@@ -25,3 +25,7 @@ experiments/reports/
 target/
 
 bench/docker/compose.d3.gen.yml
+
+# Local Python gate caches are generated, never source evidence.
+__pycache__/
+*.py[cod]

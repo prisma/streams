@@ -3404,13 +3404,12 @@ pub(crate) fn verify_internal_target(
         return Err(stale("segment"));
     }
     let identity = desc.dynamic_segment_identity(seg_id);
-    if let Some(want_id) = h("streams-internal-identity") {
-        let matches = crate::crypto::unhex(&want_id)
-            .and_then(|v| <[u8; 16]>::try_from(v).ok())
-            .is_some_and(|w| w == identity);
-        if !matches {
-            return Err(stale("identity"));
-        }
+    let matches = h("streams-internal-identity")
+        .and_then(|value| crate::crypto::unhex(&value))
+        .and_then(|value| <[u8; 16]>::try_from(value).ok())
+        .is_some_and(|value| value == identity);
+    if !matches {
+        return Err(stale("identity"));
     }
     Ok((seg_id, identity))
 }
@@ -3594,9 +3593,6 @@ pub(crate) async fn internal_queue_cursor(
     }
 }
 
-// Relay a cursor/tail probe to a segment's owner. None on any failure
-// — the caller falls back to its normal ownership error.
-
 /// Fleet-internal scan-page source: read_merged over the wire for ONE
 /// locally-owned segment, records with their routing keys (a raw page
 /// carries payloads only, and scan items surface routingKey per
@@ -3614,14 +3610,13 @@ pub(crate) async fn internal_segment_scan(
     ) {
         return crate::http::internal_unauthorized();
     }
-    let q = |h: &str| {
-        headers
-            .get(h)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    let (Some(from), Some(max_bytes), Some(key_b64)) = (
+    let q = |h: &str| headers.get(h).and_then(|v| v.to_str().ok());
+    let (Some(from), Some(end), Some(max_bytes), Some(key_b64)) = (
         q("streams-internal-from").and_then(|v| v.parse::<u64>().ok()),
+        // Older peers omit the bound; malformed present bounds are errors.
+        headers
+            .get("streams-internal-end")
+            .map_or(Some(u64::MAX), |v| v.to_str().ok()?.parse::<u64>().ok()),
         q("streams-internal-max-bytes")
             .and_then(|v| v.parse::<usize>().ok())
             // Clamped to the public scan ceiling: an internal budget
@@ -3633,7 +3628,7 @@ pub(crate) async fn internal_segment_scan(
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_body",
-            "from/max-bytes/key headers required",
+            "from/max-bytes/key required; end must be a valid u64 when present",
             None,
             false,
         );
@@ -3652,7 +3647,7 @@ pub(crate) async fn internal_segment_scan(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
+    let (skey, epoch) = match crate::http::check_key(Some(key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         _ => return perr(StatusCode::FORBIDDEN, "wrong_key", "key", None, false),
     };
@@ -3682,16 +3677,17 @@ pub(crate) async fn internal_segment_scan(
         }
     };
     state.keys.put(identity, skey.clone(), epoch);
-    let out = match crate::application::read::read_merged(
+    let out = match crate::application::read::ReadPlan::segment(
         &skey,
         &epoch,
         &handle,
         &engine,
-        from,
+        crate::application::read::ReadRange::bounded(from, end),
         None,
         max_bytes,
         crate::shard::Deliver::Durable,
     )
+    .execute()
     .await
     {
         Ok(o) => o,

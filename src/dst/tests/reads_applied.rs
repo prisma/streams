@@ -46,6 +46,11 @@ async fn copy_store(src: &Arc<dyn ObjectStore>, dst: &Arc<dyn ObjectStore>) {
 /// applied LONG-POLL parked at the applied tail is woken by the next
 /// APPLY — the low-latency property itself — while durability is still
 /// frozen. After release everything converges.
+#[expect(
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "applied-read regression; mutex assertion block ends before await; keeping the interleaving and its assertions together makes the safety argument reviewable"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     let store = mem();
@@ -98,12 +103,13 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let st = handle.state.lock().unwrap();
-        if st.applied.next >= 2 {
-            assert_eq!(st.durable.next, 1, "dispatch is held");
-            break;
+        {
+            let st = handle.state.lock().unwrap();
+            if st.applied.next >= 2 {
+                assert_eq!(st.durable.next, 1, "dispatch is held");
+                break;
+            }
         }
-        drop(st);
         assert!(std::time::Instant::now() < deadline, "r2 never applied");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
@@ -266,6 +272,11 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
 /// Durable reads never do, and after an unclean reopen (fencing
 /// takeover) BOTH watermarks are back at the durable frontier — the
 /// exact loss window the mode's contract documents.
+#[expect(
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "applied-read regression; mutex assertion block ends before await; keeping the interleaving and its assertions together makes the safety argument reviewable"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
     let store = mem();
@@ -335,12 +346,13 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
     let handle = e2.stream_handle(hash).await.unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
-        let st = handle.state.lock().unwrap();
-        if st.applied.next >= 2 {
-            assert_eq!(st.durable.next, 1, "no flush inside the window");
-            break;
+        {
+            let st = handle.state.lock().unwrap();
+            if st.applied.next >= 2 {
+                assert_eq!(st.durable.next, 1, "no flush inside the window");
+                break;
+            }
         }
-        drop(st);
         assert!(std::time::Instant::now() < deadline, "r2 never applied");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }

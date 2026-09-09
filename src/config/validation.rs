@@ -651,6 +651,7 @@ impl crate::config::ServerConfig {
     /// preflight through [`resolve_effective_capacity`].
     pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
         let mut f = Findings::default();
+
         self.validate_engine_and_profile(&mut f);
         let (tenant, cell_id) = self.validate_identity(&mut f);
         let initial_shards = self.validate_topology_and_ceilings(&mut f);

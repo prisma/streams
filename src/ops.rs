@@ -506,6 +506,8 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     {
         let mut current_commit = 0usize;
         let mut peak_commit = 0usize;
+        // SAFETY: mi_process_info accepts pointers to these initialized usize
+        // outputs, writes synchronously, and retains no pointer after return.
         unsafe {
             let mut elapsed = 0;
             let mut ut = 0;

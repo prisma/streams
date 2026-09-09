@@ -1,0 +1,7 @@
+{
+  "block_rows": 960,
+  "comparisons": 192,
+  "ratio_and_interval_triplets_reproduced": 762,
+  "tolerance": 1e-12,
+  "scope": "Author arithmetic audit over published blocks; no independent raw-sample or binary verification."
+}

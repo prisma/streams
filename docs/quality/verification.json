@@ -1,0 +1,791 @@
+{
+  "compiler_fixture_canonical_inputs_match_recorded_revision": true,
+  "compiler_fixtures": [
+    {
+      "exit_code": 0,
+      "name": "positive"
+    },
+    {
+      "exit_code": 101,
+      "name": "private-mutation",
+      "verified_cases": [
+        "batch_mutate",
+        "frame_mutate",
+        "payload_mutate",
+        "runs_construct",
+        "runs_mutate",
+        "span_mutate",
+        "window_mutate"
+      ]
+    },
+    {
+      "exit_code": 101,
+      "name": "private-construction",
+      "verified_cases": [
+        "batch_construct",
+        "frame_construct",
+        "payload_construct",
+        "span_construct",
+        "window_construct"
+      ]
+    },
+    {
+      "exit_code": 101,
+      "name": "typed-effects",
+      "verified_cases": [
+        "blocking_alias",
+        "builder",
+        "environment_alias",
+        "forget_alias",
+        "hold_lock",
+        "hold_refcell",
+        "hold_window",
+        "join_set",
+        "spawn_alias"
+      ]
+    },
+    {
+      "exit_code": 101,
+      "name": "test-cfg-effect",
+      "verified_cases": [
+        "test_spawn_alias"
+      ]
+    },
+    {
+      "exit_code": 0,
+      "name": "test-cfg-positive"
+    },
+    {
+      "exit_code": 0,
+      "name": "positive-after"
+    }
+  ],
+  "fuzz": {
+    "bounded_inputs": 26513694,
+    "elapsed_seconds": 121,
+    "failed": 0,
+    "saved_seed_files": 6,
+    "scope": "Production postings decoder/admission; no service performance claim."
+  },
+  "gate_tooling_sha256": {
+    "scripts/quality/capture_legacy.py": "954cca54d52d39b998217811eb8cfd58dc06e390e9cb3c2ea0f327fe2340b49f",
+    "scripts/quality/common.py": "bffefffc07327539ab662e5c0cf6fe1ebcbff7326063c854f96604afba9ebb0f",
+    "scripts/quality/compiler_fixtures.py": "50a3f0954cc073df30d658b74ca62291bb487482e504c845454ff1bd7ff9cde8",
+    "scripts/quality/config.py": "cbd92985b8f6fdfa1c7e9bf9dc72ee51d1c2c464aedf7dc2eb42b5e02e16360d",
+    "scripts/quality/diagnostic_report.py": "ea99a2358126a56f0c8459cbf3785cb98b5f70a578993d369359918eef1b3fdc",
+    "scripts/quality/diagnostics.py": "f44283b10af6d2a5ee934bde7a286f19754ec89fd42c7f49001ec79732282d90",
+    "scripts/quality/gate.py": "12aebd8401ee6b404831735fe2f235fae92cf24925a046c33dca6274198380b4",
+    "scripts/quality/lint_contract.py": "494e34ea07d2ba7758ae32389c8fc6ae29c6f28067865560894781c8ad54f3d2",
+    "scripts/quality/source_gate.py": "87e0c554c19ae82c8df110c315665a1d7b6a0d3179d2199496816908314a9c27",
+    "scripts/quality/source_rules.py": "7dfb9ed8e786108b117efce610263e8bd4ae9b1d9d8923cef8f80e2c7961142c",
+    "scripts/quality/test_config.py": "35bf60874f3e4159b8576029f543a74060eccc0d09b248dda18ee68040f5df1e",
+    "scripts/quality/test_diagnostics.py": "911633aee891dc439b27a74f177f75d1f87d2e37d7645c2e020e5c5ad784e144",
+    "scripts/quality/test_lint_contract.py": "b19718024e507e15917c2f5f6ecb260cdbf3b3d9eed14146446a7000e8f4ad60",
+    "scripts/quality/test_source_rules.py": "1c9b37a607db800b09fb022fb25da61c9c447696c9a0f040c9188d9c914d58fb",
+    "scripts/quality/test_verification_plan.py": "24471ba3e266f2280fd993e426a35c98d64aca2fe141407463e2173b2b8ee6fc",
+    "scripts/quality/verification_plan.py": "5d43f54ee6b0a47537dbc19a4b43760b89710fe1458355c72e45c1513016b529"
+  },
+  "local_gate": {
+    "failed": 0,
+    "followup_gate_controls": 14,
+    "followup_source_and_diagnostic_ratchets": "passed",
+    "full_suite_passed": 938,
+    "ignored": 0,
+    "isolated_capacity_passed": 1,
+    "result": "GATEDONE",
+    "source_revision": "a1d9dabf6ac3933f0115380f0c4c6d0f3294e802"
+  },
+  "loom": {
+    "failed": 0,
+    "max_branches": 1000,
+    "max_duration": null,
+    "max_permutations": null,
+    "max_threads": 4,
+    "models": 2,
+    "preemption_bound": 2
+  },
+  "merge_base": "dac9e908ec7bbf50d9b6479ce27991d198269bfb",
+  "miri": {
+    "batch_tests": 3,
+    "failed": 0,
+    "nightly": "nightly-2026-09-01",
+    "retained_tests": 1,
+    "target": "aarch64-apple-darwin"
+  },
+  "mutants": {
+    "batch": {
+      "baseline_passed": true,
+      "cargo_mutants_version": "27.1.0",
+      "caught": 34,
+      "end_time": "2026-09-08T18:06:20.768287Z",
+      "missed": 0,
+      "outcomes": [
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:16:9: replace <impl AsRef<[u8]> for PlainPayload>::as_ref -> &[u8] with Vec::leak(Vec::new())",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:16:9: replace <impl AsRef<[u8]> for PlainPayload>::as_ref -> &[u8] with Vec::leak(vec![0])",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:16:9: replace <impl AsRef<[u8]> for PlainPayload>::as_ref -> &[u8] with Vec::leak(vec![1])",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:22:9: replace <impl Deref for PlainPayload>::deref -> &[u8] with Vec::leak(Vec::new())",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:22:9: replace <impl Deref for PlainPayload>::deref -> &[u8] with Vec::leak(vec![0])",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:22:9: replace <impl Deref for PlainPayload>::deref -> &[u8] with Vec::leak(vec![1])",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:47:9: replace <impl IntoIterator for &'a PlainBatch>::into_iter -> Self::IntoIter with Default::default()",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:53:9: replace <impl Index<usize> for PlainBatch>::index -> &PlainRec with Box::leak(Box::new(Default::default()))",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:58:9: replace PlainBatch::len -> usize with 0",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:58:9: replace PlainBatch::len -> usize with 1",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:61:9: replace PlainBatch::is_empty -> bool with true",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:61:9: replace PlainBatch::is_empty -> bool with false",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:64:9: replace PlainBatch::iter -> std::slice::Iter<'_, PlainRec> with Iter::new()",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:64:9: replace PlainBatch::iter -> std::slice::Iter<'_, PlainRec> with Iter::from_iter([Default::default()])",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:64:9: replace PlainBatch::iter -> std::slice::Iter<'_, PlainRec> with Iter::new(Default::default())",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:64:9: replace PlainBatch::iter -> std::slice::Iter<'_, PlainRec> with Iter::from(Default::default())",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:69:9: replace PlainBatch::contiguous -> Option<Bytes> with None",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:69:9: replace PlainBatch::contiguous -> Option<Bytes> with Some(Default::default())",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:69:28: replace == with != in PlainBatch::contiguous",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:72:9: replace PlainBatch::retained_capacity -> usize with 0",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:72:9: replace PlainBatch::retained_capacity -> usize with 1",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:81:9: replace PlainBatch::push_decoded with ()",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:122:9: replace PlainBatch::admit_owned -> bool with true",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:122:9: replace PlainBatch::admit_owned -> bool with false",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:122:12: delete ! in PlainBatch::admit_owned",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:139:9: replace PlainBatch::append_selected -> Admission with Default::default()",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:144:41: replace && with || in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:144:82: replace == with != in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:158:44: replace && with || in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:172:48: replace && with || in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:174:61: replace - with + in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:174:61: replace - with / in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:188:20: delete ! in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:191:20: delete ! in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:199:16: delete ! in PlainBatch::append_selected",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:217:9: replace PlainBatch::append_admitted with ()",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:223:33: replace += with -= in PlainBatch::append_admitted",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:223:33: replace += with *= in PlainBatch::append_admitted",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:224:31: replace += with -= in PlainBatch::append_admitted",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/application/read_batch.rs:224:31: replace += with *= in PlainBatch::append_admitted",
+          "result": "CaughtMutant"
+        }
+      ],
+      "start_time": "2026-09-08T18:05:40.661251Z",
+      "timeout": 0,
+      "total_mutants": 40,
+      "unviable": 6
+    },
+    "postings": {
+      "baseline_passed": true,
+      "cargo_mutants_version": "27.1.0",
+      "caught": 30,
+      "end_time": "2026-09-08T18:05:38.853578Z",
+      "missed": 0,
+      "outcomes": [
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:18:9: replace ValidatedRuns::empty -> Self with Default::default()",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:9: replace ValidatedRuns::extend_after -> Option<Self> with None",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:9: replace ValidatedRuns::extend_after -> Option<Self> with Some(Default::default())",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:65: replace > with == in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:65: replace > with < in ValidatedRuns::extend_after",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:65: replace > with >= in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:48: replace + with - in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:24:48: replace + with * in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:31:35: replace + with - in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:31:35: replace + with * in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:32:22: replace > with == in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:32:22: replace > with < in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:32:22: replace > with >= in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:33:21: delete field start from struct AbsRun expression in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:34:21: delete field count from struct AbsRun expression in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:34:33: replace - with + in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:34:33: replace - with / in ValidatedRuns::extend_after",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:46:9: replace <impl Deref for ValidatedRuns>::deref -> &Self::Target with Box::leak(Box::new(Default::default()))",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:51:5: replace validate -> Option<()> with None",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:51:5: replace validate -> Option<()> with Some(())",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:54:25: replace || with && in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:54:20: replace == with != in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:54:45: replace == with != in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:58:43: replace > with == in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:58:43: replace > with < in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:58:43: replace > with >= in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:62:31: replace != with == in validate",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:93:9: replace RunWindow::iter -> impl Iterator<Item = AbsRun>+'_ with ::std::iter::empty()",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:93:9: replace RunWindow::iter -> impl Iterator<Item = AbsRun>+'_ with ::std::iter::once(Default::default())",
+          "result": "Unviable"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:95:32: replace + with - in RunWindow::iter",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:95:32: replace + with * in RunWindow::iter",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:97:17: delete field start from struct AbsRun expression in RunWindow::iter",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:98:17: delete field count from struct AbsRun expression in RunWindow::iter",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:98:29: replace - with + in RunWindow::iter",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/postings/validated.rs:98:29: replace - with / in RunWindow::iter",
+          "result": "CaughtMutant"
+        }
+      ],
+      "start_time": "2026-09-08T18:04:47.668174Z",
+      "timeout": 0,
+      "total_mutants": 35,
+      "unviable": 5
+    },
+    "retained": {
+      "baseline_passed": true,
+      "cargo_mutants_version": "27.1.0",
+      "caught": 4,
+      "end_time": "2026-09-08T18:06:30.214543Z",
+      "missed": 0,
+      "outcomes": [
+        {
+          "name": "tools/quality-invariants/src/../../../src/retained_bytes.rs:7:5: replace with_charge -> Bytes with Default::default()",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/retained_bytes.rs:13:13: replace with_charge::<impl AsRef<[u8]> for Owner<C>>::as_ref -> &[u8] with Vec::leak(Vec::new())",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/retained_bytes.rs:13:13: replace with_charge::<impl AsRef<[u8]> for Owner<C>>::as_ref -> &[u8] with Vec::leak(vec![0])",
+          "result": "CaughtMutant"
+        },
+        {
+          "name": "tools/quality-invariants/src/../../../src/retained_bytes.rs:13:13: replace with_charge::<impl AsRef<[u8]> for Owner<C>>::as_ref -> &[u8] with Vec::leak(vec![1])",
+          "result": "CaughtMutant"
+        }
+      ],
+      "start_time": "2026-09-08T18:06:22.501251Z",
+      "timeout": 0,
+      "total_mutants": 4,
+      "unviable": 0
+    }
+  },
+  "properties": {
+    "cases_per_property": 1024,
+    "failed": 0,
+    "properties": 7
+  },
+  "raw_evidence": "Local only in /private/tmp/streams-quality-policy; no raw compiler logs, binary evidence or generated fuzz corpus uploaded.",
+  "recorded_revision": "74e1faae44d8ddebed4ccdacc918ae17e75402b2",
+  "schema": 1,
+  "scope_note": "Historical adoption receipt at recorded_revision; not a current-HEAD attestation. The source inventory records canonical Rust inputs. Each check executes its stated scope; repeated owner tests in the isolated harness are not additional server tests. No whole-server Miri or performance-equivalence claim.",
+  "sdk": {
+    "authentication_vector": "passed",
+    "build": "passed",
+    "capability_vector": "passed",
+    "failed": 0,
+    "typecheck": "passed",
+    "unit_tests": 33
+  },
+  "source_inventory_sha256": {
+    "bench/awsbench/src/main.rs": "cf6bb9207fd377d8420db1e383dc534a57041d091a97007e54d82efcd01b23ac",
+    "bench/probe/examples/pgtest.rs": "88e549643a969eaf4ed00b1657f436c11075b80e43da0aa6b3c8d256d70e4733",
+    "bench/probe/src/main.rs": "0f67f227ab93d5d103c14e618be3049a3b480f31f9735c2641665f9149bc7a0c",
+    "build.rs": "073b12c83579076a3ba42e455140432e6a22a5e9a9dd7d687bc6d169daac3824",
+    "examples/readertest.rs": "c5181a896df33774777cb753c05299772daaba6fab1895d3277ee23d4046ecf0",
+    "fuzz/fuzz_targets/postings.rs": "8cafea4fea86e3f020d409405527c3eb3a4dbe6e83fd7842c9213c076b9a12c1",
+    "scripts/read-experiments/followup/allocation/allocation_meter.rs": "eb23c32407769ba668bb648842e5f4bc02e9fae3743c8ef5b0e72e2c8c6e1afc",
+    "scripts/read-experiments/followup/allocation/o2_alloc.rs": "fc23168f85217fd94101739f1abb22be833daa1f1e5f119430883c9f3ea7bd0a",
+    "scripts/read-experiments/followup/descriptor.rs": "1d2e40b56cbf49a40fc52a6a0133469885b87647a0f89f23f9a2317947c598b2",
+    "scripts/read-experiments/followup/history.rs": "f95e4158d9e5e87a060312bd370a8221e6975845a1554da16efded8fa4589a4a",
+    "scripts/read-experiments/followup/legacy_workload.rs": "27366558986cc6ccdb147e97f3d8ddf361ad65befb29c3e1bc33d466b8e892ca",
+    "scripts/read-experiments/followup/meter.rs": "39da90b59510da6f03bcb81acd492a9d6f6735702e126ee1591d80496517ff5b",
+    "scripts/read-experiments/followup/stages.rs": "20698f0aff886530d7aef6315767827258601f9ef03d91f182da9f660c9fc756",
+    "scripts/read-experiments/followup/transport.rs": "646594828a204432d1808860babb0125f36830b5d8aa8d576e1bd4aef8a244b3",
+    "src/admission.rs": "d52f9e16d60d29e30bbde5f45723dab298eca4ad0a899de63d749030703c523c",
+    "src/application/append.rs": "b756bf2731da998b21f82cb30036f73f459a88af381e9297fae47d55c31472a5",
+    "src/application/append/admission.rs": "6bb3677c9845d5e6daf02a0a03bbace7d5addb433c80b6f182a00b08dd404873",
+    "src/application/append/close.rs": "2002fe5e62e43da5b8394e0c4cbf1e3516aa640ad5c705b72e074f75d84a4a26",
+    "src/application/append/content.rs": "8fb223dedfea928c6d3a81b648dbeef9b0dc8ea0e58daebe5bcf70cfe4c3a80b",
+    "src/application/append/contract.rs": "4ec3b5ec078e510e2b87dd435ba3b357800d6d31b485f1a6375ca2966f9abf73",
+    "src/application/append/route.rs": "8926242e8852fb688253aa03d49fd946556b3a5516f9d057f250c8388079ce41",
+    "src/application/append/submit.rs": "63a6c94f6ccbe026fc61331bbcf9b556331e0c14830ec6a53c80c356ea82163d",
+    "src/application/consumer.rs": "9ae1f7051e1bfbc389ddb03f36438fc43d92e55b438e6193db2b07803a7e0f0e",
+    "src/application/consumer/deletion.rs": "b74cbbebe914e4263fed33a55d3b75832f595e072653c7d95f905685bd602ba0",
+    "src/application/consumer/delivery.rs": "b1c21434c6eeaae4427cba4c52c0b66f10e6698af3a1b6e97623a5adb6832142",
+    "src/application/consumer_remote.rs": "82a9d54a5aac2a19c730ba8bed98291ec9373a18e026926175e8e197c66b0cc7",
+    "src/application/creation.rs": "c1c4fb1c8a90f781fc11c403ed480c55f7ba1965ceec7778df36470c73bb0279",
+    "src/application/creation/anchor.rs": "a19399c40be1c39956c163d5cd1f79c9bd5d780261dc457cd7aafdfb42a74305",
+    "src/application/creation/claim.rs": "d904f0fcaf88f7cf9938807644974707999fac04adafd9494ad47e2809762f29",
+    "src/application/creation/deletion.rs": "2956fd4a49536d5db52f19b0d861e634580b1a582b8bbc7840bb9bdc03fe8d41",
+    "src/application/creation/fork.rs": "0558a8ad11cd724fb07de62f1a3d0bae41e31f1dbb2f054eb5076c9235bc963b",
+    "src/application/creation/initialization.rs": "5e4827a07a08dc699f5322ecf66591281f4ba22a7243f0e5fca422a9cdbe52cf",
+    "src/application/creation/product.rs": "5cdae99a1b1626c3fc135a5023f7ddcb160b2b81d4c06e3560cf04a59a5573ad",
+    "src/application/creation/raw.rs": "b3c1b9e04e29483d48c7f141309262e47a5eedccb8854925ef989b8e9c451415",
+    "src/application/creation/ttl.rs": "a913cfde4c08a94deb756b1738d1f06fb87400e63de237c2b2d639e09186d5d7",
+    "src/application/lifecycle.rs": "8e92899459a3db0508a080a34e280c3e5e41b568ae18c0b2c7d08e5bbd0e8d8d",
+    "src/application/lifecycle/claims.rs": "d86c4b7b50dd14c2d1096d6173ab5ae2a0987b6dd77e39e3f389a7872345fec3",
+    "src/application/lifecycle/raw_close.rs": "ab7ce709ecf720d4beac5804d273bf12d5e832891d9e45b7b374fd84b637dce2",
+    "src/application/mod.rs": "f4e589a12650cc35fd181d7930b0809c8c7fa73ff9bcbf7f0d085bf40a999180",
+    "src/application/names.rs": "776579585245480019a9c747e16e02c1bb08dadbb25c348e6e0d361622923e9c",
+    "src/application/read.rs": "71bcecc6f812baefe7480ac9be74892c9ed5677ff558cb7892d3f10b613e3a33",
+    "src/application/read_batch.rs": "db765e6a9af8b8cacfbba6681e5138476d5b33ff466b8061fa84e157aef7958d",
+    "src/application/read_batch/tests.rs": "21451e10589f2bb9ad0e339623b955c1692d6d13ccfa9822c10b7ff1f1fe3a10",
+    "src/application/read_budget.rs": "d693cb9a33003327cb528f53667a3b1d85e8975af3f0c807419e847ce4bef941",
+    "src/application/read_decode.rs": "640a4d9e2b9a8d927d2c32bc7c4f9c1d2416bd59640309f4e2311cf5560f4195",
+    "src/application/read_decode/tests.rs": "6c6505d7e2fb4a16b6724f933f5343d58634216d455d35317b3750c9926fc9c2",
+    "src/application/read_keys.rs": "3ec172bdc9c941613cb1616d2df6f6a9c21d1a33f64cf6022dbbed3325893fb4",
+    "src/application/read_range.rs": "83fbc175a94f531938aea356347dc905d7ecbae85a30133130de0d2117786cd5",
+    "src/application/read_remote.rs": "8f88213a1bfa205d4ea2d23966cf1418245f180c21b580931150aac83bf4e98d",
+    "src/application/read_request.rs": "434ad208b3e9c1385f388fa750ff0925266284f272f4c362903a0db86282be1b",
+    "src/application/read_retention_probe.rs": "401cad914e80f21c85cdd0598d210848348f923c834104f50d1d9a4806befa8d",
+    "src/application/read_scan.rs": "c10f61da64bb25c4f022eeebaacaa7d45bee3f0e6b3fff18c74fa6bf3390b9db",
+    "src/application/read_wire.rs": "d8dd677343a92c121ffdd7859dd514a640808b859a3abfcb19c3eb97b2853501",
+    "src/application/read_wire_tests.rs": "2d48d704567df7e73a30be846d266c5776c30d6a5c3f90f7ebe6dfdc4f46e0fb",
+    "src/application/request_work.rs": "d4aa7f9d400812f58e59460228c5680cff3c6d1e20af2a2a34aeb32ba5a3ea26",
+    "src/application/topology.rs": "d73b4fe4fd217fde82206586e54087d11b315f2123396a96ed092f8864254101",
+    "src/application/watch.rs": "39edaccdac5713c2b083d24fd6f3810515f2f3c03fd9c58a92ecf89d6a900357",
+    "src/audit.rs": "e8fd23a34be1e05fcc80f3e5fec4d40896ef0f0b18d4c630e63b2dc17d39cfc8",
+    "src/audit/batch_tests.rs": "b0420da60fade41a75706bfafa40c058d3dec1ec6bec1821b9811e235f6b6f4a",
+    "src/auth.rs": "8e0ba4cb3e8c68a64fe236b274682aed0aef940526e74ab6ccf16a0edcdcab86",
+    "src/auth_feed.rs": "89df089c41f18f2b70470718b62e4b4dd40183bedcd8c59da2a8c6cd431cac0f",
+    "src/backpressure.rs": "d97d98734a665d72b0968e7156ffb1f1bab121885d062830861a691044e2edfe",
+    "src/billing.rs": "415828f40964aa955156bca4aae6386ec85394c07f418d3156db428c30b928b2",
+    "src/billing_service.rs": "3190ffb77ea20de22c0422f377ed41af043ac24a8d621f8b55f0f0a290480e8d",
+    "src/bin/bench.rs": "a29a535b708d66fdb28165488a39eea0fd27d2663aa6dca2ada716d204af0921",
+    "src/bin/cryptobench.rs": "f88a691209b02353d9544c30fa906ced58ef79a1c5c9c59889489ffeaba1459f",
+    "src/bin/edgesim.rs": "95af8413893d3b821191957fbb3e898052bc306f74663993a339e4f542bbe1b7",
+    "src/bin/keys.rs": "f343c5c541b6f6ed6e9311c7523c7b2603bdb74efee0f98ceaadf944c055caf5",
+    "src/bin/livebench.rs": "d59e3a883f664b393193fbca90b999cef9d002f174fec11ee96d959f0dfcec7a",
+    "src/bin/pilot.rs": "82a5ac030568db26e6cbbec7b2743a05ca9a6ed5e0d16f3fc0791f560c66f755",
+    "src/bin/s3lite.rs": "a73625ecfbab5a653abef9910053ef1e7ccb25f0397fbc758207b43eb94b7c84",
+    "src/bin/verify.rs": "06bfcfeba353feba938f5980cab1afe8eeb188159443f4fda46b45455a39c847",
+    "src/bootstrap.rs": "dec4acdd211a0d50a70339ba63f1e893bba2126fea6ee5b6d0ebb9c754d9f4e9",
+    "src/bootstrap/process_executor.rs": "45826d0c2289ac610b2530ba598b3e05a5250c9a4711de65e8a46b1b1e31618a",
+    "src/bootstrap/rss.rs": "02849d402c12bdce23a5bf2fb306a7f40d0f0097852d2b1f7527cac555764976",
+    "src/bootstrap/runtime_handoff.rs": "790af6d75a9338e2dda94f3d0f918478559f06102084df7aeb6e1bd7837b9c52",
+    "src/config/cli.rs": "acd035a923d1b56718d306fdc505421ef6cc8daa87621a440b6cf8acef023a0b",
+    "src/config/environment.rs": "c24aec9eb5084482deb9dc278569a727c4aba15a28d8ba3e883b06e49444f58e",
+    "src/config/load.rs": "7f2ec7253314fb7d233610832dec1bd2578130b6dc5d9201dd9c199006c14d9b",
+    "src/config/mod.rs": "07b860f966b42942738cfc14c1c5a8ec58c27ac9cf4cbf6c66896e7441d4f92f",
+    "src/config/model.rs": "2c99a6bfadefbbb3c5598a5720775605d69e21e0c887b18607647b2c4d67dc8d",
+    "src/config/notice.rs": "4c5dbad77d1d09fe603c47d55f3168f93d82d33f57a9dacaecee9cfb13077685",
+    "src/config/profile.rs": "d25d6530021b12ebdfb112a44c9868ec0d40b20abf4abc60e531e28eea19be5d",
+    "src/config/summary.rs": "b9db0e16bf17538692c9520fc65c974233545784785309d87c22fc471a0819f5",
+    "src/config/tests.rs": "ca61a44729ed56254612c5d44f815c7173b0bdad841361ea21a177c0e8e29254",
+    "src/config/validation.rs": "3d2273b0488140d8b3ddb1eb7d3bbb0be36ff085f67cae180a2a25fd15074f4b",
+    "src/config/validation_tests.rs": "6929f5244566b763d9ea740e0b8eed9ad92320ddbef8fd38e41bdac71fb3c650",
+    "src/crypto.rs": "e62cbf96f4f3fc2322aa9d85c8be0ac5ae900ba51fb2f43d6e0b933e746d2a05",
+    "src/crypto/decrypt.rs": "ead9d61546819a0c3cd4b1f22e87b779ac9790040dbd9c8bcd351ee88496bb8b",
+    "src/crypto/decrypt/tests.rs": "3bad59bc3e46e1a852ccd71c79ab6875171d898c77eaaadde779118f718ded89",
+    "src/deployment.rs": "cb2eddfe5e8b5366306a58599e8e5731224ee7ffc7cdd58bab27979921aa83d1",
+    "src/deployment_bearer.rs": "b981616d3740941562dd1694441269955807ca1fb041544936f6384360900124",
+    "src/dst/dst_tests.rs": "9d7207624135136970e91676438321778fac7190aba51f36cd3074e5cee5ab79",
+    "src/dst/fault_store.rs": "0eb7408f4e265bf6b5f4ecaf327662d9ca6e6cf7b471a39e68f098c3d2d15e01",
+    "src/dst/mod.rs": "bbc63f73bd555e0e4e9bc5246c803b2741f1e8023c091acafeb76e2bf89b1884",
+    "src/dst/review_readiness.rs": "075163783846c108247b408f137be7d12d9d8f5ecae02a521d7257f368718ed8",
+    "src/dst/review_security.rs": "7a88d2a55d3e13b9a34f183b79dc55095b84ed1e9337c41bb711908ac2f4e803",
+    "src/dst/runtime.rs": "a35973bab5ea14cac138623824444325e045e5260bdfaec251cf50b8a5d11987",
+    "src/dst/tests/admission_maintenance.rs": "54079dc967609845d7e56037cb4dec92f0229df8f50a939dc97302e0ba39f1ea",
+    "src/dst/tests/admission_memory.rs": "18f4d23dfdb01b5f8faaad4dd8513f97a247b1c7ec333dee1c13eb35a1c6ac51",
+    "src/dst/tests/append_application.rs": "891fb0106512450d4fb3ed3cf8a2082cc7f01cf6a644605f68e865e39612cc34",
+    "src/dst/tests/billing_attribution.rs": "8ac8c2dd3027e48e730c6d60eb586a758748c6e02bb959066f9dbcd5f1fc1c2a",
+    "src/dst/tests/billing_controller.rs": "5af88c44e7bc3303f57b85515f99725321dc36bad6796b5e71d92782cb447cae",
+    "src/dst/tests/billing_maintenance.rs": "156f7cda188638c8c6820fb285c38052bba6aceb4b3d6a147150eb5a1f40e53e",
+    "src/dst/tests/billing_usage.rs": "b4518f9904374220d3e3454d6955a406818e064b1e57926ca430745efc615b17",
+    "src/dst/tests/consumer_atomicity.rs": "3e8f0ebdacacb3c2bb87187c104c1d035771c375447e2741e466b95d206f3abe",
+    "src/dst/tests/consumer_delete.rs": "880beee3a066194eae2a12a9960459b24ea905e2db35c7c1cb082be84942d6b3",
+    "src/dst/tests/consumer_dlq.rs": "d5532fb7903d29a8e43346b32fd807b83e1915df0d2b33369f7d39cd5e46ae9c",
+    "src/dst/tests/consumer_generations.rs": "39dc05e893a72fee90cae3cf295b4d7e1e12de271cc13485363cef11567b1ebb",
+    "src/dst/tests/consumer_product.rs": "46ae5ec6595a56d860a66ba4c3ad8692b52e00730ab4aa09c81dafe2a3234265",
+    "src/dst/tests/consumer_saga.rs": "4485f09622125141533e70745997bec73978b56552d0090be054965a9179af4c",
+    "src/dst/tests/durability_failures.rs": "47dd3558488cf0021bf708d4dd8721c77626311111d9c5246ba17376332af3a9",
+    "src/dst/tests/durability_fences.rs": "11d4108b048dcc3ed96f5ed6e3480ed23ced0daecda89529825d0342e34f90ec",
+    "src/dst/tests/fault_substrate.rs": "90fce03a39ce47a0ad14c8c545fb75b1ac28878a5eaa4fa5922b701041cf835e",
+    "src/dst/tests/fixture_auth.rs": "c65e0e96e4028e6142342f6fb4a8fc2b10b67691f7b1ce0a8f808718ea71d77f",
+    "src/dst/tests/fixture_failpoints.rs": "04577c540a1bc9d2d54f1bec2bf065815d2f824a77098d0d36731bb54cf240eb",
+    "src/dst/tests/fixture_http.rs": "3530f53d4e2fe8b317310c4269323533455dfeca2c6e238af3267491ac3789ce",
+    "src/dst/tests/fixture_livefeed.rs": "460cef11701f7d83171fc98d826ae90aef85b97495be3d4271ccdd7d2ce99e41",
+    "src/dst/tests/fixture_requests.rs": "05fd7a3129a3eac13a74a9e03bbd2d612afa3f25a05965d8062253d7e83ff90d",
+    "src/dst/tests/fixture_runtime.rs": "1f948f311caa4c1d6b7d31f1aa3c1f2a53a4500777f6cc9d216fd024c296b040",
+    "src/dst/tests/fixture_storage.rs": "e3a5747c6b1ffde389c5e43e5f68eb7e0f1f1651020f2625e4610fb765c52b38",
+    "src/dst/tests/fleet_controller.rs": "af404d07de0dbd7b7c7ce72f35e2002cc1c89dbd18a9844c76d4dfc09349b272",
+    "src/dst/tests/fork_cleanup.rs": "ba44db882ceafb62efc336d77bcb7ab874b33cb78706aa27582e85228319f6f7",
+    "src/dst/tests/fork_lifecycle.rs": "3b561c8efe6098b6116b3d2f6c395f949ef40121397e3826a038a7a45881bd9a",
+    "src/dst/tests/history_absorption.rs": "2a70d4c22ef12ba72ccc2992aee482d4170aa719eca114cf366bfb1369d3df0f",
+    "src/dst/tests/history_gather.rs": "8f0166d76e2eb4f939359a8f1482f484db3c6d267ae0aa1f83d9e9b69a83f3f5",
+    "src/dst/tests/history_recovery.rs": "969aca50f064edfeec9421972aaf54d68c32cb5888d8953af8f2534ad7b8a7a7",
+    "src/dst/tests/lifecycle_creation.rs": "a9c71759829a2b6c738c5cb5976db9fa55e3d1226e370a56bdd23ed533c29d86",
+    "src/dst/tests/lifecycle_incarnation.rs": "4ae69a751389aed8da20a75649863e78b21f5d54c572395ec5465d69f49aa2ee",
+    "src/dst/tests/livefeed_basics.rs": "46b70f813d21f1586dd6029c5cd795e194b9886b72525176ef385335492263d7",
+    "src/dst/tests/livefeed_history.rs": "6da558a67679d6533898450993d86fef4160bc587ecb36f987aa56c899c13ed6",
+    "src/dst/tests/livefeed_ownership.rs": "f7502283084f0deddfad54d7335683a59f4d517a914812362c6b6842be166320",
+    "src/dst/tests/livefeed_swap.rs": "7fdcf6028c5e99b7b9a9c1c6f801e1deeda65149c606ca2c81d86852fa221049",
+    "src/dst/tests/livefeed_tail.rs": "1fde38cecd689edd1cad18a73bf4358ffc2d40fce510fa88c4e08f580668b3b3",
+    "src/dst/tests/oracle_model.rs": "9c060c9e3ce4f0e836a7f2347672f358cc8a03224c0a9f29dbefbfc74aa48c12",
+    "src/dst/tests/persistence_faults.rs": "64a87de3b1087ad6ad098340429632b1dfe59cdd46476b5ce9e730805d78fa58",
+    "src/dst/tests/producer_handoff.rs": "35d6d21639455f72e4b3bf0160cbdd0bbbc9ceb12ee32f05b792ddd960432988",
+    "src/dst/tests/producer_protocol.rs": "e2dd8f5ba748b878f372080130ae383a3a1ea6474e3f07afe41643355f28d220",
+    "src/dst/tests/product_lifecycle.rs": "a221ffbf35c34a4fde498b686b4e50d8c288609d78933e37d18347db93d73986",
+    "src/dst/tests/quota_enforcement.rs": "ae77a142a4397cc1cf825e66d1d6aa0ab7570d3e6a4adb4202de93e01bea07fb",
+    "src/dst/tests/read_application.rs": "4cee47ffd467bfab63a7893a7b609c06ab6273a4006a5d8e9d5bd45c6947588c",
+    "src/dst/tests/read_page_assembly.rs": "78ac540e1d43e2b52214ab8c7a8e60fcf9a9267be43072aec123383cce3519d9",
+    "src/dst/tests/read_page_limits.rs": "4cea37efb48b1f7efded4e85f5f00ee68602c4a205dab2fdad57e1ce8001e147",
+    "src/dst/tests/read_span_cache.rs": "1a601be5c83004d13e8f924cf6fe64b665b1752f1c4d3b69d30dc2ace24333b7",
+    "src/dst/tests/read_subset_retention.rs": "6fc29316a34aa2a18011c50b556bce7efd4114941832467eefa05a2da53fb12a",
+    "src/dst/tests/reads_applied.rs": "4f157545e0037e48eb8b64651584cc5bd0d8ac46a2683cc8d3dd2815a7779079",
+    "src/dst/tests/reads_history.rs": "0431236d47abe50d0b4c5e624c83a6b289d03b2b16c70f7d04b1649b31d31b2e",
+    "src/dst/tests/reads_product.rs": "858bf799b164ad259ade3a5bd64a26eceed312433410bf0280b4d4a31d5b5fcb",
+    "src/dst/tests/reads_raw.rs": "f36b4fd7d9ddc2c7abdbe90732032985ab9c361ab2fec38efffd7d6e1f69e2a6",
+    "src/dst/tests/reads_ring.rs": "75b903333d612de3517d90723c37ee5ad3d92e1f639ebbb27d3cc989adfdc667",
+    "src/dst/tests/request_topology_debt.rs": "64dd3ddbfa6c4eafa2d0b3ed5b57821289f18a928565a154381ee4681f252255",
+    "src/dst/tests/runtime_engine_lifecycle.rs": "b92ddc8640991c7454cfbb60fea93cdbd395f2a5764a4e1778bb6850529228b2",
+    "src/dst/tests/runtime_isolation.rs": "cfccdf88e2bb698f231860c1dcd812cee20ca2ec4d9823c88738897026f9230a",
+    "src/dst/tests/runtime_journals.rs": "8895e14bb1ef8bacbb1d6d76842107d8489350aa3572b3fcd444b99aaf654715",
+    "src/dst/tests/runtime_open_gate.rs": "f7e550672b46e2f518e74c0e7c62af4abf0ca99f7549ed8cf7cbdd9436d1e716",
+    "src/dst/tests/runtime_request_work.rs": "c3c95f4a05b1944134aab038300ae20b1171911e871d9db1682ef6ad846aee48",
+    "src/dst/tests/runtime_retirement.rs": "f372a95102bef0827dd64a1f6b9077b309cff97fd713ae8083f5c9ad9a54084c",
+    "src/dst/tests/runtime_sweep.rs": "07696d6d4779bfd6ff112049bb4ca90ee42efc14f19eae8d0703f78134da3419",
+    "src/dst/tests/runtime_usage.rs": "cb1e837ae541ee14c4c0ef0372fbe9a80a592f15bef0059b06987cb962e55533",
+    "src/dst/tests/scaler_controller.rs": "4625c18493b56a9dcf303e713ee2994fd23fae92e041b696c9151c3c599f3768",
+    "src/dst/tests/seal_cancellation.rs": "b3950032bad1d9b6becce7c40620094125a7f873eb27ef683f16764739ab9a9d",
+    "src/dst/tests/seal_convergence.rs": "f6910c3a1d5dd166b86f2143532c945069c2062fbcd4698275ce986310a66eba",
+    "src/dst/tests/seal_coordination.rs": "1f12aa69c6489629c07d72e25f4251d7d148e5a26767fc80cfbd921142764239",
+    "src/dst/tests/seal_fencing.rs": "a7974b12e4046a4126466b9241c950d4fea1bc0e8f6fbed7f6c40b2cc93339ee",
+    "src/dst/tests/seal_incarnation.rs": "3f1bbe4fa655851a9b1ea0b42287f8fdc1f550144f295248d8a18881fc4bca15",
+    "src/dst/tests/seal_recovery.rs": "1fae87d16a2671b1e9b44e31bcbeb73e43341cffad2bfe192b6bfb4a660d5b98",
+    "src/dst/tests/security_audit.rs": "236743058a3137ed65838f4f2ba708bcb4fdcb2fdbb977ca3af3bad0a905bc21",
+    "src/dst/tests/security_freshness.rs": "fbc2a3447bac59e3c1bec5ab2eef6fd00ea05ec746c2bf601c2d3b1ccf603b36",
+    "src/dst/tests/security_isolation.rs": "6ab4e79110ba01a96f31ba6a09809f083aae1fe9927cfca8d9d71fe4466ffc6e",
+    "src/dst/tests/security_lineage.rs": "ab22631e1f5d8449a265187270700d315e922ff8a2aa0dc2a363cd762cef5a1b",
+    "src/dst/tests/security_modes.rs": "61fd18b46133a090be0e4f5a1dec223c6e51501bf5e7b9604c6276ce4ee507bb",
+    "src/dst/tests/security_noninterference.rs": "34b9a01473b618dc47842a697a31d8d4832eb7d136db12594f596e3d3cac34ec",
+    "src/dst/tests/security_policy.rs": "fb147f61831c19a5cf8076be5d0255f8a41e05dcfd4244b8d5feb8dea62d339b",
+    "src/dst/tests/security_revocation.rs": "87cb017c5b760ef822567048b2a07b6391efd1cc39928f74976c717b0bd5429f",
+    "src/dst/tests/security_routes.rs": "faeb183374594c8b76a53509f87c14862b742c650238e1f1957ba60bfd4a2874",
+    "src/dst/tests/security_subscription.rs": "d4c67c7e6333edf37a841dd37a6e5f634913604599ddab1cf6b2dfd4e1834057",
+    "src/dst/tests/security_workload.rs": "35217f491c2e287f6fd5e746432dc1d87e3b6d52b295ae5cb91a0f73a29f3f1e",
+    "src/dst/tests/sse_delivery.rs": "d5e207c187e632e08dde6ebe76b8c6b89cebc74ccb1aff4e357391fd0855dc11",
+    "src/dst/tests/topology_lifecycle.rs": "788be258aa6e1e41a543982138d703ea5841a1055bba65ae0a3f2100a82b5536",
+    "src/dst/tests/topology_scaling.rs": "8165a26731f8a3c999f2f80026ba08d264450c06972e512143ef1c0503012047",
+    "src/dst/tests/watch_admission.rs": "ba41b422897c6374c8587b0e6c5d4028486997f64411a56ef25f157f2a65dd66",
+    "src/dst/tests/watch_observation.rs": "d1dac26d48db7d3633ea21d5c7dcb4b42f7979c6eec192be4303825940f98f40",
+    "src/dst/trace_store.rs": "5347e4d8b26d8d2f5df8a356c3d3c1eb2e69a2e1f7a899b09b85af8be32a3cde",
+    "src/dst/trace_store_tests/basic.rs": "50103a6dd06d2e933e507eb4e6fa522da037c0faaad27f9dca12df5b443e83f8",
+    "src/dst/trace_store_tests/cancellation.rs": "8f22184f8f9a26be2f4adae10f750475ab151a2dcf95119b5702d6212f9d27fe",
+    "src/dst/trace_store_tests/concurrency.rs": "41637583e29198768a1c273f2528f7e336cb236c7535f10c6d627a08b7ae5e72",
+    "src/dst/trace_store_tests/delete_accounting.rs": "f791fa1b362e357d0ff0b7604c037c2e3c9e012edc28785533fed7f2ccc13c19",
+    "src/dst/trace_store_tests/mod.rs": "f7bd24e3081d239f22d1f6cb3e60a4a652fd8b65cc138c1f678a83bb9f4d86ab",
+    "src/dst/trace_store_tests/streams.rs": "d1a982853be0ce9a55ed1f36217575a0093414011b64cc18bb2cf8588093068d",
+    "src/failpoints.rs": "57de11c3749bae49f81898b4cb32925107201d06d24bfb7ca1cae1132336d7aa",
+    "src/fleet.rs": "90351c398ac6c531a286ec9804b0c1fa932970e0f3de7e2f03a3219656066ab8",
+    "src/fleet/outbox.rs": "c74fefc618da73ef9650d2b152d497719691e4b6d48d21b94a2f58676e59f6ca",
+    "src/fleet/planning.rs": "a1e8af914cee9563012c9cbb4199de27eb628b193f6f4c0152c6dd8b1b3d440c",
+    "src/fleet/repository.rs": "ab1a367629ad0e1b7ce0c84332665e4f323fac24daf5ff341023e70f85f67138",
+    "src/fleet/repository/document_tests.rs": "b7e30717c9b33f6a3030aa226843ee2b1c667b6ba22002ba8818fff825f8f3d6",
+    "src/golden_tests.rs": "26448a610be965b08793b478607f2846958ed77f6c50ccf15848be258eb1f58d",
+    "src/history.rs": "170bd16af7b4eb658e886e06b176b4fd2c3d694a8d928ee7327b945e4902e889",
+    "src/history/canonical_span.rs": "903dcbf36b1f1c80811262d569eee4fbbe9d581beac641f067c5d9268bc4ec69",
+    "src/history/controller_tests.rs": "024ef52fc25258e9e22c1f1e619d79feee09734373075cb712dd78b6f3fe3753",
+    "src/history/postings_read.rs": "57cca575887d840231a49c1f0c4730dc98125bd4f2fa4083dd129998244e2d05",
+    "src/history/postings_validation_tests.rs": "bddf98b8bb135d5c603eea30327c4159b0917fda39f48e00e4ac2317ba64c319",
+    "src/history/record_validation_tests.rs": "15818059911ee2b4ae32e150d2739374135b9fe1954318bc0dd86ff6199f2aca",
+    "src/history/span_cache.rs": "a9e649b2cbe4e9fe7ba8cb7474c6126e52fdec65a0285c1710771efbd6661a44",
+    "src/history/span_cache/capture.rs": "27af542dc2aa876f203033f34dd22fc568f562ea665d7373dec7b8327be3f631",
+    "src/history/span_cache/tests.rs": "b19a83c7f9b53d5f223658b387c0f83391a6e0434305d3ff79c116c6f628551b",
+    "src/history/worker.rs": "09f91eaedda0b9c0313754502d278717e36ab742a974f660c2801c483c34f46a",
+    "src/http.rs": "17343cb660e8b4455ceda6c3cff72d404836ecde85c9e015d6ab4bf387efaf36",
+    "src/http/read.rs": "2093c6afa96a92f3bc874d90e70c7e73e6a61843c332d0724ca12cf0a983602a",
+    "src/lib.rs": "9a58e486c8632f0df6d05c84b48d897a60dc79f3a936e1c679b65dea6a031de8",
+    "src/main.rs": "cf92f363ff0f5f23e5378d21a79c262fabfd84e1052562e184931fa24f79a01b",
+    "src/mt_lint.rs": "cb476890cc478e1dc0ecbcea452b1a0f0ebe17f3ca3f3ed3c2c7247dfa749246",
+    "src/offsets.rs": "498fe0d09c84aa6787d2b77bf0c5e6c07c181309b7610c478d0ed2057bc06aae",
+    "src/operator.rs": "7ddf73753860e5bdb3137b712b8806043fcf0794b144025cfeb229d279f70be7",
+    "src/ops.rs": "081be05ebc361c5798a877b896bc91669c723adde8d1019fa1b82eaf81e7a196",
+    "src/ops/batch_tests.rs": "c8703c4ce0d642ceaed2598d32b313391689844ce0117f0446cf566d9bb6b877",
+    "src/ownership.rs": "1b75cadc622c3beb4702dc86ac5fb9b0411f62c0eb0f7e15da500f67dabf970d",
+    "src/peer.rs": "abff99b5dd9912a3a52de4957d507e5f3c8332de8a7b3b670fc9643ce98ffaa5",
+    "src/postings.rs": "7a7cd5fbd058a279135947fbb52e4507bb8e94db88770a671ba41461f795c290",
+    "src/postings/validated.rs": "d25cffb1fa9990819854f0266bae9b88aadf8f0d4230669c2ef31bcb77fdfdbc",
+    "src/postings/validated/properties.rs": "64d4093f3dbff3b34b3b500ed68eaf7cc3bbf6cc2c7d2387751d59f8eac60852",
+    "src/postings/validated/tests.rs": "1a161ba1647754a725c4f69d5a9cda4a58ea97112f827875cb4f17b6c40ad64a",
+    "src/postings_cache.rs": "9f432959ed6ec3f4f8e746ce4f566f745c899788911998e38e69c97e79cc778e",
+    "src/product.rs": "1bbafeb7bc7e884bdbd98247b38502e7915a01d76a8b727abd7dffec51e18b44",
+    "src/product_cursor.rs": "331483bbc79ea722990a080e61888019fe95d0d52aa17785ecda14ee25929b7b",
+    "src/project_policy.rs": "f0e813d7f7e9fa7618c5ec7406396feda34abf7e70c673469b5388e6dc1fd3d2",
+    "src/protocol_pin.rs": "9c6e3f39fbaf89de6ba7594d5147462b12010e1b6bdd25f6a1a8ef140c457f60",
+    "src/queue.rs": "482cbeb1ba38458c621cd4e8173bad7ee1d13d391b321bd04f15049f3b1e9240",
+    "src/quota.rs": "3a2b59ac2100f051a91952332b1fca248c88578aff533213495e2935750c4af4",
+    "src/registry.rs": "6911dae31f01710f1caad694b346bdef607ac6032d443dea9524c5d266b440cd",
+    "src/retained_bytes.rs": "25b4b5349cc35dfff58349e6fa6602956e5575b17392a6b3134eec21683e4ca7",
+    "src/rollup.rs": "06c7992019ac214c8f1b5db43b3f41ccdb61ef4a7dfda0076a6b699b0cc4179c",
+    "src/runtime.rs": "f7409328f34b156ffce484c2e39eb8765558aa77e813a89d29b75a55a7513ae1",
+    "src/runtime/telemetry.rs": "1937f2665728b662827c616c9f8ddc70e8084e73f44ac6e4c85bdbecda4f4f92",
+    "src/scaler3.rs": "19acd3ab730e31a4b49a583dcce68a338b596654abb17d6c2d86e8c438a5c43c",
+    "src/scaler3/controller.rs": "a67f2467567477fc36fef95f6e7e59c7d44c3020770d6cb24ffa7efe2f786cbf",
+    "src/segmap.rs": "c53c7d7768a2c692df01a181f3bd50f7c577e36df3c8fa1cd4c0ba60dc28845d",
+    "src/shard.rs": "278e846cac6fa5e5b9d3bd011587f396b8731a12f098dc694b9289dd438affef",
+    "src/shard/commit_handoff.rs": "542b2eceaebe06e4c7349dfc47f5438e9ff7e77646f2b7484fd850088091bb3c",
+    "src/shard/commit_handoff/loom_tests.rs": "9bb75752deccacfa7c1f72b36a0a0f97d3c9e51ed48222f966bba8d3c2c0b22a",
+    "src/shard/commit_plan.rs": "d9435293489796a2b9838e4a59a9ae284622dced36080346205a6b91eb98010b",
+    "src/shard/durability_frontier_tests.rs": "b5a9d9f8d506e9786746af3e848d43fdf4a606722901f9fdaf183f264bf6b6d4",
+    "src/shard/history_partition.rs": "d90089dc464a998820b74dd752d4bb84733626a75dae52b580c52ad7c70e21a1",
+    "src/shard/lifecycle.rs": "a42e3abed2b64c1f1f9b037a749db19c65f02509fb24cb17ea4a37e1a1a3c426",
+    "src/shard/queue_codec_tests.rs": "9cc80bdfd84ab52b2a80811605d633eae847edd9cb01f38dd3921adffd019b9c",
+    "src/shard/read_budget_tests.rs": "5396e3844402befae8a6d7a79733a9c53efc42cb750fc74a9b63ff3cdd0f4ccc",
+    "src/shard/record.rs": "ddca344dfb1e1ddf89ab53bac196e10f30372208a69281c6bc2aa0afd9cbbf0a",
+    "src/shard/record/checked.rs": "0835d9c731d5090e47d8d177bd23aab84557111625dd2d4656b60f46321daef4",
+    "src/shard/record_scan_tests.rs": "94a09d9c1ea689c9366e1e3047ba5ed703a991e78b89e527d00edf5eb21d88b8",
+    "src/shard/retirement_tests.rs": "889a353a968afb4345e125a0ce747770ae026df34ee24e052291b3d6ff37bf55",
+    "src/shard/task_lifecycle_tests.rs": "25396216118812c0108ecde217b5471453398f6d3b49404bcf21e8f3f4ca7dc1",
+    "src/shard/transaction/append.rs": "d202599649263deebb10c7ba398bd600a74bdc6a597daa521568493d195e2e09",
+    "src/shard/transaction/finalize.rs": "cccd95a19555cb0285369a0b962f1df2089cdea2ec0c2591e966433b2502d572",
+    "src/shard/transaction/maintenance.rs": "46238db4292bb9dad66d76dae57f345091257731b0f7426d01ec00e60d4588bc",
+    "src/shard/transaction/mod.rs": "f4df70978a20e49b02fe1edce253c54e9410c5570b9a22fc06ff8bef347d63d7",
+    "src/shard/transaction/overlay.rs": "1f6d769bdd4da8f416cbdf063bc0dbe2ff868022b61965232e2b398555ce91c5",
+    "src/shard/transaction/prepare.rs": "559f59fda01996337b8668b22aceb340870b1d3ff729e6bbbcfec13472ea2121",
+    "src/shard/transaction/publish.rs": "8aaa6596aebb0e71ef91255335b0caabf79047d94414a3e5c6626ca2b9809d62",
+    "src/shard/transaction/queue/cleanup.rs": "dde90152a67c47961ab25b8c5a245f079bf10539f9f520d5413250546a026af8",
+    "src/shard/transaction/queue/config.rs": "4bbff3393dc007054cbbdebecfbed813e790fa5c82b44a58d8392fd7709d62ac",
+    "src/shard/transaction/queue/load.rs": "a4bdcee283b2b5873a59c33ddd75e48ae649e4de35e3f382502c785b49e739a1",
+    "src/shard/transaction/queue/mod.rs": "6ec6d3d239643c98612180e83ffaea864300b15237302d3065248e1a8e017ecb",
+    "src/shard/transaction/queue/receive.rs": "5a70ca6a8a722d725cd14be0122a7cfd9aa07612bcc3f094c1872b8d97080162",
+    "src/shard/transaction/queue/settle.rs": "b8ca809615a83ba423294a8c77dfd77a631e3b49f04d3cbb5f0a7e929c639b84",
+    "src/shard/transaction_tests.rs": "ee75740db0f987b0f9ca54c92dcde19b581ebb1fcde2e09cb9b93cba5442a8c5",
+    "src/shard_directory.rs": "8a4894a76c6474c3f94f248738033d81c6fba0996a2872988b4737624bffb4b5",
+    "src/sharddir.rs": "2d11453e1eeeb1d953ed9e05858d05ae1d6ef639a59988f945ffe4e8c387dd1b",
+    "src/sharddir/health.rs": "5c400b141b853607066a03d89cc8c94d254eea2d3d6c4137e0b1398b0fd6dd68",
+    "src/sketch.rs": "d754862544b7ddd67a47a4258d2a13da0bbbc18f599a56ab8517b6d32175040b",
+    "src/sse/auth.rs": "0bb5eaa15d7aa7e79f0248f646e14b8f3c7c0a3a7621e3fd9bd2c7b6143e4286",
+    "src/sse/budget.rs": "578c7b9fd3d94bd2b18c288bae4078acf79e1f70fe10d04737e10470faa8a9af",
+    "src/sse/feed.rs": "15cfe16e5427a7a8c2adc9436a4d84e9fe8b72a9a4f9759607883bd26b2de8d4",
+    "src/sse/feed/tests/fixture.rs": "f28c2247224c72a60c615b0dbb27740aad1049111d76d32f97e0ed3978bad8d9",
+    "src/sse/mod.rs": "dcc81648af01234cb7990d56603dff5e9f6cf4be9f5028c3aae3756242d80bd1",
+    "src/sse/registry.rs": "0061decbafc9f18199bdcf1acb84f08ad08bf5fe4a200ffaeb80bb44dbb3a89c",
+    "src/sse/service.rs": "e89545930f669d195dd7716f2f359f519b15cf1f4c97db2e51e7e98e7dd66645",
+    "src/sse/session.rs": "29c74ded0cae426aa3316767a8d087055ddb5dff43a7ed8fe83c426dea0f2a13",
+    "src/sse/source.rs": "7b3aa61e96f8ba7660cb9affdfa47c6edec8298b3a7a4b1264def33fbdfb5710",
+    "src/sse/source/tests.rs": "afab298cb404d8dee64b7f27f31d7505eae0eb6160d1086d65deb700670fa412",
+    "src/sse/wire.rs": "290f3d3a7948ed4294ba6f3192f3dcc9e892352502ef3454e709302ffc810f3c",
+    "src/store_timing.rs": "e4ba90336f0e5075fc9e21b22fd1ed953f74eb665ea1a8a83e728cf171a26ec6",
+    "src/store_timing/resources.rs": "5d6aeb9113ead9c59f3710d12b0736eec1ac6be7e456b19431ed018f583b2642",
+    "src/tasks.rs": "a5acd22b1a9da6ff274bc547e3aef4a86f3e648144f466c804fa79fe6310cbbc",
+    "src/tasks/shutdown.rs": "52bf1616790bbabaf6b26b4bb6884953ddc4971f873c65e502cd66c27d9d44e0",
+    "src/tasks/signal.rs": "686e7f96618c33ff1ce257a6719934dc639200a530dadb0ccf17baf3461010e9",
+    "src/telemetry_batch.rs": "01c59f18b27170fa8a802335214f93ced641e91ff43fc82dfcf778fdfa298e4b",
+    "src/tenant.rs": "a7f43b44c388ecd0beb1722fa110995fd5a56a61bdf6d79ecf5932849b4a6fbb",
+    "src/touch.rs": "e90b94a18bac87745bf81ab0f079b068d06b140580a10d671086d622666d7267",
+    "src/touch_keys.rs": "d2000247f3ac5098cfb4320ea1963b4ec67fe8d85cb27ff5c6c285320ceefc70",
+    "src/usage.rs": "8f3afbd0b467b26f754503c226220fe5747a0cb43bb034dbdd34e3af364d307f",
+    "src/usage/runtime_tests.rs": "b8a359b3c50ad73e4d0f621cee0ca00981788f76ff77d78891130525dd190b2c",
+    "tools/quality-invariants/src/application.rs": "f89510b47f938645d6f1f44782fbab88704abc1f4b3fe0060af46fd1934f8b67",
+    "tools/quality-invariants/src/lib.rs": "a7d977a0747319ad4d616d4df772c30e1123f282b88aafe3e4f19b7b997801a6",
+    "tools/quality-syntax/src/facts.rs": "f4326eb5464d4fc3fcfe655e19f395890cf456c1b9a8abb0bc60b749f23321ab",
+    "tools/quality-syntax/src/imports.rs": "44ef40fe8f67fc1585b37edd18245e268473815b75166cb89fae37bbe49656d2",
+    "tools/quality-syntax/src/main.rs": "8c518665b2786fc992fa0847092af119bdf416908e831ba074dcbfeece6d5bb8",
+    "tools/quality-syntax/src/scan.rs": "c33ddd1cad1f3c0ef5cec1c9d222fad92d27061ffae6fa30badf4f74b614b110",
+    "tools/quality-syntax/src/scan/attributes.rs": "dc08ec85d8e255c905591adf0a33b2aaee33402b2d3ab6464763c636e7793d5a",
+    "tools/quality-syntax/src/scan/macro_attributes.rs": "90418576b7beb4e5f14d9f89bb6a547f2419580eab03cea840a39c232b46d1de",
+    "tools/quality-syntax/src/scan/tests.rs": "7cb7240a1b931f2b52dac40f83604a9d8fa14fcfa265bc7f773e2217fa6e397e"
+  },
+  "syntax_scanner_tests": 8
+}

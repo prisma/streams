@@ -1,0 +1,90 @@
+{
+  "recorded_before_followup_measurements": true,
+  "scope": "Engineering screening stop rules, not owner acceptance of regressions or a production performance certificate",
+  "primary": {
+    "rule": "Retain prior historical ceilings and upper paired block 95% CI below 1 for original/candidate p50 and p99 in each primary workload; do not weaken the prior ten-block by 10000 acceptance rule",
+    "warm_screen": {
+      "blocks": 5,
+      "complete_reads_per_block": 128,
+      "order": "alternating AB/BA, stable pair_id and exact revisions recorded before execution"
+    },
+    "historical_system_ceilings_us": {
+      "hot_filtered_history": {
+        "p50": 407,
+        "p99": 1090
+      },
+      "replay_64x1024": {
+        "p50": 1428,
+        "p99": 3075
+      },
+      "replay_1x65536": {
+        "p50": 1064,
+        "p99": 2513
+      }
+    },
+    "historical_scope": "Same-machine System comparisons only; allocator/partition-shape changes must be disclosed; historical ceilings cannot certify mimalloc or substitute for a matched baseline."
+  },
+  "additional_controls": {
+    "errors_timeouts_incorrect_results": 0,
+    "append_payload_bridge_copies": 0,
+    "append_and_cold_rotating_compressed_other_tenant_latency": {
+      "maximum_upper_95_ci_p50_ratio": 1.05,
+      "maximum_upper_95_ci_p99_ratio": 1.1,
+      "comparison": "candidate versus same-allocator unchanged control; inconclusive is not a pass"
+    },
+    "rss_object_bytes_object_operations": {
+      "maximum_upper_95_ci_ratio": 1.1,
+      "zero_control_rule": "any positive excess requires explanation and remains unaccepted"
+    },
+    "retained_plaintext": "Unique backing capacity charged once per admitted owner must remain within the existing requested/max-page allowance or the existing oversized-first-record allowance; selecting a subset must not hide retained storage. Charge must survive result/body retention and return to baseline on last drop.",
+    "cache": "Carve storage, metadata, fills and retained-reader charges from existing read-cache allowance; no increase to the total configured budget. Fix explicit global and tenant sublimits before running the prototype; do not choose them from timing results.",
+    "cold_samples": "At least 1000 process/cold-state observations per case before any cold p99 statement; otherwise report individual observations/median/max only and leave cold tails unaccepted",
+    "offered_load": "Preserve scheduled-arrival queueing, full-body completion and explicit failures; persistent-connection controls must remain separate from the existing connection-close workload"
+  },
+  "candidate_cache_geometry_before_cache_measurements": {
+    "global_bytes": 2097152,
+    "per_project_bytes": 262144,
+    "fixed_metadata_bytes": 65536,
+    "maximum_entries_including_fills": 256,
+    "maximum_live_project_quota_entries": 32,
+    "fill_reservation_bytes": 65536,
+    "budget_source": "carved out of HISTORY_CACHE_BYTES; default off; no increase to configured total",
+    "status": "predeclared design limits; validate actual metadata geometry before implementation activation"
+  },
+  "workload_declared_before_screen_execution": {
+    "history_projects": 32,
+    "records_per_project": 256,
+    "record_bytes": 1024,
+    "hot_stride": 16,
+    "formats": [
+      "plain",
+      "compressed",
+      "mixed alternating incompressible/compressible"
+    ],
+    "retained_reader_results": 16,
+    "warm_blocks": 5,
+    "warm_requests_per_block": 128,
+    "process_cold_observations_per_block": 1,
+    "transport_diagnostic": {
+      "serial_primary_connection_close_retained": true,
+      "persistent_control_separate": true,
+      "offered_requests_per_case": 1000,
+      "arrival_period_us": [
+        2000,
+        250
+      ],
+      "max_inflight": 16,
+      "timeout_from_arrival_secs": 10,
+      "milestones": [
+        "wake",
+        "semaphore admission",
+        "connected",
+        "request flushed",
+        "headers received",
+        "body complete",
+        "connection close"
+      ],
+      "server_spans": "request-correlated optional nested durations; not additive and not primary uninstrumented latency"
+    }
+  }
+}

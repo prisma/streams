@@ -1,0 +1,78 @@
+{
+  "ci_invariant_tools": {
+    "conclusion": "success",
+    "job_id": 102194507599,
+    "miri_tests": 4,
+    "mutants": {
+      "caught": 68,
+      "missed": 0,
+      "passing_baselines": 3,
+      "selected": 79,
+      "timeouts": 0,
+      "unviable": 11
+    },
+    "revision": "06f88608bae037ed819bdefbe0b65084037c4787",
+    "run": "https://github.com/prisma/streams/actions/runs/34265736876",
+    "saved_decoder_corpus": "passed"
+  },
+  "compiler_fixtures": {
+    "canonical_inventory_sha256": "9e1f3bea3ddea601215df821b7c0e01b749e7bb06363b5c136bf9a8d9e54d721",
+    "canonical_rust_inputs_match": 284,
+    "positive_controls": 3,
+    "private_owner_violations": 10,
+    "typed_lint_violations": 10
+  },
+  "current_pr_checks": "https://github.com/prisma/streams/pull/19/checks",
+  "local_gate": {
+    "capacity_seconds": 20.03,
+    "failed": 0,
+    "host": "aarch64-apple-darwin",
+    "ignored": 0,
+    "isolated_capacity_tests": 1,
+    "legacy_warning_occurrences": 3524,
+    "new_or_denied_diagnostics": 0,
+    "ordinary_seconds": 122.85,
+    "ordinary_tests": 930,
+    "result": "GATEDONE",
+    "rust": "1.98.1"
+  },
+  "local_gate_revision": "06f88608bae037ed819bdefbe0b65084037c4787",
+  "merge_base": "dac9e908ec7bbf50d9b6479ce27991d198269bfb",
+  "peer_regressions": {
+    "historical_release_binary_matrix": "not executed; remains a predeployment requirement",
+    "legacy_current_rollback_contract_matrix": true,
+    "mandatory_target_identity": true,
+    "old_headers_to_current_receiver": true,
+    "passed": 3,
+    "present_invalid_bounds_rejected": true,
+    "unauthorized_held_body_rejected": true
+  },
+  "published_arithmetic": {
+    "block_rows": 960,
+    "comparisons": 192,
+    "decision": "HOLD",
+    "evaluator_matches_published": true,
+    "reproduced_triplets": 762,
+    "tolerance": 1e-12
+  },
+  "read_optimisation_dispositions": {
+    "O1": "permanent",
+    "O2": "permanent",
+    "O3": "permanent",
+    "O4": "permanent",
+    "O5": "removed"
+  },
+  "runtime_revision": "cf209dacc4915141a01fb63acc3802de4f612faf",
+  "schema": 1,
+  "scope": "Author local execution plus inspected exact-revision CI. Historical timing binaries and source-adoption receipts keep their original revisions. No performance parity, cryptographic, deployed-fleet, merge or raw-evidence-upload acceptance is granted.",
+  "sdk": {
+    "authentication_vector": "passed",
+    "build": "passed",
+    "capability_vector": "passed",
+    "failed": 0,
+    "node": "24.8.0",
+    "skipped": 0,
+    "tests": 33,
+    "typecheck": "passed"
+  }
+}

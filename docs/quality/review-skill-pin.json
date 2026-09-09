@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/cursor/plugins",
+  "revision": "2b8ae2ee306f823d54879d3da7f8496b73c31d5d",
+  "path": "cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md",
+  "git_blob": "ac76a2bc88bb2d895e83ab1788aa584a82346cfc",
+  "sha256": "7faca08b51b643b2ddd0836f92af15574444024685dcc1e677dbbb39ae8c9e8f",
+  "local_path": ".agents/skills/thermo-nuclear-code-quality-review/SKILL.md",
+  "source_content": "Unmodified upstream file; Codex invocation policy in a separate sidecar; Cursor discovers the same owner through a symlink."
+}

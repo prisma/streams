@@ -91,7 +91,10 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
         assert_eq!(remote.next.after, from + 4);
         assert_eq!(remote.up_to_date, from + 4 == 1600);
         for (left, right) in local.records.iter().zip(&remote.records) {
-            assert_eq!((left.off, &left.payload), (right.off, &right.payload));
+            assert_eq!(
+                (left.off, left.payload.as_ref()),
+                (right.off, right.payload.as_ref())
+            );
             assert_eq!(right.payload.as_ref(), payload.as_bytes());
             seen.push(right.off);
         }
@@ -114,13 +117,16 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
         "r06a-owner",
         &desc,
         &InternalTarget::of(&desc, 0).unwrap(),
-        1600,
+        crate::application::read::ReadRange::open(1600),
         64 << 10,
         PRISMA_KEY,
     )
     .await
     .unwrap();
-    assert_eq!(scan.out.recs[0].payload, remote.records[0].payload);
+    assert_eq!(
+        scan.out.recs[0].payload.as_ref(),
+        remote.records[0].payload.as_ref()
+    );
     assert_eq!(scan.out.scanned_through(1600), 1601);
     engine_shutdown(state).await;
     rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;

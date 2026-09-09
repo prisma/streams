@@ -249,7 +249,7 @@ struct MessageContext<'a> {
 fn delivery_messages(
     context: MessageContext<'_>,
     leased: &[(u64, u32, u32, [u8; 16])],
-    by_off: &std::collections::HashMap<u64, (String, Bytes)>,
+    by_off: &DeliveryRecords,
 ) -> Vec<DeliveryMessage> {
     let MessageContext {
         desc,
@@ -284,7 +284,7 @@ fn delivery_messages(
         };
         messages.push(DeliveryMessage {
             id: msg.encode(&desc.project_id, skey),
-            routing_key: rkey.clone(),
+            routing_key: rkey.to_owned(),
             attempts: *attempts,
             lease_token: lease.encode(&desc.project_id, skey),
             value,
@@ -301,9 +301,29 @@ struct DeliveryRead<'a> {
     consumer: &'a str,
     generation: u64,
 }
+#[derive(Default)]
+struct DeliveryRecords {
+    batch: crate::application::read::PlainBatch,
+    positions: std::collections::HashMap<u64, usize>,
+}
+impl DeliveryRecords {
+    fn new(batch: crate::application::read::PlainBatch) -> Self {
+        let positions = batch
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.off, index))
+            .collect();
+        Self { batch, positions }
+    }
+    fn get(&self, off: &u64) -> Option<(&str, &[u8])> {
+        let record = &self.batch[*self.positions.get(off)?];
+        Some((&record.rkey, &record.payload))
+    }
+}
+
 struct DeliveryCoverage {
     keys_map: std::collections::HashMap<u64, [u8; 16]>,
-    by_off: std::collections::HashMap<u64, (String, Bytes)>,
+    by_off: DeliveryRecords,
     covered_to: u64,
 }
 async fn read_coverage(
@@ -361,16 +381,14 @@ async fn read_coverage(
         }
     };
     let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
-    let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
     let mut covered_to = cursor;
     for r in &out.recs {
         keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
-        by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
         covered_to = covered_to.max(r.off + 1);
     }
     Ok(DeliveryCoverage {
         keys_map,
-        by_off,
+        by_off: DeliveryRecords::new(out.recs),
         covered_to,
     })
 }
@@ -519,7 +537,7 @@ pub(crate) async fn settle(
             };
             state.keys.put(identity, skey.clone(), epoch);
             let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
-            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
+            let mut by_off: DeliveryRecords = Default::default();
             if let Ok(out) = crate::application::read::read_merged(
                 &skey,
                 &epoch,
@@ -532,9 +550,7 @@ pub(crate) async fn settle(
             )
             .await
             {
-                for r in &out.recs {
-                    by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
-                }
+                by_off = DeliveryRecords::new(out.recs);
             }
             let (d, b) = dlq_and_settle(
                 &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, route, seg_id,
@@ -570,7 +586,7 @@ async fn dlq_and_settle(
     route: [u8; 16],
     seg_id: u32,
     poisoned: &[(u64, u32, u32, [u8; 16])],
-    by_off: &std::collections::HashMap<u64, (String, Bytes)>,
+    by_off: &DeliveryRecords,
 ) -> (usize, usize) {
     let mut settled = 0usize;
     // Deliveries the target refused for a reason retrying cannot fix.

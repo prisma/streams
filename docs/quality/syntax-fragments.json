@@ -1,0 +1,14 @@
+{
+  "scripts/read-experiments/followup/allocation/o2_alloc.rs": {
+    "reason": "Historical injected benchmark template with placeholders; not a standalone Rust module. File budget still applies; generated experiment compilation is separate evidence.",
+    "sha256": "fc23168f85217fd94101739f1abb22be833daa1f1e5f119430883c9f3ea7bd0a"
+  },
+  "scripts/read-experiments/followup/history.rs": {
+    "reason": "Historical injected benchmark template with placeholders; not a standalone Rust module. File budget still applies; generated experiment compilation is separate evidence.",
+    "sha256": "f95e4158d9e5e87a060312bd370a8221e6975845a1554da16efded8fa4589a4a"
+  },
+  "scripts/read-experiments/followup/legacy_workload.rs": {
+    "reason": "Historical injected benchmark template with placeholders; not a standalone Rust module. File budget still applies; generated experiment compilation is separate evidence.",
+    "sha256": "27366558986cc6ccdb147e97f3d8ddf361ad65befb29c3e1bc33d466b8e892ca"
+  }
+}

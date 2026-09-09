@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Compact per-routing-key postings for the shared history partition
 //! (docs/ROUTING-V3.md §3, replacing the full-frame covering index).
 //!
@@ -28,6 +29,10 @@
 //! so another key's data is never returned.
 
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
+
+#[path = "postings/validated.rs"]
+mod validated;
+pub use validated::{RunWindow, ValidatedRuns};
 
 /// Segment-local offsets per postings bucket. Fixed so that
 /// `bucket = offset / BUCKET_OFFSETS` is directly calculable.
@@ -108,6 +113,9 @@ fn get_varint(v: &[u8], at: &mut usize) -> Option<u64> {
     loop {
         let b = *v.get(*at)?;
         *at += 1;
+        if shift == 63 && b & 0x7f > 1 {
+            return None;
+        }
         out |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
             return Some(out);
@@ -163,14 +171,14 @@ pub fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
 }
 
 pub fn decode_page(v: &[u8]) -> Option<Page> {
-    if v.len() < 30 || v[0] != 1 || v[1] != 0 {
+    if v.len() < 30 || v.len() > PAGE_MAX_ENCODED_BYTES || v[0] != 1 || v[1] != 0 {
         return None;
     }
     let first_offset = u64::from_le_bytes(v[2..10].try_into().ok()?);
     let last_offset_exclusive = u64::from_le_bytes(v[10..18].try_into().ok()?);
     let n = u32::from_le_bytes(v[18..22].try_into().ok()?) as usize;
     let matching_frame_bytes = u64::from_le_bytes(v[22..30].try_into().ok()?);
-    if n > BUCKET_OFFSETS as usize {
+    if n == 0 || n > BUCKET_OFFSETS as usize || n > (v.len() - 30) / 4 {
         return None;
     }
     let mut at = 30usize;
@@ -178,7 +186,7 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
     for _ in 0..n {
         runs.push(PostingRun {
             gap_offsets: get_varint(v, &mut at)?,
-            record_count: get_varint(v, &mut at)? as u32,
+            record_count: u32::try_from(get_varint(v, &mut at)?).ok()?,
             matching_frame_bytes: get_varint(v, &mut at)?,
             gap_frame_bytes_before: get_varint(v, &mut at)?,
         });
@@ -188,10 +196,19 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
     let mut off = first_offset;
     let mut total = 0u64;
     for r in &runs {
-        off += r.gap_offsets + r.record_count as u64;
-        total += r.matching_frame_bytes;
+        if r.record_count == 0 || r.matching_frame_bytes == 0 {
+            return None;
+        }
+        off = off
+            .checked_add(r.gap_offsets)?
+            .checked_add(u64::from(r.record_count))?;
+        total = total.checked_add(r.matching_frame_bytes)?;
     }
-    if off != last_offset_exclusive || total != matching_frame_bytes {
+    if at != v.len()
+        || runs[0].gap_offsets != 0
+        || off != last_offset_exclusive
+        || total != matching_frame_bytes
+    {
         return None;
     }
     Some(Page {
@@ -226,14 +243,25 @@ pub const GAP_UNKNOWN: u64 = u64::MAX;
 /// carries gap_bytes_before=0 and the planner coalesces arbitrarily
 /// distant pages into one giant span (measured: a 40k-offset stream
 /// scanned WHOLE for a 2-record key — 10,000x amplification).
-pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) {
-    let prev_end = all.last().map(|r| r.start + r.count as u64);
+pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> {
+    validated::validate(&page)?;
+    let prev_end = match all.last() {
+        Some(r) => Some(r.start.checked_add(u64::from(r.count))?),
+        None => None,
+    };
+    if prev_end
+        .zip(page.first())
+        .is_some_and(|(end, first)| end > first.start)
+    {
+        return None;
+    }
     for (i, mut r) in page.into_iter().enumerate() {
         if i == 0 && prev_end != Some(r.start) {
             r.gap_bytes_before = GAP_UNKNOWN;
         }
         all.push(r);
     }
+    Some(())
 }
 
 /// Decode a page into absolute runs. `page_first` (from the KEY) must
@@ -247,16 +275,44 @@ pub fn decode_page_abs(page_first: u64, v: &[u8]) -> Option<Vec<AbsRun>> {
     let mut out = Vec::with_capacity(runs.len());
     let mut off = page_first;
     for r in runs {
-        off += r.gap_offsets;
+        off = off.checked_add(r.gap_offsets)?;
         out.push(AbsRun {
             start: off,
             count: r.record_count,
             matching_bytes: r.matching_frame_bytes,
             gap_bytes_before: r.gap_frame_bytes_before,
         });
-        off += r.record_count as u64;
+        off = off.checked_add(u64::from(r.record_count))?;
     }
+    validated::validate(&out)?;
     Some(out)
+}
+
+/// Admit the entire stored key and its bucket/range, before publishing coverage.
+pub(crate) fn decode_stored_page(
+    route: RouteHash,
+    inc: SegmentHash,
+    kh: &RoutingKeyHash,
+    key: &[u8],
+    value: &[u8],
+) -> Option<Vec<AbsRun>> {
+    if key.len() != 65
+        || key[..16] != route.0
+        || key[16..32] != inc.0
+        || key[32] != b'p'
+        || key[33..49] != kh.0
+    {
+        return None;
+    }
+    let bucket = u64::from_be_bytes(key[49..57].try_into().ok()?);
+    let first = u64::from_be_bytes(key[57..65].try_into().ok()?);
+    let runs = decode_page_abs(first, value)?;
+    let last = runs.last()?;
+    let end = last.start.checked_add(u64::from(last.count))?;
+    if bucket_of(first) != bucket || bucket_of(end.checked_sub(1)?) != bucket {
+        return None;
+    }
+    Some(runs)
 }
 
 // ---- gather-side page builder ----------------------------------------
@@ -423,7 +479,7 @@ pub struct Span {
     pub scan_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub spans: Vec<Span>,
     /// The read provably consumed matches up to here (exclusive): the
@@ -437,7 +493,16 @@ pub struct Plan {
 /// one requested range). Coalesces a following run into the current
 /// span when the intervening gap is small in BYTES; otherwise opens a
 /// new span. Stops at span/byte budgets with an honest partial.
+#[cfg(test)]
 pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
+    plan_spans_iter(runs.iter().copied(), upto, cfg)
+}
+
+pub(crate) fn plan_spans_iter(
+    runs: impl IntoIterator<Item = AbsRun>,
+    upto: u64,
+    cfg: &PlanCfg,
+) -> Plan {
     let mut plan = Plan {
         spans: Vec::new(),
         consumed_to: 0,

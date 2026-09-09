@@ -2,8 +2,9 @@
 //! result; scanned progress never depends on the number of matching records.
 use super::read_budget::{MAX_SCAN_BATCH_BYTES, PageBudget, SCAN_WINDOW};
 use super::read_keys::ReadKeys;
-use crate::crypto::{StreamKey, decode_frame};
+use crate::crypto::StreamKey;
 use crate::shard::{Deliver, ShardEngine, StreamHandle};
+#[cfg(test)]
 use bytes::Bytes;
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ pub(crate) struct ReadPlan<'a> {
     epoch: &'a [u8; 16],
     handle: &'a Arc<StreamHandle>,
     engine: &'a Arc<ShardEngine>,
-    from: u64,
+    range: ReadRange,
     selector: Option<&'a str>,
     max_bytes: usize,
     visibility: Deliver,
@@ -34,7 +35,7 @@ impl<'a> ReadPlan<'a> {
         epoch: &'a [u8; 16],
         handle: &'a Arc<StreamHandle>,
         engine: &'a Arc<ShardEngine>,
-        from: u64,
+        range: ReadRange,
         selector: Option<&'a str>,
         max_bytes: usize,
         visibility: Deliver,
@@ -44,7 +45,7 @@ impl<'a> ReadPlan<'a> {
             epoch,
             handle,
             engine,
-            from,
+            range,
             selector,
             max_bytes,
             visibility,
@@ -68,7 +69,14 @@ pub(crate) async fn read_merged(
     visibility: Deliver,
 ) -> Result<ReadPage, String> {
     ReadPlan::segment(
-        key, epoch, handle, engine, from, selector, max_bytes, visibility,
+        key,
+        epoch,
+        handle,
+        engine,
+        ReadRange::open(from),
+        selector,
+        max_bytes,
+        visibility,
     )
     .execute()
     .await
@@ -87,61 +95,16 @@ impl ReadPage {
     }
 }
 
-/// A decrypted record ready for response assembly.
-#[derive(Clone)]
-pub(crate) struct PlainRec {
-    pub(crate) off: u64,
-    pub(crate) payload: Bytes,
-    /// Exact routing-key bytes from the frame header (product scan
-    /// surfaces them per record; keyed reads ignore the field).
-    pub(crate) rkey: String,
-}
+pub(crate) use super::read_batch::{PlainBatch, PlainRec};
+use super::read_decode::decode_frames_into;
+pub(crate) use super::read_range::ReadRange;
 
 pub(crate) struct ReadPage {
     pub(crate) watermarks: Watermarks,
-    pub(crate) recs: Vec<PlainRec>,
+    pub(crate) recs: PlainBatch,
     pub(crate) last: Option<u64>,
     pub(crate) end: u64,
     pub(crate) completed: bool,
-}
-
-/// Decode raw stream-key-encrypted frames (v2 history or shard tail —
-/// byte-identical formats) into plaintext records, charging the byte
-/// budget per record.
-/// Returns false at the first withheld matching record. Earlier filtered misses
-/// are consumed, but the low-level scan's later cursor must then be discarded.
-fn decode_frames_into(
-    frames: &[Bytes],
-    keys: &mut ReadKeys<'_>,
-    out: &mut ReadPage,
-    budget: &mut PageBudget,
-) -> Result<bool, String> {
-    for raw in frames {
-        let frame = decode_frame(raw).ok_or("bad frame")?;
-        let offset = frame.header.offset;
-        if !budget.metadata_fits(&frame.header.routing_key) {
-            out.last = offset.checked_sub(1);
-            return Ok(false);
-        }
-        let Some(pt) = keys.decrypt(&frame, raw, budget.decode_limit())? else {
-            if out.recs.is_empty() {
-                return Err("decoded record exceeds 32 MiB".into());
-            }
-            out.last = offset.checked_sub(1);
-            return Ok(false);
-        };
-        if !budget.admit(pt.len(), &frame.header.routing_key) {
-            out.last = offset.checked_sub(1);
-            return Ok(false);
-        }
-        out.recs.push(PlainRec {
-            off: offset,
-            payload: Bytes::from(pt),
-            rkey: frame.header.routing_key,
-        });
-        out.last = Some(offset);
-    }
-    Ok(true)
 }
 
 /// The merge itself, free of `AppState` so the simulation harness can call
@@ -162,11 +125,12 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         epoch,
         handle,
         engine,
-        from: scan_from,
+        range,
         selector: key_filter,
         max_bytes,
         visibility: deliver,
     } = plan;
+    let scan_from = range.from;
     // The sub-stream identity (AAD + history-DB path): for total-order
     // streams this is the incarnation hash; for per-key streams, the
     // segment hash. Either way it's the handle's identity.
@@ -191,9 +155,10 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             },
         )
     };
+    let read_end = end.min(range.end);
     let mut out = ReadPage {
         watermarks,
-        recs: Vec::new(),
+        recs: PlainBatch::default(),
         last: None,
         end,
         completed: true,
@@ -216,7 +181,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let mut cursor = scan_from; // next offset still needed
     let mut boundary = absorbed; // history serves [_, boundary)
     for _ in 0..16 {
-        let hist_upto = boundary.min(end);
+        let hist_upto = boundary.min(read_end);
         if cursor < hist_upto && !budget.full() {
             if !hist_v2 {
                 // The v1 per-stream layout was deleted in the clean
@@ -226,7 +191,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             }
             let completed = decode_history_range(
                 &ReadPlan::segment(
-                    key, epoch, handle, engine, scan_from, key_filter, max_bytes, deliver,
+                    key, epoch, handle, engine, range, key_filter, max_bytes, deliver,
                 ),
                 HistoryRange {
                     route,
@@ -271,14 +236,14 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             }
             cursor = hist_upto;
         }
-        if budget.full() || cursor >= end {
+        if budget.full() || cursor >= read_end {
             break;
         }
         let part = crate::shard::record::read_frames_until(
             engine,
             handle,
             cursor,
-            cursor.saturating_add(SCAN_WINDOW).min(end),
+            cursor.saturating_add(SCAN_WINDOW).min(read_end),
             key_filter,
             budget.remaining().min(MAX_SCAN_BATCH_BYTES),
             deliver,
@@ -288,7 +253,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         // Revalidate the scan against concurrent absorption before
         // trusting it.
         let raced_boundary =
-            absorption_race(engine, hash, &part, cursor, end, key_filter.is_none()).await?;
+            absorption_race(engine, hash, &part, cursor, read_end, key_filter.is_none()).await?;
         if let Some((durable, remote_v2)) = raced_boundary {
             if durable > boundary {
                 // Adopt the remote LAYOUT FLAG with the remote boundary:
@@ -312,7 +277,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         break;
     }
     let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
-    out.completed = consumed_next >= end;
+    out.completed = consumed_next >= read_end;
     // Round-13 CODE-RED bisect (test builds): an unfiltered merged read
     // must NEVER emit a gapped page — any panic here localizes the
     // durable-skip to THIS layer.
@@ -383,10 +348,10 @@ impl ReadService {
         &self,
         desc: &StreamDesc,
         key: &StreamKey,
-        from: u64,
+        range: ReadRange,
         max_bytes: usize,
     ) -> Result<ReadPage, String> {
-        read_stitched(self, desc, key, from, max_bytes).await
+        read_stitched(self, desc, key, range, max_bytes).await
     }
     /// (engine, handle) for a stream's sole segment identity.
     pub(crate) async fn handle_of(
@@ -475,9 +440,10 @@ pub(crate) async fn read_stitched(
     state: &ReadService,
     desc: &StreamDesc,
     key: &StreamKey,
-    from: u64,
+    range: ReadRange,
     max_bytes: usize,
 ) -> Result<ReadPage, String> {
+    let from = range.from;
     let chain = fork_chain_of(state, desc).await?;
     // Every hop must accept the presented key (uniform-key chains; a
     // cross-key fork chain would decrypt garbage, so it is an error).
@@ -494,7 +460,7 @@ pub(crate) async fn read_stitched(
             durable: own_end,
             applied: own_end,
         },
-        recs: Vec::new(),
+        recs: PlainBatch::default(),
         last: None,
         end: own_end,
         completed: false,
@@ -502,6 +468,10 @@ pub(crate) async fn read_stitched(
     let mut budget = PageBudget::new(max_bytes);
     let mut cursor = from;
     for _ in 0..(chain.len() * 4 + 8) {
+        if cursor >= range.end {
+            out.completed = true;
+            break;
+        }
         if budget.full() {
             break;
         }
@@ -514,7 +484,8 @@ pub(crate) async fn read_stitched(
             .iter()
             .map(|(_, b, _)| *b)
             .min()
-            .unwrap_or(u64::MAX);
+            .unwrap_or(u64::MAX)
+            .min(range.end);
         let (d, _, epoch) = &chain[idx];
         let (engine, handle) = if idx == 0 {
             (own_engine.clone(), own_handle.clone())
@@ -527,16 +498,17 @@ pub(crate) async fn read_stitched(
         // written keyed records to replayed all of them through the
         // standards route — the one surface whose contract is that it
         // IS the default-key stream.
-        let part = read_merged(
+        let part = ReadPlan::segment(
             key,
             epoch,
             &handle,
             &engine,
-            cursor,
+            ReadRange::bounded(cursor, cap),
             Some(""),
             budget.remaining(),
             crate::shard::Deliver::Durable,
         )
+        .execute()
         .await?;
         // CONSUMED progress (finding 6): read_merged's `last` advances
         // over scanned NON-MATCHING ranges inside this ancestor, so the
@@ -545,19 +517,17 @@ pub(crate) async fn read_stitched(
         let scanned_after = part.last.map(|l| l + 1).unwrap_or(cursor);
         let consumed_here = scanned_after.min(cap);
         let before = cursor;
-        let mut emitted = false;
-        for r in part.recs {
-            if r.off >= cap {
-                break;
-            }
-            if !budget.admit(r.payload.len(), &r.rkey) {
-                out.last = r.off.checked_sub(1);
-                out.completed = false;
-                return Ok(out);
-            }
-            cursor = r.off + 1;
-            out.recs.push(r);
-            emitted = true;
+        let admission = out
+            .recs
+            .append_selected(part.recs, cursor..cap, None, &mut budget, 0);
+        if let Some(withheld) = admission.withheld {
+            out.last = withheld.checked_sub(1);
+            out.completed = false;
+            return Ok(out);
+        }
+        let emitted = admission.last.is_some();
+        if let Some(last) = admission.last {
+            cursor = last + 1;
         }
         // Match-free scanned ranges are consumed progress: the child
         // never revisits them.
@@ -690,7 +660,7 @@ mod read_contract_tests {
                 durable: 40,
                 applied: 40,
             },
-            recs: vec![],
+            recs: PlainBatch::default(),
             last: Some(39),
             end: 40,
             completed: true,
@@ -705,7 +675,7 @@ mod read_contract_tests {
                 durable: 5,
                 applied: 9,
             },
-            recs: vec![],
+            recs: PlainBatch::default(),
             last: Some(8),
             end: 9,
             completed: true,
@@ -717,7 +687,7 @@ mod read_contract_tests {
                 durable: 5,
                 applied: 5,
             },
-            recs: vec![],
+            recs: PlainBatch::default(),
             last: None,
             end: 5,
             completed: true,
@@ -803,8 +773,8 @@ async fn decode_history_range(
 }
 
 /// A tail page is accepted only after ruling out a concurrent durable trim.
-/// Unfiltered density is checked in O(1); filtered scans query the same shared
-/// durable tracker because an empty match cannot prove absence of a trim.
+/// A retained dense durable-ring interval already proves what was inspected.
+/// Other filtered scans still need the remotely durable boundary/layout tuple.
 async fn absorption_race(
     engine: &Arc<ShardEngine>,
     hash: [u8; 16],
@@ -813,6 +783,9 @@ async fn absorption_race(
     end: u64,
     unfiltered: bool,
 ) -> Result<Option<(u64, bool)>, String> {
+    if part.proves_durable_ring(engine, hash, cursor) {
+        return Ok(None);
+    }
     Ok(if unfiltered {
         // Unfiltered offsets below the durable frontier are dense,
         // so ANY gap in the page IS the absorb/trim race — head OR
@@ -830,10 +803,7 @@ async fn absorption_race(
             // detects head AND mid-page gaps without touching the
             // hot path's per-frame budget (the O(n) version cost
             // the capacity gate ~2%).
-            let first = match decode_frame(&part.frames[0]) {
-                Some(f) => f.header.offset,
-                None => return Err("bad frame".into()),
-            };
+            let first = part.frames[0].view().header.offset;
             first > cursor
                 || part
                     .last_offset
@@ -858,4 +828,78 @@ async fn absorption_race(
             .map_err(|e| e.to_string())?;
         (durable > cursor).then_some((durable, remote_v2))
     })
+}
+
+#[cfg(test)]
+mod o2_tests {
+    use super::*;
+    #[test]
+    fn o2_batch_publishes_one_owner_only_after_authentication_and_admission() {
+        let key = crate::crypto::StreamKey([7; 32]);
+        let epoch = [8; 16];
+        let hash = [9; 16];
+        let subkey = crate::crypto::derive_subkey(&key, &epoch, "", 0);
+        let cipher = crate::crypto::FrameCipher::new(
+            &subkey,
+            &hash,
+            crate::crypto::FrameCompression::Disabled,
+        );
+        let frames: Vec<_> = (0..64)
+            .map(|off| {
+                let raw =
+                    Bytes::from(cipher.encrypt(&hash, off, 123, 0, "", &vec![off as u8; 1024]));
+                crate::shard::record::CheckedFrame::from_ring(&raw, off, None)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        let page = || ReadPage {
+            watermarks: Watermarks {
+                durable: 64,
+                applied: 64,
+            },
+            recs: PlainBatch::default(),
+            last: None,
+            end: 64,
+            completed: true,
+        };
+        let mut out = page();
+        assert!(
+            decode_frames_into(
+                &frames,
+                &mut ReadKeys::new(&key, &epoch, hash),
+                &mut out,
+                &mut PageBudget::new(65536)
+            )
+            .unwrap()
+        );
+        let owner = out.recs.contiguous().unwrap();
+        assert_eq!(owner.len(), 65536);
+        assert_eq!(out.last, Some(63));
+        assert_eq!(out.recs.len(), 64);
+        for (i, record) in out.recs.iter().enumerate() {
+            assert_eq!(
+                record.payload.as_ptr(),
+                owner.as_ptr().wrapping_add(i * 1024)
+            );
+            assert!(record.payload.iter().all(|b| *b == i as u8));
+        }
+        let mut partial = page();
+        assert!(
+            !decode_frames_into(
+                &frames,
+                &mut ReadKeys::new(&key, &epoch, hash),
+                &mut partial,
+                &mut PageBudget::new(1536)
+            )
+            .unwrap()
+        );
+        assert_eq!(partial.recs.len(), 1);
+        assert_eq!(partial.last, Some(0));
+        assert_eq!(partial.recs.contiguous().unwrap().len(), 1024);
+        // A slow reader retaining the old immutable owner sees unchanged bytes
+        // while another page is built and dropped.
+        assert_eq!(owner.len(), 65536);
+        assert!(out.recs[63].payload.iter().all(|b| *b == 63));
+    }
 }

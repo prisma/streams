@@ -1,0 +1,78 @@
+name: rust-quality
+on:
+  pull_request:
+  push:
+    branches: [main, slate]
+  schedule:
+    - cron: "43 3 * * *"
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned dependency tools
+        run: |
+          set -euo pipefail
+          for tool in cargo-machete cargo-deny; do
+            version=$(python3 -c 'import sys,tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"][sys.argv[1]])' "$tool")
+            cargo install "$tool" --locked --version "=$version"
+          done
+          python3 scripts/install-actionlint.py
+          echo "$PWD/target/quality-tools/bin" >> "$GITHUB_PATH"
+      - name: Common quality entry point
+        env:
+          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
+        run: scripts/quality.sh
+      - name: Real compiler boundary fixtures
+        run: python3 scripts/quality/compiler_fixtures.py --out /tmp/quality-compiler
+      - name: Generated codec and actual handoff state tests
+        run: cargo test --locked --release --lib quality_
+  invariant-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dated nightly and pinned verification tools
+        run: |
+          set -euo pipefail
+          nightly=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["nightly"])')
+          rustup toolchain install "$nightly" --profile minimal --component miri --component rust-src
+          for tool in cargo-fuzz cargo-mutants; do
+            version=$(python3 -c 'import sys,tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"][sys.argv[1]])' "$tool")
+            cargo install "$tool" --locked --version "=$version"
+          done
+      - name: Preserve actual PR diff and select checks
+        env:
+          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
+        run: |
+          python3 scripts/quality/verification_plan.py --out target/quality-plan
+          python3 - <<'PY'
+          import json, os
+          plan = json.load(open('target/quality-plan/plan.json'))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              for name in ['miri', 'properties_fuzz', 'mutants']:
+                  output.write(f'CHECK_{name.upper()}={str(plan[name]).lower()}\n')
+          PY
+      - name: Saved production-decoder corpus
+        if: env.CHECK_PROPERTIES_FUZZ == 'true' || github.event_name == 'schedule'
+        run: scripts/quality/nightly.sh corpus
+      - name: Bounded nightly fuzzing
+        if: github.event_name == 'schedule'
+        run: scripts/quality/nightly.sh fuzz
+      - name: Compatible retained-buffer tests under Miri
+        if: env.CHECK_MIRI == 'true'
+        run: scripts/quality/nightly.sh miri
+      - name: Diff-scoped read-owner mutants
+        if: env.CHECK_MUTANTS == 'true'
+        env:
+          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
+        run: scripts/quality/mutations.sh

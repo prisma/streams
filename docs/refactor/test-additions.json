@@ -361,5 +361,20 @@
         "DUR-014"
       ]
     }
+  },
+  {
+    "finding": "O3",
+    "reason": "Held marker operation proves a dense durable ring hit bypasses only redundant revalidation; applied and missing-row fallback enter the operation.",
+    "test": {
+      "name": "o3_retained_ring_coverage_skips_only_the_redundant_marker",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "4ad05f67f3e69efa89b1dc330bce60d9f64a86927e79e39b6f0ab2c73ed48f79",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/reads_ring.rs",
+      "scenarios": []
+    }
   }
 ]

@@ -4,7 +4,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6cec5aaabaa01ce43b1e07855dae986262fd27e68f6d46b4462ea45c89384326",
+    "function_sha256": "5acafac07c1c3d4a6613c71f8edde83c3d7ca8acdaa2b80e24f3e4617c867ece",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_applied.rs",
@@ -424,7 +424,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3eb8be3396db7426e350dbda909e9696bf6aed7319f7c970850403a0c5d89d1b",
+    "function_sha256": "7495cff20d401f28f05e13fe8994c5c6b0e394896865607aa442fbb578b11fbd",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
@@ -2103,6 +2103,17 @@
     "scenarios": []
   },
   {
+    "name": "history_reads_keep_key_checks_and_delete_recreate_isolation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "792671be5e2b1a3b9f43ccf68cb8f3871944c494f03f7d9fc946792d46e4ee8a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_history_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "idempotent_successes_wait_for_durability",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3180,6 +3191,81 @@
     ]
   },
   {
+    "name": "o2a_clipped_fork_body_holds_only_selected_storage_until_cancel",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a7328a8f76c6b9163e60a502aaa0984f11b148d402332ce8829758693240c887",
+    "mechanisms": [],
+    "configuration": [
+      "seed(state, &parent, 0, &vec![b'y'; 512 << 10], 14).await;"
+    ],
+    "file": "src/dst/tests/read_subset_retention.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2a_frozen_scan_compacts_retained_owners_across_segments_and_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e955d36f04fa8074319083eaefc8e37406f51813216213595f71c6f93c184447",
+    "mechanisms": [],
+    "configuration": [
+      "seed(state, &desc, seg, b\"x\", 1).await;",
+      "seed(state, &desc, seg, &vec![b'y'; 512 << 10], 14).await;"
+    ],
+    "file": "src/dst/tests/read_subset_retention.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2df3ab0a4a3372305e88ea9967bc3bab1336384e0bf20d0e935347dd135528a8",
+    "mechanisms": [],
+    "configuration": [
+      "let desc = seed(&owner).await;"
+    ],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2c_old_scan_headers_preserve_records_progress_and_physical_frontier",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "34f736c020200a96fb43a0ed031a775032b2e276c9e4fd077d87662224289172",
+    "mechanisms": [],
+    "configuration": [
+      "let desc = seed(&rig).await;"
+    ],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2c_unauthorized_scan_does_not_wait_for_request_body",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "8bc0162c1bb181fd39ee99f02c043bde64b1b59cb4466b372016374f6bc438ae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o3_retained_ring_coverage_skips_only_the_redundant_marker",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4ad05f67f3e69efa89b1dc330bce60d9f64a86927e79e39b6f0ab2c73ed48f79",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
     "name": "object_classes_match_production_telemetry",
     "attributes": [
       "#[test]"
@@ -4092,7 +4178,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "167af4322d289fde98abaf4fcaf003c476b1f8de1653e9ff1a8454eae5e91bf6",
+    "function_sha256": "8c7b1565dc7a3e3eb4fb8b09825889f71a25cb43d5e482682fcdb0babc4d67fc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
@@ -4125,7 +4211,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "23c223d7ff00c6ccf7f9b3fc82b01d50e2972295ea43d9adbc792a5f118b7f35",
+    "function_sha256": "2ccad8807a4df1c37f0121206e5f3e649e0150e73ead70385a7743f1a23bba6a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_page_limits.rs",

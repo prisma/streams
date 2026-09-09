@@ -649,6 +649,8 @@ pub struct StreamState {
 }
 
 pub struct StreamHandle {
+    /// Physical database opening that admitted this handle and its durable ring.
+    owner: std::sync::Weak<Db>,
     pub hash: [u8; 16],
     pub state: Mutex<StreamState>,
     pub notify: Notify,
@@ -2227,6 +2229,11 @@ impl ShardEngine {
     /// in-memory layout flag would refuse a v2 history range as v1
     /// (observed in the first-absorption flush-to-dispatch window).
     pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<(u64, bool), slatedb::Error> {
+        #[cfg(test)]
+        if let Ok((entered, release)) = record::TEST_MARKER_HOLD.try_with(Clone::clone) {
+            entered.notify_one();
+            release.notified().await;
+        }
         let v = self
             .db
             .get_with_options(
@@ -2331,6 +2338,7 @@ impl ShardEngine {
             self.trim_debt.lock().unwrap().insert(hash);
         }
         let handle = Arc::new(StreamHandle {
+            owner: Arc::downgrade(&self.db),
             hash,
             state: Mutex::new(StreamState {
                 durable: tail.clone(),
@@ -2609,59 +2617,7 @@ impl ShardEngine {
         scan_to: u64,
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
-        if !self.ring_enabled || scan_from >= scan_to {
-            return None;
-        }
-        let ring = handle.ring.lock().unwrap();
-        let (Some(floor), Some(ceil)) = (ring.floor(), ring.ceil()) else {
-            self.ring_misses.fetch_add(1, Ordering::Relaxed);
-            self.ring_miss_empty.fetch_add(1, Ordering::Relaxed);
-            return None;
-        };
-        // The ring can serve only what it contiguously holds. scan_to
-        // beyond the ceiling means the caller knows about data the ring
-        // has not been handed yet (possible mid-dispatch): DB path.
-        if scan_from < floor || scan_to > ceil {
-            self.ring_misses.fetch_add(1, Ordering::Relaxed);
-            if scan_from < floor {
-                self.ring_miss_below_floor.fetch_add(1, Ordering::Relaxed);
-            }
-            if scan_to > ceil {
-                self.ring_miss_above_ceil.fetch_add(1, Ordering::Relaxed);
-            }
-            return None;
-        }
-        let mut out = FrameReadResult {
-            frames: Vec::new(),
-            last_offset: None,
-        };
-        let mut total = 0usize;
-        for b in ring.batches.iter() {
-            if b.next <= scan_from {
-                continue;
-            }
-            if b.first >= scan_to {
-                break;
-            }
-            for (off, f) in &b.frames {
-                if *off < scan_from {
-                    continue;
-                }
-                if *off >= scan_to {
-                    break;
-                }
-                record::decode_at(f, *off).ok()?;
-                total += f.len();
-                out.frames.push(f.clone());
-                out.last_offset = Some(*off);
-                if total >= max_bytes {
-                    self.ring_hits.fetch_add(1, Ordering::Relaxed);
-                    return Some(out);
-                }
-            }
-        }
-        self.ring_hits.fetch_add(1, Ordering::Relaxed);
-        Some(out)
+        self.ring_read_selected(handle, scan_from, scan_to, None, max_bytes)
     }
 
     /// #272: the ring read for FILTERED durable reads — the hub pump
@@ -2683,7 +2639,25 @@ impl ShardEngine {
         rk: &str,
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
-        if !self.ring_enabled || scan_from >= scan_to {
+        self.ring_read_selected(handle, scan_from, scan_to, Some(rk), max_bytes)
+    }
+
+    /// Both entry points use the same physical-owner, durable-frontier,
+    /// retained-density and stored-byte policy. Selection affects returned
+    /// frames only; every inspected row contributes to the coverage witness.
+    fn ring_read_selected(
+        &self,
+        handle: &StreamHandle,
+        scan_from: u64,
+        scan_to: u64,
+        selector: Option<&str>,
+        max_bytes: usize,
+    ) -> Option<FrameReadResult> {
+        if !self.ring_enabled
+            || handle.owner.as_ptr() != Arc::as_ptr(&self.db)
+            || scan_from >= scan_to
+            || scan_to > handle.state.lock().unwrap().durable.next
+        {
             return None;
         }
         let ring = handle.ring.lock().unwrap();
@@ -2705,8 +2679,10 @@ impl ShardEngine {
         let mut out = FrameReadResult {
             frames: Vec::new(),
             last_offset: None,
+            coverage: None,
         };
         let mut total = 0usize;
+        let mut expected = scan_from;
         for b in ring.batches.iter() {
             if b.next <= scan_from {
                 continue;
@@ -2721,19 +2697,41 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
-                let matched = record::decode_at(f, *off).ok()?.header.routing_key == rk;
+                // Floor/ceiling alone cannot prove density after eviction or
+                // malformed cached batch metadata. Every inspected row counts,
+                // including filtered misses and a byte-limited final row.
+                if *off != expected {
+                    return None;
+                }
+                let checked = record::CheckedFrame::from_ring(f, *off, selector).ok()?;
+                expected = off.checked_add(1)?;
                 total += f.len();
-                if matched {
-                    out.frames.push(f.clone());
+                if let Some(checked) = checked {
+                    out.frames.push(checked);
                 }
                 // Consumed progress covers NON-matching frames too.
                 out.last_offset = Some(*off);
                 if total >= max_bytes {
+                    out.coverage = Some(record::DurableRingCoverage::new(
+                        self,
+                        handle.hash,
+                        scan_from,
+                        expected,
+                    ));
                     self.ring_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(out);
                 }
             }
         }
+        if expected != scan_to {
+            return None;
+        }
+        out.coverage = Some(record::DurableRingCoverage::new(
+            self,
+            handle.hash,
+            scan_from,
+            expected,
+        ));
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
     }

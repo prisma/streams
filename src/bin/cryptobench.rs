@@ -84,5 +84,39 @@ fn main() {
             (dt / n as f64) * 1e6,
             (n as usize * size) as f64 / dt / 1e6
         );
+        // Page-style reuse: one bound schedule and private plaintext/AAD
+        // storage. Keep the existing fresh-decrypt measurement above intact.
+        let decoder = crypto::FrameDecryptor::new(&sub, &hash);
+        let decoded = decode_frame(&frame).expect("decode");
+        let mut plaintext = Vec::with_capacity(size);
+        let mut auth = Vec::with_capacity(16 + decoded.header_len);
+        decoder
+            .decrypt_append(&decoded, &frame, size, &mut plaintext, &mut auth)
+            .expect("authenticate")
+            .expect("fits");
+        assert_eq!(plaintext, plain);
+        let t0 = Instant::now();
+        for _ in 0..n {
+            plaintext.clear();
+            let range = decoder
+                .decrypt_append(&decoded, &frame, size, &mut plaintext, &mut auth)
+                .expect("authenticate")
+                .expect("fits");
+            match range {
+                crypto::Decrypted::Appended(range) => {
+                    std::hint::black_box(&plaintext[range]);
+                }
+                crypto::Decrypted::Owned(bytes) => {
+                    std::hint::black_box(&bytes);
+                }
+            }
+        }
+        let dt = t0.elapsed().as_secs_f64();
+        println!(
+            "decrypt reuse {size:>7}B: {:>9.2} ops/s | {:>8.2} µs/op | {:>8.1} MB/s",
+            n as f64 / dt,
+            dt / n as f64 * 1e6,
+            (n as usize * size) as f64 / dt / 1e6
+        );
     }
 }

@@ -249,3 +249,11 @@ mod request_topology_debt;
 
 #[path = "tests/security_freshness.rs"]
 mod security_freshness;
+
+#[path = "tests/read_history_lifecycle.rs"]
+mod read_history_lifecycle;
+#[path = "tests/read_subset_retention.rs"]
+mod read_subset_retention;
+
+#[path = "tests/read_peer_compatibility.rs"]
+mod read_peer_compatibility;

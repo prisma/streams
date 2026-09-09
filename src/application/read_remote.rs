@@ -94,7 +94,7 @@ pub(crate) async fn remote_span_page(
     initial_owner: &str,
     desc: &StreamDesc,
     target: &InternalTarget,
-    from: u64,
+    range: super::read::ReadRange,
     max_bytes: usize,
     key_b64: &str,
 ) -> Result<RemoteSpanPage, RemoteSpanError> {
@@ -114,7 +114,7 @@ pub(crate) async fn remote_span_page(
                 "owner {owner} has no entry in the trusted peer table"
             )));
         };
-        match scan_page_once(peer, &base, desc, target, from, max_bytes, key_b64).await {
+        match scan_page_once(peer, &base, desc, target, range, max_bytes, key_b64).await {
             Ok(out) => return Ok(RemoteSpanPage { out, owner }),
             Err(RemoteSpanError::WrongOwner { owner: next }) => {
                 if hop == 1 {
@@ -142,7 +142,7 @@ async fn scan_page_once(
     base: &str,
     desc: &StreamDesc,
     target: &InternalTarget,
-    from: u64,
+    range: super::read::ReadRange,
     max_bytes: usize,
     key_b64: &str,
 ) -> Result<super::read::ReadPage, RemoteSpanError> {
@@ -152,7 +152,8 @@ async fn scan_page_once(
             crate::peer::encode_stream_name_path(&desc.name)
         ))
         .timeout(std::time::Duration::from_secs(20))
-        .header("streams-internal-from", from.to_string())
+        .header("streams-internal-from", range.from.to_string())
+        .header("streams-internal-end", range.end.to_string())
         .header("streams-internal-max-bytes", max_bytes.to_string())
         .header("stream-encryption-key", key_b64);
     for (k, v) in target.headers() {

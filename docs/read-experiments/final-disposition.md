@@ -1,0 +1,51 @@
+# Permanent read paths and removal of the span-cache experiment
+
+Update, 9 September 2026: the final source review accepted these permanent
+dispositions and requested two tooling corrections. The owner then explicitly
+authorized merging PR #19 after those corrections. See the
+[merge review record](../quality/pr19-merge-review.md); the earlier draft status
+below is historical. Performance and release acceptance remain open.
+
+The repository owner's 8 September 2026 instruction requires every read optimisation to be permanently enabled or removed. O1–O4 remain the single production implementation. O5 is removed. There is no runtime, environment or Cargo feature switch between experimental read paths.
+
+This decision incorporates the follow-up source review of report `5bdaf9684197ff84bd544fd0fcd69520001ea196` and runtime `eb5ab8ad7a1459b6c679b72bf342a3af73e0bede`. Its recommendation to retain O5 default-disabled is superseded by the owner's explicit instruction to eliminate optional experiments. The review's scoped acceptance of the corrected owners is retained.
+
+| Work | Permanent disposition | Reason |
+| --- | --- | --- |
+| O1 checked frames / borrowed metadata | Enabled unconditionally. | Canonical admission preserves immutable checked metadata through reads; authentication still runs for each delivered response. |
+| O2 admitted plaintext batches | Enabled unconditionally. O2-A and the specific O2-B copy/growth finding are closed by the supplied review. | Whole-owner transfer and exact subset ownership prevent discarded suffix retention. Compressed fallback transfers its independent decoded owner. Allocator and whole-process memory tradeoffs remain disclosed. |
+| O3 durable ring coverage | Enabled unconditionally. | One walk owns physical-Db, durable-frontier, density and fallback checks for keyed and unfiltered reads. |
+| O4 validated postings windows | Enabled unconditionally. O4-A is closed by the supplied review. | Immutable admission validates nonzero, ordered, disjoint and representable runs before binary search. Malformed derived metadata takes bounded canonical fallback or an error. |
+| O5 canonical ciphertext span cache | Removed, including its tests specific to cache mechanics. | The complete screen fails. An optional production implementation without acceptance would retain unneeded ownership and lifecycle complexity. |
+
+The O5 deletion removes its ready/pending entries, coalesced waiters, capture publication, quota/reservation ownership, project invalidation and retirement hooks, checked-frame compaction used only by this cache, descriptor-only read-plan plumbing, and duplicate scoped/unscoped history/planner entry points. `HistoryResources` assigns its full configured history-cache budget to the existing block cache. `EXPERIMENTAL_CANONICAL_SPAN_CACHE` and `HistoryConfig::canonical_span_cache` are no longer read, exposed or supported. Existing decoded-postings and block caches remain normal production mechanisms.
+
+The real HTTP history test for repeated reads, wrong keys and delete/recreate isolation is retained without cache-only assertions. O1–O4's retained-owner, frozen scan, fork, peer, body lifetime, malformed postings, valid-domain differential, ring and retirement regressions remain required. Quality compiler fixtures lose only the two construction/mutation cases for the deleted `CipherSpan` type; all surviving proof-owner checks remain.
+
+## Evidence behind removal
+
+The reviewed five-block screen showed candidate-on/original hot-history p50 ratios of 0.511 (System) and 0.765 (mimalloc), but poor-reuse tenant ratios of 1.386 and 2.175. Against the same candidate with O5 off, tenant ratios were 1.373 and 1.640 while canonical openings only fell from 10,240 to 10,160. Plain-history peak RSS ratios of 1.122 and 1.217 failed the declared 1.10 resource rule. The possible 512-interval working set versus 256 slots explains a mechanism to investigate; it is not a completed attribution of all measured latency.
+
+These are the previously disclosed local measurements. Removing O5 does not establish that the remaining implementation matches the original runtime's latency. O5 excluded unfiltered replay, and persistent-connection replay controls still disclosed approximately 12.9% and 11.8% median regressions. The performance hold therefore remains. No larger campaign, enlarged cache budget or revised tolerance is used to declare acceptance.
+
+The [historical report](followup/report.md), failed preflight, paired aggregates, arithmetic evaluator and source-pinned measurement harness remain reproducibility records. They cannot enable an alternate path in the current service. The O5 harness explicitly rejects a current archive without the removed cache; use its recorded runtime for historical reproduction. Raw samples, logs and binaries retain their upload hold.
+
+## Peer compatibility and validation
+
+O2-C uses the compatible omission path. Current senders continue transmitting explicit ends. An absent `streams-internal-end` means `u64::MAX`, preserving the old open-ended scan contract. A present value must decode as an unsigned 64-bit integer; malformed, overflowing and non-ASCII values return `400 invalid_body`. The adapter borrows header text instead of allocating temporary strings. Project, epoch, segment, physical identity, encryption key, start and byte budget remain required, and fleet authorisation still runs first.
+
+The missing-header regression also exposed a pre-existing optional `streams-internal-identity` check in the shared target validator. That check now requires a present, well-formed identity matching the derived physical target for scan, cursor and sweep RPCs. Existing old/current senders already provide it. This is a separate tightening of the shared contract, not an expansion of the scan-end omission exception.
+
+The regression matrix exercises an authorised old-header request against the current HTTP receiver; current finite and empty bounds; exact payloads, last-scanned progress and the unchanged physical frontier; malformed present values; missing identity/input headers; and a wrong key. A second runtime sends a real frozen scan to an owner under the legacy open-ended contract, then the current contract, then rollback. Outer batch admission keeps exactly the selected record and one byte of retained payload after the legacy receiver returns its suffix. A held-request-body probe requires unauthorised segment scans to respond before that body arrives.
+
+The legacy receiver in this test intentionally ignores the new bound and delegates to the actual open-ended reader. It is a wire-contract fixture, **not an execution of a historical server binary**. Before a rolling deployment, the deployment owner must still exercise the exact two release binaries, connection draining and rollback in the fleet fixture. The deployment hold remains. Existing declared-wire-overflow and bounded peer decoding regressions continue to enforce the independent wire budget.
+
+Validation is pinned separately from the historical timing binaries. The final runtime source is `cf209dacc4915141a01fb63acc3802de4f612faf`; `06f88608bae037ed819bdefbe0b65084037c4787` changes only the same identity check's audit fingerprint. Current local compiler fixtures passed 10 private-owner and 10 typed-lint violations plus three positive controls; all 284 copied canonical Rust inputs match. SDK validation passed 33 tests, authentication and capability vectors, typecheck and build. The disclosed arithmetic audit reproduced all 762 triplets and the evaluator output still exactly matches HOLD.
+
+The initial old-header test lacked the fixture fleet token and was corrected. Its next run exposed the inherited missing-identity acceptance; the shared validator was fixed, rather than weakening that assertion. The tenant audit entry was updated one-for-one for the same header access, without adding identity sites or ignoring new ones. Those development failures remain distinct from final verification.
+
+The full local gate passed at `06f8860`: **930 ordinary Rust tests + one isolated capacity test**, zero failures or ignored tests. The quality gate passes with **3,524** inherited warning occurrences, down from 3,538, and no new or denied diagnostics. Formatting, dependency, architecture, scenario, test-inventory, provenance and multitenancy checks pass. All three new peer regressions and the retained authentication/corruption/read-budget/retirement controls pass.
+
+The exact-revision [CI invariant job](https://github.com/prisma/streams/actions/runs/34265736876) passed the saved decoder corpus and four compatible Miri tests. It selected 79 mutations against the real PR merge base: **68 caught, 11 unviable, zero survivors or timeouts**, with all three unmutated baselines passing. These are scoped owner checks, not whole-server proofs. [Validation receipt](final-verification.json) records revisions, counts and limits; [PR #19 checks](https://github.com/prisma/streams/pull/19/checks) shows CI for the current report head.
+
+Implementation commits are `50267c2` (O5 removal), `df2c4a4` (scan-end compatibility and regressions), `cf209da` (mandatory physical identity), and `06f8860` (one-for-one identity audit update). The final report/documentation commit introduces no further runtime changes. PR #19 remains draft. No cryptographic, deployed-fleet, workload-owner, merge or deployment acceptance is inferred from source simplification or test results.

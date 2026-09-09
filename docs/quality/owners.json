@@ -1,0 +1,236 @@
+{
+  "occurrences": [
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::postings",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/postings.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::validated",
+      "path": "src/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"postings/validated.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::properties",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/properties.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap/rss.rs",
+      "reason": "Canonical supervised RSS sampler; one joined finite pointer-free purge; failure returns TaskResult::Failed.",
+      "syntax": "tokio::task::spawn_blocking"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest)",
+      "path": "src/application/read_batch/tests.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap/rss.rs",
+      "reason": "Expression selection between supervised cancellation and timer; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest)",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::requires_test",
+      "path": "tools/quality-syntax/src/facts.rs",
+      "reason": "Pinned syn type macro for parsing comma-separated cfg syntax; compiled tool tests cover aliases and mixed cfg.",
+      "syntax": "syn::Token"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_batch/tests.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 2,
+      "owner": "crate",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/commit_handoff/loom_tests.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_history2_keyed_cached",
+      "path": "src/history.rs",
+      "reason": "Existing conditional dead-code attribute at the immutable adoption commit; nested cfg_attr is now parsed explicitly; this exact legacy exception cannot authorize another site.",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::RetireOutcome::Retired::<tuple-field>",
+      "path": "src/shard_directory.rs",
+      "reason": "Existing conditional dead-code attribute at the immutable adoption commit; nested cfg_attr is now parsed explicitly; this exact legacy exception cannot authorize another site.",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::RetirementReason::Shutdown",
+      "path": "src/shard_directory.rs",
+      "reason": "Existing conditional dead-code attribute at the immutable adoption commit; nested cfg_attr is now parsed explicitly; this exact legacy exception cannot authorize another site.",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::record",
+      "path": "tools/quality-syntax/src/scan/attributes.rs",
+      "reason": "Syntax scanner; syn Token selects the comma parser type at compile time; no runtime effects or generated service owner.",
+      "syntax": "syn::Token"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_batch",
+      "path": "tools/quality-invariants/src/application.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/application/read_batch.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_budget",
+      "path": "tools/quality-invariants/src/application.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/application/read_budget.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_retention_probe",
+      "path": "tools/quality-invariants/src/application.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/application/read_retention_probe.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::postings",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/postings.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::retained_bytes",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/retained_bytes.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_history_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Retained real HTTP history authentication and delete/recreate regression after removal of the experimental span cache; compiler and full DST suite exercise the module.",
+      "syntax": "path = \"tests/read_history_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_peer_compatibility",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",
+      "syntax": "path = \"tests/read_peer_compatibility.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::o2c_old_scan_headers_preserve_records_progress_and_physical_frontier",
+      "path": "src/dst/tests/read_peer_compatibility.rs",
+      "reason": "Exact wire-page JSON oracles for absent, finite and empty bounds; serde macro output is compiled and asserted by the protocol regression.",
+      "syntax": "serde_json::json"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 name = "streams-slate"
 version = "0.2.0-rc.4"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 libc = "0.2"
@@ -37,7 +38,6 @@ aes-gcm-siv = "0.11"
 hkdf = "0.12"
 base64 = "0.22.1"
 hmac = "0.12"
-tokio-stream = "0.1.18"
 # MT Stage 2b (docs/MULTITENANCY.md §7): JWT verification for the
 # per-project access-token principal. jsonwebtoken is the audited
 # standard (alg allowlisting, aud/iss/exp validation, JWK decoding) —
@@ -48,6 +48,8 @@ jsonwebtoken = "9"
 arc-swap = "1"
 
 [dev-dependencies]
+proptest = "=1.11.0"
+loom = "=0.7.2"
 # SR-6 identity lint (src/mt_lint.rs): parses the crate's own sources
 # and enforces ZERO unmarked residuals for the multitenancy security
 # categories. Test-only — never linked into the server binary.
@@ -70,6 +72,14 @@ path = "src/bin/bench.rs"
 [profile.release]
 lto = "thin"
 
+# Mutation tests run real assertions with optimization but without release LTO
+# or debug-symbol overhead. This profile never changes the shipped binary.
+[profile.quality]
+inherits = "dev"
+opt-level = 1
+debug = 0
+incremental = true
+
 [[bin]]
 name = "streams-keys"
 path = "src/bin/keys.rs"
@@ -90,8 +100,6 @@ path = "src/bin/pilot.rs"
 name = "cryptobench"
 path = "src/bin/cryptobench.rs"
 
-
-
 [patch.crates-io]
 # UPSTREAM main, pinned by rev — the fork is retired (2026-08-05).
 # Contains everything we carried: #1964 yield points (merged), #1993
@@ -103,3 +111,55 @@ path = "src/bin/cryptobench.rs"
 # a release after v0.15.0 ships. Fork history preserved at
 # sorenbs/slatedb (tags pin-014-final, and the final pin rev 323bc1b).
 slatedb = { git = "https://github.com/slatedb/slatedb.git", rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unfulfilled_lint_expectations = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -2 }
+correctness = { level = "deny", priority = -1 }
+
+# Structure and explicit contracts
+excessive_nesting = "warn"
+too_many_lines = "warn"
+too_many_arguments = "warn"
+type_complexity = "warn"
+fn_params_excessive_bools = "warn"
+struct_excessive_bools = "warn"
+option_option = "warn"
+unnecessary_wraps = "warn"
+match_same_arms = "warn"
+
+# Ownership and hidden failure
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+await_holding_invalid_type = "deny"
+let_underscore_future = "warn"
+let_underscore_must_use = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+undocumented_unsafe_blocks = "deny"
+
+# Suspicious conversions and avoidable ownership work
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+redundant_clone = "warn"
+needless_pass_by_value = "warn"
+
+# Enforce the canonical effect boundaries below
+disallowed_methods = "warn"
+allow_attributes_without_reason = "warn"
+
+[workspace]
+members = ["tools/quality-syntax", "tools/quality-invariants", "fuzz"]
+resolver = "3"
+
+[lints]
+workspace = true

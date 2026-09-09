@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! One returned-page contract for local execution, stitched scans and peers.
 //! Payload is charged in plaintext bytes. A first record may exceed the
 //! requested page size (so small requests cannot wedge a cursor), up to the
@@ -26,6 +27,9 @@ impl PageBudget {
             metadata: 0,
             records: 0,
         }
+    }
+    pub(super) fn admitted_bytes(&self) -> usize {
+        self.plaintext
     }
     pub(crate) fn remaining(&self) -> usize {
         self.requested.saturating_sub(self.plaintext)

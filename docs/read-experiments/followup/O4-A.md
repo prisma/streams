@@ -1,0 +1,13 @@
+# O4-A: admit postings before binary seeking
+
+Control: `85857f6cdb7ec19ae6511e4e66a9b9b550341e61` (runtime `13a43c8`). The source-only review's two counterexamples were executed against the control with added stored-data tests: overlapping pages returned zero records despite a canonical match, and an accepted zero-count run panicked at `clamp(1, 0)`. The key/header rejection and valid-seam controls passed. The failing source overlay, binary and log remain in local follow-up evidence.
+
+`ValidatedRuns` now owns the immutable array and is the only input accepted by `RunWindow`. Construction checks nonempty individual runs, checked ends and byte-weight arithmetic, and globally ordered, non-overlapping intervals. Binary windows continue to seek and iterate only overlaps; the whole validation runs at construction/extension, not every cache hit. The valid-domain differential tests live beside this owner.
+
+Stored page admission rejects truncated/overflowing varints, record counts that cannot fit u32, arithmetic overflow, zero runs/counts, trailing bytes, first/key/header disagreement, incorrect key widths/namespaces and bucket-crossing page ranges. Page seams reject overlap before extending an accumulator. Cold loads and the uncached path route invalid derived metadata to the existing bounded canonical envelope, rather than sorting/dropping invalid rows or publishing complete empty coverage.
+
+Cache entries carry validated owners. Entire write-through installs are validated before strengthening warm absence proofs; invalid installs remove that segment's cached proofs. Extensions clip only an already-validated reloaded prefix at its known coverage boundary, retaining a straddler and its conservative whole-run byte estimate. A rejected extension does not publish a stronger frontier and still releases load waiters. The postings owner is still dropped before asynchronous canonical scans.
+
+Validation: 11 focused O4/O4-A tests passed; the broader 35-test postings filter passed (overlapping coverage, not 46 unique tests). This includes actual stored overlap/decreasing-end, zero-count, integer/width/extent, key/header and bucket disagreement, valid seams, canonical result bytes and exact progress, invalid cache installation, existing straddling extension, warm absence/eviction and process-budget controls. All-target Clippy builds passed with no new baseline fingerprints; the 444-test DST inventory is unchanged. Full corrected-candidate source/CI gates will be recorded after the remaining follow-up changes.
+
+This is a source correction, not a new performance result. Prior R17-B owner and retirement regression files remain unchanged. The PR stays in draft and the performance hold remains.

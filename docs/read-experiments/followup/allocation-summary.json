@@ -1,0 +1,1226 @@
+[
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 14,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 1058339,
+      "realloc_moved_bytes": 784,
+      "reallocs": 5,
+      "requested_bytes": 1061240
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 12,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16664,
+      "peak_live_bytes": 35598,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 35899
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1054267,
+      "realloc_moved_bytes": 784,
+      "reallocs": 5,
+      "requested_bytes": 1057168
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 971,
+      "explicit_aggregate_copy_bytes": 1048576,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 1201713,
+      "realloc_moved_bytes": 726784,
+      "reallocs": 707,
+      "requested_bytes": 46677877
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 35,
+      "explicit_aggregate_copy_bytes": 16384,
+      "live_bytes": 16664,
+      "peak_live_bytes": 166641,
+      "realloc_moved_bytes": 3136,
+      "reallocs": 19,
+      "requested_bytes": 379943
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 957,
+      "explicit_aggregate_copy_bytes": 1032192,
+      "live_bytes": 48,
+      "peak_live_bytes": 1185329,
+      "realloc_moved_bytes": 722176,
+      "reallocs": 696,
+      "requested_bytes": 45428650
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 525,
+      "explicit_aggregate_copy_bytes": 524288,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 1201764,
+      "realloc_moved_bytes": 603728,
+      "reallocs": 388,
+      "requested_bytes": 40384664
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 23,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16664,
+      "peak_live_bytes": 166692,
+      "realloc_moved_bytes": 1584,
+      "reallocs": 10,
+      "requested_bytes": 183345
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 511,
+      "explicit_aggregate_copy_bytes": 507904,
+      "live_bytes": 48,
+      "peak_live_bytes": 1168996,
+      "realloc_moved_bytes": 102352,
+      "reallocs": 377,
+      "requested_bytes": 39135437
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 18,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 1165859,
+      "realloc_moved_bytes": 26896,
+      "reallocs": 9,
+      "requested_bytes": 1214840
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 12,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1304,
+      "peak_live_bytes": 4878,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 5179
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 17,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1124875,
+      "realloc_moved_bytes": 25360,
+      "reallocs": 9,
+      "requested_bytes": 1149328
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 11279,
+      "explicit_aggregate_copy_bytes": 1048576,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 1232433,
+      "realloc_moved_bytes": 1158400,
+      "reallocs": 7175,
+      "requested_bytes": 676031797
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 27,
+      "explicit_aggregate_copy_bytes": 1024,
+      "live_bytes": 1304,
+      "peak_live_bytes": 136433,
+      "realloc_moved_bytes": 1088,
+      "reallocs": 11,
+      "requested_bytes": 272423
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 11269,
+      "explicit_aggregate_copy_bytes": 1047552,
+      "live_bytes": 48,
+      "peak_live_bytes": 1231409,
+      "realloc_moved_bytes": 1415808,
+      "reallocs": 7168,
+      "requested_bytes": 674782570
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 6161,
+      "explicit_aggregate_copy_bytes": 524288,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 1232484,
+      "realloc_moved_bytes": 966720,
+      "reallocs": 4104,
+      "requested_bytes": 606796664
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 19,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1304,
+      "peak_live_bytes": 136484,
+      "realloc_moved_bytes": 544,
+      "reallocs": 6,
+      "requested_bytes": 137265
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 6151,
+      "explicit_aggregate_copy_bytes": 523264,
+      "live_bytes": 48,
+      "peak_live_bytes": 1230436,
+      "realloc_moved_bytes": 949696,
+      "reallocs": 4097,
+      "requested_bytes": 605547437
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 15,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1053912,
+      "peak_live_bytes": 1059363,
+      "realloc_moved_bytes": 784,
+      "reallocs": 5,
+      "requested_bytes": 1062456
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 35598,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 36155
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1054267,
+      "realloc_moved_bytes": 784,
+      "reallocs": 5,
+      "requested_bytes": 1057168
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 1038,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1058304,
+      "peak_live_bytes": 1208345,
+      "realloc_moved_bytes": 643392,
+      "reallocs": 712,
+      "requested_bytes": 13655069
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 35,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 182833,
+      "realloc_moved_bytes": 19456,
+      "reallocs": 20,
+      "requested_bytes": 380007
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 1025,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1191937,
+      "realloc_moved_bytes": 638144,
+      "reallocs": 701,
+      "requested_bytes": 13442130
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 624,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1058304,
+      "peak_live_bytes": 1224948,
+      "realloc_moved_bytes": 317168,
+      "reallocs": 361,
+      "requested_bytes": 7368000
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 24,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 166692,
+      "realloc_moved_bytes": 528,
+      "reallocs": 10,
+      "requested_bytes": 183601
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 610,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1192132,
+      "realloc_moved_bytes": 305136,
+      "reallocs": 350,
+      "requested_bytes": 7155037
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 19,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1130712,
+      "peak_live_bytes": 1182243,
+      "realloc_moved_bytes": 26896,
+      "reallocs": 9,
+      "requested_bytes": 1231416
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 4878,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 5435
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 17,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1124875,
+      "realloc_moved_bytes": 26896,
+      "reallocs": 9,
+      "requested_bytes": 1149328
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 12310,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1204224,
+      "peak_live_bytes": 1338905,
+      "realloc_moved_bytes": 627648,
+      "reallocs": 7184,
+      "requested_bytes": 139807709
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 27,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 136777,
+      "realloc_moved_bytes": 1024,
+      "reallocs": 12,
+      "requested_bytes": 272487
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 12301,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1337857,
+      "realloc_moved_bytes": 628352,
+      "reallocs": 7177,
+      "requested_bytes": 139671570
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 7704,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1204224,
+      "peak_live_bytes": 1340148,
+      "realloc_moved_bytes": 867568,
+      "reallocs": 3601,
+      "requested_bytes": 70670880
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 20,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 136484,
+      "realloc_moved_bytes": 528,
+      "reallocs": 6,
+      "requested_bytes": 137521
+    }
+  },
+  {
+    "allocator": "system",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 7694,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1338052,
+      "realloc_moved_bytes": 866000,
+      "reallocs": 3594,
+      "requested_bytes": 70534717
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 14,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 1058339,
+      "realloc_moved_bytes": 2896,
+      "reallocs": 5,
+      "requested_bytes": 1061240
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 12,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16664,
+      "peak_live_bytes": 35598,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 35899
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1055755,
+      "realloc_moved_bytes": 2896,
+      "reallocs": 5,
+      "requested_bytes": 1057168
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 971,
+      "explicit_aggregate_copy_bytes": 1048576,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 2020824,
+      "realloc_moved_bytes": 10748736,
+      "reallocs": 707,
+      "requested_bytes": 46677877
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 35,
+      "explicit_aggregate_copy_bytes": 16384,
+      "live_bytes": 16664,
+      "peak_live_bytes": 182833,
+      "realloc_moved_bytes": 49088,
+      "reallocs": 19,
+      "requested_bytes": 379943
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 957,
+      "explicit_aggregate_copy_bytes": 1032192,
+      "live_bytes": 48,
+      "peak_live_bytes": 2020824,
+      "realloc_moved_bytes": 10716000,
+      "reallocs": 696,
+      "requested_bytes": 45428650
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 525,
+      "explicit_aggregate_copy_bytes": 524288,
+      "live_bytes": 1052696,
+      "peak_live_bytes": 1988107,
+      "realloc_moved_bytes": 9701200,
+      "reallocs": 388,
+      "requested_bytes": 40384664
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 23,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16664,
+      "peak_live_bytes": 174884,
+      "realloc_moved_bytes": 16368,
+      "reallocs": 10,
+      "requested_bytes": 183345
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 511,
+      "explicit_aggregate_copy_bytes": 507904,
+      "live_bytes": 48,
+      "peak_live_bytes": 1988107,
+      "realloc_moved_bytes": 9668464,
+      "reallocs": 377,
+      "requested_bytes": 39135437
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 18,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 1165859,
+      "realloc_moved_bytes": 48976,
+      "reallocs": 9,
+      "requested_bytes": 1214840
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 12,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1304,
+      "peak_live_bytes": 4878,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 5179
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 17,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1124875,
+      "realloc_moved_bytes": 48976,
+      "reallocs": 9,
+      "requested_bytes": 1149328
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 11279,
+      "explicit_aggregate_copy_bytes": 1048576,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 2020824,
+      "realloc_moved_bytes": 11009856,
+      "reallocs": 7175,
+      "requested_bytes": 676031797
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 27,
+      "explicit_aggregate_copy_bytes": 1024,
+      "live_bytes": 1304,
+      "peak_live_bytes": 136753,
+      "realloc_moved_bytes": 3008,
+      "reallocs": 11,
+      "requested_bytes": 272423
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 11269,
+      "explicit_aggregate_copy_bytes": 1047552,
+      "live_bytes": 48,
+      "peak_live_bytes": 2020824,
+      "realloc_moved_bytes": 11007840,
+      "reallocs": 7168,
+      "requested_bytes": 674782570
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 6161,
+      "explicit_aggregate_copy_bytes": 524288,
+      "live_bytes": 1114136,
+      "peak_live_bytes": 2018827,
+      "realloc_moved_bytes": 9977680,
+      "reallocs": 4104,
+      "requested_bytes": 606796664
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 19,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1304,
+      "peak_live_bytes": 136484,
+      "realloc_moved_bytes": 1008,
+      "reallocs": 6,
+      "requested_bytes": 137265
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "control",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 6151,
+      "explicit_aggregate_copy_bytes": 523264,
+      "live_bytes": 48,
+      "peak_live_bytes": 2018827,
+      "realloc_moved_bytes": 9975664,
+      "reallocs": 4097,
+      "requested_bytes": 605547437
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 15,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1053912,
+      "peak_live_bytes": 1059363,
+      "realloc_moved_bytes": 2896,
+      "reallocs": 5,
+      "requested_bytes": 1062456
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 35598,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 36155
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1055755,
+      "realloc_moved_bytes": 2896,
+      "reallocs": 5,
+      "requested_bytes": 1057168
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 1038,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1058304,
+      "peak_live_bytes": 1224729,
+      "realloc_moved_bytes": 2102784,
+      "reallocs": 712,
+      "requested_bytes": 13655069
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 35,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 182833,
+      "realloc_moved_bytes": 49088,
+      "reallocs": 20,
+      "requested_bytes": 380007
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 1025,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1208321,
+      "realloc_moved_bytes": 2070048,
+      "reallocs": 701,
+      "requested_bytes": 13442130
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 624,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1058304,
+      "peak_live_bytes": 1224948,
+      "realloc_moved_bytes": 1055248,
+      "reallocs": 361,
+      "requested_bytes": 7368000
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 24,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 16920,
+      "peak_live_bytes": 174884,
+      "realloc_moved_bytes": 16368,
+      "reallocs": 10,
+      "requested_bytes": 183601
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 64,
+    "record_bytes": 16384,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 610,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1192132,
+      "realloc_moved_bytes": 1022512,
+      "reallocs": 350,
+      "requested_bytes": 7155037
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "complete",
+    "median": {
+      "calls": 19,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1130712,
+      "peak_live_bytes": 1182243,
+      "realloc_moved_bytes": 48976,
+      "reallocs": 9,
+      "requested_bytes": 1231416
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "withheld",
+    "median": {
+      "calls": 13,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 4878,
+      "realloc_moved_bytes": 16,
+      "reallocs": 1,
+      "requested_bytes": 5435
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "plain",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 17,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1124875,
+      "realloc_moved_bytes": 48976,
+      "reallocs": 9,
+      "requested_bytes": 1149328
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "complete",
+    "median": {
+      "calls": 12310,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1204224,
+      "peak_live_bytes": 1339929,
+      "realloc_moved_bytes": 2194944,
+      "reallocs": 7184,
+      "requested_bytes": 139807709
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 27,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 136777,
+      "realloc_moved_bytes": 3008,
+      "reallocs": 12,
+      "requested_bytes": 272487
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "compressed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 12301,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1338881,
+      "realloc_moved_bytes": 2192928,
+      "reallocs": 7177,
+      "requested_bytes": 139671570
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "complete",
+    "median": {
+      "calls": 7704,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1204224,
+      "peak_live_bytes": 1340148,
+      "realloc_moved_bytes": 1162768,
+      "reallocs": 3601,
+      "requested_bytes": 70670880
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "withheld",
+    "median": {
+      "calls": 20,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 1560,
+      "peak_live_bytes": 136484,
+      "realloc_moved_bytes": 1008,
+      "reallocs": 6,
+      "requested_bytes": 137521
+    }
+  },
+  {
+    "allocator": "mimalloc",
+    "version": "candidate",
+    "count": 1024,
+    "record_bytes": 1024,
+    "format": "mixed",
+    "boundary": "bad-auth",
+    "median": {
+      "calls": 7694,
+      "explicit_aggregate_copy_bytes": 0,
+      "live_bytes": 48,
+      "peak_live_bytes": 1338052,
+      "realloc_moved_bytes": 1160752,
+      "reallocs": 3594,
+      "requested_bytes": 70534717
+    }
+  }
+]

@@ -8,95 +8,26 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-/tmp/gate.txt}
 cd "$HERE"
 : > "$OUT"
-# The 2026-08-25 incident class: ci.yml was invalid YAML (an unquoted
-# `sse::` scalar), GitHub created ZERO jobs, and the local gate kept
-# reporting green. Every commit gate now validates workflow syntax
-# when actionlint is available (CI enforces it unconditionally via
-# .github/workflows/workflow-lint.yml).
-if command -v actionlint > /dev/null 2>&1; then
-  # Bare invocation, matching the independent workflow-lint job:
-  # actionlint auto-detects the project and lints every workflow file
-  # (.yml AND .yaml — an explicit .yml glob silently misses .yaml).
-  if ! actionlint >> "$OUT" 2>&1; then
-    echo GATEFAIL-actionlint >> "$OUT"
-    exit 1
-  fi
-else
-  echo "actionlint: not installed locally; CI enforces it via workflow-lint.yml" >> "$OUT"
-fi
-# Round-13: the RC evidence verifier must refuse every tampered field
-# — its mutation self-test runs on every commit (sub-second, pure py).
-if ! python3 scripts/verify-rc-evidence.py --self-test --repo . >> "$OUT" 2>&1; then
-  echo GATEFAIL-evidence-verifier >> "$OUT"
+# One mandatory entry point for local and CI source/dependency policy.
+if ! scripts/quality.sh >> "$OUT" 2>&1; then
+  echo GATEFAIL-quality >> "$OUT"
   exit 1
 fi
-# WP-00/PR 3.2: the scenario map must stay valid against the catalogue
-# (IDs, statuses, coverage, test symbols) — generated artifacts that can
-# drift without failing the gate are not guardrails.
-if ! python3 scripts/scenario-map-report.py --self-test >> "$OUT" 2>&1; then
-  echo GATEFAIL-scenario-map-selftest >> "$OUT"
-  exit 1
-fi
-if ! python3 scripts/scenario-map-report.py --check >> "$OUT" 2>&1; then
-  echo GATEFAIL-scenario-map >> "$OUT"
-  exit 1
-fi
-if ! python3 scripts/test-inventory.py --self-test >> "$OUT" 2>&1 ||
-   ! python3 scripts/test-inventory.py --check >> "$OUT" 2>&1; then
-  echo GATEFAIL-test-inventory >> "$OUT"
-  exit 1
-fi
-if ! python3 scripts/architecture-report.py --self-test >> "$OUT" 2>&1 ||
-   ! python3 scripts/architecture-gate.py --self-test >> "$OUT" 2>&1 ||
-   ! python3 scripts/architecture-gate.py --check >> "$OUT" 2>&1; then
-  echo GATEFAIL-architecture >> "$OUT"
-  exit 1
-fi
-if ! python3 scripts/review-evidence.py --self-test >> "$OUT" 2>&1 ||
-   ! python3 scripts/review-evidence.py --check >> "$OUT" 2>&1; then
-  echo GATEFAIL-review-mechanisms >> "$OUT"
-  exit 1
-fi
-if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
-  cat /tmp/fmt.out
-  echo GATEFAIL-fmt >> "$OUT"
-  exit 1
-fi
-set +e
-cargo test --release --lib -- --skip post_split_throughput_scales 2>&1 \
-  | tee /tmp/gate-full.log \
-  | grep -E "^test result|^test .* FAILED|^failures:$" >> "$OUT"
-TEST_STATUS=${PIPESTATUS[0]}
-set -e
-if [ "$TEST_STATUS" -ne 0 ] || ! grep -q "^test result: ok" "$OUT"; then
+if ! cargo test --locked --release --lib -- --skip post_split_throughput_scales > "$OUT.suite.log" 2>&1; then
   echo GATEFAIL-suite >> "$OUT"
   exit 1
 fi
+grep -E '^test result: ok' "$OUT.suite.log" >> "$OUT"
 # The capacity-mechanism measurement OWNS the machine — its own stated
 # precondition. Inside the parallel suite, contention lands one-sidedly
 # on the post-split phase (it needs two committers' worth of CPU) and
 # only ever understates the ratio: round-9 measured 1.73-1.80 in-suite
 # against 1.8x, with healthy baselines. External host load still
 # depresses it — the test's own failure text says how to distinguish.
-set +e
-cargo test --release --lib post_split_throughput_scales -- \
-  --exact dst::dst_tests::topology_scaling::post_split_throughput_scales 2>&1 \
-  | tee /tmp/gate-capacity.log \
-  | grep -E "^test result|^failures:$" >> "$OUT"
-CAP_STATUS=${PIPESTATUS[0]}
-set -e
-if [ "$CAP_STATUS" -ne 0 ]; then
+if ! cargo test --locked --release --lib post_split_throughput_scales -- \
+  --exact dst::dst_tests::topology_scaling::post_split_throughput_scales > "$OUT.capacity.log" 2>&1; then
   echo GATEFAIL-capacity >> "$OUT"
   exit 1
 fi
-if ! cargo clippy --release --bin streams-slate --all-targets > /dev/null 2> /tmp/clippy.out; then
-  cat /tmp/clippy.out
-  echo GATEFAIL-clippy-build >> "$OUT"
-  exit 1
-fi
-NEW=$(python3 scripts/clippy-fingerprints.py /tmp/clippy.out | comm -13 scripts/clippy-baseline-fingerprints.txt -)
-if [ -n "$NEW" ]; then echo "NEW FINGERPRINTS: $NEW" >> "$OUT"; echo GATEFAIL-clippy >> "$OUT"; exit 1; fi
-echo "NEW FINGERPRINTS: none" >> "$OUT"
-bash scripts/multitenancy-audit.sh 2>&1 | tail -5 >> "$OUT"
-grep -q MT_AUDIT_OK "$OUT" || { echo GATEFAIL-audit >> "$OUT"; exit 1; }
+grep -E '^test result: ok' "$OUT.capacity.log" >> "$OUT"
 echo GATEDONE >> "$OUT"

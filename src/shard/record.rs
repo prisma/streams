@@ -1,9 +1,11 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Checked stored-record admission, shared by shard and history readers.
 //! Invalid cache entries force a canonical storage read; corrupt stored rows
 //! fail before either matching or match-free progress can be published.
 use super::{Deliver, ShardEngine, StreamHandle, record_key};
 use crate::crypto::{DecodedFrame, decode_frame};
-use bytes::Bytes;
+mod checked;
+pub use checked::CheckedFrame;
 use slatedb::config::{DurabilityLevel, ScanOptions};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,8 +71,45 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
 /// Frames with offset in [scan_from, durable_next), optionally filtered by
 /// routing key (frame metadata; no decryption needed).
 pub struct FrameReadResult {
-    pub frames: Vec<Bytes>,
+    pub frames: Vec<CheckedFrame>,
     pub last_offset: Option<u64>,
+    pub(super) coverage: Option<DurableRingCoverage>,
+}
+
+/// Retained admission fact, not a caller-supplied permission to skip checks.
+/// Weak ownership binds this proof to one physical DB opening and keeps its
+/// allocation identity unique even after retirement. `hash` binds incarnation.
+pub(super) struct DurableRingCoverage {
+    owner: std::sync::Weak<slatedb::Db>,
+    hash: [u8; 16],
+    from: u64,
+    to: u64,
+}
+impl DurableRingCoverage {
+    pub(super) fn new(engine: &ShardEngine, hash: [u8; 16], from: u64, to: u64) -> Self {
+        Self {
+            owner: std::sync::Arc::downgrade(&engine.db),
+            hash,
+            from,
+            to,
+        }
+    }
+}
+impl FrameReadResult {
+    pub(crate) fn proves_durable_ring(
+        &self,
+        engine: &ShardEngine,
+        hash: [u8; 16],
+        from: u64,
+    ) -> bool {
+        self.coverage.as_ref().is_some_and(|proof| {
+            proof.owner.as_ptr() == std::sync::Arc::as_ptr(&engine.db)
+                && proof.hash == hash
+                && proof.from == from
+                && self.last_offset.and_then(|last| last.checked_add(1)) == Some(proof.to)
+                && proof.to > from
+        })
+    }
 }
 
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
@@ -89,6 +128,7 @@ pub async fn read_frames_range(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
+        coverage: None,
     };
     if scan_from >= scan_to {
         return Ok(out);
@@ -115,10 +155,10 @@ pub async fn read_frames_range(
         .await?;
     let mut total = 0usize;
     while let Some(kv) = iter.next().await? {
-        let frame = decode_row(&kv.key, &prefix[..17], &kv.value)?;
-        let off = frame.header.offset;
-        total += kv.value.len();
-        out.frames.push(kv.value);
+        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
+        let off = frame.view().header.offset;
+        total += frame.len();
+        out.frames.push(frame);
         out.last_offset = Some(off);
         if total >= max_bytes {
             break;
@@ -173,6 +213,7 @@ pub(crate) async fn read_frames_until(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
+        coverage: None,
     };
     if scan_from >= end {
         return Ok(out);
@@ -212,11 +253,11 @@ pub(crate) async fn read_frames_until(
         .await?;
     let mut total = 0usize;
     while let Some(kv) = iter.next().await? {
-        let frame = decode_row(&kv.key, &prefix[..17], &kv.value)?;
-        let off = frame.header.offset;
-        total += kv.value.len();
-        if !key_filter.is_some_and(|kf| frame.header.routing_key != kf) {
-            out.frames.push(kv.value);
+        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
+        let off = frame.view().header.offset;
+        total += frame.len();
+        if !key_filter.is_some_and(|kf| frame.view().header.routing_key != kf) {
+            out.frames.push(frame);
         }
         out.last_offset = Some(off);
         if total >= max_bytes {
@@ -224,4 +265,11 @@ pub(crate) async fn read_frames_until(
         }
     }
     Ok(out)
+}
+
+// Scoped to the actual read future, so a held redundant marker operation does
+// not block handle warming, the absorber, or another test's engine.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_MARKER_HOLD: (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>);
 }

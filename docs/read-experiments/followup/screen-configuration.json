@@ -1,0 +1,391 @@
+{
+  "blocks": 5,
+  "reads": 128,
+  "tests": [
+    "append",
+    "read_history",
+    "transport"
+  ],
+  "variants": [
+    [
+      "control",
+      false
+    ],
+    [
+      "candidate",
+      false
+    ],
+    [
+      "candidate",
+      true
+    ]
+  ],
+  "order": "AB/BA reversed on even blocks",
+  "allocators": [
+    "system",
+    "mimalloc"
+  ],
+  "started": 1788884086.874296,
+  "revisions": {
+    "system/control": {
+      "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+      "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+      "allocator": "system",
+      "binary_sha256": "6796391044e903a4e011701416feff2ea8ae361c94d9f42a39bbaf21b544eb2a"
+    },
+    "system/candidate": {
+      "base_revision": "eb5ab8ad7a1459b6c679b72bf342a3af73e0bede",
+      "base_tree": "39fa624f614c408f02980edebd17bb1e71dfb133",
+      "allocator": "system",
+      "binary_sha256": "9e4f8deedeca6c3b4d84b28e04614e7a7687f563a8800c384f0eded91484139f"
+    },
+    "mimalloc/control": {
+      "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+      "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+      "allocator": "mimalloc",
+      "binary_sha256": "14aea69fb01c4c86478a68090564b88eace81ef26d087c5967bbdf4ccd60970e"
+    },
+    "mimalloc/candidate": {
+      "base_revision": "eb5ab8ad7a1459b6c679b72bf342a3af73e0bede",
+      "base_tree": "39fa624f614c408f02980edebd17bb1e71dfb133",
+      "allocator": "mimalloc",
+      "binary_sha256": "dcabbf83131d74c1f0a652ff7f4fd5a9274459bc01b6c30efbde5301966e9407"
+    }
+  },
+  "corpus_provenance": {
+    "seed_campaign": "/private/tmp/streams-read-followup-85857f6/screen/preflight",
+    "seed_receipts": "/private/tmp/streams-read-followup-85857f6/screen/preflight/runs.jsonl",
+    "candidate_seed_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+    "candidate_read_revision": "eb5ab8ad7a1459b6c679b72bf342a3af73e0bede",
+    "reason": "Read-only cache admission refinement; append, absorber and encryption files unchanged from complete v1 seed.",
+    "seed_run_receipts": [
+      {
+        "pair_id": "preflight/system/seed_history/plain/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "plain",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "6796391044e903a4e011701416feff2ea8ae361c94d9f42a39bbaf21b544eb2a",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882218.883956,
+        "elapsed": 54.55050611495972,
+        "exit_code": 0,
+        "log_file": "system-control-off-seed_history-plain-0.log",
+        "log_sha256": "5c24615659fb82951ef16962259f639be6731cafe9d7a4500423066ec0dedbf0"
+      },
+      {
+        "pair_id": "preflight/system/seed_history/compressed/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "compressed",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "6796391044e903a4e011701416feff2ea8ae361c94d9f42a39bbaf21b544eb2a",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882273.435395,
+        "elapsed": 54.11528515815735,
+        "exit_code": 0,
+        "log_file": "system-control-off-seed_history-compressed-0.log",
+        "log_sha256": "a828c7f6f0bc76ec0eb1207f13d17eceb1e667d8c55701fd906a3ac18eeb246f"
+      },
+      {
+        "pair_id": "preflight/system/seed_history/mixed/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "mixed",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "6796391044e903a4e011701416feff2ea8ae361c94d9f42a39bbaf21b544eb2a",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882327.5532942,
+        "elapsed": 57.14458394050598,
+        "exit_code": 0,
+        "log_file": "system-control-off-seed_history-mixed-0.log",
+        "log_sha256": "3e641a9898a7465d4c073295789999f0157f86ec918200dfcfd0fba823e9d1ef"
+      },
+      {
+        "pair_id": "preflight/system/seed_history/plain/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "plain",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "1b8cdae2d952f9a008ba102336987fb35b7dde017e58820a710f9f4bcba3dd44",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882384.702616,
+        "elapsed": 57.77602791786194,
+        "exit_code": 0,
+        "log_file": "system-candidate-off-seed_history-plain-0.log",
+        "log_sha256": "11a6fadb4278e6e2629c088a51facc2df065af58dfdf83e307120883320ae9b0"
+      },
+      {
+        "pair_id": "preflight/system/seed_history/compressed/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "compressed",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "1b8cdae2d952f9a008ba102336987fb35b7dde017e58820a710f9f4bcba3dd44",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882442.4799879,
+        "elapsed": 54.6121780872345,
+        "exit_code": 0,
+        "log_file": "system-candidate-off-seed_history-compressed-0.log",
+        "log_sha256": "ce58f854b43c0a6956f593cdde93933df04c8ca0efb83b009aa5fe9b68b42193"
+      },
+      {
+        "pair_id": "preflight/system/seed_history/mixed/block-0",
+        "block_id": 0,
+        "allocator": "system",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "mixed",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "1b8cdae2d952f9a008ba102336987fb35b7dde017e58820a710f9f4bcba3dd44",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/system/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882497.094225,
+        "elapsed": 54.11480903625488,
+        "exit_code": 0,
+        "log_file": "system-candidate-off-seed_history-mixed-0.log",
+        "log_sha256": "4f6ff85c619769b4e3d0287a1b301111b0848ba8a40687d2b412a0c065ac9f62"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/plain/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "plain",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "14aea69fb01c4c86478a68090564b88eace81ef26d087c5967bbdf4ccd60970e",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882551.211349,
+        "elapsed": 54.68104696273804,
+        "exit_code": 0,
+        "log_file": "mimalloc-control-off-seed_history-plain-0.log",
+        "log_sha256": "ba26e0230dfdb1db19b3bf1a3403f5286371bb7f3c5be041d7d2c90d90992d9a"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/compressed/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "compressed",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "14aea69fb01c4c86478a68090564b88eace81ef26d087c5967bbdf4ccd60970e",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882605.894612,
+        "elapsed": 54.044849157333374,
+        "exit_code": 0,
+        "log_file": "mimalloc-control-off-seed_history-compressed-0.log",
+        "log_sha256": "6cdd2bb40fc8eeee833408bc8815e95b35bc7a2802f000eda1b605c17b4e2f6e"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/mixed/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "control",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "mixed",
+        "seed": true,
+        "base_revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+        "base_tree": "d84ebf597ecb731ffd342e7556d1cf35335c5478",
+        "binary_sha256": "14aea69fb01c4c86478a68090564b88eace81ef26d087c5967bbdf4ccd60970e",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/control-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882659.941576,
+        "elapsed": 54.0097861289978,
+        "exit_code": 0,
+        "log_file": "mimalloc-control-off-seed_history-mixed-0.log",
+        "log_sha256": "ecd9d584fd389b847e1f52fb24c28080b38ba3480bac6cc7bec8b1b099285289"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/plain/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "plain",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "5ab5db14a00e44de86da8eca3ffe075c4e5ede6744d62c67c1a5e34cc9b8bc0f",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882713.954703,
+        "elapsed": 54.70896792411804,
+        "exit_code": 0,
+        "log_file": "mimalloc-candidate-off-seed_history-plain-0.log",
+        "log_sha256": "61ef4a2165203d34eaa69bb75efb276ad4365580bafeb32d09865ff06a68402d"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/compressed/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "compressed",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "5ab5db14a00e44de86da8eca3ffe075c4e5ede6744d62c67c1a5e34cc9b8bc0f",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882768.6655638,
+        "elapsed": 57.405272245407104,
+        "exit_code": 0,
+        "log_file": "mimalloc-candidate-off-seed_history-compressed-0.log",
+        "log_sha256": "83febf84786e58ce3af2796db2d644a8dd41dc1f4bed1a6bddf4addb15c3c1dc"
+      },
+      {
+        "pair_id": "preflight/mimalloc/seed_history/mixed/block-0",
+        "block_id": 0,
+        "allocator": "mimalloc",
+        "version": "candidate",
+        "cache_on": false,
+        "test": "seed_history",
+        "format": "mixed",
+        "seed": true,
+        "base_revision": "1d6b646f936c5bad315d5a80876b34826a750c21",
+        "base_tree": "63bc159d90ab191aed198664d16db2a4bd2e6a68",
+        "binary_sha256": "5ab5db14a00e44de86da8eca3ffe075c4e5ede6744d62c67c1a5e34cc9b8bc0f",
+        "command": [
+          "/usr/bin/time",
+          "-l",
+          "/private/tmp/streams-read-followup-85857f6/screen/mimalloc/candidate-binary",
+          "local_perf_seed_history",
+          "--ignored",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "started": 1788882826.074199,
+        "elapsed": 57.32190704345703,
+        "exit_code": 0,
+        "log_file": "mimalloc-candidate-off-seed_history-mixed-0.log",
+        "log_sha256": "c3d614b9488407806f153e115803245a14671c090d870c1e149d768d9cd54b90"
+      }
+    ]
+  },
+  "guardrails_sha256": "0718e1f52e4e7e0412baacd1c44497e1453bce58ca1cad95c0f43348e16e8874",
+  "guardrails_published_before_screen": "5edf65acc7224f657a4cdbf801642a58a8fc6d2f",
+  "raw_evidence_status": "Local upload hold; not supplied for independent raw sample or binary verification."
+}

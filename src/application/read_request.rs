@@ -42,7 +42,7 @@ pub(crate) enum ReadResultKind {
 }
 pub(crate) struct ReadOutcome {
     pub descriptor: StreamDesc,
-    pub records: Vec<super::PlainRec>,
+    pub records: super::PlainBatch,
     pub next: ReadPosition,
     pub durable: Option<ReadPosition>,
     pub pending_from: Option<usize>,
@@ -97,7 +97,7 @@ impl ReadOutcome {
             .is_some_and(|map| map.segments.len() > 1 || map.pending.is_some());
         Self {
             descriptor: command.descriptor.clone(),
-            records: vec![],
+            records: super::PlainBatch::default(),
             next: position,
             durable: (command.visibility == Deliver::Applied).then_some(ReadPosition {
                 segment: position.segment,
@@ -410,7 +410,7 @@ impl ReadService {
             ));
         }
         let page = self
-            .read_stitched(desc, key, start, command.max_bytes)
+            .read_stitched(desc, key, super::ReadRange::open(start), command.max_bytes)
             .await
             .map_err(ReadFailure::Storage)?;
         let next = ReadPosition {
@@ -513,7 +513,7 @@ impl ResolvedRead<'_> {
             &desc.epoch(),
             &handle,
             &engine,
-            start,
+            super::ReadRange::bounded(start, span.sealed_next_offset.unwrap_or(u64::MAX)),
             command.selector.as_deref(),
             if waited {
                 command.max_bytes.min(command.tail_max_bytes)

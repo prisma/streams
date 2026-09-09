@@ -1,0 +1,20 @@
+# Review version/toolchain migrations explicitly. No floating latest in CI.
+rust = "1.98.1"
+nightly = "nightly-2026-09-01"
+actionlint = "1.7.12"
+
+[tools]
+cargo-machete = "0.9.2"
+cargo-deny = "0.20.2"
+cargo-fuzz = "0.13.2"
+cargo-mutants = "27.1.0"
+
+[slatedb]
+git = "https://github.com/slatedb/slatedb.git"
+rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+
+[actionlint-sha256]
+darwin_amd64 = "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"
+darwin_arm64 = "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
+linux_amd64 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+linux_arm64 = "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"

@@ -96,3 +96,5 @@ pub(crate) const DEFAULT_MANIFEST_POLL_MS: u64 = 2000;
 pub(crate) const DEFAULT_COMPACTOR_POLL_MS: u64 = 2500;
 
 mod telemetry_batch;
+
+mod retained_bytes;
