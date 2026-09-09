@@ -663,15 +663,37 @@ impl crate::config::ServerConfig {
         if !f.errors.is_empty() {
             return Err(ConfigError { errors: f.errors });
         }
+        let (
+            Some(tenant),
+            Some(cell_id),
+            Some(auth_mode),
+            Some(cert_sealed_publish_delay_ms),
+            Some(initial_shards),
+            Some(configured_capacity),
+        ) = (
+            tenant,
+            cell_id,
+            auth_mode,
+            cert_sealed_publish_delay_ms,
+            initial_shards,
+            configured_capacity,
+        )
+        else {
+            // A validator must report an error whenever it withholds a proof.
+            // Refuse an incomplete configuration even if a future validator
+            // violates that contract; no partial value reaches bootstrap.
+            return Err(ConfigError {
+                errors: vec!["configuration validation withheld a required value".into()],
+            });
+        };
         Ok(ValidatedServerConfig {
-            tenant: tenant.expect("no errors implies tenant parsed"),
-            cell_id: cell_id.expect("no errors implies cell id parsed"),
-            auth_mode: auth_mode.expect("no errors implies auth mode parsed"),
+            tenant,
+            cell_id,
+            auth_mode,
             catalog_cursor_key,
-            cert_sealed_publish_delay_ms: cert_sealed_publish_delay_ms
-                .expect("no errors implies delay parsed"),
-            initial_shards: initial_shards.expect("no errors implies shards proven"),
-            configured_capacity: configured_capacity.expect("no errors implies capacity proven"),
+            cert_sealed_publish_delay_ms,
+            initial_shards,
+            configured_capacity,
             notices: f.notices,
             config: self,
         })
@@ -757,19 +779,23 @@ impl crate::config::ServerConfig {
             f.err("FLEET_MAX and FLEET_MIN must fit the 4096-member fleet work budget");
             return None;
         }
+        let Ok(fleet_max) = usize::try_from(self.cli.fleet_max) else {
+            f.err("FLEET_MAX does not fit this platform's shard count");
+            return None;
+        };
         let fleet_mode = self.fleet_mode();
         let effective_shards = match self.cli.initial_shards {
             Some(n) => {
-                if fleet_mode && n < 4 * self.cli.fleet_max as usize {
+                if fleet_mode && n < 4 * fleet_max {
                     f.notices.push(ConfigNotice::CoarseInitialShards {
                         configured: n,
                         fleet_max: self.cli.fleet_max,
-                        suggested: (4 * self.cli.fleet_max as usize).next_power_of_two(),
+                        suggested: (4 * fleet_max).next_power_of_two(),
                     });
                 }
                 n
             }
-            None if fleet_mode => (4 * self.cli.fleet_max as usize).next_power_of_two(),
+            None if fleet_mode => (4 * fleet_max).next_power_of_two(),
             None => 1,
         };
         match InitialShards::new(effective_shards) {

@@ -1130,27 +1130,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "08f58312519e0d11ccd439984cabe304ff2201f852e09c470d9830ab1584e43a",
-      "item": "crate::crate :: config :: ServerConfig::validate_topology_and_ceilings",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0d8d6fd3f8b6153e5c693c95ec71b62c2e0a9967ae5c55974ee43a5af1e779ea",
-      "item": "crate::crate :: config :: ServerConfig::validate_topology_and_ceilings",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9f40b39e9aef68feb1bac8c67583e5f65e2b64bd02e488c0df9db0dd83442c90",
-      "item": "crate::crate :: config :: ServerConfig::validate_topology_and_ceilings",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "3beee2fe09ec5d8bb55823a573620cdb6451c77139fd35d2fb67e6eeba65d0ef",
       "item": "crate::FrameCipher::encrypt_with_nonce",
       "lint": "clippy::cast_possible_truncation",
@@ -7084,48 +7063,6 @@
       "item": "crate::on_slatedb_rt",
       "lint": "clippy::expect_used",
       "path": "src/bootstrap/runtime_handoff.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "18f43ecb78e81b3c6c67f8bcbba183aec8fab2b806bbe0302f6649a4ecc2901b",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "20788406d4aebca13b4bb77df05a6d498eac7f5e162afa4c95b615dd35e4c089",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6f6ed17a81b52f41bef4132692b82f352b6736c54faa01e62f946baf761df2aa",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8d3074710c80a6eae96cd3d690fcea600df117aff11fea0a59daf98f1c446d16",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8f88c59fc948b3671c74f075054542cb93021644dd0455f5388b397255d5c92b",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ddc3021ab6ddc8bb0ea87116f020adfdaf6eb074f2b4cd8fc1bab99a29097af2",
-      "item": "crate::crate :: config :: ServerConfig::validate",
-      "lint": "clippy::expect_used",
-      "path": "src/config/validation.rs"
     },
     {
       "count": 1,
