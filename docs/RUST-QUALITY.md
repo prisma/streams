@@ -8,7 +8,7 @@ The objective is the structural approval bar in the [pinned Cursor review skill]
 
 Root `rust-toolchain.toml` MUST pin an exact release plus Clippy and rustfmt. Local checks and every CI Rust job MUST use that pin, never floating stable. Additional tools are version-pinned in `quality-tools.toml`; nightly tools have a separate dated pin. Toolchain or baseline migrations require an explicit review and new provenance, rather than an automatic update.
 
-`scripts/quality.sh` is the common local/CI entry point for formatting, Clippy, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Every subprocess failure MUST propagate, including commands in pipelines. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
+`scripts/quality.sh` is the common local/CI entry point for workflow linting, formatting, Clippy, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Pinned actionlint MUST run without a file glob so both `.yml` and `.yaml` workflows are checked. Every subprocess failure MUST propagate, including commands in pipelines. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
 
 ## Lint profile
 

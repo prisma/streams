@@ -5,6 +5,11 @@ cd "$(dirname "$0")/.."
 QUALITY_OUT=${QUALITY_OUT:-target/quality}
 mkdir -p "$QUALITY_OUT"
 python3 -c 'import sys; sys.path.insert(0,"scripts/quality"); import config; problems=config.check(); print("\n".join(problems)); sys.exit(bool(problems))'
+# Bare invocation discovers every workflow, including both .yml and .yaml.
+if ! actionlint; then
+  echo 'QUALITY_FAIL: workflow lint (actionlint)' >&2
+  exit 1
+fi
 cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax

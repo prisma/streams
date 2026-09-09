@@ -23,6 +23,8 @@ jobs:
             version=$(python3 -c 'import sys,tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"][sys.argv[1]])' "$tool")
             cargo install "$tool" --locked --version "=$version"
           done
+          python3 scripts/install-actionlint.py
+          echo "$PWD/target/quality-tools/bin" >> "$GITHUB_PATH"
       - name: Common quality entry point
         env:
           QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}

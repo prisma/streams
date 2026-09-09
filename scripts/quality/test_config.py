@@ -8,6 +8,29 @@ from common import ROOT
 
 
 class Config(unittest.TestCase):
+    def test_actionlint_version_and_missing_tool(self):
+        pins = config.read_toml('quality-tools.toml')
+        versions = {
+            ('rustc', '--version'): f"rustc {pins['rust']}",
+            ('cargo', '--version'): f"cargo {pins['rust']}",
+            ('cargo', 'clippy', '--version'): 'clippy 0.1.98',
+            ('cargo', 'machete', '--version'): pins['tools']['cargo-machete'],
+            ('cargo', 'deny', '--version'): f"cargo-deny {pins['tools']['cargo-deny']}",
+            ('actionlint', '--version'): pins['actionlint'],
+        }
+        def output(command, **kwargs):
+            return versions[tuple(command)]
+        with patch.object(config.subprocess, 'check_output', side_effect=output), patch.dict(config.os.environ, {}, clear=True):
+            self.assertEqual(config.check(), [])
+            versions[('actionlint', '--version')] = '0.0.0'
+            self.assertTrue(any('tool version mismatch' in p and 'actionlint' in p for p in config.check()))
+        def missing(command, **kwargs):
+            if command[0] == 'actionlint':
+                raise FileNotFoundError('actionlint')
+            return versions[tuple(command)]
+        with patch.object(config.subprocess, 'check_output', side_effect=missing), patch.dict(config.os.environ, {}, clear=True):
+            self.assertTrue(any('missing required tool: actionlint' in p for p in config.check()))
+
     def test_pinned_workspace_and_drift_controls(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

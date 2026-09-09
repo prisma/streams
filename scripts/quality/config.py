@@ -60,9 +60,17 @@ def check(tools=True):
                     (['cargo', '--version'], f"cargo {pins['rust']} "),
                     (['cargo', 'clippy', '--version'], 'clippy 0.1.98 '),
                     (['cargo', 'machete', '--version'], pins['tools']['cargo-machete']),
-                    (['cargo', 'deny', '--version'], f"cargo-deny {pins['tools']['cargo-deny']}")]
+                    (['cargo', 'deny', '--version'], f"cargo-deny {pins['tools']['cargo-deny']}"),
+                    (['actionlint', '--version'], pins['actionlint'])]
         for command, prefix in commands:
-            output = subprocess.check_output(command, text=True).strip()
+            try:
+                output = subprocess.check_output(command, text=True).strip()
+            except FileNotFoundError:
+                problems.append(f'missing required tool: {command[0]}; run scripts/install-quality-tools.sh and add target/quality-tools/bin to PATH')
+                continue
+            except subprocess.CalledProcessError as error:
+                problems.append(f'tool version check failed: {command}: exit {error.returncode}')
+                continue
             if output.split()[:len(prefix.split())] != prefix.split():
                 problems.append(f'tool version mismatch: {command}: {output}')
     return problems

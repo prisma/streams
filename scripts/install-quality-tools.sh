@@ -9,4 +9,5 @@ python3 -c 'import tomllib; p=tomllib.load(open("quality-tools.toml","rb")); [pr
 while read -r tool version; do
   cargo install "$tool" --version "=$version" --locked --root "$TOOL_ROOT"
 done < "$VERSIONS"
+python3 scripts/install-actionlint.py
 printf 'Installed pinned tools in %s/bin\n' "$TOOL_ROOT"

@@ -98,7 +98,12 @@ are reported inventories, not a claim of complete macro/name resolution.
 To reproduce locally, use Rustup's Cargo/Rust proxies so root
 `rust-toolchain.toml` selects Rust 1.98.1 (a standalone older Cargo is rejected).
 Install the exact helper versions with `scripts/install-quality-tools.sh`, add
-`target/quality-tools/bin` to `PATH`, and run `scripts/gate.sh`. Install the dated
+`target/quality-tools/bin` to `PATH`, and run `scripts/gate.sh`. The installer
+also verifies and installs actionlint from its version- and checksum-pinned
+release archive (Python 3.11+ is required). `python3 scripts/install-actionlint.py`
+installs just that tool. The common gate checks its version and lints all
+`.yml` and `.yaml` workflows before Rust compilation; the independent workflow
+lint CI job remains required as well. Install the dated
 nightly with Miri and rust-src for `scripts/quality/nightly.sh`; run compiler
 fixtures with a fresh `--out` directory and `scripts/quality/mutations.sh` against
 `QUALITY_BASE_REF` set to the actual PR target. Raw output stays local.
