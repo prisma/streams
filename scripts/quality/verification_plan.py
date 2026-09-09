@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 import subprocess
 from common import ROOT, merge_base, syntax, write_json
+from production_changes import unchanged_production
 
 
-def plan(paths, visibility_only=()):
+def plan(paths, visibility_only=(), production_unchanged=()):
     source = [p for p in paths if p.endswith('.rs')]
-    implementation = [p for p in source if p not in visibility_only]
+    implementation = [p for p in source if p not in set(visibility_only) | set(production_unchanged)]
     tooling = any(p.startswith(('tools/quality-invariants/', 'fuzz/', 'scripts/quality/'))
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
@@ -19,7 +20,8 @@ def plan(paths, visibility_only=()):
     return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or tooling,
             'loom': lifecycle or tooling, 'miri': buffers or tooling,
             'mutants': codec or lifecycle or buffers, 'changed_rust_files': source,
-            'visibility_only_files': sorted(visibility_only)}
+            'visibility_only_files': sorted(visibility_only),
+            'production_unchanged_files': sorted(production_unchanged)}
 
 
 def mask_visibility(source, facts):
@@ -52,18 +54,24 @@ def is_visibility_only(before, after, old_facts, new_facts):
                                  for old, new in changed)
 
 
-def visibility_changes(base, paths):
+def source_changes(base, paths):
     before, after = {}, {}
+    existing = set(subprocess.check_output(
+        ['git', 'ls-tree', '-r', '--name-only', base], cwd=ROOT, text=True).splitlines())
     for path in paths:
-        if not path.endswith('.rs') or not (ROOT / path).is_file():
+        if not path.endswith('.rs'):
             continue
-        old = subprocess.run(['git', 'show', f'{base}:{path}'], cwd=ROOT, capture_output=True)
-        if old.returncode == 0:
-            before[path], after[path] = old.stdout.decode(), (ROOT / path).read_bytes().decode()
+        # Missing new/deleted files have empty source; real Git read failures
+        # propagate rather than being mistaken for a new test-only file.
+        before[path] = subprocess.check_output(
+            ['git', 'show', f'{base}:{path}'], cwd=ROOT).decode() if path in existing else ''
+        after[path] = (ROOT / path).read_bytes().decode() if (ROOT / path).is_file() else ''
     if not before:
-        return []
+        return [], []
     old_facts, new_facts = syntax(before), syntax(after)
-    return [path for path in before if is_visibility_only(before[path], after[path], old_facts[path], new_facts[path])]
+    visibility = [path for path in before
+                  if is_visibility_only(before[path], after[path], old_facts[path], new_facts[path])]
+    return visibility, unchanged_production(before, after, old_facts, new_facts)
 
 
 def main():
@@ -76,7 +84,8 @@ def main():
     diff = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--binary', base, '--'], cwd=ROOT)
     (out / 'pr.diff').write_bytes(diff)
     paths = subprocess.check_output(['git', 'diff', '--name-only', base, '--'], cwd=ROOT, text=True).splitlines()
-    result = dict(plan(paths, visibility_changes(base, paths)), merge_base=base)
+    visibility, production = source_changes(base, paths)
+    result = dict(plan(paths, visibility, production), merge_base=base)
     write_json(out / 'plan.json', result)
     print(json.dumps(result, indent=2))
 
