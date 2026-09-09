@@ -15,11 +15,12 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings batch retained; do
+for owner in postings batch retained rollup_allocation; do
   case "$owner" in
     postings) file=src/postings/validated.rs; filter=postings:: ;;
     batch) file=src/application/read_batch.rs; filter=application::read_batch:: ;;
     retained) file=src/retained_bytes.rs; filter=retained_bytes:: ;;
+    rollup_allocation) file=src/rollup/allocation.rs; filter=rollup_allocation:: ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"

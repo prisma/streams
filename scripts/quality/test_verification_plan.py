@@ -4,6 +4,11 @@ from verification_plan import is_visibility_only, plan
 
 
 class Triggers(unittest.TestCase):
+    def test_rollup_allocation_requires_properties_and_mutations(self):
+        checks = plan(['src/rollup/allocation.rs'])
+        self.assertTrue(checks['properties_fuzz'])
+        self.assertTrue(checks['mutants'])
+
     def test_visibility_selection_uses_real_syntax_and_keeps_compiler_checks(self):
         before = 'pub struct A { pub field: u8 }\nimpl A { pub fn value(&self)->u8 { self.field } }'
         after = before.replace('pub ', 'pub(crate) ')

@@ -38,3 +38,10 @@ mod tenant;
     reason = "invariant harness; compile actual batch budget and ownership tests together; unused service accessors remain private"
 )]
 mod application;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compile the exact production month-allocation owner; the library target has no service caller"
+)]
+#[path = "../../../src/rollup/allocation.rs"]
+mod rollup_allocation;
