@@ -214,3 +214,93 @@ fn quality_loom_sealing_transfers_rows_and_sequence_as_one_operation() {
         assert_eq!(state.sealed.front().unwrap().seq, 0);
     });
 }
+
+#[test]
+fn reserved_observations_and_zero_drains_leave_custody_unchanged() {
+    let acc = accumulator();
+    let mut reserved = identity(0);
+    reserved.stream_name = "_internal".into();
+    acc.meter(
+        &reserved,
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    assert_eq!(acc.unflushed(), (0, 0, 0));
+    acc.meter(
+        &identity(0),
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    acc.seal_if_aged(0);
+    assert!(acc.drain_sealed(0).is_empty());
+    assert_eq!(acc.unflushed(), (0, 0, 1));
+    assert_eq!(acc.drain_sealed(1).len(), 1);
+}
+
+#[test]
+fn positive_age_waits_for_the_window_and_zero_age_forces_sealing() {
+    let acc = accumulator();
+    acc.meter(
+        &identity(0),
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    acc.state.lock().unwrap().active.opened_ms = i64::MAX;
+    acc.seal_if_aged(1);
+    assert_eq!(acc.unflushed().0, 1);
+    assert_eq!(acc.unflushed().2, 0);
+    acc.seal_if_aged(0);
+    assert_eq!(acc.drain_sealed(1).len(), 1);
+    acc.meter(
+        &identity(1),
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    acc.state.lock().unwrap().active.opened_ms = 0;
+    acc.seal_if_aged(1);
+    assert_eq!(acc.drain_sealed(1).len(), 1);
+}
+
+#[test]
+fn repeated_observations_seal_at_the_estimated_byte_boundary() {
+    let acc = accumulator();
+    let mut id = identity(0);
+    id.stream_name.push('0'); // Align the initial estimate with the 8-byte updates.
+    acc.meter(
+        &id,
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    let estimate = acc.unflushed().1;
+    let remaining = super::READ_FLUSH_MAX_EST_BYTES - estimate;
+    assert_eq!(remaining % 8, 0);
+    for _ in 1..remaining / 8 {
+        acc.meter(
+            &id,
+            RowDelta {
+                read_operations: 1,
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(acc.unflushed(), (1, super::READ_FLUSH_MAX_EST_BYTES - 8, 0));
+    acc.meter(
+        &id,
+        RowDelta {
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    assert_eq!(acc.unflushed(), (0, 0, 1));
+    assert_eq!(acc.drain_sealed(1).len(), 1);
+}
