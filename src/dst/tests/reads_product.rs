@@ -63,11 +63,11 @@ async fn product_read_pages_and_binds_cursors() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 5);
     assert_eq!(h.get("prisma-up-to-date").map(String::as_str), Some("true"));
-    assert!(h.get("prisma-next-cursor").is_some());
-    assert!(h.get("prisma-sealed").is_none());
+    assert!(h.contains_key("prisma-next-cursor"));
+    assert!(!h.contains_key("prisma-sealed"));
     // The product surface never leaks protocol headers.
-    assert!(h.get("stream-next-offset").is_none(), "raw header leaked");
-    assert!(h.get("stream-up-to-date").is_none());
+    assert!(!h.contains_key("stream-next-offset"), "raw header leaked");
+    assert!(!h.contains_key("stream-up-to-date"));
 
     // Paginate with a small budget: exact reassembly, no dupes/gaps.
     let mut got = 0usize;
@@ -340,8 +340,8 @@ async fn product_long_poll_times_out_and_wakes() {
     )
     .await;
     assert_eq!(st, 204);
-    assert!(h.get("prisma-next-cursor").is_some());
-    assert!(h.get("stream-next-offset").is_none());
+    assert!(h.contains_key("prisma-next-cursor"));
+    assert!(!h.contains_key("stream-next-offset"));
 
     // Wake: a concurrent append answers the poll with the record.
     let path = format!("/v1/streams/lp/records:long-poll?routingKey=w&cursor={cursor}&waitMs=5000");
@@ -373,7 +373,7 @@ async fn product_long_poll_times_out_and_wakes() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 1);
     assert_eq!(recs[0]["n"], 1);
-    assert!(h.get("prisma-next-cursor").is_some());
+    assert!(h.contains_key("prisma-next-cursor"));
     engine_shutdown(&state).await;
 }
 
@@ -423,7 +423,7 @@ async fn product_scan_is_snapshot_exact() {
         h.get("prisma-scan-complete").map(String::as_str),
         Some("true")
     );
-    assert!(h.get("prisma-next-scan-cursor").is_none());
+    assert!(!h.contains_key("prisma-next-scan-cursor"));
     let items: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(items.len(), 4);
     let mut seen: Vec<(String, i64)> = items
