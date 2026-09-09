@@ -18231,13 +18231,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "730f5d2ea2c7b71c8524e103e8c7a7b2374ebca556e2af139a45cf81b2a3a453",
-      "item": "crate::FleetRepository::publish_heartbeat",
-      "lint": "unreachable_pub",
-      "path": "src/fleet/repository.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "843bd8d4b982636b643c5fb90691f0faf8c7223a0fb6027726c1361581a3943e",
       "item": "crate::FleetRepository::read_desired_state",
       "lint": "unreachable_pub",
@@ -18247,13 +18240,6 @@
       "count": 1,
       "fingerprint": "572b7fb72e5ca311df84e210d9d2817b69362515aae8c96692fe3d79e1735efe",
       "item": "crate::FleetRepository::read_heartbeat_set",
-      "lint": "unreachable_pub",
-      "path": "src/fleet/repository.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "65d067f1287f66a242c945fa621905b0a20bfc7db980a3d32522efc667ed6d36",
-      "item": "crate::FleetRepository::read_overrides",
       "lint": "unreachable_pub",
       "path": "src/fleet/repository.rs"
     },

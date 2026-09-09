@@ -47,7 +47,11 @@ impl FleetRepository {
 
     // -- this instance's own heartbeat ---------------------------------
 
-    pub async fn publish_heartbeat(&self, instance: &str, hb: &Heartbeat) -> anyhow::Result<()> {
+    pub(crate) async fn publish_heartbeat(
+        &self,
+        instance: &str,
+        hb: &Heartbeat,
+    ) -> anyhow::Result<()> {
         let Some(store) = self.store.as_ref() else {
             return Ok(());
         };
@@ -158,7 +162,9 @@ impl FleetRepository {
         }
     }
 
-    pub async fn read_overrides(&self) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
+    pub(crate) async fn read_overrides(
+        &self,
+    ) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
         match self.read_typed::<Overrides>(OVERRIDES_DOC).await? {
             Some((doc, version)) => {
                 validate_overrides(&doc)?;
