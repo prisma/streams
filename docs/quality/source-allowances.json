@@ -4868,13 +4868,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::persist_tests",
-      "path": "src/segmap.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/segmap.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
