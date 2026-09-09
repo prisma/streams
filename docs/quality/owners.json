@@ -231,6 +231,14 @@
       "path": "src/dst/tests/read_peer_compatibility.rs",
       "reason": "Exact wire-page JSON oracles for absent, finite and empty bounds; serde macro output is compiled and asserted by the protocol regression.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::main",
+      "path": "build.rs",
+      "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
+      "syntax": "std::env::var"
     }
   ]
 }
