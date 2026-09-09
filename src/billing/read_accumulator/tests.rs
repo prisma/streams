@@ -282,6 +282,10 @@ fn repeated_observations_seal_at_the_estimated_byte_boundary() {
         },
     );
     let estimate = acc.unflushed().1;
+    assert!(
+        estimate > 0,
+        "a nonempty active map must charge its identity"
+    );
     let remaining = super::READ_FLUSH_MAX_EST_BYTES - estimate;
     assert_eq!(remaining % 8, 0);
     for _ in 1..remaining / 8 {
