@@ -41,12 +41,12 @@ def check(sources=None, facts=None, prune=False):
                                     text=True, capture_output=True)
             if result.returncode == 0:
                 prior_lines[path] = len(result.stdout.splitlines())
-    registered = active.copy()
     entries = json.loads((ROOT / 'docs/quality/owners.json').read_text())['occurrences']
     for entry in entries:
         if not entry.get('reason'):
             problems.append(f'owner rationale missing: {entry}')
-    registered.update(rules.from_entries(entries))
+    # Overlapping registrations describe one ceiling, not additional sites.
+    registered = active | rules.from_entries(entries)
     architecture = json.loads((ROOT / 'docs/refactor/architecture-policy.json').read_text())
     problems.extend(rules.violations(sources, facts, before, prior_lines, registered, architecture))
     current = rules.inventory(facts)

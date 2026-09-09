@@ -1,5 +1,15 @@
 use super::source;
 
+#[test]
+fn visibility_facts_exclude_literals_comments_and_opaque_macro_tokens() {
+    let code = r#"pub struct A { pub(crate) field: u8 }
+        // pub fn ignored() {}
+        fn text() { let _ = "pub fn ignored() {}"; }
+        declare! { pub fn opaque() {} }
+    "#;
+    assert_eq!(values(code, "visibility"), ["pub", "pub (crate)"]);
+}
+
 fn values(code: &str, kind: &str) -> Vec<String> {
     source("src/example.rs", code)
         .unwrap()
@@ -137,4 +147,77 @@ fn conditional_attributes_are_inspected_on_every_branch() {
         values("#[cfg_attr(test)] fn malformed() {}", "unparsed-attribute").len(),
         1
     );
+}
+
+#[test]
+fn source_tokens_preserve_docs_literals_and_opaque_macro_bodies() {
+    let before =
+        "/// alpha\nfn f()->u8 { 1 } macro_rules! m { () => { #[cfg(test)] fn hidden(){} } }";
+    let parsed = source("src/example.rs", before).unwrap();
+    assert_ne!(
+        parsed.tokens,
+        source("src/example.rs", &before.replace("alpha", "beta"))
+            .unwrap()
+            .tokens
+    );
+    assert_ne!(
+        parsed.tokens,
+        source("src/example.rs", &before.replace("{ 1 }", "{ 2 }"))
+            .unwrap()
+            .tokens
+    );
+    assert_ne!(
+        parsed.tokens,
+        source("src/example.rs", &before.replace("hidden", "changed"))
+            .unwrap()
+            .tokens
+    );
+    assert_eq!(
+        parsed.tokens,
+        source("src/example.rs", &before.replace("fn f()", "fn  f ()"))
+            .unwrap()
+            .tokens
+    );
+}
+
+#[test]
+fn test_only_file_requires_a_real_file_level_test_cfg() {
+    assert!(
+        source("src/a.rs", "#![cfg(test)] fn f() {}")
+            .unwrap()
+            .test_only_file
+    );
+    for code in [
+        "fn f() {}",
+        "#![cfg(any(test, feature=\"live\"))] fn f() {}",
+        "mod tests { #![cfg(test)] fn f() {} } fn production() {}",
+        "unsafe extern \"C\" { #![cfg(test)] fn f(); } fn production() {}",
+    ] {
+        assert!(
+            !source("src/dst/tests/fake.rs", code)
+                .unwrap()
+                .test_only_file
+        );
+    }
+}
+
+#[test]
+fn explicit_item_cfg_belongs_to_the_item_header() {
+    let parsed = source(
+        "src/tests/fake.rs",
+        r#"
+        fn production()->u8 { #[cfg(test)] { return 1; } 2 }
+        #[cfg(test)] fn actual_test() {}
+        fn production_after_test() {}
+        #[cfg(any(test, feature="live"))] fn mixed() {}
+    "#,
+    )
+    .unwrap();
+    let marked: Vec<_> = parsed
+        .items
+        .iter()
+        .filter(|item| item.explicit_test_cfg)
+        .map(|item| item.qualified.as_str())
+        .collect();
+    assert_eq!(marked, ["crate::actual_test"]);
 }
