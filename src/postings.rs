@@ -610,7 +610,10 @@ pub(crate) fn plan_spans_iter(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        AbsRun, BUCKET_OFFSETS, GAP_UNKNOWN, PageBuilder, PlanCfg, PostingRun, RoutingKeyHash,
+        decode_page, decode_page_abs, encode_page, get_varint, plan_spans, put_varint,
+    };
 
     fn run(start: u64, count: u32, bytes: u64, gap_bytes: u64) -> AbsRun {
         AbsRun {
@@ -664,8 +667,7 @@ mod tests {
         assert_eq!(plan.spans.len(), cfg.max_spans, "span-bounded");
         assert!(!plan.complete, "honest partial past the span budget");
         assert_eq!(
-            plan.consumed_to,
-            runs[cfg.max_spans - 1].start + 1,
+            plan.consumed_to, 7_001,
             "cursor covers exactly the planned prefix"
         );
         for s in &plan.spans {
@@ -692,16 +694,19 @@ mod tests {
         };
         // One 32 MiB record: budget/record floor still allows exactly it.
         let plan = plan_spans(&[run(10, 1, 32 * 1024 * 1024, 0)], 11, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!((plan.spans[0].start, plan.spans[0].end), (10, 11));
+        let [span] = plan.spans.as_slice() else {
+            panic!("the oversized first record must produce exactly one span");
+        };
+        assert_eq!((span.start, span.end), (10, 11));
         assert!(!plan.complete);
         assert_eq!(plan.consumed_to, 11);
 
         // A 24 MiB contiguous run of 1 MiB records: ~16 records fit.
         let plan = plan_spans(&[run(0, 24, 24 * 1024 * 1024, 0)], 24, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!(plan.spans[0].start, 0);
-        assert_eq!(plan.spans[0].end, 16, "budget/per-record prefix");
+        let [span] = plan.spans.as_slice() else {
+            panic!("a bounded prefix must produce exactly one span");
+        };
+        assert_eq!((span.start, span.end), (0, 16), "budget/per-record prefix");
         assert!(!plan.complete);
         assert_eq!(plan.consumed_to, 16, "cursor advances to the prefix end");
     }
@@ -768,13 +773,15 @@ mod tests {
         assert_eq!(page.last_offset_exclusive, 1000 + 3 + 41 + 1);
         assert_eq!(page.matching_frame_bytes, 1028);
         let abs = decode_page_abs(1000, &v).unwrap();
-        assert_eq!(abs[0].start, 1000);
-        assert_eq!(abs[1].start, 1000 + 3 + 41);
+        assert_eq!(abs, [run(1000, 3, 900, 0), run(1044, 1, 128, 17_000)]);
         // Key/header disagreement = corruption.
         assert!(decode_page_abs(999, &v).is_none());
         // Header/runs disagreement = corruption.
-        let mut bad = v.clone();
-        bad[10] ^= 1; // perturb last_offset_exclusive
+        let mut bad = v;
+        let (_, [last_byte, ..]) = bad.split_at_mut(10) else {
+            panic!("the encoded page must contain its last-offset header");
+        };
+        *last_byte ^= 1; // perturb last_offset_exclusive
         assert!(decode_page(&bad).is_none());
     }
 
@@ -794,30 +801,32 @@ mod tests {
         b.note_frame(ka, edge, 100);
         let (pages, total) = b.finish();
         assert!(total > 0);
+        assert_eq!(pages.len(), 3, "two A buckets and one B bucket");
         let a_pages: Vec<_> = pages.iter().filter(|p| p.0 == ka).collect();
         assert_eq!(a_pages.len(), 2, "bucket edge must split the page");
         let p0 = a_pages.iter().find(|p| p.1 == 0).unwrap();
         let abs = decode_page_abs(p0.2, &p0.3).unwrap();
         // Runs for a in bucket 0: [10,12) at 10..11, [13,14), [edge-1,edge).
-        assert_eq!(abs[0].start, 10);
-        assert_eq!(abs[0].count, 2);
-        assert_eq!(abs[1].start, 13);
-        assert_eq!(abs[1].count, 1);
-        // The gap before run [13]: frame kb@12 (50 bytes) sits between.
-        assert_eq!(abs[1].gap_bytes_before, 50);
-        assert_eq!(abs[2].start, edge - 1);
+        // The gaps contain kb@12 (50 bytes) and kb@20 (60 bytes).
+        assert_eq!(
+            abs,
+            [
+                run(10, 2, 200, 0),
+                run(13, 1, 100, 50),
+                run(edge - 1, 1, 100, 60)
+            ]
+        );
         let p1 = a_pages.iter().find(|p| p.1 == 1).unwrap();
         let abs1 = decode_page_abs(p1.2, &p1.3).unwrap();
-        assert_eq!(abs1[0].start, edge);
-        assert_eq!(abs1[0].count, 1);
+        assert_eq!(abs1, [run(edge, 1, 100, 0)]);
 
         let b_pages: Vec<_> = pages.iter().filter(|p| p.0 == kb).collect();
-        assert_eq!(b_pages.len(), 1);
-        let abs_b = decode_page_abs(b_pages[0].2, &b_pages[0].3).unwrap();
-        assert_eq!(abs_b[0].start, 12);
-        assert_eq!(abs_b[1].start, 20);
+        let [b_page] = b_pages.as_slice() else {
+            panic!("B must occupy exactly one page");
+        };
+        let abs_b = decode_page_abs(b_page.2, &b_page.3).unwrap();
         // Gap before b@20: frame a@13 (100 bytes).
-        assert_eq!(abs_b[1].gap_bytes_before, 100);
+        assert_eq!(abs_b, [run(12, 1, 50, 0), run(20, 1, 60, 100)]);
     }
 
     #[test]
@@ -835,9 +844,11 @@ mod tests {
             },
         ];
         let plan = plan_spans(&runs, 40_000, &cfg);
-        assert_eq!(plan.spans.len(), 2, "unknown seams must open a new span");
-        assert_eq!(plan.spans[0].end, 6);
-        assert_eq!(plan.spans[1].start, 20_005);
+        let [first, second] = plan.spans.as_slice() else {
+            panic!("unknown seams must open a second span");
+        };
+        assert_eq!((first.start, first.end), (5, 6));
+        assert_eq!((second.start, second.end), (20_005, 20_006));
         // Truly contiguous across a seam still merges.
         let runs = vec![
             run(5, 1, 1_000, 0),
@@ -857,9 +868,10 @@ mod tests {
         let cfg = PlanCfg::default();
         // Two runs separated by a tiny gap coalesce into one span.
         let plan = plan_spans(&[run(0, 10, 4_000, 0), run(15, 5, 2_000, 1_000)], 100, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!(plan.spans[0].start, 0);
-        assert_eq!(plan.spans[0].end, 20);
+        let [span] = plan.spans.as_slice() else {
+            panic!("the cheap gap must coalesce into one span");
+        };
+        assert_eq!((span.start, span.end), (0, 20));
         assert!(plan.complete);
         assert_eq!(plan.consumed_to, 100, "match-free tail is consumed");
 
