@@ -408,3 +408,19 @@ async fn register_until_refused(supervisor: TaskSupervisor, alive: Arc<AtomicUsi
         tokio::task::yield_now().await;
     }
 }
+
+#[test]
+fn cancellation_refuses_poisoned_registration_state() {
+    let supervisor = TaskSupervisor::new();
+    let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _state = supervisor.inner.state.lock().unwrap();
+        panic!("registration interrupted while holding the phase lock");
+    }));
+    assert!(poison.is_err());
+    let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| supervisor.cancel()));
+    assert!(
+        cancelled.is_err(),
+        "poison cannot manufacture a completed cancellation"
+    );
+    assert!(!supervisor.cancellation().is_cancelled());
+}

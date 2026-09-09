@@ -8837,13 +8837,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d73c3abe64a4600fad1a07509e1de47d6b18c34c84958005553308d4020459a9",
-      "item": "crate::TaskSupervisor::cancel",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "137834f6fe95fc546b5385452dd2c65d199c35b095702506622a978243b4e94e",
       "item": "crate::TaskSupervisor::launch_shutdown",
       "lint": "clippy::let_underscore_must_use",
@@ -14117,13 +14110,6 @@
       "count": 1,
       "fingerprint": "c1924b5c21981568e0b2b4daeef02a037bc6f7e240f51a6f86c27151d9def0b5",
       "item": "crate::TaskMonitor::unready_reason",
-      "lint": "clippy::unwrap_used",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4d2b5f3cc14afae87e79e17583173f47f2ed63c2c98394eef9b144fc5b910733",
-      "item": "crate::TaskSupervisor::cancel",
       "lint": "clippy::unwrap_used",
       "path": "src/tasks.rs"
     },

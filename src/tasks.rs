@@ -364,6 +364,10 @@ impl TaskSupervisor {
     /// Request the ordered shutdown without waiting for it: the phase
     /// moves to `ShuttingDown` (no further spawns) and every loop sees
     /// cancellation. A signal handler's move; `shutdown` completes it.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TaskSupervisor cancellation; a poisoned phase may reflect incomplete registration; silent recovery could abandon a task outside the shutdown drain"
+    )]
     pub(crate) fn cancel(&self) {
         {
             let mut st = self.inner.state.lock().unwrap();
@@ -371,7 +375,7 @@ impl TaskSupervisor {
                 st.phase = Phase::ShuttingDown;
             }
         }
-        let _ = self.inner.cancel_tx.send(true);
+        self.inner.cancel_tx.send_replace(true);
     }
 }
 
