@@ -1248,13 +1248,6 @@
     },
     {
       "category": "effect",
-      "count": 2,
-      "owner": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "path": "src/dst/tests/livefeed_ownership.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 1,
       "owner": "crate::livefeed_pending_transition_connect_drives_resume",
       "path": "src/dst/tests/livefeed_ownership.rs",

@@ -2683,20 +2683,6 @@
       "path": "src/dst/tests/lifecycle_incarnation.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "1b0227e0b24c44254286dc41bb1533610fbeb0b27a3891ee96944d04cfccaffa",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2d4909697b79a87461987d1de244132d63a7aba3b4451127ce14a482009e2b5e",
-      "item": "crate::livefeed_pending_transition_connect_drives_resume",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "aabeba09b0cc032e84a4b017cbf08d8dde5fed5f76c13ff83999062fe8bfd739",
       "item": "crate::livefeed_split_held_publication_handoff_is_prompt",
@@ -4375,41 +4361,6 @@
       "item": "crate::livefeed_remote_sealed_predecessor_streams_through_owner",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/livefeed_history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4d79207de306f0e90d004b43c85dd89dbbef9df1d6ec4cc582197a16b7290114",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b2744b3aa0dc80947d2129a0fdb30e94cb507d1c58ba82ef05c3e9655788592b",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "be5ac81ccd9128fcff108df733973890bf63c7fc70a7275fc280ba2e7da7859d",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "44ba73cbae6569ff02850a3c160795c0b425aff843ebe260344570530a2b50e5",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "d338110c878143bc1aea4b0a421403b677db633dcab8b6796f80257924b84145",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/livefeed_ownership.rs"
     },
     {
       "count": 1,
@@ -8242,20 +8193,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6f272b0a7a85107705678acd158e2460538248a5d0b9403a3632c736c7672bb9",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "068f550a6d29fd208390b5ff10a0dc050e92b00660e2cf8485aa51df96f32fdc",
-      "item": "crate::livefeed_pending_transition_connect_drives_resume",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "3eabe4b5a9a67ca6dbd1330c4b7de32cc4e54aa9a18948d504b269d0fe9dbcb2",
       "item": "crate::livefeed_split_held_publication_handoff_is_prompt",
       "lint": "clippy::let_underscore_must_use",
@@ -10391,22 +10328,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "c76356a59130dc60ca8475223deaa80ba80264b2cf6330e048630696ae83d2a8",
-      "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
-      "lint": "clippy::too_many_lines",
-      "metric": 108,
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4357365aa959e6b9cac8bd05a20311c9ef8937f9bb99fc5f7785c87fb25d6545",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::too_many_lines",
-      "metric": 157,
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "9ab058a63fb36348cea04345590bee7c33ad11651a05fd43a2dee0169c89d12b",
       "item": "crate::cut_resume_never_skips_a_durable_record",
       "lint": "clippy::too_many_lines",
@@ -11473,41 +11394,6 @@
       "item": "crate::livefeed_remote_sealed_predecessor_streams_through_owner",
       "lint": "clippy::unnecessary_to_owned",
       "path": "src/dst/tests/livefeed_history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3407a1e58c2d1216eb88d0c0d190779ce41f5b8843c9b5419dc862a20eb29736",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "43110a60338a0d09a8ce3586edbcea3ec9bb2f6069f84417d0501c83c297fe88",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9be68a70df430b28226cdcae36071449054266c104b64c2e0c600e6de6c09ca8",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b1e058d17f5d572d4c006e80c67d504098ce15a54922ed1b9001fdd9d821fca5",
-      "item": "crate::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/livefeed_ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8577b9e16380622d09cb74c2cbb52391b9935ffb3f1aa65a7e75a681258716e9",
-      "item": "crate::livefeed_parked_live_session_is_cut_off_by_engine_close",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/livefeed_ownership.rs"
     },
     {
       "count": 1,

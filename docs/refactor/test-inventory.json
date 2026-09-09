@@ -2333,7 +2333,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7fb3477a7b6895b953df8823aca26eae5e3b6d4cf945bf25025b931900967816",
+    "function_sha256": "1e1dbf171d25285b0c2d151cbfc853b506ba8de3385ac6f0fc4eff36bd48edbe",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2668,7 +2668,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "467af92a934d4e5398ba973e5ce5ef623ec24d650919a283a2ac45a107fc7a42",
+    "function_sha256": "e9f4731f144a42a7aa04280be3326084fb130492bdc79663ec2f2e98f09fa04a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2690,7 +2690,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a5f470705e96e9fa202cac055195e1ed85af25a52245d87987d0647b283d1874",
+    "function_sha256": "ce39812c8750141b7a1ec572274d06e3403460ada4ccd86fddea451ee72df051",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2701,10 +2701,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "da6d8ecf83c3098119b606e84479a6cc4e8e5bb29f3225ef7ce38af1db811565",
+    "function_sha256": "8f893a4a2c57d043b078feb09943ffe89a069d65afc18eae93d6fbc82794fbbd",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::arm_scaler_before_publish(\"xpend\");",
+      "reason = \"orphaned transition regression; the split is deliberately aborted and joined at the publication failpoint; concurrent execution is needed to orphan a durable intent\"",
+      "wait_parked(crate::failpoints::Fp::ScalerBeforePublish, \"xpend\", 1).await;",
       "crate::failpoints::release_scaler_before_publish(\"xpend\");"
     ],
     "file": "src/dst/tests/livefeed_ownership.rs",
