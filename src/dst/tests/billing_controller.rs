@@ -1,7 +1,8 @@
 //! Bounded billing passes and cancellation at entered storage operations.
 
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq};
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::dst::{FaultPlan, FaultProfile, FaultStore, ObjClass, StoreOp};
 use std::sync::{Arc, atomic::Ordering};
@@ -24,7 +25,14 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
             },
         ),
     );
-    let (state, addr) = http_rig(catalog_store.clone()).await;
+    let rig = http_rig_build(
+        catalog_store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
+    let state = rig.state.clone();
+    let addr = rig.addr;
     assert_eq!(
         hreq(
             addr,
@@ -103,7 +111,7 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     }
     assert!(state.billing.drain_sealed_reads(1).is_empty());
     spool.close_for_tests().await;
-    engine_shutdown(&state).await;
+    rig.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -329,4 +337,55 @@ async fn r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt
     assert_eq!(published.as_ref(), expected);
     rollup.db.close().await.unwrap();
     engine_shutdown(&state).await;
+}
+
+/// The snapshot retirement helper cannot be a terminal boundary: a pending
+/// opener is absent from the snapshot. The real gate must retain that opener
+/// until it finishes, then close it without publishing a new resident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn billing_terminal_shutdown_waits_for_a_late_open() {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+
+    let park = Arc::new(tokio::sync::Mutex::new(()));
+    let held = park.lock().await;
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            open_park: Some(park.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    // Complete the worker milestone first, so the poll below observes only
+    // the pending shard open rather than scheduling the server cancellation.
+    let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
+    assert!(report.aborted.is_empty());
+    assert!(matches!(
+        rig.state.shards.open_or_wait("00", Duration::ZERO).await,
+        crate::sharddir::OpenOutcome::Wait { .. }
+    ));
+    assert_eq!(rig.state.shards.open_count(), 0);
+    let mut shutdown = std::pin::pin!(rig.shutdown());
+    let pending = shutdown
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_pending();
+    // Release even when the assertion fails, so the regression leaves no
+    // permanently held fixture operation behind.
+    drop(held);
+    assert!(
+        pending,
+        "terminal shutdown reported success before the held open finished"
+    );
+    shutdown.await;
+    assert_eq!(rig.state.shards.open_count(), 0);
+    assert!(matches!(
+        rig.state.shards.open_or_wait("00", Duration::ZERO).await,
+        crate::sharddir::OpenOutcome::Wait {
+            code: "shard_closing",
+            ..
+        }
+    ));
 }
