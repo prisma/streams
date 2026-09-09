@@ -1,17 +1,10 @@
 //! Stream lifetime vs observed outcome; reset refusal semantics.
 
-#![allow(unused_imports)]
-use std::sync::Arc;
-
+use super::super::{TraceOutcome, TraceStore};
+use super::{list_spy_with_one_object, mem, spy};
+use crate::dst::StoreOp;
 use object_store::path::Path as ObjPath;
-use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OsResult,
-};
-
-use super::super::{TraceEventKind, TraceOutcome, TraceStore};
-use super::*;
-use crate::dst::{ObjClass, StoreOp};
+use object_store::{ObjectStore, PutOptions, PutPayload};
 
 /// reset() refuses to run while an operation is in flight — the
 /// alternative is silent misattribution of the late completion.

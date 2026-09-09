@@ -2019,41 +2019,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/basic.rs",
-      "syntax": "allow (unused_imports)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/cancellation.rs",
-      "syntax": "allow (unused_imports)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/concurrency.rs",
-      "syntax": "allow (unused_imports)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/delete_accounting.rs",
-      "syntax": "allow (unused_imports)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/streams.rs",
-      "syntax": "allow (unused_imports)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::read_history2_keyed_cached",
       "path": "src/history.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -4548,41 +4513,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/deployment_bearer.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/basic.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/cancellation.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/concurrency.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/delete_accounting.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/dst/trace_store_tests/streams.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
