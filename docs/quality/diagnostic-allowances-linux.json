@@ -233,13 +233,6 @@
       "path": "src/dst/tests/runtime_sweep.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "bf3eba29444fbbe891bc3bb29d642f1867cd8b5c4d09cda891e2c93b4255f95c",
-      "item": "crate::shared_cell_certification_smoke",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "4726a4571dfdb78495ced8de54fa2f3b16bb3d76083e46a6132cbeb4fa571ab5",
       "item": "crate::TraceState::event",
@@ -2900,13 +2893,6 @@
       "path": "src/dst/tests/seal_recovery.rs"
     },
     {
-      "count": 1,
-      "fingerprint": "89e66e180cd1e4a98d4ed6bb5554ce38d1ca19e33ef22294acb6548eedb4e23e",
-      "item": "crate::shared_cell_certification_smoke",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
       "count": 2,
       "fingerprint": "381a7e5c1d5d5792ecd0a4e154940af63126ca25c5ff2c51ce8c6e51b62ea8bf",
       "item": "crate::noisy_neighbor_cannot_degrade_a_compliant_project",
@@ -4641,27 +4627,6 @@
       "item": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/seal_cancellation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0caa5335d800e76ca6f36ed0383c3bbe24264fe4314a0c3d2c9f8e098d5b6ce1",
-      "item": "crate::enforce_denials_journal_to_audit_events",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a6b18247b2314b87c90d405e3478b67087727cb3822d2804b6c7e49313f100e7",
-      "item": "crate::enforce_denials_journal_to_audit_events",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "badb9e1950c8f000434c6c275f9b33a4bb432dff86d770c1dece63373015c34d",
-      "item": "crate::enforce_denials_journal_to_audit_events",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_audit.rs"
     },
     {
       "count": 1,
@@ -8417,13 +8382,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "8c9240c2cccff474f34fa2768162a449bc46ba2f99fa93ab3e42043cd9a7a0bf",
-      "item": "crate::shared_cell_certification_smoke",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "03f3c6e89808820b65dcd4f69290904800396e7d8d2b64a801dd5745679302fd",
       "item": "crate::valid_transfer_bills_each_workspace_on_its_own_side",
       "lint": "clippy::let_underscore_must_use",
@@ -10690,22 +10648,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 118,
       "path": "src/dst/tests/seal_recovery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dcdc0d6230adb902cb8b12e71b81020b0c8984834f0eeb92f79d3ddf841174cb",
-      "item": "crate::enforce_denials_journal_to_audit_events",
-      "lint": "clippy::too_many_lines",
-      "metric": 246,
-      "path": "src/dst/tests/security_audit.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c85770e7ca87843a21b63fd5f0d1d9fa3f171843720bde7cdbfaa5c3597b81d5",
-      "item": "crate::shared_cell_certification_smoke",
-      "lint": "clippy::too_many_lines",
-      "metric": 251,
-      "path": "src/dst/tests/security_audit.rs"
     },
     {
       "count": 1,

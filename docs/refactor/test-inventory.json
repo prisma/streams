@@ -1228,6 +1228,17 @@
     ]
   },
   {
+    "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "628bfe78d6c8b43a057293ba8db270756eff9be0fdd78ea06f214b417f5a7a74",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_audit.rs",
+    "scenarios": []
+  },
+  {
     "name": "balanced_append_absorb_group_still_writes_progress",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -1788,7 +1799,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6342aee96dddcd85faef890b2d370a4ab63e485e9f5345ea0920ec7dbe4c1c98",
+    "function_sha256": "600040b46a05b12e83a40d0adab89a76ecfb0af8dd79210d4106c4140fe6b5f7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",
@@ -5103,7 +5114,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9512ae9bfb9e1aa59418201e99a6359854b6c450a33e1504ec1ab422126e096e",
+    "function_sha256": "06859f1db0435211312325dc1adefed577de4264a3a0fdfc5db9e97e404f76bc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",

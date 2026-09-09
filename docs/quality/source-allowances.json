@@ -2004,13 +2004,6 @@
     },
     {
       "category": "exception",
-      "count": 2,
-      "owner": "crate::shared_cell_certification_smoke",
-      "path": "src/dst/tests/security_audit.rs",
-      "syntax": "allow (non_snake_case)"
-    },
-    {
-      "category": "exception",
       "count": 1,
       "owner": "crate::TraceState::event",
       "path": "src/dst/trace_store.rs",
