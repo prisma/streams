@@ -231,6 +231,22 @@
       "path": "src/dst/tests/read_peer_compatibility.rs",
       "reason": "Exact wire-page JSON oracles for absent, finite and empty bounds; serde macro output is compiled and asserted by the protocol regression.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::queue",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "syntax": "path = \"../../../src/queue.rs\"",
+      "reason": "Queue key verification; compile the canonical codec and its generation tests directly; no copied key parser or substitute consumer types."
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/queue.rs",
+      "syntax": "proptest::proptest",
+      "reason": "Queue key properties; the pinned generator covers validated names and full-width generation/offset values; all cases execute the production codec."
     }
   ]
 }

@@ -38,3 +38,11 @@ mod tenant;
     reason = "invariant harness; compile actual batch budget and ownership tests together; unused service accessors remain private"
 )]
 mod application;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compile the actual queue key codec and generation tests; unrelated service state and commands remain internal"
+)]
+#[path = "../../../src/queue.rs"]
+mod queue;
