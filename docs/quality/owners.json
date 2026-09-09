@@ -239,6 +239,30 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::env",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot workload process configuration; this independent binary owns its explicit environment inputs for generators and measurement stores; no service configuration or credentials are inferred.",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::http_client",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot HTTP pool owner; the explicit nested path keeps the binary entry in place without creating an autodiscovered client binary; the module owns construction and renewal together.",
+      "syntax": "path = \"pilot/client.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::renewal_uses_a_new_connection_and_keeps_in_flight_clients_usable",
+      "path": "src/bin/pilot/client.rs",
+      "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
