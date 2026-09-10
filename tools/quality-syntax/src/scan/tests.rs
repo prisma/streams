@@ -221,3 +221,21 @@ fn explicit_item_cfg_belongs_to_the_item_header() {
         .collect();
     assert_eq!(marked, ["crate::actual_test"]);
 }
+
+#[test]
+fn signature_commas_are_distinct_from_tuple_and_expression_commas() {
+    let text = "fn f(x: (u8,),) { let y = (1,); } impl A { fn m(&self,) {} }";
+    let parsed = super::source("a.rs", text).unwrap();
+    let commas: Vec<_> = parsed
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == "parameter-trailing-comma")
+        .collect();
+    assert_eq!(commas.len(), 2);
+    assert_eq!(commas[0].qualified, "crate::f");
+    assert_eq!(commas[1].qualified, "crate::A::m");
+    for comma in commas {
+        assert_eq!(comma.location.line, 1);
+        assert_eq!(&text[comma.location.column..comma.location.end_column], ",");
+    }
+}

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from common import syntax
 from production_changes import normalized_source, unchanged_production
-from verification_plan import plan, source_changes
+from verification_plan import is_formatted_visibility, plan, source_changes
 
 
 class ProductionChanges(unittest.TestCase):
@@ -123,6 +123,86 @@ class ProductionChanges(unittest.TestCase):
         before = 'fn f(){}'
         self.assertTrue(self.unchanged(before, before + '#[cfg(test)] #[custom] mod tests {}'))
 
+    def test_trailing_test_module_keeps_opaque_production_inputs_fixed(self):
+        for prefix in ('#[derive(Clone)] struct A;\n',
+                       '#[async_trait::async_trait] trait A { async fn read(&self); }\n'):
+            tests = '#[cfg(test)] mod tests { #[test] fn old() {} }'
+            extracted = '#[cfg(test)] mod tests;'
+            with self.subTest(prefix=prefix):
+                self.assertTrue(self.unchanged(prefix + tests, prefix + extracted))
+                self.assertTrue(self.unchanged(prefix, prefix + tests))
+                self.assertTrue(self.unchanged(prefix + tests, prefix))
+                self.assertFalse(self.unchanged(prefix + tests, prefix.replace('A', 'B') + extracted))
+                self.assertFalse(self.unchanged(prefix + tests, '\n' + prefix + extracted))
+
+    def test_trailing_proof_cannot_erase_nested_macro_inputs_or_move_production(self):
+        before = '#[custom] mod owner { #[cfg(test)] mod tests { fn a(){} } }'
+        self.assertFalse(self.unchanged(before, before.replace('fn a()', 'fn b()')))
+        before = '#[cfg(test)] mod tests { fn a(){} }\n#[derive(Clone)] struct A;'
+        self.assertFalse(self.unchanged(before, before.replace('fn a(){}', 'fn longer(){}')))
+        prefix = '#[derive(Clone)] struct A;\n'
+        for guard in ('any(test, feature="live")', 'not(test)', 'feature="test"'):
+            self.assertFalse(self.unchanged(prefix, prefix + f'#[cfg({guard})] mod tests;'))
+        self.assertFalse(self.unchanged(prefix, prefix + '#[cfg_attr(test, cfg(test))] mod tests;'))
+
+    def test_inner_custom_attribute_can_observe_the_entire_test_suffix(self):
+        for attribute in ('custom::instrument', 'cfg_attr(feature="live", custom::instrument)'):
+            prefix = '#![' + attribute + ']\n#[derive(Clone)] struct A;\n'
+            self.assertFalse(self.unchanged(prefix, prefix + '#[cfg(test)] mod tests;'))
+
+    def test_trailing_test_proof_retains_source_introspection_checks(self):
+        for expression in ('include!("body.rs")', 'include_str!("body.rs")',
+                           'include_bytes!("body.rs")', 'line!()', 'column!()', 'file!()',
+                           'format!("{}", line!())'):
+            before = '#[derive(Clone)] struct A; fn f() { let _ = ' + expression + '; }\n'
+            self.assertFalse(self.unchanged(before, before + '#[cfg(test)] mod tests;'))
+        for prefix in ('use std::include_str as source; fn f() { let _ = source!("body.rs"); }\n',
+                       'macro_rules! source { () => { include_str!("body.rs") } }\n'):
+            self.assertFalse(self.unchanged(prefix, prefix + '#[cfg(test)] mod tests;'))
+
+    def test_formatted_visibility_keeps_other_runtime_checks(self):
+        before = 'struct Reader; impl Reader { pub fn read(&self)->u8 { 1 } }\n#[derive(Clone)] struct A;'
+        after = 'struct Reader; impl Reader { pub(crate) fn read(\n &self,\n)->u8 { 1 } }\n#[derive(Clone)] struct A;'
+        path = 'src/fleet/repository.rs'
+        old, new = syntax({path: before})[path], syntax({path: after})[path]
+        self.assertTrue(is_formatted_visibility(before, after, old, new))
+        self.assertFalse(self.unchanged(before, after, path))
+        checks = plan([path], formatted_visibility=[path])
+        self.assertTrue(checks['compiler'])
+        self.assertTrue(checks['miri'])
+        self.assertFalse(checks['mutants'])
+        self.assertEqual(checks['production_unchanged_files'], [])
+        self.assertTrue(plan([path, 'src/shard.rs'], formatted_visibility=[path])['mutants'])
+        after = after.replace('{ 1 }', '{ 2 }')
+        self.assertFalse(is_formatted_visibility(before, after, old, syntax({path: after})[path]))
+
+    def test_formatted_visibility_rejects_opaque_inputs_and_source_introspection(self):
+        for before in ('#[custom] pub fn f()->u8 { 1 }',
+                       '#[derive(Custom)] pub struct A;',
+                       '#[custom] mod owner { pub fn f(){} }',
+                       '#![custom] pub fn f(){}',
+                       'pub fn f(){ let _ = line!(); }',
+                       'use std::include_str as source; pub fn f(){ let _ = source!("a"); }',
+                       'macro_rules! m { () => { 1 } } pub fn f(){}'):
+            after = before.replace('pub ', 'pub(crate)\n')
+            old, new = syntax({'f.rs': before})['f.rs'], syntax({'f.rs': after})['f.rs']
+            with self.subTest(source=before):
+                self.assertFalse(is_formatted_visibility(before, after, old, new))
+        before = 'pub fn f()->&\'static str { "<visibility>" }'
+        after = 'pub(crate)\nfn f()->&\'static str { "pub" }'
+        self.assertFalse(is_formatted_visibility(before, after, syntax({'f.rs': before})['f.rs'], syntax({'f.rs': after})['f.rs']))
+
+    def test_formatted_visibility_never_erases_other_commas(self):
+        for before, after in (
+            ('pub fn f(x: (u8,)) {}', 'pub(crate) fn f(x: (u8),) {}'),
+            ('pub fn f(){ let x = (1,); }', 'pub(crate) fn f() { let x = (1); }'),
+            ('pub fn f(){} #[custom] fn g(x: u8){}',
+             'pub(crate) fn f(){} #[custom] fn g(x: u8,){}'),
+        ):
+            with self.subTest(source=before):
+                self.assertFalse(is_formatted_visibility(before, after,
+                    syntax({'f.rs': before})['f.rs'], syntax({'f.rs': after})['f.rs']))
+
     def test_actual_git_base_accounts_for_new_deleted_and_changed_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -146,11 +226,11 @@ class ProductionChanges(unittest.TestCase):
             (root / 'src/tasks/old_tests.rs').unlink()
             paths = ['src/tasks.rs', 'src/tasks/old_tests.rs', 'src/tasks/new_tests.rs', 'src/tasks/misnamed_tests.rs']
             with patch('verification_plan.ROOT', root):
-                _, unchanged = source_changes(base, paths)
+                _, unchanged, _ = source_changes(base, paths)
                 self.assertEqual(set(unchanged), set(paths) - {'src/tasks/misnamed_tests.rs'})
                 self.assertTrue(plan(paths, production_unchanged=unchanged)['mutants'])
                 write('src/tasks.rs', 'pub(crate) fn f()->u8 { Some(2).unwrap() }')
-                _, unchanged = source_changes(base, paths)
+                _, unchanged, _ = source_changes(base, paths)
                 self.assertNotIn('src/tasks.rs', unchanged)
 
     def test_opaque_templates_cannot_prove_an_unchanged_implementation(self):
