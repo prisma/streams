@@ -990,27 +990,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "02254e4f7fa2f7bdd58245044ab7e7a67ca9601c0ab56bf172b6ae11e2cc47fa",
-      "item": "crate::bench",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ae192c33cad7f7535dea3370dd03b0da6965cc91c64ec0197f839f0d70365c61",
-      "item": "crate::bench",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "baaf259cb5fcf0cb04e7943e4c2850131af18551dacb1067c5b013e1830fc66d",
-      "item": "crate::bench",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "a2f0080478e4d12b700d53c095c8f8e850d18d143fa7eb14d745fb285aaa271e",
       "item": "crate::generator",
       "lint": "clippy::cast_possible_truncation",
@@ -2233,34 +2212,6 @@
       "item": "crate::main",
       "lint": "clippy::disallowed_methods",
       "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "26548161f6f29d30b1f0e086e7b702556c421978f2b4b4df79cf3f1766755015",
-      "item": "crate::bench",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bdd58c88c221f2fd437506ba66ebe7851348196dd052a4ea740063914e6d607",
-      "item": "crate::bench",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8451260f119cf46c01779731c528bbd0131fe3178b83ef19dea5bf0600fe09a2",
-      "item": "crate::bench",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "bab87c8c40fe0b0d53b46b462f0b764a8cd2c26120a6a6cd57023e68bf581c9c",
-      "item": "crate::bench",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/pilot.rs"
     },
     {
       "count": 4,
@@ -3822,111 +3773,6 @@
       "item": "crate::main",
       "lint": "clippy::excessive_nesting",
       "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "14bd1b4c4b98487e776e79ffc07325759e055b96a86bed5f72b1409a20b7b7fa",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "15cb86c149ac2317e0718bc6b8cc7b1c17cf22e8439f22f4ca482299341c74ca",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "1cbe0c3fefd2d09d17d8ee5460e357ca447e787d5cfd908808a4584f00a31d74",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2dcb24e7c8f9950b80a1302a713cf068dfe5e3fd1eff446d6f9a5d5610810eca",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3257a973223f7c5c958743863a919d9185fb41958c20f7c726ce93843ed695cd",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3416a0c370333e8319dccb339795aebbb1c2c9f01aa2f8c6832234d3d2673585",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "61e4a1d64937f364e48e699e17b1ed5670bbfbe900f708d7cffde799c4076fb7",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7e44c343c0cd1f4b7956f7cf20753b9c52e76a4a6481af8305eb1beab5992fd2",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7ed55089ddddfd6a9ef5d40d9f6696449ed643023e566a47eeb9a1421ae7ec60",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "97b371790521ea87d6cdd67c6021b62364ebed4d41e56ec33db51fc1d661fedc",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9adea9aa543c547af11a213eeaee5e531eeba30b6dfbfbd4888372fdb3b3aff9",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a6bbd87ee8240a71cdfa07164247dfaabc11a16c62bdf094cbfd5112a6c3d95e",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a9f2c2ccdb8cf72a41451d8685ed7ddc3447fa502b29809297e1476e4efe5e4c",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b258ba507dad9b39836c234e6c5e15c4679aad50a1931eef4b79a0f53dd65a6c",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b7f49b4d96017636fc15af28a290acaf93a468748f4b5209ea209e5ddb752934",
-      "item": "crate::bench",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/pilot.rs"
     },
     {
       "count": 1,
@@ -6926,27 +6772,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "9ea67aa94028df9fb2cf61735c2be496820ccc546ce9e8e5c1549cf155683d49",
-      "item": "crate::bench",
-      "lint": "clippy::expect_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "acee214b5bef5a9c1df06d0df83707a77829ff5ff0788ca21256409c38ce604d",
-      "item": "crate::bench",
-      "lint": "clippy::expect_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e84baa4a7888220bf4fa141e05361a857bfdc8d1286fd973202b08f55f2dc011",
-      "item": "crate::bench",
-      "lint": "clippy::expect_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "1f34d7f33a0440890d5be10d04bfc0f83c36560c4c3212dcf33c1a821b30b553",
       "item": "crate::generator",
       "lint": "clippy::expect_used",
@@ -8001,20 +7826,6 @@
       "item": "crate::main",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c75f7da15901abf197c56c8eebd35654e1c3938a7ad41e1eb379601650b79663",
-      "item": "crate::bench",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e8f76f761749ec53557e6c132731e641e876ef724eb1e907507dd654015fdea2",
-      "item": "crate::bench",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bin/pilot.rs"
     },
     {
       "count": 1,
@@ -9960,14 +9771,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f8d0ad1fc07fd59e0b61a792b52e4d85f5dc5972c4cede7d9c993e56652c46da",
-      "item": "crate::bench",
-      "lint": "clippy::too_many_lines",
-      "metric": 324,
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2317554c9c97be9b4eceeca3b8350da72e6d58ced12fd6088010a8a9790ac5a3",
       "item": "crate::generator",
       "lint": "clippy::too_many_lines",
@@ -11899,76 +11702,6 @@
       "item": "crate::main",
       "lint": "clippy::unwrap_used",
       "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "58861fdd5919dba03115a316cc9997c119222bf8c0b6c898ed908508414b7c66",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "805fe1417d79a013dcd7d9c1baeacfe8f219eb22317c37228f200d38159a4ba8",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8ad169b8bb1a8f19cf46326099bef4538ba6a903720df4d3925745f4e55a96d9",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9a984d1df2f2af4866f5ab74cff7bf1722926882b727b52270289eccbcada347",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9eee09c63faa8702bf07e814c5c4ec925e9467b461bc36aadf7181f2d9458f71",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b5984d84cbb8e44c193bc6675a951f6935d09689fc7b748aed92bcd175737a35",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cb73ab1c26e629dbe37842d05b8e9d10d124f6cd637091880525bb2e07178b55",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cca734701eac0fb974f190afea265edb4203e0701c6d7a2b8780fbe246020a79",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d7b10ee71d67026c1afafc661afc4daad9fde838e574a2403cacbb2fe8fe0475",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d7ea520d05f7f584507609ff9cc9cc4a5926656208d877c92b69a36529c5aedc",
-      "item": "crate::bench",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/pilot.rs"
     },
     {
       "count": 1,
@@ -24072,13 +23805,6 @@
       "item": "crate::shard_lag_all",
       "lint": "unreachable_pub",
       "path": "src/usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3afbb78ee9ac7c74e132802af00e08f0caad04490bd74071eb11d4089fdf5c4a",
-      "item": "crate::bench",
-      "lint": "unused_assignments",
-      "path": "src/bin/pilot.rs"
     }
   ]
 }

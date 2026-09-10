@@ -45,6 +45,12 @@ class Triggers(unittest.TestCase):
             self.assertTrue(checks['compiler'])
             self.assertFalse(checks['mutants'])  # No changed production mutation scope.
 
+    def test_pilot_benchmark_changes_select_lifecycle_and_mutations(self):
+        for path in ('src/bin/pilot/benchmark.rs', 'src/bin/pilot/benchmark/window.rs', 'src/bin/pilot/benchmark/config.rs'):
+            checks = plan([path])
+            self.assertTrue(checks['loom'])
+            self.assertTrue(checks['mutants'])
+
     def test_trigger_controls(self):
         self.assertFalse(plan(['README.md'])['mutants'])
         self.assertTrue(plan(['src/postings/validated.rs'])['properties_fuzz'])

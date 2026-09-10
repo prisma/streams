@@ -295,6 +295,142 @@
       "path": "src/bin/pilot/proxy.rs",
       "reason": "Pilot proxy has one canonical retryable-unavailable JSON body for both transport and unmarked platform responses; compiler checks serialization expansion.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot.rs",
+      "owner": "crate::benchmark",
+      "syntax": "path = \"pilot/benchmark.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::config",
+      "syntax": "path = \"benchmark/config.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::tests",
+      "syntax": "path = \"benchmark/tests.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::window",
+      "syntax": "path = \"benchmark/window.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::Http::new",
+      "syntax": "tokio::spawn",
+      "count": 1,
+      "reason": "Pilot benchmark HTTP fixture; its server handle is retained, aborted and joined by close; real held responses exercise point drain and request contracts."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::serve",
+      "syntax": "tokio::pin",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::serve",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::wait",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Workload::worker",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::app",
+      "syntax": "serde_json::json",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::row",
+      "syntax": "serde_json::json",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
+      "syntax": "tokio::pin",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
+      "syntax": "tokio::select",
+      "count": 2,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::point_freezes_before_drain_and_joins_held_requests_before_next_point",
+      "syntax": "tokio::select",
+      "count": 5,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::requests_preserve_credentials_bodies_and_count_all_http_outcomes",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::launch",
+      "syntax": "tokio::task::JoinSet::spawn",
+      "count": 1,
+      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::worker_panic_fails_the_sweep_and_joins_all_siblings",
+      "syntax": "tokio::task::JoinSet::spawn",
+      "count": 2,
+      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
     }
   ]
 }
