@@ -3467,13 +3467,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::proxy",
-      "path": "src/bin/pilot.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::handle",
       "path": "src/bin/s3lite.rs",

@@ -263,6 +263,38 @@
       "path": "src/bin/pilot/client.rs",
       "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::routing",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot routing and HTTP forwarding are one canonical owner; the explicit binary module path keeps transport handling separate from workload orchestration.",
+      "syntax": "path = \"pilot/proxy.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy tests use real loopback upstreams and explicit routing snapshots; compiler checks the binary test-module path.",
+      "syntax": "path = \"proxy/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/proxy/tests.rs",
+      "reason": "The HTTP fixture jointly drives its upstream server and client case; unwind capture signals graceful shutdown before the joined fixture returns.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::unavailable",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy has one canonical retryable-unavailable JSON body for both transport and unmarked platform responses; compiler checks serialization expansion.",
+      "syntax": "serde_json::json"
     }
   ]
 }
