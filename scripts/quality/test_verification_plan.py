@@ -45,6 +45,13 @@ class Triggers(unittest.TestCase):
             self.assertTrue(checks['compiler'])
             self.assertFalse(checks['mutants'])  # No changed production mutation scope.
 
+    def test_generator_terminal_owner_selects_loom_and_mutations(self):
+        for path in ('src/bin/pilot/generator.rs', 'src/bin/pilot/generator/membership.rs'):
+            self.assertTrue(plan([path])['loom'])
+            self.assertTrue(plan([path])['mutants'])
+            self.assertFalse(plan([path], production_unchanged=[path])['mutants'])
+        self.assertFalse(plan(['src/bin/pilot/proxy.rs'])['mutants'])
+
     def test_trigger_controls(self):
         self.assertFalse(plan(['README.md'])['mutants'])
         self.assertTrue(plan(['src/postings/validated.rs'])['properties_fuzz'])

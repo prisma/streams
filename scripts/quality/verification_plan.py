@@ -16,7 +16,7 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
     codec_prefixes = ('src/crypto', 'src/postings', 'src/application/read_', 'src/shard/record')
-    lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse')
+    lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse', 'src/bin/pilot/generator')
     buffer_prefixes = ('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')
     codec = any(p.startswith(codec_prefixes) for p in implementation)
     lifecycle = any(p.startswith(lifecycle_prefixes) for p in implementation)
