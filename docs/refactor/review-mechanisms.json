@@ -918,8 +918,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "7a349763f34eaaf750647c546ddcbabcbbe220ce7f2cd886f5c929ffa24eb2d9",
-      "after_sha256": "b16daf456f4292f566dc4e30b79f03c913057fd0f1711dea0336b8cc9d403291",
-      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling."
+      "after_sha256": "1faf886fde5b821f9f7f43d5a5827ac898d7dcacd2c6cb164fbdbc5c79c36f8b",
+      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -927,8 +927,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
-      "after_sha256": "79a759dbdd1a643b0a86c4739bdc1c05157ea216c67668e2cb5fca7aece8dffd",
-      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged."
+      "after_sha256": "feabf4c845dba6a83583dbf1639d81549cc347e4fc829f237afdb61e748c055f",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
