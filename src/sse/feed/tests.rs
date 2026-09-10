@@ -577,7 +577,7 @@ async fn driver_permit_releases_exactly_once() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(1, 8, 4096, &budget);
     feed.fp_name.set("permit-once".into()).unwrap();
-    let release = fixture::PermitReleaseGuard;
+    let release = PermitReleaseGuard;
     crate::failpoints::arm(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
     // A: drives one record, releases the permit, parks at the hook.
     let feed_a = feed.clone();
@@ -900,5 +900,13 @@ fn outcome_name(o: &Option<DriveOutcome>) -> &'static str {
         Some(DriveOutcome::SourceFailed) => "SourceFailed",
         Some(DriveOutcome::Cancelled) => "Cancelled",
         None => "Contended",
+    }
+}
+
+/// Releases the permit fixture's named hold even when its assertions unwind.
+struct PermitReleaseGuard;
+impl Drop for PermitReleaseGuard {
+    fn drop(&mut self) {
+        crate::failpoints::release(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
     }
 }

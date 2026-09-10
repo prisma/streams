@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use super::*;
 
 pub(super) async fn hold_until_release(
@@ -81,13 +79,5 @@ fn fake_source_release_cannot_race_started_signal() {
                 .is_ready(),
             "release must survive the started signal (next_source={next_source})"
         );
-    }
-}
-
-/// Releases the permit fixture's named hold even when its assertions unwind.
-pub(super) struct PermitReleaseGuard;
-impl Drop for PermitReleaseGuard {
-    fn drop(&mut self) {
-        crate::failpoints::release(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
     }
 }
