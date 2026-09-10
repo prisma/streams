@@ -1,9 +1,7 @@
 //! Admission maintenance.
 
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::{
-    HttpRigOptions, http_rig, http_rig_build, http_rig_named, http_rig_opts,
-};
+use super::fixture_http::{HttpRigOptions, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, open_engine, skey};
@@ -173,16 +171,61 @@ fn reserved_system_streams_are_recognized() {
 // product split children, ownership replay, open-time restoration, and
 // the reserved-stream skip — through real HTTP against real engines.
 
-/// Inflate an engine's published ledger far over the default per-shard
-/// bound (256 MiB) so its latch engages on the next admission check.
-/// Per-engine state: no other test's engine is affected.
-fn inflate_ledger(engine: &crate::shard::ShardEngine) {
-    engine.publish_maintenance(crate::shard::ShardMaintenance {
-        version: 1,
-        unabsorbed_frame_bytes: 300 * 1024 * 1024,
-        backlog_started_ms: 1,
-        last_progress_ms: 1,
-    });
+const BACKLOG_LIMIT: u64 = 1024;
+
+/// The HTTP routes use the real configured maintenance bound. Absorption is
+/// paused only while arranging real acknowledged records, never by replacing
+/// the ledger that the committer and absorber must reconcile.
+async fn backlog_rig(
+    mut options: HttpRigOptions,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    let mut admission = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    )
+    .admission;
+    admission.unabsorbed_bytes_shard = BACKLOG_LIMIT;
+    options.admission = Some(admission);
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    rig.state
+        .runtime
+        .history
+        .paused
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    rig.parts()
+}
+
+async fn append_raw_backlog(addr: std::net::SocketAddr, name: &str) {
+    let body = format!("[{{\"padding\":\"{}\"}}]", "x".repeat(2048));
+    let (status, _, body) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &[("content-type", "application/json")],
+        body.as_bytes(),
+    )
+    .await;
+    assert!(
+        status == 200 || status == 204,
+        "backlog append failed: {status} {body:?}"
+    );
+}
+
+async fn drain_backlog(state: &crate::http::AppState, engine: &crate::shard::ShardEngine) {
+    state
+        .runtime
+        .history
+        .paused
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while engine.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT * 75 / 100 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "real absorption did not release backlog: {:?}",
+            engine.maintenance_snapshot()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }
 
 /// R26-5a: a RAW append to a hierarchical wildcard name receives the
@@ -190,8 +233,7 @@ fn inflate_ledger(engine: &crate::shard::ShardEngine) {
 /// while reads stay admitted, and recovery readmits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
+    let (state, addr) = backlog_rig(HttpRigOptions::default()).await;
     let ct = [("content-type", "application/json")];
     let name = "acme/prod/orders";
     let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
@@ -220,7 +262,8 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
         .engine_for_scaler(&seg.shard_route)
         .await
         .expect("engine");
-    inflate_ledger(&engine);
+    append_raw_backlog(addr, name).await;
+    assert!(engine.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT);
     let (st, hdrs, body) = hreq(
         addr,
         "POST",
@@ -244,7 +287,7 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
     let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(st, 200, "reads must not shed");
 
-    engine.publish_maintenance(crate::shard::ShardMaintenance::default());
+    drain_backlog(&state, &engine).await;
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -263,15 +306,21 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
 /// ONLY child A's keys; the sibling child keeps accepting. The per-shard
 /// latch is the multitenant failure boundary — through the product
 /// append route, not admit() called by hand.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn split_child_sheds_while_sibling_child_admits() {
-    let _l = gap_lock().lock().await;
-    let store = mem();
-    let (state, addr) = http_rig_opts(
-        store,
-        vec!["00".into(), "01".into(), "02".into(), "03".into()],
-        crate::shard::ShardConfig::default(),
-    )
+struct AdmissionChild {
+    key: &'static str,
+    engine: Arc<crate::shard::ShardEngine>,
+}
+struct SplitAdmission {
+    state: Arc<crate::http::AppState>,
+    addr: std::net::SocketAddr,
+    first: AdmissionChild,
+    second: AdmissionChild,
+}
+async fn split_admission() -> SplitAdmission {
+    let (state, addr) = backlog_rig(HttpRigOptions {
+        prefixes: vec!["00".into(), "01".into(), "02".into(), "03".into()],
+        ..Default::default()
+    })
     .await;
     let (st, _, _) = hreq(
         addr,
@@ -337,7 +386,53 @@ async fn split_child_sheds_while_sibling_child_admits() {
     };
     let (ka, kb) = (key_for(r0), key_for(r1));
 
-    inflate_ledger(&e0);
+    SplitAdmission {
+        state,
+        addr,
+        first: AdmissionChild {
+            key: ka,
+            engine: e0,
+        },
+        second: AdmissionChild {
+            key: kb,
+            engine: e1,
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_child_sheds_while_sibling_child_admits() {
+    let _l = gap_lock().lock().await;
+    let SplitAdmission {
+        state,
+        addr,
+        first: AdmissionChild {
+            key: ka,
+            engine: e0,
+        },
+        second: AdmissionChild {
+            key: kb,
+            engine: e1,
+        },
+    } = split_admission().await;
+    let body = format!("{{\"k\":\"{ka}\",\"padding\":\"{}\"}}", "x".repeat(2048));
+    let (st, _, response_body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shed-split/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", ka),
+        ],
+        body.as_bytes(),
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "backlog append failed: {st} {response_body:?}"
+    );
+    assert!(e0.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT);
+    assert!(e1.maintenance_snapshot().unabsorbed_frame_bytes < BACKLOG_LIMIT);
     let (st, _, body) = preq(
         addr,
         "POST",
@@ -370,8 +465,8 @@ async fn split_child_sheds_while_sibling_child_admits() {
         "sibling child must keep admitting, got {st}"
     );
 
-    e0.publish_maintenance(crate::shard::ShardMaintenance::default());
-    let (st, _, _) = preq(
+    drain_backlog(&state, &e0).await;
+    let (st, _, body) = preq(
         addr,
         "POST",
         "/v1/streams/shed-split/records",
@@ -384,7 +479,9 @@ async fn split_child_sheds_while_sibling_child_admits() {
     .await;
     assert!(
         st == 200 || st == 204,
-        "drained child must readmit, got {st}"
+        "drained child must readmit, got {st}: {}; maintenance={:?}",
+        String::from_utf8_lossy(&body),
+        e0.maintenance_snapshot()
     );
 }
 
@@ -395,8 +492,11 @@ async fn split_child_sheds_while_sibling_child_admits() {
 /// precisely for this; here is the route-level proof.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ownership_replay_wins_over_a_latched_local_engine() {
-    let store = mem();
-    let (state, addr) = http_rig_named(store, "inst-a").await;
+    let (state, addr) = backlog_rig(HttpRigOptions {
+        instance: Some("inst-a".into()),
+        ..Default::default()
+    })
+    .await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay-x", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -416,7 +516,8 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
         .engine_for_scaler(&seg.shard_route)
         .await
         .expect("engine");
-    inflate_ledger(&engine);
+    append_raw_backlog(addr, name).await;
+    assert!(engine.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT);
     let (st, _, body) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":2}]"#).await;
     assert_eq!(st, 503);
     assert!(String::from_utf8_lossy(&body).contains("maintenance_backpressure"));
@@ -500,6 +601,10 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     let park = Arc::new(tokio::sync::Mutex::new(()));
     let held = park.clone().lock_owned().await;
     let (_state2, addr2) = http_rig_park(store, park.clone(), RigRuntime::incarnation(1)).await;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Restoration fixture owns its blocked HTTP request; the handle is retained and joined after releasing the opener; synchronous execution cannot verify that the request stays pending"
+    )]
     let req = tokio::spawn(async move {
         hreq(addr2, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":2}]"#).await
     });
@@ -524,8 +629,7 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
 /// append_core as everything else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reserved_streams_append_through_a_latched_engine() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
+    let (state, addr) = backlog_rig(HttpRigOptions::default()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cust-r", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -544,7 +648,8 @@ async fn reserved_streams_append_through_a_latched_engine() {
         .engine_for_scaler(&seg.shard_route)
         .await
         .expect("engine");
-    inflate_ledger(&engine);
+    append_raw_backlog(addr, name).await;
+    assert!(engine.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT);
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/cust-r", &ct, br#"[{"n":2}]"#).await;
     assert_eq!(st, 503, "customer stream on the latched engine must shed");
 

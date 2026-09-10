@@ -2348,13 +2348,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "27bd863f5874a493ae97541f4bf12417801d243c830195364cda34d8e89ff6eb",
-      "item": "crate::first_request_waits_for_restoration_then_sees_the_restored_ledger",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/admission_maintenance.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "790293d4e5108f4ace7fa35bf8936ae9e59c0c4337a9a063ac8502bd47a9c1fc",
       "item": "crate::balanced_append_absorb_group_still_writes_progress",
       "lint": "clippy::disallowed_methods",
@@ -10015,14 +10008,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "864f2826c37ff400c02d1833e3be6e73ac49ec4a22ebde7072cd7e8051347195",
-      "item": "crate::split_child_sheds_while_sibling_child_admits",
-      "lint": "clippy::too_many_lines",
-      "metric": 118,
-      "path": "src/dst/tests/admission_maintenance.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4b361d0eb9496ec6d8645b9c70e03c3944b4d6f16de488ef9fee12e688664d41",
       "item": "crate::pm_enforce_rig",
       "lint": "clippy::too_many_lines",
@@ -10242,7 +10227,7 @@
       "fingerprint": "889e1d2a055667775c467c2b9d0380723ba288f78e6767ebc567fed96ba7c1ca",
       "item": "crate::http_rig_build",
       "lint": "clippy::too_many_lines",
-      "metric": 173,
+      "metric": 162,
       "path": "src/dst/tests/fixture_http.rs"
     },
     {
