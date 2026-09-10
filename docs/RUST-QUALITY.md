@@ -53,6 +53,46 @@ Splitting a transaction into context-heavy helpers, hiding flags in options bags
 
 ## Verification selected by the changed invariant
 
+The planner records `visibility_only_files` when the only changes narrow parsed
+`pub` visibility to `pub(crate)`, `pub(super)` or `pub(self)` and every other
+source character matches. It separately records `production_unchanged_files`
+when parsed production tokens match after removing direct lint `allow`/`expect`
+annotations and items with their own explicit `#[cfg(test)]` attribute. Entire
+files require an actual `#![cfg(test)]`; filenames and enclosing function names
+are not proof. Visibility may only narrow as above. Compiler, source, dependency
+and ordinary test jobs remain mandatory for both classifications.
+
+The second comparison preserves signatures, expressions, literal spellings,
+documentation attributes, configuration and macro tokens. Opaque item macros,
+custom attributes/derives and source-introspection macros retain checks. Mixed
+or indirect configuration is not erased. Parsed statement attributes cannot
+mark their containing function as test-only. Unknown syntax or a failed Git or
+parser read cannot establish unchanged production source. Executable positive
+and negative controls cover these boundaries in the planner test suite.
+
+A separate, stricter byte comparison may remove only trailing root items with
+an explicit `#[cfg(test)]` while preserving the entire production prefix and
+all its item locations. Unchanged custom attributes and derives are eligible
+only under this proof: their complete input bytes and spans remain fixed.
+Nested test items inside a production macro input cannot use this exception.
+Custom crate-level inner attributes, opaque item macros and source-introspection
+macros still retain checks.
+
+The planner separately records `formatted_visibility_files` for narrowed
+visibility plus token-preserving formatting, including parser-identified
+trailing parameter commas on the narrowed functions. This does **not** prove
+unchanged macro expansion: unrelated derive spans may move. All otherwise
+selected compiler, property, Miri and Loom checks remain selected. Only mutation
+selection omits these non-executable edits; every other critical changed source
+still needs an actual-diff mutation scope. Changed opaque macro inputs, source
+introspection, expressions, types, tuple commas and other functions' parameter
+commas are ineligible. No zero-mutant execution is reported as a passing test.
+
+The `visibility_only_files` and `production_unchanged_files` classifications do
+not select runtime mutation/Miri/property/Loom checks by themselves. Tooling changes still exercise the verification harness. This is
+a selection decision, not a passing zero-mutation experiment; other critical
+changes still require a registered executable mutation scope.
+
 | Trigger | Required verification and acceptance |
 | --- | --- |
 | Every PR | Run pinned `cargo machete` and `cargo deny check`. Fail unexplained unused dependencies, unapproved advisories, sources and licenses. Unknown Git/registry sources are denied; the existing exact-revision SlateDB source is explicitly allowed. Duplicate versions are reviewed signals, not a blanket ban. False positives require a rationale rather than automatic dependency deletion. |
