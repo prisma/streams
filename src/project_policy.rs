@@ -147,22 +147,3 @@ pub(crate) trait PolicySource: Send + Sync {
 pub(crate) trait GrantSource: Send + Sync {
     async fn fetch(&self) -> anyhow::Result<GrantSnapshot>;
 }
-
-/// In-memory source for tests and local rigs.
-pub(crate) struct StaticPolicySource(pub std::sync::Mutex<PolicySnapshot>);
-
-#[async_trait::async_trait]
-impl PolicySource for StaticPolicySource {
-    async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
-        Ok(self.0.lock().unwrap().clone())
-    }
-}
-
-pub(crate) struct StaticGrantSource(pub std::sync::Mutex<GrantSnapshot>);
-
-#[async_trait::async_trait]
-impl GrantSource for StaticGrantSource {
-    async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
-        Ok(self.0.lock().unwrap().clone())
-    }
-}
