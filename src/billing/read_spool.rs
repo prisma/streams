@@ -152,12 +152,13 @@ impl ReadSpool {
         #[cfg(test)]
         {
             let left = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
-            if left == 0 {
-                anyhow::bail!("injected spool fault");
-            }
-            if left > 0 {
-                self.fail_after
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            match left {
+                0 => anyhow::bail!("injected spool fault"),
+                1.. => {
+                    self.fail_after
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                _ => {} // Negative values disable the fixture fault.
             }
         }
         if batches.is_empty() {
