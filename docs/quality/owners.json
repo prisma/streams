@@ -239,6 +239,46 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/bench.rs",
+      "reason": "HTTP benchmark fixture module; explicit path keeps binary test support outside the runtime owner; workspace compilation checks child resolution.",
+      "syntax": "path = \"bench/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_server",
+      "path": "src/bin/bench/tests.rs",
+      "reason": "HTTP fixture jointly drives the server and its client case; panic capture still signals shutdown and joins the server.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bench_append",
+      "path": "src/bin/bench.rs",
+      "reason": "Append benchmark owns its finite group through finish_workers; failure aborts and joins siblings, cancellation drops JoinSet and aborts tasks. Typed Clippy checks the method call.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bench_read",
+      "path": "src/bin/bench.rs",
+      "reason": "Read benchmark owns every replay through finish_workers; failure aborts and joins siblings, cancellation drops JoinSet and aborts tasks. Typed Clippy checks the method call.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::failed_worker_aborts_and_joins_entered_siblings",
+      "path": "src/bin/bench/tests.rs",
+      "reason": "Terminal-ownership fixture puts an entered held sibling beside a failing worker; the production finisher must drop that sibling before returning. Typed Clippy checks both spawn sites.",
+      "syntax": "tokio::task::JoinSet::spawn"
     }
   ]
 }
