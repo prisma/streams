@@ -239,6 +239,78 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_parked_split_cannot_publish_under_a_sealed_collection",
+      "path": "src/dst/tests/seal_coordination.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_superseded_close_cannot_write_or_close",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_resumed_mark_never_seals_a_later_incarnation",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_wrong_content_type_close_cannot_join_the_valid_intent",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_product_seal_never_binds_to_a_recreated_incarnation",
+      "path": "src/dst/tests/seal_incarnation.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_product_final_never_writes_into_a_recreated_incarnation",
+      "path": "src/dst/tests/seal_incarnation.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_seal_never_installs_over_a_pending_transition",
+      "path": "src/dst/tests/seal_recovery.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_transient_producer_gap_does_not_lose_the_promised_record",
+      "path": "src/dst/tests/seal_recovery.rs",
+      "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
