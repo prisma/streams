@@ -263,6 +263,14 @@
       "path": "src/bin/s3lite.rs",
       "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
       "syntax": "path = \"s3lite/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::operation_tests",
+      "path": "src/bin/s3lite.rs",
+      "reason": "Directly cfg(test) protocol checks execute the canonical HTTP request dispatcher for conditional writes, listing, multipart lifecycle, deletion, failed bodies and poisoned state.",
+      "syntax": "path = \"s3lite/operation_tests.rs\""
     }
   ]
 }

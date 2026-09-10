@@ -1858,13 +1858,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::dispatch",
-      "path": "src/bin/s3lite.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::FrameCipher::encrypt_with_nonce",
       "path": "src/crypto.rs",
       "syntax": "allow (clippy :: too_many_arguments)"

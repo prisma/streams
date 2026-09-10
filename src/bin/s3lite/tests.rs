@@ -3,7 +3,7 @@
 use super::{AppState, Stats, handle};
 use axum::body::{Body, to_bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{Method, StatusCode};
 use axum::response::Response;
 use futures_util::FutureExt;
 use serde_json::json;
@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-fn state(latency: Duration) -> Arc<AppState> {
+pub(super) fn state(latency: Duration) -> Arc<AppState> {
     Arc::new(AppState {
         latency,
         discard_substr: None,
@@ -25,14 +25,12 @@ fn state(latency: Duration) -> Arc<AppState> {
 }
 
 async fn request(state: &Arc<AppState>, method: Method, uri: &str, body: &'static str) -> Response {
-    handle(
-        State(state.clone()),
-        method,
-        uri.parse().unwrap(),
-        HeaderMap::new(),
-        Body::from(body),
-    )
-    .await
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::from(body))
+        .unwrap();
+    handle(State(state.clone()), request).await
 }
 
 async fn json_body(response: Response) -> serde_json::Value {

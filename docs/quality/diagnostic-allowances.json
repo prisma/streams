@@ -94,13 +94,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "e5a9db61f11b09fb4876cab36faead6639606e239980bba16910aa31749f92cf",
-      "item": "crate::dispatch",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "55962c6720c0fe7ae48ec771b86d6ee6b8012638b340ca30f9c5fe271087a506",
       "item": "crate::FrameCipher::encrypt_with_nonce",
       "lint": "clippy::allow_attributes_without_reason",
@@ -4053,13 +4046,6 @@
       "item": "crate::lb",
       "lint": "clippy::excessive_nesting",
       "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b777e70be284ca08afd4097e7ae57b2263371bd339e77fdc632e359c416e0f91",
-      "item": "crate::list_objects",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/bin/s3lite.rs"
     },
     {
       "count": 1,
@@ -8977,13 +8963,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "766f0862b2777d3eb03472522f63b5eec63cac1c145f60a851949960201267c9",
-      "item": "crate::dispatch",
-      "lint": "clippy::match_same_arms",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "37ee8bcadbf20e419e2ef2f53503959ec976561d8125cdbc014d5be236660047",
       "item": "crate::Workload::attempt_with_deadline",
       "lint": "clippy::match_same_arms",
@@ -12245,48 +12224,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f207d3f75f8f5b932f38736ff526fe6c5063d4ce3effec42a0122268d26d0d7b",
-      "item": "crate::batch_delete",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7870786a9fa9ccb5c6a23f1605c4bd1e5df45436c2367c540832b6437b1d702b",
-      "item": "crate::complete_multipart",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "945db9b29a219618e8ecfd58a7333927ba9d8edff78353a0c05022811edf6037",
-      "item": "crate::complete_multipart",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a1d8ef3db510a0172bb5ed75ff15dfc7f5c59009b2de17400c51e055cf79ce36",
-      "item": "crate::dispatch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "cc0e61fa1522ad2d3ec4bebce9e613e6f1be173a5504ab49601add026db50bca",
-      "item": "crate::dispatch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fb020b701e7fc2cb5930d831e2f081b305f033399226e537173a63b71d45d4dc",
-      "item": "crate::dispatch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "286b2fb24f8658c38725de135393a16188b438a44007f9dc7fe90d8c915037ae",
       "item": "crate::get_object",
       "lint": "clippy::unwrap_used",
@@ -12303,20 +12240,6 @@
       "count": 1,
       "fingerprint": "f96a9b822b9ffc7749e0daceb594d07cda30279dba9d3c4e58f4acf80a7cf8af",
       "item": "crate::get_object",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "656a1884eaa15c54e013f56abac52b0c8fa53407d5fa3636ef71859a490350a5",
-      "item": "crate::list_objects",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bcbc8a604f3e46c0f83cd13434bc38589a92045915b9673039986c3712eda1b",
-      "item": "crate::put_object",
       "lint": "clippy::unwrap_used",
       "path": "src/bin/s3lite.rs"
     },
