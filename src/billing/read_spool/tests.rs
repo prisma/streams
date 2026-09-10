@@ -178,3 +178,96 @@ async fn cancelled_open_guard_closes_and_releases_its_database() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn restart_preserves_spool_sequence_and_observable_durable_backlog() {
+    let config = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    );
+    let store = Arc::new(object_store::memory::InMemory::new());
+    let spool = ReadSpool::open(store.clone(), "", "sequence-observation", &config)
+        .await
+        .unwrap();
+    assert_eq!(spool.quarantined_count(), 0);
+    assert_eq!(spool.depth().await, 0);
+    let before = spool.l0_stats();
+    let first = spool.persist_all(&[batch(31), batch(32)]).await.unwrap();
+    assert_eq!(spool.depth().await, 2);
+    let posture = spool.l0_stats();
+    assert!(
+        posture.0 > 0 && posture.3 > before.3,
+        "flushed spool rows must advance the manifest and expose an L0 table: before={before:?}, after={posture:?}"
+    );
+    assert_eq!(spool.quarantined_count(), 0);
+    spool.close_for_tests().await;
+    drop(spool);
+    let spool = ReadSpool::open(store, "", "sequence-observation", &config)
+        .await
+        .unwrap();
+    assert_eq!(spool.depth().await, 2);
+    let next = spool.persist(&batch(33)).await.unwrap();
+    assert!(
+        next > first[1],
+        "restart must not reuse an acknowledged spool key"
+    );
+    assert_eq!(spool.depth().await, 3);
+    let recovered: Vec<_> = spool
+        .pending(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, row)| row.seq)
+        .collect();
+    assert_eq!(recovered, [31, 32, 33]);
+    spool.remove(&[first[0].clone()]).await.unwrap();
+    assert_eq!(spool.depth().await, 2);
+    assert_eq!(spool.quarantined_count(), 0);
+    spool.close_for_tests().await;
+}
+
+#[tokio::test]
+async fn injected_fault_counts_successful_rounds_and_can_be_disabled() {
+    use std::sync::atomic::Ordering;
+    let config = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    );
+    let spool = ReadSpool::open(
+        Arc::new(object_store::memory::InMemory::new()),
+        "",
+        "countdown",
+        &config,
+    )
+    .await
+    .unwrap();
+    spool.fail_after.store(2, Ordering::SeqCst);
+    spool.persist(&batch(1)).await.unwrap();
+    spool.persist(&batch(2)).await.unwrap();
+    assert_eq!(spool.depth().await, 2);
+    assert!(
+        spool
+            .persist(&batch(3))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("injected spool fault")
+    );
+    assert_eq!(
+        spool.depth().await,
+        2,
+        "failed round cannot enter the resident ledger"
+    );
+    spool.fail_after.store(-1, Ordering::SeqCst);
+    spool.persist(&batch(4)).await.unwrap();
+    assert_eq!(spool.depth().await, 3);
+    let recovered: Vec<_> = spool
+        .pending(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, row)| row.seq)
+        .collect();
+    assert_eq!(recovered, [1, 2, 4]);
+    spool.close_for_tests().await;
+}
