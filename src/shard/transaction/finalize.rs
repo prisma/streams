@@ -55,7 +55,7 @@ impl CommitTransaction<'_> {
         match attachment {
             Attachment::Pending => {}
             Attachment::Durable => self.effects.reply(),
-            Attachment::Retired => self.effects.reject(&AppendErr::Moved),
+            Attachment::Retired => self.effects.reject(AppendErr::Moved),
         }
     }
     #[expect(
