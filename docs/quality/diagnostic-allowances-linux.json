@@ -941,13 +941,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "db67b2f76743a68950e708623e471926a07b566db646d001bc598217f243a07b",
-      "item": "crate::absorber_drains_records_larger_than_the_per_stream_gather_cap",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "dccdf9f3440838ed6a1b531764c80bbfeb31c0897b87aaa46bef061d858430d1",
       "item": "crate::a_second_absorption_wave_trims_under_a_global_budget",
       "lint": "clippy::cast_possible_truncation",
@@ -2779,55 +2772,6 @@
       "item": "crate::r05_unknown_child_state_preserves_its_source_reference",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/fork_lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "15794d28a529f7304ff774f6a1d89e4e29fb39e330046a872f7099e8c3e241f1",
-      "item": "crate::absorber_drains_records_larger_than_the_per_stream_gather_cap",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "176621f9fd5c5a883bbb3ca4595456c65de26814089324a81c96bdd5c7220d46",
-      "item": "crate::absorber_sweep_recovers_streams_whose_signals_were_lost",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a26ab7329c1bd997bd17e5f263545744c446c1606a4d4a6553067a0bde8954f1",
-      "item": "crate::acked_records_survive_absorption_into_history",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9646ddc91747c6638aba4d36c047948ec615d0fefa897122d2d4def99399850b",
-      "item": "crate::tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ff3c4be79709e6f81de4af19c26dffb59fd13f749fd4cecdcdc6208ace34e07a",
-      "item": "crate::tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ba186bea1908bbe1d76752d437a10eb43158e7f4c05475597d0b925daf334bf8",
-      "item": "crate::v2_absorbs_without_customer_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3087e1acd3e7e620c12f84868a83ff493fb0f562822e4db56ae5c1d42e07f857",
-      "item": "crate::v2_history_survives_engine_handoff",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_absorption.rs"
     },
     {
       "count": 1,
@@ -7297,14 +7241,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 126,
       "path": "src/dst/tests/fork_lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "006ae1f702ae5752bd793d9f6eb2d5a6d84128ca37c9e2b9932444996aee932f",
-      "item": "crate::tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
-      "lint": "clippy::too_many_lines",
-      "metric": 104,
-      "path": "src/dst/tests/history_absorption.rs"
     },
     {
       "count": 1,
