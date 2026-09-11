@@ -184,7 +184,6 @@ impl<'a> CommitTransaction<'a> {
         self.streams.insert(hash, local);
     }
     fn reject(self, message: &str) {
-        self.effects
-            .reject(&AppendErr::Internal(message.to_owned()));
+        self.effects.reject(AppendErr::Internal(message.to_owned()));
     }
 }
