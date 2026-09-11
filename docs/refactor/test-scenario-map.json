@@ -1793,13 +1793,13 @@
       },
       {
         "name": "fragmented_key_stays_exact_and_bounded",
-        "file": "src/postings.rs",
-        "line": 578
+        "file": "src/postings/tests.rs",
+        "line": 135
       },
       {
         "name": "planner_coalesces_cheap_gaps_and_bounds_spans",
-        "file": "src/postings.rs",
-        "line": 778
+        "file": "src/postings/tests.rs",
+        "line": 343
       }
     ],
     "mapped": true,
@@ -1812,8 +1812,8 @@
     "tests": [
       {
         "name": "amplification_bound_refuses_expensive_gaps",
-        "file": "src/postings.rs",
-        "line": 550
+        "file": "src/postings/tests.rs",
+        "line": 107
       }
     ],
     "mapped": true,

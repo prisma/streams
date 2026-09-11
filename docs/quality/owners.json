@@ -1599,6 +1599,14 @@
       "path": "src/registry/tests.rs",
       "reason": "Registry test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin conditional writes, decode fail-closed and segment resolution.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings.rs",
+      "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
+      "syntax": "path = \"postings/tests.rs\""
     }
   ]
 }
