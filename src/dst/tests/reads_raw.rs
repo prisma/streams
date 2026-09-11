@@ -80,6 +80,10 @@ async fn seal_gap_head_no_closure() {
 
 /// A long-poll already parked at the tail when the seal lands must wake
 /// WITHOUT closure and with a usable rearm token.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal-gap poll fixture; the parked poll and the held split are both joined after the wake is checked; they must run concurrently to wake the poll inside the gap"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seal_gap_long_poll_wakes_without_closure() {
     let _l = gap_lock().lock().await;
@@ -209,6 +213,10 @@ async fn seal_gap_cancel_then_retry() {
 /// the whole transition (no pending, one segment) meets the sealed
 /// engine handle. The standard path must refresh + redispatch instead
 /// of trusting the stale map and reporting closure.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "stale descriptor fixture; the held split is joined after the redispatch is checked; it must run concurrently to hold the rig inside the gap"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seal_gap_stale_descriptor_redispatches() {
     let _l = gap_lock().lock().await;
@@ -534,6 +542,10 @@ async fn long_keyed_run_pages_with_progress() {
 /// keys and splits the collection underneath it. The required
 /// cross-surface test: product keys + split, raw default-key traffic,
 /// raw reads see exactly their own records with resumable cursors.
+#[expect(
+    clippy::too_many_lines,
+    reason = "default-key route scenario; the raw route stays one strict sequence across the product's splits; helper phases would hide which split reordered the raw view"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_route_is_the_default_key_view_across_splits() {
     let _l = gap_lock().lock().await;

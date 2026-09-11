@@ -158,6 +158,10 @@ async fn a_half_deleted_fork_finishes_its_cleanup() {
 /// initialization — reference installed on the new incarnation while
 /// the child still recorded the old one, which stitched reads only
 /// discover later as an epoch mismatch.
+#[expect(
+    clippy::too_many_lines,
+    reason = "fork binding scenario; claiming the initialization against one source incarnation, replacing the source and checking the claim form one causal sequence; helper phases would hide which incarnation the fork bound to"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     let store = mem();
@@ -396,6 +400,10 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
 /// write let both win — the fork installed its reference and the delete
 /// tombstoned the source anyway, leaving a live fork anchored to a
 /// hard-deleted parent.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "fork serialization fixture; the source deletion is joined after the fork creation it races; both must run concurrently to serialize on the source"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fork_creation_and_source_deletion_serialize() {
     let _serial = gap_lock().lock().await;
@@ -643,6 +651,10 @@ async fn fork_lifecycle_and_stitched_reads() {
 /// integrity error, not a silent cross-incarnation read; the product
 /// create path cannot overwrite a retained source; and members of a
 /// fork chain never split.
+#[expect(
+    clippy::too_many_lines,
+    reason = "fork lifecycle scenario; installing and releasing references by identity, retrying and epoch-checking each step form one causal sequence; helper phases would hide which retry double-installed or released"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     let _l = gap_lock().lock().await;
@@ -791,6 +803,10 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
 
 /// An unavailable child read is not proof that its retention reference can
 /// be released. Check both post-install verification and a concurrent Ready CAS.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "unknown child fixture; the parked creation is released and joined before the source reference is checked; it must park concurrently in its unknown state"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r05_unknown_child_state_preserves_its_source_reference() {
     let _serial = gap_lock().lock().await;

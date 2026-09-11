@@ -346,6 +346,10 @@ fn fixture_config(
 }
 
 /// Build a rig from ONE process runtime and the focused options.
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTTP rig builder; every runtime owner is wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
+)]
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
     runtime: RigRuntime,
@@ -542,6 +546,10 @@ pub(super) async fn http_rig_build(
 /// Boot a rig, create + fill a stream, then drive a split INTO the
 /// parked seal-gap: Phase A CAS'd, parent sealed, successors withheld.
 /// Returns everything the gap assertions need.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal-gap rig builder; the split task handle is returned to the scenario, which joins it after its assertions; the split must run concurrently to hold the rig inside the gap"
+)]
 pub(super) async fn rig_in_seal_gap(
     stream: &str,
     per_key: usize,

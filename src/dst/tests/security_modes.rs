@@ -14,6 +14,10 @@ use super::fixture_storage::mem;
 /// deployment bearer decides. A valid credential counts `ok`, garbage
 /// counts `failed`, a bare request counts `missing`, and all three
 /// requests SUCCEED because the rig has no legacy token configured.
+#[expect(
+    clippy::too_many_lines,
+    reason = "shadow mode scenario; every product bearer runs through the same verification in order while nothing is refused; helper phases would hide which observation became an enforcement"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shadow_mode_observes_without_enforcing() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -212,6 +216,10 @@ async fn shadow_mode_observes_without_enforcing() {
 /// suspension), 421 + Prisma-Error-Code for placement, 503 for the
 /// cell's own feed staleness, and the §15 watch capability remains
 /// the one self-authorizing carrier.
+#[expect(
+    clippy::too_many_lines,
+    reason = "enforce mode scenario; the route-scope matrix and the prefix grant gate are driven against real product routes in order; helper phases would hide which route escaped the gate"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn enforce_mode_gates_the_product_surface() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");

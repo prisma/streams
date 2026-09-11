@@ -205,6 +205,10 @@ async fn catalog_paging_survives_dense_dead_entries() {
 /// CRT-007: a create whose INITIAL CONTENT write fails must not
 /// publish Ready — and the exact replay resumes the same
 /// initialization and delivers the content exactly once.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "creation recovery fixture; the parked creator is released and joined before the recovered body is checked; it must park concurrently at the failed initial write"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn create_replay_recovers_from_a_failed_initial_write() {
     let _serial = gap_lock().lock().await;
@@ -296,6 +300,10 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
 /// replay JOINS the initialization; a DIFFERENT request conflicts; and
 /// reads/appends against an initializing stream get a retryable answer
 /// rather than an empty stream.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "creation replay fixture; both racing creators are joined before their bodies are compared; they must race concurrently to replay the same creation"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn create_replay_never_loses_the_initial_body() {
     let store = mem();

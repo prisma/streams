@@ -9,6 +9,10 @@ use super::fixture_storage::{mem, skey};
 /// CURRENT policy gets two requests and then 429 `project_rate_limit`
 /// with a Retry-After — scoped to that project alone (bucket isolation
 /// is pinned at the unit level).
+#[expect(
+    clippy::too_many_lines,
+    reason = "rate backstop scenario; verifying the project, exhausting the admission budget and reading the refusal on the wire form one causal sequence; helper phases would hide which request crossed the budget"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn project_rate_quota_backstop_answers_429() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -153,6 +157,10 @@ async fn project_rate_quota_backstop_answers_429() {
 /// the policy's append_records_per_sec, and refusal is the same 429
 /// project_rate_limit. No sleeps: the legs spend a 2-token budget and
 /// probe both the batch-count and the drained-bucket refusals.
+#[expect(
+    clippy::too_many_lines,
+    reason = "volume metering scenario; appends with exact parsed counts, reads and the metered totals form one causal sequence; helper phases would hide which request was metered inexactly"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn volume_quotas_meter_appends_and_reads() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -346,6 +354,10 @@ async fn volume_quotas_meter_appends_and_reads() {
 
 /// Build an enforce rig with ONE project whose quotas are custom —
 /// the SR2-4 quota-enforcement fixture.
+#[expect(
+    clippy::too_many_lines,
+    reason = "quota rig builder; the project, its custom quotas and the enforce settings are wired in one place so the backstop's inputs stay visible; pass-through steps would hide which quota a scenario changed"
+)]
 async fn quota_rig(
     tag: &str,
     scopes: &str,
@@ -469,6 +481,10 @@ async fn quota_rig(
 /// concurrent burst admits exactly the cap; a hard delete releases a
 /// slot. Soft-deleted fork-retained names still count until their
 /// terminal hard delete (posture: they hold storage and the name).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "stream quota fixture; the racing creation is joined before the quota verdicts are compared; it must run concurrently to contend for the last slot"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_streams_is_enforced_at_create() {
     let quotas = crate::project_policy::ProjectQuotas {
@@ -639,6 +655,10 @@ async fn queued_append_bytes_charge_and_release() {
 /// RED (review, declared quotas): capability watch WAITS occupy the
 /// project's live-subscription pool — a project cannot hold unbounded
 /// long polls through capabilities.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "subscription pool fixture; the long watch is joined after the refused second wait is observed; it must hold a pool slot concurrently"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn watch_waits_occupy_the_subscription_pool() {
     let scopes = "streams.create streams.records.append streams.records.read \

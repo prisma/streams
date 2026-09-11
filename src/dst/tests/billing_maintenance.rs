@@ -347,6 +347,10 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
 /// LagSecs latch into an instance-wide shed. Composed deterministically
 /// with the commit gate: one group carrying a client append AND an
 /// absorbed-boundary advance.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "maintenance group fixture; the rider request is joined after the held group is released; it must ride the group concurrently to refresh the clock it observes"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     let store = mem();
@@ -453,6 +457,10 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
 /// durable row and refresh the progress clock. Under net accounting it
 /// vanished entirely: no row, no refresh, a false stall while absorption
 /// was keeping exact pace with ingest.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "maintenance group fixture; the rider request is joined after the held group is released; it must ride the group concurrently to land in it"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn balanced_append_absorb_group_still_writes_progress() {
     let store = mem();
@@ -534,6 +542,10 @@ async fn balanced_append_absorb_group_still_writes_progress() {
 /// divergence, not a clamp. The whole group fails — including a client
 /// append riding in it — the durable boundary and row stay put, and the
 /// engine keeps serving afterward.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "maintenance group fixture; the rider request is joined after the failing group is released; it must ride the group concurrently to observe the failure"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     let store = mem();

@@ -407,6 +407,10 @@ async fn product_consumer_dlq_flow() {
 /// Stage 2a §2.9: consumption across a split — the sealed predecessor's
 /// backlog delivers (and settles) fully before any successor record,
 /// per-key order holds end to end, exactly once.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lineage consumption scenario; consuming the sealed predecessor's backlog, splitting and continuing on the children form one causal sequence; helper phases would hide which lineage step delivered or settled out of order"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_consumer_drains_lineage_across_split() {
     let _l = gap_lock().lock().await;

@@ -51,6 +51,10 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
 /// await the open inline in the caller's task, insert into the map from
 /// the caller's task. The inner Db open is spawned (as `on_slatedb_rt`
 /// does in production), so abandoning the await detaches it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reopen storm reproduction; the detached open is the defect being reproduced and its abandonment is counted through the fenced opens and the empty serving map; owning the open would remove the storm the scenario exists to reproduce"
+)]
 async fn naive_get_or_open(
     lock: &tokio::sync::Mutex<()>,
     shards: &std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
@@ -306,6 +310,10 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
 /// per-poll directory LISTs return (the Class-A regression cost
 /// campaign 2 removed). Faults off, realistic store latency on: latency
 /// shapes timer interleaving but cannot suppress or add a poll.
+#[expect(
+    clippy::too_many_lines,
+    reason = "idle cost scenario; opening the engine, idling on the paused clock and counting store traffic against the poll cadence form one causal sequence; helper phases would hide which poll issued the extra traffic"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
     // The posture VALUES are part of the pin — the budget below scales

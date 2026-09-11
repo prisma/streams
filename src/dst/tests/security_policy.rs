@@ -247,6 +247,10 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
 /// it — is invisible: each release touches exactly its own project's
 /// descriptor, and a DLQ link cannot be configured against a target
 /// that exists only in another project.
+#[expect(
+    clippy::too_many_lines,
+    reason = "stored reference scenario; fork parentage and dead-letter targets are bound inside the referring project across the same requests; helper phases would hide which reference crossed the project"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stored_references_bind_inside_the_referring_project() {
     let store = mem();
