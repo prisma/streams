@@ -717,20 +717,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "bf7d7214d0a47564a39373cceab64168e507373c04cfe082043d248f1f97b016",
-      "item": "crate::ReadService::execute_read",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8f80f300d3dfdbd038489b32f68957cdf5130969fec927dc78dce27853cd8068",
-      "item": "crate::ResolvedRead < '_ >::execute",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c74fa37ffc9b5a5d1a619eedad0ec85546921a15744dabb30eb974b7943f69e1",
       "item": "crate::canonical_arg",
       "lint": "clippy::cast_possible_truncation",
@@ -791,20 +777,6 @@
       "item": "crate::lb",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "72f00fb5f017b1e2a9bab87cbe4b0004002f93b0af2b775e1622f6c9396673c9",
-      "item": "crate::run",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7f02d34d8ba59415371da4ada33674fa993730af5af4c89a6bbf1c93616025c4",
-      "item": "crate::run",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bootstrap.rs"
     },
     {
       "count": 1,
@@ -1008,13 +980,6 @@
       "item": "crate::debug_load",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2583c35200bec63c7e8481f4927f431b1b01fa56415ba7dc175ab87c7d1800e4",
-      "item": "crate::render_raw_read",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/http/read.rs"
     },
     {
       "count": 1,
@@ -4119,13 +4084,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "e539def7e7da9e7e1c8fae30132405d7d0ecddfde7748b9b8840f17ee19bb44d",
-      "item": "crate::run",
-      "lint": "clippy::expect_used",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6af87f90eba85adf522cbee9d1ad73eb337372ef8b6db4671ddaa0e18583242e",
       "item": "crate::StorageExecutor::new",
       "lint": "clippy::expect_used",
@@ -4364,13 +4322,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d4520aa9a818ffc0a377095d6b69fd6e43376bf842497604b9dbfbc6a96521c9",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::expect_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "47a1459158ec9b8aa4b63ed14b6256e0c68bb6aee4691c7a30dd27cb2cb33d4c",
       "item": "crate::CommitTransaction < '_ >::receive",
       "lint": "clippy::expect_used",
@@ -4459,20 +4410,6 @@
       "item": "crate::TraceStore::with_options",
       "lint": "clippy::fn_params_excessive_bools",
       "path": "src/dst/trace_store.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "45ee041a858d4429c95b1a92405b4b624edac4b11ebb012c55b18d4a7de9bd3d",
-      "item": "crate::read_inner",
-      "lint": "clippy::fn_params_excessive_bools",
-      "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0eb22305e666357a60f6af4e14911971aa470510e9cad59b93ca78c1915442f5",
-      "item": "crate::read_payload",
-      "lint": "clippy::fn_params_excessive_bools",
-      "path": "src/http/read.rs"
     },
     {
       "count": 1,
@@ -4608,13 +4545,6 @@
       "path": "src/shard.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "2b24bbdae1058f063e7eaec1e8a0099af717fd0de8bfdcb716979f40df1fed77",
-      "item": "crate::ReadService::execute_read",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/application/read_request.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "7763dfec62ce668e5e7749668f9866a9d76c8c3b88d96a8dddece50a69fe2dd6",
       "item": "crate::RequestWork::run",
@@ -4704,27 +4634,6 @@
       "item": "crate::lb",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "53176a22a908f1305e546ef7f29b9cb68cc0daf41876515409a9b58e5be56351",
-      "item": "crate::run",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "64cba4a03b7943d82bc1a3ae23aad6a1e0b0f3c1bfa2d2f7c53afef8cdb1a63c",
-      "item": "crate::run",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e212adb2701cf658dfd039eee10e092cf851d618c1fb10bc5fbf5c96bde4444a",
-      "item": "crate::run",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bootstrap.rs"
     },
     {
       "count": 1,
@@ -4900,13 +4809,6 @@
       "item": "crate::touch_ttl",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c6916cc3264591f37f915035888c1139d7fd43353b2e9cf855ac63345199c8a8",
-      "item": "crate::serve_read_sse",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/http/read.rs"
     },
     {
       "count": 2,
@@ -5138,27 +5040,6 @@
       "item": "crate::r17a_unexpected_required_engine_role_exit_fences_serving",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "285a016c8064357056a5e2b9ff03fb79cb64bda2a7bb678e9ecefb8b45aa3a2d",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "52f28b555d6917ed9454d4d13f47578f8e896ae5a536afdd4d2a352b10992337",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "de7b145266af479779a24dda3d8748250692f2a44962fab28aee47c8b1f38d2e",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/append.rs"
     },
     {
       "count": 1,
@@ -5470,20 +5351,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "c108b945981e7ee496452f1da8dfe5dd38c721b89fc7349030362617d3c8ef08",
-      "item": "crate::ReadOutcome",
-      "lint": "clippy::struct_excessive_bools",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "27b4bb287b87afca6deca29121bc925a593afd4d5712dee97cfaf589aaa6b45a",
-      "item": "crate::ResolvedRead",
-      "lint": "clippy::struct_excessive_bools",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d397af65cb249cc1e8643233406c3e6e2ad6fe694f8ccd93d07dccf770b1eebf",
       "item": "crate::PersistedDescriptor",
       "lint": "clippy::struct_excessive_bools",
@@ -5624,14 +5491,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 7,
       "path": "src/application/read_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2044079202de1f90f6bb39f84c46b6cbedbf5655d67192e38acbd4f0a6ffd471",
-      "item": "crate::ReadOutcome::empty",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/application/read_request.rs"
     },
     {
       "count": 1,
@@ -5784,14 +5643,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "30c549da01d750a469fe4db9a7c1f6ad9d7680714d2982b579ca5b43c2cf0df0",
-      "item": "crate::read_inner",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/http/read.rs"
     },
     {
       "count": 1,
@@ -5952,14 +5803,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a0e6043b0a2999ce53ea789ff8630a2e5f3c2baa5d8c80408f492f80b1de6a39",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/shard/transaction/queue/cleanup.rs"
     },
     {
       "count": 1,
@@ -6139,14 +5982,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "5f6aeea0e02d32759bfd31b4f2b13d765a4b7dbc32b06937ba511d75c42c86ef",
-      "item": "crate::ReadService::execute_read",
-      "lint": "clippy::too_many_lines",
-      "metric": 182,
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "b570890d8b6f95327b7e15d7c06de6802aa2de09ad9dd7120887546475d4f1bc",
       "item": "crate::drain_once",
       "lint": "clippy::too_many_lines",
@@ -6168,14 +6003,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 307,
       "path": "src/bin/pilot.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "01b904c152f5dcba2e53766e634a152ddfe29683e4860d8b5f7d3d6f4a170d32",
-      "item": "crate::run",
-      "lint": "clippy::too_many_lines",
-      "metric": 610,
-      "path": "src/bootstrap.rs"
     },
     {
       "count": 1,
@@ -6264,30 +6091,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 110,
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4a8b196878b76e4fa84e942498d347fd55fa9103d059816efd5e04ce109ba17f",
-      "item": "crate::read_inner",
-      "lint": "clippy::too_many_lines",
-      "metric": 103,
-      "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "53c7cdadc6029ea9f0523fd9cfd200634e15f17f4ad27510c94be595eb5edc5d",
-      "item": "crate::render_raw_read",
-      "lint": "clippy::too_many_lines",
-      "metric": 107,
-      "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a3ee9e6e971a4e3cf8cd10086c438e4dfe79e35cd6ce2f636fd65de6bc5ccab0",
-      "item": "crate::serve_read_sse",
-      "lint": "clippy::too_many_lines",
-      "metric": 131,
-      "path": "src/http/read.rs"
     },
     {
       "count": 1,
@@ -6472,22 +6275,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 173,
       "path": "src/shard/retirement_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3ba43002e818cffe734fd50b948bfb471467b924894e04450fbb1d91476b5b08",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::too_many_lines",
-      "metric": 130,
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c3203c7a81b47c93d9d68e71fca2d684e2f3a8852c27632f041f12683cc4a9f2",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::too_many_lines",
-      "metric": 154,
-      "path": "src/shard/transaction/queue/cleanup.rs"
     },
     {
       "count": 1,
@@ -6732,27 +6519,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d32d7ffffb41303043cd814bd7c7ecf4275b9236e5c56de85a1892cb270a61b7",
-      "item": "crate::ReadService::execute_fork_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c7c92c7013cc3342791e5a69ebe9165562776cf3358042e078494fd03e2a3de4",
-      "item": "crate::ResolvedRead < '_ >::execute",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f143176250fd56d05f8a571c670c1b793b1e9220db6046f188e60de34a202da2",
-      "item": "crate::tail_state",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "f2214df93dd43613446ec659a2de14e255cf22a69cb8c3a7f2a067986c2b570f",
       "item": "crate::ReadService::snapshot_scan",
       "lint": "clippy::unwrap_used",
@@ -6970,34 +6736,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "267ad8503c4127d6414393e4f39d48cae25e0103a0db53dd08562547a32f25c2",
-      "item": "crate::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6dcae89428ad56496895da95cce76feec5b664f18c08a920a6b3c6225d8aa00b",
-      "item": "crate::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e2026caf2681e64c7b5e3db306651d6692db251d3e7c98c237234a0626f2db1e",
-      "item": "crate::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f7af1a6039cd2ab34face2144ec46761965c2b3b4ff95c8ba1ed3eff2cc99226",
-      "item": "crate::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "730010c152b1433ddceb819a81576c406ec6290c180b78d381ba4d18eaefd040",
       "item": "crate::start",
       "lint": "clippy::unwrap_used",
@@ -7156,27 +6894,6 @@
       "item": "crate::stream_entry_inner",
       "lint": "clippy::unwrap_used",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "666de2d1927afda6e9f3327cdc09e1689adc86402e57a004b7531359e6c4b4a7",
-      "item": "crate::render_raw_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "97f120d9b357a0b349f9e90b2718ca1f299af708d1df051136faabe64678be50",
-      "item": "crate::render_raw_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1ca2114c9d83d074cbef8d03494980f0b2574700ef30195889e6e8d21a462aa1",
-      "item": "crate::resolve_response",
-      "lint": "clippy::unwrap_used",
-      "path": "src/http/read.rs"
     },
     {
       "count": 1,
@@ -7691,27 +7408,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "0e0d631f0386ec1fdf9c015da4a8c2b4f2fa4949cf3b73802a78a0b3bac14e1a",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "b161ab159343367467d1410edc16c6edc08b8ea2aa870e6a300d44a6d7e6fc80",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a2f75383270c0a7a64c5d0d1250a056305a53281297a429f54eba3d507081434",
-      "item": "crate::CommitTransaction < '_ >::bill_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d4079d954d073c14f979b5867716d459c4b6e132383bb701f5beead0ab9b75bb",
       "item": "crate::CommitTransaction < '_ >::join_prior_barrier",
       "lint": "clippy::unwrap_used",
@@ -7786,41 +7482,6 @@
       "item": "crate::CommitTransaction < '_ >::publish",
       "lint": "clippy::unwrap_used",
       "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "261d4bb921ed164de679df8695f804a6b77a0f28ba8e5f6ca015b99fbe41893b",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "270b008ef96e0673ec7d36840311de91a4f45ecd24ec9cdf7b78b9886a2c1578",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "54df4796fb30b5e4baab13d3e16346b22bb3583933abb7ee53624d02ed99cb27",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "984827a322b58700cd48e38adfc7e4b116acc22e9505a6885bbaa3ba632ef66c",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b3e0ce7f1cace3ed0e5869a4dca136408c6f9cfb68f7fee936420ae2236bac52",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/cleanup.rs"
     },
     {
       "count": 1,
