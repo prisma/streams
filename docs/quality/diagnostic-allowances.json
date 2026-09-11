@@ -248,41 +248,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "bb8b9e385513408950e4676a7cb557414388e737eef5c29ad97fee2b708a86bf",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/trace_store_tests/basic.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8b9e385513408950e4676a7cb557414388e737eef5c29ad97fee2b708a86bf",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/trace_store_tests/cancellation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8b9e385513408950e4676a7cb557414388e737eef5c29ad97fee2b708a86bf",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/trace_store_tests/concurrency.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8b9e385513408950e4676a7cb557414388e737eef5c29ad97fee2b708a86bf",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/trace_store_tests/delete_accounting.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8b9e385513408950e4676a7cb557414388e737eef5c29ad97fee2b708a86bf",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/trace_store_tests/streams.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c4760606323e68a32de6f3f45c1c9c4103d1885895e581c80676d77bf4a8666e",
       "item": "crate::read_history2_keyed_cached",
       "lint": "clippy::allow_attributes_without_reason",

@@ -1,17 +1,12 @@
 //! Async cancellation is RAII-safe.
 
-#![allow(unused_imports)]
-use std::sync::Arc;
-
+use super::super::{TraceOutcome, TraceStore};
+use super::{PendingStore, mem};
 use object_store::path::Path as ObjPath;
 use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OsResult,
+    CopyOptions, GetOptions, ObjectStore, PutMultipartOptions, PutOptions, PutPayload,
 };
-
-use super::super::{TraceEventKind, TraceOutcome, TraceStore};
-use super::*;
-use crate::dst::{ObjClass, StoreOp};
+use std::sync::Arc;
 
 /// Required cancellation test 1: a point-operation future polled to
 /// `Pending` and then dropped records `Cancelled`, leaves no active
