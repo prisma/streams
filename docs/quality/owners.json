@@ -903,6 +903,166 @@
       "path": "src/dst/tests/runtime_retirement.rs",
       "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
       "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::workload_generator",
+      "path": "src/bin/pilot.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"pilot/generator.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/membership.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::GeneratorState::snapshot",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::GeneratorState::backoff",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Workload::execute",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drain",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::closing_interrupts_retry_backoff_and_covers_already_closed_waits",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "tests/pilot_membership.rs",
+      "reason": "The Loom test compiles the actual production membership source with instrumented synchronization primitives; the model checks terminal accounting and prohibited late admission.",
+      "syntax": "path = \"../src/bin/pilot/generator/membership.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Generator::launch",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "Generator is the sole worker task owner; it reserves membership before spawning and aborts then joins every remaining worker on terminal server or worker failure.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats_and_drain_routes_keep_serving_the_same_final_ledger",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator HTTP contract fixture jointly drives its server and client case; unwind capture signals graceful shutdown and both futures finish before the case returns.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_receive_after_delete_in_the_same_group_is_refused",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group ordering fixture owns the delete and receive operation handles; both are joined after the held commit is released. Concurrent staging is required for the receive to follow the delete in one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the receive and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the settle and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_waits_for_durability_before_reporting_closed",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability fence fixture owns the held close and the takeover handle; both are joined after dispatch is released. Concurrent execution is required to observe the takeover pending behind the barrier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::idempotent_successes_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability barrier fixture owns the original, duplicate and close request handles; each is joined after its release. Concurrent execution is required to observe them pending behind the held dispatch.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::state_dependent_conflicts_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Definitive-conflict fixture owns the original and reuse request handles; both are joined after dispatch is released. Concurrent execution is required to observe the verdict pending on undurable state.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
