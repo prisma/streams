@@ -4294,48 +4294,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::billing_read_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::bounded_outbox_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::commit_command_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::maintenance_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::queue_publication_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::storage_decode_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate",
       "path": "src/shard/commit_plan.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

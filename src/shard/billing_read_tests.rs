@@ -2,7 +2,10 @@
 #![cfg(test)]
 use super::*;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the fixture stages the failed read inside the group inside the engine it drives, and the assertions read that nesting; flattening it would separate the failure from the group it must preserve"
+)]
 #[expect(
     clippy::too_many_lines,
     reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the scenario pins one ordered sequence of a failed accounting read, the preserved group and the newer dirty version; helper phases would hide which step each assertion observes"
@@ -11,6 +14,7 @@ use super::*;
     clippy::let_underscore_must_use,
     reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(Db::builder("r13", store.clone()).build().await.unwrap());

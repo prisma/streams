@@ -74,11 +74,11 @@ fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::let_underscore_must_use,
     reason = "r12_corrupt_tail_refuses_open_without_overwriting_records; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());

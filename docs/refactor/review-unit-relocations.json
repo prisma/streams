@@ -16,5 +16,14 @@
     "to_file": "src/application/append/contract.rs",
     "function_sha256": "ed4927f8020a415fb9d5eb55e424fde6a3e77ed7b201c814087238aef4e41f82",
     "reason": "Transport-free append failure/producer contract moved to its own focused module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version",
+    "finding": "warning cleanup",
+    "from_commit": "6ea617d4fbc1863f3e7e80865116ebce46495e09",
+    "from_file": "src/shard.rs",
+    "to_file": "src/shard/billing_read_tests.rs",
+    "function_sha256": "df3f9bbc59ebd3ec652cd1e083739cfdc144a674ba3264b5b089d8903a3a2f60",
+    "reason": "Accounting-read mechanism test moved with its module into the file-split test module; it now carries the reasoned expectations for its length, its ignored delivery result and its nesting, with the same inputs and assertions."
   }
 ]

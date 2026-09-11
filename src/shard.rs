@@ -698,10 +698,6 @@ impl StreamHandle {
     /// the seed and the group-delta attribution never double- or
     /// under-count a group.
     #[expect(
-        clippy::let_underscore_must_use,
-        reason = "StreamHandle::bind_pressure; get_or_init returns the bound handle, which callers reach through the cell afterwards; using the reference here would only restate the initialisation"
-    )]
-    #[expect(
         clippy::unwrap_used,
         reason = "StreamHandle::bind_pressure; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
     )]
@@ -2003,6 +1999,13 @@ impl ShardEngine {
         clippy::let_underscore_must_use,
         reason = "ShardEngine::submit_absorbed; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST billing fixtures' way to stage maintenance state and the service submits batches; deleting it would strip the submit those fixtures pin"
+        )
+    )]
     pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
         let _ = self
             .tx
@@ -2272,6 +2275,13 @@ impl ShardEngine {
     #[expect(
         clippy::let_underscore_must_use,
         reason = "ShardEngine::pump_trim_tick; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::pump_trim_tick; the manual trim tick is the DST recovery fixture's way to drive maintenance and the service ticks from its own timer; deleting it would strip the tick that fixture pins"
+        )
     )]
     pub(crate) fn pump_trim_tick(&self) {
         let _ = self.tx.try_send(CommitOp::TrimTick);
@@ -2718,6 +2728,13 @@ impl ShardEngine {
             .map_err(|e| e.to_string())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::count_consumer_state_rows; the row count is the consumer fixtures' witness of what the committer retired and the service never scans for it; deleting it would strip the count those fixtures pin"
+        )
+    )]
     pub async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],

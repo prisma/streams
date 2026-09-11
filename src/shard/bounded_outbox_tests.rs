@@ -2,7 +2,6 @@
 #![cfg(test)]
 use super::*;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::too_many_lines,
     reason = "r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt; the scenario pins one ordered sequence of dirty and final pages and a partial acknowledgement; helper phases would hide which page each bound is checked against"
@@ -11,6 +10,7 @@ use super::*;
     clippy::let_underscore_must_use,
     reason = "r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(

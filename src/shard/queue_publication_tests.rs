@@ -2,7 +2,6 @@
 #![cfg(test)]
 use super::*;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::too_many_lines,
     reason = "r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch; the scenario pins one ordered sequence of the staged generation, the refusal, the group failure and its dispatch; helper phases would hide which step each assertion observes"
@@ -11,6 +10,7 @@ use super::*;
     clippy::let_underscore_must_use,
     reason = "r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(

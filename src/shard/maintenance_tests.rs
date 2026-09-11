@@ -86,11 +86,11 @@ fn codec_roundtrips_v2_and_refuses_v1_values() {
 /// R25-A: load semantics against a real DB — present row loads (with
 /// the progress clock initialized for v1 rows), missing row rebuilds
 /// from the dirty index + tails and PERSISTS the rebuilt row.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::too_many_lines,
     reason = "load_or_rebuild_covers_present_missing_and_corrupt; the scenario pins the present, missing and corrupt maintenance rows through one engine in one order; helper phases would hide which state each rebuild observed"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
 
