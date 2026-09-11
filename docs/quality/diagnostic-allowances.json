@@ -241,55 +241,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2866297d3a55a878293382736f2b6b20cc857d41c85eaa26c3380037f1186178",
-      "item": "crate::canonical_stream_name",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "71277d3e194fd0024095b5eacd981360df9e5cd71eeb8b2e52465e5cbf44a487",
-      "item": "crate::install_reserved_claim",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c55696a3981eb7e59dd49462c8227906096da0722762af35c7103e883a039ac3",
-      "item": "crate::product_append_inner",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "97a7f3731e7e16942708602819df43bc08cb4f38084155b995673fefcd21c066",
-      "item": "crate::product_consumer_pull",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6a34511f8a70300e13b53162d80dad34ca4e4cccc6916af60cee95be073a57b5",
-      "item": "crate::product_watch_wait",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4ca887a8fdfba65196ceda1115d4d7fed285a684ad3d0f5026a6718ec5c2c680",
-      "item": "crate::render_product_append",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6f972ca67e7357a3f43f5583f710f513681a7c50670f49dd9272f85a092e4dc1",
-      "item": "crate::submit_product_append",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "3fc6f535aafafccf0492bd8dd860c3326140c64c8104e0d87824ee811be9aba4",
       "item": "crate",
       "lint": "clippy::allow_attributes_without_reason",
@@ -4252,41 +4203,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "7b4019956678e68d73ceb53ec104433af6920cd71d9a44262f61460e78738e0e",
-      "item": "crate::internal_queue_cursor",
-      "lint": "clippy::expect_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "95eccb58dc6800cea79292217bd4efd712ee60ecdf652366630e214edbb91371",
-      "item": "crate::internal_sweep_segment",
-      "lint": "clippy::expect_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "15c661298031062680d29b164f8f0a0727d3ba368f213c4cd0fc66630f8ba1a5",
-      "item": "crate::product_consumer_settle",
-      "lint": "clippy::expect_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "609475ecc376dacae70a104c12c196fb5b1393664201b42ac0b8a2463ca27fd2",
-      "item": "crate::product_scan",
-      "lint": "clippy::expect_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3f79ca08deb4e347f6f1fd296b087c51f039da3bc9381d2db33343d1c166341c",
-      "item": "crate::product_seal",
-      "lint": "clippy::expect_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "42eeb6c95de8528603672d7cf38b8c88e9e9386bcbeb5ea38ae21702ef707233",
       "item": "crate::mac16",
       "lint": "clippy::expect_used",
@@ -5397,27 +5313,6 @@
       "item": "crate::render_raw_read",
       "lint": "clippy::needless_pass_by_value",
       "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a1ede0fd2e84187a429ff55c18996e2bcd5fdc8cd7f39de7932b9bbd35f84bef",
-      "item": "crate::consumer_config_response",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4237887446ffae435e080ce31862f34be519be449bcf0d750d26cd4b27efd8ba",
-      "item": "crate::json_ok",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3f4bd27e25070a439aea780fe732bdf5411d16ca3f3194beffd56b61ec7dc761",
-      "item": "crate::render_product_read",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/product.rs"
     },
     {
       "count": 1,
@@ -7271,104 +7166,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f5233b8499a82aaf010dc12b6267baf2324dc6c0f82cd4d23566b749607f8698",
-      "item": "crate::consumer_config_response",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a4291659e84e79da774b1ce963fbdba1a07b8d84b121aab9e63b5f07ac160884",
-      "item": "crate::json_ok",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "46d09d3d2587eab7954b4e554e28fc0dfd5a3599e54271b3f2af3b8e0766ba09",
-      "item": "crate::metadata_response",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5dc73c9d88e58903eca95ef305eae04c51ac977ae48bd76cf927afe4bcf161e0",
-      "item": "crate::metadata_response",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0ba55811dc6d23da6d089b23d7949793de34610e199baf08c81e59722da60f98",
-      "item": "crate::perr",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "11a05778efb775a6b61126795fbe69d6999d63737713574d7b2ff1130a323397",
-      "item": "crate::product_consumer_delete",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4956f9f2afd6323a0d1490aa1c009d4632a1338c8e4aec3f5b4812ed366a34bb",
-      "item": "crate::product_entry",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "830412544892f4923b3f036df88f1b6ac1f670681b3442f152838f6120023152",
-      "item": "crate::product_list",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "453a035df8ab48a950fc6ccf108d8e74a58a9240211f7668cb8fb73199d7b509",
-      "item": "crate::product_scan",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "300e9707661fa5b3969a87c4c3a470c3d83454772a15ee3941acc983ec02846c",
-      "item": "crate::product_seal_only",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "85b29b0db8d6fc114e135ab75717caf8f5fc849d921e3487799e0ce13f930473",
-      "item": "crate::product_usage",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "84b99e3be8ee63e564dd3827715318f9825b9f5db541d6a23fa2a50d5f22c3fb",
-      "item": "crate::render_product_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4bec16a0a575cee88e5bf92c1ee6ef5257073fef65854d39647c0621e500f8e0",
-      "item": "crate::render_product_append_error",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "426e5e302f2db70b105dd4cfa0ccccbb659cd502f1992ca37b23d939f385813e",
-      "item": "crate::render_product_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "8845e6d33d2494f13b2a21cc897d78a452ed44819b7574ed8a55dbac41cf26ed",
       "item": "crate::Registry::cache_insert",
       "lint": "clippy::unwrap_used",
@@ -8598,13 +8395,6 @@
       "item": "crate::PostingsCache::runs_for",
       "lint": "unreachable_pub",
       "path": "src/postings_cache.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c3264032c89d04b0edbbde03b05aa194016f29cf351983156ace2f1765fcaee5",
-      "item": "crate::canonical_stream_name",
-      "lint": "unreachable_pub",
-      "path": "src/product.rs"
     },
     {
       "count": 1,

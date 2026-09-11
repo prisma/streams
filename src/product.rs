@@ -2297,10 +2297,6 @@ async fn submit_product_append(
 /// {cursor, count, duplicate, sealed} on success, the stable product
 /// error schema otherwise.
 #[expect(
-    clippy::too_many_arguments,
-    reason = "render_product_append; the wire rendering needs every part the append outcome produced; a rendering struct would duplicate the outcome type for one call"
-)]
-#[expect(
     clippy::unwrap_used,
     reason = "render_product_append; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
