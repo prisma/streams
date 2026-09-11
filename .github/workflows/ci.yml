@@ -296,7 +296,7 @@ jobs:
             --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
             --max-unflushed-bytes 67108864 \
             --flush-interval-ms 1 --wal-flush-gap-ms 2 \
-            --conformance-default-key "$KEY" &
+            --conformance-default-key="$KEY" &
           sleep 2
           # The runner lives in conformance/ with a committed lock and an
           # exact expected outcome. It does NOT use the package's npx
