@@ -654,6 +654,56 @@ mod tests {
         }
     }
 
+    /// A page holds every run of its bucket until the encoded-size cap:
+    /// three gapped runs in one bucket are one page, not three.
+    #[test]
+    fn small_pages_keep_their_runs_together() {
+        let key = RoutingKeyHash([7; 16]);
+        let mut builder = PageBuilder::default();
+        for offset in [0, 10, 20] {
+            builder.note_frame(key, offset, 100);
+        }
+        let (pages, _) = builder.finish();
+        assert_eq!(pages.len(), 1, "one page per bucket below the cap");
+        let (_, _, first, encoded) = pages.first().expect("one page");
+        assert_eq!(*first, 0);
+        assert_eq!(decode_page(encoded).map(|page| page.runs.len()), Some(3));
+    }
+
+    /// A known gap wider than max_gap_bytes opens a new span even when the
+    /// amplification ratio would have allowed the coalesce.
+    #[test]
+    fn a_gap_past_the_byte_cap_opens_a_new_span() {
+        let cfg = PlanCfg::default();
+        let wide = cfg.max_gap_bytes + 1;
+        let plan = plan_spans(
+            &[run(0, 1, 1 << 20, 0), run(100, 1, 1 << 20, wide)],
+            101,
+            &cfg,
+        );
+        assert_eq!(plan.spans.len(), 2, "the gap exceeds max_gap_bytes");
+        assert!(plan.complete);
+    }
+
+    /// A run that exactly fills the scan budget is planned in full; only a
+    /// run that exceeds it is cut to a bounded prefix.
+    #[test]
+    fn a_run_filling_the_scan_budget_exactly_is_complete() {
+        let cfg = PlanCfg {
+            max_scan_bytes: 4096,
+            ..PlanCfg::default()
+        };
+        let plan = plan_spans(&[run(0, 4, 4096, 0)], 4, &cfg);
+        assert_eq!(plan.spans.len(), 1);
+        assert!(plan.complete, "exactly the budget is not over budget");
+        assert_eq!(plan.consumed_to, 4);
+        let over = plan_spans(&[run(0, 4, 4097, 0)], 4, &cfg);
+        assert!(
+            !over.complete,
+            "one byte over the budget is a bounded prefix"
+        );
+    }
+
     /// Review finding 6: tiny matches around a large-but-under-64KiB
     /// gap must NOT coalesce into one high-amplification scan — the
     /// hard 4x (and target 2x) ratio gates it.
