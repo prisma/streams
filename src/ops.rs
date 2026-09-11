@@ -130,6 +130,10 @@ impl OpsService {
         self.dropped.load(Ordering::Relaxed)
     }
     /// Never fails the transition: bounded overflow becomes durable gap debt.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpsService::emit; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    )]
     pub(crate) fn emit(&self, ev: OpsEvent) {
         let mut g = self.queue.lock().unwrap();
         g.recent.push_back(ev.clone());
@@ -223,6 +227,10 @@ impl<'a> PendingOps<'a> {
     }
 }
 impl Drop for PendingOps<'_> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PendingOps::drop; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    )]
     fn drop(&mut self) {
         if self.events.is_empty() {
             return;
@@ -605,6 +613,10 @@ pub(crate) struct AlertState {
 /// transitions append to `_ops_events` (§13.2: the stored record is
 /// the audit trail). Rules read only what the snapshot carries — the
 /// evaluator itself is a pure function of observable state.
+#[expect(
+    clippy::unwrap_used,
+    reason = "evaluate_alerts; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+)]
 pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap: &OpsSnapshot) {
     let g = |k: &str| snap.gauges.get(k).copied().unwrap_or(0);
     // (fingerprint, breached, human summary)

@@ -561,6 +561,10 @@ impl Scaler {
         }
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Scaler::stats_json; a poisoned scaler state may hold a partially updated segment tally; recovering it could report a topology that was never decided"
+    )]
     pub(crate) fn stats_json(&self) -> serde_json::Value {
         use std::sync::atomic::Ordering::Relaxed;
         let hot: Vec<String> = self
