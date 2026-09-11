@@ -895,6 +895,86 @@
       "path": "src/dst/tests/seal_recovery.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_release_parked_across_recreation_cannot_touch_the_replacement",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Fork release fixture owns the parked release handle; it is released and joined before its verdict is examined. Concurrent execution is required to park it between its epoch check and its mutation.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked creation fixture owns both creator handles; each is released and joined before the verdicts are compared. Concurrent execution is required to park both in the same readiness window.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_parked_delete_never_removes_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked deletion fixture owns the deleter handle; it is released and joined before the replacement is examined. Concurrent execution is required to park it before its decision.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::creation_does_not_report_success_after_a_concurrent_delete",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked fork creation fixture owns the creator handle; it is released and joined before its status is checked. Concurrent execution is required to park it before readiness while the source is deleted.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::a_applied_read_and_long_poll_serve_the_tail_before_durability",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Applied-read fixture owns the held write, the parked long-poll and the waking write; all are joined after the frozen dispatch is released. Concurrent execution is required to observe applied delivery before durability.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Volatile-suffix fixture owns the provisional append until the fenced engine has terminated, then aborts and joins it with its disposition checked. Concurrent execution is required to keep it in flight through the crash window.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_stale_applied_cursor_is_refused_after_crash_restart",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Stale-cursor fixture owns the provisional write handle; it is joined after dispatch is released. Concurrent execution is required to mint the applied cursor beyond the durable frontier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::touch_close_shard_matches_route_hash_not_storage_hash",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Watch routing fixture owns both parked waiter handles; each is joined after the touch that should wake it. Concurrent execution is required to park a waiter before its touch.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::product_watch_wakes_on_matching_append",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Product watch fixture owns the parked waiter handle; it is joined after the matching append. Concurrent execution is required to park the waiter before the append.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::watch_capability_waits_occupy_project_admission",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Admission ceiling fixture owns the long waiter handle; it is joined after the refused second waiter is observed. Concurrent execution is required to hold the project's admission slot.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
