@@ -12,6 +12,10 @@ impl CommitTransaction<'_> {
         clippy::unwrap_used,
         reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail; recovering it could accept an append against a boundary that was never committed"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::append; the append nests the producer chain load inside the first-sight branch of the producer plane; flattening it would separate the load from the plane it seeds"
+    )]
     pub(super) async fn append(
         &mut self,
         local: &mut StreamOverlay,

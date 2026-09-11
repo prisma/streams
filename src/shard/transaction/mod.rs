@@ -43,6 +43,10 @@ pub(super) struct CommitTransaction<'a> {
     group_has_absorbed: bool,
 }
 impl<'a> CommitTransaction<'a> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained; checked conversions would only restate those bounds"
+    )]
     pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>, cfg: &'a ShardConfig) {
         let ops = Self::expand(engine, ops);
         if engine.is_closed() {
@@ -99,6 +103,10 @@ impl<'a> CommitTransaction<'a> {
         }
         transaction.finish().await;
     }
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::reject_op; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
     fn reject_op(op: CommitOp, error: AppendErr) {
         match op {
             CommitOp::Append(req) => {
@@ -124,12 +132,12 @@ impl<'a> CommitTransaction<'a> {
             CommitOp::Append(r) => r.hash,
             CommitOp::Close(r) => r.hash,
             CommitOp::SealFence(r) => r.hash,
-            CommitOp::Absorbed { hash, .. } => *hash,
-            CommitOp::Queue { hash, .. } => *hash,
-            CommitOp::TrimStep { hash } => *hash,
-            CommitOp::UsageAck { hash, .. } => *hash,
-            CommitOp::BillingClose { hash, .. } => *hash,
-            CommitOp::BillingRetained { hash, .. } => *hash,
+            CommitOp::Absorbed { hash, .. }
+            | CommitOp::Queue { hash, .. }
+            | CommitOp::TrimStep { hash }
+            | CommitOp::UsageAck { hash, .. }
+            | CommitOp::BillingClose { hash, .. }
+            | CommitOp::BillingRetained { hash, .. } => *hash,
             CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => return,
         };
 
@@ -172,6 +180,7 @@ impl<'a> CommitTransaction<'a> {
         self.streams.insert(hash, local);
     }
     fn reject(self, message: &str) {
-        self.effects.reject(AppendErr::Internal(message.to_owned()));
+        self.effects
+            .reject(&AppendErr::Internal(message.to_owned()));
     }
 }

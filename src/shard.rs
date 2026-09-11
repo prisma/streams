@@ -1934,7 +1934,7 @@ impl ShardEngine {
             return; // already closing
         }
         for group in stranded.unwrap() {
-            group.effects.reject(AppendErr::Moved);
+            group.effects.reject(&AppendErr::Moved);
         }
         if let Some(cb) = &self.on_close {
             cb();

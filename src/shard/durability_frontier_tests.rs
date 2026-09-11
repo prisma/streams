@@ -7,6 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::{mpsc, oneshot};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier; the fixture stages the prior group, the close retry and the fence wait against one remote frontier; splitting it would separate the stages from the frontier they wait on"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() {
     let store = crate::dst::FaultStore::new(

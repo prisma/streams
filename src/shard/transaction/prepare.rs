@@ -1,5 +1,13 @@
 use super::*;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::expand; the expansion nests the trim cursor walk inside the trim-tick arm of the op match; flattening it would separate the walk from the tick that schedules it"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::expand; a poisoned trim debt or cursor may hold a half-recorded stream set; recovering it could trim a stream twice or never"
+    )]
     pub(super) fn expand(engine: &ShardEngine, ops: Vec<CommitOp>) -> Vec<CommitOp> {
         const TRIM_STREAMS_PER_TICK: usize = 64;
         let mut expanded: Vec<CommitOp> = Vec::with_capacity(ops.len());
@@ -38,6 +46,10 @@ impl CommitTransaction<'_> {
         }
         expanded
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::billing_rows; the row load nests the failure capture inside the uncached-hash branch; flattening it would separate the failure from the hash it stops at"
+    )]
     pub(super) async fn billing_rows(
         engine: &ShardEngine,
         ops: &[CommitOp],

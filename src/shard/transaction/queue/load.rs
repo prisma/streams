@@ -2,6 +2,10 @@ use super::*;
 impl CommitTransaction<'_> {
     /// A complete checked snapshot belongs to the overlay. Failed scans never
     /// mark either the shared handle or this transaction as loaded.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::load_queue; a poisoned stream state may hold a half-loaded queue; recovering it could serve leases never made durable"
+    )]
     pub(super) async fn load_queue(
         &self,
         local: &mut StreamOverlay,

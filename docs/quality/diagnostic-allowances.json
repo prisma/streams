@@ -486,55 +486,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "a1b11359be9f9a47686bfd28b795e61f1c7daf09aee06de5bb1760cdf7ba3c7a",
-      "item": "crate::mixed_fixture",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/read_budget_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "53f5da96da7d8c6f1df44678ddd3872b9a78801f65fcb088168667e746031f43",
-      "item": "crate::r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/read_budget_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5d71a611d2e3f5d57e3d86a048dbac2faaeabbdd1e697b78c984aed5fc048806",
-      "item": "crate::CommitTransaction < '_ >::write",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a203db72b5ae5ddf1b09d409928cf964c425c1392c0a45723f9424507b088478",
-      "item": "crate::CommitTransaction < '_ >::write",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "361ae0020ccdfc80f88c86eba6021aad3db4e98b97a272314d14c13150a78edb",
-      "item": "crate::CommitTransaction < 'a >::run",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bfa8e4267591cea919bc6a264a67436e489bc9def8cb53fcdb89c66627712d83",
-      "item": "crate::CommitTransaction < 'a >::run",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "de5a1e794f22e602c6a2bb5a3655d49882739b5fc9bdde34889e35e5e85d4cbf",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "528dd7b6cca8a88a06f37703ab547cc2f6a640e3af129e3af149f3c66505e12b",
       "item": "crate::LiveFeed::read_and_publish",
       "lint": "clippy::cast_possible_truncation",
@@ -714,41 +665,6 @@
       "item": "crate::main",
       "lint": "clippy::disallowed_methods",
       "path": "src/main.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a4b24ddc151fb02ad8eabfe6eac9e73cde3ec8bdbd1ad791fe279b189c0673b8",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "97f3768b36e9aa2ae13afb3791439e632346d215bba8eb2f45c74e203d3154dd",
-      "item": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/shard/record_scan_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a4c566ac4888ed963ca0594ef7986ef429cfb40a3d472ab7ff4acc41ec490a50",
-      "item": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/shard/record_scan_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "65f4ed43e20e06e9bc8b75019fdc9e32d1fe4c55ab46353c7695f32790b2e50c",
-      "item": "crate::r17a_cancelled_history_opener_stays_owned_until_late_store_close",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eae69f263993551a901e67305c76ae642ede4d9711ba87b87e4074688c999d84",
-      "item": "crate::CommitTransaction < '_ >::absorbed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/shard/transaction/maintenance.rs"
     },
     {
       "count": 1,
@@ -2012,328 +1928,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "06d29137bf6e07d6ea97cd83eb4399613c6bd89261314a51f104757f2fa00b13",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "afb2d391518c4fece3b700fe17722592064afe71d81034fff84e93a56b1fe86b",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bf1452a2a29a2c1aab396a79ef49c9a81d50d389d984c28a7e549aa018e19e73",
-      "item": "crate::r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/read_budget_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "addd5da0996105fe1d8d1abda9abb632d319c7fb35a15915e12c584b3ccfb134",
-      "item": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/record_scan_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fcea964d43746206cb9a1431b43c7c2ea392308379a3b12dd14f13889ad5c241",
-      "item": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/record_scan_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a57756dfbd4c553f76c3834e880bc245f6ac40aa24814934de5bba5ae24145ed",
-      "item": "crate::r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8d494872ffc9438984e522abb6d6fbe4fdcfbd98b5135c950e5a018ff966ebc7",
-      "item": "crate::r17a_unexpected_required_engine_role_exit_fences_serving",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "444064d930057afe2c1c858b3d450c0ec72e7a9b64d9db97013f9a9b37dee079",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "622c480f1f1d6ba1cb081243988414c958bae962c68b22482e0340ae0c8c03ae",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ceaac992f61445fe487c700454f908ac526a7ba342c86e1d8ed998dff8ebfaa9",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6da71869f756f4c37f7a7b177d0db435ed61718fe5130fc9869b50a0965e855",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fc2a0abca8aaa26616700769f28148667be2792f28001eca77494495eb532d38",
-      "item": "crate::CommitTransaction < '_ >::append",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/append.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2af7a8c49eaa1986b3da2fb2c7488268aece9c672a522898d1301334ef350f69",
-      "item": "crate::CommitTransaction < '_ >::failpoint_tripped",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ad85e6e93e982b88c9a75f5463009db3e1ed649e7abd09eb759a36268f5c332d",
-      "item": "crate::CommitTransaction < '_ >::stage_stream_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b0887d1338640043f6930dd649ed9fd31a2a5071f9141c2dd154aba024da45ae",
-      "item": "crate::CommitTransaction < '_ >::stage_stream_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b5936f36fbb686771dff6fac5f19778801dedeca689d2706562074d871f19e48",
-      "item": "crate::CommitTransaction < '_ >::stage_stream_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f46149bd7df7986e0baee6a6668415cb81b51c1ebb7430c8e0b507c3ac2c54e8",
-      "item": "crate::CommitTransaction < '_ >::stage_stream_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "067d146b498a0543bb32e3fa81a8446cd4157e85c13d4ef78b4659109dbb9ad1",
-      "item": "crate::CommitTransaction < '_ >::billing_close",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "821ae01fc370d3956ce1273f277d20a60c59c7f4667c978e59667a424a81b1a0",
-      "item": "crate::CommitTransaction < '_ >::billing_close",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eba1f20e770460927418b61c490c1c544edb52f897a39584cd29adc86439c26b",
-      "item": "crate::CommitTransaction < '_ >::billing_close",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a89216f3ebdc9cd9d903dd5cd7a3a47919dbb39f003c269fd2c610f7ef6c2179",
-      "item": "crate::CommitTransaction < '_ >::billing_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e2d0ac4fb085e5e6ce42fafc5aa01cf4832013c8658e0b3d032466fdcb481b6d",
-      "item": "crate::CommitTransaction < '_ >::billing_rows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "837e3a697ea99334a6025b81a01ea7882674a4c042a4af39554630a8d827bec0",
-      "item": "crate::CommitTransaction < '_ >::expand",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9ccb9c63f55543c1f93b6a290762323c326c08435c7c33cf7471dcd2d54620b8",
-      "item": "crate::CommitTransaction < '_ >::expand",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a4e12515eaa8b696f9a26d8b13baa203e1410a0a6933a8d80f2324be00b50266",
-      "item": "crate::CommitTransaction < '_ >::expand",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ab0dcf52d01ad5cbeb9e9a3c84da0f705c30873675005e1ac0ccd34e3e099ed6",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e0700283fa85f2224091df8744d0aeb4b8bc4a7e9ce00abd444ffa5dd9b7cf72",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "523a7b83ceaa97aa79c7465ad23b3bbd01450e8888c419e9c0cbfe4e85e92ee9",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dbf474fb9469aadfd2789a9a65d483a640e978c72392e069e4f9ddb426ab1dee",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fdd81154b206ac10d0eb8976a3b136bd456e035cc7a124f84daa12b307fa1eb4",
-      "item": "crate::CommitTransaction < '_ >::delete_step",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/cleanup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b25967b33c080c20f31aece1c38a8a6d5ab483f34348a7518244506a354e07d6",
-      "item": "crate::CommitTransaction < '_ >::queue",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f16a220d5868732d6eb7612e9cb501fb2f520428533208e425e2a9c77ca99a5a",
-      "item": "crate::CommitTransaction < '_ >::queue",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "42598fd82ea2649ea1957515828ab404be5fdaadf34b7e1c74c6d46222565f8d",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "584de9e97735d3eb78e6ecaaf5522927897a74eb78acf6e70fd1f3126bfe08f3",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "77fcb29c2effa40cb2adf186ccad6ce51c835cf68d2fd334ac1bbcf3a762f7f0",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8589fd3d73c64f568b9ae2b2dbdbf191e89b17a5e7a40200aa3f07afffa35c9f",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9b3276cec96918415b26cfec3e4db0acba4659e01a1e3629e145e1586ad04241",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "05585412cc52c15ebd1f1acac7b9c62535deef89d03d3fe6f88b9324a1e6f177",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ceb87118a472e81b454ce42c773323b745ed4ab6add244ac7268d947586d9d3a",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 3,
-      "fingerprint": "f5063749e1109c019b25463ee2408576ca9675bc0a75b3727402a001cb04a535",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f8a9d7cda2f5e6a501901d63a8d10b52a1a7f32d5620d295f4af27263da82b3a",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0cfd6fab9888ecc41409c92bde9736b40993a72ab18db884a9a5863d4be53c1a",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1c22584bff6ee9db59ed389bed1af084d05ae4d26c9aa7f3ca121632beae0962",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "279cd3fcccd1d1a89ac62d1d541d3724839d24d9afcbc660adda3d2ddbc234f3",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "546abea79758392a417b75d171184eab42614dd960f208ab9da1911fdedfb418",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a44aef6fca9c1497ea0c72e87aa7c774533edd0c1b57d55b775a8811664f01a4",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "7c28528ded2efe879bb29dcab5bf3337350e7fdd7cb1e8b1e85cfc9c936e648a",
       "item": "crate::ShardDirectory::shutdown",
       "lint": "clippy::excessive_nesting",
@@ -2810,27 +2404,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "71c94b87ea313746b3655e25606c249376b24edc6bbc4662d58a76e102cf5b85",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::expect_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "47a1459158ec9b8aa4b63ed14b6256e0c68bb6aee4691c7a30dd27cb2cb33d4c",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::expect_used",
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1353469809c46427213f31ebbbed65a2ec3f4d19d9b2c5f314c7bb004a42eda3",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::expect_used",
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "942d0cd8e54fd22281efe6ac07860a79f103e8c6ea15384ae02f3a61ef5d864e",
       "item": "crate::LiveFeed::read_and_publish",
       "lint": "clippy::expect_used",
@@ -2912,13 +2485,6 @@
       "item": "crate::product_append_inner",
       "lint": "clippy::fn_params_excessive_bools",
       "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c43a1c2e500fbfb93f6f4c0895bf4352da175e841f61cf2e22cfdcb05b0a0b00",
-      "item": "crate::duplicate_order",
-      "lint": "clippy::fn_params_excessive_bools",
-      "path": "src/shard/retirement_tests.rs"
     },
     {
       "count": 1,
@@ -3132,104 +2698,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2273e8cd46b371b2f6c93c9155c01e61cddc7125be3c430eeed775884d7af64f",
-      "item": "crate::DurableEffects::reject",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/commit_plan.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f44d4dfadecc28a48e1350d6b783cf7b0f88c9fb8711bb9d1b589c604e8b3d0c",
-      "item": "crate::DurableEffects::reject",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/commit_plan.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "14ef1e9d3a3ad8e1e1c4c38debdffffa4d5f07c6f36f1ca3a81df21a61ee8d74",
-      "item": "crate::DurableEffects::reply",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/commit_plan.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "91ebc66012f2e51121a936f83d3a393bb265c82a2fa2967a320c1d7a0fbe3e2c",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7581426413df0195a556e9f3bb1e3f4084c7eb41c6af26289027c88a1b0b1631",
-      "item": "crate::EngineTasks::required",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3d33aaf54c1cf40c871389a75aa8963537f97634fb38702baee07fd190ba718f",
-      "item": "crate::r08_corrupt_queue_rows_refuse_without_replacing_persisted_state",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/queue_codec_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6c1e515b7da9304365b808dc3b92034adb1fef088fbab5e70daf87628744af25",
-      "item": "crate::r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "82fbca7ae91f0fe27c165e62d36c6c151dc6485cb269125ce3906ba555deea74",
-      "item": "crate::r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3c973fd0b5dfbbc0eddc4dbbe15bb65a977e8c9ef8830743e3a4fbfbd2503b79",
-      "item": "crate::r17a_unexpected_required_engine_role_exit_fences_serving",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9358937dcb3e827add5dd088b1f9cd0d79124c85d98431a71372112324f6c6b7",
-      "item": "crate::r17a_unexpected_required_engine_role_exit_fences_serving",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/task_lifecycle_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4d93fe37ad8a8eaa5daa24e59ba6684a1efbbcb275aca28b7a46db8dfbdad0fa",
-      "item": "crate::CommitTransaction < '_ >::close",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "75244d884d6753b6ed77434dfd975a1ce94589d84c81e71f8e74800d2115db49",
-      "item": "crate::CommitTransaction < 'a >::reject_op",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb105ec31b9fd29043677aea52cfd3ef6146164aac833d86d5db92291e68cc56",
-      "item": "crate::CommitTransaction < 'a >::reject_op",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f4063e291e49b43253a677fa54b7ff9f8e5cc770a24b92e9c1814cb31e11985a",
-      "item": "crate::CommitTransaction < 'a >::reject_op",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "449835c17a75fbd46c207989c559a9f79a23f42be0b40b9b8952cdd17865935c",
       "item": "crate::directory_tests::slow_open_is_reported_as_retryable",
       "lint": "clippy::let_underscore_must_use",
@@ -3370,13 +2838,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "37ad9fc70d48095f983c2413ff24b72a396c2c624e7b09f0c8db44bd9d459f63",
-      "item": "crate::CommitTransaction < 'a >::stage",
-      "lint": "clippy::match_same_arms",
-      "path": "src/shard/transaction/mod.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "decd1e456a1fc9f0e78141ad423f798722c55e370eee478eff21e02f24f8534c",
       "item": "crate::serve",
       "lint": "clippy::match_same_arms",
@@ -3416,13 +2877,6 @@
       "item": "crate::RuntimeCaps::with",
       "lint": "clippy::needless_pass_by_value",
       "path": "src/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6ce788248f78d6875e88116f072d743e3c3a39023ea033fb6506a346554b2596",
-      "item": "crate::DurableEffects::reject",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/shard/commit_plan.rs"
     },
     {
       "count": 1,
@@ -3764,30 +3218,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1c8e09a8608e3cec2e627b5a07348e803c3817db03602ce159ae69944f203682",
-      "item": "crate::CommitTransaction < '_ >::absorbed",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ea6bddf6d5f54d5aa0604e205c0763a707615e60ce67a295666bc975f754ec92",
-      "item": "crate::CommitTransaction < '_ >::config_lifecycle",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/shard/transaction/queue/config.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6cf3196e9b4e5a5e0d4e626573a81bd5c2034c6fc7160270fe4c5139abf088e7",
-      "item": "crate::CommitTransaction < '_ >::config_put",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/shard/transaction/queue/config.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "40bc5f30f5c9e9a20f28de8922c306638c2b4fc7d498d3fcd3f1e9be20f7799e",
       "item": "crate::GatedSseBody::new",
       "lint": "clippy::too_many_arguments",
@@ -4100,54 +3530,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "4cfb76e2e807940b1be6f45fab01f7efbe8b99347af08441af1c594a841fa7d8",
-      "item": "crate::r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier",
-      "lint": "clippy::too_many_lines",
-      "metric": 143,
-      "path": "src/shard/durability_frontier_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0ddda6871de10dc7a3b3be80f2b1d6451bf0903ae1c8ca0933844262140a8797",
-      "item": "crate::r17b_late_successful_write_settles_without_publishing_retired_effects",
-      "lint": "clippy::too_many_lines",
-      "metric": 173,
-      "path": "src/shard/retirement_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0d6513554f0108c4c3561b1a6d609a6bbf2df3a465e69f622523274a1e8f1a7d",
-      "item": "crate::CommitTransaction < '_ >::queue",
-      "lint": "clippy::too_many_lines",
-      "metric": 118,
-      "path": "src/shard/transaction/queue/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "51c20655174b5f1894e044724b31aa87f5b56ad8cc83b52123774fc006466b4d",
-      "item": "crate::CommitTransaction < '_ >::receive",
-      "lint": "clippy::too_many_lines",
-      "metric": 110,
-      "path": "src/shard/transaction/queue/receive.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "df47375ffbbc7ae4b5672df916df9c48d2003aca64961adade036bd3fad42b40",
-      "item": "crate::CommitTransaction < '_ >::settle",
-      "lint": "clippy::too_many_lines",
-      "metric": 119,
-      "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "edd74bb26d66ad79794572de0af5d97aaf8ce62bdeeab99ecbeacc8adf300e1c",
-      "item": "crate::r03a_mixed_transaction_preserves_every_row_reply_and_publication",
-      "lint": "clippy::too_many_lines",
-      "metric": 176,
-      "path": "src/shard/transaction_tests.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "04536f2aa89e60d5cc8ec50cb6e2ab664bf57cb8036dc498b7045bb15aab9f17",
       "item": "crate::LiveFeed::read_and_publish",
       "lint": "clippy::too_many_lines",
@@ -4395,118 +3777,6 @@
       "item": "crate::stream_entry_inner",
       "lint": "clippy::unwrap_used",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d201efd4aca1686ba03567dafaa11b393689eb3470a4ed5b8a2e5c86c08d9043",
-      "item": "crate::EngineTasks::failed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b5c76ba5d8f353a7fad754c2333a21d8ad2b4e0d44f89c25f12d0417c70f4c0c",
-      "item": "crate::EngineTasks::failure",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d4079d954d073c14f979b5867716d459c4b6e132383bb701f5beead0ab9b75bb",
-      "item": "crate::CommitTransaction < '_ >::join_prior_barrier",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/finalize.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d521a0f621648b2a9a20848676e586648f1c75b069527aaa77fc3cff71bf4c82",
-      "item": "crate::CommitTransaction < '_ >::billing_close",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9bcf67e08d1885005afb1383f8651e6c93e2560bcc6de4e3279b8c1416d7cbad",
-      "item": "crate::CommitTransaction < '_ >::billing_retained",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "18656309222aeeebd70e60339742e96b5a92d6618bdc0065c4dd01094af2c7e7",
-      "item": "crate::CommitTransaction < '_ >::close",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b75cefd745999a24486562bb903e93818055de7abf2625c1327c1a1f653cc347",
-      "item": "crate::CommitTransaction < '_ >::fence",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f818f2cd5de4b5ce590edf4de56232d716887cdb591edef225c9c1eea2811433",
-      "item": "crate::StreamOverlay::new",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/overlay.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ae27f6c74e077cd248fb05e05c9694bbd3b105c13375360312c3d2e3c4a79587",
-      "item": "crate::CommitTransaction < '_ >::expand",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dc36048b15546a165d00b54371f21378197b89784f408aff1f6bfc388e524433",
-      "item": "crate::CommitTransaction < '_ >::expand",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/prepare.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "526ba3fc03391b3bdaf89a105bb5b60155fe38c0a885acc60d2a1073a0fa29bc",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "73267385419e509c3042cb1a1ece9b23ac01a7bb71b6fff43e73a1b2d40638bc",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e069f9a5ed2cde19911320179dd436783bfe82ffc732c171345e13f19d6553d3",
-      "item": "crate::CommitTransaction < '_ >::publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/publish.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2013422daa126fd9eecc86d8209eee48f38dc836b981078916330c8c2bc9c9d3",
-      "item": "crate::CommitTransaction < '_ >::load_queue",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "09e4be77e099c6ffaa5ddf575d119ff426e20b1ff2ba40b3ce9b247baa748b52",
-      "item": "crate::CommitTransaction < '_ >::queue",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2e693ba896aaf514285b187c0417172c434a43477018ef004242668fe90aa2fd",
-      "item": "crate::CommitTransaction < '_ >::queue",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/transaction/queue/mod.rs"
     },
     {
       "count": 1,
@@ -4983,13 +4253,6 @@
       "item": "crate::ShardEngine::submit_billing_close",
       "lint": "unreachable_pub",
       "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bc421be6e2d658991637dd800b64a9bde9c63bd6e753c9d4336b145d5d1add3",
-      "item": "crate::DurableEffects::reject",
-      "lint": "unreachable_pub",
-      "path": "src/shard/commit_plan.rs"
     }
   ]
 }

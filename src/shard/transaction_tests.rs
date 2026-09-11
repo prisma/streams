@@ -244,6 +244,14 @@ impl Fixture {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "r03a_mixed_transaction_preserves_every_row_reply_and_publication; the fixture stages every op kind in one group so their replies and publication are judged together; splitting it would separate the ops from the group they share"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r03a_mixed_transaction_preserves_every_row_reply_and_publication; the fixture nests the per-reply and per-stream assertions inside the retired and applied phases it stages; flattening them would separate the assertions from the phase they judge"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
     let mut fixture = Fixture::new().await;

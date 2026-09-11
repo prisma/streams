@@ -79,6 +79,14 @@ async fn stored_rows(engine: &ShardEngine) -> Vec<(Bytes, Bytes)> {
     rows
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "r08a_database_record_corruption_refuses_progress_without_mutation; the fixture spawns the readers it joins immediately so their panics surface as join errors; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r08a_database_record_corruption_refuses_progress_without_mutation; the fixture nests each read inside the task it spawns and joins; flattening it would separate the read from the panic boundary it needs"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
     let mut short = record_key(&[8; 16], 1);

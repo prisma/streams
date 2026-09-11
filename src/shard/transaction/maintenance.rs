@@ -17,6 +17,14 @@ impl CommitTransaction<'_> {
             self.extra_writes = true;
         }
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::billing_close; the billing meta was inserted just above when absent; a fallible read would add a branch no close reaches"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::billing_close; the close nests the storage-clock advance inside the loaded-meta branch; flattening it would separate the advance from the meta it closes"
+    )]
     pub(super) fn billing_close(
         &mut self,
         local: &mut StreamOverlay,
@@ -47,6 +55,10 @@ impl CommitTransaction<'_> {
             }
         }
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::billing_retained; the billing meta was inserted just above when absent; a fallible read would add a branch no retention pass reaches"
+    )]
     pub(super) fn billing_retained(
         &mut self,
         local: &mut StreamOverlay,
@@ -68,6 +80,10 @@ impl CommitTransaction<'_> {
             }
         }
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::fence; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
+    )]
     pub(super) fn fence(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: SealFenceReq) {
         let mut fences = self.engine.seal_fences.lock().unwrap();
         let current = fences.entry(hash).or_insert(0);
@@ -83,6 +99,14 @@ impl CommitTransaction<'_> {
             }),
         ));
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::close; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::close; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
     pub(super) fn close(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: CloseReq) {
         #[cfg(test)]
         self.client_append_hashes.insert(hash);
@@ -110,6 +134,17 @@ impl CommitTransaction<'_> {
             }),
         ));
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, its new boundary, the retired bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
+    )]
+    #[cfg_attr(
+        test,
+        expect(
+            clippy::disallowed_methods,
+            reason = "CommitTransaction::absorbed; the drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
+        )
+    )]
     pub(super) fn absorbed(
         &mut self,
         local: &mut StreamOverlay,

@@ -2,6 +2,18 @@ use super::*;
 impl CommitTransaction<'_> {
     /// Local write success permits applied visibility. Remote waiters still
     /// observe the same sequence and dispatch barrier through DurableEffects.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::publish; a poisoned handoff, stream state or trim debt may hold a half-published group; recovering it could expose fields, producers or debt the write never covered"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::publish; the publication nests the trim-debt decision inside the per-stream walk under the debt lock; flattening it would separate the decision from the stream it marks"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CommitTransaction::publish; the record count is bounded by the group's request count, itself a u32; a checked conversion would only restate that bound"
+    )]
     pub(super) fn publish(
         self,
         sequence: u64,
@@ -15,7 +27,7 @@ impl CommitTransaction<'_> {
             // Storage may have accepted the batch. Its replacement recovers
             // canonical rows; the retired incarnation publishes no new live
             // mirrors, accounting, rings or success. Outcome remains unknown.
-            self.effects.reject(AppendErr::Moved);
+            self.effects.reject(&AppendErr::Moved);
             return;
         };
         if let Some(m) = maintenance_after {
