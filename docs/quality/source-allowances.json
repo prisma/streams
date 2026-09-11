@@ -4567,27 +4567,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::accounting_failure_tests",
-      "path": "src/rollup.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::close_seek_tests",
-      "path": "src/rollup.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/rollup.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/runtime.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

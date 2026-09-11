@@ -129,12 +129,12 @@
       "execution": "requires_final_head_receipt",
       "tests": [
         {
-          "file": "src/rollup.rs",
+          "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged",
           "sha256": "a8ceb2127c93edf96560752780c15649d5e3c6408b9ebc15b4d06de3d53c21db"
         },
         {
-          "file": "src/rollup.rs",
+          "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
           "sha256": "9cc3ac6546ee1435af5200ee754f9e2b30af8704b79c5e74395ab9c566448b2b"
         }
