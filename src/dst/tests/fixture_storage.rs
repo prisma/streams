@@ -36,12 +36,28 @@ pub(super) async fn open_engine_cfg(
     } else {
         std::time::Duration::from_millis(5)
     };
-    let db = slatedb::Db::builder(prefix, store.clone())
-        .with_settings(slatedb::config::Settings {
+    open_engine_with_settings(
+        store,
+        prefix,
+        cfg,
+        slatedb::config::Settings {
             flush_interval: Some(flush_interval),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
+        },
+    )
+    .await
+}
+
+/// Preserve a scenario's storage timing while sharing the real maintenance/open path.
+pub(super) async fn open_engine_with_settings(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    cfg: crate::shard::ShardConfig,
+    settings: slatedb::config::Settings,
+) -> Arc<crate::shard::ShardEngine> {
+    let db = slatedb::Db::builder(prefix, store.clone())
+        .with_settings(settings)
         .build()
         .await
         .expect("open db");
