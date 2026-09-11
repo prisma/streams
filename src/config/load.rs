@@ -227,6 +227,11 @@ impl ServerConfig {
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Scaler environment overlay; established floating-point inputs truncate finite fractions and saturate at Rust's integer boundaries; integer-only parsing would change deployed configuration semantics"
+    )]
     fn overlay_scaler(&mut self, env: &dyn Environment) {
         // envf: f64 parse, cast at the same points as the old
         // scaler3 PolicyOnceLock.

@@ -42,3 +42,6 @@ pub(crate) use model::{
 
 #[cfg(test)]
 mod certification_tests;
+
+#[cfg(test)]
+mod numeric_tests;
