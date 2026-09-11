@@ -6485,31 +6485,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "a85153f706b5c317bf18397c421f7397b9754a9df24b166926d1122f7225fb66",
-      "item": "crate::tests::engages_on_any_bound_and_releases_only_when_all_are_clear",
-      "lint": "clippy::needless_update",
-      "path": "src/backpressure.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "0c5becf96c0a303128491a837da0d7ebe8c11429e7aeb7be3907abca567e1f47",
       "item": "crate::product_seal::SealDoc::r#final",
       "lint": "clippy::option_option",
       "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b2a463e6a33e025fad42c33c6f5103d0e0dbc0c26abb517d3c25e63c0e05e388",
-      "item": "crate::tests::message_and_lease_tokens_roundtrip_and_fence",
-      "lint": "clippy::redundant_clone",
-      "path": "src/product_cursor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bfdd3220a1d2319c8563ea8ad1f975f6162e2916b844573f2bf27a4f8b35cad",
-      "item": "crate::tests::two_runtimes_share_no_identity_or_timing_state",
-      "lint": "clippy::redundant_clone",
-      "path": "src/runtime.rs"
     },
     {
       "count": 1,
