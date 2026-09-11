@@ -927,13 +927,6 @@
     {
       "category": "effect",
       "count": 4,
-      "owner": "crate::generator",
-      "path": "src/bin/pilot.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 4,
       "owner": "crate::lb",
       "path": "src/bin/pilot.rs",
       "syntax": "tokio::spawn"
@@ -3057,27 +3050,6 @@
       "count": 4,
       "owner": "crate::main",
       "path": "src/bin/livebench.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::generator",
-      "path": "src/bin/pilot.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::generator::gen_drain",
-      "path": "src/bin/pilot.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::generator::gen_stats_json",
-      "path": "src/bin/pilot.rs",
       "syntax": "serde_json::json"
     },
     {

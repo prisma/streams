@@ -407,7 +407,6 @@ mod tests {
         let mixed = Snapshot {
             unabsorbed_bytes_instance: 100,
             absorb_lag_secs: 99, // under the limit, over the 75 release
-            ..Default::default()
         };
         assert_eq!(next_state(true, &mixed, &l), (true, Some(Cause::LagSecs)));
     }

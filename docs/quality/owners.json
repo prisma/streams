@@ -297,158 +297,6 @@
       "syntax": "serde_json::json"
     },
     {
-      "category": "by-path-module",
-      "path": "src/bin/pilot.rs",
-      "owner": "crate::benchmark",
-      "syntax": "path = \"pilot/benchmark.rs\"",
-      "count": 1,
-      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
-    },
-    {
-      "category": "by-path-module",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::config",
-      "syntax": "path = \"benchmark/config.rs\"",
-      "count": 1,
-      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
-    },
-    {
-      "category": "by-path-module",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::tests",
-      "syntax": "path = \"benchmark/tests.rs\"",
-      "count": 1,
-      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
-    },
-    {
-      "category": "by-path-module",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::window",
-      "syntax": "path = \"benchmark/window.rs\"",
-      "count": 1,
-      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
-    },
-    {
-      "category": "effect",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::Http::new",
-      "syntax": "tokio::spawn",
-      "count": 1,
-      "reason": "Pilot benchmark HTTP fixture; its server handle is retained, aborted and joined by close; real held responses exercise point drain and request contracts."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::Sweep::serve",
-      "syntax": "tokio::pin",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::Sweep::serve",
-      "syntax": "tokio::select",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::Sweep::wait",
-      "syntax": "tokio::select",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::Workload::worker",
-      "syntax": "tokio::select",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::app",
-      "syntax": "serde_json::json",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::row",
-      "syntax": "serde_json::json",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
-      "syntax": "tokio::pin",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
-      "syntax": "tokio::select",
-      "count": 2,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::point_freezes_before_drain_and_joins_held_requests_before_next_point",
-      "syntax": "tokio::select",
-      "count": 5,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::requests_preserve_credentials_bodies_and_count_all_http_outcomes",
-      "syntax": "tokio::select",
-      "count": 1,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "effect",
-      "path": "src/bin/pilot/benchmark.rs",
-      "owner": "crate::Sweep::launch",
-      "syntax": "tokio::task::JoinSet::spawn",
-      "count": 1,
-      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
-    },
-    {
-      "category": "effect",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::worker_panic_fails_the_sweep_and_joins_all_siblings",
-      "syntax": "tokio::task::JoinSet::spawn",
-      "count": 2,
-      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::run_serves_completed_results_on_the_configured_port",
-      "syntax": "tokio::select",
-      "count": 3,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
-      "category": "macro-dsl",
-      "path": "src/bin/pilot/benchmark/tests.rs",
-      "owner": "crate::published_results",
-      "syntax": "tokio::select",
-      "count": 2,
-      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
-    },
-    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::Stats::snapshot",
@@ -1046,6 +894,398 @@
       "owner": "crate::a_transient_producer_gap_does_not_lose_the_promised_record",
       "path": "src/dst/tests/seal_recovery.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot.rs",
+      "owner": "crate::benchmark",
+      "syntax": "path = \"pilot/benchmark.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::config",
+      "syntax": "path = \"benchmark/config.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::tests",
+      "syntax": "path = \"benchmark/tests.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "by-path-module",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::window",
+      "syntax": "path = \"benchmark/window.rs\"",
+      "count": 1,
+      "reason": "Pilot benchmark canonical owner; these explicit paths compile configuration, point measurement and its actual regression tests in the pilot binary; module declarations preserve one implementation."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::Http::new",
+      "syntax": "tokio::spawn",
+      "count": 1,
+      "reason": "Pilot benchmark HTTP fixture; its server handle is retained, aborted and joined by close; real held responses exercise point drain and request contracts."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::serve",
+      "syntax": "tokio::pin",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::serve",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::wait",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Workload::worker",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::app",
+      "syntax": "serde_json::json",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::row",
+      "syntax": "serde_json::json",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
+      "syntax": "tokio::pin",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::done_results_remain_available_with_the_original_json_contract",
+      "syntax": "tokio::select",
+      "count": 2,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::point_freezes_before_drain_and_joins_held_requests_before_next_point",
+      "syntax": "tokio::select",
+      "count": 5,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::requests_preserve_credentials_bodies_and_count_all_http_outcomes",
+      "syntax": "tokio::select",
+      "count": 1,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark.rs",
+      "owner": "crate::Sweep::launch",
+      "syntax": "tokio::task::JoinSet::spawn",
+      "count": 1,
+      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
+    },
+    {
+      "category": "effect",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::worker_panic_fails_the_sweep_and_joins_all_siblings",
+      "syntax": "tokio::task::JoinSet::spawn",
+      "count": 2,
+      "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::run_serves_completed_results_on_the_configured_port",
+      "syntax": "tokio::select",
+      "count": 3,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::published_results",
+      "syntax": "tokio::select",
+      "count": 2,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::workload_generator",
+      "path": "src/bin/pilot.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"pilot/generator.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/membership.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::GeneratorState::snapshot",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::GeneratorState::backoff",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Workload::execute",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drain",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::closing_interrupts_retry_backoff_and_covers_already_closed_waits",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "tests/pilot_membership.rs",
+      "reason": "The Loom test compiles the actual production membership source with instrumented synchronization primitives; the model checks terminal accounting and prohibited late admission.",
+      "syntax": "path = \"../src/bin/pilot/generator/membership.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Generator::launch",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "Generator is the sole worker task owner; it reserves membership before spawning and aborts then joins every remaining worker on terminal server or worker failure.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats_and_drain_routes_keep_serving_the_same_final_ledger",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator HTTP contract fixture jointly drives its server and client case; unwind capture signals graceful shutdown and both futures finish before the case returns.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_release_parked_across_recreation_cannot_touch_the_replacement",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Fork release fixture owns the parked release handle; it is released and joined before its verdict is examined. Concurrent execution is required to park it between its epoch check and its mutation.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked creation fixture owns both creator handles; each is released and joined before the verdicts are compared. Concurrent execution is required to park both in the same readiness window.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_parked_delete_never_removes_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked deletion fixture owns the deleter handle; it is released and joined before the replacement is examined. Concurrent execution is required to park it before its decision.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::creation_does_not_report_success_after_a_concurrent_delete",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "reason": "Parked fork creation fixture owns the creator handle; it is released and joined before its status is checked. Concurrent execution is required to park it before readiness while the source is deleted.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::a_applied_read_and_long_poll_serve_the_tail_before_durability",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Applied-read fixture owns the held write, the parked long-poll and the waking write; all are joined after the frozen dispatch is released. Concurrent execution is required to observe applied delivery before durability.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Volatile-suffix fixture owns the provisional append until the fenced engine has terminated, then aborts and joins it with its disposition checked. Concurrent execution is required to keep it in flight through the crash window.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_stale_applied_cursor_is_refused_after_crash_restart",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Stale-cursor fixture owns the provisional write handle; it is joined after dispatch is released. Concurrent execution is required to mint the applied cursor beyond the durable frontier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::touch_close_shard_matches_route_hash_not_storage_hash",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Watch routing fixture owns both parked waiter handles; each is joined after the touch that should wake it. Concurrent execution is required to park a waiter before its touch.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::product_watch_wakes_on_matching_append",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Product watch fixture owns the parked waiter handle; it is joined after the matching append. Concurrent execution is required to park the waiter before the append.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::watch_capability_waits_occupy_project_admission",
+      "path": "src/dst/tests/watch_observation.rs",
+      "reason": "Admission ceiling fixture owns the long waiter handle; it is joined after the refused second waiter is observed. Concurrent execution is required to hold the project's admission slot.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_receive_after_delete_in_the_same_group_is_refused",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group ordering fixture owns the delete and receive operation handles; both are joined after the held commit is released. Concurrent staging is required for the receive to follow the delete in one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the receive and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the settle and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_waits_for_durability_before_reporting_closed",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability fence fixture owns the held close and the takeover handle; both are joined after dispatch is released. Concurrent execution is required to observe the takeover pending behind the barrier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::idempotent_successes_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability barrier fixture owns the original, duplicate and close request handles; each is joined after its release. Concurrent execution is required to observe them pending behind the held dispatch.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::state_dependent_conflicts_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Definitive-conflict fixture owns the original and reuse request handles; both are joined after dispatch is released. Concurrent execution is required to observe the verdict pending on undurable state.",
       "syntax": "tokio::spawn"
     }
   ]

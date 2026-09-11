@@ -61,6 +61,13 @@ class Triggers(unittest.TestCase):
             self.assertTrue(checks['loom'])
             self.assertTrue(checks['mutants'])
 
+    def test_generator_terminal_owner_selects_loom_and_mutations(self):
+        for path in ('src/bin/pilot/generator.rs', 'src/bin/pilot/generator/membership.rs'):
+            self.assertTrue(plan([path])['loom'])
+            self.assertTrue(plan([path])['mutants'])
+            self.assertFalse(plan([path], production_unchanged=[path])['mutants'])
+        self.assertFalse(plan(['src/bin/pilot/proxy.rs'])['mutants'])
+
     def test_touch_and_billing_state_owners_require_synchronization_and_mutations(self):
         for path in ('src/touch.rs', 'src/billing/read_accumulator.rs', 'src/billing/read_spool.rs'):
             with self.subTest(path=path):
