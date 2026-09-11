@@ -4,6 +4,18 @@ use super::*;
 
 // ---- customer usage API (docs/OBSERVABILITY-BILLING.md §10) ----------
 
+/// The rollup is the only source of usage answers: when it is absent or
+/// fails, the request is retryable, never a client error.
+fn usage_unavailable(error: &dyn std::fmt::Display) -> Response {
+    perr(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "usage_unavailable",
+        &error.to_string(),
+        None,
+        true,
+    )
+}
+
 /// GET /v1/streams/{name}/usage[?month=YYYY-MM] and .../usage/current.
 /// Control-plane metadata: bearer-authorized, NO record key required,
 /// answered from the rollup with a point read (never a ledger scan).
@@ -31,13 +43,7 @@ pub(super) async fn product_usage(
         Err(r) => return r,
     };
     let Some(rollup) = state.rollup.get() else {
-        return perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "usage_unavailable",
-            "the usage rollup is not running on this instance",
-            None,
-            true,
-        );
+        return usage_unavailable(&"the usage rollup is not running on this instance");
     };
     let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) => d,
@@ -85,15 +91,7 @@ pub(super) async fn product_usage(
         .await
     {
         Ok(row) => row.unwrap_or_default(),
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(error) => return usage_unavailable(&error),
     };
     let is_current = month == current;
     // Round-21 blocker 2: a retained-but-idle stream has no month row
@@ -105,15 +103,7 @@ pub(super) async fn product_usage(
             .await
         {
             Ok(states) => states,
-            Err(error) => {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "usage_unavailable",
-                    &error.to_string(),
-                    None,
-                    true,
-                );
-            }
+            Err(error) => return usage_unavailable(&error),
         };
         let mstart = {
             let (y, m) = crate::billing::parse_month(&month).unwrap();
@@ -149,15 +139,7 @@ pub(super) async fn product_usage(
         .await
     {
         Ok(row) => row,
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(error) => return usage_unavailable(&error),
     };
     let status = if row.finalized_at_ms.is_some() {
         if row.corrections.is_empty() {
@@ -265,13 +247,7 @@ pub(crate) async fn project_usage(
         );
     }
     let Some(rollup) = state.rollup.get() else {
-        return perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "usage_unavailable",
-            "the usage rollup is not running on this instance",
-            None,
-            true,
-        );
+        return usage_unavailable(&"the usage rollup is not running on this instance");
     };
     let now = crate::shard::now_ms();
     let (cy, cm) = crate::billing::utc_year_month(now);
@@ -299,15 +275,7 @@ pub(crate) async fn project_usage(
     };
     let agg = match rollup.project_row(&month, &account, &project).await {
         Ok(row) => row.unwrap_or_default(),
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(error) => return usage_unavailable(&error),
     };
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
     json_ok(&json!({

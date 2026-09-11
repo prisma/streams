@@ -40,3 +40,28 @@ fn sig_compatibility_rules() {
     // Identity.
     assert!(sig_compatible(&old2, &old2));
 }
+
+/// The fatal cutoff carried through anyhow names the reason the feed
+/// downcasts, so a bare error message never hides which cutoff fired.
+#[test]
+fn a_fatal_span_cutoff_names_its_reason() {
+    let cutoff = crate::sse::source::FatalSpanCutoff(crate::sse::feed::SourceCutoff::WrongOwner);
+    assert_eq!(cutoff.to_string(), "fatal span cutoff: WrongOwner");
+}
+
+/// The linearization rule: a one-past offset maps to the span covering
+/// it, the boundary one-past a sealed cap belongs to the next span at
+/// local 0, and the live tail absorbs everything past the last cap.
+#[test]
+fn linearized_offsets_map_to_the_span_that_covers_them() {
+    let spans = [(1u32, 0u64, Some(10u64)), (2, 10, Some(5)), (3, 15, None)];
+    let at = |logical_after: u64| {
+        let pos = super::spans::locate_in_spans(&spans, logical_after);
+        (pos.seg_id, pos.local_after)
+    };
+    assert_eq!(at(7), (1, 7), "inside the first sealed span");
+    assert_eq!(at(10), (2, 0), "the boundary belongs to the next span");
+    assert_eq!(at(12), (2, 2), "inside the second sealed span");
+    assert_eq!(at(15), (3, 0), "the second cap hands over to the live tail");
+    assert_eq!(at(40), (3, 25), "the live tail is open-ended");
+}

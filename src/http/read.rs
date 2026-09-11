@@ -249,7 +249,7 @@ pub(crate) async fn read_inner(
         ))
         .into_response();
     }
-    render_raw_read(&state, &params, &headers, key.as_ref(), &out)
+    render_raw_read(&state, &params, &headers, key.as_ref(), out)
 }
 
 #[expect(
@@ -348,12 +348,16 @@ pub(crate) fn meter_read_outcome(state: &AppState, out: &ReadOutcome) {
     clippy::unwrap_used,
     reason = "render_raw_read; the response builder holds a fixed status and header values validated when the descriptor and cursor were produced, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "render_raw_read; the read outcome is handed to the render once and never reused by its caller, so passing it by value keeps the read path free of a borrow; borrowing it would edit the render body and its caller, whose branch mutants no read scenario bounds"
+)]
 fn render_raw_read(
     state: &AppState,
     params: &ReadParams,
     headers: &HeaderMap,
     key: Option<&StreamKey>,
-    out: &ReadOutcome,
+    out: ReadOutcome,
 ) -> Response {
     let etag = read_etag(&out.descriptor, out.scan_from, out.end, out.closed);
     if out.kind == ReadResultKind::Data
@@ -374,7 +378,7 @@ fn render_raw_read(
         Bytes::new()
     } else {
         read_payload(
-            out,
+            &out,
             frames,
             key,
             params.key.as_deref(),
@@ -382,7 +386,7 @@ fn render_raw_read(
         )
     };
     if !params.internal {
-        meter_read_outcome(state, out);
+        meter_read_outcome(state, &out);
     }
     state
         .runtime

@@ -230,9 +230,12 @@ pub(crate) fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String])
 /// keeps those OS-reclaimable pages in resident_size (measured on the
 /// wedge repro: resident 120 MB vs phys_footprint 2 MB after drain).
 /// phys_footprint is the metric Darwin's own memory limits use.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "rss_bytes; the mach info word count is the size of a small fixed struct in 32-bit words; a checked conversion would only restate the ABI"
+#[cfg_attr(
+    target_os = "macos",
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "rss_bytes; the mach info word count is the size of a small fixed struct in 32-bit words; a checked conversion would only restate the ABI"
+    )
 )]
 #[cfg_attr(
     target_os = "linux",

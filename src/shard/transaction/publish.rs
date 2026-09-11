@@ -27,7 +27,7 @@ impl CommitTransaction<'_> {
             // Storage may have accepted the batch. Its replacement recovers
             // canonical rows; the retired incarnation publishes no new live
             // mirrors, accounting, rings or success. Outcome remains unknown.
-            self.effects.reject(&AppendErr::Moved);
+            self.effects.reject(AppendErr::Moved);
             return;
         };
         if let Some(m) = maintenance_after {
