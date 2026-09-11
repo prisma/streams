@@ -18,8 +18,8 @@ mod allocation;
 mod close;
 mod page;
 mod reconciliation;
-mod totals;
 mod storage;
+mod totals;
 
 use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
