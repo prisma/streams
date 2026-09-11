@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 /// Per-directory readiness. Process-wide open counters below remain
 /// metrics; another runtime's success can never heal this directory.
 #[derive(Clone, Default)]
-pub struct ShardHealth(pub(super) Arc<Mutex<OpenHealth>>);
+pub(crate) struct ShardHealth(pub(super) Arc<Mutex<OpenHealth>>);
 
 #[derive(Default)]
 pub(super) struct OpenHealth {
@@ -34,7 +34,7 @@ impl ShardHealth {
             .engine_failure
             .get_or_insert_with(|| format!("required engine task terminated: {prefix}/{role}"));
     }
-    pub fn unready_reason(&self) -> Option<String> {
+    pub(crate) fn unready_reason(&self) -> Option<String> {
         let h = self.0.lock().unwrap();
         if let Some(failure) = &h.engine_failure {
             return Some(failure.clone());

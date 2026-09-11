@@ -31,17 +31,17 @@ pub(super) const MAX_MEMBERS: usize = crate::config::FleetConfig::MAX_MEMBERS as
 const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Default)]
-pub struct FleetRepository {
+pub(crate) struct FleetRepository {
     store: Option<Arc<dyn ObjectStore>>,
 }
 
 impl FleetRepository {
-    pub fn new(store: Option<Arc<dyn ObjectStore>>) -> Self {
+    pub(crate) fn new(store: Option<Arc<dyn ObjectStore>>) -> Self {
         Self { store }
     }
 
     /// Whether this runtime participates in fleet coordination.
-    pub fn enabled(&self) -> bool {
+    pub(crate) fn enabled(&self) -> bool {
         self.store.is_some()
     }
 
@@ -62,11 +62,11 @@ impl FleetRepository {
 
     /// Complete bounded populations. An incomplete/invalid snapshot is
     /// an error, so the controller retains its prior ownership view.
-    pub async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
+    pub(crate) async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
         self.read_population("fleet", true).await
     }
 
-    pub async fn read_router_reports(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub(crate) async fn read_router_reports(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         self.read_population("routers", false).await
     }
 
@@ -146,7 +146,7 @@ impl FleetRepository {
 
     /// Absence is distinct from unavailable or corrupt state: only a confirmed
     /// NotFound may bootstrap a count or clear the local override mirror.
-    pub async fn read_desired_state(
+    pub(crate) async fn read_desired_state(
         &self,
     ) -> anyhow::Result<(Option<Desired>, Option<UpdateVersion>)> {
         match self.read_typed::<Desired>(DESIRED_DOC).await? {
@@ -169,7 +169,7 @@ impl FleetRepository {
     }
 
     /// The caller validates each URL's authority before publishing the view.
-    pub async fn read_published_urls(
+    pub(crate) async fn read_published_urls(
         &self,
     ) -> anyhow::Result<Option<std::collections::HashMap<String, String>>> {
         let Some((doc, _)) = self
@@ -184,7 +184,7 @@ impl FleetRepository {
 
     /// CAS-replace a coordination document: `Some(version)` updates that
     /// exact version, `None` creates. Returns whether it committed.
-    pub async fn replace_document(
+    pub(crate) async fn replace_document(
         &self,
         doc: FleetDocument,
         body: Vec<u8>,
@@ -260,7 +260,7 @@ impl FleetRepository {
 
     /// What the operator surface shows about the cell: the live
     /// heartbeat set and the desired-count document.
-    pub async fn operator_snapshot(
+    pub(crate) async fn operator_snapshot(
         &self,
     ) -> (Option<Vec<serde_json::Value>>, Option<serde_json::Value>) {
         if !self.enabled() {
@@ -336,7 +336,7 @@ fn validate_write(doc: FleetDocument, body: &[u8]) -> anyhow::Result<()> {
 /// The coordination documents a runtime may write. A closed set, so a
 /// caller cannot invent a path the repository does not own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FleetDocument {
+pub(crate) enum FleetDocument {
     Desired,
     Overrides,
 }

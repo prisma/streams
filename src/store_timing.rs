@@ -25,8 +25,8 @@ use object_store::{
     PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart, path::Path,
 };
 
-pub const OPS: [&str; 7] = ["put", "mpu", "get", "head", "delete", "list", "copy"];
-pub const CLASSES: [&str; 5] = ["wal", "manifest", "sst", "fleet", "other"];
+pub(crate) const OPS: [&str; 7] = ["put", "mpu", "get", "head", "delete", "list", "copy"];
+pub(crate) const CLASSES: [&str; 5] = ["wal", "manifest", "sst", "fleet", "other"];
 
 const RING_CAP: usize = 16_384;
 const SLOW_CAP: usize = 96;
@@ -50,7 +50,7 @@ struct SlowOp {
     path: String,
 }
 
-pub struct StoreStats {
+pub(crate) struct StoreStats {
     ring: Mutex<VecDeque<Ev>>,
     slow: Mutex<VecDeque<SlowOp>>,
     /// Outbound object-store ops in flight right now, instance-wide.
@@ -68,15 +68,15 @@ pub struct StoreStats {
 /// explains the ceiling is READ AMPLIFICATION — bytes fetched from the
 /// object store per useful frame byte returned. The absorber snapshots
 /// these around its read phase; the delta is that gather's cost.
-pub static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 mod resources;
 #[cfg(test)]
 use resources::BulkGate;
-pub use resources::StoreResources;
+pub(crate) use resources::StoreResources;
 
-pub fn stats() -> &'static StoreStats {
+pub(crate) fn stats() -> &'static StoreStats {
     static S: OnceLock<StoreStats> = OnceLock::new();
     S.get_or_init(|| StoreStats {
         ring: Mutex::new(VecDeque::with_capacity(RING_CAP)),
@@ -138,7 +138,7 @@ fn read_steal() -> Option<(u64, u64)> {
 /// process. The documented exception to task supervision: it measures
 /// the process, not a runtime, holds no runtime state and has nothing
 /// to release, so it is not a child of any supervisor.
-pub fn spawn_sentinels() {
+pub(crate) fn spawn_sentinels() {
     std::thread::Builder::new()
         .name("drift-sentinel".into())
         .spawn(|| {
@@ -319,13 +319,13 @@ impl Drop for OpGuard {
 /// ObjectStore wrapper that times every operation. Sits *beneath*
 /// PrefixStore so it sees final (fully-prefixed) paths.
 #[derive(Debug)]
-pub struct TimingStore<T: ObjectStore> {
+pub(crate) struct TimingStore<T: ObjectStore> {
     inner: T,
     resources: Arc<StoreResources>,
 }
 
 impl<T: ObjectStore> TimingStore<T> {
-    pub fn new(inner: T, resources: Arc<StoreResources>) -> Self {
+    pub(crate) fn new(inner: T, resources: Arc<StoreResources>) -> Self {
         TimingStore { inner, resources }
     }
 }
@@ -920,7 +920,7 @@ impl object_store::client::HttpService for SniffService {
 
 /// Install with `AmazonS3Builder::with_http_connector(SniffConnector)`.
 #[derive(Debug, Default)]
-pub struct SniffConnector;
+pub(crate) struct SniffConnector;
 
 impl object_store::client::HttpConnector for SniffConnector {
     fn connect(
@@ -936,7 +936,7 @@ impl object_store::client::HttpConnector for SniffConnector {
 
 /// Counts behind the compaction-stall signal, over a trailing window.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct WalReadStorm {
+pub(crate) struct WalReadStorm {
     pub wal_gets: u64,
     pub sst_puts: u64,
     pub wal_deletes: u64,
@@ -958,7 +958,7 @@ const STORM_MIN_WAL_GETS: u64 = 500;
 ///
 /// The shape is unmistakable and cheap to spot: thousands of `get:wal`
 /// against zero `put:sst` and zero `delete:wal`.
-pub fn wal_read_storm(window_secs: u64) -> WalReadStorm {
+pub(crate) fn wal_read_storm(window_secs: u64) -> WalReadStorm {
     let s = stats();
     let cutoff = now_ms().saturating_sub(window_secs * 1000);
     let ring = s.ring.lock().unwrap();
@@ -991,7 +991,7 @@ fn tally_storm(ops: impl Iterator<Item = (u8, u8)>) -> WalReadStorm {
 
 /// Cheap scalar summary for heartbeats: WAL-PUT p50/p99 over the trailing
 /// 15 s plus the outbound gauge (non-destructive peak read).
-pub fn heartbeat_summary() -> (u64, u64, i64, i64) {
+pub(crate) fn heartbeat_summary() -> (u64, u64, i64, i64) {
     let s = stats();
     let cutoff = now_ms().saturating_sub(15_000);
     let mut wal: Vec<u32> = Vec::new();
