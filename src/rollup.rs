@@ -15,9 +15,11 @@
 
 use crate::billing::{UsageCorrection, UsageEnvelope, month_start_ms, next_month, parse_month};
 mod allocation;
+mod close;
 mod page;
 mod reconciliation;
 mod totals;
+mod storage;
 
 use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
@@ -252,7 +254,7 @@ impl MonthRow {
                 if s.final_seen || s.accounted_through_ms >= upto {
                     base
                 } else {
-                    base + (upto - s.accounted_through_ms) as u128 * s.gauge_bytes as u128
+                    base + storage::byte_ms(s.gauge_bytes, s.accounted_through_ms, upto)
                 }
             })
             .sum()
@@ -412,22 +414,29 @@ async fn read_json<T: for<'a> Deserialize<'a>>(db: &Db, key: &[u8]) -> anyhow::R
 fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
     // Persisted decimal fields intentionally accept the historical empty
     // representation of zero. Nonempty malformed values never become zero.
+    fn validate_decimal(key: &str, value: &serde_json::Value) -> anyhow::Result<()> {
+        if !key.contains("storage_byte_ms") {
+            return Ok(());
+        }
+        let number = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid decimal accounting field"))?;
+        if number.is_empty() {
+            return Ok(());
+        }
+        if key.ends_with("delta") {
+            number.parse::<i128>()?;
+        } else {
+            number.parse::<u128>()?;
+        }
+        Ok(())
+    }
+
     fn validate(v: &serde_json::Value) -> anyhow::Result<()> {
         match v {
             serde_json::Value::Object(fields) => {
                 for (key, value) in fields {
-                    if key.contains("storage_byte_ms") {
-                        let number = value
-                            .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("invalid decimal accounting field"))?;
-                        if !number.is_empty() {
-                            if key.ends_with("delta") {
-                                number.parse::<i128>()?;
-                            } else {
-                                number.parse::<u128>()?;
-                            }
-                        }
-                    }
+                    validate_decimal(key, value)?;
                     validate(value)?;
                 }
             }
@@ -678,312 +687,13 @@ impl UsageRollup {
         Ok(())
     }
 
-    /// Round-22 item 8: close every overdue month IN ORDER from the
-    /// persisted oldest-unclosed marker. A rollup that was down across
-    /// one or more boundaries catches up oldest-first; the marker
-    /// advances only after that month's close completed, so a crash
-    /// resumes at the same month. Returns (month, streams closed).
-    pub async fn close_months_due(&self, grace_ms: i64) -> anyhow::Result<Vec<(String, usize)>> {
-        const MARKER: &[u8] = b"meta/oldest-unclosed-month";
-        fn prev_month(y: i32, m: u32) -> (i32, u32) {
-            if m == 1 { (y - 1, 12) } else { (y, m - 1) }
-        }
-        let now = crate::billing::billing_now_ms();
-        let (cy, cm) = crate::billing::utc_year_month(now);
-        let (mut y, mut m) = match self.db.get(MARKER).await? {
-            Some(v) => {
-                let s = std::str::from_utf8(&v)?;
-                parse_month(s)
-                    .ok_or_else(|| anyhow::anyhow!("invalid oldest-unclosed-month cursor"))?
-            }
-            None => {
-                // First run: start at the OLDEST month with data — a
-                // fresh marker must not skip a backlog that predates
-                // it. `month/` keys sort by month string, so the first
-                // key names the oldest.
-                let mut it = self.db.scan_prefix(&b"month/"[..], ..).await?;
-                match it.next().await? {
-                    Some(kv) => std::str::from_utf8(&kv.key)?
-                        .split('/')
-                        .nth(1)
-                        .and_then(parse_month)
-                        .ok_or_else(|| anyhow::anyhow!("invalid month index key"))?,
-                    None => prev_month(cy, cm),
-                }
-            }
-        };
-        let mut out = Vec::new();
-        // Safety cap far above any real backlog; the loop also stops
-        // at the current (never-closeable) month.
-        for _ in 0..600 {
-            if (y, m) >= (cy, cm) {
-                break;
-            }
-            let (ny, nm) = next_month(y, m);
-            if now < month_start_ms(ny, nm) + grace_ms {
-                break; // grace not yet met; younger months even less so
-            }
-            let n = self.close_month(y, m, grace_ms).await?;
-            out.push((crate::billing::month_str(y, m), n));
-            let mut wb = WriteBatch::new();
-            wb.put(MARKER, crate::billing::month_str(ny, nm).as_bytes());
-            self.db.write(wb).await?;
-            (y, m) = (ny, nm);
-        }
-        Ok(out)
-    }
-
     // ---- month close (§9.4/§9.5/§9.6) --------------------------------
 
-    /// Close (year, month) — round-21 blockers 2 and 9.
-    ///
-    /// PASS A (carry): page the persistent `segment/` index and, for
-    /// every segment whose storage clock lags the month boundary,
-    /// synthesize the missing byte-time up to the boundary INTO the
-    /// closing month's row — an idle retained stream accrues every
-    /// month with no stream write and no data-plane traffic — then
-    /// advance the segment's accounting boundary.
-    ///
-    /// PASS B (finalize): page the month's rows, extrapolate any
-    /// remaining non-final segment to the exact boundary, stamp
-    /// `finalized_at`, and hand each closed row to `artifact`.
-    ///
-    /// Both passes run in bounded chunks (`CLOSE_CHUNK` rows), each
-    /// chunk one durable WriteBatch behind a persisted cursor — a crash
-    /// resumes mid-month with no lost or repeated accrual (the carry is
-    /// guarded by per-segment `final_seen`/boundary checks, so a replay
-    /// applies zero).
+    /// Physical rows visited by both close phases, including resumed runs.
     #[cfg(test)]
     pub(crate) fn close_rows_visited(&self) -> u64 {
         self.close_rows_visited
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub async fn close_month(&self, year: i32, month: u32, grace_ms: i64) -> anyhow::Result<usize> {
-        // Round-22 item 9: chunks are bounded by ROWS AND BYTES — a
-        // month of few-but-huge rows (a stream with thousands of
-        // segments) must not build an unbounded WriteBatch.
-        const CLOSE_CHUNK: usize = 1000;
-        const CLOSE_CHUNK_BYTES: usize = 1_000_000;
-        let mstr = crate::billing::month_str(year, month);
-        let (ny, nm) = next_month(year, month);
-        let boundary = month_start_ms(ny, nm);
-        let start = month_start_ms(year, month);
-        let now = crate::billing::billing_now_ms();
-        if now < boundary + grace_ms {
-            return Ok(0); // not yet closeable
-        }
-        // ---- pass A: carry idle gauges into the closing month ----
-        let seg_cursor_key = format!("meta/close-seg-cursor/{mstr}").into_bytes();
-        let mut after: Option<Vec<u8>> =
-            self.db.get(&seg_cursor_key[..]).await?.map(|v| v.to_vec());
-        loop {
-            let mut wb = WriteBatch::new();
-            let mut page: Vec<(Vec<u8>, SegmentState)> = Vec::new();
-            let mut page_bytes = 0usize;
-            {
-                let mut iter = self
-                    .db
-                    .scan_prefix(
-                        &b"segment/"[..],
-                        close_scan_range(b"segment/", after.as_deref())?,
-                    )
-                    .await?;
-                while let Some(kv) = iter.next().await? {
-                    self.close_rows_visited
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    page_bytes += kv.value.len();
-                    page.push((kv.key.to_vec(), decode_json::<SegmentState>(&kv.value)?));
-                    // Byte-bound only once something is in the page —
-                    // an empty page must mean "pass done", never
-                    // "chunk full of undecodable rows".
-                    if page.len() >= CLOSE_CHUNK
-                        || (page_bytes >= CLOSE_CHUNK_BYTES && !page.is_empty())
-                    {
-                        break;
-                    }
-                }
-            }
-            if page.is_empty() {
-                break;
-            }
-            let last_key = page.last().unwrap().0.clone();
-            // Round-22 item 3: page-LOCAL row caches, exactly like
-            // apply_page. Two segments of one stream in one page must
-            // MERGE into a single month-row put — independent
-            // read-modify-writes into the same WriteBatch let the last
-            // put win and silently dropped a segment's byte-time, with
-            // both SegmentStates already advanced (unrecoverable).
-            let mut mrows: std::collections::HashMap<Vec<u8>, MonthRow> = Default::default();
-            let mut arows: std::collections::HashMap<Vec<u8>, AggRow> = Default::default();
-            for (key, mut st) in page {
-                // key = segment/<account>/<project>/<stream-id>/<seg>
-                let parts: Vec<&str> = std::str::from_utf8(&key)?.split('/').collect();
-                anyhow::ensure!(
-                    parts.len() == 5
-                        && parts[0] == "segment"
-                        && parts.iter().all(|p| !p.is_empty()),
-                    "invalid segment accounting key"
-                );
-                let (account, project, stream_id) = (parts[1], parts[2], parts[3]);
-                let seg_id: u32 = parts[4].parse()?;
-                anyhow::ensure!(
-                    st.account_id == account,
-                    "segment accounting identity mismatch"
-                );
-                if st.storage_accounted_through_ms >= boundary {
-                    continue;
-                }
-                let mkey = k_month(&mstr, account, project, stream_id);
-                let mut row: MonthRow = match mrows.get(&mkey) {
-                    Some(rw) => rw.clone(),
-                    None => get_json(&self.db, &mkey).await?,
-                };
-                let sm = row.segments.entry(seg_id).or_default();
-                if !sm.final_seen {
-                    let span_start = st.storage_accounted_through_ms.max(start);
-                    if span_start < boundary && st.owned_frame_bytes_current > 0 {
-                        let add =
-                            (boundary - span_start) as u128 * st.owned_frame_bytes_current as u128;
-                        let cur: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
-                        sm.storage_byte_ms = (cur + add).to_string();
-                        // Aggregates absorb the same delta.
-                        for (akey, is_name) in [
-                            (k_name(&mstr, account, project, &st.stream_name), true),
-                            (k_project(&mstr, account, project), false),
-                        ] {
-                            let mut a: AggRow = match arows.get(&akey) {
-                                Some(x) => x.clone(),
-                                None => get_json(&self.db, &akey).await?,
-                            };
-                            a.add_storage(add);
-                            if is_name && !a.incarnations.contains(&stream_id.to_string()) {
-                                a.incarnations.push(stream_id.to_string());
-                            }
-                            arows.insert(akey, a);
-                        }
-                    }
-                    sm.gauge_bytes = st.owned_frame_bytes_current;
-                    sm.accounted_through_ms = boundary;
-                    sm.final_seen = true;
-                    row.account_id = st.account_id.clone();
-                    if row.stream_name.is_empty() {
-                        row.stream_name = st.stream_name.clone();
-                    }
-                    row.updated_ms = now;
-                    mrows.insert(mkey, row);
-                }
-                st.storage_accounted_through_ms = boundary;
-                wb.put(key, serde_json::to_vec(&st)?);
-            }
-            for (k, row) in &mrows {
-                wb.put(k.clone(), serde_json::to_vec(row)?);
-            }
-            for (k, a) in &arows {
-                wb.put(k.clone(), serde_json::to_vec(a)?);
-            }
-            wb.put(seg_cursor_key.clone(), last_key.clone());
-            self.db.write(wb).await?;
-            #[cfg(test)]
-            if read_faults().lock().unwrap().remove(&(
-                Arc::as_ptr(&self.db) as usize,
-                b"stop-after-close-chunk".to_vec(),
-            )) {
-                anyhow::bail!("test interruption after committed close chunk");
-            }
-            after = Some(last_key);
-        }
-        // ---- pass B: finalize the month's rows, chunked ----
-        let fin_cursor_key = format!("meta/close-fin-cursor/{mstr}").into_bytes();
-        let mut fin_after: Option<Vec<u8>> =
-            self.db.get(&fin_cursor_key[..]).await?.map(|v| v.to_vec());
-        let pfx = k_month_prefix(&mstr);
-        let mut closed = 0usize;
-        loop {
-            let mut wb = WriteBatch::new();
-            let mut page: Vec<(Vec<u8>, MonthRow)> = Vec::new();
-            let mut page_bytes = 0usize;
-            {
-                let mut iter = self
-                    .db
-                    .scan_prefix(&pfx[..], close_scan_range(&pfx, fin_after.as_deref())?)
-                    .await?;
-                while let Some(kv) = iter.next().await? {
-                    self.close_rows_visited
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    page_bytes += kv.value.len();
-                    page.push((kv.key.to_vec(), decode_json::<MonthRow>(&kv.value)?));
-                    if page.len() >= CLOSE_CHUNK
-                        || (page_bytes >= CLOSE_CHUNK_BYTES && !page.is_empty())
-                    {
-                        break;
-                    }
-                }
-            }
-            if page.is_empty() {
-                break;
-            }
-            let last_key = page.last().unwrap().0.clone();
-            for (key, mut row) in page {
-                let parts: Vec<&str> = std::str::from_utf8(&key)?.split('/').collect();
-                anyhow::ensure!(
-                    parts.len() == 5
-                        && parts[0] == "month"
-                        && parts[1] == mstr
-                        && parts.iter().all(|p| !p.is_empty()),
-                    "invalid month accounting key"
-                );
-                anyhow::ensure!(
-                    row.account_id == parts[2],
-                    "month accounting identity mismatch"
-                );
-                if row.finalized_at_ms.is_some() {
-                    continue;
-                }
-                for sm in row.segments.values_mut() {
-                    if !sm.final_seen && sm.accounted_through_ms < boundary {
-                        let cur: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
-                        let from = sm.accounted_through_ms.max(start);
-                        let add = (boundary - from).max(0) as u128 * sm.gauge_bytes as u128;
-                        sm.storage_byte_ms = (cur + add).to_string();
-                        sm.accounted_through_ms = boundary;
-                        sm.final_seen = true;
-                    }
-                }
-                row.finalized_at_ms = Some(now);
-                // Freeze the invoice base (blocker 8) and stage the
-                // monthly artifact as a PENDING row in the SAME batch
-                // (blocker 7): publication is two-phase — a failed or
-                // crashed PUT retries from this durable outbox, and a
-                // finalized row is never re-derived.
-                row.frozen = Some(FrozenTotals {
-                    ingest_bytes: row.ingest_bytes(),
-                    ingest_records: row.ingest_records(),
-                    storage_byte_ms: row.storage_byte_ms().to_string(),
-                    read_payload_bytes: row.read_payload_bytes,
-                    read_records: row.read_records,
-                    read_operations: row.read_operations,
-                    queue_operations: row.queue_operations,
-                    append_requests: row.append_requests,
-                });
-                let pkey = format!(
-                    "artifact-pending/{mstr}/{}/{}/{}",
-                    parts[2], parts[3], parts[4]
-                );
-                wb.put(pkey.into_bytes(), serde_json::to_vec(&row)?);
-                wb.put(key, serde_json::to_vec(&row)?);
-                closed += 1;
-            }
-            wb.put(fin_cursor_key.clone(), last_key.clone());
-            self.db.write(wb).await?;
-            fin_after = Some(last_key);
-        }
-        // Cursors are month-scoped; clear them once the month is done.
-        let mut wb = WriteBatch::new();
-        wb.delete(seg_cursor_key);
-        wb.delete(fin_cursor_key);
-        self.db.write(wb).await?;
-        Ok(closed)
     }
 }
 
@@ -1064,7 +774,8 @@ impl UsageRollup {
         Ok(())
     }
 
-    pub async fn ops_m1(&self, instance: &str, minute_ms: i64) -> Option<OpsM1> {
+    #[cfg(test)]
+    pub(crate) async fn ops_m1(&self, instance: &str, minute_ms: i64) -> Option<OpsM1> {
         self.db
             .get(&k_ops_m1(instance, minute_ms)[..])
             .await
@@ -1075,7 +786,11 @@ impl UsageRollup {
 
     /// Retention sweep for the raw tier (§13.1): delete points older
     /// than the cutoff, bounded per call.
-    pub async fn sweep_ops_raw(&self, now_ms: i64, max_deletes: usize) -> anyhow::Result<usize> {
+    pub(crate) async fn sweep_ops_raw(
+        &self,
+        now_ms: i64,
+        max_deletes: usize,
+    ) -> anyhow::Result<usize> {
         let cutoff = now_ms - OPS_RAW_RETENTION_MS;
         let mut wb = WriteBatch::new();
         let mut n = 0usize;

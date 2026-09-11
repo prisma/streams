@@ -68,3 +68,10 @@ mod queue;
 )]
 #[path = "../../../src/rollup/allocation.rs"]
 mod rollup_allocation;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compile the canonical storage byte-time arithmetic and its properties; the library target has no service caller"
+)]
+#[path = "../../../src/rollup/storage.rs"]
+mod rollup_storage;

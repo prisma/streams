@@ -144,3 +144,53 @@ async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
     assert_eq!(snapshot(&db).await, before);
     db.close().await.unwrap();
 }
+
+#[test]
+fn decimal_validation_preserves_nested_and_legacy_zero_rules() {
+    let decode = |text: &str| super::decode_json::<serde_json::Value>(text.as_bytes());
+    assert!(
+        decode(
+            r#"{"rows":[{"storage_byte_ms":""},{"storage_byte_ms_delta":"-1"}],"unrelated":"text"}"#
+        )
+        .is_ok()
+    );
+    for invalid in [
+        r#"{"rows":[{"storage_byte_ms":"-1"}]}"#,
+        r#"{"storage_byte_ms":1}"#,
+        r#"{"storage_byte_ms":"bad"}"#,
+        r#"{"storage_byte_ms_delta":"170141183460469231731687303715884105728"}"#,
+    ] {
+        assert!(
+            decode(invalid).is_err(),
+            "accepted invalid accounting data: {invalid}"
+        );
+    }
+}
+
+#[test]
+fn provisional_storage_handles_the_full_signed_clock_range() {
+    let end = month_start_ms(2026, 8);
+    let mut row = super::MonthRow {
+        segments: [(
+            0,
+            super::SegMonth {
+                storage_byte_ms: "7".into(),
+                gauge_bytes: 3,
+                accounted_through_ms: i64::MIN,
+                ..Default::default()
+            },
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let expected = 7 + u128::from(end.abs_diff(i64::MIN)) * 3;
+    assert_eq!(
+        row.storage_byte_ms_provisional("2026-07", i64::MAX),
+        expected
+    );
+    row.segments.get_mut(&0).unwrap().final_seen = true;
+    assert_eq!(row.storage_byte_ms_provisional("2026-07", i64::MAX), 7);
+    row.segments.get_mut(&0).unwrap().final_seen = false;
+    row.segments.get_mut(&0).unwrap().accounted_through_ms = end;
+    assert_eq!(row.storage_byte_ms_provisional("2026-07", i64::MAX), 7);
+}
