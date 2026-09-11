@@ -53,6 +53,52 @@ impl SegmentDesc {
     }
 }
 
+impl SegmentDesc {
+    /// Each edge must preserve allocation order, overlap and seal authority.
+    fn validate_lineage(&self, map: &SegmentMap) -> Result<(), String> {
+        use std::collections::HashSet;
+        let parents = self.predecessors.iter().map(|id| (id, false));
+        let children = self.successors.iter().map(|id| (id, true));
+        let mut seen = HashSet::new();
+        for (id, successor) in parents.chain(children) {
+            if !seen.insert((successor, *id)) || *id == self.seg_id {
+                return Err(format!(
+                    "segment {} has duplicate/self reference",
+                    self.seg_id
+                ));
+            }
+            // Missing historical predecessors may already have been absorbed.
+            // A missing successor would lose future routing authority.
+            let other = match map.get(*id) {
+                Some(other) => other,
+                None if !successor && *id < self.seg_id => continue,
+                None => {
+                    return Err(format!(
+                        "segment {} references missing segment {id}",
+                        self.seg_id
+                    ));
+                }
+            };
+            if (successor && *id <= self.seg_id) || (!successor && *id >= self.seg_id) {
+                return Err(format!(
+                    "segment {} has cyclic/reversed lineage",
+                    self.seg_id
+                ));
+            }
+            if other.lo >= self.hi || self.lo >= other.hi {
+                return Err("lineage ranges do not overlap".into());
+            }
+            if successor && !other.predecessors.contains(&self.seg_id) {
+                return Err("successor does not reference parent".into());
+            }
+            if !successor && other.is_live() {
+                return Err("predecessor remains live".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SegmentMap {
     /// Monotonic map version; CAS target.
@@ -90,13 +136,42 @@ pub(crate) struct PendingTransition {
     pub seal_gen: u64,
 }
 
+impl PendingTransition {
+    fn validate(&self, map: &SegmentMap) -> Result<(), String> {
+        let required = match self.kind.as_str() {
+            "split" => 1,
+            "merge" => 2,
+            _ => return Err("unknown transition kind".into()),
+        };
+        if self.segs.len() != required {
+            return Err("transition parent count is invalid".into());
+        }
+        if matches!(self.segs.as_slice(), [a, b] if a == b) {
+            return Err("transition repeats a parent".into());
+        }
+        let parents = self
+            .segs
+            .iter()
+            .map(|id| {
+                map.get(*id)
+                    .ok_or_else(|| "transition parent is missing".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match parents.as_slice() {
+            [parent] if self.split_at <= parent.lo || self.split_at >= parent.hi => {
+                Err("split point is outside parent".into())
+            }
+            [a, b] if a.hi != b.lo && b.hi != a.lo => Err("merge parents are not adjacent".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum MapError {
     NotFound(u32),
     AlreadySealed(u32),
     NotAdjacent(u32, u32),
-    NotSealed(u32),
-    SingleSegmentStream,
     InvalidSplitPoint,
     IdExhausted,
 }
@@ -129,7 +204,8 @@ impl SegmentMap {
 
     /// The live segment owning hashed key `k`. The partition invariant
     /// guarantees exactly one.
-    pub fn route(&self, k: u64) -> Option<&SegmentDesc> {
+    #[cfg(test)]
+    fn route(&self, k: u64) -> Option<&SegmentDesc> {
         self.live().find(|s| s.contains(k))
     }
 
@@ -137,29 +213,10 @@ impl SegmentMap {
         self.segments.iter().find(|s| s.seg_id == seg_id)
     }
 
-    /// Successors of a sealed segment: the PERSISTED list (written
-    /// atomically with the seal at Phase B — spec Stage 3 §4.2), with
-    /// range-intersection derivation only as a defensive fallback.
-    pub fn successors(&self, seg_id: u32) -> Vec<&SegmentDesc> {
-        let Some(sealed) = self.get(seg_id) else {
-            return vec![];
-        };
-        if !sealed.successors.is_empty() {
-            return sealed
-                .successors
-                .iter()
-                .filter_map(|id| self.get(*id))
-                .collect();
-        }
-        self.live()
-            .filter(|s| s.lo < sealed.hi && sealed.lo < s.hi)
-            .collect()
-    }
-
     /// Validate persisted topology, including sealed predecessor coverage and
     /// partially closed transitions. Requiring every segment to be live would
     /// reject legitimate recovery states; terminal leaves must cover keyspace.
-    pub fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         use std::collections::HashSet;
         if self.segments.is_empty() {
             return Err("explicit map is empty".into());
@@ -189,47 +246,7 @@ impl SegmentMap {
             }
         }
         for segment in &self.segments {
-            for (references, successor) in
-                [(&segment.predecessors, false), (&segment.successors, true)]
-            {
-                let mut seen = HashSet::new();
-                for id in references {
-                    if !seen.insert(*id) || *id == segment.seg_id {
-                        return Err(format!(
-                            "segment {} has duplicate/self reference",
-                            segment.seg_id
-                        ));
-                    }
-                    let Some(other) = self.get(*id) else {
-                        // Absorbed predecessors may have been pruned. Their
-                        // allocated IDs remain historical references; a missing
-                        // successor would instead lose future routing authority.
-                        if !successor && *id < segment.seg_id {
-                            continue;
-                        }
-                        return Err(format!(
-                            "segment {} references missing segment {id}",
-                            segment.seg_id
-                        ));
-                    };
-                    if (successor && *id <= segment.seg_id) || (!successor && *id >= segment.seg_id)
-                    {
-                        return Err(format!(
-                            "segment {} has cyclic/reversed lineage",
-                            segment.seg_id
-                        ));
-                    }
-                    if other.lo >= segment.hi || segment.lo >= other.hi {
-                        return Err("lineage ranges do not overlap".into());
-                    }
-                    if successor && !other.predecessors.contains(&segment.seg_id) {
-                        return Err("successor does not reference parent".into());
-                    }
-                    if !successor && other.is_live() {
-                        return Err("predecessor remains live".into());
-                    }
-                }
-            }
+            segment.validate_lineage(self)?;
         }
         let mut leaves: Vec<_> = self
             .segments
@@ -245,35 +262,7 @@ impl SegmentMap {
             return Err("terminal segments do not exactly cover keyspace".into());
         }
         if let Some(pending) = &self.pending {
-            let required = match pending.kind.as_str() {
-                "split" => 1,
-                "merge" => 2,
-                _ => return Err("unknown transition kind".into()),
-            };
-            if pending.segs.len() != required {
-                return Err("transition parent count is invalid".into());
-            }
-            if pending.segs.iter().collect::<HashSet<_>>().len() != required {
-                return Err("transition repeats a parent".into());
-            }
-            for id in &pending.segs {
-                if self.get(*id).is_none() {
-                    return Err("transition parent is missing".into());
-                }
-            }
-            if pending.kind == "split" {
-                let parent = self.get(pending.segs[0]).unwrap();
-                if pending.split_at <= parent.lo || pending.split_at >= parent.hi {
-                    return Err("split point is outside parent".into());
-                }
-            }
-            if pending.kind == "merge" {
-                let a = self.get(pending.segs[0]).unwrap();
-                let b = self.get(pending.segs[1]).unwrap();
-                if a.hi != b.lo && b.hi != a.lo {
-                    return Err("merge parents are not adjacent".into());
-                }
-            }
+            pending.validate(self)?;
         }
         Ok(())
     }
@@ -282,10 +271,9 @@ impl SegmentMap {
     pub(crate) fn check_partition(&self) -> bool {
         let mut ranges: Vec<(u64, u64)> = self.live().map(|s| (s.lo, s.hi)).collect();
         ranges.sort_unstable();
-        if ranges.is_empty() {
-            return false;
-        }
-        if ranges[0].0 != 0 || ranges.last().unwrap().1 != KEYSPACE_END {
+        if ranges.first().map(|range| range.0) != Some(0)
+            || ranges.last().map(|range| range.1) != Some(KEYSPACE_END)
+        {
             return false;
         }
         ranges.windows(2).all(|w| w[0].1 == w[1].0)
@@ -412,31 +400,119 @@ impl SegmentMap {
         debug_assert!(self.check_partition());
         Ok(c)
     }
-
-    /// Drop sealed segments whose shard data is fully drained (caller
-    /// verifies absorption/GC) AND which no live segment lists as a
-    /// predecessor-of-predecessor chain readers might still walk. We keep
-    /// it simple: prune only sealed segments none of whose range-successors
-    /// are themselves sealed (lineage depth 1 retained).
-    pub fn prune(&mut self, drained: &[u32]) {
-        self.segments
-            .retain(|s| s.is_live() || !drained.contains(&s.seg_id));
-        self.version += 1;
-    }
-}
-
-/// Hash a routing key into the segment keyspace: first 8 bytes of the
-/// stream_hash SHA-256 construction over the routing key — the same
-/// construction touch_keys uses, so the whole codebase derives 64-bit
-/// ids one way.
-pub fn key_point(routing_key: &str) -> u64 {
-    let h = crate::crypto::stream_hash(routing_key);
-    u64::from_be_bytes(h[..8].try_into().unwrap())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_transition_validation_preserves_shape_and_boundary_errors() {
+        let mut map = SegmentMap::initial("root", 1);
+        let mid = KEYSPACE_END / 2;
+        let (a, b) = map.split(0, mid, 7, [1; 16], [2; 16], 2).unwrap();
+        let (c, d) = map.split(a, mid / 2, 8, [1; 16], [3; 16], 3).unwrap();
+        let cases = [
+            ("unknown", vec![], 0, Some("unknown transition kind")),
+            (
+                "split",
+                vec![],
+                0,
+                Some("transition parent count is invalid"),
+            ),
+            (
+                "split",
+                vec![c, d],
+                0,
+                Some("transition parent count is invalid"),
+            ),
+            (
+                "merge",
+                vec![c],
+                0,
+                Some("transition parent count is invalid"),
+            ),
+            ("merge", vec![c, c], 0, Some("transition repeats a parent")),
+            ("split", vec![999], 0, Some("transition parent is missing")),
+            (
+                "merge",
+                vec![c, 999],
+                0,
+                Some("transition parent is missing"),
+            ),
+            ("split", vec![c], 0, Some("split point is outside parent")),
+            (
+                "split",
+                vec![c],
+                mid / 2,
+                Some("split point is outside parent"),
+            ),
+            (
+                "merge",
+                vec![c, b],
+                0,
+                Some("merge parents are not adjacent"),
+            ),
+            ("split", vec![c], mid / 4, None),
+            ("merge", vec![d, b], 0, None),
+            ("merge", vec![b, d], 0, None),
+        ];
+        for (kind, segs, split_at, error) in cases {
+            map.pending = Some(PendingTransition {
+                kind: kind.into(),
+                segs,
+                split_at,
+                started_ms: 4,
+                seal_gen: 1,
+            });
+            assert_eq!(map.validate().err().as_deref(), error, "{:?}", map.pending);
+        }
+    }
+
+    #[test]
+    fn lineage_preserves_direction_and_historical_predecessor_rules() {
+        let mut map = SegmentMap::initial("root", 1);
+        let (a, b) = map
+            .split(0, KEYSPACE_END / 2, 7, [1; 16], [2; 16], 2)
+            .unwrap();
+        assert!(map.validate().is_ok());
+        let mut historical = map.clone();
+        historical.segments.retain(|segment| segment.seg_id != 0);
+        assert!(
+            historical.validate().is_ok(),
+            "absorbed predecessors may be absent"
+        );
+
+        let mut missing_successor = map.clone();
+        missing_successor
+            .segments
+            .retain(|segment| segment.seg_id != a);
+        assert_eq!(
+            missing_successor.validate().unwrap_err(),
+            format!("segment 0 references missing segment {a}")
+        );
+
+        let mut repeated = map.clone();
+        repeated.segments[0].successors.push(a);
+        assert_eq!(
+            repeated.validate().unwrap_err(),
+            "segment 0 has duplicate/self reference"
+        );
+
+        let mut missing_backlink = map.clone();
+        missing_backlink.segments[1].predecessors.clear();
+        assert_eq!(
+            missing_backlink.validate().unwrap_err(),
+            "successor does not reference parent"
+        );
+
+        let mut reverse = map;
+        reverse.segments[1].predecessors.push(b);
+        assert_eq!(
+            reverse.validate().unwrap_err(),
+            format!("segment {a} has cyclic/reversed lineage")
+        );
+    }
 
     #[test]
     fn initial_routes_everything() {
@@ -457,7 +533,7 @@ mod tests {
         assert_eq!(m.route(mid).unwrap().seg_id, b);
         let parent = m.get(0).unwrap();
         assert_eq!(parent.sealed_next_offset, Some(4242));
-        let succ: Vec<u32> = m.successors(0).iter().map(|s| s.seg_id).collect();
+        let succ = &parent.successors;
         assert_eq!(succ.len(), 2);
         assert!(succ.contains(&a) && succ.contains(&b));
         // double split of sealed parent rejected
@@ -500,8 +576,7 @@ mod tests {
         assert!(m.check_partition());
         assert_eq!(m.live().count(), 2);
         assert_eq!(m.route(KEYSPACE_END / 2).unwrap().seg_id, e);
-        let succ_d: Vec<u32> = m.successors(d).iter().map(|s| s.seg_id).collect();
-        assert_eq!(succ_d, vec![e]);
+        assert_eq!(m.get(d).unwrap().successors, vec![e]);
     }
 
     #[test]
@@ -512,13 +587,5 @@ mod tests {
         let j = serde_json::to_string(&m).unwrap();
         let back: SegmentMap = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
-    }
-
-    #[test]
-    fn key_point_is_stable_and_spread() {
-        let a = key_point("user-1");
-        let b = key_point("user-2");
-        assert_ne!(a, b);
-        assert_eq!(a, key_point("user-1"));
     }
 }

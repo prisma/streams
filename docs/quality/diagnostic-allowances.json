@@ -5624,34 +5624,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "4ecb33283dd06851fbe4df2d5e9429e86767384e235dd9f1d7b104d11a5a67f7",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e4d474d6e029528f630d14abb823dcdc8f5d656dc8dd37da6fdb3ef068204169",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f502eb8410e2b124b6467b7d63abd031ea3155d056d685ed79cfb8d7368b1bd3",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f942e1d0f58d5074cd5c692f314e4f98f1a43cefb05ad8d9a54fac1c086adbd4",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "708c0e28416e32bac3d3263265aa780e38c67bdf8cee5d74d18258cd16d7dc7a",
       "item": "crate::ShardEngine::acker_loop",
       "lint": "clippy::excessive_nesting",
@@ -11082,14 +11054,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1105f91e3d17220acbc19a5de9afb5dfc67f7d7522a3241cd6c9acee9ccb2d09",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::too_many_lines",
-      "metric": 113,
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "f14d0799857f95502c21531e4196ffc1ac122cb8bbba01a80444cb567cd6db81",
       "item": "crate::ShardEngine::committer_loop",
       "lint": "clippy::too_many_lines",
@@ -13170,43 +13134,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "264661bd8e6f449f7d3d87528d1319e2384f50f216c5ce5bd02f519a7e5005ba",
-      "item": "crate::SegmentMap::check_partition",
-      "lint": "clippy::unwrap_used",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4444bfa12e7112b1e20f0e36e2b87817542d90019858d54419c0d52705546082",
       "item": "crate::SegmentMap::merge",
-      "lint": "clippy::unwrap_used",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0417b9cedea309c1a654988eefc9292bd569cdf4a371dd66475cf9bff56da38f",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::unwrap_used",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "989c70cfe12576f76c62f43e1b116a001359891f14c923c8759493965335d08b",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::unwrap_used",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b31d0e7e0ebed8d7c3e3fe25df2f81d32e4545d71ee399d20e8989a22caac130",
-      "item": "crate::SegmentMap::validate",
-      "lint": "clippy::unwrap_used",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f59b668f29199176e3e776bce9c91b49743f1a5ac196a2852917e46b28a64da2",
-      "item": "crate::key_point",
       "lint": "clippy::unwrap_used",
       "path": "src/segmap.rs"
     },
@@ -14654,34 +14583,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "78e1fbcd7e36286d5cb4bcae491e886b503e4c751f2d047124fdee326aea2c2f",
-      "item": "crate::MapError::NotSealed",
-      "lint": "dead_code",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5cc4b43918820afa6384b9b5352610cbb567b7d99612d1c837665b6b55dd3a7d",
-      "item": "crate::SegmentMap::prune",
-      "lint": "dead_code",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7993599b8f9e1582dae72947bb197eb41d3afe33e21ac0301ac35799dea32669",
-      "item": "crate::SegmentMap::route",
-      "lint": "dead_code",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b3f45fdcaf6f09ad31c4c04fc94140497ed366356657126137c1c61024f76b5e",
-      "item": "crate::key_point",
-      "lint": "dead_code",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "e80690df057a744aceef1931fef6d045042424df8859f2d098273534f0d67026",
       "item": "crate::ShardEngine::await_terminated",
       "lint": "dead_code",
@@ -15298,43 +15199,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "92db8857b67ca2303e3c5bf8d36253ce5627775c188db34e2851cb42ea1fa50c",
-      "item": "crate::SegmentMap::prune",
-      "lint": "unreachable_pub",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2d61e381c5baa7f6f8f966161ea87ca6a3ec03b4c6e4051b2d8e4825bb44a94d",
-      "item": "crate::SegmentMap::route",
-      "lint": "unreachable_pub",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "db865badf7d78cdfb304fc5674505c513b9f8c06bb85042781a287e7ab09c19c",
       "item": "crate::SegmentMap::split",
-      "lint": "unreachable_pub",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "196e114399a58fa5ebeb332f9567309192deec564cdf1b466972f82e19fc18b0",
-      "item": "crate::SegmentMap::successors",
-      "lint": "unreachable_pub",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c43bf6dd9663581f92044ea39c5c75bf5c11408b677bb330b191bdc7cf534293",
-      "item": "crate::SegmentMap::validate",
-      "lint": "unreachable_pub",
-      "path": "src/segmap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a67e750ba81ffb86697df60723cab0f63206699cff2d3324154a51220e583a9e",
-      "item": "crate::key_point",
       "lint": "unreachable_pub",
       "path": "src/segmap.rs"
     },
