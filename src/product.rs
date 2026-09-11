@@ -27,6 +27,10 @@ use crate::registry::{StreamDesc, WatchDefinition};
 pub(crate) use crate::tenant::RESERVED_ROOT;
 
 /// Stable product error shape (spec Stage 8 §11).
+#[expect(
+    clippy::unwrap_used,
+    reason = "perr; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 pub(crate) fn perr(
     status: StatusCode,
     code: &str,
@@ -86,12 +90,20 @@ pub(crate) fn canonical_name(raw: &str) -> Result<String, Response> {
 /// (Stage 4): same rules, same error responses, returns the checked
 /// identity type. No reconstruction, no expect (WP-03/PR 5): the value
 /// IS the one validation produced.
-#[allow(dead_code)] // consumed from MT Stage 4 surface conversion on
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical_stream_name; the typed conversion is the checked-identity entry the multi-tenant surface conversion is written against and its tests pin it; removing it until that caller lands would strip the validated path they exercise"
+    )
+)]
 #[allow(
     clippy::result_large_err,
     reason = "transport boundary returns Axum wire response directly; application errors stay compact"
 )]
-pub fn canonical_stream_name(raw: &str) -> Result<crate::tenant::CanonicalStreamName, Response> {
+pub(crate) fn canonical_stream_name(
+    raw: &str,
+) -> Result<crate::tenant::CanonicalStreamName, Response> {
     match ProductStreamName::try_from(raw) {
         Ok(p) => Ok(p.into_canonical()),
         Err(e) => Err(perr(
@@ -1033,6 +1045,10 @@ async fn meter_op_if_ok(
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_entry; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 pub async fn product_entry(
     state: Arc<AppState>,
     path: String,
@@ -1470,6 +1486,10 @@ async fn product_create(
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "metadata_response; watch definitions serialize as plain JSON objects and the response builder holds a fixed status and literal headers, so neither step can fail; mapping either into a substitute response would report a wire status the handler never decided"
+)]
 fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {
     let created_at = chrono::DateTime::from_timestamp_millis(desc.created_ms)
         .map(|t| t.to_rfc3339())
@@ -1544,6 +1564,10 @@ async fn product_metadata(
 
 /// Collection seal (Stage 8 §7, v1: seal-only; atomic final append
 /// lands with the lifecycle stage). Durable + monotonic + idempotent.
+#[expect(
+    clippy::expect_used,
+    reason = "product_seal; the routing key was checked to be a valid header value when the seal document was admitted; a second fallible conversion would reject what admission already accepted"
+)]
 async fn product_seal(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -1783,7 +1807,7 @@ async fn product_seal(
             )
             .await;
             return match result {
-                Ok(()) => json_ok(json!({"sealed":true})),
+                Ok(()) => json_ok(&json!({"sealed":true})),
                 Err(crate::application::lifecycle::SealFinalError::Append(error)) => {
                     render_product_append_error(error)
                 }
@@ -1812,6 +1836,10 @@ where
     T::deserialize(d).map(Some)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_seal_only; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 async fn product_seal_only(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -1966,7 +1994,10 @@ async fn product_append(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // request context, not tunables
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_append_inner; the parameters are the request's typed context parts, not tunables; a bundle struct for this single call site would only rename the same positional list"
+)]
 async fn product_append_inner(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -2181,7 +2212,10 @@ async fn product_append_inner(
     render_product_append(&desc, &key, &routing_key, count, result)
 }
 
-#[allow(clippy::too_many_arguments)] // Parsed protocol fields converge into one typed application command.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "submit_product_append; parsed protocol fields converge here into one typed application command; bundling them earlier would parse the wire shape twice"
+)]
 async fn submit_product_append(
     state: Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2262,7 +2296,14 @@ async fn submit_product_append(
 /// Map the shared path's protocol response into the product contract:
 /// {cursor, count, duplicate, sealed} on success, the stable product
 /// error schema otherwise.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "render_product_append; the wire rendering needs every part the append outcome produced; a rendering struct would duplicate the outcome type for one call"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "render_product_append; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 fn render_product_append(
     desc: &StreamDesc,
     key: &crate::crypto::StreamKey,
@@ -2290,6 +2331,10 @@ fn render_product_append(
         .body(Body::from(json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string())).unwrap()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "render_product_append_error; a retry-after delay renders as decimal digits, which are always a valid header value; treating the conversion as fallible would drop the retry hint the client is owed"
+)]
 fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {
     use crate::application::append::{AppendCode as C, FailureClass as F};
     let status = crate::http::append_failure_status(&error);
@@ -2757,16 +2802,20 @@ async fn product_read(
         .await;
     }
     match state.read_service().execute_read(command).await {
-        Ok(outcome) => render_product_read(&state, &skey, &rk, outcome),
+        Ok(outcome) => render_product_read(&state, &skey, &rk, &outcome),
         Err(error) => render_product_read_failure(error),
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 fn render_product_read(
     state: &AppState,
     key: &crate::crypto::StreamKey,
     routing_key: &str,
-    out: crate::application::read::ReadOutcome,
+    out: &crate::application::read::ReadOutcome,
 ) -> Response {
     use crate::application::read::ReadResultKind;
     let cursor = |position: crate::application::read::ReadPosition| {
@@ -2802,9 +2851,9 @@ fn render_product_read(
     let payload = if out.kind == ReadResultKind::Timeout {
         Bytes::new()
     } else {
-        crate::http::read_payload(&out, false, Some(key), Some(routing_key), false)
+        crate::http::read_payload(out, false, Some(key), Some(routing_key), false)
     };
-    crate::http::meter_read_outcome(state, &out);
+    crate::http::meter_read_outcome(state, out);
     response.body(Body::from(payload)).unwrap()
 }
 
@@ -2910,6 +2959,11 @@ pub(crate) fn render_product_read_failure(
     response
 }
 
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail; mapping either into a substitute response would report a wire status the handler never decided"
+)]
 async fn product_scan(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3165,9 +3219,13 @@ fn consumer_failure_response(error: crate::application::consumer::ConsumerFailur
     }
     response
 }
+#[expect(
+    clippy::unwrap_used,
+    reason = "consumer_config_response; the version token is printable ASCII and the other headers are literals, so building the response cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 fn consumer_config_response(
     cname: &str,
-    out: crate::application::consumer::ConfigOutcome,
+    out: &crate::application::consumer::ConfigOutcome,
 ) -> Response {
     Response::builder()
         .status(if out.created {
@@ -3245,7 +3303,7 @@ async fn product_consumer_put(
         }
     };
     match crate::application::consumer::put(context, doc, access).await {
-        Ok(out) => consumer_config_response(&cname, out),
+        Ok(out) => consumer_config_response(&cname, &out),
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3277,7 +3335,7 @@ async fn product_consumer_get(
         Err(e) => return consumer_failure_response(e),
     };
     match crate::application::consumer::get(context).await {
-        Ok(out) => consumer_config_response(&cname, out),
+        Ok(out) => consumer_config_response(&cname, &out),
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3292,7 +3350,11 @@ async fn product_consumer_get(
 
 // ---- fleet-internal segment fan-out (cross-owner consumer ops) ------
 
-fn json_ok(v: serde_json::Value) -> Response {
+#[expect(
+    clippy::unwrap_used,
+    reason = "json_ok; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
+fn json_ok(v: &serde_json::Value) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
@@ -3428,6 +3490,10 @@ pub(crate) fn verify_internal_target(
 /// Fleet-internal sweep target: run bounded ConfigDeleteStep rounds for
 /// ONE locally-owned segment. fence_below arrives from the caller so
 /// the generation-fenced cleanup semantics (round 17) hold unchanged.
+#[expect(
+    clippy::expect_used,
+    reason = "internal_sweep_segment; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+)]
 pub(crate) async fn internal_sweep_segment(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -3510,7 +3576,7 @@ pub(crate) async fn internal_sweep_segment(
         )
         .await
     {
-        Ok(out) => json_ok(serde_json::to_value(out).expect("sweep outcome serializable")),
+        Ok(out) => json_ok(&serde_json::to_value(out).expect("sweep outcome serializable")),
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3520,6 +3586,10 @@ pub(crate) async fn internal_sweep_segment(
 /// predecessor and yield past a FOREIGN empty live sibling without
 /// taking the segment's engine — the two cases whole-request replay
 /// cannot converge on (each owner would bounce on the other's segment).
+#[expect(
+    clippy::expect_used,
+    reason = "internal_queue_cursor; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+)]
 pub(crate) async fn internal_queue_cursor(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -3588,7 +3658,7 @@ pub(crate) async fn internal_queue_cursor(
         )
         .await
     {
-        Ok(out) => json_ok(serde_json::to_value(out).expect("queue position serializable")),
+        Ok(out) => json_ok(&serde_json::to_value(out).expect("queue position serializable")),
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3713,7 +3783,7 @@ pub(crate) async fn internal_segment_scan(
             })
         })
         .collect();
-    json_ok(json!({
+    json_ok(&json!({
         "items": items,
         "last": out.last,
         "end": out.end,
@@ -3721,6 +3791,10 @@ pub(crate) async fn internal_segment_scan(
     }))
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_consumer_delete; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 async fn product_consumer_delete(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3778,7 +3852,10 @@ async fn product_consumer_delete(
 /// id (crash-idempotent), and only after that is durable, ack the
 /// source lease. No dead-letter stream configured -> the poison is
 /// dropped by acking directly.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_consumer_pull; the parameters are the request's typed context parts, not tunables; a bundle struct for this single call site would only rename the same positional list"
+)]
 async fn product_consumer_pull(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3836,12 +3913,16 @@ async fn product_consumer_pull(
                     out.messages.len() as u64,
                 );
             }
-            json_ok(json!({"messages":out.messages,"backlog":out.backlog}))
+            json_ok(&json!({"messages":out.messages,"backlog":out.backlog}))
         }
         Err(e) => consumer_failure_response(e),
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "product_consumer_settle; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+)]
 async fn product_consumer_settle(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3886,7 +3967,7 @@ async fn product_consumer_settle(
         }
     };
     match crate::application::consumer::settle(context, doc).await {
-        Ok(out) => json_ok(serde_json::to_value(out).expect("settle outcome serializable")),
+        Ok(out) => json_ok(&serde_json::to_value(out).expect("settle outcome serializable")),
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3912,7 +3993,7 @@ async fn product_watches_list(
         .await
     {
         Ok(definitions) => json_ok(
-            json!({ "watches": definitions.iter().map(watch_def_json).collect::<Vec<_>>() }),
+            &json!({ "watches": definitions.iter().map(watch_def_json).collect::<Vec<_>>() }),
         ),
         Err(error) => watch_failure_response(error),
     }
@@ -3933,14 +4014,17 @@ async fn product_watch_get(
             .iter()
             .find(|definition| definition.name == watch)
         {
-            Some(definition) => json_ok(watch_def_json(definition)),
+            Some(definition) => json_ok(&watch_def_json(definition)),
             None => watch_failure_response(crate::application::watch::WatchFailure::UnknownWatch),
         },
         Err(error) => watch_failure_response(error),
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Parsed protocol fields converge into one typed application command.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_watch_wait; the parameters are the request's typed context parts, not tunables; a bundle struct for this single call site would only rename the same positional list"
+)]
 async fn product_watch_wait(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -4012,7 +4096,7 @@ async fn product_watch_wait(
         }) => json!({"invalidated": false, "cursor": cursor, "streamCursor": stream_cursor}),
         Err(error) => return watch_failure_response(error),
     };
-    let mut response = json_ok(body);
+    let mut response = json_ok(&body);
     response
         .headers_mut()
         .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
@@ -4022,6 +4106,10 @@ async fn product_watch_wait(
 /// GET /v1/streams — the paginated product catalog (spec Stage 8 §10).
 /// One object-store LIST over the registry prefix; no per-stream GET
 /// fan-out beyond the descriptors the page returns.
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_list; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMap) -> Response {
     // Its own route entry (not through product_entry): gate it here.
     // In enforce mode the principal is retained so the listing can be
@@ -4159,6 +4247,10 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
 /// GET /v1/streams/{name}/usage[?month=YYYY-MM] and .../usage/current.
 /// Control-plane metadata: bearer-authorized, NO record key required,
 /// answered from the rollup with a point read (never a ledger scan).
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_usage; the month was parsed once at admission, so parsing it again cannot fail; a fallible re-parse would turn an already accepted request into a spurious error"
+)]
 async fn product_usage(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -4311,7 +4403,7 @@ async fn product_usage(
     } else {
         "provisional"
     };
-    json_ok(json!({
+    json_ok(&json!({
         "projectId": id.project_id,
         "streamId": id.stream_id,
         "streamName": id.stream_name,
@@ -4453,7 +4545,7 @@ pub(crate) async fn project_usage(
         }
     };
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
-    json_ok(json!({
+    json_ok(&json!({
         "accountId": account,
         "projectId": project,
         "month": month,
@@ -4519,7 +4611,10 @@ pub(crate) async fn claim_seal(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)] // Test adapter exercises all coordinates of a durable claim.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "install_reserved_claim; the claim installation takes the reservation's typed parts as the lifecycle service produced them; a bundle struct would exist for this single call site"
+)]
 pub(crate) async fn install_reserved_claim(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -4644,270 +4739,4 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// WP-03/PR 5: the wire error MESSAGES are pinned across the
-    /// single-sourcing — same code, same body text per case, including
-    /// the multi-violation precedence corner (`__ds/..` reports the
-    /// dot segment — since PR 4.1 that order is owned by the canonical
-    /// layer, not re-scanned here).
-    #[test]
-    fn name_error_messages_are_wire_pinned() {
-        let msg = |raw: &str| match ProductStreamName::try_from(raw) {
-            Ok(_) => panic!("{raw:?} must be rejected"),
-            Err(e) => e.message(),
-        };
-        assert_eq!(msg(""), "stream name must be 1-512 UTF-8 bytes");
-        assert_eq!(
-            msg(&"x".repeat(513)),
-            "stream name must be 1-512 UTF-8 bytes"
-        );
-        assert_eq!(msg("has\u{7}bell"), "control characters are not allowed");
-        assert_eq!(msg("a//b"), "empty path segments are not allowed");
-        assert_eq!(msg("a/./b"), "'.' and '..' segments are not allowed");
-        assert_eq!(msg("__ds/x"), "the __ds namespace is reserved");
-        assert_eq!(
-            msg("a/records"),
-            "'records', 'consumers' and 'watches' are reserved subresource names"
-        );
-        assert_eq!(
-            msg("a/consumers/b"),
-            "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)"
-        );
-        // The precedence corner: reserved root AND a dot segment —
-        // the segment message wins, as the old scan order dictated.
-        assert_eq!(msg("__ds/.."), "'.' and '..' segments are not allowed");
-        assert_eq!(msg("__ds//x"), "empty path segments are not allowed");
-    }
-
-    #[test]
-    fn name_rules() {
-        assert!(canonical_name("orders").is_ok());
-        assert!(canonical_name("customers/acme/orders").is_ok());
-        assert!(canonical_name("").is_err());
-        assert!(canonical_name(&"x".repeat(513)).is_err());
-        assert!(canonical_name("a//b").is_err());
-        assert!(canonical_name("a/./b").is_err());
-        assert!(canonical_name("a/../b").is_err());
-        assert!(canonical_name("__ds/x").is_err());
-        assert!(canonical_name("__ds").is_err());
-        assert!(canonical_name("a/records").is_err());
-        assert!(canonical_name("a/consumers").is_err());
-        assert!(canonical_name("a/watches").is_err());
-        assert!(canonical_name("has\u{7}bell").is_err());
-    }
-
-    #[test]
-    fn validators_agree() {
-        // Pins product::canonical_name to tenant::CanonicalStreamName:
-        // every ACCEPT of canonical_name must be an ACCEPT of the
-        // identity type (canonical_name may be STRICTER — it adds the
-        // addressability rules — never looser). Divergence here means
-        // an identity-layer bypass.
-        let corpus = [
-            "orders",
-            "customers/acme/orders",
-            "a",
-            "a/b/c",
-            "a/__ds",
-            "records-ish",
-            "a/recordsx",
-            "deep/a/b/c/d/e",
-            "",
-            "a//b",
-            "/a",
-            "a/",
-            "a/./b",
-            "a/../b",
-            ".",
-            "..",
-            "__ds",
-            "__ds/x",
-            "has\u{7}bell",
-            "a/records",
-            "a/consumers",
-            "a/watches",
-        ];
-        for raw in corpus {
-            let product_ok = canonical_name(raw).is_ok();
-            let tenant_ok = crate::tenant::CanonicalStreamName::new(raw).is_ok();
-            assert!(
-                !product_ok || tenant_ok,
-                "canonical_name accepted {raw:?} but CanonicalStreamName rejected it"
-            );
-        }
-        let long = "x".repeat(513);
-        assert!(canonical_name(&long).is_err());
-        assert!(crate::tenant::CanonicalStreamName::new(&long).is_err());
-        // The typed entry point returns the same acceptance set as
-        // canonical_name itself.
-        assert!(canonical_stream_name("customers/acme").is_ok());
-        assert!(canonical_stream_name("a/records").is_err());
-    }
-
-    #[test]
-    fn subresource_split() {
-        assert_eq!(
-            split_subresource("customers/acme/orders/records"),
-            Some(("customers/acme/orders", "records"))
-        );
-        assert_eq!(
-            split_subresource("orders/consumers/fulfilment"),
-            Some(("orders", "consumers/fulfilment"))
-        );
-        assert_eq!(split_subresource("orders"), None);
-    }
-
-    #[test]
-    fn idle_durations() {
-        assert_eq!(parse_idle_secs("30d"), Some(30 * 86_400));
-        assert_eq!(parse_idle_secs("12h"), Some(12 * 3_600));
-        assert_eq!(parse_idle_secs("90"), Some(90));
-        assert_eq!(parse_idle_secs("0d"), None);
-        assert_eq!(parse_idle_secs("x"), None);
-    }
-
-    // Round-19 ABA: a peer RPC that names only (stream, segment) binds
-    // to whatever descriptor holds that name when it LANDS. These pin
-    // the guard that makes a stale relay refuse instead.
-    fn desc_with(name: &str, epoch_hex: &str) -> StreamDesc {
-        crate::registry::PersistedDescriptor {
-            name: name.to_string(),
-            account_id: None,
-            project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
-            stream_epoch: epoch_hex.to_string(),
-            seal_gen_counter: 0,
-            key_fingerprint: String::new(),
-            created_ms: 0,
-            expires_at_ms: None,
-            deleted: false,
-            soft_deleted: false,
-            logical_close_ms: None,
-            forked_from: None,
-            fork_children: Vec::new(),
-            init: None,
-            sealing: None,
-            seal_op: None,
-            content_type: "application/json".to_string(),
-            ttl_secs: None,
-            segments: None,
-            sealed: false,
-            watch_definitions: Vec::new(),
-            watch_sig_key: None,
-            parent_ref_pending: false,
-            layout_version: crate::registry::LAYOUT_VERSION,
-        }
-        .try_into()
-        .expect("valid descriptor fixture")
-    }
-
-    fn target_headers(d: &StreamDesc, seg: u32) -> HeaderMap {
-        let t = InternalTarget::of(d, seg).expect("descriptor has an epoch");
-        let mut h = HeaderMap::new();
-        for (k, v) in t.headers() {
-            h.insert(k, axum::http::HeaderValue::from_str(&v).unwrap());
-        }
-        h
-    }
-
-    #[test]
-    fn internal_target_accepts_its_own_incarnation() {
-        let d = desc_with("orders", &"11".repeat(16));
-        let h = target_headers(&d, 0);
-        let (seg, id) = verify_internal_target(&d, &h).expect("same incarnation must verify");
-        assert_eq!(seg, 0);
-        assert_eq!(id, d.dynamic_segment_identity(0));
-    }
-
-    #[test]
-    fn internal_target_refuses_a_recreated_stream() {
-        // The saga/read was issued against incarnation X...
-        let x = desc_with("orders", &"11".repeat(16));
-        let h = target_headers(&x, 0);
-        // ...and the name now holds incarnation Y. The request must NOT
-        // bind: a stale sweep would otherwise fence and delete Y's
-        // generation-1 consumer state.
-        let y = desc_with("orders", &"22".repeat(16));
-        let err = verify_internal_target(&y, &h).expect_err("recreation must refuse");
-        assert_eq!(err.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn internal_target_refuses_a_foreign_project() {
-        // Same name, same epoch, DIFFERENT project: the §16 corruption
-        // check must refuse the bind even when every other coordinate
-        // matches — a silent project swap here is a cross-tenant bind.
-        let d = desc_with("orders", &"55".repeat(16));
-        let h = target_headers(&d, 0);
-        let mut foreign = d.to_persisted();
-        foreign.project_id = crate::tenant::ProjectId::new("proj-other").unwrap();
-        let foreign = StreamDesc::try_from(foreign).unwrap();
-        let err = verify_internal_target(&foreign, &h).expect_err("foreign project must refuse");
-        assert_eq!(err.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn internal_target_refuses_an_unknown_segment() {
-        let d = desc_with("orders", &"33".repeat(16));
-        let mut h = target_headers(&d, 0);
-        h.insert(
-            "streams-internal-seg",
-            axum::http::HeaderValue::from_static("7"),
-        );
-        let err = verify_internal_target(&d, &h).expect_err("unknown segment must refuse");
-        assert_eq!(err.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn internal_target_refuses_a_mismatched_identity() {
-        let d = desc_with("orders", &"44".repeat(16));
-        let mut h = target_headers(&d, 0);
-        h.insert(
-            "streams-internal-identity",
-            axum::http::HeaderValue::from_str(&crate::crypto::hex(&[9u8; 16])).unwrap(),
-        );
-        let err = verify_internal_target(&d, &h).expect_err("identity mismatch must refuse");
-        assert_eq!(err.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn internal_target_requires_the_headers() {
-        let d = desc_with("orders", &"55".repeat(16));
-        let err = verify_internal_target(&d, &HeaderMap::new())
-            .expect_err("an untargeted internal request must be rejected");
-        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
-    }
-
-    // Regression (two-instance rig): an ownership 409 translated to
-    // cursor_beyond_tail told SDKs to rewind healthy cursors, and
-    // dropping Streams-Replay-To hid the only signal routers use to
-    // converge — cross-owner lineage reads died as fake tail overruns
-    // and every post-split append to a foreign child failed opaquely.
-    #[test]
-    fn ownership_bounce_survives_read_translation() {
-        let out = render_product_read_failure(crate::application::read::ReadFailure::Resolve(
-            crate::shard_directory::ResolveError::NotOwner {
-                prefix: "000".into(),
-                owner: "streams-2".into(),
-            },
-        ));
-        assert_eq!(out.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            out.headers()
-                .get("streams-replay-to")
-                .and_then(|v| v.to_str().ok()),
-            Some("streams-2")
-        );
-    }
-
-    #[test]
-    fn plain_409_still_reads_as_beyond_tail() {
-        // The applied rollback verdict is an explicit typed failure; it does
-        // not infer rewind semantics from an unrelated HTTP status.
-        let out =
-            render_product_read_failure(crate::application::read::ReadFailure::CursorBeyondTail);
-        assert_eq!(out.status(), StatusCode::CONFLICT);
-        assert!(out.headers().get("streams-replay-to").is_none());
-    }
-}
+mod tests;
