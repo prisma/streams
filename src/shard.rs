@@ -2160,7 +2160,7 @@ impl ShardEngine {
     pub(crate) async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
         #[cfg(test)]
         {
-            let mut faults = test_support::dirty_scan_faults().lock().unwrap();
+            let mut faults = dirty_scan_faults().lock().unwrap();
             if let Some(n) = faults.get_mut(&self.prefix)
                 && *n > 0
             {
@@ -2195,7 +2195,7 @@ impl ShardEngine {
         anyhow::ensure!(limit > 0, "dirty page limit must be positive");
         #[cfg(test)]
         {
-            let mut faults = test_support::dirty_scan_faults().lock().unwrap();
+            let mut faults = dirty_scan_faults().lock().unwrap();
             if let Some(n) = faults.get_mut(&self.prefix)
                 && *n > 0
             {
@@ -3218,6 +3218,8 @@ impl ShardEngine {
 
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+use test_support::dirty_scan_faults;
 #[cfg(test)]
 mod transaction_tests;
 #[cfg(test)]
