@@ -1855,6 +1855,86 @@
       "path": "src/dst/trace_store_tests/streams.rs",
       "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
       "syntax": "std::mem::forget"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/http/test_support.rs",
+      "reason": "HTTP fixture adapters import their enclosing production owner; the compiler resolves the parent exports and the adapters only forward scenario calls.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/test_support.rs",
+      "reason": "Shard test helpers import their enclosing production owner; the compiler resolves the parent exports and the helpers only encode fixtures and arm scan faults.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::dirty_scan_faults::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only fault injection for the durable dirty-index scan, keyed by shard prefix so concurrent tests cannot poison each other; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BILLING_CLOCK_OVERRIDE",
+      "path": "src/billing/test_clock.rs",
+      "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: atomic :: AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::billing_clock_lock::L",
+      "path": "src/billing/test_clock.rs",
+      "reason": "Test-only lock serialising the month-sensitive tests around the injected clock; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve_h1",
+      "path": "src/http.rs",
+      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::router",
+      "path": "src/http.rs",
+      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::test_support",
+      "path": "src/http.rs",
+      "reason": "HTTP fixture adapters; declared by path like the surface's read adapter so the file name says what it holds; no copied surface or public test API.",
+      "syntax": "path = \"http/test_support.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/http.rs",
+      "reason": "HTTP surface unit tests; declared by path like the surface's read adapter; no copied surface or public test API.",
+      "syntax": "path = \"http/tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/http/tests.rs",
+      "reason": "HTTP surface test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the interval cursor.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

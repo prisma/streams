@@ -1571,27 +1571,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::ReadParams::sig",
-      "path": "src/http.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::raise_nofile",
-      "path": "src/http.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::sse_response",
-      "path": "src/http.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::canonical_name",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
@@ -1830,13 +1809,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::BILLING_CLOCK_OVERRIDE",
-      "path": "src/billing.rs",
-      "syntax": "std :: sync :: atomic :: AtomicI64"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::SEGMENT_IDENTITY_DRIFT",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"
@@ -1861,13 +1833,6 @@
       "owner": "crate::WALK_DEFERRED",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::billing_clock_lock::L",
-      "path": "src/billing.rs",
-      "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
     },
     {
       "category": "global",
@@ -2176,13 +2141,6 @@
       "owner": "crate::billing_read_faults::FAULTS",
       "path": "src/shard.rs",
       "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , () > > >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::dirty_scan_faults::M",
-      "path": "src/shard.rs",
-      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
     },
     {
       "category": "global",
@@ -3792,13 +3750,6 @@
       "count": 1,
       "owner": "crate",
       "path": "src/history/postings_validation_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/http.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

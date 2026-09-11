@@ -34,6 +34,10 @@ fn append_position(seg: u32, next: u64, materialized: bool) -> String {
         tail_token(next)
     }
 }
+#[expect(
+    clippy::unwrap_used,
+    reason = "render_append; the response builder carries only the fixed headers the render sets and the position header is ASCII digits and punctuation, so neither can fail; fallible builds would add branches no append reaches"
+)]
 pub(crate) fn render_append(result: crate::application::append::AppendResult) -> Response {
     match result {
         Ok(out) => {
@@ -807,6 +811,11 @@ async fn get_segments(
     axum::Json(body).into_response()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    reason = "debug_load; the load report gathers every runtime gauge into one JSON document stamped with Unix milliseconds that fit u64 for millions of years; splitting the report or checking the stamp would only restate the document"
+)]
 async fn debug_load(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1268,6 +1277,11 @@ async fn internal_telemetry_append(
 /// per parked conn; a bounded max_buf_size holds the same fleet at
 /// ~44 KB, floor now dominated by task/future/slab overhead).
 /// max_buf bounds per-READ chunk size, not request body size.
+#[expect(
+    clippy::disallowed_methods,
+    clippy::let_underscore_must_use,
+    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled results would restate what the JoinSet already owns"
+)]
 pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
@@ -1326,7 +1340,12 @@ pub(crate) async fn serve_h1(
     Ok(())
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
+#[expect(
+    clippy::too_many_lines,
+    clippy::disallowed_methods,
+    reason = "router; the route table is one declaration so every path is visible in one place, and the debug abort spawns a bare task that ends the process itself; splitting the table or supervising the abort would separate the routes from the table and the abort from the death it causes"
+)]
+pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
         // R23-5 / R24-E: separate the two questions a platform asks.
@@ -1643,6 +1662,10 @@ pub(crate) fn err_resp(status: StatusCode, code: &str, message: &str) -> Respons
 
 /// Commit-pipeline timing samples per shard: how long db.write took vs how
 /// long the group then waited for the durable watermark. Diagnostic only.
+#[expect(
+    clippy::unwrap_used,
+    reason = "debug_timings; a poisoned timing ring may hold a half-recorded wait; recovering it could report a group that never completed"
+)]
 async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !authorized(&state, &headers) {
         return err_resp(
@@ -1726,8 +1749,10 @@ pub(crate) struct ReadParams {
     pub(crate) key: Option<String>,
     // touch wait params
     pub(crate) cursor: Option<String>,
-    #[allow(dead_code)]
-    // Retained in the pinned raw query DTO; touch observation has its own owner.
+    #[allow(
+        dead_code,
+        reason = "sig; retained in the pinned raw query DTO so the wire shape does not change; touch observation reads it through its own owner"
+    )]
     pub(crate) sig: Option<String>,
     /// Internal page-budget override (product maxBytes). Skipped by
     /// serde so the raw query string can never set it.
@@ -1777,6 +1802,10 @@ async fn ds_reserved() -> Response {
 
 /// Browser preflight for the catalog route (the wildcard product route
 /// answers its own inside product_entry).
+#[expect(
+    clippy::unwrap_used,
+    reason = "product_preflight; the preflight response carries only fixed header values, so the builder cannot fail; a fallible build would add a branch no preflight reaches"
+)]
 async fn product_preflight() -> Response {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
@@ -2133,6 +2162,10 @@ pub(crate) async fn product_entry_axum_inner(
     crate::product::with_product_cors(resp)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream_entry; the raw entry takes every extractor axum resolved for the wildcard route; a request struct would restate the extractors"
+)]
 async fn stream_entry(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -2160,6 +2193,12 @@ async fn stream_entry(
     resp
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "stream_entry_inner; the raw entry takes every extractor axum resolved and dispatches every method from one match, and its preflight response carries only fixed headers; a request struct, a split or a fallible build would separate the dispatch from the extractors and the preflight from the method it answers"
+)]
 async fn stream_entry_inner(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -2457,6 +2496,11 @@ pub(crate) async fn product_delete(
     delete_stream(state, tenant.stream_ref(&name)).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "create_stream; creation validates, admits and publishes in one sequence and its response carries only fixed headers; splitting it or a fallible build would separate the steps from the response that reports them"
+)]
 pub(crate) async fn create_stream(
     state: Arc<AppState>,
     project: crate::tenant::ProjectId,
@@ -2641,18 +2685,6 @@ async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRe
         Err(error) => creation_error_response(error),
     }
 }
-#[cfg(test)]
-pub(crate) async fn release_fork_ref_for_test(
-    state: &Arc<AppState>,
-    source: crate::tenant::TenantStreamRef,
-    fork_id: &str,
-    epoch: &str,
-) -> Result<bool, String> {
-    state
-        .creation_service()
-        .release_fork_ref(source, fork_id, epoch)
-        .await
-}
 
 // ---- state-protocol touch surface (collapsible GET-per-key model) ----
 
@@ -2675,6 +2707,10 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 /// pending transition is a genuine user-closed stream and passes
 /// through. Pre-split streams (segments: None — the common case) take
 /// the core path directly with zero overhead.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "append; the append entry takes the state, descriptor, key, headers, body and producer parts as the handler resolved them; a request struct would exist only for this signature"
+)]
 pub(crate) async fn append(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
@@ -2697,6 +2733,12 @@ pub(crate) async fn append(
         .await,
     )
 }
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "append_typed; the typed append takes the request parts as the handler parsed them and validates, drains, admits and executes them in one sequence whose drain cap nests inside the body walk; a request struct, a split or a flattened drain would separate the parts from the sequence that orders them"
+)]
 pub(crate) async fn append_typed(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
@@ -2822,28 +2864,14 @@ pub(crate) async fn append_typed(
 pub(crate) use crate::application::lifecycle::SealAuthz;
 
 #[cfg(test)]
-pub(crate) async fn fence_segment_for_key(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    epoch: &str,
-    key: &str,
-    generation: u64,
-) -> Result<bool, crate::application::lifecycle::SealError> {
-    crate::application::lifecycle::fence_segment_for_key(
-        &state.lifecycle_service(),
-        sref,
-        epoch,
-        key,
-        generation,
-    )
-    .await
-}
-
-#[cfg(test)]
 pub(crate) use crate::application::read::TEST_ASSERT_KEYED_DENSE;
 #[cfg(test)]
 pub(crate) use crate::application::read::read_merged;
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "interval_cursor; now_ms is a non-negative Unix millisecond stamp; a checked conversion would only restate the clock"
+)]
 pub(crate) fn interval_cursor(req_cursor: Option<&str>) -> String {
     interval_cursor_at(now_ms() as u64, req_cursor)
 }
@@ -2993,7 +3021,6 @@ pub(crate) enum SseSurface {
 /// `ctl_at` is the control's cursor offset: mid-batch events name
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
-#[allow(clippy::too_many_arguments)]
 /// L3a field wedge: the instance's file-descriptor limit (~2k) was
 /// the wall at ~1.5k parked SSE + writer + S3 sockets — EMFILE stalls
 /// accepts, WAL->S3 flushes and therefore appends, while parked
@@ -3047,6 +3074,10 @@ pub(crate) static RUNTIME_LAST_TICK_MS: std::sync::atomic::AtomicI64 =
 pub(crate) static RUNTIME_MAX_GAP_MS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "spawn_runtime_watchdog; the supervisor rejects a spawn only while it is stopping, when no watchdog tick is owed; a rejected watchdog has nothing left to police"
+)]
 pub(crate) fn spawn_runtime_watchdog(tasks: &crate::tasks::TaskSupervisor) {
     let _ = tasks.spawn(
         "runtime-watchdog",
@@ -3071,7 +3102,14 @@ pub(crate) fn spawn_runtime_watchdog(tasks: &crate::tasks::TaskSupervisor) {
 
 /// The single-segment SSE dispatch: the livefeed session (round 11.8:
 /// the only engine) with the typed segmented-at-dispatch retryable.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "sse_response; the single-segment SSE dispatch takes the state, descriptor, key, epoch, engine, handle and start the raw entry resolved; a request struct would exist only for this signature"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "sse_response; scheduling the topology resume is best effort and the retryable answer is returned regardless; a handled result would only restate the retry the client makes"
+)]
 async fn sse_response(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -3322,63 +3360,15 @@ async fn internal_segment_read(
 
 // ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
 
-#[cfg(test)]
-mod tests {
-
-    /// interval_cursor_at is a pure function of (now, request cursor):
-    /// exact outputs for fixed instants, both arms and both fallbacks.
-    #[test]
-    fn interval_cursor_at_is_exact() {
-        let now = 90_000_000 * 20_000; // interval 90_000_000 exactly
-        assert_eq!(interval_cursor_at(now, None), "90000000");
-        // request cursor at/above the current interval echoes r + 1:
-        assert_eq!(interval_cursor_at(now, Some("90000000")), "90000001");
-        assert_eq!(interval_cursor_at(now, Some("95000000")), "95000001");
-        // long-past request cursor yields the current interval:
-        assert_eq!(interval_cursor_at(now, Some("5")), "90000000");
-        // unparseable request cursor likewise:
-        assert_eq!(interval_cursor_at(now, Some("junk")), "90000000");
-        // epoch boundary:
-        assert_eq!(interval_cursor_at(0, None), "0");
-        assert_eq!(interval_cursor_at(19_999, None), "0");
-        assert_eq!(interval_cursor_at(20_000, None), "1");
-    }
-
-    // Round-19 fleet-contract: hierarchical names with characters that
-    // are structural in a URL must survive a relay intact.
-    #[test]
-    fn stream_names_encode_for_peer_paths() {
-        assert_eq!(
-            encode_stream_name_path("customers/acme/orders"),
-            "customers/acme/orders",
-            "the hierarchy separator must survive"
-        );
-        assert_eq!(encode_stream_name_path("a?b"), "a%3Fb");
-        assert_eq!(encode_stream_name_path("a#b"), "a%23b");
-        assert_eq!(encode_stream_name_path("a%b"), "a%25b");
-        assert_eq!(encode_stream_name_path("a b"), "a%20b");
-        // UTF-8 is encoded byte-wise.
-        assert_eq!(encode_stream_name_path("é"), "%C3%A9");
-    }
-    use super::*;
-}
-
 #[path = "http/read.rs"]
 mod read_adapter;
 pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
 
-// Fixture adapters preserve existing scenario calls without making AppState a
-// production application dependency.
 #[cfg(test)]
-pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
-    let _ = state.creation_service().touch_ttl(desc);
-}
+#[path = "http/test_support.rs"]
+mod test_support;
 #[cfg(test)]
-impl AppState {
-    pub(crate) async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
-        self.shards
-            .resolve(hash, crate::shard_directory::Adoption::Internal)
-            .await
-            .ok()
-    }
-}
+pub(crate) use test_support::{fence_segment_for_key, release_fork_ref_for_test, touch_ttl};
+#[cfg(test)]
+#[path = "http/tests.rs"]
+mod tests;

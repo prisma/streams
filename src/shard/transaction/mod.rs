@@ -99,7 +99,7 @@ impl<'a> CommitTransaction<'a> {
         }
         transaction.finish().await;
     }
-    fn reject_op(op: CommitOp, error: AppendErr) {
+    pub(super) fn reject_op(op: CommitOp, error: AppendErr) {
         match op {
             CommitOp::Append(req) => {
                 let _ = req.resp.send(Err(error));
