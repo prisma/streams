@@ -74,14 +74,11 @@ async fn r09a_request_ttl_jobs_bound_retained_keys_across_projects() {
             .expect("the first touch is admitted while its CAS is held"),
     );
     entered(&held).await;
-    let mut refused = 0;
-    for desc in &descriptors {
-        for _ in 0..4 {
-            if !admit_touch(&service, desc) {
-                refused += 1;
-            }
-        }
-    }
+    let refused = descriptors
+        .iter()
+        .flat_map(|desc| std::iter::repeat_n(desc, 4))
+        .filter(|desc| !admit_touch(&service, desc))
+        .count();
     let retained = service.pending_ttl_for_tests();
     let (active, queued, keys, rejected) = rig.state.runtime.request_work.counts();
     assert!(active <= 8 && queued <= 64);

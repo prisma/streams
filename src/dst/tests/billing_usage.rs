@@ -1,6 +1,6 @@
 //! Billing usage.
 
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{engine_shutdown, http_rig, install_read_spool, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -454,10 +454,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
 
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -693,10 +690,7 @@ async fn ops_metrics_and_alerts_flow() {
         crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
             .await
             .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
 
     // Two snapshot emissions land in the same minute bucket.
     crate::ops::emit_metrics_once(&state).await.expect("emit 1");
@@ -794,10 +788,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     // Three streams, one record each.
     for i in 0..3 {
@@ -924,13 +915,7 @@ async fn read_batches_survive_crash_in_the_spool() {
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
-    assert!(
-        state
-            .billing
-            .install_read_spool(std::sync::Arc::new(spool))
-            .is_ok(),
-        "this rig installs its read spool once"
-    );
+    install_read_spool(&state, spool);
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,

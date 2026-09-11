@@ -1,6 +1,6 @@
 //! Billing attribution.
 
-use super::fixture_http::{engine_shutdown, http_rig_with_auth_service};
+use super::fixture_http::{engine_shutdown, http_rig_with_auth_service, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 
@@ -96,10 +96,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -321,10 +318,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
 
     #[derive(serde::Serialize)]
     struct C<'a> {

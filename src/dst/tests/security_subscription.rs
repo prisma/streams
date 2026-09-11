@@ -5,7 +5,7 @@ use super::fixture_auth::{
     rig_publish_policy, rig_sse,
 };
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::http_rig_with_auth_service;
+use super::fixture_http::{http_rig_with_auth_service, install_rollup};
 use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
@@ -55,10 +55,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    assert!(
-        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
-        "this rig installs its rollup once"
-    );
+    install_rollup(&state, rollup);
     let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
