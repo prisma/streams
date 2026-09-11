@@ -35,24 +35,24 @@ use crate::tenant::{
 };
 
 /// §5 recommended constraints.
-pub const MAX_TOKEN_BYTES: usize = 8 * 1024;
-pub const CLOCK_SKEW_SECS: i64 = 30;
-pub const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;
+pub(crate) const MAX_TOKEN_BYTES: usize = 8 * 1024;
+pub(crate) const CLOCK_SKEW_SECS: i64 = 30;
+pub(crate) const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;
 /// §7.1: policy/credential data unavailable beyond this window fails
 /// closed. Generous relative to the 30–60s refresh cadence so a brief
 /// Control Plane blip does not take the data plane down with it.
-pub const POLICY_STALENESS_MAX_SECS: i64 = 300;
+pub(crate) const POLICY_STALENESS_MAX_SECS: i64 = 300;
 /// Keys rotate far slower than policy, but a cell that cannot refresh
 /// its key set for this long must stop trusting it (review item 6) —
 /// a revoked signing key must not verify forever on a wedged feed.
-pub const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
+pub(crate) const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
 
 /// Separate trust boundaries (§14): three audiences, three verify
 /// entry points. A customer token can never satisfy an internal or
 /// operator check and vice versa.
-pub const AUD_CUSTOMER: &str = "prisma-streams-data";
-pub const AUD_INTERNAL: &str = "prisma-streams-internal";
-pub const AUD_OPERATOR: &str = "prisma-streams-operator";
+pub(crate) const AUD_CUSTOMER: &str = "prisma-streams-data";
+pub(crate) const AUD_INTERNAL: &str = "prisma-streams-internal";
+pub(crate) const AUD_OPERATOR: &str = "prisma-streams-operator";
 
 /// Explicit algorithm allowlist (§5). RS256 is what Prisma Auth mints
 /// today; EdDSA is pre-approved for the planned key migration. Anything
@@ -61,14 +61,14 @@ pub const AUD_OPERATOR: &str = "prisma-streams-operator";
 const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::EdDSA];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AuthMode {
+pub(crate) enum AuthMode {
     Off,
     Shadow,
     Enforce,
 }
 
 impl AuthMode {
-    pub fn from_env(raw: Option<&str>) -> anyhow::Result<Self> {
+    pub(crate) fn from_env(raw: Option<&str>) -> anyhow::Result<Self> {
         match raw.unwrap_or("off") {
             "off" => Ok(AuthMode::Off),
             "shadow" => Ok(AuthMode::Shadow),
@@ -93,7 +93,7 @@ impl AuthMode {
 /// Every distinct fail-closed reason, for metrics and (in shadow mode)
 /// field diagnosis. `WrongCell` is special-cased by the HTTP layer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AuthError {
+pub(crate) enum AuthError {
     TokenTooLarge,
     Malformed(&'static str),
     KidMissing,
@@ -130,7 +130,7 @@ pub enum AuthError {
 
 impl AuthError {
     /// Stable metric key.
-    pub fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             AuthError::TokenTooLarge => "token_too_large",
             AuthError::Malformed(_) => "malformed",
@@ -170,7 +170,7 @@ impl AuthError {
 /// the cached credential grant at the same grant_version, so neither
 /// a stale cache nor a widened token can grant beyond the other.
 #[derive(Clone, Debug)]
-pub struct RequestPrincipal {
+pub(crate) struct RequestPrincipal {
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
     /// Review item 5: the quotas from the EXACT policy snapshot this
@@ -198,7 +198,7 @@ pub struct RequestPrincipal {
 /// must not keep receiving records through a connection opened
 /// before a transfer, suspension, revocation, or expiry.
 #[derive(Clone, Debug)]
-pub struct AuthLease {
+pub(crate) struct AuthLease {
     pub project_id: ProjectId,
     pub credential_id: Arc<str>,
     pub ownership_version: u64,
@@ -209,7 +209,7 @@ pub struct AuthLease {
 /// Review round 3 F1: the reasons a live subscription's lease stops
 /// being valid. Exported as termination counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LeaseInvalidReason {
+pub(crate) enum LeaseInvalidReason {
     TokenExpired,
     PolicyStale,
     GrantsStale,
@@ -223,7 +223,7 @@ pub enum LeaseInvalidReason {
 }
 
 impl LeaseInvalidReason {
-    pub const ALL: [LeaseInvalidReason; 10] = [
+    pub(crate) const ALL: [LeaseInvalidReason; 10] = [
         Self::TokenExpired,
         Self::PolicyStale,
         Self::GrantsStale,
@@ -235,7 +235,7 @@ impl LeaseInvalidReason {
         Self::GrantChanged,
         Self::CredentialExpired,
     ];
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::TokenExpired => "token_expired",
             Self::PolicyStale => "policy_stale",
@@ -249,7 +249,7 @@ impl LeaseInvalidReason {
             Self::CredentialExpired => "credential_expired",
         }
     }
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
@@ -257,7 +257,7 @@ impl LeaseInvalidReason {
 impl RequestPrincipal {
     /// Review V4: the compact facts a live subscription must keep
     /// re-proving for as long as it stays open.
-    pub fn lease(&self) -> AuthLease {
+    pub(crate) fn lease(&self) -> AuthLease {
         AuthLease {
             project_id: self.project_id.clone(),
             credential_id: self.credential_id.clone(),
@@ -268,7 +268,7 @@ impl RequestPrincipal {
     }
 
     /// §6.1 route/method matrix entry point.
-    pub fn require(&self, scope: Scope) -> Result<(), AuthError> {
+    pub(crate) fn require(&self, scope: Scope) -> Result<(), AuthError> {
         if self.scopes.has(scope) {
             Ok(())
         } else {
@@ -278,7 +278,7 @@ impl RequestPrincipal {
 
     /// §6.2 component-aware prefix authorization.
     // mt-lint: allow(name-param-shared-core): authorization predicate — evaluates the name against THIS principal's own prefix grant; the project is the principal itself
-    pub fn require_stream(&self, canonical_name: &str) -> Result<(), AuthError> {
+    pub(crate) fn require_stream(&self, canonical_name: &str) -> Result<(), AuthError> {
         if self.grant.permits(canonical_name) {
             Ok(())
         } else {
@@ -290,7 +290,7 @@ impl RequestPrincipal {
 /// §14.1 fleet workload principal (minimal Stage 2b shape; Stage 4
 /// binds it to InternalStreamTarget verification).
 #[derive(Clone, Debug)]
-pub struct InternalPrincipal {
+pub(crate) struct InternalPrincipal {
     pub subject: Arc<str>,
     pub cell_id: Arc<str>,
     pub operations: Vec<String>,
@@ -305,7 +305,7 @@ pub struct InternalPrincipal {
 /// the token header's alg must equal the key's declared alg — the
 /// allowlist alone still permitted verifying an RSA key under any
 /// allowlisted algorithm the header claimed.
-pub struct JwksKey {
+pub(crate) struct JwksKey {
     pub alg: Algorithm,
     pub key: DecodingKey,
     /// SR3-3: canonical fingerprint of the key MATERIAL (sha256 of the
@@ -316,14 +316,14 @@ pub struct JwksKey {
 }
 
 /// SR3-3: the key-material fingerprint stored per kid.
-pub fn key_fp(pem: &[u8]) -> [u8; 32] {
+pub(crate) fn key_fp(pem: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(pem);
     h.finalize().into()
 }
 
-pub struct JwksSnapshot {
+pub(crate) struct JwksSnapshot {
     // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
     pub keys: HashMap<String, JwksKey>,
     pub fetched_at_unix: i64,
@@ -331,7 +331,7 @@ pub struct JwksSnapshot {
 }
 
 impl JwksSnapshot {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             keys: HashMap::new(),
             fetched_at_unix: 0,
@@ -378,7 +378,7 @@ struct RawInternalClaims {
 }
 
 #[derive(Default)]
-pub struct ShadowCounters {
+pub(crate) struct ShadowCounters {
     pub ok: AtomicU64,
     pub missing: AtomicU64,
     pub failed: AtomicU64,
@@ -388,7 +388,7 @@ pub struct ShadowCounters {
 /// §7.1. Request-path reads are lock-free snapshot loads; refreshers
 /// publish via the `publish_*` methods (Stage 5 wires the real feed;
 /// tests publish fixtures directly).
-pub struct AuthService {
+pub(crate) struct AuthService {
     pub mode: AuthMode,
     issuer: String,
     cell_id: Arc<str>,
@@ -514,7 +514,7 @@ fn feed_fp(debug: impl std::fmt::Debug) -> [u8; 32] {
 /// Read `exp` from a JWT WITHOUT verifying it — used only to schedule
 /// refreshes of this instance's OWN outbound workload token (§14.1);
 /// authorization always happens at the receiving peer.
-pub fn unverified_exp(token: &str) -> Option<i64> {
+pub(crate) fn unverified_exp(token: &str) -> Option<i64> {
     use base64::Engine;
     let mid = token.split('.').nth(1)?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -527,7 +527,7 @@ pub fn unverified_exp(token: &str) -> Option<i64> {
 }
 
 impl AuthService {
-    pub fn new(mode: AuthMode, issuer: String, cell_id: &str) -> anyhow::Result<Self> {
+    pub(crate) fn new(mode: AuthMode, issuer: String, cell_id: &str) -> anyhow::Result<Self> {
         validate_cell_id(cell_id)
             .map_err(|e| anyhow::anyhow!("invalid cell id {cell_id:?}: {e}"))?;
         Ok(Self {
@@ -561,18 +561,18 @@ impl AuthService {
     /// FEED must not resurrect removed entries at lower versions —
     /// recorded as the feed contract.
     /// Effective policy/grant staleness window (seconds).
-    pub fn staleness_max_secs(&self) -> i64 {
+    pub(crate) fn staleness_max_secs(&self) -> i64 {
         self.staleness_max_secs.load(Ordering::Relaxed)
     }
 
     /// TEST HOOK: shorten the staleness window so feed-staleness legs
     /// run in seconds. Production never calls this.
-    pub fn set_staleness_max_secs(&self, secs: i64) {
+    pub(crate) fn set_staleness_max_secs(&self, secs: i64) {
         self.staleness_max_secs.store(secs, Ordering::Relaxed);
     }
 
     /// Review V4: current auth publication generation (any feed).
-    pub fn auth_generation(&self) -> u64 {
+    pub(crate) fn auth_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
@@ -622,7 +622,7 @@ impl AuthService {
 
     /// Review V4: is this lease still authorized under the CURRENT
     /// snapshots? (Boolean view of `lease_check`.)
-    pub fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
+    pub(crate) fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
         self.lease_check(l, now_unix).is_ok()
     }
 
@@ -630,7 +630,7 @@ impl AuthService {
     /// re-proved even if no feed publishes — the earliest of token
     /// expiry, credential expiry, and each feed's staleness boundary.
     /// A clean refresh (even an identical replay) moves it forward.
-    pub fn lease_deadline(&self, l: &AuthLease) -> i64 {
+    pub(crate) fn lease_deadline(&self, l: &AuthLease) -> i64 {
         let w = self.staleness_max_secs();
         let mut d = l.expires_at;
         d = d.min(self.projects.load().fetched_at_unix + w);
@@ -649,11 +649,11 @@ impl AuthService {
     /// Review round 3 F2: a watch on the publication generation — no
     /// lost wakeups, immediate notification to parked response bodies,
     /// current value visible to new receivers.
-    pub fn generation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub(crate) fn generation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
         self.gen_tx.subscribe()
     }
 
-    pub fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
+    pub(crate) fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
         let cur = self.jwks.load();
         if snapshot.feed_version < cur.feed_version {
             return Err("jwks feed_version regressed");
@@ -1021,7 +1021,7 @@ impl AuthService {
     /// — so a freshly rotated signing key is fetched when its first
     /// token arrives instead of failing requests until the next tick.
     /// Returns whether the nudge fired (rate-limit observable in tests).
-    pub fn request_kid_refresh(&self) -> bool {
+    pub(crate) fn request_kid_refresh(&self) -> bool {
         let now = crate::shard::now_ms();
         let last = self.last_kid_wake_ms.load(Ordering::Relaxed);
         if now - last < 30_000 {
@@ -1268,7 +1268,7 @@ impl AuthService {
     /// Wired into the request path (behind `mode == Shadow`) at the
     /// layout-4 switch; exposed here so field diagnostics land in
     /// /v1/debug/load before enforcement ever turns on.
-    pub fn shadow_observe(&self, bearer: Option<&str>, now: i64) {
+    pub(crate) fn shadow_observe(&self, bearer: Option<&str>, now: i64) {
         let Some(token) = bearer else {
             self.shadow.missing.fetch_add(1, Ordering::Relaxed);
             return;
@@ -1290,7 +1290,7 @@ impl AuthService {
     /// reads the policy, never token claims). None = project not in
     /// the snapshot; callers treat that as no-quota because the
     /// request already passed verification against the same snapshot.
-    pub fn quotas_for(
+    pub(crate) fn quotas_for(
         &self,
         project: &crate::tenant::ProjectId,
     ) -> Option<crate::project_policy::ProjectQuotas> {
@@ -1303,7 +1303,7 @@ impl AuthService {
 
     /// Stage 7: the workspace that owns `project` in the CURRENT
     /// policy snapshot — billing's workspace-at-event resolution.
-    pub fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
+    pub(crate) fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
         self.projects
             .load()
             .projects
@@ -1322,7 +1322,7 @@ impl AuthService {
     /// (`PolicyStale` -> retryable 503), never open on a stale
     /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
     /// (not served here); the caller's uniform refusal applies.
-    pub fn status_and_quotas(
+    pub(crate) fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
         now: i64,
@@ -1346,7 +1346,7 @@ impl AuthService {
     /// Snapshot freshness for the operator surface: whether each feed
     /// has EVER been published, how old it is against the fail-closed
     /// window, and what it contains.
-    pub fn feed_json(&self, now: i64) -> serde_json::Value {
+    pub(crate) fn feed_json(&self, now: i64) -> serde_json::Value {
         let jwks = self.jwks.load();
         let policies = self.projects.load();
         let grants = self.credentials.load();
@@ -1375,7 +1375,7 @@ impl AuthService {
         })
     }
 
-    pub fn shadow_json(&self) -> serde_json::Value {
+    pub(crate) fn shadow_json(&self) -> serde_json::Value {
         serde_json::json!({
             "mode": match self.mode {
                 AuthMode::Off => "off",
@@ -1395,7 +1395,7 @@ impl AuthService {
 /// inputs permit it. For component-prefix sets that is exactly: keep
 /// each prefix that the other side covers (the deeper of any covering
 /// pair survives).
-pub fn intersect_grants(a: &StreamGrant, b: &StreamGrant) -> StreamGrant {
+pub(crate) fn intersect_grants(a: &StreamGrant, b: &StreamGrant) -> StreamGrant {
     match (a, b) {
         (StreamGrant::All, g) | (g, StreamGrant::All) => g.clone(),
         (StreamGrant::Prefixes(pa), StreamGrant::Prefixes(pb)) => {

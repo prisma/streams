@@ -15,10 +15,10 @@
 
 use crate::crypto::StreamKey;
 
-pub const KIND_KEY_V2: u8 = 0x12;
-pub const KIND_SCAN_V2: u8 = 0x22;
-pub const KIND_MSG_V2: u8 = 0x32;
-pub const KIND_LEASE_V2: u8 = 0x42;
+pub(crate) const KIND_KEY_V2: u8 = 0x12;
+pub(crate) const KIND_SCAN_V2: u8 = 0x22;
+pub(crate) const KIND_MSG_V2: u8 = 0x32;
+pub(crate) const KIND_LEASE_V2: u8 = 0x42;
 
 const MAC_LEN: usize = 16;
 
@@ -26,7 +26,7 @@ const MAC_LEN: usize = 16;
 /// position and the consumed segment-local offset, bound to the stream
 /// incarnation and the exact routing key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyCursor {
+pub(crate) struct KeyCursor {
     /// Stream incarnation (epoch bytes) the cursor belongs to.
     pub epoch: [u8; 16],
     /// Routing-key hash — the cursor is valid for exactly this key.
@@ -77,7 +77,7 @@ fn unb64(s: &str) -> Option<Vec<u8>> {
 }
 
 impl KeyCursor {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
         p.push(KIND_KEY_V2);
         p.extend_from_slice(&self.epoch);
@@ -93,7 +93,7 @@ impl KeyCursor {
     /// cursor to the REQUESTED stream incarnation and routing key: a
     /// cursor for any other stream or key is invalid_cursor, never a
     /// silent cross-read.
-    pub fn decode(
+    pub(crate) fn decode(
         s: &str,
         project: &crate::tenant::ProjectId,
         key: &StreamKey,
@@ -143,7 +143,7 @@ impl KeyCursor {
 /// Snapshot-bounded scan cursor (spec Stage 6 §5.3): the whole snapshot
 /// is embedded so creating a scan adds no control-plane request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScanCursor {
+pub(crate) struct ScanCursor {
     pub epoch: [u8; 16],
     pub map_version: u64,
     /// (segment id, end_exclusive) captured at snapshot creation, in
@@ -155,7 +155,7 @@ pub struct ScanCursor {
     pub expires_at_ms: i64,
 }
 
-pub const SCAN_CURSOR_MAX: usize = 16 * 1024;
+pub(crate) const SCAN_CURSOR_MAX: usize = 16 * 1024;
 
 /// Catalog cursor (review item 3): versioned and PROJECT-BOUND — a
 /// listing cursor from one project replayed under another is
@@ -164,15 +164,15 @@ pub const SCAN_CURSOR_MAX: usize = 16 * 1024;
 /// STREAMS_CURSOR_KEY so page walks verify across instances; a
 /// keyless single instance still gets the binding, and cursors from a
 /// differently-configured process fail closed on shape).
-pub const KIND_CATALOG_V1: u8 = 0x51;
+pub(crate) const KIND_CATALOG_V1: u8 = 0x51;
 
-pub struct CatalogCursor {
+pub(crate) struct CatalogCursor {
     pub project: crate::tenant::ProjectId,
     pub last_name: String,
 }
 
 impl CatalogCursor {
-    pub fn encode(&self, key: Option<&[u8; 32]>) -> String {
+    pub(crate) fn encode(&self, key: Option<&[u8; 32]>) -> String {
         let pb = self.project.as_str().as_bytes();
         let mut p = Vec::with_capacity(1 + 2 + pb.len() + self.last_name.len() + MAC_LEN);
         p.push(KIND_CATALOG_V1);
@@ -188,7 +188,7 @@ impl CatalogCursor {
 
     /// Decode, verify (when keyed), and REQUIRE the bound project to
     /// be the request's listing authority.
-    pub fn decode(
+    pub(crate) fn decode(
         s: &str,
         expect_project: &crate::tenant::ProjectId,
         key: Option<&[u8; 32]>,
@@ -234,7 +234,7 @@ impl CatalogCursor {
 }
 
 impl ScanCursor {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(64 + self.segments.len() * 12);
         p.push(KIND_SCAN_V2);
         p.extend_from_slice(&self.epoch);
@@ -252,7 +252,7 @@ impl ScanCursor {
         b64(&p)
     }
 
-    pub fn decode(
+    pub(crate) fn decode(
         s: &str,
         project: &crate::tenant::ProjectId,
         key: &StreamKey,
@@ -322,7 +322,7 @@ impl ScanCursor {
 /// incarnation + routing-key hash + segment + offset, MAC'd like every
 /// product token. Clients never see internal offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageId {
+pub(crate) struct MessageId {
     pub epoch: [u8; 16],
     pub key_hash: [u8; 16],
     pub seg_id: u32,
@@ -330,7 +330,7 @@ pub struct MessageId {
 }
 
 impl MessageId {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
         p.push(KIND_MSG_V2);
         p.extend_from_slice(&self.epoch);
@@ -387,7 +387,7 @@ impl MessageId {
 /// identity plus the lease generation and deadline, unforgeable
 /// without the stream key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseToken {
+pub(crate) struct LeaseToken {
     pub msg: MessageId,
     pub lease_gen: u32,
     /// The CONSUMER generation this lease was granted under (round
@@ -399,7 +399,7 @@ pub struct LeaseToken {
 }
 
 impl LeaseToken {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN);
         p.push(KIND_LEASE_V2);
         p.extend_from_slice(&self.msg.epoch);
@@ -414,7 +414,7 @@ impl LeaseToken {
         b64(&p)
     }
 
-    pub fn decode(
+    pub(crate) fn decode(
         s: &str,
         project: &crate::tenant::ProjectId,
         key: &StreamKey,

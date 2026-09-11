@@ -16,14 +16,14 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const AUDIT_QUEUE_CAP: usize = 4096;
+pub(crate) const AUDIT_QUEUE_CAP: usize = 4096;
 
 /// Response extension attached where a refusal is CLASSIFIED (the
 /// auth/quota response builders), read once where the response leaves
 /// the product surface. Traveling inside the Response keeps every
 /// intermediate signature unchanged.
 #[derive(Clone, Debug)]
-pub struct DenialTag {
+pub(crate) struct DenialTag {
     pub code: &'static str,
     /// Verified principal's project, when one existed at the denial.
     pub project: Option<String>,
@@ -43,7 +43,7 @@ pub fn tag(mut resp: axum::response::Response, code: &'static str) -> axum::resp
 /// Fill-only-if-absent: the entry wrapper calls this with the gate's
 /// principal for EVERY outgoing response, and it must never clobber a
 /// classifier's more specific attribution.
-pub fn tag_project(
+pub(crate) fn tag_project(
     mut resp: axum::response::Response,
     project: &crate::tenant::ProjectId,
 ) -> axum::response::Response {
@@ -73,7 +73,7 @@ fn bounded_route(route: &str) -> String {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AuditEvent {
+pub(crate) struct AuditEvent {
     pub v: u16,
     pub event_id: String,
     pub event_time_ms: i64,
@@ -95,17 +95,17 @@ pub struct AuditEvent {
 
 /// A denial journal belongs to one server runtime and its durable cell ledger.
 #[derive(Default)]
-pub struct AuditJournal {
+pub(crate) struct AuditJournal {
     sequence: AtomicU64,
     dropped: AtomicU64,
     gap: AtomicU64,
     queue: Mutex<VecDeque<AuditEvent>>,
 }
 impl AuditJournal {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
-    pub fn dropped(&self) -> u64 {
+    pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
 }
@@ -113,7 +113,7 @@ impl AuditJournal {
 /// Observe a product-surface response on its way out. Enforce-mode
 /// denials (a `DenialTag` extension) journal; everything else is a
 /// no-op. Never blocks and never alters the response.
-pub fn observe_denial(
+pub(crate) fn observe_denial(
     state: &crate::http::AppState,
     route: &str,
     method: &axum::http::Method,
@@ -247,7 +247,7 @@ where
 
 /// Drain queued denials to `_audit_events`. Called from the telemetry
 /// task; requeues on failure (order preserved).
-pub async fn drain_audit_once(
+pub(crate) async fn drain_audit_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
     let Some(key) = state.billing.usage_key() else {
