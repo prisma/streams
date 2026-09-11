@@ -62,20 +62,6 @@
       "fingerprint": "bb867b15ca545a687e7b8334db95bed71004a3df5971318b5e82a43306504095",
       "item": "crate::crypto",
       "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ce15662a05f21b1e241a4a02b1aae232fc715824c763e30d4684c7b474106b39",
-      "item": "crate::tenant",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb867b15ca545a687e7b8334db95bed71004a3df5971318b5e82a43306504095",
-      "item": "crate::crypto",
-      "lint": "clippy::allow_attributes_without_reason",
       "path": "src/bin/livebench.rs"
     },
     {
@@ -8941,13 +8927,6 @@
       "item": "crate::split_children_land_on_distinct_engines",
       "lint": "clippy::unnecessary_to_owned",
       "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eff1490a38fbc36310701a1f5915b4dbf1841f3b88640ce9db788c04271a44a1",
-      "item": "crate::getrandom",
-      "lint": "clippy::unnecessary_wraps",
-      "path": "src/bin/keys.rs"
     },
     {
       "count": 1,

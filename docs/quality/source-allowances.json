@@ -1691,20 +1691,6 @@
       "category": "exception",
       "count": 1,
       "owner": "crate::crypto",
-      "path": "src/bin/keys.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::tenant",
-      "path": "src/bin/keys.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::crypto",
       "path": "src/bin/livebench.rs",
       "syntax": "allow (dead_code)"
     },
