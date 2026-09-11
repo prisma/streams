@@ -6422,13 +6422,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "8b0668a5a06c30c12cbc4cb1880ebb0678a2f503fd43cf006e9eec961c5abe94",
-      "item": "crate::client",
-      "lint": "clippy::expect_used",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6725fba502e20a16caa80cc79da77202b6ee23112426f97f47108b13a3df4721",
       "item": "crate::PageBuilder::close_run",
       "lint": "clippy::expect_used",
@@ -8050,13 +8043,6 @@
       "item": "crate::cut_resume_never_skips_a_durable_record",
       "lint": "clippy::match_same_arms",
       "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a3f4fa6829711f2420ce7d00d2ddd4bc0f51fc2c40294dd1739f9e96f045376b",
-      "item": "crate::PeerClient::inbound_static_ok",
-      "lint": "clippy::match_same_arms",
-      "path": "src/peer.rs"
     },
     {
       "count": 1,
@@ -11403,27 +11389,6 @@
       "path": "src/ops.rs"
     },
     {
-      "count": 1,
-      "fingerprint": "4e32735b399eabe7633073706017f91e767dcf518837a48fff019891d2aa422e",
-      "item": "crate::PeerClient::has_peer",
-      "lint": "clippy::unwrap_used",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a33434c459f8c057cea153496b9cc0129dcedddd7dddb8755810d283cac85900",
-      "item": "crate::PeerClient::set_peers",
-      "lint": "clippy::unwrap_used",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4cb803f844ad0d0b7a664e8c15a13284772e7a83565f2af933069ba1d847644e",
-      "item": "crate::PeerClient::url_for",
-      "lint": "clippy::unwrap_used",
-      "path": "src/peer.rs"
-    },
-    {
       "count": 2,
       "fingerprint": "f85d17bd66398a0a6896657d9d38f430fb428b4999b99a9ee7a016925a233e6a",
       "item": "crate::PostingsCache::install_chunk",
@@ -13333,13 +13298,6 @@
       "item": "crate::evaluate_alerts",
       "lint": "unreachable_pub",
       "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d4524d5bd98923480596c025ba968b93880adec11e28cdf607511b652a3343ac",
-      "item": "crate::PeerClient::new",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
     },
     {
       "count": 1,
