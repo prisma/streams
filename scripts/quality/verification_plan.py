@@ -19,7 +19,7 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
                       'src/application/read_', 'src/shard/record', 'src/rollup/allocation', 'src/rollup/storage')
     quota_prefixes = ('src/quota',)
     lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse', 'src/touch.rs',
-                          'src/billing/read_accumulator', 'src/billing/read_spool', 'src/bin/pilot/generator')
+                          'src/billing/read_accumulator', 'src/billing/read_spool', 'src/bin/pilot/benchmark', 'src/bin/pilot/generator')
     buffer_prefixes = ('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')
     codec = any(p.startswith(codec_prefixes) for p in implementation)
     quota = any(p.startswith(quota_prefixes) for p in implementation)

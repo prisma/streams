@@ -71,6 +71,24 @@ PYTHON
     --file "$mutation_file" --package "$package" --cargo-test-arg="$filter" \
     --profile quality --jobs 1 --timeout 90 --build-timeout 600 --gitignore true --output "$output"
 done
+# The benchmark owns its workers and measurement window in the pilot binary.
+output="$QUALITY_MUTANTS_OUT/pilot-benchmark"
+mkdir -p "$output"
+cargo mutants --list --json --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" \
+  --file src/bin/pilot/benchmark.rs --file src/bin/pilot/benchmark/config.rs \
+  --file src/bin/pilot/benchmark/window.rs --package streams-slate > "$output/selected.json"
+count=$(python3 -c 'import json,sys; raw=open(sys.argv[1]).read().strip(); print(len(json.loads(raw)) if raw else 0)' "$output/selected.json")
+if [[ "$count" != 0 ]]; then
+  TOTAL=$((TOTAL + count))
+  cargo mutants --cargo-arg=--locked --cargo-arg=--bin=pilot \
+    --cargo-arg="--target-dir=$QUALITY_MUTANTS_OUT/pilot-build" --baseline run \
+    --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" --file src/bin/pilot/benchmark.rs \
+    --file src/bin/pilot/benchmark/config.rs --file src/bin/pilot/benchmark/window.rs \
+    --package streams-slate --cargo-test-arg=benchmark:: --profile quality \
+    --jobs 1 --timeout 90 --build-timeout 600 --gitignore true --output "$output"
+else
+  echo 'pilot-benchmark: no executable mutants in the actual diff'
+fi
 # The pilot generator owns its worker lifetime and final measurement accounting.
 # Its binary tests cover HTTP and RAII; the integration test compiles the same
 # terminal membership source with Loom primitives. Neither is a library test.
@@ -79,7 +97,7 @@ mkdir -p "$output"
 cargo mutants --list --json --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" \
   --file src/bin/pilot/generator.rs --file src/bin/pilot/generator/membership.rs \
   --package streams-slate > "$output/selected.json"
-count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$output/selected.json")
+count=$(python3 -c 'import json,sys; raw=open(sys.argv[1]).read().strip(); print(len(json.loads(raw)) if raw else 0)' "$output/selected.json")
 if [[ "$count" != 0 ]]; then
   TOTAL=$((TOTAL + count))
   cargo mutants --cargo-arg=--locked --cargo-arg=--bin=pilot --cargo-arg=--test=pilot_membership \
