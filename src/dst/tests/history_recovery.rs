@@ -79,6 +79,26 @@ async fn idle_stream_handles_evict_and_reload() {
 /// deletes, the remainder becomes trim debt, and TrimTick maintenance
 /// drains it a budgeted slice per commit — including via the 5 s flush
 /// ticker with no test involvement.
+/// One look at every stream's durable tail: true when `ready` holds for all.
+async fn all_tails(
+    engine: &crate::shard::ShardEngine,
+    hashes: &[[u8; 16]],
+    ready: impl Fn(&crate::shard::TailFields) -> bool,
+) -> bool {
+    for hash in hashes {
+        let handle = engine.stream_handle(*hash).await.unwrap();
+        let tail = handle.state.lock().unwrap().durable.clone();
+        if !ready(&tail) {
+            return false;
+        }
+    }
+    true
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "budgeted trim scenario; seeding two waves, draining under the global budget and checking every stream's convergence form one causal sequence on one engine; helper phases would hide which wave exceeded the budget"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_absorption_wave_trims_under_a_global_budget() {
     let inner = mem();
@@ -140,7 +160,7 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
     // owes no trims — which is exactly why the earlier 100k-stream run
     // never caught this bug.
     for h in &hashes {
-        append_n(&engine, *h, &key, RECS as usize, 512).await;
+        append_n(&engine, *h, &key, usize::try_from(RECS).unwrap(), 512).await;
     }
     wait_all_absorbed(&engine, &hashes).await;
     let (debt0, _, max0, _) = engine.trim_stats();
@@ -156,16 +176,7 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
     // 30 s: same suite-saturation allowance as the restart-seed test.
     for _ in 0..1500 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let mut all = true;
-        for h in &hashes {
-            let st = engine.stream_handle(*h).await.unwrap();
-            let a = st.state.lock().unwrap().durable.absorbed;
-            if a < RECS + 1 {
-                all = false;
-                break;
-            }
-        }
-        if all {
+        if all_tails(&engine, &hashes, |t| t.absorbed > RECS).await {
             ok = true;
             break;
         }
@@ -208,16 +219,8 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
     let mut drained = false;
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let mut all = true;
-        for h in &hashes {
-            let st = engine.stream_handle(*h).await.unwrap();
-            let f = { st.state.lock().unwrap().durable.clone() };
-            if f.trimmed < f.trim_safe_to {
-                all = false;
-                break;
-            }
-        }
-        if all && engine.trim_stats().0 == 0 {
+        let trimmed = all_tails(&engine, &hashes, |t| t.trimmed >= t.trim_safe_to).await;
+        if trimmed && engine.trim_stats().0 == 0 {
             drained = true;
             break;
         }
@@ -320,23 +323,15 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
     // this test exists to catch (proven by mutation: removing deferred
     // streams from pending converges at rescan time, not tick time).
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1_200);
-    'outer: loop {
+    loop {
         assert!(
             std::time::Instant::now() < deadline,
             "budget-deferred streams did not absorb within the tick horizon"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        for h in &hashes {
-            let st = engine.stream_handle(*h).await.unwrap();
-            let (a, n) = {
-                let s = st.state.lock().unwrap();
-                (s.durable.absorbed, s.durable.next)
-            };
-            if !(a == n && n > 0) {
-                continue 'outer;
-            }
+        if all_tails(&engine, &hashes, |t| t.absorbed == t.next && t.next > 0).await {
+            break;
         }
-        break;
     }
     engine.begin_close();
 }
