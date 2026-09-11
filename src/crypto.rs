@@ -47,7 +47,7 @@ pub(crate) enum FrameCompression {
 }
 
 impl FrameCompression {
-    pub fn from_enabled(enabled: bool) -> Self {
+    pub(crate) fn from_enabled(enabled: bool) -> Self {
         if enabled {
             FrameCompression::ZstdLevel1
         } else {
@@ -72,7 +72,7 @@ impl StreamKey {
         Ok(StreamKey(arr))
     }
 
-    pub fn to_b64(&self) -> String {
+    pub(crate) fn to_b64(&self) -> String {
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.0)
     }
@@ -80,7 +80,7 @@ impl StreamKey {
     /// One-way fingerprint stored in the registry at creation so a wrong key
     /// on later requests is rejected with 403 instead of poisoning the
     /// stream. Bound to the stream epoch.
-    pub fn fingerprint(&self, stream_epoch: &[u8; EPOCH_LEN]) -> String {
+    pub(crate) fn fingerprint(&self, stream_epoch: &[u8; EPOCH_LEN]) -> String {
         let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &self.0);
         let mut out = [0u8; 16];
         hk.expand(b"streams-key-fingerprint-v1", &mut out)
@@ -92,7 +92,7 @@ impl StreamKey {
 /// Touch capability token (PROFILES.md §6): authorizes /touch/* observation
 /// without granting payload decryption. Derived, never stored — the registry
 /// keeps only its fingerprint.
-pub fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
+pub(crate) fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &key.0);
     let mut out = [0u8; 32];
     hk.expand(b"touch-capability-v1", &mut out)
@@ -104,7 +104,7 @@ pub fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] 
 /// the token, stored by the registry so the origin can verify wait-URL
 /// signatures without holding the token itself. Registry exposure grants at
 /// most observation-forging — never decryption.
-pub fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
+pub(crate) fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), token);
     let mut out = [0u8; 32];
     hk.expand(b"wait-sig-v1", &mut out).expect("hkdf expand");
@@ -233,7 +233,7 @@ pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-pub fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
@@ -243,7 +243,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 }
 
 // mt-lint: allow(name-param-shared-core): the layout hash PRIMITIVE; tenant qualification happens in the layout-4 constructors above it (callers are the audited stream-hash fingerprint category)
-pub fn stream_hash(name: &str) -> [u8; 16] {
+pub(crate) fn stream_hash(name: &str) -> [u8; 16] {
     hash16(name.as_bytes())
 }
 
@@ -340,10 +340,10 @@ impl SegmentHash {
 /// routing key is user data, the other two are system identities, and
 /// confusing them was the class of bug the newtypes exist to stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RoutingKeyHash(pub [u8; 16]);
+pub(crate) struct RoutingKeyHash(pub [u8; 16]);
 
 impl RoutingKeyHash {
-    pub fn of(rk: &str) -> Self {
+    pub(crate) fn of(rk: &str) -> Self {
         RoutingKeyHash(stream_hash(rk))
     }
 }
