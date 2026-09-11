@@ -377,7 +377,7 @@
         {
           "file": "src/dst/tests/billing_controller.rs",
           "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
-          "sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108"
+          "sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9"
         },
         {
           "file": "src/dst/tests/billing_controller.rs",

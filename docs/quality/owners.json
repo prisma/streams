@@ -599,6 +599,22 @@
       "path": "src/tasks.rs",
       "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/billing/read_accumulator/tests.rs",
+      "reason": "Read accumulator conservation properties generate bounded observations and drain/requeue schedules against the actual service owner; property cases do not substitute for durable spool integration tests.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::billing_terminal_shutdown_waits_for_a_late_open",
+      "path": "src/dst/tests/billing_controller.rs",
+      "reason": "Terminal billing fixture; pin the actual shutdown observer for one deterministic poll while its real open is held; no substitute lifecycle model or timer is used.",
+      "syntax": "std::pin::pin"
     }
   ]
 }
