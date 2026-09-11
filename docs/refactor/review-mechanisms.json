@@ -70,22 +70,22 @@
       "execution": "requires_final_head_receipt",
       "tests": [
         {
-          "file": "src/crypto.rs",
+          "file": "src/crypto/invocation_tests.rs",
           "name": "r01_rfc8452_aes256_empty_plaintext_vector",
           "sha256": "6195fc6bf32cc487241c0da26dfb83e52f369fa13021e3a5151226208a518952"
         },
         {
-          "file": "src/crypto.rs",
+          "file": "src/crypto/invocation_tests.rs",
           "name": "r01_segments_and_reused_offsets_have_safe_invocation_domains",
           "sha256": "4effe4c548332b1aa9bfec142378b9d903879c613a3a25394b9e4b4d9a2fcb51"
         },
         {
-          "file": "src/crypto.rs",
+          "file": "src/crypto/invocation_tests.rs",
           "name": "r01_retained_legacy_frames_and_new_versions_read_together",
-          "sha256": "169214879bba60bfff050bfb67f802454cb0d778d4e6bd1f413c75f93e74c698"
+          "sha256": "c25a3eecea6759e7163e891a7470d1ee09bebf4a58e374f65269dcbf48f872eb"
         },
         {
-          "file": "src/crypto.rs",
+          "file": "src/crypto/invocation_tests.rs",
           "name": "r01_frame_golden_header_and_ciphertext",
           "sha256": "165487534c5ca524b49594629f085aee7bbe23b7f32c490248cdab6fd797c7bc"
         }

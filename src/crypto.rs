@@ -80,6 +80,10 @@ impl StreamKey {
     /// One-way fingerprint stored in the registry at creation so a wrong key
     /// on later requests is rejected with 403 instead of poisoning the
     /// stream. Bound to the stream epoch.
+    #[expect(
+        clippy::expect_used,
+        reason = "StreamKey::fingerprint; the output length is a fixed 16 or 32 bytes, far below HKDF-SHA256's 8,160-byte limit, so expansion cannot fail; a fallible derivation would add an error path no input reaches"
+    )]
     pub(crate) fn fingerprint(&self, stream_epoch: &[u8; EPOCH_LEN]) -> String {
         let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &self.0);
         let mut out = [0u8; 16];
@@ -92,6 +96,10 @@ impl StreamKey {
 /// Touch capability token (PROFILES.md §6): authorizes /touch/* observation
 /// without granting payload decryption. Derived, never stored — the registry
 /// keeps only its fingerprint.
+#[expect(
+    clippy::expect_used,
+    reason = "touch_token; the output length is a fixed 16 or 32 bytes, far below HKDF-SHA256's 8,160-byte limit, so expansion cannot fail; a fallible derivation would add an error path no input reaches"
+)]
 pub(crate) fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &key.0);
     let mut out = [0u8; 32];
@@ -104,6 +112,10 @@ pub(crate) fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u
 /// the token, stored by the registry so the origin can verify wait-URL
 /// signatures without holding the token itself. Registry exposure grants at
 /// most observation-forging — never decryption.
+#[expect(
+    clippy::expect_used,
+    reason = "wait_sig_key; the output length is a fixed 16 or 32 bytes, far below HKDF-SHA256's 8,160-byte limit, so expansion cannot fail; a fallible derivation would add an error path no input reaches"
+)]
 pub(crate) fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), token);
     let mut out = [0u8; 32];
@@ -118,9 +130,15 @@ pub(crate) fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> 
 /// §15 watch-observation capability limits: enforced at VERIFICATION
 /// (issuance is offline by stream-key holders, so the server bounds
 /// what it accepts, not what clients mint).
-#[allow(dead_code)] // unused only in the crypto-sharing side bins
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) const WATCH_CAP_MAX_LIFETIME_SECS: i64 = 300;
-#[allow(dead_code)] // unused only in the crypto-sharing side bins
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) const WATCH_CAP_SKEW_SECS: i64 = 30;
 
 /// The layout-4 watch-observation capability signature: HMAC-SHA256
@@ -134,8 +152,18 @@ pub(crate) const WATCH_CAP_SKEW_SECS: i64 = 30;
 // 8 arguments: each is a DISTINCT §15 capability binding (project,
 // stream, epoch, watch, key, method, expiry) plus the signing key; a
 // params struct would rename the count without changing it.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // unused only in the crypto-sharing side bins
+#[expect(
+    clippy::too_many_arguments,
+    reason = "watch_capability_sig; the signature covers every capability field the SDK mirrors byte-for-byte; bundling them would hide which field enters the cross-language input"
+)]
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "watch_capability_sig; HMAC-SHA256 accepts a key of any length, so constructing the signer cannot fail; a fallible construction would add an error path no key reaches"
+)]
 pub(crate) fn watch_capability_sig(
     sig_key: &[u8; 32],
     sref: &crate::tenant::TenantStreamRef,
@@ -173,14 +201,23 @@ pub(crate) fn watch_capability_sig(
 /// BEFORE any registry lookup — the wire's project must match the
 /// sref the caller resolved (and the signature input has always bound
 /// the project, so a swapped prefix cannot verify).
-#[allow(dead_code)] // unused only in the crypto-sharing side bins
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) fn watch_capability_project(cap: &str) -> Option<crate::tenant::ProjectId> {
     let (project_s, _) = cap.trim().split_once('.')?;
     crate::tenant::ProjectId::new(project_s).ok()
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // unused only in the crypto-sharing side bins
+#[expect(
+    clippy::too_many_arguments,
+    reason = "verify_watch_capability; the check takes every signed capability field separately, as the wire presents them; a bundle struct would exist for this single call site"
+)]
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) fn verify_watch_capability(
     cap: &str,
     sig_key: &[u8; 32],
@@ -273,14 +310,20 @@ pub(crate) struct RouteHash(pub [u8; 16]);
 impl RouteHash {
     /// Layout-4 route hash (MULTITENANCY §2.1):
     /// route-v1 + project_id + stream_name.
-    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    #[allow(
+        dead_code,
+        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+    )]
     pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef) -> Self {
         RouteHash(hash16(&crate::tenant::route_hash_input(sref)))
     }
 
     /// Layout-4 split-child route (contract r1):
     /// route-child-v1 + project_id + stream_name + child_segment_id + salt.
-    #[allow(dead_code)] // consumed at MT Stage 3 (scaler3 conversion)
+    #[allow(
+        dead_code,
+        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+    )]
     pub(crate) fn for_child(
         sref: &crate::tenant::TenantStreamRef,
         child_segment_id: u32,
@@ -309,7 +352,10 @@ impl SegmentHash {
     /// storage-v1 + project_id + stream_name + stream_epoch.
     /// Replaces `StreamDesc::storage_hash`'s bare-name derivation at
     /// MT Stage 3.
-    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    #[allow(
+        dead_code,
+        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+    )]
     pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef, stream_epoch: &str) -> Self {
         SegmentHash(hash16(&crate::tenant::storage_hash_input(
             sref,
@@ -320,7 +366,10 @@ impl SegmentHash {
     /// Layout-4 dynamic segment identity (MULTITENANCY §2.1):
     /// segment-v1 + project_id + stream_name + stream_epoch + segment_id.
     /// Replaces `StreamDesc::dynamic_segment_identity` at MT Stage 3.
-    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    #[allow(
+        dead_code,
+        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+    )]
     pub(crate) fn for_segment(
         sref: &crate::tenant::TenantStreamRef,
         stream_epoch: &str,
@@ -348,6 +397,10 @@ impl RoutingKeyHash {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "derive_subkey; the output length is a fixed 16 or 32 bytes, far below HKDF-SHA256's 8,160-byte limit, so expansion cannot fail; a fallible derivation would add an error path no input reaches"
+)]
 pub(crate) fn derive_subkey(
     key: &StreamKey,
     stream_epoch: &[u8; EPOCH_LEN],
@@ -380,6 +433,10 @@ pub(crate) struct FrameHeader<R = String> {
 
 /// Independent domain from all legacy AES-GCM keys, and from sibling
 /// segments even when their epoch, routing key and local offset match.
+#[expect(
+    clippy::expect_used,
+    reason = "segment_frame_key; the output length is a fixed 16 or 32 bytes, far below HKDF-SHA256's 8,160-byte limit, so expansion cannot fail; a fallible derivation would add an error path no input reaches"
+)]
 fn segment_frame_key(subkey: &[u8; KEY_LEN], segment: &[u8; 16]) -> [u8; KEY_LEN] {
     let hk = Hkdf::<Sha256>::new(Some(segment), subkey);
     let mut key = [0; KEY_LEN];
@@ -437,7 +494,11 @@ impl FrameCipher {
 
     /// Encrypt one record into its wire/storage frame without re-deriving
     /// the key schedule and without cloning the routing key.
-    pub fn encrypt(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "FrameCipher::encrypt; the frame header fields are encrypted and authenticated separately, as the wire lays them out; a header struct would duplicate the frame layout for one call"
+    )]
+    pub(crate) fn encrypt(
         &self,
         stream_hash: &[u8; 16],
         offset: u64,
@@ -461,7 +522,18 @@ impl FrameCipher {
 
     // Private: only new random-nonce invocations reach this in production.
     // Fixed nonces exist solely for codec vectors and misuse regressions.
-    #[allow(clippy::too_many_arguments)] // Exact frame fields plus a nonce; codec vectors must control every authenticated byte.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "encrypt_with_nonce; the frame header fields are encrypted and authenticated separately, as the wire lays them out; a header struct would duplicate the frame layout for one call"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "FrameCipher::encrypt_with_nonce; AES-GCM-SIV encryption fails only past the cipher's 2^36-byte limit, which the record plaintext cap rules out; a fallible encrypt would add an error path no admitted frame reaches"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "FrameCipher::encrypt_with_nonce; the routing key was bounded to 1,024 bytes and the ciphertext to the frame cap at admission, so both lengths fit their wire fields; a checked conversion would add an error path no admitted frame reaches"
+    )]
     fn encrypt_with_nonce(
         &self,
         stream_hash: &[u8; 16],
@@ -561,7 +633,10 @@ pub(crate) const MAX_RECORD_PLAINTEXT: usize = 32 << 20;
 pub(crate) const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as usize + 55;
 
 // Shared by the standalone keys/cryptobench tools; server pages use bounded reads.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
@@ -629,179 +704,20 @@ mod capability_vector {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key() -> StreamKey {
-        StreamKey([7u8; 32])
-    }
-
-    #[test]
-    fn round_trip_and_fresh_invocation_nonce() {
-        let epoch = [3u8; 16];
-        let hash = stream_hash("s1");
-        let sub = derive_subkey(&key(), &epoch, "chat-42", 0);
-        let h = FrameHeader {
-            offset: 12345,
-            ts_ms: 1_751_900_000_000,
-            key_version: 0,
-            routing_key: "chat-42".into(),
-        };
-        let f1 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
-        let f2 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
-        assert_ne!(f1, f2, "new invocations must use fresh nonces");
-
-        let dec = decode_frame(&f1).unwrap();
-        assert_eq!(dec.header.offset, 12345);
-        assert_eq!(dec.header.routing_key, "chat-42");
-        let pt = decrypt_frame(&sub, &hash, &dec, &f1).unwrap();
-        assert_eq!(pt, b"hello world");
-
-        // wrong subkey fails
-        let bad = derive_subkey(&key(), &epoch, "chat-43", 0);
-        assert!(decrypt_frame(&bad, &hash, &dec, &f1).is_err());
-        // different epoch => different subkey (fail-closed on stream re-creation)
-        let sub2 = derive_subkey(&key(), &[4u8; 16], "chat-42", 0);
-        assert_ne!(sub, sub2);
-    }
-
-    #[test]
-    fn fingerprint_stable() {
-        let epoch = [3u8; 16];
-        assert_eq!(key().fingerprint(&epoch), key().fingerprint(&epoch));
-        assert_ne!(key().fingerprint(&epoch), key().fingerprint(&[4u8; 16]));
-    }
-}
+#[path = "crypto/tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod compress_tests {
-    use super::*;
-
-    fn sub() -> [u8; KEY_LEN] {
-        [9u8; KEY_LEN]
-    }
-
-    fn hdr(offset: u64) -> FrameHeader {
-        FrameHeader {
-            offset,
-            ts_ms: 1_753_000_000_000,
-            key_version: 0,
-            routing_key: "rk".into(),
-        }
-    }
-
-    #[test]
-    fn new_compressed_frame_round_trip() {
-        let payload = vec![b'x'; 4096];
-        let hash = stream_hash("s");
-        // The writer side honors the explicit policy: ZstdLevel1 emits a
-        // v5 frame for a compressible payload and decodes to the original.
-        let on = FrameCipher::new(&sub(), &hash, FrameCompression::ZstdLevel1);
-        let h = hdr(7);
-        let frame = on.encrypt(
-            &hash,
-            h.offset,
-            h.ts_ms,
-            h.key_version,
-            &h.routing_key,
-            &payload,
-        );
-        let dec = decode_frame(&frame).expect("v3 decodes");
-        assert_eq!(dec.ver, FRAME_VER_Z);
-        let pt = decrypt_frame(&sub(), &hash, &dec, &frame).expect("decrypts");
-        assert_eq!(pt, payload);
-        let frame2 = on.encrypt(
-            &hash,
-            h.offset,
-            h.ts_ms,
-            h.key_version,
-            &h.routing_key,
-            &payload,
-        );
-        assert_ne!(frame, frame2, "compressed frames also get fresh nonces");
-        // Disabled policy on the same payload stays uncompressed v4.
-        let off = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
-        let h2 = hdr(8);
-        let frame3 = off.encrypt(
-            &hash,
-            h2.offset,
-            h2.ts_ms,
-            h2.key_version,
-            &h2.routing_key,
-            &payload,
-        );
-        assert_eq!(decode_frame(&frame3).unwrap().ver, FRAME_VER);
-
-        // The decode/decrypt path also handles a hand-built v3 frame
-        // (wire-shape pin, independent of the writer policy).
-        let cipher = Aes256Gcm::new((&sub()).into());
-        let z = zstd::bulk::compress(&payload, 1).unwrap();
-        assert!(z.len() < payload.len());
-        let h = hdr(7);
-        let rk = h.routing_key.as_bytes();
-        let mut header = Vec::new();
-        header.push(LEGACY_FRAME_VER_Z);
-        header.extend_from_slice(&h.offset.to_be_bytes());
-        header.extend_from_slice(&h.ts_ms.to_be_bytes());
-        header.extend_from_slice(&h.key_version.to_be_bytes());
-        header.extend_from_slice(&(rk.len() as u16).to_be_bytes());
-        header.extend_from_slice(rk);
-        let nonce = nonce_for_offset(h.offset);
-        let ct = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &z[..],
-                    aad: &aad(&hash, &header),
-                },
-            )
-            .unwrap();
-        let mut frame = header;
-        frame.extend_from_slice(&(ct.len() as u32).to_be_bytes());
-        frame.extend_from_slice(&ct);
-
-        let dec = decode_frame(&frame).expect("v3 decodes");
-        assert_eq!(dec.ver, LEGACY_FRAME_VER_Z);
-        let pt = decrypt_frame(&sub(), &hash, &dec, &frame).expect("decrypts");
-        assert_eq!(pt, payload);
-    }
-
-    #[test]
-    fn new_uncompressed_frame_round_trip() {
-        let hash = stream_hash("s");
-        let cipher = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
-        let h = hdr(9);
-        let frame = cipher.encrypt(
-            &hash,
-            h.offset,
-            h.ts_ms,
-            h.key_version,
-            &h.routing_key,
-            b"tiny",
-        );
-        let dec = decode_frame(&frame).expect("v2 decodes");
-        assert_eq!(dec.ver, FRAME_VER);
-        assert_eq!(decrypt_frame(&sub(), &hash, &dec, &frame).unwrap(), b"tiny");
-    }
-
-    #[test]
-    fn unknown_version_rejected() {
-        let hash = stream_hash("s");
-        let cipher = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
-        let mut frame = cipher.encrypt(&hash, 1, 0, 0, "rk", b"data");
-        frame[0] = 9;
-        assert!(decode_frame(&frame).is_none());
-        // Flipping v2 -> v3 must fail the AAD tag, not decompress garbage.
-        frame[0] = FRAME_VER_Z;
-        let dec = decode_frame(&frame).unwrap();
-        assert!(decrypt_frame(&sub(), &hash, &dec, &frame).is_err());
-    }
-}
+#[path = "crypto/compress_tests.rs"]
+mod compress_tests;
 
 /// Constant-time comparison for shared-secret tokens: a byte-by-byte
 /// `==` on a secret leaks its prefix length through timing (PR 6-C:
 /// shared by the deployment bearer and the peer client).
-#[allow(dead_code)] // the by-path bins (s3lite, edgesim) include this module and use only the hashing half
+#[allow(
+    dead_code,
+    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+)]
 pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -811,140 +727,5 @@ pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
 }
 
 #[cfg(test)]
-mod invocation_tests {
-    use super::*;
-
-    #[test]
-    fn r01_rfc8452_aes256_empty_plaintext_vector() {
-        // RFC 8452 Appendix C.2, first AES-256-GCM-SIV test vector.
-        let mut key = [0; 32];
-        key[0] = 1;
-        let mut nonce = [0; 12];
-        nonce[0] = 3;
-        let cipher = Aes256GcmSiv::new((&key).into());
-        let ct = cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: b"", aad: b"" })
-            .unwrap();
-        assert_eq!(hex(&ct), "07f5f4169bbf55a8400cd47ea6fd400f");
-    }
-
-    #[test]
-    fn r01_segments_and_reused_offsets_have_safe_invocation_domains() {
-        let sub = derive_subkey(&StreamKey([7; 32]), &[8; 16], "customer-1", 0);
-        let parent = [1; 16];
-        let successor = [2; 16];
-        assert_ne!(
-            segment_frame_key(&sub, &parent),
-            segment_frame_key(&sub, &successor)
-        );
-        let a = FrameCipher::new(&sub, &parent, FrameCompression::Disabled);
-        let b = FrameCipher::new(&sub, &successor, FrameCompression::Disabled);
-        let p1 = [b'A'; 16];
-        let p2 = [b'B'; 16];
-        // Forced identical nonce proves the vetted construction protects
-        // rollback and even RNG-repetition cases; ordinary writes use OsRng.
-        let f1 = a.encrypt_with_nonce(&parent, 0, 1000, 0, "customer-1", &p1, [0; 12]);
-        let sibling = b.encrypt_with_nonce(&successor, 0, 1000, 0, "customer-1", &p2, [0; 12]);
-        let rollback = a.encrypt_with_nonce(&parent, 0, 1000, 0, "customer-1", &p2, [0; 12]);
-        let c1 = decode_frame(&f1).unwrap();
-        for (segment, frame) in [(successor, sibling), (parent, rollback)] {
-            let decoded = decode_frame(&frame).unwrap();
-            let ciphertext_xor: Vec<_> = c1.ciphertext[..16]
-                .iter()
-                .zip(&decoded.ciphertext[..16])
-                .map(|(a, b)| a ^ b)
-                .collect();
-            assert_ne!(ciphertext_xor, vec![3; 16], "no repeated GCM keystream");
-            assert_eq!(decrypt_frame(&sub, &segment, &decoded, &frame).unwrap(), p2);
-        }
-        let retry = f1.clone();
-        assert_eq!(retry, f1, "retransmit encoded durable bytes exactly");
-        let recreated_writer = FrameCipher::new(&sub, &parent, FrameCompression::Disabled);
-        let fresh = recreated_writer.encrypt(&parent, 0, 1000, 0, "customer-1", &p2);
-        assert_ne!(
-            &fresh[c1.header_len - 12..c1.header_len],
-            &f1[c1.header_len - 12..c1.header_len]
-        );
-        assert_eq!(
-            decrypt_frame(&sub, &parent, &decode_frame(&fresh).unwrap(), &fresh).unwrap(),
-            p2
-        );
-    }
-
-    #[test]
-    fn r01_retained_legacy_frames_and_new_versions_read_together() {
-        let sub = [7; 32];
-        let segment = [8; 16];
-        for (version, compressed) in [(LEGACY_FRAME_VER, false), (LEGACY_FRAME_VER_Z, true)] {
-            let payload = vec![b'x'; 1024];
-            let message = if compressed {
-                zstd::bulk::compress(&payload, 1).unwrap()
-            } else {
-                payload.clone()
-            };
-            let mut header = vec![version];
-            header.extend_from_slice(&0u64.to_be_bytes());
-            header.extend_from_slice(&1000i64.to_be_bytes());
-            header.extend_from_slice(&0u32.to_be_bytes());
-            header.extend_from_slice(&1u16.to_be_bytes());
-            header.push(b'k');
-            let ct = Aes256Gcm::new((&sub).into())
-                .encrypt(
-                    Nonce::from_slice(&nonce_for_offset(0)),
-                    Payload {
-                        msg: &message,
-                        aad: &aad(&segment, &header),
-                    },
-                )
-                .unwrap();
-            let mut frame = header;
-            frame.extend_from_slice(&(ct.len() as u32).to_be_bytes());
-            frame.extend_from_slice(&ct);
-            assert_eq!(
-                decrypt_frame(&sub, &segment, &decode_frame(&frame).unwrap(), &frame).unwrap(),
-                payload
-            );
-            let replacement =
-                FrameCipher::new(&sub, &segment, FrameCompression::from_enabled(compressed))
-                    .encrypt(&segment, 0, 1000, 0, "k", &payload);
-            assert_eq!(
-                decode_frame(&replacement).unwrap().ver,
-                if compressed { FRAME_VER_Z } else { FRAME_VER }
-            );
-            assert_eq!(
-                decrypt_frame(
-                    &sub,
-                    &segment,
-                    &decode_frame(&replacement).unwrap(),
-                    &replacement
-                )
-                .unwrap(),
-                payload
-            );
-            let mut forged = replacement.clone();
-            forged[24] ^= 1;
-            assert!(
-                decrypt_frame(&sub, &segment, &decode_frame(&forged).unwrap(), &forged).is_err(),
-                "nonce is authenticated"
-            );
-        }
-    }
-
-    #[test]
-    fn r01_frame_golden_header_and_ciphertext() {
-        let cipher = FrameCipher::new(&[7; 32], &[8; 16], FrameCompression::Disabled);
-        let frame = cipher.encrypt_with_nonce(&[8; 16], 0, 1000, 0, "k", b"hello", [3; 12]);
-        assert_eq!(
-            hex(&frame[..36]),
-            "04000000000000000000000000000003e80000000000016b030303030303030303030303"
-        );
-        assert_eq!(
-            hex(&frame),
-            "04000000000000000000000000000003e80000000000016b03030303030303030303030300000015d484209bdfe8375c81dbafa669e2b57200b50f9346"
-        );
-        assert_eq!(
-            decrypt_frame(&[7; 32], &[8; 16], &decode_frame(&frame).unwrap(), &frame).unwrap(),
-            b"hello"
-        );
-    }
-}
+#[path = "crypto/invocation_tests.rs"]
+mod invocation_tests;

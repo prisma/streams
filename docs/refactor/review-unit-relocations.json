@@ -16,5 +16,41 @@
     "to_file": "src/application/append/contract.rs",
     "function_sha256": "ed4927f8020a415fb9d5eb55e424fde6a3e77ed7b201c814087238aef4e41f82",
     "reason": "Transport-free append failure/producer contract moved to its own focused module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "r01_rfc8452_aes256_empty_plaintext_vector",
+    "finding": "warning cleanup",
+    "from_commit": "6f308ced95ef896b9398ed1c385dbb3d60edc9fe",
+    "from_file": "src/crypto.rs",
+    "to_file": "src/crypto/invocation_tests.rs",
+    "function_sha256": "6195fc6bf32cc487241c0da26dfb83e52f369fa13021e3a5151226208a518952",
+    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "r01_segments_and_reused_offsets_have_safe_invocation_domains",
+    "finding": "warning cleanup",
+    "from_commit": "6f308ced95ef896b9398ed1c385dbb3d60edc9fe",
+    "from_file": "src/crypto.rs",
+    "to_file": "src/crypto/invocation_tests.rs",
+    "function_sha256": "4effe4c548332b1aa9bfec142378b9d903879c613a3a25394b9e4b4d9a2fcb51",
+    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "r01_retained_legacy_frames_and_new_versions_read_together",
+    "finding": "warning cleanup",
+    "from_commit": "6f308ced95ef896b9398ed1c385dbb3d60edc9fe",
+    "from_file": "src/crypto.rs",
+    "to_file": "src/crypto/invocation_tests.rs",
+    "function_sha256": "c25a3eecea6759e7163e891a7470d1ee09bebf4a58e374f65269dcbf48f872eb",
+    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; the fixture's ciphertext length now converts checked (u32::try_from(...).unwrap()) instead of through a truncating cast, with the same inputs and assertions."
+  },
+  {
+    "name": "r01_frame_golden_header_and_ciphertext",
+    "finding": "warning cleanup",
+    "from_commit": "6f308ced95ef896b9398ed1c385dbb3d60edc9fe",
+    "from_file": "src/crypto.rs",
+    "to_file": "src/crypto/invocation_tests.rs",
+    "function_sha256": "165487534c5ca524b49594629f085aee7bbe23b7f32c490248cdab6fd797c7bc",
+    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; exact function tokens and executable attributes unchanged."
   }
 ]

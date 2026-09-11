@@ -1606,104 +1606,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::FrameCipher::encrypt_with_nonce",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::RouteHash::for_child",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::RouteHash::for_stream",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::SegmentHash::for_segment",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::SegmentHash::for_stream",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::WATCH_CAP_MAX_LIFETIME_SECS",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::WATCH_CAP_SKEW_SECS",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::decrypt_frame",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::secret_eq",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::verify_watch_capability",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::verify_watch_capability",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_project",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_sig",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_sig",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::Workload::append_to",
       "path": "src/dst/runtime.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -3897,27 +3799,6 @@
       "count": 1,
       "owner": "crate::config_validation_tests",
       "path": "src/config/validation_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::compress_tests",
-      "path": "src/crypto.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::invocation_tests",
-      "path": "src/crypto.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/crypto.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
