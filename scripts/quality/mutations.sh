@@ -15,7 +15,7 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings_codec postings batch retained quota cursors queue; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -24,6 +24,7 @@ for owner in postings_codec postings batch retained quota cursors queue; do
     quota) file=src/quota/bucket.rs; filter=quota_bucket:: ;;
     cursors) file=src/product_cursor/decode.rs; filter=product_cursor:: ;;
     queue) file=src/queue.rs; filter=queue:: ;;
+    rollup_allocation) file=src/rollup/allocation.rs; filter=rollup_allocation:: ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"

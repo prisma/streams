@@ -61,3 +61,10 @@ mod product_cursor;
 )]
 #[path = "../../../src/queue.rs"]
 mod queue;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compile the exact production month-allocation owner; the library target has no service caller"
+)]
+#[path = "../../../src/rollup/allocation.rs"]
+mod rollup_allocation;
