@@ -39,6 +39,10 @@ impl SingleSource {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "SingleSource; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a length never made durable"
+)]
 #[async_trait::async_trait]
 impl FeedSourceRead for SingleSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
@@ -165,10 +169,17 @@ struct LineageSpan {
     seg_id: u32,
     logical_start: u64,
     cap: Option<u64>,
-    #[allow(dead_code)] // identity is informational (engine/handle keying)
+    #[allow(
+        dead_code,
+        reason = "identity; the span keeps its segment identity for engine and handle keying; reading it here would restate the key the reader already holds"
+    )]
     identity: [u8; 16],
     reader: SpanReader,
 }
+
+/// The cached local reader of a sealed span: the engine and handle the
+/// last locally served page used.
+type LocalReader = tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>;
 
 /// HOW a span's records are read (round-10 two-instance model):
 /// metadata (`seg_id`/`logical_start`/`cap`) answers `locate`/
@@ -186,7 +197,7 @@ enum SpanReader {
         route: [u8; 16],
         target: crate::application::read_remote::InternalTarget,
         owner_hint: std::sync::RwLock<Option<String>>,
-        local: tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>,
+        local: LocalReader,
     },
     /// The LIVE tail: LOCAL ONLY (locked architecture). Every read
     /// confirms this instance is still the effective owner; a moved
@@ -197,26 +208,6 @@ enum SpanReader {
         engine: Arc<ShardEngine>,
         handle: Arc<StreamHandle>,
     },
-}
-
-/// Round-11.2: a FATAL span error carried through anyhow — the feed
-/// downcasts it and turns the source's lifecycle into the typed
-/// cutoff instead of retrying forever.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FatalSpanCutoff(pub(crate) super::feed::SourceCutoff);
-
-impl std::fmt::Display for FatalSpanCutoff {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fatal span cutoff: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for FatalSpanCutoff {}
-
-/// Is this instance the effective owner of `route`'s shard? None-ring
-/// (single instance) counts as ours.
-fn owned_here(state: &crate::application::read::ReadService, route: &[u8; 16]) -> bool {
-    state.ownership.is_mine(&state.shards.prefix_for(route))
 }
 
 impl LineageSpan {
@@ -277,6 +268,10 @@ impl LineageSource {
     /// (mirrors the legacy keyed-lineage construction: segments
     /// containing the lane's key point, ordered by
     /// `(created_ms, seg_id)`).
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "LineageSource::build; the chain build nests the owner, engine and handle resolution inside each segment's span; flattening it would separate the span from the owner it was built under"
+    )]
     pub(crate) async fn build(
         state: Arc<crate::application::read::ReadService>,
         desc: StreamDesc,
@@ -401,14 +396,20 @@ impl LineageSource {
     /// protocol with at most one verified redirect. Fatal outcomes
     /// ride `FatalSpanCutoff`; retryables stay anyhow errors (the
     /// session's bounded-backoff retry).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::excessive_nesting,
+        clippy::unwrap_used,
+        reason = "LineageSource::sealed_span_page; a sealed span's page resolves the current owner, serves locally or through one redirect and caches the reader and owner hint it used, and a poisoned hint may hold a half-recorded owner that could route the next page to the wrong instance; a request struct, a split, a flattened resolution or a recovered hint would separate the page from the owner resolution it must repeat"
+    )]
     async fn sealed_span_page(
         &self,
         span: &LineageSpan,
         route: &[u8; 16],
         target: &crate::application::read_remote::InternalTarget,
         owner_hint: &std::sync::RwLock<Option<String>>,
-        local: &tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>,
+        local: &LocalReader,
         local_from: u64,
         budget: usize,
     ) -> anyhow::Result<crate::application::read::ReadPage> {
@@ -548,11 +549,20 @@ impl LineageSource {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "LineageSource::tail; a lineage is built with at least one span and never emptied; a fallible tail would add a branch no source reaches"
+    )]
     fn tail(&self) -> &LineageSpan {
         self.spans.last().expect("non-empty lineage")
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "LineageSource; one batch walks the span chain until the budget or the frontier stops it, and a poisoned stream state may hold a half-advanced durable frontier; splitting the walk would separate it from its budget and recovering the state could serve a length never made durable"
+)]
 #[async_trait::async_trait]
 impl FeedSourceRead for LineageSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
@@ -783,6 +793,13 @@ impl FeedSourceRead for LineageSource {
 /// source implementation. Called ONLY under the feed's driver permit.
 /// Genuine-close detection uses the read service incarnation boundary
 /// (no materialized map, or a <=1-segment map with nothing pending).
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    clippy::let_underscore_must_use,
+    reason = "refresh_transition; the resume takes the state, descriptor, key, epoch, filter and signature the source built with, walks one bounded deadline across attempts whose waits nest inside the pending-transition branch, and a timed-out ticket wait simply re-reads; a request struct, a split, a flattened wait or a handled timeout would separate the attempts from the deadline they share"
+)]
 pub(crate) async fn refresh_transition(
     state: &Arc<crate::application::read::ReadService>,
     desc: &StreamDesc,
@@ -955,30 +972,10 @@ pub(crate) async fn refresh_transition(
     Ok(SourceTransition::RetryLater)
 }
 
-/// The linearization rule (engine-free, so the mapping itself is
-/// unit-testable): a linearized one-past offset maps to the span
-/// covering it; the boundary one-past a sealed span's cap belongs to
-/// the NEXT span at local 0.
-fn locate_in_spans(spans: &[(u32, u64, Option<u64>)], logical_after: u64) -> WirePosition {
-    for (i, (seg, start, cap)) in spans.iter().enumerate() {
-        let last = i + 1 == spans.len();
-        match cap.map(|c| start + c) {
-            Some(e) if logical_after >= e && !last => continue,
-            Some(e) if logical_after > e => continue,
-            _ => {
-                return WirePosition {
-                    seg_id: *seg,
-                    local_after: logical_after - start,
-                };
-            }
-        }
-    }
-    let (seg_id, start, _) = spans.last().copied().expect("non-empty lineage");
-    WirePosition {
-        seg_id,
-        local_after: logical_after.saturating_sub(start),
-    }
-}
+#[path = "source/spans.rs"]
+mod spans;
+pub(crate) use spans::FatalSpanCutoff;
+use spans::{locate_in_spans, owned_here};
 
 #[cfg(test)]
 #[path = "source/tests.rs"]

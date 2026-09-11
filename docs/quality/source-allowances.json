@@ -1653,20 +1653,6 @@
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
     },
     {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::LineageSource::sealed_span_page",
-      "path": "src/sse/source.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::LineageSpan::identity",
-      "path": "src/sse/source.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
       "category": "global",
       "count": 1,
       "owner": "crate::target::T",

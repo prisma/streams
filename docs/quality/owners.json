@@ -2047,6 +2047,46 @@
       "path": "src/http/tests.rs",
       "reason": "HTTP surface test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the interval cursor.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/source/spans.rs",
+      "reason": "Lineage span rule imports its enclosing source owner; the compiler resolves the parent exports and the rule only maps linearized offsets.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/retention.rs",
+      "reason": "Retention entry imports its enclosing feed owner; the compiler resolves the parent exports and the entry only mirrors admission.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/test_support.rs",
+      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::LiveFeed::schedule_transition_retry",
+      "path": "src/sse/feed.rs",
+      "reason": "The feed's transition retry is a bare task the feed owns and cancels through its own flag; it ends with the feed.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::spans",
+      "path": "src/sse/source.rs",
+      "reason": "Lineage span rule; declared by path like the source's tests so the file name says what it holds; no copied source or public test API.",
+      "syntax": "path = \"source/spans.rs\""
     }
   ]
 }
