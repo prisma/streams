@@ -69,7 +69,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a7aa1949d4f5baa5fceeee5728a289cbffaa2782820231c3d7aeb2fdccd51ccc",
+    "function_sha256": "6a470dfe8962a41d8fcee253805e7ec45a11a754c09ad1f73108cd2b70daaab5",
     "mechanisms": [],
     "configuration": [
       "let pre = crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk13kid\");",
@@ -2965,7 +2965,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6f5adf6e595e069c8e4b6101ee10e2abdbaf8cd11fb80e2cd1f24fc41e94e077",
+    "function_sha256": "c202df6e47bc48c1d51da7b2bf3562d292c6c006e7fd09736ab7574f68f54279",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::arm_scaler_before_publish(\"lfhp\");"

@@ -51,6 +51,10 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
 /// await the open inline in the caller's task, insert into the map from
 /// the caller's task. The inner Db open is spawned (as `on_slatedb_rt`
 /// does in production), so abandoning the await detaches it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reopen storm reproduction; the detached open is the defect being reproduced and its abandonment is counted through the fenced opens and the empty serving map; owning the open would remove the storm the scenario exists to reproduce"
+)]
 async fn naive_get_or_open(
     lock: &tokio::sync::Mutex<()>,
     shards: &std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,

@@ -17,6 +17,10 @@ use std::sync::atomic::Ordering;
 /// 4. Budget progress: max_bytes=1 still returns the first record and
 ///    advances — an oversized record can never wedge a cursor, on the
 ///    ring path or the DB path.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "ring ordering fixture; the appender is joined before the delivered offsets are compared; it must append concurrently with the parked waiter"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let inner = mem();

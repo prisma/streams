@@ -220,6 +220,10 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
 /// (c) keep A's worst-case latency bounded while B floods. The
 /// at-scale binary campaign (latency percentiles under real load)
 /// remains a field exercise for the release push.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "noisy-neighbor fixture; the hostile and compliant campaigns are joined together before their outcomes are compared; they must run concurrently to contend on one cell"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");

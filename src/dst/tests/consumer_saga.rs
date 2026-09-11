@@ -39,6 +39,10 @@ async fn consumer_version_with(
 /// record Deleting. The consumer_deleting conflict now carries the
 /// deleting incarnation's version token (round-18 recovery path), and
 /// a retry with it completes the saga.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "saga refresh fixture; the deletion is joined after its injected refresh failure; it must run concurrently with the fault window it is parked in"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_saga_refresh_failure_is_retryable_not_stable() {
     let _serial = gap_lock().lock().await;
@@ -146,6 +150,10 @@ async fn a_saga_refresh_failure_is_retryable_not_stable() {
 /// the refresh outcome — not by reusing a stale map.** The saga parks
 /// before its refresh; the stream is deleted (no recreation); the
 /// resumed saga must observe Ok(None)/not-alive and answer 204.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "vanished collection fixture; the deletion is joined after the collection vanishes underneath it; it must run concurrently with that removal"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_saga_vanished_collection_is_idempotent_success() {
     let _serial = gap_lock().lock().await;

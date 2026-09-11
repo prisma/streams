@@ -490,6 +490,10 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
 /// failpoint, no false terminal appears; on release, the parked
 /// session continues promptly (deadline well below the 15-s
 /// heartbeat).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "held publication fixture; the split is joined after the subscriber's prompt handoff is observed; it must run concurrently to hold publication while the subscriber waits"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_split_held_publication_handoff_is_prompt() {
     let _gap = gap_lock().lock().await;
@@ -569,7 +573,7 @@ async fn livefeed_split_held_publication_handoff_is_prompt() {
         !acc2.contains("\"sealed\":true"),
         "no false terminal after the handoff:\n{acc2}"
     );
-    let _ = split.await;
+    split.await.expect("the held split task completed");
 }
 
 // ==================================================================

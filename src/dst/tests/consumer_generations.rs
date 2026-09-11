@@ -349,6 +349,10 @@ async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
 /// and recreated under the same name and key (new epoch) with its own
 /// consumer and leases; the resumed saga must observe the epoch change
 /// and answer 204 without touching the replacement.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked saga fixture; the deletion saga is released and joined before the replacement is examined; it must park before its descriptor refresh while the stream is recreated"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_saga_never_touches_a_recreated_stream() {
     let _serial = gap_lock().lock().await;
