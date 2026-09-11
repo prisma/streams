@@ -1403,13 +1403,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::Absorber::start",
-      "path": "src/history.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::tests::cancelled_reservation_releases_its_gather_slot",
       "path": "src/history.rs",
       "syntax": "tokio::spawn"

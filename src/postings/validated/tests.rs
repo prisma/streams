@@ -2,6 +2,11 @@ use super::*;
 use crate::postings::{PlanCfg, plan_spans, plan_spans_iter};
 use std::sync::Arc;
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "old_clip; the reference clipper reproduces the pre-owner arithmetic on the fixture's small runs; saturating or checked forms would change the oracle it exists to reproduce"
+)]
 fn old_clip(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
     runs.iter()
         .filter_map(|r| {
@@ -16,6 +21,10 @@ fn old_clip(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
         .collect()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "o4_window_matches_double_clipping_and_every_plan_field; the fixture's run counts are small numbers it generated; a checked conversion would only restate the fixture"
+)]
 #[test]
 fn o4_window_matches_double_clipping_and_every_plan_field() {
     let mut seed = 0x04a7e2070u64;
@@ -93,6 +102,10 @@ fn o4_late_window_seeks_and_retains_whole_run_estimates() {
     );
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "o4a_owner_rejects_invalid_runs_and_preserves_valid_extension; the fixture indexes the two runs it just extended; a checked index would only restate the length it asserted"
+)]
 #[test]
 fn o4a_owner_rejects_invalid_runs_and_preserves_valid_extension() {
     let r = |start, count, bytes| AbsRun {

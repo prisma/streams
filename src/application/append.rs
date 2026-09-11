@@ -147,6 +147,10 @@ impl AppendService {
         self.check_memory().await?;
         self.execute_prepared(prepared, command).await
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "AppendService::execute_prepared; the resume nests the topology ticket and its wait inside the pending-transition branch; flattening it would separate the wait from the transition it follows"
+    )]
     pub(crate) async fn execute_prepared(
         &self,
         prepared: AuthorizedAppend,
@@ -212,6 +216,10 @@ impl AppendService {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "execute_once; one append validates, admits, commits and settles in the order the retry contract fixes; splitting it would separate the steps from the retry that orders them"
+)]
 async fn execute_once(
     state: &AppendService,
     prepared: AuthorizedAppend,

@@ -234,6 +234,13 @@ pub(crate) fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String])
     clippy::cast_possible_truncation,
     reason = "rss_bytes; the mach info word count is the size of a small fixed struct in 32-bit words; a checked conversion would only restate the ABI"
 )]
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::collapsible_if,
+        reason = "rss_bytes; the statm read and the page parse stay as two steps so each proc-file failure is its own branch; collapsing them would edit the body of an untested sampler for no behaviour change"
+    )
+)]
 pub(crate) fn rss_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {

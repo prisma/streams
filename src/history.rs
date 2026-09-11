@@ -27,6 +27,8 @@ use crate::shard::{AbsorbSignal, ShardEngine};
 
 #[cfg(test)]
 mod controller_tests;
+#[cfg(test)]
+mod test_support;
 
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
@@ -602,6 +604,10 @@ impl KeyCache {
 // ---- absorber ----
 
 #[derive(Clone)]
+#[expect(
+    dead_code,
+    reason = "AbsorberConfig; batch_puts, pass_bytes, small_pass_bytes and concurrency are accepted by the CLI so existing deployments keep booting while the gather planner sizes passes itself; removing them would remove the flags with them"
+)]
 pub(crate) struct AbsorberConfig {
     pub threshold_bytes: u64,
     pub threshold_age: Duration,
@@ -772,6 +778,10 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
 /// submitted it (true = the v2 shared partition).
 type LaneMarks = std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>;
 
+#[expect(
+    dead_code,
+    reason = "Absorber; the store and key cache it was started with are kept for the gather planner, which reaches them through the engine today; dropping them would touch boot's mutation-gated wiring for no behaviour change"
+)]
 pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
     /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
@@ -892,21 +902,6 @@ impl Absorber {
     ) {
         let absorber = Self::new(data_store, shard.clone(), keys, cfg);
         shard.spawn_required("absorber", absorber.run(rx));
-    }
-
-    #[cfg(test)]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "Absorber::start; the DST fixtures drive this absorber through a bare task they abort themselves; a supervised spawn would tie a fixture's teardown to a supervisor the fixture never builds"
-    )]
-    pub(crate) fn start(
-        data_store: Arc<dyn ObjectStore>,
-        shard: Arc<ShardEngine>,
-        keys: Arc<KeyCache>,
-        cfg: AbsorberConfig,
-        rx: mpsc::Receiver<AbsorbSignal>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(Self::new(data_store, shard, keys, cfg).run(rx))
     }
 }
 
