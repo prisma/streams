@@ -3138,13 +3138,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 3,
-      "owner": "crate::handle",
-      "path": "src/bin/s3lite.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::cas",
       "path": "src/bin/verify.rs",
