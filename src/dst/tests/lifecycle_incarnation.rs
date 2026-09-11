@@ -179,7 +179,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     crate::failpoints::park_create_before_ready("abacreate");
     let stale =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
-    let first_epoch = parked_create_epoch(&state, before).await;
+    let first_epoch = parked_epoch(
+        &state,
+        crate::failpoints::Fp::CreateBeforeReady,
+        "abacreate",
+        before,
+    )
+    .await;
     assert!(
         !first_epoch.is_empty(),
         "the first creator never reached its window"
@@ -195,7 +201,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     );
     let live =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
-    let second_epoch = parked_create_epoch(&state, before + 1).await;
+    let second_epoch = parked_epoch(
+        &state,
+        crate::failpoints::Fp::CreateBeforeReady,
+        "abacreate",
+        before + 1,
+    )
+    .await;
     assert!(
         !second_epoch.is_empty(),
         "the replacement never reached the window"
@@ -241,22 +253,25 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     engine_shutdown(&state).await;
 }
 
-/// The epoch of `abacreate` once more creators than `threshold` are parked
-/// before publishing readiness; empty if no creator reaches that window.
-async fn parked_create_epoch(state: &crate::http::AppState, threshold: usize) -> String {
+/// The epoch of `name` once more operations than `threshold` are parked at
+/// `fp`; empty if no operation reaches that window.
+async fn parked_epoch(
+    state: &crate::http::AppState,
+    fp: crate::failpoints::Fp,
+    name: &str,
+    threshold: usize,
+) -> String {
     for _ in 0..300 {
-        if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, "abacreate")
-            <= threshold
-        {
+        if crate::failpoints::parked(fp, name) <= threshold {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             continue;
         }
         state
             .registry
-            .invalidate(&state.deployment.raw_adapter_sref("abacreate"));
+            .invalidate(&state.deployment.raw_adapter_sref(name));
         return match state
             .registry
-            .get(&state.deployment.raw_adapter_sref("abacreate"))
+            .get(&state.deployment.raw_adapter_sref(name))
             .await
         {
             Ok(Some(d)) => d.stream_epoch.clone(),
