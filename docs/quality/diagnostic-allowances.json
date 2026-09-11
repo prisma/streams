@@ -1802,13 +1802,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6ac6dcbd47da8cfd94b86a7d0b828fca67d8ec09519e6bd97907b656e43a5f9b",
-      "item": "crate::blast_keys",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c3c8e6f10636569f7060d6fb5a83ad511cafbbe936bcd93bd0054a9c3721ca05",
       "item": "crate::reset_refuses_while_in_flight",
       "lint": "clippy::disallowed_methods",
@@ -2863,55 +2856,6 @@
       "item": "crate::sse_follows_lineage_across_split",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/sse_delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2083a054d7361c403b9574b2cfe9f03ac9160e4c0a0efaf0243e8e2b4a50631b",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2beac2c8a1f4a38ae635af4aea66b7033c497d8c882247ef5646218e91785b2d",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "54f4311b7ad9efbd71f2c6227bb08d8d56b58dbc3c66abe88ba3b7efacad4e9d",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a60abfd308e380f0264eb8537198ca8ecfd94c293a99f35ca96d9b29a2097f33",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c72af80a2e5ca7ed82679bb409f86b9b62a826a4256fafdc1383bb40f0fdd026",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e25cc5f5b55ec4fdebfa04056203609c308bde01a6df196bae556fc2b3b3b697",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f400dbab241f1cdca1a8663d6bbf6431ff2cc71f42b542100a9f2c1645adf00f",
-      "item": "crate::blast_keys",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/topology_scaling.rs"
     },
     {
       "count": 1,
@@ -7362,22 +7306,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f553bf6c3a538e31220393a3f6bde48fbe6b8719af6c08e7ab6b120dc51dce87",
-      "item": "crate::merge_rejoins_cold_children_with_exact_lineage",
-      "lint": "clippy::too_many_lines",
-      "metric": 135,
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "518d61dce432673f0959a181e1836cb673e55edb782b9c63b280c7db8b74f77c",
-      "item": "crate::split_children_land_on_distinct_engines",
-      "lint": "clippy::too_many_lines",
-      "metric": 103,
-      "path": "src/dst/tests/topology_scaling.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "356b6413e1a23f83718ecfe5cbb250a77811980fc145f8ac12fc71c175f4619b",
       "item": "crate::Fp::site",
       "lint": "clippy::too_many_lines",
@@ -7851,13 +7779,6 @@
       "item": "crate::livefeed_remote_sealed_predecessor_streams_through_owner",
       "lint": "clippy::unnecessary_to_owned",
       "path": "src/dst/tests/livefeed_history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "61c51dc7fa02ae171a598fbaf2cff5d692f9bbdf88dacfe8196289da2654d364",
-      "item": "crate::split_children_land_on_distinct_engines",
-      "lint": "clippy::unnecessary_to_owned",
-      "path": "src/dst/tests/topology_scaling.rs"
     },
     {
       "count": 1,

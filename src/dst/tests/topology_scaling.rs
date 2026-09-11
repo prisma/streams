@@ -14,6 +14,10 @@ use std::sync::Arc;
 
 /// Concurrent keyed append load for `secs`; returns acks completed.
 /// Every append must succeed — capacity tests tolerate zero errors.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "capacity load fixture; every client task is stopped through the shared flag and joined before the count is returned; the clients must run concurrently to saturate the committer"
+)]
 async fn blast_keys(
     addr: std::net::SocketAddr,
     stream: &str,
@@ -21,101 +25,19 @@ async fn blast_keys(
     clients: usize,
     secs: f64,
 ) -> u64 {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut tasks = Vec::new();
     for c in 0..clients {
-        let done = done.clone();
-        let stop = stop.clone();
-        let stream = stream.to_string();
-        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
-        tasks.push(tokio::spawn(async move {
-            // One key per client (a client blocked on a saturated
-            // segment must not throttle the other side) and ONE
-            // persistent keep-alive connection: per-request TCP churn
-            // burns the client time that should keep admitted slots
-            // full, and that loss is what a capacity ratio measures.
-            let k = keys[c % keys.len()].clone();
-            let mut conn: Option<tokio::net::TcpStream> = None;
-            let mut buf = vec![0u8; 16 * 1024];
-            let mut i = c;
-            'outer: while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                i += 1;
-                let sck = match conn.as_mut() {
-                    Some(s) => s,
-                    None => {
-                        conn = Some(tokio::net::TcpStream::connect(addr).await.unwrap());
-                        conn.as_mut().unwrap()
-                    }
-                };
-                let body = format!("{{\"c\":{c},\"i\":{i}}}");
-                let req = format!(
-                    "POST /v1/streams/{stream}/records HTTP/1.1\r\nhost: x\r\nprisma-encryption-key: {RIG_KEY_B64}\r\nprisma-routing-key: {k}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
-                    body.len()
-                );
-                if sck.write_all(req.as_bytes()).await.is_err() {
-                    conn = None;
-                    continue;
-                }
-                // Read one response: headers, then content-length body.
-                let mut head = Vec::new();
-                let split_at;
-                loop {
-                    let n = match sck.read(&mut buf).await {
-                        Ok(0) | Err(_) => {
-                            conn = None;
-                            continue 'outer;
-                        }
-                        Ok(n) => n,
-                    };
-                    head.extend_from_slice(&buf[..n]);
-                    if let Some(p) = head.windows(4).position(|w| w == b"\r\n\r\n") {
-                        split_at = p;
-                        break;
-                    }
-                }
-                let head_str = String::from_utf8_lossy(&head[..split_at]).to_string();
-                let status: u16 = head_str
-                    .lines()
-                    .next()
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
-                let clen: usize = head_str
-                    .lines()
-                    .find_map(|l| {
-                        let (k2, v) = l.split_once(':')?;
-                        (k2.trim().eq_ignore_ascii_case("content-length"))
-                            .then(|| v.trim().parse().ok())?
-                    })
-                    .unwrap_or(0);
-                let mut have = head.len() - split_at - 4;
-                while have < clen {
-                    let n = match sck.read(&mut buf).await {
-                        Ok(0) | Err(_) => {
-                            conn = None;
-                            continue 'outer;
-                        }
-                        Ok(n) => n,
-                    };
-                    have += n;
-                }
-                if status == 429 {
-                    // Backpressure is the capacity ceiling speaking — not
-                    // an error. Back off briefly and retry.
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                    continue;
-                }
-                assert!(
-                    status == 200 || status == 204 || status == 503,
-                    "append during capacity run: {status}"
-                );
-                if status == 200 || status == 204 {
-                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-        }));
+        // One key per client (a client blocked on a saturated segment must
+        // not throttle the other side).
+        let appender = KeyedAppender::new(addr, stream, keys[c % keys.len()]);
+        tasks.push(tokio::spawn(blast_client(
+            appender,
+            c,
+            stop.clone(),
+            done.clone(),
+        )));
     }
     tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -125,8 +47,136 @@ async fn blast_keys(
     done.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// One client's append loop until `stop`: backpressure backs off and
+/// retries, dropped connections reconnect on the next append, and every
+/// other status must be a success or an explicit overload refusal.
+async fn blast_client(
+    mut appender: KeyedAppender,
+    client: usize,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    done: Arc<std::sync::atomic::AtomicU64>,
+) {
+    let mut sequence = client;
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        sequence += 1;
+        let Some(status) = appender.post(client, sequence).await else {
+            continue;
+        };
+        if status == 429 {
+            // Backpressure is the capacity ceiling speaking — not an
+            // error. Back off briefly and retry.
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            continue;
+        }
+        assert!(
+            status == 200 || status == 204 || status == 503,
+            "append during capacity run: {status}"
+        );
+        if status == 200 || status == 204 {
+            done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// ONE persistent keep-alive connection per client: per-request TCP churn
+/// burns the client time that should keep admitted slots full, and that
+/// loss is what a capacity ratio measures.
+struct KeyedAppender {
+    addr: std::net::SocketAddr,
+    stream: String,
+    key: String,
+    conn: Option<tokio::net::TcpStream>,
+    buf: Vec<u8>,
+}
+
+impl KeyedAppender {
+    fn new(addr: std::net::SocketAddr, stream: &str, key: &str) -> Self {
+        Self {
+            addr,
+            stream: stream.to_string(),
+            key: key.to_string(),
+            conn: None,
+            buf: vec![0u8; 16 * 1024],
+        }
+    }
+
+    /// Posts one record and returns its status; `None` means the connection
+    /// dropped mid-exchange and the next post reconnects.
+    async fn post(&mut self, client: usize, sequence: usize) -> Option<u16> {
+        use tokio::io::AsyncWriteExt;
+        let body = format!("{{\"c\":{client},\"i\":{sequence}}}");
+        let req = format!(
+            "POST /v1/streams/{}/records HTTP/1.1\r\nhost: x\r\nprisma-encryption-key: {RIG_KEY_B64}\r\nprisma-routing-key: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            self.stream,
+            self.key,
+            body.len()
+        );
+        if self.conn.is_none() {
+            self.conn = Some(tokio::net::TcpStream::connect(self.addr).await.unwrap());
+        }
+        let written = self.conn.as_mut()?.write_all(req.as_bytes()).await;
+        if written.is_err() {
+            self.conn = None;
+            return None;
+        }
+        // Read one response: headers, then content-length body.
+        let mut head = Vec::new();
+        let split_at = loop {
+            let n = self.read_some().await?;
+            head.extend_from_slice(&self.buf[..n]);
+            if let Some(p) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                break p;
+            }
+        };
+        let (status, clen) = parse_head(&head[..split_at]);
+        let mut have = head.len() - split_at - 4;
+        while have < clen {
+            have += self.read_some().await?;
+        }
+        Some(status)
+    }
+
+    /// One read into the buffer; a closed or failed connection is dropped
+    /// so the next post reconnects.
+    async fn read_some(&mut self) -> Option<usize> {
+        use tokio::io::AsyncReadExt;
+        match self.conn.as_mut()?.read(&mut self.buf).await {
+            Ok(0) | Err(_) => {
+                self.conn = None;
+                None
+            }
+            Ok(n) => Some(n),
+        }
+    }
+}
+
+/// The status and content-length of an HTTP/1.1 response head.
+fn parse_head(head: &[u8]) -> (u16, usize) {
+    let head = String::from_utf8_lossy(head);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let clen = head
+        .lines()
+        .find_map(|l| {
+            let (name, value) = l.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0);
+    (status, clen)
+}
+
 /// Split children carry REAL routes on DISTINCT engines, and per-key
 /// order + exact counts hold across the lineage on both sides.
+#[expect(
+    clippy::too_many_lines,
+    reason = "split capacity scenario; the warm-up, the single-segment plateau, the split and the two-child plateau are one measured sequence on one rig; helper phases would hide which topology each window measured"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn split_children_land_on_distinct_engines() {
     let _l = gap_lock().lock().await;
@@ -219,7 +269,7 @@ async fn split_children_land_on_distinct_engines() {
             )
             .await;
             assert!(st == 200 || st == 204, "post-split append {st}");
-            *per_key.get_mut(&k.to_string()).unwrap() += 1;
+            *per_key.get_mut(*k).unwrap() += 1;
         }
     }
     for k in &keys {
@@ -229,7 +279,7 @@ async fn split_children_land_on_distinct_engines() {
             .filter(|r| r["k"] == *k)
             .map(|r| r["n"].as_i64().unwrap())
             .collect();
-        assert_eq!(ns.len(), per_key[&k.to_string()], "exact count for {k}");
+        assert_eq!(ns.len(), per_key[*k], "exact count for {k}");
         assert!(
             ns.windows(2).all(|w| w[0] <= w[1]),
             "per-key order for {k}: {ns:?}"
@@ -394,6 +444,10 @@ async fn post_split_throughput_scales() {
 /// back — the merged child covers the full range on a real route, both
 /// children seal, and per-key reads drain exactly across all THREE
 /// generations (parent -> split child -> merged child).
+#[expect(
+    clippy::too_many_lines,
+    reason = "merge lineage scenario; appending across the split, cooling the children, merging and checking per-key order and counts form one causal sequence; helper phases would hide which lineage step lost or duplicated a record"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn merge_rejoins_cold_children_with_exact_lineage() {
     let _l = gap_lock().lock().await;
@@ -524,7 +578,7 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
             .filter(|r| r["k"] == *k)
             .map(|r| r["n"].as_i64().unwrap())
             .collect();
-        assert_eq!(ns.len(), per_key[&k.to_string()], "exact count for {k}");
+        assert_eq!(ns.len(), per_key[*k], "exact count for {k}");
         assert!(ns.windows(2).all(|w| w[0] < w[1]), "order for {k}: {ns:?}");
         assert_eq!(
             last.get("prisma-up-to-date")

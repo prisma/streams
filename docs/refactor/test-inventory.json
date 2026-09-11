@@ -3153,7 +3153,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "41622b7cf257bd2f66d071236e83cf945b8b2837b7f7c5865408535d3f4d25e5",
+    "function_sha256": "1ee2fd2b162e1b310f8df3d291afca2c43c233d2ec22f3401dc5db87f4ce9260",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
@@ -5221,7 +5221,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b14305d9ac6856a75734c2bb9f516a66fbbdea464e3eee2f7df7f05a82727f7d",
+    "function_sha256": "8e50f301a633ff369a144cd017800d03ceb42541525df0c1fdd2cee14c7adb2e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",

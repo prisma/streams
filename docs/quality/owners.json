@@ -1135,6 +1135,14 @@
       "path": "src/dst/tests/durability_fences.rs",
       "reason": "Definitive-conflict fixture owns the original and reuse request handles; both are joined after dispatch is released. Concurrent execution is required to observe the verdict pending on undurable state.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::blast_keys",
+      "path": "src/dst/tests/topology_scaling.rs",
+      "reason": "Capacity load fixture owns every client task; all are stopped through the shared flag and joined before the acknowledged count is returned. Concurrent clients are required to saturate the committer.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
