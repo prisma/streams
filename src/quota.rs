@@ -43,13 +43,13 @@ use crate::tenant::ProjectId;
 /// to track (never merging strangers into shared buckets) remains
 /// the fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation.
-pub const MAX_TRACKED_PROJECTS: usize = 16_384;
+pub(crate) const MAX_TRACKED_PROJECTS: usize = 16_384;
 
 /// A tracked project with no admission attempts for this long (and no
 /// inflight work) may be evicted under tracker pressure. Its buckets
 /// restart full — an idle project lost no accumulated debt worth
 /// keeping at this horizon.
-pub const IDLE_EVICT_MS: i64 = 300_000;
+pub(crate) const IDLE_EVICT_MS: i64 = 300_000;
 
 struct Bucket {
     /// Fractional tokens currently available.
@@ -73,7 +73,7 @@ impl Bucket {
     }
 }
 
-pub struct ProjectAdmission {
+pub(crate) struct ProjectAdmission {
     ops: Arc<crate::ops::OpsService>,
     /// Last admission attempt (ms) — the idle-eviction clock.
     last_seen_ms: std::sync::atomic::AtomicI64,
@@ -136,13 +136,13 @@ pub struct ProjectAdmission {
 /// Versioned IN CODE: a calibration campaign bumps the version, not a
 /// profile knob. Exact counters (retained/queued/body/frame bytes)
 /// enter unweighted.
-pub const PROJECT_PRESSURE_MODEL_VERSION: u32 = 1;
-pub const PRESSURE_SUB_WEIGHT_BYTES: u64 = 32 * 1024;
-pub const PRESSURE_FEED_WEIGHT_BYTES: u64 = 16 * 1024;
-pub const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 64 * 1024;
+pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 1;
+pub(crate) const PRESSURE_SUB_WEIGHT_BYTES: u64 = 32 * 1024;
+pub(crate) const PRESSURE_FEED_WEIGHT_BYTES: u64 = 16 * 1024;
+pub(crate) const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 64 * 1024;
 
 /// Startup + manifest visibility for the model coefficients.
-pub fn pressure_model_json() -> serde_json::Value {
+pub(crate) fn pressure_model_json() -> serde_json::Value {
     serde_json::json!({
         "version": PROJECT_PRESSURE_MODEL_VERSION,
         "sub_weight_bytes": PRESSURE_SUB_WEIGHT_BYTES,
@@ -154,7 +154,7 @@ pub fn pressure_model_json() -> serde_json::Value {
 impl ProjectAdmission {
     /// `estimated_project_pressure_bytes` — named for what it is: a
     /// conservative model, not RSS attribution.
-    pub fn estimated_pressure_bytes(&self) -> u64 {
+    pub(crate) fn estimated_pressure_bytes(&self) -> u64 {
         self.live_subs.load(Ordering::Relaxed) * PRESSURE_SUB_WEIGHT_BYTES
             + self.live_feeds.load(Ordering::Relaxed) * PRESSURE_FEED_WEIGHT_BYTES
             + self.retained_sse_bytes.load(Ordering::Relaxed)
@@ -180,7 +180,7 @@ impl ProjectAdmission {
     /// Returns true when the append must receive the typed
     /// project_memory_pressure refusal. Emits ONE ops event per
     /// engage and one per release — never per rejected request.
-    pub fn memory_gate(&self, project: &ProjectId, high: u64, release_pct: u64) -> bool {
+    pub(crate) fn memory_gate(&self, project: &ProjectId, high: u64, release_pct: u64) -> bool {
         if high == 0 {
             return false;
         }
@@ -238,22 +238,22 @@ impl ProjectAdmission {
     }
 
     /// Read-only pressure dimensions (observability + tests).
-    pub fn unabsorbed_frame_bytes_now(&self) -> u64 {
+    pub(crate) fn unabsorbed_frame_bytes_now(&self) -> u64 {
         self.unabsorbed_frame_bytes.load(Ordering::Relaxed)
     }
-    pub fn dirty_streams_now(&self) -> u64 {
+    pub(crate) fn dirty_streams_now(&self) -> u64 {
         self.dirty_streams.load(Ordering::Relaxed)
     }
-    pub fn buffered_body_bytes_now(&self) -> u64 {
+    pub(crate) fn buffered_body_bytes_now(&self) -> u64 {
         self.buffered_body_bytes.load(Ordering::Relaxed)
     }
 
     /// EXACT retained-byte mirror for the LiveFeed budget (budget.rs
     /// calls these on reserve/release — one counter, one truth).
-    pub fn retained_sse_add(&self, bytes: u64) {
+    pub(crate) fn retained_sse_add(&self, bytes: u64) {
         self.retained_sse_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
-    pub fn retained_sse_sub(&self, bytes: u64) {
+    pub(crate) fn retained_sse_sub(&self, bytes: u64) {
         let mut cur = self.retained_sse_bytes.load(Ordering::Relaxed);
         loop {
             let next = cur.saturating_sub(bytes);
@@ -273,12 +273,12 @@ impl ProjectAdmission {
 /// One live LiveFeed feed's static charge — held BY the feed object,
 /// so concurrent first subscribers charge the feed exactly once and
 /// the last teardown releases it exactly once.
-pub struct FeedPressureGuard {
+pub(crate) struct FeedPressureGuard {
     admission: Arc<ProjectAdmission>,
 }
 
 impl FeedPressureGuard {
-    pub fn acquire(admission: Arc<ProjectAdmission>) -> Self {
+    pub(crate) fn acquire(admission: Arc<ProjectAdmission>) -> Self {
         admission.live_feeds.fetch_add(1, Ordering::Relaxed);
         FeedPressureGuard { admission }
     }
@@ -294,20 +294,20 @@ impl Drop for FeedPressureGuard {
 /// incrementally for chunked bodies) after auth, released or handed
 /// to the queued-append charge when the body is decided. Never
 /// pessimistically the protocol ceiling.
-pub struct BufferedBodyGuard {
+pub(crate) struct BufferedBodyGuard {
     admission: Arc<ProjectAdmission>,
     bytes: u64,
 }
 
 impl BufferedBodyGuard {
-    pub fn reserve(admission: Arc<ProjectAdmission>, bytes: u64) -> Self {
+    pub(crate) fn reserve(admission: Arc<ProjectAdmission>, bytes: u64) -> Self {
         admission
             .buffered_body_bytes
             .fetch_add(bytes, Ordering::Relaxed);
         BufferedBodyGuard { admission, bytes }
     }
     /// Chunked bodies charge as chunks arrive.
-    pub fn grow(&mut self, more: u64) {
+    pub(crate) fn grow(&mut self, more: u64) {
         self.bytes += more;
         self.admission
             .buffered_body_bytes
@@ -332,13 +332,13 @@ impl Drop for BufferedBodyGuard {
 /// approximation could clear itself during a real absorber stall).
 /// Drop (close, eviction, owner movement) releases this instance's
 /// attribution exactly.
-pub struct StreamPressureBinding {
+pub(crate) struct StreamPressureBinding {
     admission: Arc<ProjectAdmission>,
     current_unabsorbed: AtomicU64,
 }
 
 impl StreamPressureBinding {
-    pub fn bind(admission: Arc<ProjectAdmission>, seed_unabsorbed: u64) -> Self {
+    pub(crate) fn bind(admission: Arc<ProjectAdmission>, seed_unabsorbed: u64) -> Self {
         if seed_unabsorbed > 0 {
             admission
                 .unabsorbed_frame_bytes
@@ -352,7 +352,7 @@ impl StreamPressureBinding {
     }
 
     /// The committer added `bytes` of ACTUAL encoded frame.
-    pub fn frames_added(&self, bytes: u64) {
+    pub(crate) fn frames_added(&self, bytes: u64) {
         if bytes == 0 {
             return;
         }
@@ -368,7 +368,7 @@ impl StreamPressureBinding {
     /// Absorption retired `bytes` of frame. The pos->0 edge decision
     /// rides the CAS itself — a later re-read could race a concurrent
     /// add's 0->pos edge and leak a dirty-stream count.
-    pub fn frames_retired(&self, bytes: u64) {
+    pub(crate) fn frames_retired(&self, bytes: u64) {
         if bytes == 0 {
             return;
         }
@@ -431,13 +431,13 @@ struct StreamCount {
 /// Holds one reserved stream slot until the create DECIDES: `commit`
 /// keeps the +1 (the caller truly created a new stream), drop rolls
 /// it back (replay, refusal, error).
-pub struct StreamReservation {
+pub(crate) struct StreamReservation {
     admission: Arc<ProjectAdmission>,
     committed: bool,
 }
 
 impl StreamReservation {
-    pub fn commit(mut self) {
+    pub(crate) fn commit(mut self) {
         self.committed = true;
     }
 }
@@ -453,7 +453,7 @@ impl Drop for StreamReservation {
 
 /// Releases the queued-byte charge when the append is DECIDED (the
 /// handler's await returns, success or failure).
-pub struct QueuedBytesGuard {
+pub(crate) struct QueuedBytesGuard {
     admission: Arc<ProjectAdmission>,
     bytes: u64,
 }
@@ -467,7 +467,7 @@ impl Drop for QueuedBytesGuard {
 }
 
 #[derive(Debug)]
-pub enum QuotaRefusal {
+pub(crate) enum QuotaRefusal {
     /// Seconds until a token is expected (for Retry-After).
     Rate {
         retry_after_secs: u64,
@@ -488,7 +488,7 @@ pub enum QuotaRefusal {
 /// lifetime. (Streaming response bodies outlive the handler; their
 /// long-lived cost is the live-subscription dimension, not this
 /// counter.)
-pub struct QuotaGuard {
+pub(crate) struct QuotaGuard {
     admission: Arc<ProjectAdmission>,
 }
 
@@ -501,7 +501,7 @@ impl Drop for QuotaGuard {
 /// One live subscription (§17.2). Attached to the STREAMING response
 /// body, so it releases when the stream ends or the client goes away —
 /// not when the handler returns.
-pub struct SubscriptionGuard {
+pub(crate) struct SubscriptionGuard {
     admission: Arc<ProjectAdmission>,
 }
 
@@ -512,13 +512,13 @@ impl Drop for SubscriptionGuard {
 }
 
 #[derive(Default, Clone)]
-pub struct QuotaRegistry {
+pub(crate) struct QuotaRegistry {
     ops: Arc<crate::ops::OpsService>,
     projects: Arc<Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>>,
 }
 
 impl QuotaRegistry {
-    pub fn new(ops: Arc<crate::ops::OpsService>) -> Self {
+    pub(crate) fn new(ops: Arc<crate::ops::OpsService>) -> Self {
         Self {
             ops,
             projects: Default::default(),
@@ -529,7 +529,7 @@ impl QuotaRegistry {
     /// (from the CURRENT policy snapshot — never token claims, §17.2).
     /// Quota value 0 = not configured at this level (cell safety
     /// limits still apply elsewhere).
-    pub fn admit(
+    pub(crate) fn admit(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
@@ -717,7 +717,7 @@ impl QuotaRegistry {
     /// Read admission (§17.2): reads are refused while the project's
     /// read-byte bucket is IN DEBT from earlier responses. The check is
     /// cheap and runs before serving; the debit lands after.
-    pub fn check_read(
+    pub(crate) fn check_read(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
@@ -757,7 +757,7 @@ impl QuotaRegistry {
 
     /// §17.2 subscriptions: acquire one live-subscription slot. The
     /// guard rides the streaming response body.
-    pub fn admit_subscription(
+    pub(crate) fn admit_subscription(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
@@ -781,7 +781,7 @@ impl QuotaRegistry {
     /// SR2-4: does the project's stream count still need its catalog
     /// seed? The caller counts (async, catalog pages) only when this
     /// says so, then passes the count to `reserve_stream`.
-    pub fn needs_stream_seed(&self, project: &ProjectId) -> bool {
+    pub(crate) fn needs_stream_seed(&self, project: &ProjectId) -> bool {
         self.tracked(project)
             .map(|a| !a.streams.lock().unwrap().seeded)
             .unwrap_or(false)
@@ -799,7 +799,7 @@ impl QuotaRegistry {
     /// docs/CONTROL-PLANE-INTEGRATION.md §9. `seed` supplies the
     /// catalog count when this project has not been seeded since boot;
     /// the first reservation wins the seed, later ones ignore theirs.
-    pub fn reserve_stream(
+    pub(crate) fn reserve_stream(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
@@ -835,7 +835,7 @@ impl QuotaRegistry {
     /// SR2-4: a terminal hard delete frees the slot. Unseeded (or
     /// untracked) projects no-op — their next seed recounts the
     /// catalog, which already reflects the deletion.
-    pub fn release_stream(&self, project: &ProjectId) {
+    pub(crate) fn release_stream(&self, project: &ProjectId) {
         if let Some(a) = self.tracked(project) {
             let mut st = a.streams.lock().unwrap();
             if st.seeded {
@@ -847,7 +847,7 @@ impl QuotaRegistry {
     /// SR2-4: charge `bytes` to the project's committer-queue budget
     /// BEFORE the append is enqueued; the guard releases when the
     /// append DECIDES. 0 = not configured.
-    pub fn charge_queued(
+    pub(crate) fn charge_queued(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
@@ -876,13 +876,13 @@ impl QuotaRegistry {
     /// bindings, body guards) attach to the ONE canonical project
     /// entry. admit() runs first on every authenticated request, so
     /// the entry exists whenever pressure can.
-    pub fn pressure_handle(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
+    pub(crate) fn pressure_handle(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
         self.tracked(project)
     }
 
     /// Bounded per-project pressure rows + process aggregates for
     /// /v1/debug/load.
-    pub fn memory_pressure_json(&self, high: u64, limit: usize) -> serde_json::Value {
+    pub(crate) fn memory_pressure_json(&self, high: u64, limit: usize) -> serde_json::Value {
         let m = self.projects.lock().unwrap();
         let mut engaged = 0u64;
         let mut shed_total = 0u64;
@@ -927,7 +927,7 @@ impl QuotaRegistry {
     }
 
     /// Operator visibility: (projects tracked, total inflight).
-    pub fn stats(&self) -> (usize, u64) {
+    pub(crate) fn stats(&self) -> (usize, u64) {
         let m = self.projects.lock().unwrap();
         let inflight = m.values().map(|a| a.inflight.load(Ordering::Relaxed)).sum();
         (m.len(), inflight)
