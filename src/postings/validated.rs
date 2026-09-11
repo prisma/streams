@@ -21,17 +21,20 @@ impl ValidatedRuns {
     /// Reloads may include an already-proven prefix. Validate the new source
     /// before clipping only that prefix, preserving a straddler's full weight.
     pub(crate) fn extend_after(&self, fresh: &Self, cut: u64) -> Option<Self> {
-        if self.last().is_some_and(|r| r.start + r.count as u64 > cut) {
+        if self
+            .last()
+            .is_some_and(|r| r.start.saturating_add(u64::from(r.count)) > cut)
+        {
             return None;
         }
         let mut merged = self.to_vec();
         let tail = fresh
             .iter()
             .filter_map(|r| {
-                let end = r.start + r.count as u64;
+                let end = r.start.saturating_add(u64::from(r.count));
                 (end > cut).then(|| AbsRun {
                     start: r.start.max(cut),
-                    count: (end - r.start.max(cut)) as u32,
+                    count: u32::try_from(end.saturating_sub(r.start.max(cut))).unwrap_or(u32::MAX),
                     ..*r
                 })
             })
@@ -76,11 +79,15 @@ pub(crate) struct RunWindow {
 }
 impl RunWindow {
     pub(crate) fn new(owner: ValidatedRuns, from: u64, upto: u64) -> Self {
-        let start = owner.partition_point(|r| r.start + r.count as u64 <= from);
+        let start = owner.partition_point(|r| r.start.saturating_add(u64::from(r.count)) <= from);
         let end = if from >= upto {
             start
         } else {
-            start + owner[start..].partition_point(|r| r.start < upto)
+            start.saturating_add(
+                owner
+                    .get(start..)
+                    .map_or(0, |tail| tail.partition_point(|r| r.start < upto)),
+            )
         };
         Self {
             owner,
@@ -90,15 +97,19 @@ impl RunWindow {
         }
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = AbsRun> + '_ {
-        self.owner[self.indices.clone()].iter().map(|r| {
-            let start = r.start.max(self.from);
-            let end = (r.start + r.count as u64).min(self.upto);
-            AbsRun {
-                start,
-                count: (end - start) as u32,
-                ..*r
-            }
-        })
+        self.owner
+            .get(self.indices.clone())
+            .unwrap_or(&[])
+            .iter()
+            .map(|r| {
+                let start = r.start.max(self.from);
+                let end = r.start.saturating_add(u64::from(r.count)).min(self.upto);
+                AbsRun {
+                    start,
+                    count: u32::try_from(end.saturating_sub(start)).unwrap_or(u32::MAX),
+                    ..*r
+                }
+            })
     }
 }
 

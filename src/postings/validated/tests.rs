@@ -125,3 +125,28 @@ fn o4a_owner_rejects_invalid_runs_and_preserves_valid_extension() {
     );
     assert!(old.extend_after(&fresh, 58).is_none());
 }
+
+/// The proven prefix must end at or before the cut: a prefix reaching past
+/// it is refused even when the fresh runs start beyond it and would not
+/// overlap, and a prefix ending before it extends over the gap.
+#[test]
+fn extend_after_refuses_a_prefix_past_the_cut_and_accepts_one_before_it() {
+    let run = |start: u64, count: u32| AbsRun {
+        start,
+        count,
+        matching_bytes: u64::from(count) * 8,
+        gap_bytes_before: 0,
+    };
+    let fresh = ValidatedRuns::new(vec![run(20, 2)]).expect("fresh runs validate");
+    let past = ValidatedRuns::new(vec![run(0, 10)]).expect("prefix validates");
+    assert!(
+        past.extend_after(&fresh, 5).is_none(),
+        "a prefix reaching past the cut is refused"
+    );
+    let before = ValidatedRuns::new(vec![run(0, 4)]).expect("prefix validates");
+    let extended = before
+        .extend_after(&fresh, 8)
+        .expect("a prefix ending before the cut extends");
+    assert_eq!(extended.len(), 2);
+    assert_eq!(extended.last().map(|r| r.start), Some(20));
+}
