@@ -1599,6 +1599,14 @@
       "path": "src/registry/tests.rs",
       "reason": "Registry test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin conditional writes, decode fail-closed and segment resolution.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/bounded_discovery_tests.rs",
+      "reason": "Discovery test module imports its enclosing production owner; the compiler resolves the parent exports and the fixture pins the pending capacity bound.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

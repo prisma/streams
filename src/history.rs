@@ -768,6 +768,10 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
     })
 }
 
+/// The highest `upto` each lane submitted per stream, with the lane that
+/// submitted it (true = the v2 shared partition).
+type LaneMarks = std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>;
+
 pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
     /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
@@ -806,7 +810,7 @@ pub(crate) struct Absorber {
     /// instance state: a restarted or new-owner absorber starts from
     /// published state again, which is safe because re-absorbing is
     /// idempotent.
-    submitted: std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>,
+    submitted: LaneMarks,
     discovery_after: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
@@ -849,10 +853,11 @@ impl Absorber {
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
             .max(self.shard.history_resources.worst_frame_transient);
         let floor = worst_frame_transient_for(GATHER_PER_STREAM_CAP).min(cap);
-        (self
-            .recent_transient
-            .load(std::sync::atomic::Ordering::Relaxed) as usize)
-            .clamp(floor, cap)
+        usize::try_from(
+            self.recent_transient
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+        .map_or(cap, |observed| observed.clamp(floor, cap))
     }
 
     /// Record a gather's observed transient: decaying max — jumps to a
@@ -874,6 +879,10 @@ impl Absorber {
 
     /// Production and composed fixtures register the task before publishing
     /// the engine, so its termination includes absorption as well as commits.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Absorber::start_owned; the engine handle is cloned into the absorber and then registers its task; borrowing it would ripple through boot's mutation-gated wiring and four fixtures for one clone"
+    )]
     pub(crate) fn start_owned(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
@@ -886,6 +895,10 @@ impl Absorber {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Absorber::start; the DST fixtures drive this absorber through a bare task they abort themselves; a supervised spawn would tie a fixture's teardown to a supervisor the fixture never builds"
+    )]
     pub(crate) fn start(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
@@ -911,7 +924,11 @@ pub(crate) static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static READ_FRAMES_MATCHED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static POSTINGS_CORRUPT: AtomicU64 = AtomicU64::new(0);
 
-pub async fn read_history2(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_history2; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+)]
+pub(crate) async fn read_history2(
     part: &Arc<Db>,
     route: RouteHash,
     inc: SegmentHash,
@@ -928,6 +945,10 @@ pub async fn read_history2(
 
 /// Unfiltered canonical scan (whole-segment replay): unchanged from the
 /// covering-index era — the canonical rows ARE the stream.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_history2_scan; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+)]
 async fn read_history2_scan(
     part: &Arc<Db>,
     route: RouteHash,
@@ -975,6 +996,10 @@ async fn read_history2_scan(
 /// before postings existed. Partitions that STRADDLE the cutover in one
 /// requested range are a dev-rig-only shape and are not served exactly
 /// (docs/ROUTING-V3.md §3); production deployments are greenfield.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_history2_keyed; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+)]
 async fn read_history2_keyed(
     part: &Arc<Db>,
     route: RouteHash,
@@ -1030,7 +1055,10 @@ async fn read_history2_keyed(
 /// extension), then the shared planner/executor below serves them.
 /// `provable_to < upto` (a load window that could not reach the whole
 /// range) yields an honest partial at the proven boundary.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_history2_keyed_cached; a keyed history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+)]
 pub(crate) async fn read_history2_keyed_cached(
     cache: &Arc<crate::postings_cache::PostingsCache>,
     part: &Arc<Db>,
@@ -1065,6 +1093,10 @@ pub(crate) async fn read_history2_keyed_cached(
 /// requested range, filtered by EXACT routing-key bytes. Never lies
 /// about completeness — a byte-truncated envelope returns an honest
 /// partial with a resume cursor.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_history2_keyed_envelope; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+)]
 async fn read_history2_keyed_envelope(
     part: &Arc<Db>,
     route: RouteHash,
@@ -1375,6 +1407,14 @@ mod tests {
     /// permits return BOTH resources, and after the holder releases,
     /// fresh reservations fill every slot again. Deterministic via
     /// available-permit observation, no sleeps as conditions.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "cancelled_reservation_releases_its_gather_slot; the fixture spawns the task it then aborts or joins before asserting; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "cancelled_reservation_releases_its_gather_slot; the fixture ignores a join or enqueue result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_reservation_releases_its_gather_slot() {
         let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
@@ -1442,6 +1482,14 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "worst_frame_floor_serializes_oversized_gathers_without_starvation; the fixture spawns the task it then aborts or joins before asserting; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "worst_frame_floor_serializes_oversized_gathers_without_starvation; the fixture nests each oversized gather inside the worker that serialises it; flattening it would separate the gather from the floor it must respect"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
         assert_eq!(
@@ -1545,6 +1593,18 @@ mod tests {
     /// End-to-end wedge detection under REAL SlateDB byte backpressure: a
     /// store whose PUTs stall blocks the commit db.write once the unflushed
     /// cap fills, and commit_blocked_ms() must cross the shed threshold.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "commit_blocked_detects_real_flush_stall; the fixture spawns the task it then aborts or joins before asserting; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "commit_blocked_detects_real_flush_stall; the fixture ignores a join or enqueue result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "commit_blocked_detects_real_flush_stall; the fixture nests the stalled flush inside the blocked commit inside the feeding task it stages; flattening it would separate the stall from the commit it must block"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn commit_blocked_detects_real_flush_stall() {
         let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -1627,6 +1687,14 @@ mod tests {
     /// age in in_flight and oldest_inflight_ms must cross the threshold.
     /// This is the mode the 2026-07-22 cloud gate proved commit_blocked_ms
     /// alone cannot see.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "wedge_detects_stale_durability; the fixture ignores a join or enqueue result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "wedge_detects_stale_durability; the fixture nests the stale durability report inside the wedged engine it stages; flattening it would separate the report from the wedge it must detect"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wedge_detects_stale_durability() {
         let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -1698,121 +1766,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod bounded_discovery_tests {
-    use super::*;
-    use slatedb::WriteBatch;
-
-    #[test]
-    fn r09_hot_prefix_cannot_starve_other_due_streams() {
-        let now = Instant::now();
-        let cfg = AbsorberConfig::default();
-        let pending: HashMap<_, _> = (0..6u8)
-            .map(|id| {
-                (
-                    [id; 16],
-                    PendingAbsorb {
-                        bytes: u64::MAX - id as u64,
-                        since: now,
-                        failures: 0,
-                        retry_after: None,
-                    },
-                )
-            })
-            .collect();
-        let first: Vec<_> = due_streams(&pending, &cfg, now, None)
-            .into_iter()
-            .take(3)
-            .map(|(hash, _)| hash)
-            .collect();
-        let second: Vec<_> = due_streams(&pending, &cfg, now, first.last().copied())
-            .into_iter()
-            .take(3)
-            .map(|(hash, _)| hash)
-            .collect();
-        assert_eq!(first, vec![[0; 16], [1; 16], [2; 16]]);
-        assert_eq!(second, vec![[3; 16], [4; 16], [5; 16]]);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
-        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(
-            Db::builder("r09-history", store.clone())
-                .build()
-                .await
-                .unwrap(),
-        );
-        let mut batch = WriteBatch::new();
-        for id in 0..260u64 {
-            let mut hash = [0; 16];
-            hash[..8].copy_from_slice(&id.to_be_bytes());
-            let marker = crate::shard::dirty_value_for_tests(&crate::shard::StreamMaintenance {
-                next: 1,
-                unabsorbed_bytes: 64,
-                ..Default::default()
-            });
-            let width = [16, 24, 32][id as usize % 3];
-            batch.put(crate::shard::dirty_key(&hash), &marker[..width]);
-            batch.put(
-                crate::shard::tail_key(&hash),
-                crate::shard::encode_tail_for_tests(&crate::shard::TailFields {
-                    next: 1,
-                    unabsorbed_bytes: 64,
-                    route: [1; 16],
-                    ..Default::default()
-                }),
-            );
-        }
-        db.write(batch).await.unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r09-history".into(),
-            db.clone(),
-            store.clone(),
-            crate::shard::ShardConfig::default(),
-            tx,
-            None,
-            Default::default(),
-        );
-        let absorber = Absorber::new(
-            store,
-            engine.clone(),
-            Arc::new(KeyCache::default()),
-            AbsorberConfig::default(),
-        );
-        let mut pending = HashMap::new();
-        assert_eq!(
-            absorber.seed_from_dirty_index(&mut pending).await.unwrap(),
-            DISCOVERY_PAGE_STREAMS
-        );
-        assert_eq!(pending.len(), DISCOVERY_PAGE_STREAMS);
-        assert!(absorber.discovery_after.lock().unwrap().is_some());
-        assert_eq!(
-            absorber.seed_from_dirty_index(&mut pending).await.unwrap(),
-            4
-        );
-        assert_eq!(pending.len(), 260);
-        assert!(absorber.discovery_after.lock().unwrap().is_none());
-        pending.clear();
-        for id in 0..MAX_PENDING_STREAMS {
-            let mut hash = [255; 16];
-            hash[..8].copy_from_slice(&(id as u64).to_be_bytes());
-            pending.insert(
-                hash,
-                PendingAbsorb {
-                    bytes: 1,
-                    since: Instant::now(),
-                    failures: 0,
-                    retry_after: None,
-                },
-            );
-        }
-        absorber.seed_from_dirty_index(&mut pending).await.unwrap();
-        assert_eq!(pending.len(), MAX_PENDING_STREAMS);
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod bounded_discovery_tests;
 
 #[cfg(test)]
 mod record_validation_tests;
