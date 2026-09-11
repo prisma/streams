@@ -1535,6 +1535,14 @@
       "syntax": "tokio::select",
       "count": 2,
       "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/product/tests.rs",
+      "reason": "Product transport test module imports its enclosing production owner; the compiler resolves the parent exports and the tests pin wire messages and responses.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

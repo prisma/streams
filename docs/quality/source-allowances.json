@@ -1837,13 +1837,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::canonical_stream_name",
-      "path": "src/product.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::classify_route",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
@@ -1865,13 +1858,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::install_reserved_claim",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::internal_sref",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
@@ -1886,30 +1872,9 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::product_append_inner",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::product_auth_gate",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::product_consumer_pull",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::product_watch_wait",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
       "category": "exception",
@@ -1928,23 +1893,9 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::render_product_append",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::strict_query",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::submit_product_append",
-      "path": "src/product.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
       "category": "exception",
@@ -4233,13 +4184,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/postings_cache.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/product.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
