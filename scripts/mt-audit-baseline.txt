@@ -10,7 +10,7 @@ stream-hash	src/crypto.rs /// Shard-routing identity: `stream_hash(name)`. Keys 
 stream-hash	src/crypto.rs RoutingKeyHash(stream_hash(rk))	
 stream-hash	src/crypto.rs let hash = stream_hash("s");	
 stream-hash	src/crypto.rs let hash = stream_hash("s1");	
-stream-hash	src/crypto.rs pub fn stream_hash(name: &str) -> [u8; 16] {	
+stream-hash	src/crypto.rs pub(crate) fn stream_hash(name: &str) -> [u8; 16] {	
 stream-hash	src/dst/runtime.rs key_hash: crate::crypto::stream_hash(rk),	
 stream-hash	src/dst/tests/consumer_atomicity.rs keys_map.insert(0, crate::crypto::stream_hash("k0"));	
 stream-hash	src/dst/tests/consumer_atomicity.rs keys_map.insert(1, crate::crypto::stream_hash("k1"));	
@@ -33,7 +33,6 @@ stream-hash	src/dst/tests/sse_delivery.rs let kh = crate::crypto::stream_hash("s
 stream-hash	src/fleet.rs // stream_hash(name) - so it almost never matched and D3 never moved.	
 stream-hash	src/fleet.rs /// stream_hash(name); the two are unrelated, so the derived prefix	
 stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/history.rs let h = crate::crypto::stream_hash(&absorber.shard.prefix);	
 stream-hash	src/history.rs let h = crate::crypto::stream_hash(prefix);	
 stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(routing_key),	
 stream-hash	src/product.rs let kh = crate::crypto::stream_hash(&rk);	
@@ -43,7 +42,6 @@ stream-hash	src/registry.rs assert_ne!(r.shard_route, stream_hash("t"));
 stream-hash	src/registry.rs crate::crypto::stream_hash(&seg.shard_prefix)	
 stream-hash	src/registry.rs let h = crate::crypto::stream_hash(routing_key);	
 stream-hash	src/rollup.rs crate::crypto::hex(&crate::crypto::stream_hash(name))	
-stream-hash	src/segmap.rs let h = crate::crypto::stream_hash(routing_key);	
 stream-hash	src/shard.rs /// Shard-routing hash (stream_hash(name)); zeros for streams last	
 stream-hash	src/shard.rs /// Shard-routing identity (`stream_hash(name)`), persisted into the	
 stream-hash	src/shard.rs /// stream_hash(routing_key), computed once at admission: the	

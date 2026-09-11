@@ -8777,69 +8777,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "05dbaa6afc40e18e9ba1e0f20433c5eef3627cc9eeba1adb4f3c401deb260ac8",
-      "item": "crate::FrameCompression::from_enabled",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4e813cfa36dc30f37bc5d724cdff36bec15793893a17e52d21586b3d1925f7cf",
-      "item": "crate::RoutingKeyHash",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "42c8d9b5b9cb10397376fcfa5598900f254853255f371862068b44a06ccc0643",
-      "item": "crate::RoutingKeyHash::of",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "48677e507bd0834de0ffb7bfd1705c16d35f30d27d8737382bcf1ae2ff56192c",
-      "item": "crate::StreamKey::fingerprint",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "52d47b15ad19f0fd05bc9b32f90c0bd0fbef916b6e2b96b893c85c88297a702d",
-      "item": "crate::StreamKey::to_b64",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4df9771134eb98052029c167008eb7855a85431e988d4609ab4b7f6f8fca677d",
-      "item": "crate::stream_hash",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "acbe6cd65ab9bbf219eabb1eaab336d1df4ddbfba8ad5bea28551b56c71de2d2",
-      "item": "crate::touch_token",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "89c95b6be9de5647a04c0682ae80ccf682710ff928e6344b1e1ed500243b937a",
-      "item": "crate::unhex",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8c2583a1a6abd6c72f5e1a8f83379739beeb3e6b9a49567640aa5da8b6e26ce9",
-      "item": "crate::wait_sig_key",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c763d0f3cfb9fc6c2a70582986128c5f6429e69766fd24b2dcdccf4822e9e58b",
       "item": "crate::Workload::append",
       "lint": "unreachable_pub",
