@@ -1571,34 +1571,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::tests::aborted_drive_releases_the_permit",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::concurrent_retention_never_exceeds_cap",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::tests::driver_permit_releases_exactly_once",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::reconcile_and_driver_install_bump_generation_once",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::serve",
       "path": "src/sse/session.rs",
       "syntax": "tokio::spawn"
@@ -3831,27 +3803,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::aborted_drive_releases_the_permit",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::driver_permit_releases_exactly_once",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::reconcile_and_driver_install_bump_generation_once",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::fake_source_release_cannot_race_started_signal",
       "path": "src/sse/feed/tests/fixture.rs",
@@ -4653,13 +4604,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/sketch.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/sse/feed.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
