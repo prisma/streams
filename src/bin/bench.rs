@@ -8,13 +8,16 @@
 //!                object storage (old server: /_details uploaded_through;
 //!                new server: durable at ACK by construction)
 
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use clap::Parser;
 use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "bench")]
@@ -24,18 +27,18 @@ struct Args {
     #[arg(long, default_value = "append")]
     mode: String,
     /// Concurrent in-flight requests.
-    #[arg(long, default_value_t = 64)]
-    concurrency: usize,
+    #[arg(long, default_value = "64")]
+    concurrency: NonZeroUsize,
     /// Distinct streams to spread appends across.
-    #[arg(long, default_value_t = 16)]
-    streams: usize,
+    #[arg(long, default_value = "16")]
+    streams: NonZeroUsize,
     #[arg(long, default_value_t = 256)]
     payload_bytes: usize,
     /// Entries per append request (JSON array mode when > 1).
-    #[arg(long, default_value_t = 1)]
-    entries: usize,
-    #[arg(long, default_value_t = 15)]
-    duration_secs: u64,
+    #[arg(long, default_value = "1")]
+    entries: NonZeroUsize,
+    #[arg(long, default_value = "15")]
+    duration_secs: NonZeroU64,
     #[arg(long, default_value_t = 3)]
     warmup_secs: u64,
     /// Stream name prefix (change between runs to write fresh streams).
@@ -80,14 +83,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn make_client(concurrency: usize) -> reqwest::Client {
+fn make_client(concurrency: usize) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
-        .pool_max_idle_per_host(concurrency + 8)
+        .pool_max_idle_per_host(concurrency.saturating_add(8))
         .pool_idle_timeout(Duration::from_secs(120))
         .timeout(Duration::from_secs(30))
         .http1_only()
         .build()
-        .expect("client")
 }
 
 fn payload(bytes: usize, entries: usize) -> (Vec<u8>, &'static str) {
@@ -107,113 +109,176 @@ fn payload(bytes: usize, entries: usize) -> (Vec<u8>, &'static str) {
     }
 }
 
-async fn bench_append(args: Args) -> anyhow::Result<()> {
-    let client = make_client(args.concurrency);
-    let shared = Arc::new(Shared {
-        hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
-        ok: AtomicU64::new(0),
-        errors: AtomicU64::new(0),
-        entries_ok: AtomicU64::new(0),
-        bytes_ok: AtomicU64::new(0),
-    });
-    let (body, content_type) = payload(args.payload_bytes, args.entries);
-    let body = Arc::new(body);
-
-    // Pre-create the target streams (the old server 404s appends to
-    // non-existent streams).
-    for s in 0..args.streams {
-        let r = keyed(
-            client.put(format!("{}/v1/stream/{}-{}", args.url, args.prefix, s)),
-            &args.key,
-        )
-        .send()
-        .await?;
-        anyhow::ensure!(
-            r.status().is_success(),
-            "create stream failed: {}",
-            r.status()
-        );
+impl Shared {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3)?),
+            ok: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            entries_ok: AtomicU64::new(0),
+            bytes_ok: AtomicU64::new(0),
+        })
     }
 
-    let warmup_until = Instant::now() + Duration::from_secs(args.warmup_secs);
-    let stop_at = warmup_until + Duration::from_secs(args.duration_secs);
-    let measure_start = warmup_until;
+    async fn record_success(
+        &self,
+        elapsed: Duration,
+        entries: u64,
+        bytes: u64,
+    ) -> anyhow::Result<()> {
+        // Do not publish throughput for a sample the latency histogram rejected.
+        let micros = u64::try_from(elapsed.as_micros())?;
+        self.hist.lock().await.record(micros)?;
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        self.entries_ok.fetch_add(entries, Ordering::Relaxed);
+        self.bytes_ok.fetch_add(bytes, Ordering::Relaxed);
+        Ok(())
+    }
+}
 
-    let mut handles = Vec::new();
-    for w in 0..args.concurrency {
-        let client = client.clone();
-        let shared = shared.clone();
-        let body = body.clone();
+/// Owns the common append window, payload and measurements shared by all workers.
+struct AppendRun {
+    args: Args,
+    client: reqwest::Client,
+    shared: Shared,
+    body: Vec<u8>,
+    content_type: &'static str,
+    entries: u64,
+    bytes: u64,
+    measure_start: Instant,
+    stop_at: Instant,
+}
+
+impl AppendRun {
+    async fn start(args: Args) -> anyhow::Result<Self> {
+        let client = make_client(args.concurrency.get())?;
+        let shared = Shared::new()?;
+        let entries = u64::try_from(args.entries.get())?;
+        let bytes = u64::try_from(args.payload_bytes)?
+            .checked_mul(entries)
+            .context("requested bytes per append overflow the measurement counter")?;
+        let (body, content_type) = payload(args.payload_bytes, args.entries.get());
+        // Old servers reject appends to absent streams. Start the window only
+        // after all stream creation has succeeded, as in the original workload.
+        for stream in 0..args.streams.get() {
+            let response = keyed(
+                client.put(format!("{}/v1/stream/{}-{stream}", args.url, args.prefix)),
+                &args.key,
+            )
+            .send()
+            .await?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "create stream failed: {}",
+                response.status()
+            );
+        }
+        let measure_start = Instant::now()
+            .checked_add(Duration::from_secs(args.warmup_secs))
+            .context("warmup exceeds the monotonic clock range")?;
+        let stop_at = measure_start
+            .checked_add(Duration::from_secs(args.duration_secs.get()))
+            .context("duration exceeds the monotonic clock range")?;
+        Ok(Self {
+            args,
+            client,
+            shared,
+            body,
+            content_type,
+            entries,
+            bytes,
+            measure_start,
+            stop_at,
+        })
+    }
+
+    async fn worker(&self, index: usize) -> anyhow::Result<()> {
         let url = format!(
             "{}/v1/stream/{}-{}",
-            args.url,
-            args.prefix,
-            w % args.streams
+            self.args.url,
+            self.args.prefix,
+            index % self.args.streams.get()
         );
-        let entries = args.entries as u64;
-        let bytes = args.payload_bytes as u64 * entries;
-        let content_type = content_type.to_string();
-        let key = args.key.clone();
-        handles.push(tokio::spawn(async move {
-            loop {
-                let now = Instant::now();
-                if now >= stop_at {
-                    break;
+        while Instant::now() < self.stop_at {
+            let started = Instant::now();
+            let response = keyed(self.client.post(&url), &self.args.key)
+                .header("content-type", self.content_type)
+                .body(self.body.clone())
+                .send()
+                .await;
+            // The existing benchmark measures response-header ACK latency.
+            // Drain the body for pool reuse without changing that definition.
+            let elapsed = started.elapsed();
+            let success = match response {
+                Ok(response) => {
+                    let success = response.status().is_success();
+                    drop(response.bytes().await);
+                    success
                 }
-                let t0 = Instant::now();
-                let res = keyed(client.post(&url), &key)
-                    .header("content-type", content_type.as_str())
-                    .body(body.as_ref().clone())
-                    .send()
-                    .await;
-                let elapsed = t0.elapsed();
-                let in_window = t0 >= measure_start;
-                match res {
-                    Ok(r) if r.status().is_success() => {
-                        let _ = r.bytes().await;
-                        if in_window {
-                            shared.ok.fetch_add(1, Ordering::Relaxed);
-                            shared.entries_ok.fetch_add(entries, Ordering::Relaxed);
-                            shared.bytes_ok.fetch_add(bytes, Ordering::Relaxed);
-                            shared
-                                .hist
-                                .lock()
-                                .await
-                                .record(elapsed.as_micros() as u64)
-                                .ok();
-                        }
-                    }
-                    Ok(r) => {
-                        let _ = r.bytes().await;
-                        if in_window {
-                            shared.errors.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    Err(_) => {
-                        if in_window {
-                            shared.errors.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
+                Err(_) => false,
+            };
+            if started < self.measure_start {
+                continue;
             }
-        }));
+            if success {
+                self.shared
+                    .record_success(elapsed, self.entries, self.bytes)
+                    .await?;
+            } else {
+                self.shared.errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
-    for h in handles {
-        h.await?;
-    }
+}
 
+/// Retains every worker until success or terminal cancellation. An error aborts
+/// and joins the remaining tasks before it can escape to a benchmark caller.
+async fn finish_workers<T: Send + 'static>(
+    mut workers: JoinSet<anyhow::Result<T>>,
+) -> anyhow::Result<Vec<T>> {
+    let mut results = Vec::with_capacity(workers.len());
+    while let Some(joined) = workers.join_next().await {
+        let result = joined
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result);
+        match result {
+            Ok(value) => results.push(value),
+            Err(error) => {
+                workers.shutdown().await;
+                return Err(error);
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Append benchmark owns this finite worker group; finish_workers aborts and joins all siblings on failure, and JoinSet aborts on cancellation; detached handles would lose terminal ownership"
+)]
+async fn bench_append(args: Args) -> anyhow::Result<()> {
+    let run = Arc::new(AppendRun::start(args).await?);
+    let mut workers = JoinSet::new();
+    for index in 0..run.args.concurrency.get() {
+        let run = run.clone();
+        workers.spawn(async move { run.worker(index).await });
+    }
+    finish_workers(workers).await?;
+    let args = &run.args;
+    let shared = &run.shared;
     let hist = shared.hist.lock().await;
     let ok = shared.ok.load(Ordering::Relaxed);
     let errors = shared.errors.load(Ordering::Relaxed);
     let entries_ok = shared.entries_ok.load(Ordering::Relaxed);
-    let secs = args.duration_secs as f64;
+    let secs = args.duration_secs.get() as f64;
     let summary = serde_json::json!({
         "label": args.label,
         "mode": "append",
-        "concurrency": args.concurrency,
-        "streams": args.streams,
+        "concurrency": args.concurrency.get(),
+        "streams": args.streams.get(),
         "payload_bytes": args.payload_bytes,
-        "entries_per_req": args.entries,
+        "entries_per_req": args.entries.get(),
         "duration_secs": secs,
         "requests_ok": ok,
         "errors": errors,
@@ -237,55 +302,69 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn bench_read(args: Args) -> anyhow::Result<()> {
-    let client = make_client(args.concurrency);
-    let t0 = Instant::now();
-    let mut total_bytes = 0u64;
-    let mut total_reqs = 0u64;
-    let mut handles = Vec::new();
-    for s in 0..args.streams {
-        let client = client.clone();
-        let url = format!("{}/v1/stream/{}-{}", args.url, args.prefix, s);
-        let key = args.key.clone();
-        handles.push(tokio::spawn(async move {
-            let mut offset = "-1".to_string();
-            let mut bytes = 0u64;
-            let mut reqs = 0u64;
-            loop {
-                let res = keyed(client.get(format!("{url}?offset={offset}")), &key)
-                    .send()
-                    .await;
-                let Ok(r) = res else { break };
-                if !r.status().is_success() {
-                    break;
-                }
-                let next = r
-                    .headers()
-                    .get("stream-next-offset")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let body = r.bytes().await.unwrap_or_default();
-                reqs += 1;
-                bytes += body.len() as u64;
-                let Some(next) = next else { break };
-                if body.is_empty() || next == offset {
-                    break;
-                }
-                offset = next;
-            }
-            (bytes, reqs)
-        }));
+#[derive(Default, Debug, PartialEq, Eq)]
+struct ReadTotals {
+    bytes: u64,
+    requests: u64,
+}
+
+async fn read_stream(
+    client: &reqwest::Client,
+    url: &str,
+    key: &Option<String>,
+) -> anyhow::Result<ReadTotals> {
+    let mut offset = "-1".to_string();
+    let mut totals = ReadTotals::default();
+    loop {
+        let response = keyed(client.get(format!("{url}?offset={offset}")), key)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "read failed: {}",
+            response.status()
+        );
+        let next = response
+            .headers()
+            .get("stream-next-offset")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.bytes().await?;
+        totals.requests += 1;
+        totals.bytes += u64::try_from(body.len())?;
+        let Some(next) = next else { return Ok(totals) };
+        if body.is_empty() || next == offset {
+            return Ok(totals);
+        }
+        offset = next;
     }
-    for h in handles {
-        let (b, r) = h.await?;
-        total_bytes += b;
-        total_reqs += r;
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Read benchmark owns all stream replays; finish_workers aborts and joins siblings before returning any failure, and JoinSet aborts on cancellation; detached tasks could outlive a failed measurement"
+)]
+async fn bench_read(args: Args) -> anyhow::Result<()> {
+    let client = make_client(args.concurrency.get())?;
+    let t0 = Instant::now();
+    let mut workers = JoinSet::new();
+    for stream in 0..args.streams.get() {
+        let client = client.clone();
+        let url = format!("{}/v1/stream/{}-{stream}", args.url, args.prefix);
+        let key = args.key.clone();
+        workers.spawn(async move { read_stream(&client, &url, &key).await });
+    }
+    let mut total_bytes = 0;
+    let mut total_reqs = 0;
+    for result in finish_workers(workers).await? {
+        total_bytes += result.bytes;
+        total_reqs += result.requests;
     }
     let secs = t0.elapsed().as_secs_f64();
     let summary = serde_json::json!({
         "label": args.label,
         "mode": "read",
-        "streams": args.streams,
+        "streams": args.streams.get(),
         "requests": total_reqs,
         "total_mb": total_bytes as f64 / 1e6,
         "secs": secs,
@@ -297,14 +376,13 @@ async fn bench_read(args: Args) -> anyhow::Result<()> {
 
 /// Measures the gap between append ACK and object-store durability.
 async fn bench_durability(args: Args) -> anyhow::Result<()> {
-    let client = make_client(4);
+    let client = make_client(4)?;
     let stream = format!("{}-dur-{}", args.prefix, std::process::id());
     let url = format!("{}/v1/stream/{}", args.url, stream);
     let r = keyed(client.put(&url), &args.key).send().await?;
     anyhow::ensure!(r.status().is_success(), "create failed: {}", r.status());
-    let mut lags_ms: Vec<f64> = Vec::new();
-    let iterations = 10usize;
-    for _ in 0..iterations {
+    let mut lags_ms = [0.0f64; 10];
+    for sample in &mut lags_ms {
         let t0 = Instant::now();
         let res = keyed(client.post(&url), &args.key)
             .header("content-type", "application/octet-stream")
@@ -342,7 +420,7 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        lags_ms.push(lag);
+        *sample = lag;
         println!(
             "append ack: {:.1}ms, ack->durable lag: {:.1}ms",
             ack.as_secs_f64() * 1000.0,
@@ -350,12 +428,16 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    lags_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    lags_ms.sort_by(f64::total_cmp);
     println!(
         "durability lag ms: min={:.1} median={:.1} max={:.1}",
-        lags_ms.first().unwrap(),
+        lags_ms[0],
         lags_ms[lags_ms.len() / 2],
-        lags_ms.last().unwrap()
+        lags_ms[9]
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "bench/tests.rs"]
+mod tests;

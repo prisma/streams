@@ -70,8 +70,35 @@ mark their containing function as test-only. Unknown syntax or a failed Git or
 parser read cannot establish unchanged production source. Executable positive
 and negative controls cover these boundaries in the planner test suite.
 
-These reported changes do not select runtime mutation/Miri/property/Loom checks
-by themselves. Tooling changes still exercise the verification harness. This is
+An unchanged outer custom attribute or derive may also retain its exact input
+while an unrelated item changes only lint annotations. This requires the entire
+annotated declaration, including nested tokens and all attributes, to remain
+byte-identical at identical line, column and UTF-8 byte positions. No macro name
+is treated as inherently safe. Changes inside that declaration, moved inputs,
+custom inner or conditionally constructed attributes, opaque item macros and
+source introspection retain checks. The remaining production source must still pass the parsed token
+comparison. Positive and negative controls cover these boundaries.
+
+A separate, stricter byte comparison may remove only trailing root items with
+an explicit `#[cfg(test)]` while preserving the entire production prefix and
+all its item locations. Unchanged custom attributes and derives are eligible
+only under this proof: their complete input bytes and spans remain fixed.
+Nested test items inside a production macro input cannot use this exception.
+Custom crate-level inner attributes, opaque item macros and source-introspection
+macros still retain checks.
+
+The planner separately records `formatted_visibility_files` for narrowed
+visibility plus token-preserving formatting, including parser-identified
+trailing parameter commas on the narrowed functions. This does **not** prove
+unchanged macro expansion: unrelated derive spans may move. All otherwise
+selected compiler, property, Miri and Loom checks remain selected. Only mutation
+selection omits these non-executable edits; every other critical changed source
+still needs an actual-diff mutation scope. Changed opaque macro inputs, source
+introspection, expressions, types, tuple commas and other functions' parameter
+commas are ineligible. No zero-mutant execution is reported as a passing test.
+
+The `visibility_only_files` and `production_unchanged_files` classifications do
+not select runtime mutation/Miri/property/Loom checks by themselves. Tooling changes still exercise the verification harness. This is
 a selection decision, not a passing zero-mutation experiment; other critical
 changes still require a registered executable mutation scope.
 

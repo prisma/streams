@@ -11,6 +11,14 @@ use super::fixture_storage::mem;
 /// clears. The intent CAS is the serialization point — it installs only
 /// over a topologically quiet descriptor, resolving the transition
 /// first.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal transition fixture; the split and sealer are released and joined before the resumability assertions; serial requests cannot expose the pending-transition race"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal transition scenario; the held topology operation and resumability observations must stay visible together; splitting into one-use helpers would obscure the forbidden overlapping intents"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seal_never_installs_over_a_pending_transition() {
     let _l = gap_lock().lock().await;
@@ -109,7 +117,9 @@ async fn a_seal_never_installs_over_a_pending_transition() {
         );
     }
     crate::failpoints::release_scaler_before_publish("deadl");
-    let _ = split.await;
+    split
+        .await
+        .expect("held split task must finish without panic");
     let (st, _, b) = sealer.await.unwrap();
 
     state
@@ -329,6 +339,10 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
 /// collection Sealing forever — so recovery is a TIMEOUT: past
 /// `SEAL_CLAIM_MS` another seal may take the claim over. Never a guess
 /// about whether a verdict was terminal.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal abandonment scenario; refusal retained intent expiry and takeover are one lifecycle sequence; one-use helpers would hide which operation still owns the final promise"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
     let store = mem();
@@ -545,6 +559,14 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
 /// Driven through the real committer with the predecessor parked
 /// between admission and enqueue, so the close genuinely observes the
 /// gap and the predecessor genuinely lands afterwards.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal producer-gap fixture; the parked predecessor is released and joined before the exact final retry; serial append ordering cannot expose the transient gap"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal producer-gap scenario; the out-of-order predecessor and exactly-once final readback form one retry proof; separating the phases would hide the producer sequence dependency"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     let _serial = gap_lock().lock().await;
@@ -670,6 +692,10 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
 /// surfaces, and the next seal request finishes the job. A sealed
 /// descriptor is authoritative even if a segment engine has not
 /// observed its close.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal recovery scenario; both wire surfaces and descriptor authority must agree before and after resumption; adjacent protocol assertions keep that transition inspectable"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seal_is_a_resumable_transition() {
     let store = mem();

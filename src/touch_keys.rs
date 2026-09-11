@@ -4,8 +4,7 @@
 //! ever handling template ids or HMAC keys (spec Stage 2 §3.3/§3.5).
 //! So the layouts below are normative, and the hash is SHA-256 —
 //! available to every client runtime through WebCrypto, and the same
-//! same construction the routing keyspace already uses
-//! (`segmap::key_point`). The digest's first 8 bytes, big-endian, are
+//! construction used for routing-key hashes. The digest's first 8 bytes, big-endian, are
 //! the 64-bit key.
 //!
 //!   h64(b)                        = be_u64(SHA256(b)[..8])
@@ -25,11 +24,18 @@
 use sha2::{Digest, Sha256};
 
 fn h64(buf: &[u8]) -> u64 {
-    let d = Sha256::digest(buf);
-    u64::from_be_bytes(d[..8].try_into().expect("32-byte digest"))
+    let [a, b, c, d, e, f, g, h, ..]: [u8; 32] = Sha256::digest(buf).into();
+    u64::from_be_bytes([a, b, c, d, e, f, g, h])
 }
 
-pub fn table_key(entity: &str) -> u64 {
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "shared watch-key encoder; livebench and the wire tests use this entry point while the server consumes client-encoded keys; retain one canonical derivation instead of copying it into the benchmark"
+    )
+)]
+pub(crate) fn table_key(entity: &str) -> u64 {
     let mut buf = Vec::with_capacity(4 + entity.len());
     buf.extend_from_slice(b"tbl\0");
     buf.extend_from_slice(entity.as_bytes());
@@ -63,27 +69,52 @@ pub(crate) fn watch_key(template_id: u64, args: &[String]) -> u64 {
     h64(&buf)
 }
 
-pub fn key_hex(key: u64) -> String {
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "shared watch-key encoder; livebench and the wire tests use this entry point while the server consumes client-encoded keys; retain one canonical derivation instead of copying it into the benchmark"
+    )
+)]
+pub(crate) fn key_hex(key: u64) -> String {
     format!("{key:016x}")
 }
 
 /// Journal-level uint32 key ID for an API-level key string.
-pub fn key_id_of(key: &str) -> u32 {
+pub(crate) fn key_id_of(key: &str) -> u32 {
     if key.len() == 16
         && let Ok(v) = u64::from_str_radix(key, 16)
     {
-        return v as u32;
+        return key_id_of_u64(v);
     }
-    h64(key.as_bytes()) as u32
+    key_id_of_u64(h64(key.as_bytes()))
 }
 
-pub fn key_id_of_u64(key: u64) -> u32 {
-    key as u32
+pub(crate) fn key_id_of_u64(key: u64) -> u32 {
+    let [_, _, _, _, a, b, c, d] = key.to_be_bytes();
+    u32::from_be_bytes([a, b, c, d])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_prefix_and_low_word_follow_the_wire_byte_order() {
+        assert_eq!(h64(b""), 0xe3b0_c442_98fc_1c14);
+        assert_eq!(h64(b"hello"), 0x2cf2_4dba_5fb0_a30e);
+        assert_eq!(key_id_of("hello"), 0x5fb0_a30e);
+        for (key, expected) in [
+            (0, 0),
+            (1, 1),
+            (u64::MAX, u32::MAX),
+            (0xffff_ffff_0000_0000, 0),
+            (0xdead_beef_0123_4567, 0x0123_4567),
+        ] {
+            assert_eq!(key_id_of_u64(key), expected);
+            assert_eq!(key_id_of(&format!("{key:016x}")), expected);
+        }
+    }
 
     #[test]
     fn stable_and_distinct() {
@@ -97,6 +128,6 @@ mod tests {
         assert_ne!(w1, w2);
         assert_eq!(w1, watch_key(tpl, &["t1".into()]));
         assert_eq!(key_hex(w1).len(), 16);
-        assert_eq!(key_id_of(&key_hex(w1)), w1 as u32);
+        assert_eq!(key_id_of(&key_hex(w1)), key_id_of_u64(w1));
     }
 }

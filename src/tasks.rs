@@ -179,6 +179,10 @@ struct Inner {
 }
 
 impl Inner {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Supervisor task snapshot; poisoned registration may have failed between assigning an ID and retaining its handle; returning a partial task list would hide incomplete ownership"
+    )]
     fn snapshot(&self) -> Vec<TaskStatus> {
         self.state
             .lock()
@@ -197,6 +201,10 @@ impl Inner {
             .collect()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Supervisor phase observation; poisoned registration or shutdown cannot prove a valid lifecycle phase; silent recovery could report a partially published transition"
+    )]
     fn phase(&self) -> Phase {
         self.state.lock().unwrap().phase
     }
@@ -246,6 +254,10 @@ impl TaskMonitor {
     /// Serving requires a live supervisor in its running phase and all
     /// required loops still running. Recoverable errors inside a loop do
     /// not change this verdict; permanent task exit does.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Supervisor readiness; poisoned lifecycle state is not evidence of a healthy runtime; returning a readiness result would conceal incomplete registration or shutdown"
+    )]
     pub(crate) fn unready_reason(&self) -> Option<String> {
         let Some(inner) = self.inner.upgrade() else {
             return Some("runtime supervisor unavailable".into());
@@ -331,6 +343,10 @@ impl TaskSupervisor {
     /// loop can be written without one. Registration and the phase
     /// check are one atomic step: once shutdown has begun, nothing is
     /// spawned — a stopped runtime stays stopped.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Supervisor registration; a poisoned phase may contain an incomplete task insertion; recovering and spawning again could leave a task outside the eventual drain"
+    )]
     pub(crate) fn spawn<F, Fut>(
         &self,
         label: &'static str,
@@ -349,6 +365,10 @@ impl TaskSupervisor {
         }
         let id = TaskId(st.next_id);
         st.next_id += 1;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "TaskSupervisor worker owner; the registration lock retains each handle before shutdown can take the map; spawning through another supervisor would recursively delegate this canonical owner"
+        )]
         let handle = tokio::spawn(build(self.inner.cancel.clone()));
         st.tasks.insert(
             id,

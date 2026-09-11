@@ -544,7 +544,7 @@ async fn product_requires_the_account_token() {
     let (st, h, _) = preq(addr, "OPTIONS", "/v1/streams/sec/records", &[], b"").await;
     assert!(st == 200 || st == 204, "preflight status {st}");
     assert!(
-        h.get("access-control-allow-headers").is_some(),
+        h.contains_key("access-control-allow-headers"),
         "preflight must allow the product headers"
     );
     let (st, _, _) = preq(addr, "OPTIONS", "/v1/streams", &[], b"").await;

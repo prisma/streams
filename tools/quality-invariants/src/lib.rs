@@ -38,3 +38,40 @@ mod tenant;
     reason = "invariant harness; compile actual batch budget and ownership tests together; unused service accessors remain private"
 )]
 mod application;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compiles the actual quota balance owner and its tests; production callers reside in the service"
+)]
+#[path = "../../../src/quota/bucket.rs"]
+mod quota_bucket;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compiles the actual product cursor codecs and their tests; unrelated service APIs remain internal"
+)]
+#[path = "../../../src/product_cursor.rs"]
+mod product_cursor;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compile the actual queue key codec and generation tests; unrelated service state and commands remain internal"
+)]
+#[path = "../../../src/queue.rs"]
+mod queue;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compile the exact production month-allocation owner; the library target has no service caller"
+)]
+#[path = "../../../src/rollup/allocation.rs"]
+mod rollup_allocation;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compile the canonical storage byte-time arithmetic and its properties; the library target has no service caller"
+)]
+#[path = "../../../src/rollup/storage.rs"]
+mod rollup_storage;

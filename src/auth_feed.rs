@@ -32,7 +32,7 @@ use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
 
 /// Verification keys, mirroring `PolicySource`/`GrantSource`.
 #[async_trait::async_trait]
-pub trait KeySource: Send + Sync {
+pub(crate) trait KeySource: Send + Sync {
     async fn fetch(&self) -> anyhow::Result<JwksSnapshot>;
 }
 
@@ -106,7 +106,7 @@ struct GrantDoc {
 // ---------------------------------------------------------------------
 // Strict parsers (pure; the sources wrap file I/O around them)
 
-pub fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
+pub(crate) fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
     let doc: KeysDoc = serde_json::from_str(json)?;
     anyhow::ensure!(!doc.keys.is_empty(), "keys file lists no keys");
     let mut keys = HashMap::new();
@@ -146,7 +146,7 @@ pub fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
     })
 }
 
-pub fn parse_policies(json: &str, now: i64) -> anyhow::Result<PolicySnapshot> {
+pub(crate) fn parse_policies(json: &str, now: i64) -> anyhow::Result<PolicySnapshot> {
     let doc: PoliciesDoc = serde_json::from_str(json)?;
     let mut projects = HashMap::new();
     for p in doc.projects {
@@ -174,7 +174,7 @@ pub fn parse_policies(json: &str, now: i64) -> anyhow::Result<PolicySnapshot> {
     })
 }
 
-pub fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot> {
+pub(crate) fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot> {
     let doc: GrantsDoc = serde_json::from_str(json)?;
     let mut credentials = HashMap::new();
     for g in doc.credentials {
@@ -232,9 +232,9 @@ pub fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot> {
 // ---------------------------------------------------------------------
 // File-backed sources
 
-pub struct FileKeySource(pub std::path::PathBuf);
-pub struct FilePolicySource(pub std::path::PathBuf);
-pub struct FileGrantSource(pub std::path::PathBuf);
+pub(crate) struct FileKeySource(pub std::path::PathBuf);
+pub(crate) struct FilePolicySource(pub std::path::PathBuf);
+pub(crate) struct FileGrantSource(pub std::path::PathBuf);
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -273,7 +273,7 @@ impl GrantSource for FileGrantSource {
 /// A single pass has exactly three independent operations and a fixed
 /// per-source deadline. Each successful source publishes immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshOutcome {
+pub(crate) enum RefreshOutcome {
     Published,
     Refused,
     Unavailable,
@@ -281,7 +281,7 @@ pub enum RefreshOutcome {
 }
 
 #[derive(Debug)]
-pub struct RefreshReport {
+pub(crate) struct RefreshReport {
     pub keys: RefreshOutcome,
     pub policies: RefreshOutcome,
     pub grants: RefreshOutcome,
@@ -316,7 +316,7 @@ async fn refresh_source<T>(
     }
 }
 
-pub async fn refresh_once(
+pub(crate) async fn refresh_once(
     auth: &AuthService,
     keys: &dyn KeySource,
     policies: &dyn PolicySource,

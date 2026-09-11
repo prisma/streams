@@ -59,6 +59,10 @@ def copy_source(destination):
     for name in ('Cargo.toml', 'Cargo.lock', 'build.rs', 'RUNBOOK.md', 'clippy.toml', 'rust-toolchain.toml'):
         if (ROOT / name).exists():
             shutil.copy2(ROOT / name, destination / name)
+    # The real protocol-pin test includes these tracked manifests at compile time.
+    (destination / 'conformance').mkdir()
+    for name in ('package.json', 'expected.json'):
+        shutil.copy2(ROOT / 'conformance' / name, destination / 'conformance' / name)
     with (destination / 'src/lib.rs').open('a') as root:
         root.write('\nmod quality_boundary_fixture;\n')
 

@@ -492,8 +492,8 @@ pub struct CliArgs {
     pub(crate) admit_max_inflight: i64,
 
     /// Measured per-instance ingress-concurrency capacity through the
-    /// platform front door. Two-layer model (platform team investigation
-    /// + our 6-source confirmation, 2026-07-15): each SOURCE Compute
+    /// platform front door. Two-layer model confirmed by the platform team
+    /// and six independent sources (2026-07-15): each SOURCE Compute
     /// instance is egress-capped at ~48-50 outgoing requests; the
     /// DESTINATION front door admits ~145-150 concurrent aggregate (the
     /// earlier 48 calibration was the measuring instance's own egress

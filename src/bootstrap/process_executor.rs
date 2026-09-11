@@ -35,7 +35,7 @@ static EXECUTOR: OnceLock<StorageExecutor> = OnceLock::new();
 /// Called by the single process bootstrap before any storage opens. A prior
 /// direct open may already own the default pool; never silently ignore a
 /// conflicting validated configuration in that case.
-pub fn init_slatedb_runtime_threads(threads: usize) -> anyhow::Result<()> {
+pub(crate) fn init_slatedb_runtime_threads(threads: usize) -> anyhow::Result<()> {
     anyhow::ensure!(threads > 0, "storage executor requires at least one thread");
     EXECUTOR
         .get_or_init(|| StorageExecutor::new(threads))
@@ -45,7 +45,7 @@ pub fn init_slatedb_runtime_threads(threads: usize) -> anyhow::Result<()> {
 /// Runtime services share the physical executor, while their queues, caches
 /// and admission state remain independent. Direct storage fixtures use two
 /// threads without changing another service's configuration.
-pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
     &EXECUTOR.get_or_init(|| StorageExecutor::new(2)).runtime
 }
 

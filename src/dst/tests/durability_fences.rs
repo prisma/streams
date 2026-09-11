@@ -16,6 +16,14 @@ use super::fixture_storage::mem;
 /// that the old claim stays UNMARKED. Answering from staged state let
 /// the takeover mark a final "committed" off a WriteBatch that could
 /// still fail, and publish Sealed over a record that never existed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "durability fence fixture; the held close and the competing takeover are both joined after dispatch is released; running either inline would deadlock behind the held durability barrier"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "durability fence scenario; the held close, the pending takeover observation and the durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would hide which state the fence answered from"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fence_waits_for_durability_before_reporting_closed() {
     let store = mem();
@@ -169,6 +177,10 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
 /// Only the NEWEST reservation may install. Two takeovers can reserve
 /// against the same lapsed claim; if the lower one installed, the live
 /// claim's generation would sit below the higher fence.
+#[expect(
+    clippy::too_many_lines,
+    reason = "takeover reservation scenario; two reservations against one lapsed claim and the install verdicts form one ordered sequence; separating them would hide the generation comparison being proved"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lower_takeover_reservation_cannot_install() {
     let _serial = gap_lock().lock().await;
@@ -419,6 +431,14 @@ async fn a_fence_survives_handle_eviction() {
 /// immediately let a retry observe "durably committed" for a record
 /// whose group write could still fail. Same for the idempotent
 /// close-only answer.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "durability barrier fixture; the original, its exact duplicate and both idempotent closes are joined after each release; the pending checks require the requests to run concurrently with the held dispatch"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "idempotent durability scenario; the write window and the close-only window drive the same barrier contract through the same held engine; splitting them would duplicate the arrangement without sharpening the proof"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idempotent_successes_wait_for_durability() {
     let store = mem();
@@ -546,6 +566,10 @@ async fn idempotent_successes_wait_for_durability() {
 /// for that state's durability — answering early and losing the write
 /// hands the client a permanent verdict about state that never
 /// existed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "definitive-conflict fixture; the original write and the reuse verdict are joined after dispatch is released; the conflict can only be observed pending while the judged state is held pre-durability"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn state_dependent_conflicts_wait_for_durability() {
     let store = mem();

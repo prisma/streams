@@ -512,7 +512,7 @@ mod tests {
             "instance-a",
         );
         let b = RuntimeCaps::with_sources(
-            Arc::new(clock_b.clone()),
+            Arc::new(clock_b),
             &src_b,
             Arc::new(SeededEntropy::seeded(1)),
             "instance-b",

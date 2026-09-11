@@ -9,13 +9,21 @@
 // the previous completes), so offered load self-paces to what the fleet
 // can absorb and congestion collapse is impossible by construction.
 
+#[path = "pilot/client.rs"]
+mod http_client;
+use http_client::{RotatingClient, client};
+
+#[path = "pilot/proxy.rs"]
+mod routing;
+use routing::proxy;
+
+#[path = "pilot/generator.rs"]
+mod workload_generator;
+
 use axum::Router;
-use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::extract::State;
+use axum::response::Html;
 use axum::routing::get;
-use futures_util::TryStreamExt;
 use hdrhistogram::Histogram;
 use object_store::ObjectStoreExt;
 use std::collections::VecDeque;
@@ -23,14 +31,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pilot process configuration; this independent workload binary owns its explicit environment inputs; routing them through server runtime state would couple separate executables"
+)]
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    epoch_millis(SystemTime::now())
+}
+
+fn epoch_millis(now: SystemTime) -> u64 {
+    u64::try_from(
+        now.duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 // Matches the JS FNV-1a in the run-1 Bun LB so stream→server pinning is
@@ -101,6 +119,10 @@ struct FleetView {
     overrides: std::collections::HashMap<String, String>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "pilot object-store startup; missing credentials or invalid store configuration must stop the selected workload; defaults could publish measurements to an unintended store"
+)]
 fn fleet_store(prefix: &str) -> Arc<dyn object_store::ObjectStore> {
     let s3 = object_store::aws::AmazonS3Builder::new()
         .with_endpoint(env("S3_ENDPOINT").expect("S3_ENDPOINT"))
@@ -197,64 +219,19 @@ fn shard_for(topology: &[String], hash: &[u8; 16]) -> String {
         .unwrap_or_default()
 }
 
-/// A client handle that is rebuilt every 60 s: the platform pins existing
-/// keep-alive connections to whatever replica/version first accepted them,
-/// so long-lived pools can stay stuck on stale replicas after a redeploy.
-/// Rotating the client closes the pool and re-resolves within a minute.
-#[derive(Clone)]
-struct RotatingClient(Arc<Mutex<reqwest::Client>>);
-
-impl RotatingClient {
-    fn new() -> Self {
-        let rc = RotatingClient(Arc::new(Mutex::new(client())));
-        let inner = rc.0.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                *inner.lock().unwrap() = client();
-            }
-        });
-        rc
-    }
-    fn get(&self) -> reqwest::Client {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        // http1_only is load-bearing: the platform edge negotiates h2 via
-        // ALPN, and h2 multiplexes everything over ONE TCP connection per
-        // host (bounded by the server's max-concurrent-streams and pinned
-        // to a single LB replica) — measured throughput FELL as workers
-        // doubled. HTTP/1.1 with a big pool gets one connection per
-        // in-flight request and spreads across replicas.
-        .http1_only()
-        .pool_max_idle_per_host(8192)
-        // <5 s: Compute suspends idle VMs after ~5 s and silently kills
-        // flows; a pooled socket idle past that is a corpse the next
-        // request eats. Same rule as the server's store client (RUNBOOK
-        // §3.1). The 60 s client rotation handles replica pinning; this
-        // handles dead sockets.
-        .pool_idle_timeout(Duration::from_secs(4))
-        .tcp_nodelay(true)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap()
-}
-
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let mode = env("MODE").unwrap_or_else(|| std::env::args().nth(1).unwrap_or_default());
     match mode.as_str() {
         "lb" => lb().await,
-        "gen" => generator().await,
+        "gen" => workload_generator::run().await?,
         "bench" => bench().await,
         m => {
             eprintln!("unknown MODE '{m}' (want lb|gen)");
             std::process::exit(1);
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- LB ----
@@ -634,638 +611,6 @@ async fn lb() {
         .await
         .unwrap();
     println!("pilot lb listening on :{port}");
-    axum::serve(listener, app).await.unwrap();
-}
-
-async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
-    let path = req.uri().path().to_string();
-    // BOTH surfaces route by stream name: the raw route
-    // (/v1/stream/{name}...) and the product route
-    // (/v1/streams/{name}[/...|:action]). A product name segment may
-    // carry an :action suffix (records:long-poll, :scan), so ':' also
-    // terminates the name. Registry-scoped paths (/v1/streams catalog,
-    // /v1/segments, /health) are not stream-scoped — any instance
-    // answers; pin them to the first active ordinal so sleepers sleep.
-    let stream: Option<String> = collection_name(&path);
-    if stream.is_none()
-        && !(path == "/v1/streams"
-            || path == "/v1/segments"
-            // /v1/segments/{name} is a registry read — any instance
-            // answers. Run-2 rig finding: rejecting it blinded the
-            // probe's split detection through the LB.
-            || path.starts_with("/v1/segments/")
-            || path == "/health"
-            || path.starts_with("/v1/debug"))
-    {
-        return (StatusCode::NOT_FOUND, "lb: not a stream route").into_response();
-    }
-    // COMPUTE-SPEC R1: route by shard (name-hash longest-prefix against the
-    // topology), rendezvous over only the active set (first `desired`
-    // upstreams) — instances beyond the desired count receive nothing and
-    // scale to zero.
-    let (active, shard, override_to) = {
-        let f = lb.fleet.lock().unwrap();
-        let shard = stream
-            .as_deref()
-            .map(|st| shard_for(&f.topology, &name_hash(st)));
-        let mut active = if f.active.is_empty() {
-            vec!["streams-1".to_string()]
-        } else {
-            f.active.clone()
-        };
-        // Locally ejected ordinals (an unmarked platform response within
-        // the eject window) are removed from the routing set NOW —
-        // round-19 MF4: heartbeat-dark detection takes ~30 s, and every
-        // request routed there in the meantime is a client-visible
-        // failure. Never eject the last candidate: some upstream must
-        // remain so a fully-ejected fleet still produces a real answer
-        // (and its own retryable error) rather than a routing panic.
-        let now = now_ms();
-        let live: Vec<String> = active
-            .iter()
-            .filter(|n| {
-                n.strip_prefix("streams-")
-                    .and_then(|o| o.parse::<usize>().ok())
-                    .and_then(|o| o.checked_sub(1))
-                    .and_then(|i| lb.stats.get(i))
-                    .map(|st| st.eject_until_ms.load(Ordering::Relaxed) <= now)
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        if !live.is_empty() {
-            active = live;
-        }
-        let ov = shard.as_deref().and_then(|sh| f.overrides.get(sh)).cloned();
-        (active, shard, ov)
-    };
-    // Ownership mirrors the servers' effective_owner: a rebalancer
-    // override whose target is active wins; otherwise rendezvous over
-    // instance NAMES from the live-filtered active set — the identical
-    // computation the servers run for their R2 check. Nameless
-    // (registry-scoped) requests pin to the first active.
-    let chosen: &str = match (&override_to, &shard) {
-        (Some(t), _) if active.iter().any(|a| a == t) => t,
-        (_, Some(sh)) => &active[pick(sh, &active)],
-        _ => &active[0],
-    };
-    let first_i = chosen
-        .strip_prefix("streams-")
-        .and_then(|n| n.parse::<usize>().ok())
-        .and_then(|n| n.checked_sub(1))
-        .filter(|n| *n < lb.stats.len())
-        .unwrap_or(0);
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap();
-    let mut headers = HeaderMap::new();
-    for (k, v) in req.headers() {
-        let n = k.as_str();
-        if n != "host" && n != "connection" && n != "content-length" && n != "transfer-encoding" {
-            headers.insert(k.clone(), v.clone());
-        }
-    }
-    // Same ceiling the server enforces (MAX_BODY_BYTES = 32 MiB). A
-    // router that buffered less made the effective public limit depend
-    // on whether a request arrived directly or through the router
-    // (round-19 fleet-contract finding).
-    let body = match axum::body::to_bytes(req.into_body(), 32 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
-    };
-
-    let t0 = Instant::now();
-    let http = lb.http.get();
-    let send_to = |i: usize| {
-        let url = format!(
-            "{}{}{}",
-            lb.upstreams.read().unwrap()[i].clone(),
-            path,
-            query
-        );
-        http.request(method.clone(), url)
-            .headers(headers.clone())
-            .body(body.clone())
-            .send()
-    };
-    let replay_target = |r: &reqwest::Response| {
-        if r.status() != 409 {
-            return None;
-        }
-        r.headers()
-            .get("streams-replay-to")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|n| n.strip_prefix("streams-"))
-            .and_then(|n| n.parse::<usize>().ok())
-            .and_then(|n| n.checked_sub(1))
-            .filter(|n| *n < lb.stats.len())
-    };
-    // R3: an instance that doesn't own the shard answers 409 with
-    // Streams-Replay-To: <instance-name>; replay there without involving
-    // the client (Fly-Replay pattern). Up to two follows: mid-move both
-    // the pick and the first target can miss, so the second follow backs
-    // off briefly to let the fence settle instead of leaking the 409
-    // (FLEET-CAMPAIGN.md: 299 leaked 409s, all in transition windows).
-    let mut cur_i = first_i;
-    let mut resp = send_to(cur_i).await;
-    let mut follows = 0usize;
-    while let Some(target) = resp.as_ref().ok().and_then(&replay_target) {
-        // The bouncing instance answered: it is alive, and it is the one
-        // whose ownership view disagrees with this router's pick.
-        lb.stats[cur_i]
-            .last_seen_ms
-            .store(now_ms(), Ordering::Relaxed);
-        lb.stats[cur_i].replays.fetch_add(1, Ordering::Relaxed);
-        if follows >= 2 {
-            break;
-        }
-        if follows == 1 {
-            tokio::time::sleep(Duration::from_millis(75)).await;
-        }
-        cur_i = target;
-        follows += 1;
-        resp = send_to(cur_i).await;
-    }
-    // Attribute the request to the upstream that actually served it —
-    // run 1 counted replayed traffic under the first pick, freezing the
-    // real owner's counters at zero while it carried the load.
-    let s = &lb.stats[cur_i];
-    let us = t0.elapsed().as_micros() as u64;
-    let idle_ms = now_ms().saturating_sub(s.last_seen_ms.load(Ordering::Relaxed));
-    s.last_seen_ms.store(now_ms(), Ordering::Relaxed);
-    match resp {
-        Ok(r) => {
-            // ROUND-19 MF4: a response WITHOUT Prisma-Streams-Origin never
-            // reached a Streams server — it is the platform edge's static
-            // page for a dead or unpublished service. Passing its 404
-            // through tells the SDK "this stream does not exist", which is
-            // not retryable and makes applications delete or recreate live
-            // data. Convert to a retryable 503 and eject the upstream
-            // locally at once, instead of waiting out heartbeat-dark.
-            if !r.headers().contains_key("prisma-streams-origin") {
-                s.unmarked.fetch_add(1, Ordering::Relaxed);
-                s.eject_until_ms
-                    .store(now_ms() + eject_ms(), Ordering::Relaxed);
-                let body = serde_json::json!({
-                    "error": {
-                        "code": "upstream_unavailable",
-                        "message": "the serving instance is unavailable; retry",
-                        "retryable": true,
-                    }
-                });
-                return Response::builder()
-                    .status(StatusCode::SERVICE_UNAVAILABLE)
-                    .header("content-type", "application/json")
-                    .header("retry-after", "1")
-                    .header("cache-control", "no-store")
-                    .body(Body::from(body.to_string()))
-                    .unwrap();
-            }
-            s.reqs.fetch_add(1, Ordering::Relaxed);
-            s.window.fetch_add(1, Ordering::Relaxed);
-            s.last_us.store(us, Ordering::Relaxed);
-            let prev = s.ewma_us.load(Ordering::Relaxed);
-            s.ewma_us.store(
-                if prev == 0 { us } else { (prev * 9 + us) / 10 },
-                Ordering::Relaxed,
-            );
-            if idle_ms > 8000 && us > 1_500_000 {
-                s.cold_starts.fetch_add(1, Ordering::Relaxed);
-            }
-            let mut out = Response::builder().status(r.status().as_u16());
-            for (k, v) in r.headers() {
-                let n = k.as_str();
-                if n != "connection" && n != "transfer-encoding" {
-                    out = out.header(k, v);
-                }
-            }
-            out.body(Body::from_stream(
-                r.bytes_stream().map_err(std::io::Error::other),
-            ))
-            .unwrap()
-        }
-        Err(e) => {
-            // A transport failure is the STRONGEST form of "never
-            // reached a Streams server" — connection refused, reset, or
-            // timeout against a dead instance. It gets the same
-            // treatment as an unmarked platform response (round-19
-            // MF4): retryable 503 + immediate local ejection, never a
-            // 502 (which the SDK does not retry any more than a 404).
-            s.errs.fetch_add(1, Ordering::Relaxed);
-            s.eject_until_ms
-                .store(now_ms() + eject_ms(), Ordering::Relaxed);
-            tracing_warn_once(&e);
-            let body = serde_json::json!({
-                "error": {
-                    "code": "upstream_unavailable",
-                    "message": "the serving instance is unavailable; retry",
-                    "retryable": true,
-                }
-            });
-            Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header("content-type", "application/json")
-                .header("retry-after", "1")
-                .header("cache-control", "no-store")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        }
-    }
-}
-
-// --------------------------------------------------------------- gen ----
-
-struct Gen {
-    ok: AtomicU64,
-    // `ok` alone cannot drive loss accounting: with READ_EVERY on, 1/N of
-    // the successes are reads that append nothing, and the run-1 campaign
-    // misread that mix as a 122k-record loss (FLEET-CAMPAIGN.md). Split
-    // counters make Σ(stream tails) == ok_appends × BATCH checkable
-    // directly.
-    ok_appends: AtomicU64,
-    ok_reads: AtomicU64,
-    errs: AtomicU64,
-    window: AtomicU64,
-    achieved: AtomicU64,
-    throttled: AtomicU64,
-    concurrency: AtomicU64,
-    // Drain: workers stop taking new attempts, in-flight ones finish, and
-    // /stats then reports exact final counters — the run-1 kill-mid-flight
-    // stop left a 41 s accounting gap that turned the zero-loss check into
-    // a one-sided bound. Set by POST /drain or SIGTERM.
-    draining: std::sync::atomic::AtomicBool,
-    active_workers: AtomicU64,
-    hist: Mutex<Histogram<u64>>,
-    // Windowed histogram, reset at each concurrency level so per-level
-    // percentiles aren't polluted by boot cold-starts or earlier levels.
-    hist_win: Mutex<Histogram<u64>>,
-    last_err: Mutex<String>,
-    start: Instant,
-    // Per-upstream attribution: which server each stream's requests land
-    // on, computed client-side with the same rendezvous hash the LB uses.
-    per_up_window: Vec<AtomicU64>,
-    per_up_rate: Vec<AtomicU64>,
-    /// COMPACT ACKNOWLEDGED-ID LEDGER (round-19 correction). Aggregate
-    /// tail sums prove no aggregate DEFICIT; they cannot prove every
-    /// acknowledged operation appears exactly once — a missing ack could
-    /// be masked by an ambiguous op that committed. Each append carries
-    /// a unique op id, and per stream we keep count/sum/xor of the ids
-    /// the server ACKNOWLEDGED. The reader recomputes the same three
-    /// over the ids it actually reads back: all three matching pins the
-    /// multiset (count catches loss/duplication, sum+xor catch
-    /// substitution) in O(1) memory instead of a million-entry set.
-    ack_count: Vec<AtomicU64>,
-    ack_sum: Vec<AtomicU64>,
-    ack_xor: Vec<AtomicU64>,
-}
-
-async fn generator() {
-    let auth = env("AUTH_TOKEN").expect("AUTH_TOKEN required");
-    let key = env("STREAM_KEY").expect("STREAM_KEY required");
-    // Route client-side (mimics production router, no LB hop) when
-    // GEN_UPSTREAMS is set; otherwise send everything through LB_URL.
-    // Deliberately NOT named UPSTREAMS: platform env vars merge across
-    // deploys (and appear to leak between services at project scope), and
-    // the LB legitimately sets UPSTREAMS — the generator silently flipping
-    // into direct mode from inherited env caused two broken runs.
-    let upstreams: Vec<String> = match env("GEN_UPSTREAMS") {
-        Some(u) => u
-            .split([',', ';'])
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim().to_string())
-            .collect(),
-        None => vec![env("LB_URL").expect("LB_URL or GEN_UPSTREAMS required")],
-    };
-    // Attribution-only server list (when routing via LB_URL): lets the
-    // stats report a per-server split without bypassing the LB.
-    let attr_upstreams: Vec<String> = env("ATTR_UPSTREAMS")
-        .map(|u| {
-            u.split([',', ';'])
-                .filter(|s| !s.is_empty())
-                .map(|s| s.trim().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    let n_streams: usize = env("STREAMS").and_then(|v| v.parse().ok()).unwrap_or(32);
-    let conc_start: u64 = env("CONC_START").and_then(|v| v.parse().ok()).unwrap_or(8);
-    let conc_max: u64 = env("CONC_MAX").and_then(|v| v.parse().ok()).unwrap_or(4096);
-    let ramp_secs: u64 = env("RAMP_SECS").and_then(|v| v.parse().ok()).unwrap_or(300);
-    let batch: usize = env("BATCH").and_then(|v| v.parse().ok()).unwrap_or(1);
-    // AWS-comparison knobs (bench/aws-comparison-plan.md): RECORD_PAD sizes
-    // records (default 200 B); READ_EVERY mixes one read per N ops
-    // (default 10; 0 = pure write so shapes match the awsbench arms).
-    let read_every: u64 = env("READ_EVERY").and_then(|v| v.parse().ok()).unwrap_or(10);
-    let record_pad: usize = env("RECORD_PAD")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(200);
-    // Distinct per-generator stream namespaces: multiple generators over
-    // the same streams muddies closed-loop accounting and attribution.
-    let stream_prefix: String = env("STREAM_PREFIX").unwrap_or_else(|| "pilot".into());
-    let stream_prefix2 = stream_prefix.clone();
-
-    let rc = RotatingClient::new();
-    let http = rc.get();
-    let base = |stream: &str| -> String {
-        let i = if upstreams.len() == 1 {
-            0
-        } else {
-            pick(stream, &upstreams)
-        };
-        upstreams[i].clone()
-    };
-
-    // Create the streams up front (idempotent; matches run-1 config).
-    for i in 0..n_streams {
-        let name = format!("{stream_prefix}-{i}");
-        let r = http
-            .put(format!("{}/v1/stream/{name}", base(&name)))
-            .header("authorization", format!("Bearer {auth}"))
-            .header("stream-encryption-key", key.clone())
-            .header("content-type", "application/json")
-            .send()
-            .await;
-        if let Err(e) = r {
-            eprintln!("create {name}: {e}");
-        }
-    }
-    println!(
-        "pilot gen: {} stream(s), conc {}→{} doubling every {}s, batch {}, {} target(s)",
-        n_streams,
-        conc_start,
-        conc_max,
-        ramp_secs,
-        batch,
-        upstreams.len()
-    );
-
-    let attr_n = attr_upstreams.len().max(1);
-    let g = Arc::new(Gen {
-        ok: AtomicU64::new(0),
-        ok_appends: AtomicU64::new(0),
-        ok_reads: AtomicU64::new(0),
-        errs: AtomicU64::new(0),
-        window: AtomicU64::new(0),
-        achieved: AtomicU64::new(0),
-        throttled: AtomicU64::new(0),
-        concurrency: AtomicU64::new(0),
-        draining: std::sync::atomic::AtomicBool::new(false),
-        active_workers: AtomicU64::new(0),
-        hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
-        hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
-        last_err: Mutex::new(String::new()),
-        start: Instant::now(),
-        per_up_window: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
-        per_up_rate: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
-        ack_count: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
-        ack_sum: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
-        ack_xor: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
-    });
-
-    // SIGTERM = drain, same as POST /drain: platform stops become
-    // graceful, and whatever polls /stats up to the end reads exact
-    // counters instead of a mid-flight snapshot.
-    #[cfg(unix)]
-    {
-        let g = g.clone();
-        tokio::spawn(async move {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-            term.recv().await;
-            g.draining.store(true, Ordering::Relaxed);
-            println!("pilot gen: SIGTERM -> draining");
-        });
-    }
-
-    // 1s ticker: achieved/s window.
-    {
-        let g = g.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                g.achieved
-                    .store(g.window.swap(0, Ordering::Relaxed), Ordering::Relaxed);
-                for i in 0..g.per_up_window.len() {
-                    g.per_up_rate[i].store(
-                        g.per_up_window[i].swap(0, Ordering::Relaxed),
-                        Ordering::Relaxed,
-                    );
-                }
-            }
-        });
-    }
-
-    // Controller: step concurrency up every ramp_secs, spawning workers.
-    {
-        let g = g.clone();
-        let rc = rc.clone();
-        let upstreams = upstreams.clone();
-        let attr_upstreams = attr_upstreams.clone();
-        tokio::spawn(async move {
-            let mut spawned: u64 = 0;
-            let seq = Arc::new(AtomicU64::new(0));
-            loop {
-                let level = g.start.elapsed().as_secs() / ramp_secs;
-                let desired = conc_max.min(conc_start.saturating_mul(1 << level.min(30)));
-                if g.concurrency.swap(desired, Ordering::Relaxed) != desired {
-                    g.hist_win.lock().unwrap().reset();
-                }
-                while spawned < desired && !g.draining.load(Ordering::Relaxed) {
-                    spawned += 1;
-                    let g = g.clone();
-                    let rc = rc.clone();
-                    let upstreams = upstreams.clone();
-                    let attr_upstreams = attr_upstreams.clone();
-                    let auth = auth.clone();
-                    let key = key.clone();
-                    let seq = seq.clone();
-                    let stream_prefix2 = stream_prefix2.clone();
-                    let (read_every, pad_n) = (read_every, record_pad);
-                    tokio::spawn(async move {
-                        g.active_workers.fetch_add(1, Ordering::Relaxed);
-                        loop {
-                            if g.draining.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let n = seq.fetch_add(1, Ordering::Relaxed);
-                            let name = format!("{}-{}", stream_prefix2, n as usize % n_streams);
-                            let i = if upstreams.len() == 1 {
-                                0
-                            } else {
-                                pick(&name, &upstreams)
-                            };
-                            let attr_i = if attr_upstreams.is_empty() {
-                                i
-                            } else {
-                                pick(&name, &attr_upstreams)
-                            };
-                            let t0 = Instant::now();
-                            let http = rc.get();
-                            let is_read = read_every > 0 && n % read_every == read_every - 1;
-                            let res = if is_read {
-                                http.get(format!("{}/v1/stream/{name}?offset=now", upstreams[i]))
-                                    .header("authorization", format!("Bearer {auth}"))
-                                    .header("stream-encryption-key", key.clone())
-                                    .send()
-                                    .await
-                            } else {
-                                let recs: Vec<serde_json::Value> = (0..batch)
-                                    .map(|b| serde_json::json!({"i": n, "b": b, "t": now_ms(), "pad": "x".repeat(pad_n)}))
-                                    .collect();
-                                http.post(format!("{}/v1/stream/{name}", upstreams[i]))
-                                    .header("authorization", format!("Bearer {auth}"))
-                                    .header("stream-encryption-key", key.clone())
-                                    .header("content-type", "application/json")
-                                    .json(&recs)
-                                    .send()
-                                    .await
-                            };
-                            match res {
-                                Ok(r) if r.status().is_success() => {
-                                    let _ = r.bytes().await;
-                                    g.ok.fetch_add(1, Ordering::Relaxed);
-                                    if is_read {
-                                        g.ok_reads.fetch_add(1, Ordering::Relaxed);
-                                    } else {
-                                        g.ok_appends.fetch_add(1, Ordering::Relaxed);
-                                        // Ledger the ACKNOWLEDGED op id.
-                                        let sx = n as usize % n_streams;
-                                        g.ack_count[sx].fetch_add(1, Ordering::Relaxed);
-                                        g.ack_sum[sx].fetch_add(n, Ordering::Relaxed);
-                                        g.ack_xor[sx].fetch_xor(n, Ordering::Relaxed);
-                                    }
-                                    g.window.fetch_add(1, Ordering::Relaxed);
-                                    let ai = attr_i.min(g.per_up_window.len().saturating_sub(1));
-                                    g.per_up_window[ai].fetch_add(1, Ordering::Relaxed);
-                                    let us = t0.elapsed().as_micros() as u64;
-                                    let _ = g.hist.lock().unwrap().record(us);
-                                    let _ = g.hist_win.lock().unwrap().record(us);
-                                }
-                                // §12.2 client contract: back off on 429/503,
-                                // honoring Retry-After with jitter. Without
-                                // this, closed-loop workers retry instantly
-                                // and admission control becomes a reject
-                                // storm that starves the whole instance
-                                // (docker staircase, 2026-07-15: 2.7M 429s,
-                                // goodput ~1/s, /health unresponsive).
-                                Ok(r)
-                                    if r.status().as_u16() == 429 || r.status().as_u16() == 503 =>
-                                {
-                                    g.throttled.fetch_add(1, Ordering::Relaxed);
-                                    let ra_ms = r
-                                        .headers()
-                                        .get("retry-after")
-                                        .and_then(|v| v.to_str().ok())
-                                        .and_then(|v| v.parse::<u64>().ok())
-                                        .map(|secs| secs * 1000)
-                                        .unwrap_or(500);
-                                    let jitter = n % 400;
-                                    tokio::time::sleep(Duration::from_millis(ra_ms + jitter)).await;
-                                }
-                                Ok(r) => {
-                                    g.errs.fetch_add(1, Ordering::Relaxed);
-                                    *g.last_err.lock().unwrap() =
-                                        format!("status {} on {name}", r.status());
-                                }
-                                Err(e) => {
-                                    g.errs.fetch_add(1, Ordering::Relaxed);
-                                    *g.last_err.lock().unwrap() = format!("{e}");
-                                }
-                            }
-                        }
-                        g.active_workers.fetch_sub(1, Ordering::Relaxed);
-                    });
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        });
-    }
-
-    fn gen_stats_json(g: &Gen) -> serde_json::Value {
-        let (win_p50, win_p99, win_n) = {
-            let hw = g.hist_win.lock().unwrap();
-            (
-                hw.value_at_quantile(0.5) as f64 / 1000.0,
-                hw.value_at_quantile(0.99) as f64 / 1000.0,
-                hw.len(),
-            )
-        };
-        let h = g.hist.lock().unwrap();
-        let per_up: Vec<u64> = g
-            .per_up_rate
-            .iter()
-            .map(|c| c.load(Ordering::Relaxed))
-            .collect();
-        serde_json::json!({
-            "mode": "closed-loop",
-            "winP50Ms": win_p50,
-            "winP99Ms": win_p99,
-            "winSamples": win_n,
-            "concurrency": g.concurrency.load(Ordering::Relaxed),
-            "achievedPerSec": g.achieved.load(Ordering::Relaxed),
-            "perUpstreamPerSec": per_up,
-            "ok": g.ok.load(Ordering::Relaxed),
-            "okAppends": g.ok_appends.load(Ordering::Relaxed),
-            "okReads": g.ok_reads.load(Ordering::Relaxed),
-            "ledger": g
-                .ack_count
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    serde_json::json!({
-                        "count": c.load(Ordering::Relaxed),
-                        "sum": g.ack_sum[i].load(Ordering::Relaxed),
-                        "xor": g.ack_xor[i].load(Ordering::Relaxed),
-                    })
-                })
-                .collect::<Vec<_>>(),
-            "errs": g.errs.load(Ordering::Relaxed),
-            "throttled": g.throttled.load(Ordering::Relaxed),
-            "draining": g.draining.load(Ordering::Relaxed),
-            "activeWorkers": g.active_workers.load(Ordering::Relaxed),
-            "meanMs": h.mean() / 1000.0,
-            "p50Ms": h.value_at_quantile(0.5) as f64 / 1000.0,
-            "p99Ms": h.value_at_quantile(0.99) as f64 / 1000.0,
-            "maxMs": h.max() as f64 / 1000.0,
-            "elapsedMin": g.start.elapsed().as_secs_f64() / 60.0,
-            "lastErr": g.last_err.lock().unwrap().clone(),
-        })
-    }
-
-    async fn gen_stats(State(g): State<Arc<Gen>>) -> impl axum::response::IntoResponse {
-        (
-            [("access-control-allow-origin", "*")],
-            axum::Json(gen_stats_json(&g)),
-        )
-    }
-
-    // Drain contract: stop taking new attempts, let in-flight ones land,
-    // then read /stats for EXACT final counters (draining=true and
-    // activeWorkers=0 means the numbers are final). Zero-loss accounting
-    // becomes an equality instead of a kill-window bound.
-    async fn gen_drain(State(g): State<Arc<Gen>>) -> impl axum::response::IntoResponse {
-        g.draining.store(true, Ordering::Relaxed);
-        axum::Json(serde_json::json!({
-            "draining": true,
-            "activeWorkers": g.active_workers.load(Ordering::Relaxed),
-        }))
-    }
-
-    let app = Router::new()
-        .route("/", get(gen_stats))
-        // The LB serves its stats at /stats; run 1 spent a debugging
-        // detour on the asymmetry. Same payload on both paths.
-        .route("/stats", get(gen_stats))
-        .route("/drain", get(gen_drain).post(gen_drain))
-        .with_state(g);
-
-    let port = env("PORT").unwrap_or_else(|| "8080".into());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
-        .await
-        .unwrap();
-    println!("pilot gen stats on :{port}");
     axum::serve(listener, app).await.unwrap();
 }
 

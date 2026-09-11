@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -44,7 +44,7 @@ struct StoredObject {
     etag: String,
     last_modified: chrono::DateTime<chrono::Utc>,
     /// Original body length (equals data.len() unless discarded).
-    orig_len: u64,
+    orig_len: usize,
     discarded: bool,
 }
 
@@ -64,7 +64,110 @@ struct Stats {
     /// public-Tigris-shaped billing rules (PUT/LIST/multipart billable
     /// Class A on 2xx; GET/HEAD billable Class B on 2xx; 304/404/412,
     /// deletes, and errors free).
-    detailed: Mutex<HashMap<(&'static str, &'static str, &'static str), [u64; 6]>>,
+    detailed: Mutex<HashMap<RequestClass, [u64; 6]>>,
+}
+
+/// Stable identity of a physical request in the emulator's cost ledger.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RequestClass {
+    tier: &'static str,
+    kind: &'static str,
+    op: &'static str,
+}
+
+impl Stats {
+    fn snapshot(&self, objects: usize) -> serde_json::Value {
+        serde_json::json!({
+            "put": self.put.load(Ordering::Relaxed),
+            "get": self.get.load(Ordering::Relaxed),
+            "head": self.head.load(Ordering::Relaxed),
+            "delete": self.delete.load(Ordering::Relaxed),
+            "list": self.list.load(Ordering::Relaxed),
+            "multipart": self.multipart.load(Ordering::Relaxed),
+            "put_bytes": self.put_bytes.load(Ordering::Relaxed),
+            "get_bytes": self.get_bytes.load(Ordering::Relaxed),
+            "objects": objects,
+        })
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator request ledger; poisoned counts cannot support cost measurements; recovering a partial ledger would silently certify false totals"
+    )]
+    fn detailed_snapshot(&self) -> serde_json::Value {
+        let detailed = self.detailed.lock().unwrap();
+        let mut cells = serde_json::Map::new();
+        let (mut class_a, mut class_b, mut free) = (0u64, 0u64, 0u64);
+        let mut rollup: HashMap<&'static str, [u64; 3]> = HashMap::new();
+        let mut keys: Vec<_> = detailed.keys().collect();
+        keys.sort();
+        for k in keys {
+            let RequestClass { tier, kind, op } = *k;
+            let counts = &detailed[k];
+            let cell: serde_json::Map<String, serde_json::Value> = STATUS_BUCKETS
+                .iter()
+                .zip(counts)
+                .filter(|(_, count)| **count > 0)
+                .map(|(bucket, count)| ((*bucket).into(), (*count).into()))
+                .collect();
+            let [
+                success,
+                not_modified,
+                missing,
+                conditional,
+                client_error,
+                server_error,
+            ] = *counts;
+            let failures = not_modified + missing + conditional + client_error + server_error;
+            let classified = match billing(op, 0) {
+                'A' => [success, 0, failures],
+                'B' => [0, success, failures],
+                _ => [0, 0, failures + success],
+            };
+            let [a, b, f] = classified;
+            class_a += a;
+            class_b += b;
+            free += f;
+            let tier_counts = rollup.entry(tier).or_default();
+            for (target, value) in tier_counts.iter_mut().zip(classified) {
+                *target += value;
+            }
+            cells.insert(format!("{tier}/{kind}/{op}"), cell.into());
+        }
+        let by_tier: serde_json::Map<String, serde_json::Value> = rollup
+            .into_iter()
+            .map(|(t, [a, b, f])| {
+                (
+                    t.to_string(),
+                    serde_json::json!({"class_a": a, "class_b": b, "free": f}),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "cells": cells,
+            "by_tier": by_tier,
+            "total": {"class_a": class_a, "class_b": class_b, "free": free},
+        })
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator request ledger; poisoned counts cannot support cost measurements; recovering a partial ledger would silently certify false totals"
+    )]
+    fn record(
+        &self,
+        method: &Method,
+        key: &str,
+        query: &HashMap<String, String>,
+        status: StatusCode,
+    ) {
+        let class = RequestClass {
+            tier: tier_class(method, key, query),
+            kind: kind_class(key),
+            op: op_name(method, key.is_empty(), query),
+        };
+        self.detailed.lock().unwrap().entry(class).or_default()[status_index(status)] += 1;
+    }
 }
 
 const STATUS_BUCKETS: [&str; 6] = ["2xx", "304", "404", "412", "4xx", "5xx"];
@@ -132,7 +235,6 @@ fn kind_class(key: &str) -> &'static str {
 fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) -> &'static str {
     match (method.clone(), key_empty) {
         (Method::GET, true) => "list",
-        (Method::POST, true) => "delete", // batch delete
         (Method::POST, false) | (Method::PUT, false)
             if query.contains_key("uploads") || query.contains_key("uploadId") =>
         {
@@ -141,7 +243,7 @@ fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) ->
         (Method::PUT, _) => "put",
         (Method::GET, false) => "get",
         (Method::HEAD, _) => "head",
-        (Method::DELETE, _) => "delete",
+        (Method::POST, true) | (Method::DELETE, _) => "delete", // batch or single delete
         _ => "other",
     }
 }
@@ -172,6 +274,33 @@ struct AppState {
 }
 
 impl AppState {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator live-object census; a poisoned object map cannot support retention measurements; recovering partial contents would hide failed storage operations"
+    )]
+    fn live_objects(&self) -> serde_json::Value {
+        // Live-object census: what the bucket holds RIGHT NOW, by
+        // tier/kind — the direct gauge for GC retention (request cells
+        // alone can't show what was never deleted).
+        let mut live: HashMap<(&'static str, &'static str), u64> = HashMap::new();
+        {
+            let objects = self.objects.lock().unwrap();
+            let no_query = HashMap::new();
+            for key in objects.keys() {
+                let k = key.split_once('/').map(|x| x.1).unwrap_or(key);
+                let tier = tier_class(&Method::PUT, k, &no_query);
+                *live.entry((tier, kind_class(k))).or_default() += 1;
+            }
+        }
+        let mut live_map = serde_json::Map::new();
+        let mut live_keys: Vec<_> = live.keys().copied().collect();
+        live_keys.sort();
+        for (tier, kind) in live_keys {
+            live_map.insert(format!("{tier}/{kind}"), live[&(tier, kind)].into());
+        }
+        live_map.into()
+    }
+
     fn next_etag(&self) -> String {
         format!(
             "\"e{:016x}\"",
@@ -248,218 +377,151 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn handle(
-    State(state): State<Arc<AppState>>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let path = uri.path().to_string();
+async fn handle(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let path = request.uri().path();
 
     // Stats endpoints bypass latency injection.
     if path == "/_s3lite/stats" {
-        let s = &state.stats;
-        let body = serde_json::json!({
-            "put": s.put.load(Ordering::Relaxed),
-            "get": s.get.load(Ordering::Relaxed),
-            "head": s.head.load(Ordering::Relaxed),
-            "delete": s.delete.load(Ordering::Relaxed),
-            "list": s.list.load(Ordering::Relaxed),
-            "multipart": s.multipart.load(Ordering::Relaxed),
-            "put_bytes": s.put_bytes.load(Ordering::Relaxed),
-            "get_bytes": s.get_bytes.load(Ordering::Relaxed),
-            "objects": state.objects.lock().unwrap().len(),
-        });
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            body.to_string(),
-        )
-            .into_response();
+        #[expect(
+            clippy::unwrap_used,
+            reason = "S3 emulator object census; a poisoned object map cannot report a trustworthy count; silently recovering it would hide failed storage operations"
+        )]
+        let objects = state.objects.lock().unwrap().len();
+        return axum::Json(state.stats.snapshot(objects)).into_response();
     }
     if path == "/_s3lite/stats2" {
-        let detailed = state.stats.detailed.lock().unwrap();
-        let mut cells = serde_json::Map::new();
-        let (mut class_a, mut class_b, mut free) = (0u64, 0u64, 0u64);
-        let mut rollup: HashMap<&'static str, [u64; 3]> = HashMap::new();
-        let mut keys: Vec<_> = detailed.keys().collect();
-        keys.sort();
-        for k in keys {
-            let (tier, kind, op) = *k;
-            let counts = &detailed[k];
-            let mut cell = serde_json::Map::new();
-            for (i, bucket) in STATUS_BUCKETS.iter().enumerate() {
-                if counts[i] > 0 {
-                    cell.insert((*bucket).into(), counts[i].into());
-                }
-                let r = rollup.entry(tier).or_default();
-                match billing(op, i) {
-                    'A' => {
-                        class_a += counts[i];
-                        r[0] += counts[i];
-                    }
-                    'B' => {
-                        class_b += counts[i];
-                        r[1] += counts[i];
-                    }
-                    _ => {
-                        free += counts[i];
-                        r[2] += counts[i];
-                    }
-                }
-            }
-            cells.insert(format!("{tier}/{kind}/{op}"), cell.into());
-        }
-        let by_tier: serde_json::Map<String, serde_json::Value> = rollup
-            .into_iter()
-            .map(|(t, [a, b, f])| {
-                (
-                    t.to_string(),
-                    serde_json::json!({"class_a": a, "class_b": b, "free": f}),
-                )
-            })
-            .collect();
-        // Live-object census: what the bucket holds RIGHT NOW, by
-        // tier/kind — the direct gauge for GC retention (request cells
-        // alone can't show what was never deleted).
-        let mut live: HashMap<(&'static str, &'static str), u64> = HashMap::new();
-        {
-            let objects = state.objects.lock().unwrap();
-            let no_query = HashMap::new();
-            for key in objects.keys() {
-                let k = key.split_once('/').map(|x| x.1).unwrap_or(key);
-                let tier = tier_class(&Method::PUT, k, &no_query);
-                *live.entry((tier, kind_class(k))).or_default() += 1;
-            }
-        }
-        let mut live_map = serde_json::Map::new();
-        let mut live_keys: Vec<_> = live.keys().copied().collect();
-        live_keys.sort();
-        for (tier, kind) in live_keys {
-            live_map.insert(format!("{tier}/{kind}"), live[&(tier, kind)].into());
-        }
-        let body = serde_json::json!({
-            "cells": cells,
-            "by_tier": by_tier,
-            "total": {"class_a": class_a, "class_b": class_b, "free": free},
-            "live_objects": live_map,
-        });
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            body.to_string(),
-        )
-            .into_response();
+        let mut body = state.stats.detailed_snapshot();
+        body["live_objects"] = state.live_objects();
+        return axum::Json(body).into_response();
     }
 
     tokio::time::sleep(state.latency).await;
 
-    let query = query_map(&uri);
-    // Path: /{bucket} or /{bucket}/{key...}
-    let trimmed = path.trim_start_matches('/');
+    dispatch(&state, request).await
+}
+
+/// Parse and classify one HTTP request once; each operation owns its state
+/// transition and every returned response enters the physical-request ledger.
+async fn dispatch(state: &Arc<AppState>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let query = query_map(&parts.uri);
+    let trimmed = parts.uri.path().trim_start_matches('/');
     let (bucket, key) = match trimmed.split_once('/') {
-        Some((b, k)) => (b.to_string(), percent_decode(k, false)),
-        None => (trimmed.to_string(), String::new()),
+        Some((bucket, key)) => (bucket, percent_decode(key, false)),
+        None => (trimmed, String::new()),
     };
     if bucket.is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let full_key = format!("{bucket}/{key}");
-
-    let tier = tier_class(&method, &key, &query);
-    let kind = kind_class(&key);
-    let op = op_name(&method, key.is_empty(), &query);
-    let resp = dispatch(
-        &state, method, &bucket, &key, &full_key, &query, headers, body,
-    )
-    .await;
-    {
-        let mut detailed = state.stats.detailed.lock().unwrap();
-        detailed.entry((tier, kind, op)).or_default()[status_index(resp.status())] += 1;
-    }
-    resp
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn dispatch(
-    state: &Arc<AppState>,
-    method: Method,
-    bucket: &str,
-    key: &str,
-    full_key: &str,
-    query: &HashMap<String, String>,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    match (method.clone(), key.is_empty()) {
-        // ---- bucket-level ----
-        (Method::GET, true) => list_objects(state, bucket, query),
+    let response = match (parts.method.clone(), key.is_empty()) {
+        (Method::GET, true) => list_objects(state, bucket, &query),
         (Method::POST, true) if query.contains_key("delete") => {
             batch_delete(state, bucket, body).await
         }
-        (Method::HEAD, true) => StatusCode::OK.into_response(),
-        (Method::PUT, true) => StatusCode::OK.into_response(), // create bucket
-
-        // ---- object-level ----
+        (Method::HEAD | Method::PUT, true) => StatusCode::OK.into_response(),
         (Method::POST, false) if query.contains_key("uploads") => {
-            state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let id = format!(
-                "u{:x}",
-                state.upload_counter.fetch_add(1, Ordering::Relaxed)
-            );
-            state
-                .uploads
-                .lock()
-                .unwrap()
-                .insert(format!("{full_key}:{id}"), BTreeMap::new());
-            let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId></InitiateMultipartUploadResult>",
-                xml_escape(bucket),
-                xml_escape(key),
-                id
-            );
-            ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
+            initiate_multipart(state, bucket, &key, &full_key)
         }
         (Method::POST, false) if query.contains_key("uploadId") => {
-            complete_multipart(state, bucket, key, full_key, query).await
+            complete_multipart(state, bucket, &key, &full_key, &query).await
         }
         (Method::PUT, false) if query.contains_key("uploadId") => {
-            state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let part: u32 = query
-                .get("partNumber")
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(0);
-            let upload_id = query.get("uploadId").cloned().unwrap_or_default();
-            let data = match axum::body::to_bytes(body, usize::MAX).await {
-                Ok(b) => b,
-                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-            };
-            let mut uploads = state.uploads.lock().unwrap();
-            let Some(parts) = uploads.get_mut(&format!("{full_key}:{upload_id}")) else {
-                return s3_error(StatusCode::NOT_FOUND, "NoSuchUpload", "upload not found");
-            };
-            parts.insert(part, data);
-            let etag = state.next_etag();
-            ([(header::ETAG, etag)], "").into_response()
+            upload_part(state, &full_key, &query, body).await
         }
         (Method::DELETE, false) if query.contains_key("uploadId") => {
-            let upload_id = query.get("uploadId").cloned().unwrap_or_default();
-            state
-                .uploads
-                .lock()
-                .unwrap()
-                .remove(&format!("{full_key}:{upload_id}"));
-            StatusCode::NO_CONTENT.into_response()
+            abort_multipart(state, &full_key, &query)
         }
-        (Method::PUT, false) => put_object(state, full_key, &headers, body).await,
-        (Method::GET, false) => get_object(state, full_key, &headers, false),
-        (Method::HEAD, false) => get_object(state, full_key, &headers, true),
-        (Method::DELETE, false) => {
-            state.stats.delete.fetch_add(1, Ordering::Relaxed);
-            state.objects.lock().unwrap().remove(full_key);
-            StatusCode::NO_CONTENT.into_response()
-        }
+        (Method::PUT, false) => put_object(state, &full_key, &parts.headers, body).await,
+        (Method::GET, false) => get_object(state, &full_key, &parts.headers, false),
+        (Method::HEAD, false) => get_object(state, &full_key, &parts.headers, true),
+        (Method::DELETE, false) => delete_object(state, &full_key),
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
-    }
+    };
+    state
+        .stats
+        .record(&parts.method, &key, &query, response.status());
+    response
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart initiation; a poisoned upload registry cannot acknowledge a reliable upload identity; failing the emulator is safer than recovering partial state"
+)]
+fn initiate_multipart(state: &Arc<AppState>, bucket: &str, key: &str, full_key: &str) -> Response {
+    state.stats.multipart.fetch_add(1, Ordering::Relaxed);
+    let id = format!(
+        "u{:x}",
+        state.upload_counter.fetch_add(1, Ordering::Relaxed)
+    );
+    state
+        .uploads
+        .lock()
+        .unwrap()
+        .insert(format!("{full_key}:{id}"), BTreeMap::new());
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId></InitiateMultipartUploadResult>",
+        xml_escape(bucket),
+        xml_escape(key),
+        id
+    );
+    ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart part admission; acknowledged parts must belong to an intact upload registry; recovering poisoned state could manufacture successful object assembly"
+)]
+async fn upload_part(
+    state: &Arc<AppState>,
+    full_key: &str,
+    query: &HashMap<String, String>,
+    body: Body,
+) -> Response {
+    state.stats.multipart.fetch_add(1, Ordering::Relaxed);
+    let part = query
+        .get("partNumber")
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(0);
+    let upload_id = query.get("uploadId").cloned().unwrap_or_default();
+    let data = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(data) => data,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let mut uploads = state.uploads.lock().unwrap();
+    let Some(parts) = uploads.get_mut(&format!("{full_key}:{upload_id}")) else {
+        return s3_error(StatusCode::NOT_FOUND, "NoSuchUpload", "upload not found");
+    };
+    parts.insert(part, data);
+    ([(header::ETAG, state.next_etag())], "").into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart abort; aborted identities must be removed from intact upload state; silently recovering a poisoned map would hide incomplete cleanup"
+)]
+fn abort_multipart(
+    state: &Arc<AppState>,
+    full_key: &str,
+    query: &HashMap<String, String>,
+) -> Response {
+    let upload_id = query.get("uploadId").cloned().unwrap_or_default();
+    state
+        .uploads
+        .lock()
+        .unwrap()
+        .remove(&format!("{full_key}:{upload_id}"));
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator deletion; a delete acknowledgement must observe an intact object map; poisoned-state recovery would hide a failed storage operation"
+)]
+fn delete_object(state: &Arc<AppState>, full_key: &str) -> Response {
+    state.stats.delete.fetch_add(1, Ordering::Relaxed);
+    state.objects.lock().unwrap().remove(full_key);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
@@ -470,6 +532,10 @@ fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, [(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator conditional writes; preconditions and publication share one unpoisoned object-map lock; recovering partial state could falsely satisfy a compare-and-set"
+)]
 async fn put_object(
     state: &Arc<AppState>,
     full_key: &str,
@@ -513,7 +579,7 @@ async fn put_object(
         }
     }
     let etag = state.next_etag();
-    let orig_len = data.len() as u64;
+    let orig_len = data.len();
     let discard = state
         .discard_substr
         .as_deref()
@@ -532,6 +598,10 @@ async fn put_object(
     ([(header::ETAG, etag)], "").into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator GET snapshot; the object map must be unpoisoned and internally generated ETag/date/range headers must be valid; recovering partial state or malformed metadata would hide an emulator invariant failure"
+)]
 fn get_object(
     state: &Arc<AppState>,
     full_key: &str,
@@ -567,26 +637,30 @@ fn get_object(
             .body(Body::empty())
             .unwrap();
     }
-    let total = if obj.discarded {
-        obj.orig_len
-    } else {
-        obj.data.len() as u64
-    };
+    // HEAD uses retained object metadata, including when benchmark mode has
+    // discarded the payload. No HEAD request may index that absent body.
+    let total = obj.orig_len;
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
-        .and_then(|r| parse_range(r, total));
-
-    let (status, slice, content_range) = match range {
-        Some((start, end)) => {
-            let s = obj.data.slice(start as usize..(end + 1) as usize);
-            (
-                StatusCode::PARTIAL_CONTENT,
-                s,
-                Some(format!("bytes {start}-{end}/{total}")),
-            )
-        }
-        None => (StatusCode::OK, obj.data.clone(), None),
+        .and_then(|raw| parse_range(raw, total));
+    let (status, selected, content_range) = match range {
+        Some(selected) => (
+            StatusCode::PARTIAL_CONTENT,
+            selected.clone(),
+            Some(format!(
+                "bytes {}-{}/{total}",
+                selected.start,
+                selected.end - 1
+            )),
+        ),
+        None => (StatusCode::OK, 0..total, None),
+    };
+    let content_length = selected.len();
+    let slice = if head_only {
+        Bytes::new()
+    } else {
+        obj.data.slice(selected)
     };
     if !head_only {
         state
@@ -605,7 +679,7 @@ fn get_object(
                 .format("%a, %d %b %Y %H:%M:%S GMT")
                 .to_string(),
         )
-        .header(header::CONTENT_LENGTH, slice.len());
+        .header(header::CONTENT_LENGTH, content_length);
     if let Some(cr) = content_range {
         builder = builder.header(header::CONTENT_RANGE, cr);
     }
@@ -617,7 +691,7 @@ fn get_object(
     builder.body(body).unwrap()
 }
 
-fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
+fn parse_range(raw: &str, total: usize) -> Option<std::ops::Range<usize>> {
     if total == 0 {
         return None;
     }
@@ -626,25 +700,35 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
 
     if start_s.is_empty() {
         // suffix range: bytes=-N
-        let n: u64 = end_s.parse().ok()?;
-        let n = n.min(total);
-        return Some((total - n, total - 1));
+        let n = usize::try_from(end_s.parse::<u64>().ok()?)
+            .unwrap_or(usize::MAX)
+            .min(total);
+        if n == 0 {
+            return None;
+        }
+        return Some(total - n..total);
     }
-    let start: u64 = start_s.parse().ok()?;
+    let start = usize::try_from(start_s.parse::<u64>().ok()?).ok()?;
     if start >= total {
         return None;
     }
     let end = if end_s.is_empty() {
         total - 1
     } else {
-        end_s.parse::<u64>().ok()?.min(total - 1)
+        usize::try_from(end_s.parse::<u64>().ok()?)
+            .unwrap_or(usize::MAX)
+            .min(total - 1)
     };
     if end < start {
         return None;
     }
-    Some((start, end))
+    Some(start..end + 1)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator object listing; pagination must observe an intact ordered object map; recovering a poisoned map could conceal lost or duplicated objects"
+)]
 fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
     state.stats.list.fetch_add(1, Ordering::Relaxed);
     let prefix = query.get("prefix").cloned().unwrap_or_default();
@@ -677,20 +761,20 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
         {
             continue;
         }
-        if let Some(delim) = &delimiter {
-            let after_prefix = &rel[prefix.len()..];
-            if let Some(pos) = after_prefix.find(delim.as_str()) {
-                let cp = format!("{}{}{}", prefix, &after_prefix[..pos], delim);
-                if common_prefixes.last() != Some(&cp) {
-                    if contents.len() + common_prefixes.len() >= max_keys {
-                        truncated = true;
-                        next_token = Some(rel.to_string());
-                        break;
-                    }
-                    common_prefixes.push(cp);
-                }
+        if let Some(delim) = &delimiter
+            && let Some(pos) = rel[prefix.len()..].find(delim.as_str())
+        {
+            let cp = format!("{}{}{}", prefix, &rel[prefix.len()..][..pos], delim);
+            if common_prefixes.last() == Some(&cp) {
                 continue;
             }
+            if contents.len() + common_prefixes.len() >= max_keys {
+                truncated = true;
+                next_token = Some(rel.to_string());
+                break;
+            }
+            common_prefixes.push(cp);
+            continue;
         }
         if contents.len() + common_prefixes.len() >= max_keys {
             truncated = true;
@@ -740,6 +824,10 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator batch deletion; each acknowledgement must remove from intact object state; recovering a poisoned map would hide failed storage operations"
+)]
 async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Response {
     state.stats.delete.fetch_add(1, Ordering::Relaxed);
     let data = match axum::body::to_bytes(body, usize::MAX).await {
@@ -779,6 +867,10 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart completion; both the removed upload and published object require intact maps; recovering either poisoned map could acknowledge incomplete assembly"
+)]
 async fn complete_multipart(
     state: &Arc<AppState>,
     bucket: &str,
@@ -805,7 +897,7 @@ async fn complete_multipart(
         .put_bytes
         .fetch_add(data.len() as u64, Ordering::Relaxed);
     let etag = state.next_etag();
-    let orig_len = data.len() as u64;
+    let orig_len = data.len();
     let discard = state
         .discard_substr
         .as_deref()
@@ -835,3 +927,15 @@ async fn complete_multipart(
     );
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
+
+#[cfg(test)]
+#[path = "s3lite/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "s3lite/range_tests.rs"]
+mod range_tests;
+
+#[cfg(test)]
+#[path = "s3lite/operation_tests.rs"]
+mod operation_tests;

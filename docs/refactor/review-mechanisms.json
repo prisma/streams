@@ -129,12 +129,12 @@
       "execution": "requires_final_head_receipt",
       "tests": [
         {
-          "file": "src/rollup.rs",
+          "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged",
           "sha256": "a8ceb2127c93edf96560752780c15649d5e3c6408b9ebc15b4d06de3d53c21db"
         },
         {
-          "file": "src/rollup.rs",
+          "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
           "sha256": "9cc3ac6546ee1435af5200ee754f9e2b30af8704b79c5e74395ab9c566448b2b"
         }
@@ -377,7 +377,7 @@
         {
           "file": "src/dst/tests/billing_controller.rs",
           "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
-          "sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108"
+          "sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9"
         },
         {
           "file": "src/dst/tests/billing_controller.rs",
@@ -557,7 +557,7 @@
         {
           "file": "src/store_timing/resources.rs",
           "name": "runtime_store_concurrency_is_shared_locally_and_independent_of_first_access",
-          "sha256": "fd2dabcd27d9f7d322727a546ed12e23b0282b8b3ff173458783c138545cb9ab"
+          "sha256": "93fd22b82a0bb9e94e254b1bafa3985085208ee49b125a2fa3a2964ce2595b3a"
         },
         {
           "file": "src/store_timing/resources.rs",
@@ -918,8 +918,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "7a349763f34eaaf750647c546ddcbabcbbe220ce7f2cd886f5c929ffa24eb2d9",
-      "after_sha256": "b16daf456f4292f566dc4e30b79f03c913057fd0f1711dea0336b8cc9d403291",
-      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling."
+      "after_sha256": "1faf886fde5b821f9f7f43d5a5827ac898d7dcacd2c6cb164fbdbc5c79c36f8b",
+      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -927,8 +927,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
-      "after_sha256": "79a759dbdd1a643b0a86c4739bdc1c05157ea216c67668e2cb5fca7aece8dffd",
-      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged."
+      "after_sha256": "feabf4c845dba6a83583dbf1639d81549cc347e4fc829f237afdb61e748c055f",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",

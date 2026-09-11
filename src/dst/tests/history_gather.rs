@@ -1,10 +1,154 @@
 //! History gather.
 
-use super::fixture_storage::{append_sized, mem, skey, wait_all_absorbed};
+use super::fixture_storage::{
+    append_sized, mem, open_engine_with_settings, skey, wait_all_absorbed,
+};
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+fn gather_hashes(tag: u8, count: u16) -> Vec<[u8; 16]> {
+    (0..count)
+        .map(|index| {
+            let [high, low] = index.to_be_bytes();
+            let mut hash = [0; 16];
+            hash[0] = tag;
+            hash[1] = high;
+            hash[2] = low;
+            hash
+        })
+        .collect()
+}
+
+async fn gather_after_reopen(
+    path: &str,
+    seed: u64,
+    cfg: crate::history::AbsorberConfig,
+    key: &crate::crypto::StreamKey,
+) -> (Vec<([u8; 16], u64)>, Arc<crate::shard::ShardEngine>) {
+    let hashes = gather_hashes(0xA9, 96);
+    let inner = mem();
+    let store = FaultStore::uniform(
+        inner,
+        seed,
+        FaultPlan {
+            error_pct: 0,
+            lost_response_pct: 0,
+            latency_pct: 100,
+            latency_ms: (20, 20),
+        },
+    );
+    let engine = open_engine_with_settings(
+        store.clone(),
+        path,
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+    )
+    .await;
+    for h in &hashes {
+        append_sized(&engine, *h, key, "", 2048).await;
+    }
+    // Fresh appends sit in the shard memtable and just-flushed
+    // L0 blocks sit in slatedb's block cache — served from
+    // either, a read costs no store op and both rigs time
+    // identically. Flush, then REOPEN the db (CAS-fences the
+    // seeder engine, the absorption-war precedent): the second
+    // engine starts with a cold cache, so the gather's frame
+    // reads genuinely traverse the latency-injected store.
+    engine.db.flush().await.unwrap();
+    let engine2 = open_engine_with_settings(
+        store.clone(),
+        path,
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+    )
+    .await;
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine2.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        cfg,
+    );
+    let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+    let mut advanced: Vec<([u8; 16], u64)> = outcome
+        .advanced
+        .iter()
+        .map(|(h, upto, _)| (*h, *upto))
+        .collect();
+    advanced.sort_unstable();
+    (advanced, engine2)
+}
+
+async fn gather_with_pacing(
+    path: &str,
+    cfg: crate::history::AbsorberConfig,
+    key: &crate::crypto::StreamKey,
+) -> (
+    Vec<([u8; 16], u64)>,
+    std::time::Duration,
+    Arc<crate::shard::ShardEngine>,
+) {
+    let hashes = gather_hashes(0xA8, 96);
+    let store = mem();
+    let engine = open_engine_with_settings(
+        store.clone(),
+        path,
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+    )
+    .await;
+    for h in &hashes {
+        append_sized(&engine, *h, key, "", 2048).await;
+    }
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        cfg,
+    );
+    let t0 = std::time::Instant::now();
+    let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+    let mut advanced: Vec<([u8; 16], u64)> = outcome
+        .advanced
+        .iter()
+        .map(|(h, upto, _)| (*h, *upto))
+        .collect();
+    advanced.sort_unstable();
+    (advanced, t0.elapsed(), engine)
+}
+
+/// Preserve the existing lower order statistic: floor((30 - 1) * p).
+/// The fixed 30-probe episode uses indices 14 (p50) and 28 (p99).
+async fn paced_append_p99_ms(
+    engine: &Arc<crate::shard::ShardEngine>,
+    key: &crate::crypto::StreamKey,
+    tag: &str,
+) -> u128 {
+    let probe = [0xA7; 16];
+    let mut latencies = [0; 30];
+    for sample in &mut latencies {
+        let started = std::time::Instant::now();
+        append_sized(engine, probe, key, "", 1024).await;
+        *sample = started.elapsed().as_millis();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    latencies.sort_unstable();
+    eprintln!("{tag}: p50={}ms p99={}ms", latencies[14], latencies[28]);
+    latencies[28]
+}
 
 /// #266 adaptive-estimate pin: the reservation estimate seeds at the
 /// worst case (boot gathers cover restart-rediscovery bursts), decays
@@ -16,26 +160,16 @@ use std::sync::atomic::Ordering;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adaptive_gather_estimate_seeds_decays_and_jumps() {
     let store = mem();
-    let db = slatedb::Db::builder("dst-est", store.clone() as Arc<dyn ObjectStore>)
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-est".to_string(),
-        Arc::new(db),
+    let engine = open_engine_with_settings(
         store.clone(),
+        "dst-est",
         crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
+        slatedb::config::Settings::default(),
+    )
+    .await;
     let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
+        store,
+        engine,
         Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig::default(),
     );
@@ -82,103 +216,8 @@ async fn adaptive_gather_estimate_seeds_decays_and_jumps() {
 async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
     const N: usize = 96;
     let key = skey();
-    let mk_hashes = || -> Vec<[u8; 16]> {
-        (0..N)
-            .map(|i| {
-                let mut h = [0u8; 16];
-                h[0] = 0xA9;
-                h[1] = (i / 256) as u8;
-                h[2] = (i % 256) as u8;
-                h
-            })
-            .collect()
-    };
-    let rig = |path: &'static str, seed: u64, cfg: crate::history::AbsorberConfig| {
-        let key = key.clone();
-        let hashes = mk_hashes();
-        async move {
-            let inner = mem();
-            let store = FaultStore::uniform(
-                inner,
-                seed,
-                FaultPlan {
-                    error_pct: 0,
-                    lost_response_pct: 0,
-                    latency_pct: 100,
-                    latency_ms: (20, 20),
-                },
-            );
-            let db = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
-                .with_settings(slatedb::config::Settings {
-                    flush_interval: Some(std::time::Duration::from_millis(5)),
-                    manifest_poll_interval: std::time::Duration::from_millis(50),
-                    ..Default::default()
-                })
-                .build()
-                .await
-                .expect("open db");
-            let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-                .await
-                .expect("load maintenance");
-            let engine = crate::shard::ShardEngine::start(
-                path.to_string(),
-                Arc::new(db),
-                store.clone(),
-                crate::shard::ShardConfig::default(),
-                absorb_tx,
-                None,
-                __maint,
-            );
-            for h in &hashes {
-                append_sized(&engine, *h, &key, "", 2048).await;
-            }
-            // Fresh appends sit in the shard memtable and just-flushed
-            // L0 blocks sit in slatedb's block cache — served from
-            // either, a read costs no store op and both rigs time
-            // identically. Flush, then REOPEN the db (CAS-fences the
-            // seeder engine, the absorption-war precedent): the second
-            // engine starts with a cold cache, so the gather's frame
-            // reads genuinely traverse the latency-injected store.
-            engine.db.flush().await.unwrap();
-            let db2 = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
-                .with_settings(slatedb::config::Settings {
-                    flush_interval: Some(std::time::Duration::from_millis(5)),
-                    manifest_poll_interval: std::time::Duration::from_millis(50),
-                    ..Default::default()
-                })
-                .build()
-                .await
-                .expect("reopen db");
-            let (absorb_tx2, _absorb_rx2) = crate::history::absorber_channel();
-            let __maint2 = crate::shard::load_or_rebuild_maintenance(&db2)
-                .await
-                .expect("reload maintenance");
-            let engine2 = crate::shard::ShardEngine::start(
-                path.to_string(),
-                Arc::new(db2),
-                store.clone(),
-                crate::shard::ShardConfig::default(),
-                absorb_tx2,
-                None,
-                __maint2,
-            );
-            let absorber = crate::history::Absorber::new(
-                store.clone(),
-                engine2.clone(),
-                Arc::new(crate::history::KeyCache::default()),
-                cfg,
-            );
-            let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
-            let mut advanced: Vec<([u8; 16], u64)> = outcome
-                .advanced
-                .iter()
-                .map(|(h, upto, _)| (*h, *upto))
-                .collect();
-            advanced.sort_unstable();
-            (advanced, engine2)
-        }
-    };
+    let seed = 7501;
+
     let serial_cfg = crate::history::AbsorberConfig {
         gather_read_par: 1,
         gather_pace: std::time::Duration::ZERO,
@@ -189,8 +228,8 @@ async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
         gather_pace: std::time::Duration::ZERO,
         ..Default::default()
     };
-    let (adv_serial, _e1) = rig("dst-rpar-1", 7501, serial_cfg).await;
-    let (adv_par, _e2) = rig("dst-rpar-8", 7501, par_cfg).await;
+    let (adv_serial, _e1) = gather_after_reopen("dst-rpar-1", seed, serial_cfg, &key).await;
+    let (adv_par, _e2) = gather_after_reopen("dst-rpar-8", seed, par_cfg, &key).await;
     assert_eq!(adv_par.len(), N, "parallel gather must settle every stream");
     assert_eq!(
         adv_par, adv_serial,
@@ -213,65 +252,6 @@ async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
 async fn gather_pacing_preserves_outcomes_and_opens_windows() {
     const N: usize = 96;
     let key = skey();
-    let mk_hashes = || -> Vec<[u8; 16]> {
-        (0..N)
-            .map(|i| {
-                let mut h = [0u8; 16];
-                h[0] = 0xA8;
-                h[1] = (i / 256) as u8;
-                h[2] = (i % 256) as u8;
-                h
-            })
-            .collect()
-    };
-    // Two rigs, identical data shape, differing ONLY in pacing.
-    let rig = |path: &'static str, cfg: crate::history::AbsorberConfig| {
-        let key = key.clone();
-        let hashes = mk_hashes();
-        async move {
-            let store = mem();
-            let db = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
-                .with_settings(slatedb::config::Settings {
-                    flush_interval: Some(std::time::Duration::from_millis(5)),
-                    manifest_poll_interval: std::time::Duration::from_millis(50),
-                    ..Default::default()
-                })
-                .build()
-                .await
-                .expect("open db");
-            let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-                .await
-                .expect("load maintenance");
-            let engine = crate::shard::ShardEngine::start(
-                path.to_string(),
-                Arc::new(db),
-                store.clone(),
-                crate::shard::ShardConfig::default(),
-                absorb_tx,
-                None,
-                __maint,
-            );
-            for h in &hashes {
-                append_sized(&engine, *h, &key, "", 2048).await;
-            }
-            let absorber = crate::history::Absorber::new(
-                store.clone(),
-                engine.clone(),
-                Arc::new(crate::history::KeyCache::default()),
-                cfg,
-            );
-            let t0 = std::time::Instant::now();
-            let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
-            let mut advanced: Vec<([u8; 16], u64)> = outcome
-                .advanced
-                .iter()
-                .map(|(h, upto, _)| (*h, *upto))
-                .collect();
-            advanced.sort_unstable();
-            (advanced, t0.elapsed(), engine)
-        }
-    };
 
     // read_par 1: parks happen between WAVES, so serial reads keep
     // the zero-window park count exactly equal to the read count.
@@ -286,8 +266,9 @@ async fn gather_pacing_preserves_outcomes_and_opens_windows() {
         gather_read_par: 1,
         ..Default::default()
     };
-    let (adv_paced, t_paced, _e1) = rig("dst-pace-on", paced_cfg).await;
-    let (adv_unpaced, _t_unpaced, _e2) = rig("dst-pace-off", unpaced_cfg).await;
+    let (adv_paced, t_paced, _e1) = gather_with_pacing("dst-pace-on", paced_cfg, &key).await;
+    let (adv_unpaced, _t_unpaced, _e2) =
+        gather_with_pacing("dst-pace-off", unpaced_cfg, &key).await;
 
     assert_eq!(adv_paced.len(), N, "paced gather must settle every stream");
     assert_eq!(
@@ -322,39 +303,20 @@ async fn sparse_absorption_wave_bounds_append_latency() {
         },
     );
     let key = skey();
-    const N: usize = 192;
-    let hashes: Vec<[u8; 16]> = (0..N)
-        .map(|i| {
-            let mut h = [0u8; 16];
-            h[0] = 0xA6;
-            h[1] = (i / 256) as u8;
-            h[2] = (i % 256) as u8;
-            h
-        })
-        .collect();
+    const N: u16 = 192;
+    let hashes = gather_hashes(0xA6, N);
 
-    let db = slatedb::Db::builder("dst-wave", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
+    let engine = open_engine_with_settings(
+        store.clone(),
+        "dst-wave",
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-wave".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
+        },
+    )
+    .await;
     // Sparse seed: ~2 KiB per stream — the 10k-tenant field shape in
     // miniature.
     for h in &hashes {
@@ -368,51 +330,34 @@ async fn sparse_absorption_wave_bounds_append_latency() {
         crate::history::AbsorberConfig::default(),
     );
 
-    let pctl = |mut v: Vec<u128>, p: f64| -> u128 {
-        v.sort_unstable();
-        v[((v.len() as f64 - 1.0) * p) as usize]
-    };
-    let paced_appends = |tag: &'static str| {
-        let engine = engine.clone();
-        let key = key.clone();
-        let probe: [u8; 16] = [0xA7; 16];
-        async move {
-            let mut lat = Vec::with_capacity(30);
-            for _ in 0..30 {
-                let t0 = std::time::Instant::now();
-                append_sized(&engine, probe, &key, "", 1024).await;
-                lat.push(t0.elapsed().as_millis());
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            eprintln!(
-                "{tag}: p50={}ms p99={}ms",
-                pctl(lat.clone(), 0.5),
-                pctl(lat.clone(), 0.99)
-            );
-            lat
-        }
-    };
     // Probe stream must exist before measuring.
     append_sized(&engine, [0xA7; 16], &key, "", 1024).await;
 
-    let base = paced_appends("baseline").await;
+    let base_p99 = paced_append_p99_ms(&engine, &key, "baseline").await;
 
     // The WAVE: one gather sweeping every sparse stream, concurrent
     // with the paced appends on the shared 2-worker runtime.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "sparse_absorption_wave_bounds_append_latency; this test owns the concurrent wave and joins its actual result before asserting latency; replacing the spawned wave with sequential work would stop exercising cross-worker contention"
+    )]
     let wave_task = {
         let absorber = absorber;
         let hashes = hashes.clone();
         tokio::spawn(async move {
-            let _ = absorber.absorb_gather_v2(&hashes).await;
+            absorber
+                .absorb_gather_v2(&hashes)
+                .await
+                .expect("wave gather")
         })
     };
-    let during = paced_appends("during-wave").await;
-    let _ = wave_task.await;
+    let wave_p99 = paced_append_p99_ms(&engine, &key, "during-wave").await;
+    wave_task
+        .await
+        .expect("wave task must complete without panicking");
 
-    let base_p99 = pctl(base, 0.99) as f64;
-    let wave_p99 = pctl(during, 0.99) as f64;
     assert!(
-        wave_p99 <= base_p99 * 4.0 + 150.0,
+        wave_p99 <= base_p99 * 4 + 150,
         "append p99 under a sparse absorption wave must stay bounded: \
          baseline {base_p99}ms vs wave {wave_p99}ms"
     );

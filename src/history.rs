@@ -22,7 +22,7 @@ use slatedb::config::{CompressionCodec, Settings, WriteOptions};
 use slatedb::{Db, WriteBatch};
 use tokio::sync::mpsc;
 
-use crate::crypto::{RouteHash, SegmentHash, StreamKey, hex};
+use crate::crypto::{RouteHash, SegmentHash, StreamKey};
 use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
 #[cfg(test)]
@@ -67,7 +67,7 @@ fn postings_scan_opts() -> slatedb::config::ScanOptions {
 // Values are raw stream-key-encrypted frames, byte-identical to the
 // shard log's — the reader decodes them with the same tail machinery.
 
-pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<u8> {
+pub(crate) fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(41);
     k.extend_from_slice(&route.0);
     k.extend_from_slice(&inc.0);
@@ -87,7 +87,7 @@ pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<
 /// tolerantly: (l0_sst_count, l0_bytes_est, compacted_runs,
 /// manifest_id). The review's leading indicator — "history L0
 /// approaching 64 × 4 MiB" — is exactly l0_sst_count here.
-pub fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
+pub(crate) fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
     fn sum_sizes(v: &serde_json::Value) -> u64 {
         match v {
             serde_json::Value::Object(m) => m
@@ -145,7 +145,7 @@ pub fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
 /// an oversized gather serializes process-wide instead of deadlocking.
 /// Budgets are process-wide BY CONSTRUCTION: the semaphores live in one
 /// process-level static, not per absorber.
-pub struct AbsorbBudget {
+pub(crate) struct AbsorbBudget {
     bytes: tokio::sync::Semaphore,
     gathers: tokio::sync::Semaphore,
     capacity: usize,
@@ -158,7 +158,7 @@ pub struct AbsorbBudget {
 /// frames + WriteBatch value/key clones + posting builders + SST
 /// encode. Conservative by design — under-reserving is how instances
 /// die between RSS samples.
-pub const ABSORB_BUILD_MULTIPLIER: usize = 3;
+pub(crate) const ABSORB_BUILD_MULTIPLIER: usize = 3;
 
 /// Per-stream byte cap for one gather chunk — bounds what a single
 /// stream contributes to a batch (and what one wave slot holds in
@@ -169,7 +169,7 @@ pub(crate) const GATHER_PER_STREAM_CAP: usize = 4 * 1024 * 1024;
 /// frame header + maximum routing key + length fields + AEAD tag are
 /// all well under this; rounding the reservation UP is the safe
 /// direction.
-pub const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
+pub(crate) const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
 
 /// Worst-case MODELED transient for ONE legal oversized frame: the
 /// packer deliberately lets a single frame proceed alone (liveness —
@@ -190,14 +190,14 @@ pub const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
 /// shrinks this proportionally and buys the difference back as
 /// admission headroom.
 #[cfg(test)]
-pub fn absorb_worst_frame_transient() -> usize {
+pub(crate) fn absorb_worst_frame_transient() -> usize {
     worst_frame_transient_for(crate::protocol_pin::MAX_BODY_BYTES)
 }
 
 /// The sizing rule as a pure function of the body ceiling, so it can be
 /// asserted without mutating process-wide state under a parallel test
 /// harness.
-pub fn worst_frame_transient_for(body_limit: usize) -> usize {
+pub(crate) fn worst_frame_transient_for(body_limit: usize) -> usize {
     (body_limit + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
 }
 
@@ -207,7 +207,7 @@ pub fn worst_frame_transient_for(body_limit: usize) -> usize {
 /// Runtime-scoped resources shared by every engine of that runtime.
 /// Construction captures validated capacities; no first caller can select
 /// configuration for a different runtime.
-pub struct HistoryResources {
+pub(crate) struct HistoryResources {
     pub budget: AbsorbBudget,
     pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
     pub paused: std::sync::atomic::AtomicBool,
@@ -224,10 +224,10 @@ impl std::fmt::Debug for HistoryResources {
     }
 }
 impl HistoryResources {
-    pub fn new(cfg: &crate::config::HistoryConfig, packing_bytes: usize) -> Self {
+    pub(crate) fn new(cfg: &crate::config::HistoryConfig, packing_bytes: usize) -> Self {
         Self::with_body_limit(cfg, packing_bytes, crate::protocol_pin::MAX_BODY_BYTES)
     }
-    pub fn with_body_limit(
+    pub(crate) fn with_body_limit(
         cfg: &crate::config::HistoryConfig,
         packing_bytes: usize,
         body_limit: usize,
@@ -251,13 +251,13 @@ impl HistoryResources {
             resolved_memory_config: std::sync::OnceLock::new(),
         }
     }
-    pub fn per_gather_reservation_bytes(&self) -> usize {
+    pub(crate) fn per_gather_reservation_bytes(&self) -> usize {
         self.packing_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
             .max(self.worst_frame_transient)
             .clamp(1, self.budget.capacity())
     }
-    pub fn effective_gather_concurrency(&self) -> usize {
+    pub(crate) fn effective_gather_concurrency(&self) -> usize {
         self.budget
             .gather_slots()
             .min((self.budget.capacity() / self.per_gather_reservation_bytes().max(1)).max(1))
@@ -269,12 +269,12 @@ impl HistoryResources {
 /// FLUSH acceptance leg's lever: it stalls the actual gather flush
 /// path WITH the reservation held (it does not pause the SlateDB
 /// compactor itself).
-pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// The budget floor as a pure function (tested directly): a configured
 /// capacity below one worst-case frame build is raised to it.
 #[cfg(test)]
-pub fn floored_budget_capacity(configured: usize) -> usize {
+pub(crate) fn floored_budget_capacity(configured: usize) -> usize {
     configured.max(absorb_worst_frame_transient())
 }
 
@@ -282,11 +282,11 @@ pub fn floored_budget_capacity(configured: usize) -> usize {
 /// test: pressure = sampled RSS + absorber bytes ALREADY RESERVED —
 /// the reservation is visible the instant it is granted, so admission
 /// backs off BEFORE the allocation shows up in an RSS sample.
-pub fn memory_pressure_mb(rss_mb: u64, reserved_bytes: u64) -> u64 {
+pub(crate) fn memory_pressure_mb(rss_mb: u64, reserved_bytes: u64) -> u64 {
     rss_mb.saturating_add(reserved_bytes / (1024 * 1024))
 }
 
-pub struct AbsorbReservation<'a> {
+pub(crate) struct AbsorbReservation<'a> {
     bytes: usize,
     budget: &'a AbsorbBudget,
     // RAII permits (review: cancellation safety). If reserve() is
@@ -300,7 +300,7 @@ pub struct AbsorbReservation<'a> {
 }
 
 impl AbsorbBudget {
-    pub fn new(bytes: usize, gathers: usize) -> Self {
+    pub(crate) fn new(bytes: usize, gathers: usize) -> Self {
         // Permits are addressed as u32 (acquire_many); cap the byte
         // capacity there so conversions are total, never truncating.
         let capacity = bytes.clamp(1, u32::MAX as usize);
@@ -316,11 +316,11 @@ impl AbsorbBudget {
 
     /// The effective (floored, clamped) byte capacity — startup
     /// invariants and the campaign's verify-before-load read this.
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
 
-    pub fn gather_slots(&self) -> usize {
+    pub(crate) fn gather_slots(&self) -> usize {
         self.gather_cap
     }
 
@@ -330,7 +330,7 @@ impl AbsorbBudget {
     /// once on a 1 GiB instance. Cancellation-safe: permits are RAII,
     /// so a reservation future dropped at ANY await point returns
     /// whatever it already held.
-    pub async fn reserve(&self, estimate: usize) -> AbsorbReservation<'_> {
+    pub(crate) async fn reserve(&self, estimate: usize) -> AbsorbReservation<'_> {
         let want = estimate.clamp(1, self.capacity);
         // capacity <= u32::MAX by construction, so this is total.
         let want_permits = u32::try_from(want).expect("capacity clamped to u32 range");
@@ -356,23 +356,23 @@ impl AbsorbBudget {
         }
     }
 
-    pub fn inflight(&self) -> u64 {
+    pub(crate) fn inflight(&self) -> u64 {
         self.inflight.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn reserved_bytes(&self) -> u64 {
+    pub(crate) fn reserved_bytes(&self) -> u64 {
         self.reserved.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    pub fn gather_slots_free(&self) -> usize {
+    pub(crate) fn gather_slots_free(&self) -> usize {
         self.gathers.available_permits()
     }
 }
 
 impl AbsorbReservation<'_> {
     /// Bytes actually GRANTED (post-clamp) — what the gauges report.
-    pub fn granted(&self) -> usize {
+    pub(crate) fn granted(&self) -> usize {
         self.bytes
     }
 
@@ -385,7 +385,7 @@ impl AbsorbReservation<'_> {
     /// (resolved_gather_packing_bytes caps gather_max at capacity ÷
     /// multiplier), so a shortfall after clamping only occurs in
     /// shapes the pre-adaptive reservation could not cover either.
-    pub async fn grow(&mut self, additional: usize) {
+    pub(crate) async fn grow(&mut self, additional: usize) {
         let add = additional.min(self.budget.capacity.saturating_sub(self.bytes));
         if add == 0 {
             return;
@@ -421,18 +421,18 @@ impl Drop for AbsorbReservation<'_> {
 // Gather observability (OOM review instrumentation): last-gather phase
 // timings + reserved-vs-actual, and cumulative absorbed/ingested bytes
 // for rate derivation between ops snapshots.
-pub static ABSORB_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
-pub static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ABSORB_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
 /// Time the last gather spent PARKED between frame reads (#266 pacing).
 /// Included in GATHER_LAST_READ_MS's window; subtract to attribute the
 /// read phase between real store reads and deliberate append windows.
-pub static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
-pub static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
 
 /// Settings for the SHARED history v2 partition (docs/HISTORY-V2.md).
 /// Differences from v1 per-stream DBs, each deliberate: NO compression
@@ -523,20 +523,16 @@ pub(crate) fn history_settings(
     }
 }
 
-pub fn history_db_path(hash: &[u8; 16]) -> String {
-    format!("streams/{}", hex(hash))
-}
-
 // ---- key cache (transient; fed by keyed requests) ----
 
-pub struct KeyEntry {
+pub(crate) struct KeyEntry {
     pub key: StreamKey,
     pub epoch: [u8; 16],
     pub at: Instant,
 }
 
 #[derive(Default)]
-pub struct KeyCache {
+pub(crate) struct KeyCache {
     map: Mutex<HashMap<[u8; 16], KeyEntry>>,
 }
 
@@ -547,7 +543,7 @@ const KEY_TTL: Duration = Duration::from_secs(900);
 const KEY_CACHE_MAX: usize = 65_536;
 
 impl KeyCache {
-    pub fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
+    pub(crate) fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
         let mut map = self.map.lock().unwrap();
         if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
             map.retain(|_, e| e.at.elapsed() <= KEY_TTL);
@@ -567,7 +563,7 @@ impl KeyCache {
         );
     }
 
-    pub fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
+    pub(crate) fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
         let mut map = self.map.lock().unwrap();
         let expired = map.get(hash).is_some_and(|e| e.at.elapsed() > KEY_TTL);
         if expired {
@@ -578,7 +574,7 @@ impl KeyCache {
         Some((e.key.clone(), e.epoch))
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.map.lock().unwrap().len()
     }
 }
@@ -586,7 +582,7 @@ impl KeyCache {
 // ---- absorber ----
 
 #[derive(Clone)]
-pub struct AbsorberConfig {
+pub(crate) struct AbsorberConfig {
     pub threshold_bytes: u64,
     pub threshold_age: Duration,
     pub tick: Duration,
@@ -752,7 +748,7 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
     })
 }
 
-pub struct Absorber {
+pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
     /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
     /// against a 96 MiB worst-case reservation — 19% of the 1 GiB
@@ -875,7 +871,7 @@ impl Absorber {
     }
 
     #[cfg(test)]
-    pub fn start(
+    pub(crate) fn start(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
         keys: Arc<KeyCache>,
@@ -1334,15 +1330,15 @@ use std::sync::atomic::AtomicU64;
 
 /// Zero-route tails with unabsorbed data (a bug, not a layout — the v1
 /// per-stream format was deleted in the pre-launch clean switch).
-pub static ABSORB_ZERO_ROUTE_DROPPED: AtomicU64 = AtomicU64::new(0);
-pub static POSTINGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
-pub static POSTINGS_PAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
-pub static POSTINGS_RUNS_WRITTEN: AtomicU64 = AtomicU64::new(0);
-pub static CANONICAL_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
-pub static READ_SPANS_MAX: AtomicU64 = AtomicU64::new(0);
-pub static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
-pub static READ_FRAMES_MATCHED: AtomicU64 = AtomicU64::new(0);
-pub static POSTINGS_CORRUPT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ABSORB_ZERO_ROUTE_DROPPED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static POSTINGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static POSTINGS_PAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static POSTINGS_RUNS_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CANONICAL_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static READ_SPANS_MAX: AtomicU64 = AtomicU64::new(0);
+pub(crate) static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static READ_FRAMES_MATCHED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static POSTINGS_CORRUPT: AtomicU64 = AtomicU64::new(0);
 
 pub async fn read_history2(
     part: &Arc<Db>,
@@ -1464,7 +1460,7 @@ async fn read_history2_keyed(
 /// `provable_to < upto` (a load window that could not reach the whole
 /// range) yields an honest partial at the proven boundary.
 #[allow(clippy::too_many_arguments)]
-pub async fn read_history2_keyed_cached(
+pub(crate) async fn read_history2_keyed_cached(
     cache: &Arc<crate::postings_cache::PostingsCache>,
     part: &Arc<Db>,
     route: RouteHash,
@@ -1534,7 +1530,7 @@ async fn read_history2_keyed_envelope(
     Ok((frames, last, completed))
 }
 
-pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbSignal>) {
+pub(crate) fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbSignal>) {
     mpsc::channel(65_536)
 }
 

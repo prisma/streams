@@ -8,7 +8,7 @@ use std::{
 /// Only construction/extension validates the whole run array. Warm windows
 /// borrow this immutable proof; callers cannot install an unchecked Arc.
 #[derive(Clone)]
-pub struct ValidatedRuns(Arc<[AbsRun]>);
+pub(crate) struct ValidatedRuns(Arc<[AbsRun]>);
 impl ValidatedRuns {
     pub(crate) fn new(runs: Vec<AbsRun>) -> Option<Self> {
         validate(&runs)?;
@@ -68,7 +68,7 @@ pub(super) fn validate(runs: &[AbsRun]) -> Option<()> {
 }
 
 /// Boundary estimates retain whole-run bytes, as canonical clipping did.
-pub struct RunWindow {
+pub(crate) struct RunWindow {
     owner: ValidatedRuns,
     indices: Range<usize>,
     from: u64,

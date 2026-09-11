@@ -26,7 +26,7 @@ impl Ewma {
             // "never fed" sentinel.
             self.last_ms = now_ms.max(1);
         }
-        let dt = ((now_ms - self.last_ms).max(0) as f64) / 1000.0;
+        let dt = (now_ms.saturating_sub(self.last_ms).max(0) as f64) / 1000.0;
         if dt > 0.0 {
             let decay = (-dt / self.window_secs).exp();
             self.rate *= decay;
@@ -42,7 +42,7 @@ impl Ewma {
         if self.last_ms == 0 {
             return 0.0;
         }
-        let dt = ((now_ms - self.last_ms).max(0) as f64) / 1000.0;
+        let dt = (now_ms.saturating_sub(self.last_ms).max(0) as f64) / 1000.0;
         self.rate * (-dt / self.window_secs).exp()
     }
 }
@@ -83,6 +83,10 @@ impl SpaceSaving8 {
             return;
         }
         // Replace the minimum, inheriting its count as error bound.
+        #[expect(
+            clippy::expect_used,
+            reason = "SpaceSaving8 replacement; the preceding length guard proves eight occupied slots; silently ignoring an impossible empty table would lose the observation"
+        )]
         let min = self.slots.iter_mut().min_by_key(|s| s.1).expect("8 slots");
         *min = (key, min.1 + amount, min.1);
     }
@@ -104,6 +108,11 @@ impl SpaceSaving8 {
         if self.total == 0 {
             return 0;
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "Heavy-hitter threshold; the saturating float cast defines the existing floor including NaN, negative and infinite inputs; direct float comparison changes strict integer threshold semantics"
+        )]
         let floor = (self.total as f64 * frac) as u64;
         self.slots
             .iter()
@@ -136,7 +145,8 @@ impl Hll64 {
     }
 
     pub(crate) fn add(&mut self, key_hash: &[u8; 16]) {
-        let h = u64::from_le_bytes(key_hash[8..16].try_into().expect("hll half"));
+        let [.., a, b, c, d, e, f, g, h] = *key_hash;
+        let h = u64::from_le_bytes([a, b, c, d, e, f, g, h]);
         let idx = (h & 0x3f) as usize;
         let rest = h >> 6;
         let rank = (rest.trailing_zeros() + 1).min(58) as u8;
@@ -184,13 +194,18 @@ pub(crate) struct KeyDistribution {
 
 impl KeyDistribution {
     pub(crate) fn new(lo: u64, hi: u64, window_secs: f64) -> KeyDistribution {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Distribution rotation window; fractional milliseconds truncate and unbounded windows saturate at i64::MAX; an alternative conversion would introduce a different time policy"
+        )]
+        let window_ms = (window_secs.max(1.0) * 1000.0) as i64;
         KeyDistribution {
             bins: vec![Ewma::new(window_secs); 64],
             top_keys: SpaceSaving8::default(),
             prev_top_keys: SpaceSaving8::default(),
             distinct: Hll64::default(),
             prev_distinct: Hll64::default(),
-            window_ms: (window_secs.max(1.0) * 1000.0) as i64,
+            window_ms,
             window_started_ms: 0,
             bytes: Ewma::new(window_secs),
             reqs: Ewma::new(window_secs),
@@ -206,7 +221,7 @@ impl KeyDistribution {
             self.window_started_ms = now_ms.max(1);
             return;
         }
-        if now_ms - self.window_started_ms >= self.window_ms {
+        if now_ms.saturating_sub(self.window_started_ms) >= self.window_ms {
             self.prev_top_keys = std::mem::take(&mut self.top_keys);
             self.prev_distinct = std::mem::take(&mut self.distinct);
             self.window_started_ms = now_ms;
@@ -229,7 +244,18 @@ impl KeyDistribution {
         ((rel as u128 * 64u128) / span as u128) as usize
     }
 
-    pub fn note(&mut self, now_ms: i64, point: u64, key_hash: [u8; 16], bytes: u64, records: u64) {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Distribution observation; timestamp, routing point, key hash and two measured quantities describe one sample; passing a storage descriptor would couple this bounded sketch to registry state"
+    )]
+    pub(crate) fn note(
+        &mut self,
+        now_ms: i64,
+        point: u64,
+        key_hash: [u8; 16],
+        bytes: u64,
+        records: u64,
+    ) {
         self.maybe_rotate(now_ms);
         let b = self.bin_of(point);
         self.bins[b].add(now_ms, bytes as f64);
@@ -251,27 +277,107 @@ impl KeyDistribution {
             return None;
         }
         let mut acc = 0.0;
-        for (i, l) in loads.iter().enumerate() {
-            acc += l;
-            if acc >= total / 2.0 {
-                if i + 1 >= 64 {
-                    return None; // all load in the last bin
-                }
-                let span = self.hi.saturating_sub(self.lo).max(1) as u128;
-                let point = self.lo + ((span * (i as u128 + 1)) / 64) as u64;
-                if point <= self.lo || point >= self.hi {
-                    return None;
-                }
-                return Some((point, acc / total));
-            }
+        let index = loads.iter().position(|load| {
+            acc += load;
+            acc >= total / 2.0
+        })?;
+        if index >= 63 {
+            return None; // all load in the last bin
         }
-        None
+        let span = u128::from(self.hi.saturating_sub(self.lo).max(1));
+        let point = u64::try_from(u128::from(self.lo) + span * (index as u128 + 1) / 64).ok()?;
+        (point > self.lo && point < self.hi).then_some((point, acc / total))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use proptest::prelude::{any, prop_assert, prop_assert_eq};
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config { cases: 1024, ..Default::default() })]
+        #[test]
+        fn backward_clock_observations_preserve_all_recent_load(
+            first in 1i64..i64::MAX, earlier in any::<i64>(), a in any::<u32>(), b in any::<u32>(),
+        ) {
+            let earlier = earlier.min(first);
+            let mut rate = Ewma::new(1.0);
+            rate.add(first, f64::from(a));
+            rate.add(earlier, f64::from(b));
+            prop_assert_eq!(rate.value(earlier), f64::from(a) + f64::from(b));
+        }
+
+        #[test]
+        fn histogram_split_satisfies_wide_integer_bin_bounds(
+            lo in 0u64..=(u64::MAX / 2), span in 64u64..=(u64::MAX / 2), bin in 0usize..63,
+        ) {
+            let hi = lo + span;
+            let mut distribution = KeyDistribution::new(lo, hi, 1.0);
+            distribution.bins[bin].add(1_000, 1.0);
+            let (point, fraction) = distribution.weighted_median(1_000).unwrap();
+            prop_assert!(point > lo && point < hi);
+            prop_assert_eq!(fraction, 1.0);
+            let boundary = u128::from(span) * (bin as u128 + 1);
+            let left = u128::from(point - lo) * 64;
+            prop_assert!(left <= boundary && boundary < left + 64);
+        }
+    }
+
+    #[test]
+    fn backward_clock_extremes_do_not_decay_or_rotate_recent_load() {
+        let mut rate = Ewma::new(1.0);
+        rate.add(1_000, 10.0);
+        rate.add(i64::MIN, 1.0);
+        assert_eq!(rate.value(i64::MIN), 11.0);
+        assert_eq!(rate.value(1_000), 11.0);
+        let mut distribution = KeyDistribution::new(0, 64, 1.0);
+        distribution.note(1_000, 7, [7; 16], 10, 1);
+        distribution.note(i64::MIN, 7, [7; 16], 1, 1);
+        assert_eq!(distribution.bytes.value(i64::MIN), 11.0);
+        assert_eq!(distribution.top_keys.total, 11);
+        assert_eq!(distribution.prev_top_keys.total, 0);
+    }
+
+    #[test]
+    fn fractional_thresholds_keep_saturating_integer_floor_semantics() {
+        let mut keys = SpaceSaving8::default();
+        keys.add([1; 16], 7);
+        keys.add([2; 16], 3);
+        for fraction in [f64::NAN, f64::NEG_INFINITY, -0.5] {
+            assert_eq!(keys.keys_above(fraction), 2);
+        }
+        assert_eq!(keys.keys_above(0.5), 1);
+        assert_eq!(keys.keys_above(0.7), 0);
+        assert_eq!(keys.keys_above(f64::INFINITY), 0);
+    }
+
+    #[test]
+    fn hll_uses_the_little_endian_second_half() {
+        let mut key = [0; 16];
+        key[8] = 5 | 64;
+        let mut estimate = Hll64::default();
+        estimate.add(&key);
+        let mut expected = [0; 64];
+        expected[5] = 1;
+        assert_eq!(estimate.regs, expected);
+        key[..8].fill(255);
+        estimate.add(&key);
+        assert_eq!(estimate.regs, expected);
+    }
+
+    #[test]
+    fn non_finite_median_load_keeps_its_existing_outcome() {
+        let mut distribution = KeyDistribution::new(0, 6400, 1.0);
+        distribution.bins[7].add(1_000, f64::NAN);
+        assert!(distribution.weighted_median(1_000).is_none());
+        distribution.bins[7] = Ewma::new(1.0);
+        distribution.bins[7].add(1_000, f64::INFINITY);
+        let (point, fraction) = distribution.weighted_median(1_000).unwrap();
+        assert_eq!(point, 800);
+        assert!(fraction.is_nan());
+    }
 
     #[test]
     fn ewma_decays_and_accumulates() {

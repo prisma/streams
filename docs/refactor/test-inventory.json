@@ -4,7 +4,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5acafac07c1c3d4a6613c71f8edde83c3d7ca8acdaa2b80e24f3e4617c867ece",
+    "function_sha256": "8999048d77210274714e92767088c58882e8d3495ecab1528c718d45627bbaa8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_applied.rs",
@@ -37,12 +37,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d2a20203895688c38ca48bc45f1bb7439bcb60a292a208508df4b6dee60f6400",
+    "function_sha256": "00fa4a8cc204c832cd53ce6416c9b98ab3902c976c304babcea7058df7fd8fd0",
     "mechanisms": [],
     "configuration": [
-      "let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 20));"
+      "let store = FaultStore::uniform(mem(), 91, FaultPlan::new(0, 0, 20));"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -164,7 +164,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "882c91f10ea835ef1e001707fcc266f06f6791453ecd3ac57bd689d890c3be2b",
+    "function_sha256": "22748cdc9786adc7f4058989bc7a1efe920bca03860f0bc21ccc38cfc826a70b",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -180,7 +180,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2e84b1e956346f867cabec2732747f96139ffc761b61f0248c68bf6a0f3c87bf",
+    "function_sha256": "36b1634ab9f1f9d07709f4803d6c0c0060f060786aedd0ea120196d7046c8ad3",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -225,7 +225,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "23e6ba64f0c0efd5ae73c9610908d8f5d4c24cb967f9ef377cfcac57bc91608d",
+    "function_sha256": "6b25e4af2d125231de37740502152753f08a3f9fa3c7ddebc6804d823da83ebc",
     "mechanisms": [],
     "configuration": [
       "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel021\");",
@@ -424,7 +424,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7495cff20d401f28f05e13fe8994c5c6b0e394896865607aa442fbb578b11fbd",
+    "function_sha256": "13cb7c74d5330864db937d49c848bc50dd770895da83227db341ee6790bba756",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
@@ -482,13 +482,13 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c6ba31b8916927f57c500b202087c940705a03f1ac72e0f783b0aa381b74e0c4",
+    "function_sha256": "fd0ce0ad545b676490fef9acb884f2e4228724730b5fe25fa9fb8ef2e9dfa4db",
     "mechanisms": [],
     "configuration": [
       "let before = crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\");",
       "crate::failpoints::park_create_before_ready(\"abacreate\");",
-      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\") > before",
-      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\")",
+      "crate::failpoints::Fp::CreateBeforeReady,",
+      "crate::failpoints::Fp::CreateBeforeReady,",
       "crate::failpoints::release_create_before_ready(\"abacreate\");"
     ],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
@@ -552,7 +552,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "57a7ac05e27f12434163841dd8fd75e526b8927bb8d59d6a970f2cdf83ece1f7",
+    "function_sha256": "8d8618088b4efc00de3915fda26abba0dbf8b1328d88fb1bcb086a1092254fff",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::arm_scaler_before_publish(\"parked\");",
@@ -707,7 +707,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8e95aca160f51390a65cb277943f9dbf09602a674efa417813bf6d369a34d513",
+    "function_sha256": "58d3655add39c2dd97618160cb6d4e61a76e2142969796dc812cec13dc5315dc",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -793,7 +793,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7eb0ddd40beac5d60f2f166ef5ba2ff598bde78611220c212b893b032d35ca49",
+    "function_sha256": "63280fb7e5da5d99ff5b3536a26ac5ad8de1a8926abd3c4749e3ae16ab88b340",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::arm_scaler_before_publish(\"deadl\");",
@@ -921,7 +921,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5ca08bab96590e1200d3fa99c4fbaa2df45f2f70df7cb7d854894950bb7465a1",
+    "function_sha256": "f59318fcb171c75d5d49ee9d7d419cd63eb4e0d9935ecf2bc3fd183faad6f81c",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -1128,7 +1128,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "2c9d3a16715dc16ef1a94a640861e9eb4fac3687e68d4fdee0c68cd09c14f82b",
+    "function_sha256": "686c9da7412fbe2fb4786d73d60763fdcbcdbcdaa45b0aa8bb88a611c47188f8",
     "mechanisms": [],
     "configuration": [
       "\"estimate must seed at the worst case\""
@@ -1228,6 +1228,17 @@
     ]
   },
   {
+    "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "628bfe78d6c8b43a057293ba8db270756eff9be0fdd78ea06f214b417f5a7a74",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_audit.rs",
+    "scenarios": []
+  },
+  {
     "name": "balanced_append_absorb_group_still_writes_progress",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -1252,6 +1263,17 @@
     "scenarios": []
   },
   {
+    "name": "billing_terminal_shutdown_waits_for_a_late_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "5cfcf4d541c82ec2d4edebbdfdc860dc236b212467ebdda3c223565186f96627",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "budget_deferred_streams_absorb_on_the_next_tick",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1271,7 +1293,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "43551d1aa0f885aab584dc303b8d4d3bd76039c51b016c8e56dd9c898e74b1e1",
+    "function_sha256": "78d930f4043881cd722bc102461d759c4718d8c4c88dd70439dd0d629d46fb72",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_cancellation.rs",
@@ -1374,12 +1396,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "073b7db4a2fe0db6fae24d503beec4a4945703ae216db755456bf0f9c2cbd252",
+    "function_sha256": "c60eb64822243d458c7e9f08b04edf0b94acf5097c46df11286c9c074b3c64e4",
     "mechanisms": [],
     "configuration": [
       "FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow_wal),"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -1567,17 +1589,11 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7041b8ce9cfd7d792ef28ffe8be8c52f7d783d8f29f92268b6a51813e464a974",
+    "function_sha256": "cb0c2879dccd9c613142b363756587031d63c979f7318a114d81da46fe802980",
     "mechanisms": [],
     "configuration": [
       "for seed in [3u64, 17, 29] {",
-      "let tag = format!(\"ni{seed}\");",
-      "assert_eq!(st, 201, \"create seed {seed}\");",
-      "let mut rng = rand::rngs::StdRng::seed_from_u64(seed);",
-      "let tag2 = format!(\"ni{seed}x\");",
-      "assert_eq!(st, 201, \"world-2 create seed {seed}\");",
-      "\"observable counts, seed {seed}\"",
-      "\"seed {seed} observable {k} diverged: interleaved {:?} vs solo {:?}\","
+      "dab_noninterference_for_seed(seed).await;"
     ],
     "file": "src/dst/tests/security_noninterference.rs",
     "scenarios": []
@@ -1602,7 +1618,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "19c3a90355b893013a0451c37b7d268af9059a5cc9234c5c81d23a93aed3c49e",
+    "function_sha256": "82fbcca790dc694c94e6451b73485b856714f555e593734f3def930dad4a4be6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_noninterference.rs",
@@ -1637,7 +1653,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8eae62e4f6504f90c1c8f2e8a52d6f80a07e0306027a68bf560ff5d6ddce6635",
+    "function_sha256": "59ef5dba7f819d5ed0267bae33d4cb32d66a7f7bbf676af3c4dad78a64720c7e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_lineage.rs",
@@ -1788,7 +1804,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6342aee96dddcd85faef890b2d370a4ab63e485e9f5345ea0920ec7dbe4c1c98",
+    "function_sha256": "600040b46a05b12e83a40d0adab89a76ecfb0af8dd79210d4106c4140fe6b5f7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",
@@ -1910,7 +1926,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "67e4b36351fae77bccece5beb62c2c5cae815fe09bc8cb2961c8fad6c55c5fad",
+    "function_sha256": "16e060ac2aa908c379bef8d9d0d0e7c82a1b7210d59ed6715495fb942b8f7374",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
@@ -2013,7 +2029,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "20a29cce088ad4fb2b5c0df0efc5fde165382b427a4186fbae679b9010aac510",
+    "function_sha256": "30a47fa91794a019d57e02295ed8b21ea46b66f63b3b80a2d0f0ee373c9d1b28",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/history_gather.rs",
@@ -2024,11 +2040,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "3340a572873f033e39e92d382279e43dba1ab97939fa507979574572e735ae98",
+    "function_sha256": "3713462bcccc6cf794126b906e21eb9542d72a95f3299d0c8f15188edaa2be65",
     "mechanisms": [],
     "configuration": [
-      "let rig = |path: &'static str, seed: u64, cfg: crate::history::AbsorberConfig| {",
-      "seed,"
+      "let seed = 7501;",
+      "let (adv_serial, _e1) = gather_after_reopen(\"dst-rpar-1\", seed, serial_cfg, &key).await;",
+      "let (adv_par, _e2) = gather_after_reopen(\"dst-rpar-8\", seed, par_cfg, &key).await;"
     ],
     "file": "src/dst/tests/history_gather.rs",
     "scenarios": []
@@ -2038,7 +2055,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "53c57b172e629fcac9e194bea61ad3bd73df9cdea17812e6f310d317af35eb71",
+    "function_sha256": "2e1d9f94e80d02d474990aabd62bc19be8f0ed63bf9dd4db991e0c997bc15347",
     "mechanisms": [],
     "configuration": [
       "for seed in [3u64, 17, 41] {",
@@ -2053,7 +2070,7 @@
       "\"seed {seed}: idle append took {took:?} \u2014 the gather window is \\",
       "\"no seed ever exercised the gather/barrier path \u2014 the scenario \\"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -2333,7 +2350,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7fb3477a7b6895b953df8823aca26eae5e3b6d4cf945bf25025b931900967816",
+    "function_sha256": "1e1dbf171d25285b0c2d151cbfc853b506ba8de3385ac6f0fc4eff36bd48edbe",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2668,7 +2685,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "467af92a934d4e5398ba973e5ce5ef623ec24d650919a283a2ac45a107fc7a42",
+    "function_sha256": "e9f4731f144a42a7aa04280be3326084fb130492bdc79663ec2f2e98f09fa04a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2690,7 +2707,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a5f470705e96e9fa202cac055195e1ed85af25a52245d87987d0647b283d1874",
+    "function_sha256": "ce39812c8750141b7a1ec572274d06e3403460ada4ccd86fddea451ee72df051",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -2701,10 +2718,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "da6d8ecf83c3098119b606e84479a6cc4e8e5bb29f3225ef7ce38af1db811565",
+    "function_sha256": "8f893a4a2c57d043b078feb09943ffe89a069d65afc18eae93d6fbc82794fbbd",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::arm_scaler_before_publish(\"xpend\");",
+      "reason = \"orphaned transition regression; the split is deliberately aborted and joined at the publication failpoint; concurrent execution is needed to orphan a durable intent\"",
+      "wait_parked(crate::failpoints::Fp::ScalerBeforePublish, \"xpend\", 1).await;",
       "crate::failpoints::release_scaler_before_publish(\"xpend\");"
     ],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -3555,7 +3574,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "30222fa9646d38c4dbfd605aca2400bf92657503e19dc53d8b500a7b41471c94",
+    "function_sha256": "7dd21d7cfd6037dde924bde9b81035a3b48118c09f24e5f95497278c667b8456",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
@@ -3597,7 +3616,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "309850664c9b35b1291b91924e61100a64d60b11c0fead74b854380dd22ce342",
+    "function_sha256": "5aa4917ec52126bac4c8529e5e242736287b9de52d967b8d92373947c629dd33",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
@@ -3610,7 +3629,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "4193102873a10f03e65b835c80519e1a45a55d981b184bbe7ca1f712ab62802d",
+    "function_sha256": "e46dd3c5b09dfb92a0dc882b38ba132cc921036caf6fd0f862244ad321841033",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 109, FaultPlan::new(0, 0, 0));"
@@ -3670,7 +3689,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "11c34b45c296bbac8fb8fdf728c246d7bf4ba5d2fe42ba8ff90c2363dcf7a722",
+    "function_sha256": "6899d06893228d2c6aa01f9ab723e3929e53760535c778996a31396b3280be7f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
@@ -3784,7 +3803,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "eec26bacbdc87ee07275f7f8d26a9b499add2aedf9dff2102496fa8f48711e75",
+    "function_sha256": "ec0b6b5219cf6b77ff271b762be620c16609d84a57ac68b31b6cff1e7fea9839",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_product.rs",
@@ -3795,7 +3814,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1fb64dd2883bca33c7d981b21a9a35bae5b230b9003c4903356d02e1790e37d3",
+    "function_sha256": "12b5708f4a26f90d4aadeabc397c26b7c5774fc6fb1ae125bc8b7192a096de1f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
@@ -3830,7 +3849,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "988077fbfef5cb5de94e03e360700534f75beaf353e14811f2ce18b3cbee39d2",
+    "function_sha256": "8f027f9bad5ee328d2b452e00673ed7292f5c35df9dd42215a8467e0d3072e03",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_product.rs",
@@ -3843,7 +3862,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "12a75181c8f9f3ca977e739671ff253ad2a8d3a9789ea82f2aeecb38b49aa5a7",
+    "function_sha256": "fd46f1cec60d9b561a02d61575c57e1883dff9340bac21ba382445d51483785f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",
@@ -3880,7 +3899,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d71e246ea5e860f516720ba63f0901aa784d9029f3103c345e3f89aa22274051",
+    "function_sha256": "88067998532259d0ba25692f43cc333929304ed02d0bf57260173f8b89b45713",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_product.rs",
@@ -4272,7 +4291,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108",
+    "function_sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN",
@@ -4513,7 +4532,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0870edc1665e6a703875f5781ab63128f82d67a82e7ff295e013f2fbf3d66b64",
+    "function_sha256": "b65684649d57f5bd11c3e0481867c7b4ceecf692924d6bb586916527a1b2e3a5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
@@ -4661,7 +4680,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d440a3d482cbd447a5a786c07365f04d0320b2dc887fedf2ca3660d8cb92674e",
+    "function_sha256": "1a9d841d61aef28b5c63c075c38e08554683b40f9a751113c7b108e190cad4ac",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
@@ -5103,7 +5122,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9512ae9bfb9e1aa59418201e99a6359854b6c450a33e1504ec1ab422126e096e",
+    "function_sha256": "06859f1db0435211312325dc1adefed577de4264a3a0fdfc5db9e97e404f76bc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",
@@ -5147,7 +5166,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "f97b15245a9aa86d3c40b7dd261b21095e8489b86c5f9101556968b570dbfb7f",
+    "function_sha256": "174da5d260f9a1c648d98aa77529ac6fdc43a2431cf395375b4abd4e1db5b986",
     "mechanisms": [],
     "configuration": [
       "// Sparse seed: ~2 KiB per stream \u2014 the 10k-tenant field shape in"
@@ -5191,7 +5210,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "e7ec7d450d347f948c2d6ea32c63e186c6132e75b301c3a3e2078eb9948b8cdc",
+    "function_sha256": "85fc3bcc98f80a3c7a829ec950b1b76df2d60ecfb284abaf17d5fe484cd46c68",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
@@ -5369,7 +5388,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7bee8825ffd8ab669d2a48322c6f0a30e6e3061236167dda4f9e932ed2813ed9",
+    "function_sha256": "6c49e956cf581f97c71bcb55839be25e491846954d93e438451ea5a1aee0e7c0",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 108, FaultPlan::new(0, 0, 0));"
@@ -5382,7 +5401,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "604f7ebcae153cdca3a6e3b710ac51d1a0d91cab35c7731637ce9a7e1427f1dc",
+    "function_sha256": "5ea797fa82286eb653e8ed4b98ce15ba1eeb028fe757ad35143e4e1b93fe744a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
@@ -5529,12 +5548,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0e405cc9f5a707382c8c37a7f9c6bde23e7885089c376c27fa4de38cf7a2f9d5",
+    "function_sha256": "af13bcb7ae39b0585d0097b8ad4083181a081e0b79b1f4a7b098bb26325e4f2b",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 87, FaultPlan::new(0, 0, 30));"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": [
       "DUR-001"
     ]
@@ -5836,7 +5855,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "143108edf1c629465eaf4262614f2a82105d543b10fa5afc0ad49e3fb0826c87",
+    "function_sha256": "b7285dc9fb3884c82a9a1dafce205f601f1c96fd78cd8b76b2fedbf8e887d1db",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/watch_observation.rs",

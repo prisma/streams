@@ -8,7 +8,57 @@ import re
 from common import syntax
 
 
-def normalized_source(source, parsed):
+def attribute_key(fact):
+    loc = fact['location']
+    return (fact['value'], loc['line'], loc['column'], loc['end_line'], loc['end_column'])
+
+
+def fixed_attribute_inputs(before, after, old_facts, new_facts):
+    """Opaque outer attributes may observe their complete item and its spans.
+
+    Freeze the complete enclosing declaration byte-for-byte, including every
+    attribute and nested token, at identical line/column AND byte positions.
+    This does not interpret a derive name or assume it is a standard macro.
+    Inner attributes and items without a parsed enclosing declaration stay
+    conservative. The normal comparison still rejects source introspection.
+    """
+    def inputs(source, parsed):
+        if 'tokens' not in parsed:
+            return {}
+        offsets = [0, *[i + 1 for i, char in enumerate(source) if char == '\n']]
+
+        def span(node):
+            loc = node['location']
+            return (offsets[loc['line'] - 1] + loc['column'],
+                    offsets[loc['end_line'] - 1] + loc['end_column'])
+
+        items = [(item, *span(item)) for item in parsed['items'] if item['kind'] in {
+            'module', 'function', 'impl', 'struct', 'enum', 'trait', 'const', 'static', 'type'
+        }]
+        result = {}
+        for fact in parsed['facts']:
+            if fact['kind'] != 'attribute':
+                continue
+            start, end = span(fact)
+            if source[max(0, start - 2):start] != '#[' or source[end:end + 1] != ']':
+                continue  # Never treat an inner attribute or macro interior as an outer one.
+            containers = [(item, left, right) for item, left, right in items
+                          if left <= start - 2 and end + 1 <= right]
+            if not containers:
+                continue
+            item, left, right = min(containers, key=lambda entry: entry[2] - entry[1])
+            result[attribute_key(fact)] = (
+                item['kind'], item['qualified'], item['location'],
+                len(source[:left].encode('utf-8')), len(source[:right].encode('utf-8')),
+                source[left:right],
+            )
+        return result
+
+    old, new = inputs(before, old_facts), inputs(after, new_facts)
+    return {key for key in old.keys() & new.keys() if old[key] == new[key]}
+
+
+def normalized_source(source, parsed, fixed_attributes=()):
     # Opaque templates cannot establish this proof. Do not use the scanner's
     # filename-based test hints: only a direct Rust cfg(test) can erase an item.
     if 'tokens' not in parsed:
@@ -71,9 +121,11 @@ def normalized_source(source, parsed):
     for fact in parsed['facts']:
         if erased(fact):
             continue
-        # A custom attribute/derive can inspect the annotations supplied to it.
-        # Retain checks instead of assuming its expansion commutes with erasure.
-        if fact['kind'] == 'attribute' and re.split(r'[ (=]', fact['value'], maxsplit=1)[0] not in builtins:
+        # A custom attribute/derive can inspect its complete supplied item.
+        # Retain checks unless both that item and all its positions are fixed.
+        if (fact['kind'] == 'attribute'
+                and re.split(r'[ (=]', fact['value'], maxsplit=1)[0] not in builtins
+                and attribute_key(fact) not in fixed_attributes):
             return None
         if fact['kind'] in {'macro', 'import-target'} and fact['value'].split('::')[-1].strip() in sensitive:
             return None
@@ -99,11 +151,72 @@ def normalized_source(source, parsed):
     return source, [value for _, value in sorted(visibilities)]
 
 
+def trailing_test_prefix(source, parsed):
+    """Keep opaque production inputs byte-exact; erase only a root test suffix.
+
+    Unlike token normalization this cannot move or modify any production item,
+    including the attributes and nested tokens supplied to a procedural macro.
+    A test item inside such a macro's input is never eligible for this proof.
+    Source-reading macros remain conservative even with unchanged locations.
+    """
+    if 'tokens' not in parsed:
+        return None
+    offsets = [0, *[i + 1 for i, char in enumerate(source) if char == '\n']]
+
+    def span(node):
+        loc = node['location']
+        return (offsets[loc['line'] - 1] + loc['column'],
+                offsets[loc['end_line'] - 1] + loc['end_column'])
+
+    items = [(item, *span(item)) for item in parsed['items']]
+    roots = [(start, end) for item, start, end in items
+             if item['explicit_test_cfg'] and item['kind'] in {
+                 'module', 'function', 'impl', 'struct', 'enum', 'trait', 'const', 'static', 'type'
+             } and not any(other is not item and left <= start and end <= right
+                           for other, left, right in items)]
+    cursor = len(source)
+    for start, end in sorted(roots, reverse=True):
+        if source[end:cursor].strip():
+            break
+        cursor = start
+    # No production token or span can shift. Whitespace after the final item
+    # does not belong to any production macro input.
+    prefix = source[:cursor].rstrip()
+    sensitive = {'line', 'column', 'file', 'include', 'include_str', 'include_bytes'}
+    if any(item['kind'] == 'macro' and start < cursor for item, start, _ in items):
+        return None
+    builtins = {'cfg', 'doc', 'repr', 'inline', 'cold', 'must_use', 'deprecated',
+                'allow', 'expect', 'warn', 'deny', 'forbid', 'path', 'track_caller',
+                'no_mangle', 'export_name', 'link', 'link_name', 'link_section', 'unsafe'}
+    for fact in parsed['facts']:
+        start, _end = span(fact)
+        if start >= cursor:
+            continue
+        # A crate-level custom inner attribute can consume the whole file,
+        # including the supposedly erased suffix, rather than one fixed item.
+        if (fact['kind'] == 'attribute' and source[max(0, start - 3):start] == '#!['
+                and re.split(r'[ (=]', fact['value'], maxsplit=1)[0] not in builtins):
+            return None
+        if fact['kind'] in {'macro', 'import-target'} and fact['value'].split('::')[-1].strip() in sensitive:
+            return None
+        if fact['kind'] == 'macro-tokens' and re.search(
+            r'\b(?:line|column|file|include|include_str|include_bytes)\s*!', fact['value']
+        ):
+            return None
+    return prefix
+
+
 def unchanged_production(before, after, old_facts, new_facts):
-    candidates, normalized = {}, {}
+    candidates, normalized, fixed_prefixes = {}, {}, []
     for path in before:
-        old = normalized_source(before[path], old_facts[path])
-        new = normalized_source(after[path], new_facts[path])
+        old_prefix = trailing_test_prefix(before[path], old_facts[path])
+        new_prefix = trailing_test_prefix(after[path], new_facts[path])
+        if old_prefix is not None and new_prefix is not None and old_prefix == new_prefix:
+            fixed_prefixes.append(path)
+            continue
+        fixed = fixed_attribute_inputs(before[path], after[path], old_facts[path], new_facts[path])
+        old = normalized_source(before[path], old_facts[path], fixed)
+        new = normalized_source(after[path], new_facts[path], fixed)
         if old is None or new is None:
             continue
         old_source, old_vis = old
@@ -117,9 +230,9 @@ def unchanged_production(before, after, old_facts, new_facts):
         normalized[old_key], normalized[new_key] = old_source, new_source
         candidates[path] = old_key, new_key
     if not candidates:
-        return []
+        return fixed_prefixes
     # syn's token stream preserves doc attributes, literal spellings and macro
     # bodies; a regex/whitespace fingerprint is not sufficient here.
     parsed = syntax(normalized)
-    return [path for path, (old_key, new_key) in candidates.items()
+    return fixed_prefixes + [path for path, (old_key, new_key) in candidates.items()
             if parsed[old_key]['tokens'] == parsed[new_key]['tokens']]
