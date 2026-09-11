@@ -26,6 +26,10 @@ pub(super) fn records<'de, D: Deserializer<'de>>(
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "at most {MAX_PAGE_RECORDS} records")
         }
+        #[expect(
+            clippy::excessive_nesting,
+            reason = "visit_seq; the visitor nests the record-limit stop inside the sequence walk; flattening it would separate the stop from the element it refuses"
+        )]
         fn visit_seq<A: serde::de::SeqAccess<'de>>(
             self,
             mut seq: A,

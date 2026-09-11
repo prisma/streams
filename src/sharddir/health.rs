@@ -17,9 +17,17 @@ pub(super) struct OpenHealth {
 }
 
 impl ShardHealth {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardHealth::succeeded; a poisoned health record may hold a half-recorded failure; recovering it could report readiness a failure already withdrew"
+    )]
     pub(super) fn succeeded(&self) {
         self.0.lock().unwrap().ever_opened = true;
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardHealth::failed; a poisoned health record may hold a half-recorded failure; recovering it could report readiness a failure already withdrew"
+    )]
     pub(super) fn failed(&self, prefix: &str, error: String) {
         let mut h = self.0.lock().unwrap();
         if h.failed.len() < 3 {
@@ -27,6 +35,10 @@ impl ShardHealth {
         }
         h.last_error = Some(error);
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardHealth::engine_failed; a poisoned health record may hold a half-recorded failure; recovering it could report readiness a failure already withdrew"
+    )]
     pub(super) fn engine_failed(&self, prefix: &str, role: &str) {
         self.0
             .lock()
@@ -34,6 +46,10 @@ impl ShardHealth {
             .engine_failure
             .get_or_insert_with(|| format!("required engine task terminated: {prefix}/{role}"));
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardHealth::unready_reason; a poisoned health record may hold a half-recorded failure; recovering it could report readiness a failure already withdrew"
+    )]
     pub(crate) fn unready_reason(&self) -> Option<String> {
         let h = self.0.lock().unwrap();
         if let Some(failure) = &h.engine_failure {

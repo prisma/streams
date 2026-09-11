@@ -472,6 +472,10 @@ impl OpenGate {
         clippy::unwrap_used,
         reason = "OpenGate::get_or_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "OpenGate::get_or_open; the gate nests the holdoff, the raced-open check and the spawned opener inside the no-inflight branch, and the outcome wait inside its timeout; flattening them would separate each verdict from the gate state that decides it"
+    )]
     pub(crate) async fn get_or_open(&self, prefix: &str, wait: Duration) -> OpenOutcome {
         if self.inner.stopping.load(Ordering::SeqCst) {
             return closing_outcome();

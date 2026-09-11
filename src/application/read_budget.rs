@@ -44,28 +44,32 @@ impl PageBudget {
     pub(crate) fn metadata_fits(&self, key: &str) -> bool {
         key.len() <= u16::MAX as usize
             && self.records < MAX_PAGE_RECORDS
-            && self.metadata + metadata_charge(key) <= MAX_PAGE_METADATA
+            && self.metadata.saturating_add(metadata_charge(key)) <= MAX_PAGE_METADATA
     }
     pub(crate) fn admit(&mut self, plaintext: usize, key: &str) -> bool {
         if self.full() || plaintext > self.decode_limit() || !self.metadata_fits(key) {
             return false;
         }
-        self.plaintext += plaintext;
-        self.metadata += metadata_charge(key);
-        self.records += 1;
+        self.plaintext = self.plaintext.saturating_add(plaintext);
+        self.metadata = self.metadata.saturating_add(metadata_charge(key));
+        self.records = self.records.saturating_add(1);
         true
     }
     pub(crate) fn full(&self) -> bool {
         self.remaining() == 0
             || self.records == MAX_PAGE_RECORDS
-            || self.metadata + 128 > MAX_PAGE_METADATA
+            || self.metadata.saturating_add(128) > MAX_PAGE_METADATA
     }
 }
 fn metadata_charge(key: &str) -> usize {
     // JSON can escape each key byte as six bytes. 128 covers the offset,
     // object fields/punctuation and base64 padding for each record.
-    key.len() * 6 + 128
+    key.len().saturating_mul(6).saturating_add(128)
 }
 pub(crate) fn max_wire_bytes() -> usize {
-    MAX_RECORD_PLAINTEXT.div_ceil(3) * 4 + MAX_PAGE_METADATA + 2048
+    MAX_RECORD_PLAINTEXT
+        .div_ceil(3)
+        .saturating_mul(4)
+        .saturating_add(MAX_PAGE_METADATA)
+        .saturating_add(2048)
 }

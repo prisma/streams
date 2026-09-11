@@ -27,6 +27,10 @@ const URLS_DOC: &str = "fleet/urls.json";
 // Single coordination documents are read sequentially. The same ceiling applies
 // to streamed bodies and writes, independent of provider metadata accuracy.
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "MAX_MEMBERS; the member cap is a small u32 constant and usize is at least 32 bits on every supported target; a checked conversion is not available in a const"
+)]
 pub(super) const MAX_MEMBERS: usize = crate::config::FleetConfig::MAX_MEMBERS as usize;
 const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -74,6 +78,10 @@ impl FleetRepository {
         self.read_population("routers", false).await
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "FleetRepository::read_population; the population read nests the per-document byte guard inside the chunk stream of each fetched path; flattening it would separate the guard from the document it bounds"
+    )]
     async fn read_population<T: serde::de::DeserializeOwned>(
         &self,
         prefix: &str,

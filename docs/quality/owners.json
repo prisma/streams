@@ -1855,6 +1855,46 @@
       "path": "src/dst/trace_store_tests/streams.rs",
       "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
       "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
+      "path": "src/sse/auth.rs",
+      "reason": "Test-only DST failpoint release for the parked SSE poll; the bare task only wakes the parked waker and exists under cfg(test).",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::on_slatedb_rt",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "Database opens run on the shared SlateDB runtime, which no supervisor owns; the result travels back through a oneshot whose queued value closes itself if abandoned.",
+      "syntax": "tokio::runtime::Runtime::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<DbHandoff as Drop>::drop",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "An abandoned database open is closed on the SlateDB runtime it was opened on; the close owns nothing beyond the database it retires.",
+      "syntax": "tokio::runtime::Runtime::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "Handoff regression spawns the caller it abandons mid-handoff; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
+      "path": "src/application/read_wire_tests.rs",
+      "reason": "Wire regression spawns the one-shot TCP server it releases and joins itself; nothing escapes the test.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

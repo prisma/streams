@@ -41,7 +41,11 @@ impl<'a> ReadKeys<'a> {
                 })
             })
     }
-    pub fn decrypt_append(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadKeys::decrypt_append; the append decrypts one frame into the caller's plaintext and auth buffers under the page limit; a request struct would restate the buffers it fills"
+    )]
+    pub(crate) fn decrypt_append(
         &mut self,
         frame: &DecodedFrame<'_>,
         raw: &[u8],
@@ -80,6 +84,10 @@ impl<'a> ReadKeys<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "e03_page_cipher_cache_bounds_unique_lanes_and_fences_segment_epoch_and_version; the fixture's lane versions alternate between 1 and 2; a checked conversion would only restate the fixture"
+    )]
     #[test]
     fn e03_page_cipher_cache_bounds_unique_lanes_and_fences_segment_epoch_and_version() {
         let key = StreamKey([3; 32]);

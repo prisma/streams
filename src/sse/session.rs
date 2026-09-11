@@ -199,30 +199,29 @@ pub(crate) async fn serve(
     // ring allowance from the process-global budget — exhaustion
     // rejects THE NEW subscriber with a typed capacity refusal while
     // the existing singleton continues normally.
-    let subscription =
-        match state
-            .livefeed
-            .subscribe(fkey.clone(), src.clone(), desc.project_id.clone(), |feed| {
-                // Round-13: bind the project's admission pressure entry —
-                // in the CREATION closure, so the feed charges its static
-                // weight exactly once regardless of racing first
-                // subscribers, and the retention mirror is live before
-                // the first publication reserves bytes.
-                if let Some(adm) = state.quotas.pressure_handle(&desc.project_id) {
-                    feed.bind_pressure(adm);
-                }
-            }) {
-            Ok(sub) => sub,
-            Err(_) => {
-                use axum::response::IntoResponse;
-                return err_resp(
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "subscription_capacity",
-                    "the process retention budget cannot host another shared subscription",
-                )
-                .into_response();
+    let subscription = match state
+        .livefeed
+        .subscribe(fkey, &src, desc.project_id.clone(), |feed| {
+            // Round-13: bind the project's admission pressure entry —
+            // in the CREATION closure, so the feed charges its static
+            // weight exactly once regardless of racing first
+            // subscribers, and the retention mirror is live before
+            // the first publication reserves bytes.
+            if let Some(adm) = state.quotas.pressure_handle(&desc.project_id) {
+                feed.bind_pressure(adm);
             }
-        };
+        }) {
+        Ok(sub) => sub,
+        Err(_) => {
+            use axum::response::IntoResponse;
+            return err_resp(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "subscription_capacity",
+                "the process retention budget cannot host another shared subscription",
+            )
+            .into_response();
+        }
+    };
     // Test failpoint: AFTER the atomic attach, BEFORE the session reads
     // any feed state — the exact window of the join-head handoff race.
     #[cfg(test)]

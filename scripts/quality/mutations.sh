@@ -16,7 +16,7 @@ BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_ba
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
 REGISTERED=(src/bin/pilot/benchmark.rs src/bin/pilot/benchmark/config.rs src/bin/pilot/benchmark/window.rs src/bin/pilot/generator.rs src/bin/pilot/generator/membership.rs)
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler postings_cache sharddir crypto tail_ring shard bootstrap read_request http_read queue_cleanup transaction_append record tasks_shutdown runtime runtime_telemetry product_cursor quota_registry; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler postings_cache sharddir crypto tail_ring shard bootstrap read_request http_read queue_cleanup transaction_append record tasks_shutdown runtime runtime_telemetry product_cursor quota_registry read_budget read_decode read_decode_tests read_keys read_remote read_scan read_wire read_wire_tests read_batch_tests crypto_decrypt crypto_decrypt_tests fleet_outbox fleet_repository fleet_document_tests runtime_handoff process_executor sharddir_health sse_auth sse_registry sse_service sse_session sse_wire; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -41,6 +41,28 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     queue_cleanup) file=src/shard/transaction/queue/cleanup.rs; filter=shard:: ;;
     transaction_append) file=src/shard/transaction/append.rs; filter=shard:: ;;
     record) file=src/shard/record.rs; filter=shard:: ;;
+    read_budget) file=src/application/read_budget.rs; filter=application::read ;;
+    read_decode) file=src/application/read_decode.rs; filter=application::read ;;
+    read_decode_tests) file=src/application/read_decode/tests.rs; filter=application::read ;;
+    read_keys) file=src/application/read_keys.rs; filter=application::read ;;
+    read_remote) file=src/application/read_remote.rs; filter=application::read ;;
+    read_scan) file=src/application/read_scan.rs; filter=application::read ;;
+    read_wire) file=src/application/read_wire.rs; filter=application::read ;;
+    read_wire_tests) file=src/application/read_wire_tests.rs; filter=application::read ;;
+    read_batch_tests) file=src/application/read_batch/tests.rs; filter=application::read_batch:: ;;
+    crypto_decrypt) file=src/crypto/decrypt.rs; filter=crypto:: ;;
+    crypto_decrypt_tests) file=src/crypto/decrypt/tests.rs; filter=crypto:: ;;
+    fleet_outbox) file=src/fleet/outbox.rs; filter=fleet:: ;;
+    fleet_repository) file=src/fleet/repository.rs; filter=fleet:: ;;
+    fleet_document_tests) file=src/fleet/repository/document_tests.rs; filter=fleet:: ;;
+    runtime_handoff) file=src/bootstrap/runtime_handoff.rs; filter=bootstrap:: ;;
+    process_executor) file=src/bootstrap/process_executor.rs; filter=bootstrap:: ;;
+    sharddir_health) file=src/sharddir/health.rs; filter=sharddir:: ;;
+    sse_auth) file=src/sse/auth.rs; filter=sse:: ;;
+    sse_registry) file=src/sse/registry.rs; filter=sse:: ;;
+    sse_service) file=src/sse/service.rs; filter=sse:: ;;
+    sse_session) file=src/sse/session.rs; filter=sse:: ;;
+    sse_wire) file=src/sse/wire.rs; filter=sse:: ;;
     tasks_shutdown) file=src/tasks/shutdown.rs; filter=tasks:: ;;
     runtime) file=src/runtime.rs; filter=runtime:: ;;
     runtime_telemetry) file=src/runtime/telemetry.rs; filter=runtime:: ;;
@@ -60,7 +82,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == postings_cache || "$owner" == sharddir || "$owner" == crypto || "$owner" == tail_ring || "$owner" == shard || "$owner" == bootstrap || "$owner" == read_request || "$owner" == http_read || "$owner" == queue_cleanup || "$owner" == transaction_append || "$owner" == record || "$owner" == tasks_shutdown || "$owner" == runtime || "$owner" == runtime_telemetry || "$owner" == product_cursor || "$owner" == quota_registry ]]; then
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == postings_cache || "$owner" == sharddir || "$owner" == crypto || "$owner" == tail_ring || "$owner" == shard || "$owner" == bootstrap || "$owner" == read_request || "$owner" == http_read || "$owner" == queue_cleanup || "$owner" == transaction_append || "$owner" == record || "$owner" == tasks_shutdown || "$owner" == runtime || "$owner" == runtime_telemetry || "$owner" == product_cursor || "$owner" == quota_registry || "$owner" == read_budget || "$owner" == read_decode || "$owner" == read_decode_tests || "$owner" == read_keys || "$owner" == read_remote || "$owner" == read_scan || "$owner" == read_wire || "$owner" == read_wire_tests || "$owner" == read_batch_tests || "$owner" == crypto_decrypt || "$owner" == crypto_decrypt_tests || "$owner" == fleet_outbox || "$owner" == fleet_repository || "$owner" == fleet_document_tests || "$owner" == runtime_handoff || "$owner" == process_executor || "$owner" == sharddir_health || "$owner" == sse_auth || "$owner" == sse_registry || "$owner" == sse_service || "$owner" == sse_session || "$owner" == sse_wire ]]; then
     # These owners use actual service clocks, task handles and storage types.
     # Keep their code and tests in the service crate without substitute models.
     package=streams-slate

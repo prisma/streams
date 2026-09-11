@@ -65,6 +65,10 @@ fn o2a_full_append_then_selection_preserves_block_ranges() {
         .expect("pure ownership scope does not suspend");
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity; the fixture writes the first and last byte of a buffer it sized itself; a checked index would only restate the size"
+)]
 #[test]
 fn o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity() {
     let probe = Probe::default();

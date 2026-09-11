@@ -224,6 +224,10 @@ fn r09_fleet_configuration_cannot_publish_an_unreadable_population() {
     );
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version; the fixture stages the oversized, exact-cap and versioned writes against one repository so the CAS version is judged across them; splitting it would separate the writes from the version they share"
+)]
 #[tokio::test]
 async fn r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version() {
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
