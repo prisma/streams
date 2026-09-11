@@ -115,6 +115,10 @@ pub(crate) struct RequestWork {
     wake: Notify,
 }
 impl RequestWork {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "RequestWork::start; a poisoned work state may hold a half-admitted ticket; recovering it could run a request twice or never"
+    )]
     pub(crate) fn start(
         self: &Arc<Self>,
         tasks: &crate::tasks::TaskSupervisor,
@@ -147,6 +151,10 @@ impl RequestWork {
     pub(crate) fn submit(&self, key: Key, action: Action) -> Result<Ticket, WorkError> {
         self.admit(key, action, tokio::time::Instant::now() + JOB_TIMEOUT)
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "RequestWork::admit; a poisoned work state may hold a half-admitted ticket; recovering it could run a request twice or never"
+    )]
     fn admit(
         &self,
         key: Key,
@@ -178,6 +186,14 @@ impl RequestWork {
         Ok(Ticket(Some((watch, deadline))))
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "RequestWork::run; the requester may have stopped waiting for its completion; a handled send would only restate that the ticket was abandoned"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "RequestWork::run; a poisoned work state may hold a half-admitted ticket; recovering it could run a request twice or never"
+    )]
     async fn run(&self, cancel: crate::tasks::Cancellation) {
         let mut active = FuturesUnordered::new();
         loop {

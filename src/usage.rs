@@ -183,6 +183,14 @@ impl LimitHit {
 /// Refill-and-consume against one bucket. Returns Err(the first limit
 /// hit) without consuming anything when any bucket is short — the
 /// request is rejected whole.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "admit_on; the retry delay is a non-negative millisecond count bounded by the bucket's deficit over its rate; a checked conversion would only restate the bucket arithmetic"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "admit_on; the retry delay is the ceiling of a non-negative deficit over a positive rate; a checked conversion would only restate the bucket arithmetic"
+)]
 fn admit_on(
     bucket: &mut Bucket,
     l: &Limits,
@@ -249,6 +257,10 @@ impl std::fmt::Debug for UsageService {
             .finish_non_exhaustive()
     }
 }
+/// One tracked stream's usage row: its hash and the seven counters the
+/// operator snapshot reports for it.
+type UsageRow = ([u8; 16], u64, u64, u64, u64, u64, u64, u64);
+
 impl UsageService {
     pub(crate) fn new(cfg: &crate::config::AdmissionConfig, clock: Arc<dyn Clock>) -> Self {
         let limits = Limits {
@@ -340,6 +352,10 @@ impl UsageService {
     #[expect(
         clippy::unwrap_used,
         reason = "UsageService::admit_append_in; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "UsageService::admit_append_in; admission takes the tenant, stream, size and clock parts separately as the request resolved them; a request struct would exist for this single call site"
     )]
     fn admit_append_in(
         &self,
@@ -576,7 +592,7 @@ impl UsageService {
         clippy::unwrap_used,
         reason = "UsageService::snapshot; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
     )]
-    pub fn snapshot(&self) -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64, u64)> {
+    pub(crate) fn snapshot(&self) -> Vec<UsageRow> {
         self.map
             .lock()
             .unwrap()
@@ -797,6 +813,14 @@ mod tests {
         assert!(catch_unwind(AssertUnwindSafe(|| usage.counters(&[1; 16]))).is_err());
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "buckets_enforce_and_reject_whole; the fixture's cap is a small positive whole number computed from its own limits; a checked conversion would only restate the limit it sets"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "buckets_enforce_and_reject_whole; the fixture's cap is a small positive whole number computed from its own limits; a checked conversion would only restate the limit it sets"
+    )]
     #[test]
     fn buckets_enforce_and_reject_whole() {
         let h = [1u8; 16];
@@ -846,6 +870,14 @@ mod tests {
     /// overflow population must stay rate-limited — through the shared
     /// conservative bucket — and its traffic must aggregate somewhere
     /// visible.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "past_the_cap_limits_still_apply_and_counters_aggregate; the fixture's caps and refill are small positive whole numbers computed from its own limits; checked conversions would only restate the limits it sets"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "past_the_cap_limits_still_apply_and_counters_aggregate; the fixture's caps and refill are small positive whole numbers computed from its own limits; checked conversions would only restate the limits it sets"
+    )]
     #[test]
     fn past_the_cap_limits_still_apply_and_counters_aggregate() {
         // PRIVATE map + overflow bucket: filling the process-global map
