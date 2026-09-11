@@ -15,7 +15,7 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -27,6 +27,9 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     rollup_allocation) file=src/rollup/allocation.rs; filter=rollup_allocation:: ;;
     rollup_storage) file=src/rollup/storage.rs; filter=rollup_storage:: ;;
     tasks) file=src/tasks.rs; filter=tasks:: ;;
+    touch) file=src/touch.rs; filter=touch:: ;;
+    read_accumulator) file=src/billing/read_accumulator.rs; filter=billing ;;
+    read_spool) file=src/billing/read_spool.rs; filter=billing ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
@@ -35,9 +38,9 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks ]]; then
-    # Supervisor fixtures use actual Tokio task handles and process signals.
-    # Run them in the service crate, rather than rewriting a stand-in model.
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool ]]; then
+    # These owners use actual service clocks, task handles and storage types.
+    # Keep their code and tests in the service crate without substitute models.
     package=streams-slate
     mutation_file="$file"
     mutation_diff="$QUALITY_MUTANTS_OUT/pr.diff"
