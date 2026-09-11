@@ -1535,6 +1535,70 @@
       "syntax": "tokio::select",
       "count": 2,
       "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/product/tests.rs",
+      "reason": "Product transport test module imports its enclosing production owner; the compiler resolves the parent exports and the tests pin wire messages and responses.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::trace_gather",
+      "path": "src/history/gather.rs",
+      "reason": "Test-only drain trace of the gather pass; the DST harness switches it on through the process environment, and it prints the staged frames without touching absorber state.",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/admission_tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/straddle_tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::layout_gate_refuses_foreign_namespaces",
+      "path": "src/registry/tests.rs",
+      "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/resolution_tests.rs",
+      "reason": "Registry test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin conditional writes, decode fail-closed and segment resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/tests.rs",
+      "reason": "Registry test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin conditional writes, decode fail-closed and segment resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }
