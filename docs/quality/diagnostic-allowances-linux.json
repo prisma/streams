@@ -52,104 +52,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "55962c6720c0fe7ae48ec771b86d6ee6b8012638b340ca30f9c5fe271087a506",
-      "item": "crate::FrameCipher::encrypt_with_nonce",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a02b4205b5a5c568f433624ead4d5f566e9b7a9fa9383ee12842f0fe8425902c",
-      "item": "crate::RouteHash::for_child",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e5e3fe334904042fa84312963a50f5d927601aa85cbb5880ff1f236d399a0eb9",
-      "item": "crate::RouteHash::for_stream",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e5822e70eaf7ef1e49359f4e3fa88c28d15738afe6d08215cc44f78d321b6440",
-      "item": "crate::SegmentHash::for_segment",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0e09c218a15a13c0e947a12effcda4bd8647dd1ba12b15aa8484a873b60b5550",
-      "item": "crate::SegmentHash::for_stream",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6db0cdd8b3080b1fdb3a955ead59cf68eddf367df4c0d33ec8a76f241af8abb",
-      "item": "crate::WATCH_CAP_MAX_LIFETIME_SECS",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1bb9673d9bf46a81fc3b8afa552569d1a2546ca60d1d2687c2222265b6a771e1",
-      "item": "crate::WATCH_CAP_SKEW_SECS",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1ed6070edc0451593ae392d015f5427664b4fd89e005bf04fa5314aed13bb5d4",
-      "item": "crate::decrypt_frame",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "db38219b21c58deb629de36fb058ebb04ee2520dbcc4811df3a9f4503239f2ad",
-      "item": "crate::secret_eq",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "023705754c03cff9fc623a5b390b6b0543d2e2601c03e11ec6a2df26fe25dede",
-      "item": "crate::verify_watch_capability",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3bb6d8b8dcdbfdd29b4dd81b8ff6626fa773cb750f22bf4e9233402727372d0c",
-      "item": "crate::verify_watch_capability",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8c2c9636dce9ab5f733c96a02aa862a227fdbc1f7e3c43c5d88c5514722101b1",
-      "item": "crate::watch_capability_project",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "291c4b1fec492d53ffce829fd3db5d8168830fcbd43dd8f78c2ae956158503b8",
-      "item": "crate::watch_capability_sig",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "872cbc3ad46c0d9bec606973873901128224e31f920d2a7036fb65fa02ee728b",
-      "item": "crate::watch_capability_sig",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "1e34a87c9b148a32b7f3afade087122f6afe8d473aeeaa5fb841c9a888b10d04",
       "item": "crate::Workload::append_to",
       "lint": "clippy::allow_attributes_without_reason",
@@ -805,41 +707,6 @@
       "item": "crate::run",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3beee2fe09ec5d8bb55823a573620cdb6451c77139fd35d2fb67e6eeba65d0ef",
-      "item": "crate::FrameCipher::encrypt_with_nonce",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9996ef29ba41364b7dba34f262620bbcbc67588aeeae7eb7f370935da29912a5",
-      "item": "crate::FrameCipher::encrypt_with_nonce",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2ba2b03b0be661fa654335577c8e6a8f9f98026268d8bd4545bbb3b574e14c95",
-      "item": "crate::compress_tests::new_compressed_frame_round_trip",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3464257887d7c7ee30eaf5d357081f1945d93bb851bd10692c0cad2261c88dbe",
-      "item": "crate::compress_tests::new_compressed_frame_round_trip",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "70de38cdad7fb915e29a2a7266fd530355515231c2a4b80cff9550bc181ce3f7",
-      "item": "crate::invocation_tests::r01_retained_legacy_frames_and_new_versions_read_together",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/crypto.rs"
     },
     {
       "count": 1,
@@ -4147,55 +4014,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d5e38b47fc1606c97d18338b854f23f1566cdabb71fa41054a72cda359ff2246",
-      "item": "crate::FrameCipher::encrypt_with_nonce",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1ff2f240a3815a29ec21fb8557898b28536538d44f51507fea92019f12420746",
-      "item": "crate::StreamKey::fingerprint",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d4cf29439345c71ed8d339c7de0a2418df870e0f17d7b4cc593678b8b46c3183",
-      "item": "crate::derive_subkey",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ba76ccb9d451806dea08e8681dbb9dce307e4acb7e422444f613c0cf24b5ec35",
-      "item": "crate::segment_frame_key",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f819b3acec1eecb01fb8c36bc2fb2ac25efb0c6b7e346dd81e8d658d47e11997",
-      "item": "crate::touch_token",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "aee311a87a35aca8b257f6bead2418937b8463eb29512d92db06020ad4469838",
-      "item": "crate::wait_sig_key",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eec739d8bd80cce70e938f265c1df30360e82d1687aea5ab242d773c5c67e50a",
-      "item": "crate::watch_capability_sig",
-      "lint": "clippy::expect_used",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "23fe18d6bb468f82a2161e564ba0a9407164c015daadd31ea51a63d87ba6f605",
       "item": "crate::DeploymentIdentity::raw_adapter_sref",
       "lint": "clippy::expect_used",
@@ -5672,14 +5490,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/auth_feed.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "11046ab76a377fd7fa0e0051f11a6722935ea2dec97ee8547327bc2c60ac1cd4",
-      "item": "crate::FrameCipher::encrypt",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/crypto.rs"
     },
     {
       "count": 1,
@@ -8367,13 +8177,6 @@
       "item": "crate::run",
       "lint": "unreachable_pub",
       "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b4dc19abf13dffd046e14c8fb922f877b89890ae80f8ea558b39d287b38cdcdb",
-      "item": "crate::FrameCipher::encrypt",
-      "lint": "unreachable_pub",
-      "path": "src/crypto.rs"
     },
     {
       "count": 1,
