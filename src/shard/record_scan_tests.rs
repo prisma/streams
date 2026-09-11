@@ -228,12 +228,13 @@ async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress(
             frames: vec![(1, Bytes::from_static(b"broken"))],
             bytes: 6,
         });
-    assert!(engine.ring_read(&handle, 0, 512, 1024).is_none());
-    assert!(
-        engine
-            .ring_read_keyed(&handle, 0, 512, "wanted", 1024)
-            .is_none()
-    );
+    let window = crate::shard::RingScan {
+        from: 0,
+        to: 512,
+        max_bytes: 1024,
+    };
+    assert!(engine.ring_read(&handle, window, None).is_none());
+    assert!(engine.ring_read(&handle, window, Some("wanted")).is_none());
     let page = read_frames(&engine, &handle, 0, Some("wanted"), 1024, Deliver::Durable)
         .await
         .unwrap();

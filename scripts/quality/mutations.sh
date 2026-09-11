@@ -15,7 +15,7 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool tail_ring; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -30,6 +30,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     touch) file=src/touch.rs; filter=touch:: ;;
     read_accumulator) file=src/billing/read_accumulator.rs; filter=billing ;;
     read_spool) file=src/billing/read_spool.rs; filter=billing ;;
+    tail_ring) file=src/shard/tail_ring.rs; filter=shard:: ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
@@ -38,7 +39,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool ]]; then
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == tail_ring ]]; then
     # These owners use actual service clocks, task handles and storage types.
     # Keep their code and tests in the service crate without substitute models.
     package=streams-slate
