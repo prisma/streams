@@ -77,7 +77,7 @@ impl TaskSupervisor {
 
     /// Each worker is aborted if needed and joined; the shared result is
     /// published only after the resource finalizer has also completed.
-    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
+    pub(crate) async fn shutdown(&self, grace: Duration) -> ShutdownReport {
         self.launch_shutdown(grace, None);
         self.observe_shutdown().await
     }

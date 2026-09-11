@@ -9,13 +9,18 @@
 // the previous completes), so offered load self-paces to what the fleet
 // can absorb and congestion collapse is impossible by construction.
 
+#[path = "pilot/client.rs"]
+mod http_client;
+use http_client::{RotatingClient, client};
+
+#[path = "pilot/proxy.rs"]
+mod routing;
+use routing::proxy;
+
 use axum::Router;
-use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::extract::State;
+use axum::response::Html;
 use axum::routing::get;
-use futures_util::TryStreamExt;
 use hdrhistogram::Histogram;
 use object_store::ObjectStoreExt;
 use std::collections::VecDeque;
@@ -23,14 +28,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pilot process configuration; this independent workload binary owns its explicit environment inputs; routing them through server runtime state would couple separate executables"
+)]
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    epoch_millis(SystemTime::now())
+}
+
+fn epoch_millis(now: SystemTime) -> u64 {
+    u64::try_from(
+        now.duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 // Matches the JS FNV-1a in the run-1 Bun LB so stream→server pinning is
@@ -101,6 +116,10 @@ struct FleetView {
     overrides: std::collections::HashMap<String, String>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "pilot object-store startup; missing credentials or invalid store configuration must stop the selected workload; defaults could publish measurements to an unintended store"
+)]
 fn fleet_store(prefix: &str) -> Arc<dyn object_store::ObjectStore> {
     let s3 = object_store::aws::AmazonS3Builder::new()
         .with_endpoint(env("S3_ENDPOINT").expect("S3_ENDPOINT"))
@@ -195,52 +214,6 @@ fn shard_for(topology: &[String], hash: &[u8; 16]) -> String {
         .max_by_key(|p| p.len())
         .cloned()
         .unwrap_or_default()
-}
-
-/// A client handle that is rebuilt every 60 s: the platform pins existing
-/// keep-alive connections to whatever replica/version first accepted them,
-/// so long-lived pools can stay stuck on stale replicas after a redeploy.
-/// Rotating the client closes the pool and re-resolves within a minute.
-#[derive(Clone)]
-struct RotatingClient(Arc<Mutex<reqwest::Client>>);
-
-impl RotatingClient {
-    fn new() -> Self {
-        let rc = RotatingClient(Arc::new(Mutex::new(client())));
-        let inner = rc.0.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                *inner.lock().unwrap() = client();
-            }
-        });
-        rc
-    }
-    fn get(&self) -> reqwest::Client {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        // http1_only is load-bearing: the platform edge negotiates h2 via
-        // ALPN, and h2 multiplexes everything over ONE TCP connection per
-        // host (bounded by the server's max-concurrent-streams and pinned
-        // to a single LB replica) — measured throughput FELL as workers
-        // doubled. HTTP/1.1 with a big pool gets one connection per
-        // in-flight request and spreads across replicas.
-        .http1_only()
-        .pool_max_idle_per_host(8192)
-        // <5 s: Compute suspends idle VMs after ~5 s and silently kills
-        // flows; a pooled socket idle past that is a corpse the next
-        // request eats. Same rule as the server's store client (RUNBOOK
-        // §3.1). The 60 s client rotation handles replica pinning; this
-        // handles dead sockets.
-        .pool_idle_timeout(Duration::from_secs(4))
-        .tcp_nodelay(true)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap()
 }
 
 #[tokio::main]
@@ -635,245 +608,6 @@ async fn lb() {
         .unwrap();
     println!("pilot lb listening on :{port}");
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
-    let path = req.uri().path().to_string();
-    // BOTH surfaces route by stream name: the raw route
-    // (/v1/stream/{name}...) and the product route
-    // (/v1/streams/{name}[/...|:action]). A product name segment may
-    // carry an :action suffix (records:long-poll, :scan), so ':' also
-    // terminates the name. Registry-scoped paths (/v1/streams catalog,
-    // /v1/segments, /health) are not stream-scoped — any instance
-    // answers; pin them to the first active ordinal so sleepers sleep.
-    let stream: Option<String> = collection_name(&path);
-    if stream.is_none()
-        && !(path == "/v1/streams"
-            || path == "/v1/segments"
-            // /v1/segments/{name} is a registry read — any instance
-            // answers. Run-2 rig finding: rejecting it blinded the
-            // probe's split detection through the LB.
-            || path.starts_with("/v1/segments/")
-            || path == "/health"
-            || path.starts_with("/v1/debug"))
-    {
-        return (StatusCode::NOT_FOUND, "lb: not a stream route").into_response();
-    }
-    // COMPUTE-SPEC R1: route by shard (name-hash longest-prefix against the
-    // topology), rendezvous over only the active set (first `desired`
-    // upstreams) — instances beyond the desired count receive nothing and
-    // scale to zero.
-    let (active, shard, override_to) = {
-        let f = lb.fleet.lock().unwrap();
-        let shard = stream
-            .as_deref()
-            .map(|st| shard_for(&f.topology, &name_hash(st)));
-        let mut active = if f.active.is_empty() {
-            vec!["streams-1".to_string()]
-        } else {
-            f.active.clone()
-        };
-        // Locally ejected ordinals (an unmarked platform response within
-        // the eject window) are removed from the routing set NOW —
-        // round-19 MF4: heartbeat-dark detection takes ~30 s, and every
-        // request routed there in the meantime is a client-visible
-        // failure. Never eject the last candidate: some upstream must
-        // remain so a fully-ejected fleet still produces a real answer
-        // (and its own retryable error) rather than a routing panic.
-        let now = now_ms();
-        let live: Vec<String> = active
-            .iter()
-            .filter(|n| {
-                n.strip_prefix("streams-")
-                    .and_then(|o| o.parse::<usize>().ok())
-                    .and_then(|o| o.checked_sub(1))
-                    .and_then(|i| lb.stats.get(i))
-                    .map(|st| st.eject_until_ms.load(Ordering::Relaxed) <= now)
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        if !live.is_empty() {
-            active = live;
-        }
-        let ov = shard.as_deref().and_then(|sh| f.overrides.get(sh)).cloned();
-        (active, shard, ov)
-    };
-    // Ownership mirrors the servers' effective_owner: a rebalancer
-    // override whose target is active wins; otherwise rendezvous over
-    // instance NAMES from the live-filtered active set — the identical
-    // computation the servers run for their R2 check. Nameless
-    // (registry-scoped) requests pin to the first active.
-    let chosen: &str = match (&override_to, &shard) {
-        (Some(t), _) if active.iter().any(|a| a == t) => t,
-        (_, Some(sh)) => &active[pick(sh, &active)],
-        _ => &active[0],
-    };
-    let first_i = chosen
-        .strip_prefix("streams-")
-        .and_then(|n| n.parse::<usize>().ok())
-        .and_then(|n| n.checked_sub(1))
-        .filter(|n| *n < lb.stats.len())
-        .unwrap_or(0);
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap();
-    let mut headers = HeaderMap::new();
-    for (k, v) in req.headers() {
-        let n = k.as_str();
-        if n != "host" && n != "connection" && n != "content-length" && n != "transfer-encoding" {
-            headers.insert(k.clone(), v.clone());
-        }
-    }
-    // Same ceiling the server enforces (MAX_BODY_BYTES = 32 MiB). A
-    // router that buffered less made the effective public limit depend
-    // on whether a request arrived directly or through the router
-    // (round-19 fleet-contract finding).
-    let body = match axum::body::to_bytes(req.into_body(), 32 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
-    };
-
-    let t0 = Instant::now();
-    let http = lb.http.get();
-    let send_to = |i: usize| {
-        let url = format!(
-            "{}{}{}",
-            lb.upstreams.read().unwrap()[i].clone(),
-            path,
-            query
-        );
-        http.request(method.clone(), url)
-            .headers(headers.clone())
-            .body(body.clone())
-            .send()
-    };
-    let replay_target = |r: &reqwest::Response| {
-        if r.status() != 409 {
-            return None;
-        }
-        r.headers()
-            .get("streams-replay-to")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|n| n.strip_prefix("streams-"))
-            .and_then(|n| n.parse::<usize>().ok())
-            .and_then(|n| n.checked_sub(1))
-            .filter(|n| *n < lb.stats.len())
-    };
-    // R3: an instance that doesn't own the shard answers 409 with
-    // Streams-Replay-To: <instance-name>; replay there without involving
-    // the client (Fly-Replay pattern). Up to two follows: mid-move both
-    // the pick and the first target can miss, so the second follow backs
-    // off briefly to let the fence settle instead of leaking the 409
-    // (FLEET-CAMPAIGN.md: 299 leaked 409s, all in transition windows).
-    let mut cur_i = first_i;
-    let mut resp = send_to(cur_i).await;
-    let mut follows = 0usize;
-    while let Some(target) = resp.as_ref().ok().and_then(&replay_target) {
-        // The bouncing instance answered: it is alive, and it is the one
-        // whose ownership view disagrees with this router's pick.
-        lb.stats[cur_i]
-            .last_seen_ms
-            .store(now_ms(), Ordering::Relaxed);
-        lb.stats[cur_i].replays.fetch_add(1, Ordering::Relaxed);
-        if follows >= 2 {
-            break;
-        }
-        if follows == 1 {
-            tokio::time::sleep(Duration::from_millis(75)).await;
-        }
-        cur_i = target;
-        follows += 1;
-        resp = send_to(cur_i).await;
-    }
-    // Attribute the request to the upstream that actually served it —
-    // run 1 counted replayed traffic under the first pick, freezing the
-    // real owner's counters at zero while it carried the load.
-    let s = &lb.stats[cur_i];
-    let us = t0.elapsed().as_micros() as u64;
-    let idle_ms = now_ms().saturating_sub(s.last_seen_ms.load(Ordering::Relaxed));
-    s.last_seen_ms.store(now_ms(), Ordering::Relaxed);
-    match resp {
-        Ok(r) => {
-            // ROUND-19 MF4: a response WITHOUT Prisma-Streams-Origin never
-            // reached a Streams server — it is the platform edge's static
-            // page for a dead or unpublished service. Passing its 404
-            // through tells the SDK "this stream does not exist", which is
-            // not retryable and makes applications delete or recreate live
-            // data. Convert to a retryable 503 and eject the upstream
-            // locally at once, instead of waiting out heartbeat-dark.
-            if !r.headers().contains_key("prisma-streams-origin") {
-                s.unmarked.fetch_add(1, Ordering::Relaxed);
-                s.eject_until_ms
-                    .store(now_ms() + eject_ms(), Ordering::Relaxed);
-                let body = serde_json::json!({
-                    "error": {
-                        "code": "upstream_unavailable",
-                        "message": "the serving instance is unavailable; retry",
-                        "retryable": true,
-                    }
-                });
-                return Response::builder()
-                    .status(StatusCode::SERVICE_UNAVAILABLE)
-                    .header("content-type", "application/json")
-                    .header("retry-after", "1")
-                    .header("cache-control", "no-store")
-                    .body(Body::from(body.to_string()))
-                    .unwrap();
-            }
-            s.reqs.fetch_add(1, Ordering::Relaxed);
-            s.window.fetch_add(1, Ordering::Relaxed);
-            s.last_us.store(us, Ordering::Relaxed);
-            let prev = s.ewma_us.load(Ordering::Relaxed);
-            s.ewma_us.store(
-                if prev == 0 { us } else { (prev * 9 + us) / 10 },
-                Ordering::Relaxed,
-            );
-            if idle_ms > 8000 && us > 1_500_000 {
-                s.cold_starts.fetch_add(1, Ordering::Relaxed);
-            }
-            let mut out = Response::builder().status(r.status().as_u16());
-            for (k, v) in r.headers() {
-                let n = k.as_str();
-                if n != "connection" && n != "transfer-encoding" {
-                    out = out.header(k, v);
-                }
-            }
-            out.body(Body::from_stream(
-                r.bytes_stream().map_err(std::io::Error::other),
-            ))
-            .unwrap()
-        }
-        Err(e) => {
-            // A transport failure is the STRONGEST form of "never
-            // reached a Streams server" — connection refused, reset, or
-            // timeout against a dead instance. It gets the same
-            // treatment as an unmarked platform response (round-19
-            // MF4): retryable 503 + immediate local ejection, never a
-            // 502 (which the SDK does not retry any more than a 404).
-            s.errs.fetch_add(1, Ordering::Relaxed);
-            s.eject_until_ms
-                .store(now_ms() + eject_ms(), Ordering::Relaxed);
-            tracing_warn_once(&e);
-            let body = serde_json::json!({
-                "error": {
-                    "code": "upstream_unavailable",
-                    "message": "the serving instance is unavailable; retry",
-                    "retryable": true,
-                }
-            });
-            Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header("content-type", "application/json")
-                .header("retry-after", "1")
-                .header("cache-control", "no-store")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        }
-    }
 }
 
 // --------------------------------------------------------------- gen ----

@@ -132,7 +132,6 @@ impl WatchService {
         let journal = self.touch.journal(
             descriptor.storage_hash(),
             crate::crypto::RouteHash::for_stream(&descriptor.sref()),
-            &watch_pinned(descriptor),
         );
         Some(crate::shard::TouchFeed {
             journal,
@@ -304,7 +303,6 @@ impl WatchService {
         let journal = self.touch.journal(
             descriptor.storage_hash(),
             crate::crypto::RouteHash::for_stream(&descriptor.sref()),
-            &watch_pinned(descriptor),
         );
         let outcome = journal
             .wait(
@@ -343,15 +341,6 @@ impl WatchService {
             },
         })
     }
-}
-
-/// Journal template registration shape for a stream's immutable watch
-/// definitions.
-pub(crate) fn watch_pinned(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
-    desc.watch_definitions
-        .iter()
-        .map(|w| (w.name.clone(), w.fields.clone()))
-        .collect()
 }
 
 /// Canonical watch-key value encoding (spec Stage 2 §3.3): JSON

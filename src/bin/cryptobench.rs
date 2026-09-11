@@ -2,9 +2,16 @@
 use std::time::Instant;
 
 #[path = "../crypto.rs"]
+#[allow(
+    dead_code,
+    reason = "crypto benchmark module selection; the benchmark measures frame operations from the canonical service module; token and routing entry points remain compiled but unused here"
+)]
 mod crypto;
 #[path = "../tenant.rs"]
-#[allow(dead_code)] // shared identity module; side bins use only crypto
+#[allow(
+    dead_code,
+    reason = "benchmark module selection; crypto shares canonical tenant types with the service; the binary does not expose every service identity operation"
+)]
 mod tenant;
 use crypto::{
     FrameCompression, FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey,

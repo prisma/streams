@@ -32,12 +32,22 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 #[path = "../crypto.rs"]
-#[allow(dead_code)] // this tool never encrypts frames
+#[allow(
+    dead_code,
+    reason = "benchmark module selection; the canonical crypto module also exposes service-only frame operations; copying just the benchmark functions would duplicate the wire implementation"
+)]
 mod crypto;
 #[path = "../tenant.rs"]
-#[allow(dead_code)] // shared identity module; side bins use only crypto
+#[allow(
+    dead_code,
+    reason = "benchmark module selection; crypto shares canonical tenant types with the service; the binary does not expose every service identity operation"
+)]
 mod tenant;
 #[path = "../touch_keys.rs"]
+#[allow(
+    dead_code,
+    reason = "watch benchmark module selection; this client encodes full watch keys while server journals use the low-word functions; sharing the module preserves one cross-language wire contract"
+)]
 mod touch_keys;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "livebench")]

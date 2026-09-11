@@ -35,7 +35,7 @@ pub(super) struct StreamOverlay {
     pub frames: FrameEffects,
 }
 impl StreamOverlay {
-    pub fn new(
+    pub(super) fn new(
         handle: Arc<StreamHandle>,
         billing: Option<crate::billing::SegmentBillingMetaV1>,
     ) -> Self {

@@ -23,11 +23,10 @@ mod memprofile_tests {
         );
         let cert = crate::config::profile::resolved_compactor_options(&cfg.engine)
             .worker
-            .clone()
             .unwrap_or_default();
         for (family, co) in crate::config::profile::production_settings_families(&cfg) {
             let co = co.unwrap_or_else(|| panic!("{family}: compactor disabled"));
-            let w = co.worker.clone().unwrap_or_default();
+            let w = co.worker.unwrap_or_default();
             assert_eq!(w.max_subcompactions, cert.max_subcompactions, "{family}");
             assert_eq!(w.max_fetch_tasks, cert.max_fetch_tasks, "{family}");
             assert_eq!(w.bytes_to_fetch, cert.bytes_to_fetch, "{family}");

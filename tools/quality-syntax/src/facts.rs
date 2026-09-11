@@ -27,6 +27,7 @@ pub(super) struct Item {
     pub(super) kind: &'static str,
     pub(super) signature: String,
     pub(super) test_only: bool,
+    pub(super) explicit_test_cfg: bool,
     pub(super) location: Location,
 }
 
@@ -42,12 +43,24 @@ pub(super) struct Fact {
 #[derive(Default, Serialize)]
 pub(super) struct Source {
     pub(super) path: String,
+    pub(super) tokens: String,
+    pub(super) test_only_file: bool,
     pub(super) items: Vec<Item>,
     pub(super) facts: Vec<Fact>,
 }
 
 pub(super) fn tokens(value: &impl ToTokens) -> String {
     value.to_token_stream().to_string()
+}
+
+/// Only a direct attribute on this AST node proves this exact cfg boundary.
+pub(super) fn explicit_test_cfg(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Path>()
+                .is_ok_and(|path| path.is_ident("test"))
+    })
 }
 
 /// Classify only a positive `cfg(test)` requirement as test-only. Unknown and

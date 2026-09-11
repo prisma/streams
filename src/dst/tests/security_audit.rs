@@ -1,5 +1,6 @@
 //! Security audit.
 
+use super::fixture_auth::sr_rig;
 use super::fixture_http::{engine_shutdown, http_rig_with_auth_service};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
@@ -11,115 +12,10 @@ use super::fixture_storage::mem;
 /// under the system project where no customer credential reaches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn enforce_denials_journal_to_audit_events() {
-    const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
-    const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
-    let now = crate::shard::now_ms() / 1000;
-    let svc = std::sync::Arc::new(
-        crate::auth::AuthService::new(
-            crate::auth::AuthMode::Enforce,
-            "https://auth.prisma.io".into(),
-            "test-cell",
-        )
-        .unwrap(),
-    );
-    let mut keys = std::collections::HashMap::new();
-    keys.insert(
-        "audj-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
-    );
-    svc.publish_jwks(crate::auth::JwksSnapshot {
-        keys,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
     // Deliberately NO streams.records.read: the read leg must deny.
     let scopes = "streams.create streams.records.append";
-    let pid = crate::tenant::ProjectId::new("proj-audj").unwrap();
-    let mut projects = std::collections::HashMap::new();
-    projects.insert(
-        pid.clone(),
-        crate::project_policy::ProjectPolicy {
-            project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_audj").unwrap(),
-            cell_id: std::sync::Arc::from("test-cell"),
-            project_policy_version: 1,
-            ownership_version: 1,
-            status: crate::project_policy::ProjectStatus::Active,
-            quotas: crate::project_policy::ProjectQuotas::default(),
-        },
-    );
-    let mut credentials = std::collections::HashMap::new();
-    credentials.insert(
-        std::sync::Arc::from("c_audj"),
-        crate::project_policy::CredentialGrant {
-            credential_id: std::sync::Arc::from("c_audj"),
-            project_id: pid.clone(),
-            grant_version: 1,
-            status: crate::project_policy::CredentialStatus::Active,
-            scopes: crate::tenant::ScopeSet::parse(scopes).0,
-            grant: crate::tenant::StreamGrant::All,
-            expires_at: None,
-        },
-    );
-    svc.publish_policies(crate::project_policy::PolicySnapshot {
-        projects,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    svc.publish_grants(crate::project_policy::GrantSnapshot {
-        credentials,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
-
-    #[derive(serde::Serialize)]
-    struct C<'a> {
-        iss: &'a str,
-        aud: &'a str,
-        sub: &'a str,
-        credential_id: &'a str,
-        project_id: &'a str,
-        workspace_id: &'a str,
-        cell_id: &'a str,
-        ownership_version: u64,
-        grant_version: u64,
-        scope: &'a str,
-        jti: &'a str,
-        iat: i64,
-        exp: i64,
-    }
-    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    header.kid = Some("audj-1".into());
-    let token = jsonwebtoken::encode(
-        &header,
-        &C {
-            iss: "https://auth.prisma.io",
-            aud: "prisma-streams-data",
-            sub: "u",
-            credential_id: "c_audj",
-            project_id: "proj-audj",
-            workspace_id: "ws_audj",
-            cell_id: "test-cell",
-            ownership_version: 1,
-            grant_version: 1,
-            scope: scopes,
-            jti: "t",
-            iat: now - 60,
-            exp: now + 600,
-        },
-        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-    )
-    .unwrap();
-    let auth = format!("Bearer {token}");
-    let auth = ("authorization", auth.as_str());
+    let (state, addr, token) = sr_rig("proj-audj", "ws_audj", "c_audj", "audj-1", scopes).await;
+    let auth = ("authorization", token.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
     // A fresh runtime owns an empty journal; another rig cannot drain into it.
@@ -173,27 +69,6 @@ async fn enforce_denials_journal_to_audit_events() {
     .await;
     assert_eq!(st, 403);
 
-    // Journal scope (§8.1/§7.1): placement and own-feed staleness are
-    // NOT denials of the caller and must never be tagged; real
-    // verification failures are.
-    for e in [
-        crate::auth::AuthError::WrongCell,
-        crate::auth::AuthError::PolicyStale,
-        crate::auth::AuthError::KeysStale,
-    ] {
-        let r = crate::product::auth_failure_response(&e);
-        assert!(
-            r.extensions().get::<crate::audit::DenialTag>().is_none(),
-            "{} must not journal",
-            e.kind()
-        );
-    }
-    let r = crate::product::auth_failure_response(&crate::auth::AuthError::Expired);
-    assert!(
-        r.extensions().get::<crate::audit::DenialTag>().is_some(),
-        "expired must journal"
-    );
-
     // Drain this runtime's queue to its `_audit_events`.
     let mut appended = 0usize;
     for _ in 0..40 {
@@ -207,39 +82,8 @@ async fn enforce_denials_journal_to_audit_events() {
     }
     assert!(appended >= 2, "denials appended: {appended}");
 
-    // Read the journal back through the system read path (each page is
-    // a JSON array of event records) and find both events.
-    let key = state.billing.usage_key().expect("rig usage key");
-    let mut events: Vec<serde_json::Value> = Vec::new();
-    let mut cursor: Option<String> = None;
-    for _ in 0..200 {
-        match crate::billing::system_read(
-            &state,
-            crate::billing::AUDIT_EVENTS_STREAM,
-            &key,
-            cursor.clone(),
-        )
-        .await
-        .expect("system read")
-        {
-            Some((page, next)) => {
-                if page.is_empty() {
-                    break;
-                }
-                if let Ok(serde_json::Value::Array(a)) = serde_json::from_slice(&page) {
-                    if a.is_empty() {
-                        break;
-                    }
-                    events.extend(a);
-                }
-                if cursor.as_deref() == Some(next.as_str()) {
-                    break;
-                }
-                cursor = Some(next);
-            }
-            None => break,
-        }
-    }
+    // Read through the system path; invalid JSON is a failed oracle.
+    let events = audit_events(&state).await;
     let probe: Vec<&serde_json::Value> = events
         .iter()
         .filter(|e| e["route"] == "audj-probe/records")
@@ -280,6 +124,64 @@ async fn enforce_denials_journal_to_audit_events() {
     engine_shutdown(&state).await;
 }
 
+/// Response tagging is independent of journal storage and runtime construction.
+#[test]
+fn audit_tags_distinguish_caller_failures_from_cell_failures() {
+    // Journal scope (§8.1/§7.1): placement and own-feed staleness are
+    // NOT denials of the caller and must never be tagged; real
+    // verification failures are.
+    for e in [
+        crate::auth::AuthError::WrongCell,
+        crate::auth::AuthError::PolicyStale,
+        crate::auth::AuthError::KeysStale,
+    ] {
+        let r = crate::product::auth_failure_response(&e);
+        assert!(
+            r.extensions().get::<crate::audit::DenialTag>().is_none(),
+            "{} must not journal",
+            e.kind()
+        );
+    }
+    let r = crate::product::auth_failure_response(&crate::auth::AuthError::Expired);
+    assert!(
+        r.extensions().get::<crate::audit::DenialTag>().is_some(),
+        "expired must journal"
+    );
+}
+
+/// Read the durable journal through the system path, retaining every event.
+async fn audit_events(state: &std::sync::Arc<crate::http::AppState>) -> Vec<serde_json::Value> {
+    let key = state.billing.usage_key().expect("rig usage key");
+    let mut events = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..200 {
+        let Some((page, next)) = crate::billing::system_read(
+            state,
+            crate::billing::AUDIT_EVENTS_STREAM,
+            &key,
+            cursor.clone(),
+        )
+        .await
+        .expect("system read") else {
+            break;
+        };
+        if page.is_empty() {
+            break;
+        }
+        let values: Vec<serde_json::Value> =
+            serde_json::from_slice(&page).expect("journal page is an array");
+        if values.is_empty() {
+            break;
+        }
+        events.extend(values);
+        if cursor.as_deref() == Some(next.as_str()) {
+            break;
+        }
+        cursor = Some(next);
+    }
+    events
+}
+
 /// MT Stage 8 (shared-cell certification, in-suite gate): 128 projects
 /// on ONE cell — every project reuses the SAME stream name, a noisy
 /// subset appends distinct volumes, the majority stays idle — and the
@@ -288,6 +190,10 @@ async fn enforce_denials_journal_to_audit_events() {
 /// balanced books under reconciliation, and journaled denials. The
 /// at-scale (≥1,000 projects) and fleet legs run as the field
 /// campaign; this gate keeps the shared-cell mechanism honest in CI.
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared-cell certification; isolation, suspension, revocation and books share one ordered runtime; splitting the scenario would hide their common state and before/after assertions"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shared_cell_certification_smoke() {
     let _xr = crate::billing::billing_clock_lock().read().await;
@@ -296,13 +202,15 @@ async fn shared_cell_certification_smoke() {
     // Suite default = 128 (fast gate). The at-scale certification leg
     // (contract Stage 8: >= 1,000 projects, 32-64 noisy) runs the SAME
     // test with MT_CERT_PROJECTS=1000 — one code path, two postures.
-    #[allow(non_snake_case)]
-    let N: usize = std::env::var("MT_CERT_PROJECTS")
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "shared-cell certification owner; CI selects 128 or 1000 projects before fixture construction; removing the explicit process input would disconnect the at-scale campaign"
+    )]
+    let project_count: usize = std::env::var("MT_CERT_PROJECTS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(128);
-    #[allow(non_snake_case)]
-    let NOISY: usize = if N >= 1000 { 48 } else { 16 };
+    let noisy_count: usize = if project_count >= 1000 { 48 } else { 16 };
     let now = crate::shard::now_ms() / 1000;
     let svc = std::sync::Arc::new(
         crate::auth::AuthService::new(
@@ -337,7 +245,7 @@ async fn shared_cell_certification_smoke() {
     let ws_name = |i: usize| format!("ws-c{:02}", i % 16);
     let mut base_projects = std::collections::HashMap::new();
     let mut base_credentials = std::collections::HashMap::new();
-    for i in 0..N {
+    for i in 0..project_count {
         let pid = crate::tenant::ProjectId::new(&proj_name(i)).unwrap();
         base_projects.insert(
             pid.clone(),
@@ -380,7 +288,10 @@ async fn shared_cell_certification_smoke() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    assert!(
+        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
+        "fresh certification runtime has an empty rollup slot"
+    );
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -427,7 +338,7 @@ async fn shared_cell_certification_smoke() {
             .unwrap()
         )
     };
-    let tokens: Vec<String> = (0..N).map(mint).collect();
+    let tokens: Vec<String> = (0..project_count).map(mint).collect();
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let create = br#"{"format":{"kind":"json"}}"#;
 
@@ -440,7 +351,7 @@ async fn shared_cell_certification_smoke() {
     }
     // Noisy subset appends DISTINCT volumes (project i: i%3+1 records
     // carrying its own marker); the other 112 projects stay idle.
-    for (i, t) in tokens.iter().enumerate().take(NOISY) {
+    for (i, t) in tokens.iter().enumerate().take(noisy_count) {
         let auth = ("authorization", t.as_str());
         for k in 0..(i % 3 + 1) {
             let body = format!("{{\"p\":{i},\"k\":{k}}}");
@@ -553,7 +464,7 @@ async fn shared_cell_certification_smoke() {
     let rep = rollup.reconcile_month(&month).await.expect("reconcile");
     assert!(rep.ok, "books must balance: {:?}", rep.mismatches);
     assert!(
-        rep.projects >= NOISY,
+        rep.projects >= noisy_count,
         "every noisy project rolled up: {rep:?}"
     );
 

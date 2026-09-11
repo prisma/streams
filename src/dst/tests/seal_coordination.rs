@@ -314,6 +314,14 @@ async fn topology_transitions_are_fenced_by_sealing() {
 /// publishing successors, while the collection seals underneath it.
 /// Fencing only the START of a transition left this open — phase B
 /// would resume and publish live children under a Sealed collection.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal topology fixture; both the held split and competing sealer are released and joined before inspecting terminal state; serial requests cannot exercise successor publication under a seal"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal topology scenario; the parked split and raw/keyed terminal write assertions form one publication proof; one-use phase wrappers would hide the causal relationship"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     let _l = gap_lock().lock().await;
@@ -403,7 +411,9 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     crate::failpoints::release_scaler_before_publish("parked");
-    let _ = split.await;
+    split
+        .await
+        .expect("held split task must finish without panic");
     let seal_result = sealer.await.unwrap();
 
     // Whatever order they settled in, the end state must be coherent:

@@ -1,17 +1,10 @@
 //! Ordering, byte counts, redaction, hashing, outcomes, multipart.
 
-#![allow(unused_imports)]
-use std::sync::Arc;
-
-use object_store::path::Path as ObjPath;
-use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OsResult,
-};
-
-use super::super::{TraceEventKind, TraceOutcome, TraceStore};
-use super::*;
+use super::super::{TraceOutcome, TraceStore};
+use super::mem;
 use crate::dst::{ObjClass, StoreOp};
+use object_store::path::Path as ObjPath;
+use object_store::{GetOptions, ObjectStore, PutMultipartOptions, PutOptions, PutPayload};
 
 /// The trace is in id (= trace-lock acquisition) order, so a
 /// before/after refactor diff compares equal iff the client issued the
