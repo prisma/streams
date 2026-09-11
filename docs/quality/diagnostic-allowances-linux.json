@@ -1424,27 +1424,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1904e7103ac8bc21014fd703259f4ffc2747ee63215b9db42915335ceba77815",
-      "item": "crate::KeyDistribution::new",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f5183bf3a7c1a73fd6145822fd82dba4f434ff5d39f340c9dc78bec0af5403e4",
-      "item": "crate::KeyDistribution::weighted_median",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e8b547198d3c16807be9655e367514537c3c2c786468d61cc8e9883e04f53ef6",
-      "item": "crate::SpaceSaving8::keys_above",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "528dd7b6cca8a88a06f37703ab547cc2f6a640e3af129e3af149f3c66505e12b",
       "item": "crate::LiveFeed::read_and_publish",
       "lint": "clippy::cast_possible_truncation",
@@ -1687,13 +1666,6 @@
       "item": "crate::ShardMaintenance::no_progress_secs",
       "lint": "clippy::cast_sign_loss",
       "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f389a9741fe3822c5ce7baee11e543e4a24b70fbb9ff7ffdfa478a8ae881f862",
-      "item": "crate::SpaceSaving8::keys_above",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/sketch.rs"
     },
     {
       "count": 1,
@@ -4973,20 +4945,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "4f3f7f65cdd283866634678abc0030e647fb2f26e6b0d621c12788dcd2addeaa",
-      "item": "crate::KeyDistribution::weighted_median",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b102d92401e0a55ff3f4aab7eaa45356da5b574473dd5b906b2fb6b76951ad4e",
-      "item": "crate::KeyDistribution::weighted_median",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "51eb15adaf263aefa95e835f9244d149413a19bbfb3908d90dbfb232e6f2f21f",
       "item": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
       "lint": "clippy::excessive_nesting",
@@ -5922,20 +5880,6 @@
       "item": "crate::CommitTransaction < '_ >::settle",
       "lint": "clippy::expect_used",
       "path": "src/shard/transaction/queue/settle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "17b36ad4597e568d254b7beec26d70ccbb2ab6d3a29d14b6f3aa724ef10d92bf",
-      "item": "crate::Hll64::add",
-      "lint": "clippy::expect_used",
-      "path": "src/sketch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c1d13bd388f3f693ccf3088ab2c578c17f7f869279d2cec45a4cd779afb75e7a",
-      "item": "crate::SpaceSaving8::add",
-      "lint": "clippy::expect_used",
-      "path": "src/sketch.rs"
     },
     {
       "count": 1,
@@ -7880,14 +7824,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/shard/transaction/queue/config.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "81b73f45aa822233d4a24c64c2102e087e495db49bb11fb9968be95294d08fa1",
-      "item": "crate::KeyDistribution::note",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/sketch.rs"
     },
     {
       "count": 1,
@@ -12310,13 +12246,6 @@
       "item": "crate::OpenGate::get_or_open",
       "lint": "unreachable_pub",
       "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fee22242fdd16dfda993c97c0fb96655395e2ba74f6067cf38e29acdc3e48627",
-      "item": "crate::KeyDistribution::note",
-      "lint": "unreachable_pub",
-      "path": "src/sketch.rs"
     },
     {
       "count": 1,
