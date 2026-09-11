@@ -37,7 +37,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     scaler) file=src/scaler3.rs; filter=scaler3:: ;;
     bootstrap) file=src/bootstrap.rs; filter=bootstrap:: ;;
     read_request) file=src/application/read_request.rs; filter=application::read_request:: ;;
-    http_read) file=src/http/read.rs; filter=http::read:: ;;
+    http_read) file=src/http/read.rs; filter="http::read:: dst_tests::reads_raw:: dst_tests::reads_history::" ;;
     queue_cleanup) file=src/shard/transaction/queue/cleanup.rs; filter=shard:: ;;
     transaction_append) file=src/shard/transaction/append.rs; filter=shard:: ;;
     record) file=src/shard/record.rs; filter=shard:: ;;
