@@ -188,7 +188,7 @@
           "sha256": "650887ca19c494c8ed4e394f8f48d3af0b96fb214b4ea16d7fc7d47d8bbc56a2"
         },
         {
-          "file": "src/tasks.rs",
+          "file": "src/tasks/tests.rs",
           "name": "critical_exits_failures_and_panics_are_reported",
           "sha256": "13b4991686073b3e5db3b1e40ef6862bc110617df596f4647eaaedfb1714f90f"
         }

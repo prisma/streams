@@ -1626,20 +1626,6 @@
     },
     {
       "category": "effect",
-      "count": 2,
-      "owner": "crate::tests::concurrent_shutdowns_share_one_run_and_one_report",
-      "path": "src/tasks.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::registration_cannot_race_shutdown",
-      "path": "src/tasks.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 1,
       "owner": "crate::TaskSupervisor::launch_shutdown",
       "path": "src/tasks/shutdown.rs",
@@ -3944,13 +3930,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::tests::shutdown_is_ordered_bounded_and_joins_everything",
-      "path": "src/tasks.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::TaskSupervisor::observe_shutdown",
       "path": "src/tasks/shutdown.rs",
       "syntax": "tokio::pin"
@@ -4765,13 +4744,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/store_timing/resources.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/tasks.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
