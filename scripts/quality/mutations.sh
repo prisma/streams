@@ -16,7 +16,7 @@ BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_ba
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
 REGISTERED=(src/bin/pilot/benchmark.rs src/bin/pilot/benchmark/config.rs src/bin/pilot/benchmark/window.rs src/bin/pilot/generator.rs src/bin/pilot/generator/membership.rs)
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler bootstrap read_request http_read queue_cleanup transaction_append; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -35,6 +35,11 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     history_partition) file=src/shard/history_partition.rs; filter=shard:: ;;
     ops) file=src/ops.rs; filter=ops:: ;;
     scaler) file=src/scaler3.rs; filter=scaler3:: ;;
+    bootstrap) file=src/bootstrap.rs; filter=bootstrap:: ;;
+    read_request) file=src/application/read_request.rs; filter=application::read_request:: ;;
+    http_read) file=src/http/read.rs; filter=http::read:: ;;
+    queue_cleanup) file=src/shard/transaction/queue/cleanup.rs; filter=shard:: ;;
+    transaction_append) file=src/shard/transaction/append.rs; filter=shard:: ;;
   esac
   REGISTERED+=("$file")
   output="$QUALITY_MUTANTS_OUT/$owner"
@@ -44,7 +49,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler ]]; then
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == bootstrap || "$owner" == read_request || "$owner" == http_read || "$owner" == queue_cleanup || "$owner" == transaction_append ]]; then
     # These owners use actual service clocks, task handles and storage types.
     # Keep their code and tests in the service crate without substitute models.
     package=streams-slate

@@ -1,5 +1,17 @@
 use super::*;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "CommitTransaction::append; the append validates, seals, accepts and bills in the order the commit contract promises; splitting it would hide which check each rejection comes from"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::append; an appender that gave up before its reply has no receiver; a handled send would only restate that the request was abandoned"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail; recovering it could accept an append against a boundary that was never committed"
+    )]
     pub(super) async fn append(
         &mut self,
         local: &mut StreamOverlay,
@@ -236,6 +248,10 @@ impl CommitTransaction<'_> {
             }),
         ));
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::bill_append; the billing meta was loaded for this stream before the append was accepted; a fallible read would add a branch no accepted append reaches"
+    )]
     fn bill_append(
         &mut self,
         local: &mut StreamOverlay,
