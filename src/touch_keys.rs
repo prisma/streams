@@ -81,16 +81,6 @@ pub fn key_id_of_u64(key: u64) -> u32 {
     key as u32
 }
 
-/// Canonical string encoding of a JSON field value for watch-key args
-/// (encodings collapse to their string form; nulls/missing become "").
-pub fn arg_string(v: Option<&serde_json::Value>) -> String {
-    match v {
-        None | Some(serde_json::Value::Null) => String::new(),
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

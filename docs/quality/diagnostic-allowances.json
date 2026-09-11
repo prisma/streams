@@ -14563,13 +14563,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "3dd2c159320a68c76f8a092cae4785b41b68da4b05f0254cb4123280a76bb00b",
-      "item": "crate::arg_string",
-      "lint": "dead_code",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "818b8871f27623300c34b68b42d326260e1ed554205631438a85d2104cc201fc",
       "item": "crate::key_hex",
       "lint": "dead_code",
@@ -21546,13 +21539,6 @@
       "item": "crate::validate_cell_id",
       "lint": "unreachable_pub",
       "path": "src/tenant.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0f411a329293a08f682a7420fb0ab51a65161fb736f7c1135cd839a3f5142a94",
-      "item": "crate::arg_string",
-      "lint": "unreachable_pub",
-      "path": "src/touch_keys.rs"
     },
     {
       "count": 1,
