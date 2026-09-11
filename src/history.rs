@@ -10,6 +10,7 @@
 //!                       [rk_len u16 LE][rk][payload]
 
 mod canonical_span;
+mod gather;
 mod postings_read;
 use postings_read::execute_postings_plan;
 use std::collections::HashMap;
@@ -330,6 +331,10 @@ impl AbsorbBudget {
     /// once on a 1 GiB instance. Cancellation-safe: permits are RAII,
     /// so a reservation future dropped at ANY await point returns
     /// whatever it already held.
+    #[expect(
+        clippy::expect_used,
+        reason = "AbsorbBudget::reserve; the permit count is clamped to the u32 range at construction and the budget semaphore is never closed; a fallible reservation would let a gather proceed without the bytes it was promised"
+    )]
     pub(crate) async fn reserve(&self, estimate: usize) -> AbsorbReservation<'_> {
         let want = estimate.clamp(1, self.capacity);
         // capacity <= u32::MAX by construction, so this is total.
@@ -385,6 +390,10 @@ impl AbsorbReservation<'_> {
     /// (resolved_gather_packing_bytes caps gather_max at capacity ÷
     /// multiplier), so a shortfall after clamping only occurs in
     /// shapes the pre-adaptive reservation could not cover either.
+    #[expect(
+        clippy::expect_used,
+        reason = "AbsorbReservation::grow; the permit count is clamped to the u32 range at construction and the budget semaphore is never closed; a fallible reservation would let a gather proceed without the bytes it was promised"
+    )]
     pub(crate) async fn grow(&mut self, additional: usize) {
         let add = additional.min(self.budget.capacity.saturating_sub(self.bytes));
         if add == 0 {
@@ -543,6 +552,10 @@ const KEY_TTL: Duration = Duration::from_secs(900);
 const KEY_CACHE_MAX: usize = 65_536;
 
 impl KeyCache {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "KeyCache::put; a poisoned key cache may hold a partially inserted key entry; recovering it could decrypt or index with a key that was never fully installed"
+    )]
     pub(crate) fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
         let mut map = self.map.lock().unwrap();
         if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
@@ -563,6 +576,10 @@ impl KeyCache {
         );
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "KeyCache::get; a poisoned key cache may hold a partially inserted key entry; recovering it could decrypt or index with a key that was never fully installed"
+    )]
     pub(crate) fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
         let mut map = self.map.lock().unwrap();
         let expired = map.get(hash).is_some_and(|e| e.at.elapsed() > KEY_TTL);
@@ -574,6 +591,10 @@ impl KeyCache {
         Some((e.key.clone(), e.epoch))
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "KeyCache::len; a poisoned key cache may hold a partially inserted key entry; recovering it could decrypt or index with a key that was never fully installed"
+    )]
     pub(crate) fn len(&self) -> usize {
         self.map.lock().unwrap().len()
     }
@@ -790,11 +811,6 @@ pub(crate) struct Absorber {
     discovery_after: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
-/// Must exceed the small lane's concurrency, or a tick's concurrent
-/// passes evict each other's handles at the end of every tick and the
-/// next tick re-opens them (the open IS the per-stream cost being
-/// amortized).
-
 impl Absorber {
     /// Construct without starting the pump — DST tests drive gathers
     /// directly for deterministic budget/packing assertions.
@@ -879,450 +895,6 @@ impl Absorber {
         rx: mpsc::Receiver<AbsorbSignal>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(Self::new(data_store, shard, keys, cfg).run(rx))
-    }
-
-    /// Scan the durable dirty index and merge outstanding work:
-    /// unabsorbed streams into `pending`, trim debt into the engine's
-    /// maintenance set. Pending bytes come from the tail's EXACT
-    /// `unabsorbed_bytes` gauge — the old records × 1 KiB estimate
-    /// under-sized a single 32 MiB record by 32,000×, putting it below
-    /// both default absorption thresholds forever (review round 4).
-    /// `or_insert` merge: live entries always win over the scan's view.
-    async fn seed_from_dirty_index(
-        &self,
-        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
-    ) -> anyhow::Result<usize> {
-        // R25-A: maintenance state is loaded SYNCHRONOUSLY by the
-        // engine opener, before the engine is published. Restoring it
-        // here — asynchronously, after the engine is already serving —
-        // was the R24 defect: the first request after a restart could be
-        // admitted before the backlog was known, and a late restore
-        // could overwrite state a new append had already advanced.
-        let after = *self.discovery_after.lock().unwrap();
-        let (dirty, more) = self
-            .shard
-            .scan_dirty_streams_page(after, DISCOVERY_PAGE_STREAMS)
-            .await?;
-        let last = dirty.last().map(|entry| entry.0);
-        let mut absorb_seeded = 0usize;
-        for (h, absorbed, next) in dirty {
-            if pending.len() >= MAX_PENDING_STREAMS && !pending.contains_key(&h) {
-                continue;
-            }
-            let (recs, bytes) = match self.shard.tail_fields(&h).await {
-                Ok(Some(t)) => {
-                    if t.trimmed < t.trim_safe_to {
-                        self.shard.note_trim_debt(h);
-                    }
-                    let recs = t.next.saturating_sub(t.absorbed);
-                    let bytes = if t.unabsorbed_bytes > 0 {
-                        t.unabsorbed_bytes
-                    } else {
-                        // Legacy tail without the gauge: keep the estimate.
-                        recs.saturating_mul(1024)
-                    };
-                    (recs, bytes)
-                }
-                // Tail unreadable right now: fall back to the marker's
-                // view rather than failing the whole seed pass.
-                _ => {
-                    let recs = next.saturating_sub(absorbed);
-                    (recs, recs.saturating_mul(1024))
-                }
-            };
-            if recs == 0 {
-                continue;
-            }
-            // R25-D: heal a stranded submitted-watermark. The gather
-            // records what it SUBMITTED (fire-and-forget) so an advance
-            // in flight to handle state is not re-sent — but if the
-            // committer group carrying that advance FAILED, the durable
-            // boundary never moved and the mark now fences the range
-            // off from every future gather: `from = max(mark, absorbed)
-            // >= upto` reads as no_work forever, and the backlog is
-            // stranded until a restart. The durable tail is the source
-            // of truth: a mark ahead of it at rescan time describes a
-            // submission that did not land, so roll it back. A genuine
-            // in-flight advance re-submitted after this is harmless —
-            // the committer ignores non-advancing boundaries and the
-            // history write is idempotent.
-            {
-                let mut submitted = self.submitted.lock().unwrap();
-                if let Some((mark, _v2)) = submitted.get(&h)
-                    && *mark > absorbed
-                {
-                    tracing::warn!(
-                        "rolling back stranded absorb mark for {}: submitted={} durable absorbed={}",
-                        crate::crypto::hex(&h[..4]),
-                        mark,
-                        absorbed,
-                    );
-                    submitted.remove(&h);
-                }
-            }
-            // Backdate by the age threshold so recovered work is eligible
-            // promptly rather than a full window later.
-            let since = Instant::now()
-                .checked_sub(self.cfg.threshold_age)
-                .unwrap_or_else(Instant::now);
-            pending.entry(h).or_insert(PendingAbsorb {
-                bytes,
-                since,
-                failures: 0,
-                retry_after: None,
-            });
-            absorb_seeded += 1;
-        }
-        *self.discovery_after.lock().unwrap() = if more { last } else { None };
-        Ok(absorb_seeded)
-    }
-
-    /// Shared-partition gather pass (history v2): read MANY streams' raw
-    /// encrypted frames from the shard log, put them all into ONE
-    /// WriteBatch on the shard's shared partition, flush ONCE, then
-    /// advance every covered boundary. No decryption, no KeyCache, no
-    /// per-stream DB — the per-stream request tax this replaces was ~43
-    /// Class A per one-record stream (docs/COST-WIDE1.md §1).
-    ///
-    /// Classifies every requested stream: `advanced` covered by this
-    /// flush (with new upto and the frame bytes copied), `no_work` had
-    /// nothing durable to absorb, and `deferred_budget` did not fit the
-    /// aggregate byte budget — the CALLER must keep those pending (with
-    /// lag and age intact) so they gather on the next tick; dropping
-    /// them used to strand their backlog until the ~60 s resident-handle
-    /// sweep re-found it. A per-stream byte cap truncates fat streams
-    /// mid-range — their boundary still advances over what was written,
-    /// and the sweep or the next signal re-drives the remainder.
-    /// Test-facing wrapper: reserve adaptively, then gather. The pump
-    /// loop calls absorb_gather_v2_with directly because its
-    /// reservation must precede the post-budget fence re-check.
-    #[cfg(test)]
-    pub(crate) async fn absorb_gather_v2(
-        &self,
-        streams: &[[u8; 16]],
-    ) -> anyhow::Result<GatherOutcome> {
-        let mut reservation = self
-            .shard
-            .history_resources
-            .budget
-            .reserve(self.adaptive_gather_est())
-            .await;
-        self.absorb_gather_v2_with(streams, &mut reservation).await
-    }
-
-    pub(crate) async fn absorb_gather_v2_with(
-        &self,
-        streams: &[[u8; 16]],
-        reservation: &mut AbsorbReservation<'_>,
-    ) -> anyhow::Result<GatherOutcome> {
-        // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
-        const ENTRY_OVERHEAD: usize = 64;
-        let part = self.shard.history_partition().await?;
-        let t_read = Instant::now();
-        let mut wb = WriteBatch::new();
-        let mut out = GatherOutcome::default();
-        let mut batch_bytes: usize = 0;
-        let mut paced = Duration::ZERO;
-        let mut last_park = Instant::now();
-        // (segment, chunk_from, chunk_to, per-key runs) for write-through
-        // cache warming — installed only after the batch flush succeeds.
-        type WarmChunk = (
-            SegmentHash,
-            u64,
-            u64,
-            Vec<([u8; 16], Vec<crate::postings::AbsRun>)>,
-        );
-        let mut warm_installs: Vec<WarmChunk> = Vec::new();
-        // #266 phase A: plan the reads serially — resident-map lookups
-        // and lock reads only. The per-stream frame reads are the
-        // latency-bound part of the gather (store round trips), and the
-        // L1 ladder showed append shed scales with read-phase WALL TIME
-        // (L1d8: stretching the phase via pacing amplified shed 10x),
-        // so the reads run in bounded-concurrency waves below while the
-        // WriteBatch build stays serial and deterministic in lane order.
-        struct ReadPlan {
-            hash: [u8; 16],
-            handle: Arc<crate::shard::StreamHandle>,
-            from: u64,
-            upto: u64,
-            route: RouteHash,
-        }
-        let mut plans: Vec<ReadPlan> = Vec::new();
-        for hash in streams {
-            let handle = self.shard.stream_handle(*hash).await?;
-            let (from, upto, route) = {
-                let st = handle.state.lock().unwrap();
-                (
-                    st.durable.absorbed,
-                    st.durable.next,
-                    RouteHash(st.durable.route),
-                )
-            };
-            // Lane-scoped floor: trust only OUR lane's mark — a v1 mark
-            // here may describe an advance the layout seal dropped, and
-            // skipping past it would hide that range from the partition.
-            let from = {
-                let submitted = self.submitted.lock().unwrap();
-                submitted
-                    .get(hash)
-                    .and_then(|(u, v2)| (*v2).then_some(*u))
-                    .unwrap_or(0)
-                    .max(from)
-            };
-            if from >= upto {
-                out.no_work.push(*hash);
-                continue;
-            }
-            plans.push(ReadPlan {
-                hash: *hash,
-                handle,
-                from,
-                upto,
-                route,
-            });
-        }
-        const PER_STREAM_CAP: usize = GATHER_PER_STREAM_CAP;
-        let read_par = self.cfg.gather_read_par.max(1);
-        let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
-        let mut pi = 0usize;
-        while pi < plans.len() {
-            // Aggregate budget: the batch is held in memory until the one
-            // flush below, so its size — not the lane's stream count — is
-            // what a 1 GiB instance actually feels. Anything deferred here
-            // stays in the pending set and gathers on a later tick; the
-            // whole-remainder deferral also skips their reads.
-            if batch_bytes >= self.cfg.gather_max_bytes {
-                for p in &plans[pi..] {
-                    out.deferred_budget.push(p.hash);
-                }
-                break;
-            }
-            let wave_end = (pi + read_par).min(plans.len());
-            let wave = &plans[pi..wave_end];
-            pi = wave_end;
-            // Transient memory: at most read_par chunks in flight, each
-            // capped at per_stream — bounded by the same reservation the
-            // caller already holds (gather_max_bytes x build multiplier).
-            let shard = &self.shard;
-            let mut futs = Vec::with_capacity(wave.len());
-            for (k, p) in wave.iter().enumerate() {
-                futs.push(async move {
-                    (
-                        k,
-                        read_frames_range(shard, &p.handle, p.from, p.upto, per_stream).await,
-                    )
-                });
-            }
-            // The wave is already sized to read_par, so join_all IS the
-            // concurrency bound — no stream adapter needed.
-            let mut got = futures_util::future::join_all(futs).await;
-            got.sort_unstable_by_key(|(k, _)| *k);
-            // #266: optional duty-cycle between waves — see the
-            // gather_pace_window field doc. L1d8 falsified pacing as a
-            // shed fix (default now 0); the knob remains for field
-            // experiments. The commit below is untouched — never
-            // stretch the durability-critical section.
-            if !self.cfg.gather_pace.is_zero() && last_park.elapsed() >= self.cfg.gather_pace_window
-            {
-                tokio::time::sleep(self.cfg.gather_pace).await;
-                paced += self.cfg.gather_pace;
-                last_park = Instant::now();
-            }
-            for (k, res) in got {
-                let p = &wave[k];
-                let hash = &p.hash;
-                let (from, upto, route) = (p.from, p.upto, p.route);
-                let inc = SegmentHash(p.hash);
-                let chunk = res?;
-                if chunk.frames.is_empty() {
-                    out.no_work.push(*hash);
-                    continue;
-                }
-                // This chunk's batch contribution (keyed frames store the
-                // value twice: record row + routing-key index row, whose key
-                // is 2 bytes longer than the record row's for the length
-                // prefix), plus the raw frame bytes for the tail's
-                // unabsorbed_bytes gauge.
-                let mut chunk_bytes = 0usize;
-                let mut chunk_raw = 0u64;
-                for raw in &chunk.frames {
-                    chunk_raw += raw.len() as u64;
-                    // Canonical row + a conservative per-record postings
-                    // allowance (~key 65 B amortized + a few varints). The
-                    // full-frame keyed duplicate is GONE (ROUTING-V3 §3).
-                    chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD + 24;
-                }
-                // A chunk that would blow the budget waits for a batch of its
-                // own — unless the batch is empty, in which case it proceeds
-                // alone (one oversized frame must still make progress; frame
-                // bodies can reach the 32 MiB API cap).
-                if batch_bytes > 0 && batch_bytes + chunk_bytes > self.cfg.gather_max_bytes {
-                    out.deferred_budget.push(*hash);
-                    continue;
-                }
-                // #266 adaptive reservation: cover this chunk's modeled
-                // transient BEFORE building it. On the steady path the
-                // adaptive estimate already covers the batch and this
-                // is a no-op; when a gather turns out fatter than
-                // recent history, grow() waits on the pool — the same
-                // cross-shard backpressure reserve() gives, applied to
-                // exactly the bytes that turned real.
-                let needed = (batch_bytes + chunk_bytes).saturating_mul(ABSORB_BUILD_MULTIPLIER);
-                if needed > reservation.granted() {
-                    reservation.grow(needed - reservation.granted()).await;
-                }
-                batch_bytes += chunk_bytes;
-                #[cfg(test)]
-                if std::env::var("DST_DRAIN_TRACE").is_ok() {
-                    let offs: Vec<u64> = chunk
-                        .frames
-                        .iter()
-                        .map(|raw| raw.view().header.offset)
-                        .collect();
-                    eprintln!(
-                        "GATHER {} from={from} upto={upto} frames={offs:?}",
-                        crate::crypto::hex(&hash[..4]),
-                    );
-                }
-                let mut last = from;
-                // Postings replace the covering index (ROUTING-V3 §3): the
-                // frame is stored once under its canonical offset; every
-                // routing key — INCLUDING the empty/default key — gets
-                // compact offset-run pages in the SAME WriteBatch, so the
-                // index adds no request, manifest, database, namespace or
-                // GC surface of its own.
-                let mut pages = crate::postings::PageBuilder::default();
-                for raw in &chunk.frames {
-                    let frame = raw.view();
-                    let off = frame.header.offset;
-                    wb.put(hist2_record_key(route, inc, off), Bytes::from(raw.clone()));
-                    pages.note_frame(
-                        crate::postings::rk_hash(frame.header.routing_key),
-                        off,
-                        raw.len() as u64,
-                    );
-                    last = off;
-                }
-                let (emitted, postings_bytes) = pages.finish();
-                POSTINGS_PAGES_WRITTEN
-                    .fetch_add(emitted.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                // Decode what we just encoded (cheap varints, and a free
-                // round-trip check) to hand the slice cache exactly the runs
-                // a reader would load — write-through warming (spec §7)
-                // makes first-read-after-absorb skip the index round trip.
-                let mut chunk_runs: std::collections::HashMap<
-                    [u8; 16],
-                    Vec<crate::postings::AbsRun>,
-                > = std::collections::HashMap::new();
-                for (kh, bucket, first, value) in emitted {
-                    match crate::postings::decode_page_abs(first, &value) {
-                        Some(abs) => {
-                            POSTINGS_RUNS_WRITTEN
-                                .fetch_add(abs.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                            crate::postings::append_page_runs(
-                                chunk_runs.entry(kh.0).or_default(),
-                                abs,
-                            )
-                            .ok_or_else(|| anyhow::anyhow!("overlapping postings during gather"))?;
-                        }
-                        None => anyhow::bail!("postings page failed self-decode during gather"),
-                    }
-                    wb.put(
-                        crate::postings::postings_key(route, inc, &kh, bucket, first),
-                        value,
-                    );
-                }
-                POSTINGS_BYTES_WRITTEN
-                    .fetch_add(postings_bytes, std::sync::atomic::Ordering::Relaxed);
-                CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
-                warm_installs.push((inc, from, last + 1, chunk_runs.into_iter().collect()));
-                out.advanced.push((*hash, last + 1, chunk_raw));
-                // Truncated by the per-stream cap: more durable data sits
-                // below `upto`. The caller must keep this stream pending.
-                if last + 1 < upto {
-                    out.partial.push((*hash, upto - (last + 1)));
-                }
-            }
-        }
-        GATHER_LAST_PACE_MS.store(
-            paced.as_millis() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        self.observe_gather_transient(batch_bytes);
-        if out.advanced.is_empty() {
-            return Ok(out);
-        }
-        let ord = std::sync::atomic::Ordering::Relaxed;
-        GATHER_LAST_READ_MS.store(t_read.elapsed().as_millis() as u64, ord);
-        GATHER_LAST_ACTUAL.store(batch_bytes as u64, ord);
-        // R25-F: the per-gather read-amplification attribution was
-        // REMOVED. It snapshotted process-global GET deltas around the
-        // read phase, so concurrent customer/registry/billing/fleet
-        // traffic contaminated every sample — a number that looks like a
-        // measurement and is not is worse than no number. Operation-
-        // local attribution needs the metrics handle carried through
-        // SlateDB's scan and spawned fetch tasks (deferred fork patch);
-        // until then the process-wide transferred-byte counters in
-        // store_timing are the only honest read telemetry.
-        let t_write = Instant::now();
-        part.write_with_options(wb, &WriteOptions::default())
-            .await?;
-        GATHER_LAST_WRITE_MS.store(t_write.elapsed().as_millis() as u64, ord);
-        let t_flush = Instant::now();
-        let stall = HISTORY_FLUSH_STALL_MS.load(std::sync::atomic::Ordering::Relaxed);
-        if stall > 0 {
-            // Stalled-history-flush campaign lever: the stall sits ON
-            // the real flush path with the reservation held, and it is
-            // INSIDE the flush timing window — the flush-wait metrics
-            // must report the delay the campaign injects, or the gate
-            // could stall the path while its primary metric shows
-            // nothing.
-            tokio::time::sleep(Duration::from_millis(stall)).await;
-        }
-        part.flush().await?; // wal off => memtable -> L0, manifest published
-        // Flush wait is the review's leading indicator: when history L0
-        // approaches its cap, THIS is what starts blocking.
-        let flush_ms = t_flush.elapsed().as_millis() as u64;
-        GATHER_LAST_FLUSH_MS.store(flush_ms, ord);
-        HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
-        let absorbed_bytes = out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>();
-        ABSORB_BYTES_TOTAL.fetch_add(absorbed_bytes, ord);
-        // R25-B: NO maintenance retirement here. This task has proved
-        // the HISTORY COPY is durable — the backlog is not retired until
-        // the shard's absorbed boundary commits, which happens in the
-        // committer's common finalization when the AbsorbedBatch group
-        // lands (and stages the maintenance row in the same WriteBatch).
-        // Retiring here would claim progress a crash between this flush
-        // and that commit would revoke.
-        // The pages are durable: warm the slice cache with the runs we
-        // just wrote. Readers clip to their own durable boundary, so an
-        // install racing the boundary advance can never over-serve.
-        for (inc, chunk_from, chunk_to, per_key) in warm_installs {
-            self.shard
-                .postings_cache
-                .install_chunk(inc, chunk_from, chunk_to, per_key);
-        }
-        self.shard
-            .submit_absorbed_batch_v2(out.advanced.clone())
-            .await;
-        {
-            let mut submitted = self.submitted.lock().unwrap();
-            for (hash, upto, _) in &out.advanced {
-                let e = submitted.entry(*hash).or_insert((0, true));
-                if e.1 {
-                    e.0 = e.0.max(*upto);
-                } else {
-                    *e = (*upto, true);
-                }
-            }
-        }
-        tracing::info!(
-            "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",
-            out.advanced.len(),
-            self.shard.prefix,
-            out.deferred_budget.len()
-        );
-        Ok(out)
     }
 }
 
