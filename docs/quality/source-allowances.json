@@ -1690,41 +1690,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::spawn_sentinels",
-      "path": "src/store_timing.rs",
-      "syntax": "std::thread::Builder::new"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::spawn_sentinels",
-      "path": "src/store_timing.rs",
-      "syntax": "std::thread::sleep"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::spawn_sentinels",
-      "path": "src/store_timing.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::bulk_gate_bounds_concurrent_bytes",
-      "path": "src/store_timing.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::bulk_gate_waiter_proceeds_when_holder_releases",
-      "path": "src/store_timing.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::TaskSupervisor::spawn",
       "path": "src/tasks.rs",
       "syntax": "tokio::spawn"
@@ -2943,27 +2908,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::drift::D",
-      "path": "src/store_timing.rs",
-      "syntax": "OnceLock < DriftRings >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::http_stats::H",
-      "path": "src/store_timing.rs",
-      "syntax": "OnceLock < HttpStats >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::stats::S",
-      "path": "src/store_timing.rs",
-      "syntax": "OnceLock < StoreStats >"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::Counters::fresh::NEXT_GEN",
       "path": "src/usage.rs",
       "syntax": "AtomicU64"
@@ -4063,20 +4007,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::drift_stats",
-      "path": "src/store_timing.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 7,
-      "owner": "crate::snapshot",
-      "path": "src/store_timing.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::BulkGate::stats_json",
       "path": "src/store_timing/resources.rs",
       "syntax": "serde_json::json"
@@ -4933,13 +4863,6 @@
       "count": 1,
       "owner": "crate",
       "path": "src/sse/source/tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/store_timing.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
