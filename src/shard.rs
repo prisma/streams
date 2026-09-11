@@ -19,29 +19,29 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 pub(crate) mod record;
 #[cfg(test)]
-pub use record::read_frames;
-pub use record::{FrameReadResult, read_frames_range};
+pub(crate) use record::read_frames;
+pub(crate) use record::{FrameReadResult, read_frames_range};
 mod commit_handoff;
 use commit_handoff::{Attachment, CommitHandoff};
 mod commit_plan;
 mod history_partition;
 mod lifecycle;
 mod transaction;
-pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
+pub(crate) use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
     BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
     decide_consumer_generation, decide_producer, seal_authorized,
 };
 pub(crate) use lifecycle::EngineShutdown;
 
-pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
     k.extend_from_slice(hash);
     k.push(b't');
     k
 }
 
-pub fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
+pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(25);
     k.extend_from_slice(hash);
     k.push(b'r');
@@ -173,27 +173,27 @@ pub(crate) fn decode_cursor(raw: &[u8]) -> Result<u64, slatedb::Error> {
 /// producing the pre-gauge layout older builds wrote. DST uses this to
 /// prove the R26-4 open-time repair; production code never writes it.
 #[cfg(test)]
-pub fn encode_tail_without_gauge_for_tests(t: &TailFields) -> Vec<u8> {
+pub(crate) fn encode_tail_without_gauge_for_tests(t: &TailFields) -> Vec<u8> {
     let mut v = encode_tail(t);
     v.truncate(v.len() - 8);
     v
 }
 
 #[cfg(test)]
-pub fn decode_tail_for_tests(v: &[u8]) -> Option<TailFields> {
+pub(crate) fn decode_tail_for_tests(v: &[u8]) -> Option<TailFields> {
     decode_tail(v)
 }
 
 /// Test-only: the production tail encoder, exposed so golden tests can
 /// pin the exact v3 byte layout without going through a shard engine.
 #[cfg(test)]
-pub fn encode_tail_for_tests(t: &TailFields) -> Vec<u8> {
+pub(crate) fn encode_tail_for_tests(t: &TailFields) -> Vec<u8> {
     encode_tail(t)
 }
 
 /// Per-routing-key Stream-Seq row (ROUTING-V3 §3.6): seq is scoped to
 /// the KEY, not the segment — a segment carries many keys' lanes.
-pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(33);
     k.extend_from_slice(hash);
     k.push(b's');
@@ -201,7 +201,7 @@ pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-pub fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
+pub(crate) fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
     // <segment identity> 'q' <routing-key hash> <producer id> — producer
     // sessions are scoped per ROUTING KEY (review finding 5): one
     // producer id keeps independent sequence lanes for different keys,
@@ -235,7 +235,7 @@ pub fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &str) -> 
 /// (new owner opens the whole shard DB) is unaffected.
 const DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
 
-pub fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(33);
     k.extend_from_slice(&DIRTY_SENTINEL);
     k.push(b'D');
@@ -272,7 +272,7 @@ pub fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
 /// carried forward or cleared, never made younger, so a restart may
 /// overstate age but can never reset it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct StreamMaintenance {
+pub(crate) struct StreamMaintenance {
     pub absorbed: u64,
     pub next: u64,
     pub unabsorbed_bytes: u64,
@@ -295,7 +295,7 @@ fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
 /// Test-only: the production dirty-row encoder, exposed so golden tests
 /// can pin the exact 32-byte LE layout.
 #[cfg(test)]
-pub fn dirty_value_for_tests(m: &StreamMaintenance) -> [u8; 32] {
+pub(crate) fn dirty_value_for_tests(m: &StreamMaintenance) -> [u8; 32] {
     dirty_value(m)
 }
 
@@ -309,12 +309,12 @@ pub fn dirty_value_for_tests(m: &StreamMaintenance) -> [u8; 32] {
 /// Exact frame-byte flow, in the maintenance unit (R25-B). These are
 /// process-lifetime observability counters, NOT admission inputs — the
 /// admission source of truth is each engine's durable row.
-pub static INGEST_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
+pub(crate) static INGEST_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static ABSORBED_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
+pub(crate) static ABSORBED_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-pub fn shard_maint_key() -> Vec<u8> {
+pub(crate) fn shard_maint_key() -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
     k.extend_from_slice(&DIRTY_SENTINEL);
     k.push(b'M');
@@ -331,7 +331,7 @@ pub fn shard_maint_key() -> Vec<u8> {
 /// ratio" and 3.87 GB of fictional backlog that were, in large part,
 /// the benchmark's compression ratio. One unit, both directions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ShardMaintenance {
+pub(crate) struct ShardMaintenance {
     pub version: u64,
     /// Exact encoded frame bytes still present in the shard tier and
     /// not covered by the durable absorbed boundary.
@@ -351,7 +351,7 @@ impl ShardMaintenance {
     /// not a saturation: it means the two sides of the accounting have
     /// diverged, and clamping would hide exactly the class of unit bug
     /// this type exists to prevent.
-    pub fn apply_delta(
+    pub(crate) fn apply_delta(
         self,
         added_frame_bytes: u64,
         retired_frame_bytes: u64,
@@ -388,7 +388,7 @@ impl ShardMaintenance {
 
     /// Seconds since maintenance last made durable progress, while a
     /// backlog is outstanding. Zero when there is nothing to do.
-    pub fn no_progress_secs(self, now_ms: i64) -> u64 {
+    pub(crate) fn no_progress_secs(self, now_ms: i64) -> u64 {
         if self.unabsorbed_frame_bytes == 0 || self.last_progress_ms <= 0 {
             0
         } else {
@@ -399,7 +399,7 @@ impl ShardMaintenance {
 
 const SHARD_MAINT_V2: u8 = 2;
 
-pub fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
+pub(crate) fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
     let mut v = [0u8; 40];
     v[0] = SHARD_MAINT_V2;
     v[8..16].copy_from_slice(&m.version.to_le_bytes());
@@ -417,12 +417,12 @@ pub fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
 /// over-retirement, which the checked accounting refuses forever. The
 /// legacy value is therefore never trusted as frame bytes in either
 /// direction: the opener rebuilds from the durable tails instead.
-pub enum ShardMaintRow {
+pub(crate) enum ShardMaintRow {
     Exact(ShardMaintenance),
     LegacyPayloadUnit,
 }
 
-pub fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> {
+pub(crate) fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> {
     match v.len() {
         16 => Ok(ShardMaintRow::LegacyPayloadUnit),
         40 if v[0] == SHARD_MAINT_V2 => Ok(ShardMaintRow::Exact(ShardMaintenance {
@@ -462,7 +462,7 @@ pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
 /// A corrupt row or a failed rebuild scan is an ENGINE-OPEN FAILURE.
 /// Translating either to "zero backlog" would silently disable the
 /// safety bound exactly when the shard's state is least understood.
-pub async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
+pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
     match db.get(shard_maint_key()).await? {
         Some(v) => match decode_shard_maint_row(&v)? {
             ShardMaintRow::Exact(mut m) => {
@@ -561,7 +561,7 @@ async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintena
     Ok(rebuilt)
 }
 
-pub fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
+pub(crate) fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
     // Preserve complete legacy fields (16/24 bytes) and current v2 (32).
     // Partial fields or unknown extensions are corrupt, never an empty marker.
     if !matches!(v.len(), 16 | 24 | 32) {
@@ -581,7 +581,7 @@ pub fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct TailFields {
+pub(crate) struct TailFields {
     pub next: u64,
     pub ts: i64,
     pub logical: u64,
@@ -620,14 +620,14 @@ pub struct TailFields {
 /// clamp only: acks, consumers, watches, absorption and trim stay
 /// durable-gated exactly as before.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Deliver {
+pub(crate) enum Deliver {
     #[default]
     Durable,
     Applied,
 }
 
 /// `durable` is what readers see; `applied` is what's in the memtable.
-pub struct StreamState {
+pub(crate) struct StreamState {
     pub durable: TailFields,
     pub applied: TailFields,
     /// Producer idempotence state: id -> (epoch, highest seq). Loaded from
@@ -648,7 +648,7 @@ pub struct StreamState {
     pub queue: crate::queue::QueueState,
 }
 
-pub struct StreamHandle {
+pub(crate) struct StreamHandle {
     /// Physical database opening that admitted this handle and its durable ring.
     owner: std::sync::Weak<Db>,
     pub hash: [u8; 16],
@@ -684,7 +684,7 @@ impl StreamHandle {
     /// lock ordering against the committer's publish site guarantees
     /// the seed and the group-delta attribution never double- or
     /// under-count a group.
-    pub fn bind_pressure(&self, adm: std::sync::Arc<crate::quota::ProjectAdmission>) {
+    pub(crate) fn bind_pressure(&self, adm: std::sync::Arc<crate::quota::ProjectAdmission>) {
         if self.pressure.get().is_some() {
             return;
         }
@@ -701,7 +701,7 @@ impl StreamHandle {
 
 /// One durably-committed group's frames for one stream: a contiguous
 /// offset range [first, next) in publish order.
-pub struct RingBatch {
+pub(crate) struct RingBatch {
     pub first: u64,
     pub next: u64,
     pub frames: Vec<(u64, Bytes)>,
@@ -709,7 +709,7 @@ pub struct RingBatch {
 }
 
 #[derive(Default)]
-pub struct TailRing {
+pub(crate) struct TailRing {
     /// Contiguous in coverage: back.next of batch k == front.first of
     /// batch k+1 for consecutive batches (all publishes come through the
     /// same committer in offset order; eviction only pops the front).
@@ -730,7 +730,7 @@ impl TailRing {
 /// stream's touch journal only after the batch is durable (H2 hook).
 /// `next_offset` is filled in by the committer once offsets are assigned so
 /// wait responses can carry the covered stream offset (delta reads).
-pub struct TouchFeed {
+pub(crate) struct TouchFeed {
     pub journal: Arc<crate::touch::TouchJournal>,
     pub key_ids: Vec<u32>,
     pub next_offset: u64,
@@ -741,10 +741,10 @@ pub struct TouchFeed {
 /// They live in the same durable keyspace as public ones, so the wire
 /// parser refuses this prefix — otherwise a caller could pre-create the
 /// row and turn a later final append into a false duplicate.
-pub const INTERNAL_PRODUCER_PREFIX: &str = "\u{0}prisma-internal\u{0}";
+pub(crate) const INTERNAL_PRODUCER_PREFIX: &str = "\u{0}prisma-internal\u{0}";
 
 #[derive(Debug, Clone)]
-pub struct ProducerReq {
+pub(crate) struct ProducerReq {
     pub id: String,
     pub epoch: u64,
     pub seq: u64,
@@ -759,19 +759,19 @@ pub struct ProducerReq {
 /// duplicate check (a retry must return 204 even if e.g. the content type
 /// no longer matches).
 #[derive(Debug, Clone)]
-pub enum DeferredErr {
+pub(crate) enum DeferredErr {
     CtMismatch,
     BadBody(String),
 }
 
 /// Why a new producer sequence must not be accepted right now.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SealedReject {
+pub(crate) enum SealedReject {
     Sealing,
     Sealed,
 }
 
-pub struct AppendReq {
+pub(crate) struct AppendReq {
     pub hash: [u8; 16],
     /// Shard-routing identity (`stream_hash(name)`), persisted into the
     /// tail so history v2 can key the shared partition route-first and a
@@ -829,7 +829,7 @@ pub struct AppendReq {
 }
 
 #[derive(Debug, Clone)]
-pub struct AppendAck {
+pub(crate) struct AppendAck {
     pub last_offset: u64,
     pub next_offset: u64,
     pub closed: bool,
@@ -840,7 +840,7 @@ pub struct AppendAck {
 }
 
 #[derive(Debug, Clone)]
-pub enum AppendErr {
+pub(crate) enum AppendErr {
     SeqConflict {
         current: Option<String>,
     },
@@ -960,13 +960,13 @@ pub enum CommitOp {
 
 /// Notification to the absorber that a stream accumulated shard-log bytes.
 #[derive(Debug, Clone)]
-pub struct AbsorbSignal {
+pub(crate) struct AbsorbSignal {
     pub hash: [u8; 16],
     pub appended_bytes: u64,
 }
 
 #[derive(Clone)]
-pub struct ShardConfig {
+pub(crate) struct ShardConfig {
     pub queue_reqs: usize,
     pub max_batch_reqs: usize,
     pub max_batch_bytes: usize,
@@ -1088,7 +1088,7 @@ impl Default for ShardConfig {
 /// Per-commit-group pipeline decomposition: where a request's time goes
 /// between arriving at the committer and being durably acked.
 #[derive(Clone, Copy, Debug)]
-pub struct GroupTiming {
+pub(crate) struct GroupTiming {
     pub ts_ms: i64,
     /// Oldest request's wait in the committer queue before this group.
     pub queue_wait_us: u32,
@@ -1117,7 +1117,7 @@ struct InFlightGroup {
     effects: DurableEffects,
 }
 
-pub struct ShardEngine {
+pub(crate) struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
     /// R29 custody model. `last_external_seq`: the global adoption
@@ -1316,7 +1316,7 @@ pub struct ShardEngine {
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
 }
 
-pub fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -1781,7 +1781,7 @@ impl ShardEngine {
         self.tasks.workers(timeout).await
     }
 
-    pub fn try_enqueue(&self, req: AppendReq) -> Result<(), EnqueueError> {
+    pub(crate) fn try_enqueue(&self, req: AppendReq) -> Result<(), EnqueueError> {
         // Control-only closes enter the actor as a different command. Data
         // appends retain final-record completion atomically with their data.
         let command = if req.finish == AppendFinish::Close
@@ -1802,11 +1802,11 @@ impl ShardEngine {
         self.try_command(command)
     }
 
-    pub fn try_close(&self, req: CloseReq) -> Result<(), EnqueueError> {
+    pub(crate) fn try_close(&self, req: CloseReq) -> Result<(), EnqueueError> {
         self.try_command(CommitOp::Close(req))
     }
 
-    pub fn try_seal_fence(&self, req: SealFenceReq) -> Result<(), EnqueueError> {
+    pub(crate) fn try_seal_fence(&self, req: SealFenceReq) -> Result<(), EnqueueError> {
         self.try_command(CommitOp::SealFence(req))
     }
 
@@ -1832,7 +1832,7 @@ impl ShardEngine {
 
     /// True once the shard db reported closed (fenced by a new owner or a
     /// fatal storage error). Holders must stop using this engine.
-    pub fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 
@@ -1841,7 +1841,7 @@ impl ShardEngine {
     /// requests already queued here hang until the new owner's fence
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
-    pub fn begin_close(&self) {
+    pub(crate) fn begin_close(&self) {
         // This is the terminal handoff, shared with transaction publication,
         // no-write attachment and durable dispatch. Recover poisoning so a
         // failed worker still fences admission and retains shutdown authority.
@@ -1905,7 +1905,7 @@ impl ShardEngine {
     /// A sustained value means SlateDB backpressure (L0-full/unflushed-full
     /// with lagging compaction): admission should shed 429 instead of
     /// queueing appends into a hang.
-    pub fn commit_blocked_ms(&self) -> i64 {
+    pub(crate) fn commit_blocked_ms(&self) -> i64 {
         let started = self.commit_write_started_ms.load(Ordering::SeqCst);
         if started == 0 {
             0
@@ -1915,7 +1915,7 @@ impl ShardEngine {
     }
 
     #[cfg(test)]
-    pub fn set_commit_write_started_ms(&self, v: i64) {
+    pub(crate) fn set_commit_write_started_ms(&self, v: i64) {
         self.commit_write_started_ms.store(v, Ordering::SeqCst);
     }
 
@@ -1925,7 +1925,7 @@ impl ShardEngine {
     /// L0-full, so groups pile up here waiting for the durable watermark.
     /// The 2026-07-22 final gate run proved commit_blocked_ms alone misses
     /// this mode entirely (wedge_shed=0 through a 10-minute wedge).
-    pub fn oldest_inflight_ms(&self) -> i64 {
+    pub(crate) fn oldest_inflight_ms(&self) -> i64 {
         self.in_flight
             .lock()
             .unwrap()
@@ -1936,7 +1936,7 @@ impl ShardEngine {
     }
 
     /// Combined wedge signal: blocked commit write OR stale durability.
-    pub fn wedge_ms(&self) -> i64 {
+    pub(crate) fn wedge_ms(&self) -> i64 {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
     }
 
@@ -1969,7 +1969,7 @@ impl ShardEngine {
     /// every covered stream lands in the same write batch by
     /// construction (per-stream sends only coalesced opportunistically).
     /// Entries are (hash, new upto, frame bytes copied).
-    pub async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
+    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
         if streams.is_empty() {
             return;
         }
@@ -1982,7 +1982,7 @@ impl ShardEngine {
     /// The history partition ONLY IF already open — the metrics path
     /// must never trigger an open (an idle shard would materialize a
     /// whole partition DB just to report zeros).
-    pub fn history_partition_if_open(&self) -> Option<Arc<Db>> {
+    pub(crate) fn history_partition_if_open(&self) -> Option<Arc<Db>> {
         self.history2.get()
     }
 
@@ -1991,7 +1991,7 @@ impl ShardEngine {
     /// are raw stream-key-encrypted frames, so the partition needs no
     /// block transformer and no compression (frames compress before
     /// encryption; re-compressing ciphertext is pure waste).
-    pub async fn history_partition(&self) -> Result<Arc<Db>, slatedb::Error> {
+    pub(crate) async fn history_partition(&self) -> Result<Arc<Db>, slatedb::Error> {
         if self.is_closed() {
             return Err(slatedb::Error::closed(
                 "engine closed".into(),
@@ -2091,19 +2091,19 @@ impl ShardEngine {
     }
 
     /// Published maintenance state for admission decisions.
-    pub fn maintenance_snapshot(&self) -> ShardMaintenance {
+    pub(crate) fn maintenance_snapshot(&self) -> ShardMaintenance {
         *self.maintenance.read().unwrap()
     }
 
     /// Publish new maintenance state. Callers must only do this AFTER
     /// the write carrying the durable row has succeeded — that ordering
     /// is the entire fix for phantom backlog.
-    pub fn publish_maintenance(&self, m: ShardMaintenance) {
+    pub(crate) fn publish_maintenance(&self, m: ShardMaintenance) {
         *self.maintenance.write().unwrap() = m;
     }
 
     #[cfg(test)]
-    pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
+    pub(crate) async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
         #[cfg(test)]
         {
             let mut faults = dirty_scan_faults().lock().unwrap();
@@ -2132,7 +2132,7 @@ impl ShardEngine {
         Ok(out)
     }
 
-    pub async fn scan_dirty_streams_page(
+    pub(crate) async fn scan_dirty_streams_page(
         &self,
         after: Option<[u8; 16]>,
         limit: usize,
@@ -2182,7 +2182,7 @@ impl ShardEngine {
     /// (unabsorbed_bytes, trim debt) of each marked stream; loading
     /// handles for every cold dirty stream is exactly what memory
     /// pruning must avoid.
-    pub async fn tail_fields(&self, hash: &[u8; 16]) -> anyhow::Result<Option<TailFields>> {
+    pub(crate) async fn tail_fields(&self, hash: &[u8; 16]) -> anyhow::Result<Option<TailFields>> {
         Ok(self
             .db
             .get(tail_key(hash))
@@ -2193,7 +2193,7 @@ impl ShardEngine {
 
     /// Enroll a stream in TrimTick maintenance (startup marker scan; the
     /// committer maintains the set itself for live streams).
-    pub fn note_trim_debt(&self, hash: [u8; 16]) {
+    pub(crate) fn note_trim_debt(&self, hash: [u8; 16]) {
         self.trim_debt.lock().unwrap().insert(hash);
     }
 
@@ -2206,7 +2206,7 @@ impl ShardEngine {
     /// (streams owing trims, last group's deletes, max deletes in any
     /// one group, cumulative deletes) — the mature-second-wave gate
     /// reads max ≤ trim_global_budget from here.
-    pub fn trim_stats(&self) -> (usize, u64, u64, u64) {
+    pub(crate) fn trim_stats(&self) -> (usize, u64, u64, u64) {
         (
             self.trim_debt.lock().unwrap().len(),
             self.trim_deletes_last.load(Ordering::Relaxed),
@@ -2257,7 +2257,7 @@ impl ShardEngine {
     /// under this identity (inherited records are served from the
     /// ancestor chain). No-op when the tail already exists (idempotent
     /// PUT retries).
-    pub async fn seed_fork_tail(
+    pub(crate) async fn seed_fork_tail(
         &self,
         hash: [u8; 16],
         route: [u8; 16],
@@ -2282,7 +2282,7 @@ impl ShardEngine {
             .map(|_| ())
     }
 
-    pub async fn queue_cursor(
+    pub(crate) async fn queue_cursor(
         &self,
         hash: [u8; 16],
         consumer: &str,
@@ -2297,7 +2297,7 @@ impl ShardEngine {
             .unwrap_or(0))
     }
 
-    pub async fn submit_queue(
+    pub(crate) async fn submit_queue(
         &self,
         hash: [u8; 16],
         op: crate::queue::QueueOp,
@@ -2400,13 +2400,13 @@ impl ShardEngine {
         before - map.len()
     }
 
-    pub fn resident_streams(&self) -> usize {
+    pub(crate) fn resident_streams(&self) -> usize {
         self.streams.lock().unwrap().len()
     }
 
     /// Peek a resident handle's absorbed boundary WITHOUT materializing
     /// one (materialization is exactly what memory pruning must avoid).
-    pub fn resident_absorbed(&self, hash: &[u8; 16]) -> Option<u64> {
+    pub(crate) fn resident_absorbed(&self, hash: &[u8; 16]) -> Option<u64> {
         let h = self.streams.lock().unwrap().get(hash).cloned()?;
         let st = h.state.lock().unwrap();
         Some(st.durable.absorbed)
@@ -2602,7 +2602,7 @@ impl ShardEngine {
         }
     }
 
-    pub fn ring_resident_bytes(&self) -> u64 {
+    pub(crate) fn ring_resident_bytes(&self) -> u64 {
         (self.ring_cfg_bytes as i64 - self.ring_budget.load(Ordering::Relaxed)).max(0) as u64
     }
 
@@ -2610,7 +2610,7 @@ impl ShardEngine {
     /// covers scan_from. Returns None when it does not (caller falls back
     /// to the canonical scan). Mirrors the DB path's contract exactly:
     /// stop at max_bytes, end = scan_to, last_offset = progress.
-    pub fn ring_read(
+    pub(crate) fn ring_read(
         &self,
         handle: &StreamHandle,
         scan_from: u64,
@@ -2747,7 +2747,7 @@ impl ShardEngine {
     /// commit group. The companion to `fail_next_group_for` for
     /// deterministic same-group scenarios.
     #[cfg(test)]
-    pub async fn test_hold_commit(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub(crate) async fn test_hold_commit(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.commit_gate.lock().await
     }
 
@@ -2755,7 +2755,7 @@ impl ShardEngine {
     /// fences, and queue submissions — enqueued on this engine so far. A test polls the delta
     /// instead of sleeping and hoping its request made the queue.
     #[cfg(test)]
-    pub fn appends_enqueued(&self) -> u64 {
+    pub(crate) fn appends_enqueued(&self) -> u64 {
         self.appends_enqueued
             .load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -2771,7 +2771,7 @@ impl ShardEngine {
     /// consumer generation, modeling the multi-generation residue a
     /// crashed/raced deletion leaves behind (round-17 stress gate).
     #[cfg(test)]
-    pub async fn seed_consumer_residue_rows(
+    pub(crate) async fn seed_consumer_residue_rows(
         &self,
         hash: [u8; 16],
         consumer: &str,
@@ -2826,7 +2826,7 @@ impl ShardEngine {
     /// store error mid-enumeration. The contract under test: a failed
     /// scan stages NOTHING and the consumer is untouched.
     #[cfg(test)]
-    pub fn fail_next_config_scan(&self) {
+    pub(crate) fn fail_next_config_scan(&self) {
         self.fail_config_scan
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -2841,13 +2841,13 @@ impl ShardEngine {
     /// an absorbed boundary (R25-D): proves retirement is atomic with
     /// the boundary, which the client-append selector cannot reach.
     #[cfg(test)]
-    pub fn fail_next_absorbed_group(&self) {
+    pub(crate) fn fail_next_absorbed_group(&self) {
         self.fail_next_absorbed_group
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[cfg(test)]
-    pub fn fail_next_group_for(&self, identity: [u8; 16]) {
+    pub(crate) fn fail_next_group_for(&self, identity: [u8; 16]) {
         self.fail_group_for
             .lock()
             .unwrap()
@@ -2859,7 +2859,7 @@ impl ShardEngine {
     /// unbounded (no wall-clock expiry can be proven safe against a
     /// queue with no residence bound), so its cardinality must be
     /// visible before it could ever become material.
-    pub fn seal_fence_stats(&self) -> (usize, u64) {
+    pub(crate) fn seal_fence_stats(&self) -> (usize, u64) {
         let f = self.seal_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
         (f.len(), max)
@@ -2870,7 +2870,7 @@ impl ShardEngine {
     /// (hash, unacked version). One prefix scan; the drainer's
     /// discovery path after restart or ownership move.
     #[cfg(test)]
-    pub async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
+    pub(crate) async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
         let mut pfx = Vec::with_capacity(17);
         pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
         pfx.push(b'U');
@@ -2890,7 +2890,7 @@ impl ShardEngine {
 
     /// Presence probe for residency decisions: at most one row from
     /// each outbox index, including orphaned final rows.
-    pub async fn has_billing_debt(&self) -> anyhow::Result<bool> {
+    pub(crate) async fn has_billing_debt(&self) -> anyhow::Result<bool> {
         for tag in *b"UV" {
             let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
             prefix.push(tag);
@@ -2910,7 +2910,7 @@ impl ShardEngine {
 
     /// One bounded page of the dirty index, with an exclusive identity
     /// continuation. Only the caller's finite page is materialized.
-    pub async fn usage_dirty_page(
+    pub(crate) async fn usage_dirty_page(
         &self,
         after: Option<[u8; 16]>,
         limit: usize,
@@ -2941,7 +2941,7 @@ impl ShardEngine {
 
     /// Bounded finals for a single dirty segment. More finals keep its
     /// dirty marker alive even after this page's exact keys are acked.
-    pub async fn usage_month_finals_page(
+    pub(crate) async fn usage_month_finals_page(
         &self,
         hash: [u8; 16],
         limit: usize,
@@ -2962,7 +2962,7 @@ impl ShardEngine {
     }
 
     /// Missing means never billed. Read errors and invalid rows remain errors.
-    pub async fn load_billing_meta(
+    pub(crate) async fn load_billing_meta(
         &self,
         hash: [u8; 16],
     ) -> anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>> {
@@ -3001,7 +3001,7 @@ impl ShardEngine {
 
     /// Legacy test convenience; production must handle missing and failed reads.
     #[cfg(test)]
-    pub async fn billing_meta(
+    pub(crate) async fn billing_meta(
         &self,
         hash: [u8; 16],
     ) -> Option<crate::billing::SegmentBillingMetaV1> {
@@ -3013,7 +3013,7 @@ impl ShardEngine {
     /// Closed-month final snapshots awaiting ledger acknowledgment
     /// (sentinel-'V' rows): (exact key, snapshot).
     #[cfg(test)]
-    pub async fn usage_month_finals(
+    pub(crate) async fn usage_month_finals(
         &self,
     ) -> anyhow::Result<Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>> {
         let mut pfx = Vec::with_capacity(17);
@@ -3038,7 +3038,7 @@ impl ShardEngine {
         });
     }
 
-    pub fn submit_usage_final_ack(&self, hash: [u8; 16], month_final_keys: Vec<Vec<u8>>) {
+    pub(crate) fn submit_usage_final_ack(&self, hash: [u8; 16], month_final_keys: Vec<Vec<u8>>) {
         let _ = self.tx.try_send(CommitOp::UsageAck {
             hash,
             scope: UsageAckScope::FinalRowsOnly,
@@ -3061,7 +3061,7 @@ impl ShardEngine {
 
     /// Durably persist the fork-retention flag on the billing row
     /// (round-22 item 7); awaited like the closure.
-    pub async fn submit_billing_retained(
+    pub(crate) async fn submit_billing_retained(
         &self,
         hash: [u8; 16],
         retained: bool,
@@ -3077,7 +3077,7 @@ impl ShardEngine {
     /// safety, so its growth is surfaced instead of hidden. Any future
     /// cleanup must be proved by committer-queue progress, exactly like
     /// the seal fences; never wall-clock expiry.
-    pub fn consumer_fence_stats(&self) -> (usize, u64) {
+    pub(crate) fn consumer_fence_stats(&self) -> (usize, u64) {
         let f = self.consumer_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
         (f.len(), max)
@@ -3088,7 +3088,7 @@ impl ShardEngine {
     /// just moved to another instance, which opened a fresh engine".
     /// The durable fence must still refuse dead generations.
     #[cfg(test)]
-    pub fn forget_consumer_fences_for_test(&self) {
+    pub(crate) fn forget_consumer_fences_for_test(&self) {
         self.consumer_fences.lock().unwrap().clear();
     }
 
@@ -3105,7 +3105,7 @@ impl ShardEngine {
     }
 
     #[cfg(test)]
-    pub fn group_failures_tripped(&self) -> usize {
+    pub(crate) fn group_failures_tripped(&self) -> usize {
         self.fail_group_tripped
             .load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -3114,7 +3114,7 @@ impl ShardEngine {
     /// nor the pump can dispatch acks — the deterministic stand-in for
     /// "the acker is paused after durability, before response dispatch".
     #[cfg(test)]
-    pub async fn test_hold_dispatch(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub(crate) async fn test_hold_dispatch(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.dispatch_gate.lock().await
     }
 

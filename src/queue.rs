@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Copy)]
-pub struct Lease {
+pub(crate) struct Lease {
     pub deadline_ms: i64,
     pub delivery_count: u32,
     pub lease_gen: u32,
@@ -32,7 +32,7 @@ pub struct Lease {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ConsumerState {
+pub(crate) struct ConsumerState {
     /// The consumer GENERATION these rows belong to. A recreated
     /// consumer is a new generation; rows and ops of dead generations
     /// are inert (round 16: deletion as a generation-fenced saga).
@@ -43,7 +43,7 @@ pub struct ConsumerState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct QueueState {
+pub(crate) struct QueueState {
     // mt-lint: allow(name-keyed-map): consumer name inside ONE stream's queue state — project-scoped by containment
     pub consumers: HashMap<String, ConsumerState>,
     pub loaded: bool,
@@ -57,7 +57,7 @@ pub struct QueueState {
 ///   <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
 /// `state_prefix` (name + separator, NO generation) covers every
 /// generation — cleanup deletes a consumer's rows across all of them.
-pub fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
+pub(crate) fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(18 + consumer.len());
     k.extend_from_slice(hash);
     k.push(tag);
@@ -66,20 +66,20 @@ pub fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
     k
 }
 
-pub fn cursor_key(hash: &[u8; 16], consumer: &str, cgen: u64) -> Vec<u8> {
+pub(crate) fn cursor_key(hash: &[u8; 16], consumer: &str, cgen: u64) -> Vec<u8> {
     let mut k = state_prefix(hash, b'c', consumer);
     k.extend_from_slice(&cgen.to_be_bytes());
     k
 }
 
-pub fn lease_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
+pub(crate) fn lease_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
     let mut k = state_prefix(hash, b'l', consumer);
     k.extend_from_slice(&cgen.to_be_bytes());
     k.extend_from_slice(&off.to_be_bytes());
     k
 }
 
-pub fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
+pub(crate) fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
     let mut k = state_prefix(hash, b'x', consumer);
     k.extend_from_slice(&cgen.to_be_bytes());
     k.extend_from_slice(&off.to_be_bytes());
@@ -88,7 +88,7 @@ pub fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> 
 
 /// Canonical decoder for generation-qualified queue keys. Truncated or foreign
 /// rows are corruption, never evidence that a generation has been deleted.
-pub fn decode_state_key<'a>(
+pub(crate) fn decode_state_key<'a>(
     hash: &[u8; 16],
     tag: u8,
     key: &'a [u8],
@@ -120,18 +120,18 @@ pub fn decode_state_key<'a>(
     Ok((name, generation, offset))
 }
 
-pub fn decode_counter(raw: &[u8]) -> Result<u64, &'static str> {
+pub(crate) fn decode_counter(raw: &[u8]) -> Result<u64, &'static str> {
     Ok(u64::from_le_bytes(
         raw.try_into()
             .map_err(|_| "queue counter has invalid width")?,
     ))
 }
 
-pub fn decode_consumer_record(raw: &[u8]) -> Result<ConsumerRecord, serde_json::Error> {
+pub(crate) fn decode_consumer_record(raw: &[u8]) -> Result<ConsumerRecord, serde_json::Error> {
     serde_json::from_slice(raw)
 }
 
-pub fn encode_lease(l: &Lease) -> Vec<u8> {
+pub(crate) fn encode_lease(l: &Lease) -> Vec<u8> {
     let mut v = Vec::with_capacity(32);
     v.extend_from_slice(&l.deadline_ms.to_le_bytes());
     v.extend_from_slice(&l.delivery_count.to_le_bytes());
@@ -140,7 +140,7 @@ pub fn encode_lease(l: &Lease) -> Vec<u8> {
     v
 }
 
-pub fn decode_lease(v: &[u8]) -> Option<Lease> {
+pub(crate) fn decode_lease(v: &[u8]) -> Option<Lease> {
     if !matches!(v.len(), 16 | 32) {
         return None;
     }
@@ -159,7 +159,7 @@ pub fn decode_lease(v: &[u8]) -> Option<Lease> {
 /// Consumer-group config row (spec Stage 2 §2.2), stored under the
 /// PARENT identity — collection-scoped, unlike per-segment state.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ConsumerConfig {
+pub(crate) struct ConsumerConfig {
     #[serde(default = "d_vis")]
     pub visibility_timeout_ms: u32,
     #[serde(default = "d_att")]
@@ -201,7 +201,7 @@ impl Default for ConsumerConfig {
 /// that makes late old-generation writes and residual rows inert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ConsumerLifecycle {
+pub(crate) enum ConsumerLifecycle {
     Active,
     Deleting,
     Deleted,
@@ -209,13 +209,13 @@ pub enum ConsumerLifecycle {
 
 /// What the parent-identity config row actually stores.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ConsumerRecord {
+pub(crate) struct ConsumerRecord {
     pub generation: u64,
     pub state: ConsumerLifecycle,
     pub config: ConsumerConfig,
 }
 
-pub fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
+pub(crate) fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + consumer.len());
     k.extend_from_slice(hash);
     k.push(b'C');
@@ -237,7 +237,7 @@ pub fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
 ///
 /// The row is tiny, monotonic, and long-lived: new generations are always
 /// above it, so it never needs deleting.
-pub fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
+pub(crate) fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + consumer.len());
     k.extend_from_slice(hash);
     k.push(b'F');
@@ -251,7 +251,7 @@ pub fn parse_token(t: &str) -> Option<(u64, u32)> {
     Some((o.parse().ok()?, g.parse().ok()?))
 }
 
-pub enum QueueOp {
+pub(crate) enum QueueOp {
     Receive {
         consumer: String,
         /// The consumer generation this op belongs to (from the config
@@ -312,7 +312,7 @@ pub enum QueueOp {
 }
 
 #[derive(Debug, Clone)]
-pub enum QueueOut {
+pub(crate) enum QueueOut {
     Received {
         /// (offset, gen, attempts, key_hash) for each newly leased
         /// message.

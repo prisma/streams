@@ -5,7 +5,7 @@
 use super::{Deliver, ShardEngine, StreamHandle, record_key};
 use crate::crypto::{DecodedFrame, decode_frame};
 mod checked;
-pub use checked::CheckedFrame;
+pub(crate) use checked::CheckedFrame;
 use slatedb::config::{DurabilityLevel, ScanOptions};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
 
 /// Frames with offset in [scan_from, durable_next), optionally filtered by
 /// routing key (frame metadata; no decryption needed).
-pub struct FrameReadResult {
+pub(crate) struct FrameReadResult {
     pub frames: Vec<CheckedFrame>,
     pub last_offset: Option<u64>,
     pub(super) coverage: Option<DurableRingCoverage>,
@@ -117,7 +117,7 @@ impl FrameReadResult {
 /// ranges partition the log exactly — the absorber issues several of these
 /// concurrently to hide per-chunk object-store latency (a serial 8 MB chunk
 /// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
-pub async fn read_frames_range(
+pub(crate) async fn read_frames_range(
     engine: &ShardEngine,
     handle: &StreamHandle,
     scan_from: u64,
