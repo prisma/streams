@@ -3,6 +3,7 @@
 use super::fixture_http::http_rig_with_auth_service;
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
+use crate::project_policy::ProjectStatus::{self, Active, Suspended};
 
 // ---------------------------------------------------------------------------
 // SR-6c: the D/A/B adversarial fixture and the certification campaign
@@ -58,7 +59,7 @@ async fn dab_rig(
         feed_version: 1,
     })
     .unwrap();
-    svc.publish_policies(dab_policies(tag, true, true, 1))
+    svc.publish_policies(dab_policies(tag, Active, Active, 1))
         .unwrap();
     let mut credentials = std::collections::HashMap::new();
     for side in ["a", "b"] {
@@ -93,12 +94,12 @@ async fn dab_rig(
 /// complete replacements, so suspension republishes BOTH projects).
 fn dab_policies(
     tag: &str,
-    a_active: bool,
-    b_active: bool,
+    a_status: ProjectStatus,
+    b_status: ProjectStatus,
     feed_version: u64,
 ) -> crate::project_policy::PolicySnapshot {
     let mut projects = std::collections::HashMap::new();
-    for (side, active) in [("a", a_active), ("b", b_active)] {
+    for (side, status) in [("a", a_status), ("b", b_status)] {
         let pid = crate::tenant::ProjectId::new(&format!("proj-dab-{side}-{tag}")).unwrap();
         projects.insert(
             pid.clone(),
@@ -108,11 +109,7 @@ fn dab_policies(
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: feed_version,
                 ownership_version: 1,
-                status: if active {
-                    crate::project_policy::ProjectStatus::Active
-                } else {
-                    crate::project_policy::ProjectStatus::Suspended
-                },
+                status,
                 quotas: crate::project_policy::ProjectQuotas::default(),
             },
         );
@@ -198,6 +195,39 @@ async fn dab_view(
     (rs, rb, hs)
 }
 
+/// Seed the same JSON stream/key for either customer, checking each write.
+async fn dab_seed(
+    addr: std::net::SocketAddr,
+    auth: (&str, &str),
+    name: &str,
+    who: &str,
+    records: u32,
+) {
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{who} create");
+    for i in 0..records {
+        let body = format!("{{\"who\":\"{who}\",\"i\":{i}}}");
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            &format!("/v1/streams/{name}/records"),
+            &[ekey, auth, ct],
+            body.as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200, "{who} append {i}");
+    }
+}
+
 /// SR-6c (validation item D): the transitions matrix. A runs its
 /// stream through every lifecycle transition the cell can drive
 /// locally — append, split, seal, delete, recreate — while B (same
@@ -219,27 +249,7 @@ async fn dab_transitions_matrix_leaves_foreign_streams_byte_identical() {
 
     // B and D stage their same-named streams FIRST (they must never
     // move again). Shared key everywhere: leaks become visible bytes.
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/tmx",
-        &[ekey, b],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201, "B create");
-    for i in 0..3 {
-        let body = format!("{{\"who\":\"b\",\"i\":{i}}}");
-        let (st, _, _) = preq(
-            addr,
-            "POST",
-            "/v1/streams/tmx/records",
-            &[ekey, b, ct],
-            body.as_bytes(),
-        )
-        .await;
-        assert_eq!(st, 200, "B append {i}");
-    }
+    dab_seed(addr, b, "tmx", "b", 3).await;
     let (st, _, _) = hreq(
         addr,
         "PUT",
@@ -269,27 +279,7 @@ async fn dab_transitions_matrix_leaves_foreign_streams_byte_identical() {
     };
 
     // Transition 1: A creates + appends (same name, same key).
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/tmx",
-        &[ekey, a],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201, "A create");
-    for i in 0..4 {
-        let body = format!("{{\"who\":\"a\",\"i\":{i}}}");
-        let (st, _, _) = preq(
-            addr,
-            "POST",
-            "/v1/streams/tmx/records",
-            &[ekey, a, ct],
-            body.as_bytes(),
-        )
-        .await;
-        assert_eq!(st, 200, "A append {i}");
-    }
+    dab_seed(addr, a, "tmx", "a", 4).await;
     let bv = dab_view(addr, &b, &ekey, "tmx").await;
     let (s, _, d2) = hreq(addr, "GET", "/v1/stream/tmx", &[fleet], b"").await;
     check("A create+append", bv, (s, d2));
@@ -344,140 +334,122 @@ async fn dab_transitions_matrix_leaves_foreign_streams_byte_identical() {
 /// happens to A's project.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dab_noninterference_property() {
-    use rand::{Rng, SeedableRng};
     for seed in [3u64, 17, 29] {
-        // World 1: the full interleaving.
-        let tag = format!("ni{seed}");
-        let (_state, addr, svc, jwt_a, jwt_b) = dab_rig(&tag, DAB_SCOPES).await;
-        let auth_a = format!("Bearer {jwt_a}");
-        let auth_b = format!("Bearer {jwt_b}");
-        let a = ("authorization", auth_a.as_str());
-        let b = ("authorization", auth_b.as_str());
-        let ekey = ("prisma-encryption-key", PRISMA_KEY);
-        let ct = ("content-type", "application/json");
-        for side in [&a, &b] {
+        dab_noninterference_for_seed(seed).await;
+    }
+}
+
+async fn dab_observe(
+    addr: std::net::SocketAddr,
+    auth: &(&str, &str),
+    &(is_b, op, i): &(bool, u8, u32),
+) -> (u8, u16, Vec<u8>) {
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+    match op {
+        0 => {
+            let actor = if is_b { "b" } else { "a" };
+            let body = format!("{{\"actor\":\"{actor}\",\"i\":{i}}}");
             let (st, _, _) = preq(
                 addr,
-                "PUT",
-                "/v1/streams/ni",
-                &[ekey, *side],
-                br#"{"format":{"kind":"json"}}"#,
+                "POST",
+                "/v1/streams/ni/records",
+                &[ekey, *auth, ct],
+                body.as_bytes(),
             )
             .await;
-            assert_eq!(st, 201, "create seed {seed}");
+            (0, st, Vec::new())
         }
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        // (actor_is_b, op, payload_i) — generated ONCE, replayed for
-        // world 2 by filtering. Ops: 0 = append, 1 = read, 2 = head.
-        let script: Vec<(bool, u8, u32)> = (0..24)
-            .map(|i| (rng.random_bool(0.5), rng.random_range(0..3u8), i))
-            .collect();
-        let mut world1_b: Vec<(u8, u16, Vec<u8>)> = Vec::new();
-        for (step, (is_b, op, i)) in script.iter().enumerate() {
-            if step == 8 {
-                // A's project is suspended mid-sequence...
-                svc.publish_policies(dab_policies(&tag, false, true, 2))
-                    .unwrap();
-            }
-            if step == 16 {
-                // ...and reactivated later.
-                svc.publish_policies(dab_policies(&tag, true, true, 3))
-                    .unwrap();
-            }
-            let side = if *is_b { &b } else { &a };
-            match op {
-                0 => {
-                    let body = format!(
-                        "{{\"actor\":\"{}\",\"i\":{i}}}",
-                        if *is_b { "b" } else { "a" }
-                    );
-                    let (st, _, _) = preq(
-                        addr,
-                        "POST",
-                        "/v1/streams/ni/records",
-                        &[ekey, *side, ct],
-                        body.as_bytes(),
-                    )
-                    .await;
-                    if *is_b {
-                        world1_b.push((0, st, Vec::new()));
-                    }
-                }
-                1 => {
-                    let (st, _, body) =
-                        preq(addr, "GET", "/v1/streams/ni/records", &[ekey, *side], b"").await;
-                    if *is_b {
-                        world1_b.push((1, st, body));
-                    }
-                }
-                _ => {
-                    let (st, _, _) =
-                        preq(addr, "HEAD", "/v1/streams/ni", &[ekey, *side], b"").await;
-                    if *is_b {
-                        world1_b.push((2, st, Vec::new()));
-                    }
-                }
-            }
+        1 => {
+            let (st, _, body) =
+                preq(addr, "GET", "/v1/streams/ni/records", &[ekey, *auth], b"").await;
+            (1, st, body)
         }
+        _ => {
+            let (st, _, _) = preq(addr, "HEAD", "/v1/streams/ni", &[ekey, *auth], b"").await;
+            (2, st, Vec::new())
+        }
+    }
+}
 
-        // World 2: a FRESH rig runs only B's subsequence (no A create,
-        // no A ops, no feed events).
-        let tag2 = format!("ni{seed}x");
-        let (_s2, addr2, _svc2, _ja2, jwt_b2) = dab_rig(&tag2, DAB_SCOPES).await;
-        let auth_b2 = format!("Bearer {jwt_b2}");
-        let b2 = ("authorization", auth_b2.as_str());
+async fn dab_noninterference_for_seed(seed: u64) {
+    use rand::{Rng, SeedableRng};
+    // World 1: the full interleaving.
+    let tag = format!("ni{seed}");
+    let (_state, addr, svc, jwt_a, jwt_b) = dab_rig(&tag, DAB_SCOPES).await;
+    let auth_a = format!("Bearer {jwt_a}");
+    let auth_b = format!("Bearer {jwt_b}");
+    let a = ("authorization", auth_a.as_str());
+    let b = ("authorization", auth_b.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    for side in [&a, &b] {
         let (st, _, _) = preq(
-            addr2,
+            addr,
             "PUT",
             "/v1/streams/ni",
-            &[ekey, b2],
+            &[ekey, *side],
             br#"{"format":{"kind":"json"}}"#,
         )
         .await;
-        assert_eq!(st, 201, "world-2 create seed {seed}");
-        let mut world2_b: Vec<(u8, u16, Vec<u8>)> = Vec::new();
-        for (is_b, op, i) in script.iter() {
-            if !*is_b {
-                continue;
-            }
-            match op {
-                0 => {
-                    let body = format!("{{\"actor\":\"b\",\"i\":{i}}}");
-                    let (st, _, _) = preq(
-                        addr2,
-                        "POST",
-                        "/v1/streams/ni/records",
-                        &[ekey, b2, ct],
-                        body.as_bytes(),
-                    )
-                    .await;
-                    world2_b.push((0, st, Vec::new()));
-                }
-                1 => {
-                    let (st, _, body) =
-                        preq(addr2, "GET", "/v1/streams/ni/records", &[ekey, b2], b"").await;
-                    world2_b.push((1, st, body));
-                }
-                _ => {
-                    let (st, _, _) = preq(addr2, "HEAD", "/v1/streams/ni", &[ekey, b2], b"").await;
-                    world2_b.push((2, st, Vec::new()));
-                }
-            }
+        assert_eq!(st, 201, "create seed {seed}");
+    }
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    // (actor_is_b, op, payload_i) — generated ONCE, replayed for
+    // world 2 by filtering. Ops: 0 = append, 1 = read, 2 = head.
+    let script: Vec<(bool, u8, u32)> = (0..24)
+        .map(|i| (rng.random_bool(0.5), rng.random_range(0..3u8), i))
+        .collect();
+    let mut world1_b: Vec<(u8, u16, Vec<u8>)> = Vec::new();
+    for (step, operation) in script.iter().enumerate() {
+        if step == 8 {
+            // A's project is suspended mid-sequence...
+            svc.publish_policies(dab_policies(&tag, Suspended, Active, 2))
+                .unwrap();
         }
+        if step == 16 {
+            // ...and reactivated later.
+            svc.publish_policies(dab_policies(&tag, Active, Active, 3))
+                .unwrap();
+        }
+        let side = if operation.0 { &b } else { &a };
+        let observed = dab_observe(addr, side, operation).await;
+        if operation.0 {
+            world1_b.push(observed);
+        }
+    }
+
+    // World 2: a FRESH rig runs only B's subsequence (no A create,
+    // no A ops, no feed events).
+    let tag2 = format!("ni{seed}x");
+    let (_s2, addr2, _svc2, _ja2, jwt_b2) = dab_rig(&tag2, DAB_SCOPES).await;
+    let auth_b2 = format!("Bearer {jwt_b2}");
+    let b2 = ("authorization", auth_b2.as_str());
+    let (st, _, _) = preq(
+        addr2,
+        "PUT",
+        "/v1/streams/ni",
+        &[ekey, b2],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "world-2 create seed {seed}");
+    let mut world2_b: Vec<(u8, u16, Vec<u8>)> = Vec::new();
+    for operation in script.iter().filter(|operation| operation.0) {
+        world2_b.push(dab_observe(addr2, &b2, operation).await);
+    }
+    assert_eq!(
+        world1_b.len(),
+        world2_b.len(),
+        "observable counts, seed {seed}"
+    );
+    for (k, (w1, w2)) in world1_b.iter().zip(world2_b.iter()).enumerate() {
         assert_eq!(
-            world1_b.len(),
-            world2_b.len(),
-            "observable counts, seed {seed}"
+            w1,
+            w2,
+            "seed {seed} observable {k} diverged: interleaved {:?} vs solo {:?}",
+            (w1.0, w1.1, String::from_utf8_lossy(&w1.2)),
+            (w2.0, w2.1, String::from_utf8_lossy(&w2.2)),
         );
-        for (k, (w1, w2)) in world1_b.iter().zip(world2_b.iter()).enumerate() {
-            assert_eq!(
-                w1,
-                w2,
-                "seed {seed} observable {k} diverged: interleaved {:?} vs solo {:?}",
-                (w1.0, w1.1, String::from_utf8_lossy(&w1.2)),
-                (w2.0, w2.1, String::from_utf8_lossy(&w2.2)),
-            );
-        }
     }
 }
 
