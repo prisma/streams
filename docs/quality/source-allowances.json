@@ -1087,62 +1087,6 @@
     },
     {
       "category": "effect",
-      "count": 1,
-      "owner": "crate::a_busy_next_generation_skips_the_gather_window",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::a_failed_group_fails_the_close_and_its_retry_together",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::a_failed_group_write_fails_its_duplicate_too",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::a_reuse_verdict_dies_with_its_failed_group",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::a_stream_seq_verdict_is_grounded_in_durable_state",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::commits_during_a_flush_do_not_extend_its_barrier",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::the_gather_window_waits_for_ack_dispatch",
-      "path": "src/dst/tests/durability_failures.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 2,
       "owner": "crate::a_fence_waits_for_durability_before_reporting_closed",
       "path": "src/dst/tests/durability_fences.rs",

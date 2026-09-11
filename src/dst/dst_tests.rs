@@ -49,6 +49,9 @@ mod consumer_saga;
 #[path = "tests/durability_failures.rs"]
 mod durability_failures;
 
+#[path = "tests/durability_gather.rs"]
+mod durability_gather;
+
 #[path = "tests/durability_fences.rs"]
 mod durability_fences;
 

@@ -37,12 +37,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d2a20203895688c38ca48bc45f1bb7439bcb60a292a208508df4b6dee60f6400",
+    "function_sha256": "00fa4a8cc204c832cd53ce6416c9b98ab3902c976c304babcea7058df7fd8fd0",
     "mechanisms": [],
     "configuration": [
-      "let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 20));"
+      "let store = FaultStore::uniform(mem(), 91, FaultPlan::new(0, 0, 20));"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -164,7 +164,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "882c91f10ea835ef1e001707fcc266f06f6791453ecd3ac57bd689d890c3be2b",
+    "function_sha256": "22748cdc9786adc7f4058989bc7a1efe920bca03860f0bc21ccc38cfc826a70b",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -180,7 +180,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2e84b1e956346f867cabec2732747f96139ffc761b61f0248c68bf6a0f3c87bf",
+    "function_sha256": "36b1634ab9f1f9d07709f4803d6c0c0060f060786aedd0ea120196d7046c8ad3",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -225,7 +225,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "23e6ba64f0c0efd5ae73c9610908d8f5d4c24cb967f9ef377cfcac57bc91608d",
+    "function_sha256": "6b25e4af2d125231de37740502152753f08a3f9fa3c7ddebc6804d823da83ebc",
     "mechanisms": [],
     "configuration": [
       "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel021\");",
@@ -707,7 +707,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8e95aca160f51390a65cb277943f9dbf09602a674efa417813bf6d369a34d513",
+    "function_sha256": "58d3655add39c2dd97618160cb6d4e61a76e2142969796dc812cec13dc5315dc",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -921,7 +921,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5ca08bab96590e1200d3fa99c4fbaa2df45f2f70df7cb7d854894950bb7465a1",
+    "function_sha256": "f59318fcb171c75d5d49ee9d7d419cd63eb4e0d9935ecf2bc3fd183faad6f81c",
     "mechanisms": [],
     "configuration": [
       "\"the failpoint never fired\""
@@ -1385,12 +1385,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "073b7db4a2fe0db6fae24d503beec4a4945703ae216db755456bf0f9c2cbd252",
+    "function_sha256": "c60eb64822243d458c7e9f08b04edf0b94acf5097c46df11286c9c074b3c64e4",
     "mechanisms": [],
     "configuration": [
       "FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow_wal),"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -2044,7 +2044,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "53c57b172e629fcac9e194bea61ad3bd73df9cdea17812e6f310d317af35eb71",
+    "function_sha256": "2e1d9f94e80d02d474990aabd62bc19be8f0ed63bf9dd4db991e0c997bc15347",
     "mechanisms": [],
     "configuration": [
       "for seed in [3u64, 17, 41] {",
@@ -2059,7 +2059,7 @@
       "\"seed {seed}: idle append took {took:?} \u2014 the gather window is \\",
       "\"no seed ever exercised the gather/barrier path \u2014 the scenario \\"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": []
   },
   {
@@ -5537,12 +5537,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0e405cc9f5a707382c8c37a7f9c6bde23e7885089c376c27fa4de38cf7a2f9d5",
+    "function_sha256": "af13bcb7ae39b0585d0097b8ad4083181a081e0b79b1f4a7b098bb26325e4f2b",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 87, FaultPlan::new(0, 0, 30));"
     ],
-    "file": "src/dst/tests/durability_failures.rs",
+    "file": "src/dst/tests/durability_gather.rs",
     "scenarios": [
       "DUR-001"
     ]
