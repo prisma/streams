@@ -1,3 +1,6 @@
+//! Product transport tests: wire-pinned error messages, query parsing
+//! and response rendering.
+#![cfg(test)]
 use super::*;
 
 /// WP-03/PR 5: the wire error MESSAGES are pinned across the
