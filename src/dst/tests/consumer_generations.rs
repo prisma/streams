@@ -361,6 +361,10 @@ async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
     clippy::too_many_lines,
     reason = "parked saga scenario; parking the deletion saga, recreating the stream underneath and checking the replacement form one causal sequence; helper phases would hide which incarnation the saga rebound to"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked saga fixture; the deletion saga is released and joined before the replacement is examined; it must park before its descriptor refresh while the stream is recreated"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_saga_never_touches_a_recreated_stream() {
     let _serial = gap_lock().lock().await;

@@ -211,6 +211,10 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     clippy::too_many_lines,
     reason = "merge under sealing scenario; the pending merge, the sealing collection and the resumable retry form one causal sequence; helper phases would hide which phase published under the seal"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "merge under sealing fixture; the pending merge is joined after the seal is resolved; it must run concurrently to be declined under the sealing collection"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn merge_phase_b_declines_under_sealing() {
     let _l = gap_lock().lock().await;
@@ -405,6 +409,10 @@ async fn merge_phase_b_declines_under_sealing() {
 /// SEL-027: two finals with the SAME bytes but different producer
 /// coordination are different operations. The second must not join
 /// the first's claim, and its refusal must not tear that claim down.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "concurrent finals fixture; the first final is joined after the second is answered; they must run concurrently to contend for one claim"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     let _serial = gap_lock().lock().await;
@@ -514,6 +522,10 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
 /// The late reference install must not pin the source to a child that
 /// no longer exists: the creator fails, the source keeps no children,
 /// and the source hard-deletes cleanly.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked fork fixture; the creator is released and joined before the source pin is checked; it must park concurrently before its source reference"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
     let _serial = gap_lock().lock().await;

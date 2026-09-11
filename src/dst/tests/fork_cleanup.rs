@@ -17,6 +17,10 @@ use super::fixture_storage::mem;
 /// conclusive — so the ordinary retry of the child DELETE removes the
 /// late-installed reference and frees the source. No resumed creator,
 /// no repair tool: the retry the client already owns is the repair.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "crashed creator fixture; the parked creator is released and joined before shutdown; its outcome is irrelevant because the world is repaired around it, but it must park concurrently at the crash point"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     let _serial = gap_lock().lock().await;
@@ -36,7 +40,7 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     crate::failpoints::park_fork_before_source_ref("frk13kid");
     crate::failpoints::park_fork_after_source_ref("frk13kid");
     let b2 = boundary.clone();
-    let _creator = tokio::spawn(async move {
+    let creator = tokio::spawn(async move {
         hreq(
             addr,
             "PUT",
@@ -132,6 +136,7 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     // Unpark the "dead" creator so shutdown is clean; its outcome is
     // irrelevant — the world has already been repaired around it.
     crate::failpoints::release_fork_after_source_ref("frk13kid");
+    creator.await.expect("the released creator completed");
     engine_shutdown(&state).await;
 }
 

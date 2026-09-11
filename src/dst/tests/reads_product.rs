@@ -297,6 +297,10 @@ async fn product_read_follows_split_lineage() {
 
 /// Stage 6: the long-poll transport — a timeout answers 204 with a
 /// rearm cursor; a wake serves the new record.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "product long-poll fixture; the parked poll is joined after the waking append; it must be parked concurrently before the append is issued"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_long_poll_times_out_and_wakes() {
     let store = mem();

@@ -230,6 +230,10 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     clippy::too_many_lines,
     reason = "parked-pull deletion scenario; loading the generation, parking before settlement, deleting underneath and checking the lease verdict form one causal sequence; helper phases would hide which generation the lease was refused against"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked pull fixture; the pull is released and joined before its lease verdict is checked; it must park before settlement while the generation is deleted"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
     let _serial = gap_lock().lock().await;
@@ -474,6 +478,10 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
 /// see the first's staged config (overlay), so exactly one reports
 /// created and an equal repeat is idempotent — the DB behind an
 /// unwritten batch would show both "missing" and mint two creations.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "same-group configuration fixture; both configuration puts are joined after the held commit is released; they must be staged concurrently to share one write group"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_group_config_puts_see_each_other() {
     let store = mem();

@@ -90,6 +90,10 @@ async fn a_fenced_owners_absorber_exits() {
 /// Queued-but-uncommitted appends must be answered when the shard closes,
 /// not left to hang until each client's own timeout. `begin_close` drains
 /// what is in flight; the committer drains what is still queued behind it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "engine close fixture; every queued append is joined under a deadline after the close begins; the burst must queue concurrently behind the slow commit"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
     let inner = mem();

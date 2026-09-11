@@ -546,6 +546,10 @@ pub(super) async fn http_rig_build(
 /// Boot a rig, create + fill a stream, then drive a split INTO the
 /// parked seal-gap: Phase A CAS'd, parent sealed, successors withheld.
 /// Returns everything the gap assertions need.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal-gap rig builder; the split task handle is returned to the scenario, which joins it after its assertions; the split must run concurrently to hold the rig inside the gap"
+)]
 pub(super) async fn rig_in_seal_gap(
     stream: &str,
     per_key: usize,

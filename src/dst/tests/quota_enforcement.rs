@@ -481,6 +481,10 @@ async fn quota_rig(
 /// concurrent burst admits exactly the cap; a hard delete releases a
 /// slot. Soft-deleted fork-retained names still count until their
 /// terminal hard delete (posture: they hold storage and the name).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "stream quota fixture; the racing creation is joined before the quota verdicts are compared; it must run concurrently to contend for the last slot"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_streams_is_enforced_at_create() {
     let quotas = crate::project_policy::ProjectQuotas {
@@ -651,6 +655,10 @@ async fn queued_append_bytes_charge_and_release() {
 /// RED (review, declared quotas): capability watch WAITS occupy the
 /// project's live-subscription pool — a project cannot hold unbounded
 /// long polls through capabilities.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "subscription pool fixture; the long watch is joined after the refused second wait is observed; it must hold a pool slot concurrently"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn watch_waits_occupy_the_subscription_pool() {
     let scopes = "streams.create streams.records.append streams.records.read \
