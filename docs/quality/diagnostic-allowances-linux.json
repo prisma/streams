@@ -612,13 +612,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6e98b39f3e07de317c227856cee0add69547c9c020254853f3bb71bccaa90cef",
-      "item": "crate::decode_page",
-      "lint": "clippy::arithmetic_side_effects",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "19b82a5db607c67660cef672cefdfc44a44c55cf7d2f24dc940f559388ed8bf1",
       "item": "crate::encode_page",
       "lint": "clippy::arithmetic_side_effects",
@@ -635,20 +628,6 @@
       "count": 1,
       "fingerprint": "e635567b6bb2fd4f15dd1553c1dcaede17f144dd1be17ad5db1423d7b6f4c4ca",
       "item": "crate::encode_page",
-      "lint": "clippy::arithmetic_side_effects",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4346a208e8a3cb5ea9f9f815cde65f09fed65e9518ae8d4a46f4600e6d200891",
-      "item": "crate::get_varint",
-      "lint": "clippy::arithmetic_side_effects",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4ec3a3d4d4036f38009fa6911337468bf67a1cbe13c3d22ce1b50be6ce792940",
-      "item": "crate::get_varint",
       "lint": "clippy::arithmetic_side_effects",
       "path": "src/postings.rs"
     },
@@ -1393,13 +1372,6 @@
       "item": "crate::decode_char",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/offsets.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "104bf544ae84e5d64cf78367efea0190c8d667b1ddc254fe9611b84633e6ac34",
-      "item": "crate::decode_page",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/postings.rs"
     },
     {
       "count": 1,
@@ -7553,90 +7525,6 @@
       "item": "crate::o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity",
       "lint": "clippy::indexing_slicing",
       "path": "src/application/read_batch/tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "018560809a4ddf99709a39c56a48fa3a81aae80d6c2b7821a03138a09201834f",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "423aea459e2e202c259ca14b189841807298625ee483830b39e7323ac32afb16",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "5c5af3632e26910da124101a99e2d45ba4f8f5b49887f176c73c3402631a8e84",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "93ac26b206add2f89d04bf9e030e77b319a2feb446425adf0383348ae24859c0",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ac3f74b6f570299072ae8f2ef3a0e368b440e95316662de9a781919cab20514f",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8dc4dd772c1b87da3d16a26634dcc6ac5c50ffa1941e00267c430dc8d1025f",
-      "item": "crate::decode_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0632242dae052a2632bbfda15fd6597a8c0bbd675068deab7d814428be54a2e9",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "27a751bdb2645fb0585dd6903380e5d3f7e7ccc9da1b96de94b650aeca941cb2",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4fbca3978871a730ecb2ba19b610a60b4af7f69fafc6d22e58cfb815e6ba83ac",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "666278ec14e8234831cac8b393b6a59856cf481499917e8efebdf46e4c54151b",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c64b3ed44abc768d5a4b8819649d8749c3b4beb6772eb2938f54e68c99961a73",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d96d1fdc420dd9ebc600d255ef3b1ddbdae7fe28477428717b204c80988ce4df",
-      "item": "crate::decode_stored_page",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/postings.rs"
     },
     {
       "count": 1,
