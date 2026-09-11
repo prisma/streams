@@ -634,6 +634,11 @@ async fn rollup_applies_deltas_and_closes_months() {
         "the frozen invoice base never moves"
     );
     assert_eq!(after_snap.corrections.len(), 2);
+    let reconciliation = r.reconcile_month("2026-07").await.unwrap();
+    assert!(
+        reconciliation.ok,
+        "late snapshot must reconcile: {reconciliation:?}"
+    );
     let c = &after_snap.corrections[1];
     assert_eq!(c.ingest_payload_bytes_delta, 50);
     // Storage corrects ZERO here: finalization already extrapolated

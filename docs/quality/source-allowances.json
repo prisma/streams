@@ -3839,13 +3839,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::MonthRow::effective",
-      "path": "src/rollup.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::UsageRollup::mark_artifact_published",
       "path": "src/rollup.rs",
       "syntax": "serde_json::json"

@@ -241,6 +241,22 @@
       "syntax": "std::env::var"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/rollup/allocation.rs",
+      "reason": "Exact month-allocation properties; the pinned macro generates tests of the unchanged production owner compiled in both service and invariant harness; syntax tokens remain inventoried.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::rollup_allocation",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Month-allocation invariant harness; includes the canonical production implementation and properties directly; no model, source rewrite or public service API.",
+      "syntax": "path = \"../../../src/rollup/allocation.rs\""
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::codec_tests",
@@ -319,22 +335,6 @@
       "path": "src/auth/publication/tests.rs",
       "reason": "Publication regression owns scoped threads; every worker joins before the test returns even on panic; real parallel calls exercise the shared production publisher.",
       "syntax": "std::thread::scope"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::macro(proptest::proptest)",
-      "path": "src/rollup/allocation.rs",
-      "reason": "Exact month-allocation properties; the pinned macro generates tests of the unchanged production owner compiled in both service and invariant harness; syntax tokens remain inventoried.",
-      "syntax": "proptest::proptest"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::rollup_allocation",
-      "path": "tools/quality-invariants/src/lib.rs",
-      "reason": "Month-allocation invariant harness; includes the canonical production implementation and properties directly; no model, source rewrite or public service API.",
-      "syntax": "path = \"../../../src/rollup/allocation.rs\""
     },
     {
       "category": "global",
@@ -422,6 +422,14 @@
       "owner": "crate::drift_stats",
       "path": "src/store_timing/sentinels.rs",
       "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the reviewed measurement expressions; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::MonthRow::effective",
+      "path": "src/rollup/totals.rs",
+      "reason": "Invoice response owner; this existing JSON presentation consumes the shared typed meter calculation; it makes no domain decisions from JSON and preserves every response field.",
       "syntax": "serde_json::json"
     }
   ]
