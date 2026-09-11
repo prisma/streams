@@ -239,6 +239,22 @@
       "path": "src/postings.rs",
       "reason": "Canonical postings decoder regressions; compile the same private decoder and allocation admission in the server and invariant harness; no copied parser or public test API.",
       "syntax": "path = \"postings/codec_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::quota_bucket",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical quota token bucket and its tests directly; no copied admission arithmetic or substitute owner.",
+      "syntax": "path = \"../../../src/quota/bucket.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/quota/bucket.rs",
+      "reason": "Quota bucket properties; the pinned macro generates full-burst and refused-debit cases against the production owner; all generated cases execute with the service and invariant harness.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

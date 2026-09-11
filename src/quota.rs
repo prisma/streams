@@ -51,27 +51,8 @@ pub(crate) const MAX_TRACKED_PROJECTS: usize = 16_384;
 /// keeping at this horizon.
 pub(crate) const IDLE_EVICT_MS: i64 = 300_000;
 
-struct Bucket {
-    /// Fractional tokens currently available.
-    level: f64,
-    last_ms: i64,
-}
-
-impl Bucket {
-    /// Refill at `rate`/sec (capped at one second's burst) and try to
-    /// take `cost` tokens. On refusal returns seconds until enough
-    /// tokens exist (Retry-After).
-    fn take(&mut self, rate: f64, cost: f64, now_ms: i64) -> Result<(), u64> {
-        let dt_s = ((now_ms - self.last_ms).max(0) as f64) / 1000.0;
-        self.level = (self.level + dt_s * rate).min(rate);
-        self.last_ms = now_ms;
-        if self.level < cost {
-            return Err((((cost - self.level) / rate).ceil().max(1.0)) as u64);
-        }
-        self.level -= cost;
-        Ok(())
-    }
-}
+mod bucket;
+use bucket::Bucket;
 
 pub(crate) struct ProjectAdmission {
     ops: Arc<crate::ops::OpsService>,
@@ -566,24 +547,13 @@ impl QuotaRegistry {
                     let a = Arc::new(ProjectAdmission {
                         ops: self.ops.clone(),
                         last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
-                        bucket: Mutex::new(Bucket {
-                            // A fresh project starts with a full
-                            // second's burst.
-                            level: quotas.requests_per_sec as f64,
-                            last_ms: now_ms,
-                        }),
-                        append_bytes: Mutex::new(Bucket {
-                            level: quotas.append_bytes_per_sec as f64,
-                            last_ms: now_ms,
-                        }),
-                        append_records: Mutex::new(Bucket {
-                            level: quotas.append_records_per_sec as f64,
-                            last_ms: now_ms,
-                        }),
-                        read_bytes: Mutex::new(Bucket {
-                            level: quotas.read_bytes_per_sec as f64,
-                            last_ms: now_ms,
-                        }),
+                        bucket: Mutex::new(Bucket::full(quotas.requests_per_sec, now_ms)),
+                        append_bytes: Mutex::new(Bucket::full(quotas.append_bytes_per_sec, now_ms)),
+                        append_records: Mutex::new(Bucket::full(
+                            quotas.append_records_per_sec,
+                            now_ms,
+                        )),
+                        read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
                         inflight: AtomicU64::new(0),
                         live_subs: AtomicU64::new(0),
                         streams: Mutex::new(StreamCount::default()),
@@ -677,7 +647,7 @@ impl QuotaRegistry {
                 return Ok(());
             }
             let rate = rate_u as f64;
-            let _ = b.take(rate, 0.0, now_ms); // refill only
+            b.refill(rate, now_ms);
             let full = b.level >= rate - f64::EPSILON;
             if full && cost > rate {
                 // Oversized single op from a full bucket: admit once,
@@ -687,7 +657,7 @@ impl QuotaRegistry {
             }
             if b.level < cost {
                 return Err(QuotaRefusal::Rate {
-                    retry_after_secs: (((cost - b.level) / rate).ceil().max(1.0)) as u64,
+                    retry_after_secs: b.retry_after(rate, cost),
                 });
             }
             *slot = Some((rate, cost));
@@ -731,10 +701,10 @@ impl QuotaRegistry {
         };
         let rate = quotas.read_bytes_per_sec as f64;
         let mut b = admission.read_bytes.lock().unwrap();
-        let _ = b.take(rate, 0.0, now_ms); // refill only
+        b.refill(rate, now_ms);
         if b.level < 0.0 {
             return Err(QuotaRefusal::Rate {
-                retry_after_secs: ((-b.level / rate).ceil().max(1.0)) as u64,
+                retry_after_secs: b.retry_after(rate, 0.0),
             });
         }
         Ok(())
@@ -743,14 +713,20 @@ impl QuotaRegistry {
     /// Post-hoc read debit with the SERVED byte count. Deliberately
     /// unconditional and negative-capable: the response was already
     /// sent, so the debt is real either way.
-    pub fn debit_read(&self, project: &ProjectId, quotas: &ProjectQuotas, bytes: u64, now_ms: i64) {
+    pub(crate) fn debit_read(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        bytes: u64,
+        now_ms: i64,
+    ) {
         if quotas.read_bytes_per_sec == 0 || bytes == 0 {
             return;
         }
         if let Some(admission) = self.tracked(project) {
             let rate = quotas.read_bytes_per_sec as f64;
             let mut b = admission.read_bytes.lock().unwrap();
-            let _ = b.take(rate, 0.0, now_ms); // refill first
+            b.refill(rate, now_ms);
             b.level -= bytes as f64;
         }
     }

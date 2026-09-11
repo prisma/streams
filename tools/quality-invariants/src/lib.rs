@@ -38,3 +38,10 @@ mod tenant;
     reason = "invariant harness; compile actual batch budget and ownership tests together; unused service accessors remain private"
 )]
 mod application;
+
+#[allow(
+    dead_code,
+    reason = "invariant harness; compiles the actual quota balance owner and its tests; production callers reside in the service"
+)]
+#[path = "../../../src/quota/bucket.rs"]
+mod quota_bucket;
