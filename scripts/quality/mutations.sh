@@ -70,6 +70,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     sse_feed) file=src/sse/feed.rs; filter=sse:: ;;
     sse_feed_retention) file=src/sse/feed/retention.rs; filter=sse:: ;;
     sse_feed_test_support) file=src/sse/feed/test_support.rs; filter=sse:: ;;
+    sse_session) file=src/sse/session.rs; filter="sse:: dst_tests::sse_delivery:: dst_tests::livefeed_swap::" ;;
     tasks_shutdown) file=src/tasks/shutdown.rs; filter=tasks:: ;;
     runtime) file=src/runtime.rs; filter=runtime:: ;;
     runtime_telemetry) file=src/runtime/telemetry.rs; filter=runtime:: ;;
