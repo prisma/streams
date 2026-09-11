@@ -623,6 +623,22 @@
       "path": "src/config/environment.rs",
       "reason": "ProcessEnvironment composition input; this explicit adapter reads immutable process configuration and subprocess markers; tests install their environment before starting the subprocess.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/billing/read_spool/tests.rs",
+      "reason": "Read spool resident-ledger properties check byte totals against the retained key inventory across bounded insert, replace and repeated-remove operations; real database tests check durable row accounting.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<SpoolOpenGuard as Drop>::drop",
+      "path": "src/billing/read_spool.rs",
+      "reason": "Typed Runtime::spawn on the process storage executor retains the abandoned-open database until asynchronous close finishes; Clippy resolves this method call, which the syntax inventory cannot infer from its receiver. The guard disarms only after readability is proved.",
+      "syntax": "tokio::runtime::Runtime::spawn"
     }
   ]
 }
