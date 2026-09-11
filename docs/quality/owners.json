@@ -615,6 +615,14 @@
       "path": "src/dst/tests/billing_controller.rs",
       "reason": "Terminal billing fixture; pin the actual shutdown observer for one deterministic poll while its real open is held; no substitute lifecycle model or timer is used.",
       "syntax": "std::pin::pin"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<ProcessEnvironment as Environment>::get",
+      "path": "src/config/environment.rs",
+      "reason": "ProcessEnvironment composition input; this explicit adapter reads immutable process configuration and subprocess markers; tests install their environment before starting the subprocess.",
+      "syntax": "std::env::var"
     }
   ]
 }

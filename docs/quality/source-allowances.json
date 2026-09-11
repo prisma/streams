@@ -983,20 +983,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::cli_fixture_drift_helper",
-      "path": "src/config/tests.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::process_environment_smoke_helper",
-      "path": "src/config/tests.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::drain_observed",
       "path": "src/dst/runtime.rs",
       "syntax": "std::env::var"
@@ -3240,13 +3226,6 @@
       "owner": "crate::run",
       "path": "src/bootstrap.rs",
       "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::certified_memprofile_errors",
-      "path": "src/config/profile.rs",
-      "syntax": "serde_json::json"
     },
     {
       "category": "macro-dsl",
