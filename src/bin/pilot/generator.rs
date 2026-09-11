@@ -228,7 +228,9 @@ impl GeneratorState {
             }
         }
         self.window.fetch_add(1, Ordering::Relaxed);
-        self.rates[attempt.attribution.min(self.rates.len() - 1)]
+        // Workload::attempt chooses from this exact attribution set (or index
+        // zero when absent); clamping would hide a broken owner invariant.
+        self.rates[attempt.attribution]
             .window
             .fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -337,8 +339,10 @@ impl Workload {
             usize::try_from(nonce % count).context("stream index exceeds address space")?;
         let name = format!("{}-{stream}", self.config.prefix);
         let target = pick(&name, &self.config.targets);
+        // Without an attribution list the public rate vector has one aggregate
+        // bucket, independent of how many request-routing targets are present.
         let attribution = if self.config.attribution.is_empty() {
-            target
+            0
         } else {
             pick(&name, &self.config.attribution)
         };
@@ -457,6 +461,19 @@ impl Generator {
         true
     }
 
+    fn ramp(&mut self) {
+        let desired = self
+            .workload
+            .config
+            .desired(self.workload.state.start.elapsed());
+        self.workload.state.set_concurrency(desired);
+        for _ in self.workers.len()..usize::try_from(desired).unwrap_or(usize::MAX) {
+            if !self.launch() {
+                break;
+            }
+        }
+    }
+
     async fn serve(
         &mut self,
         server: impl std::future::Future<Output = std::io::Result<()>>,
@@ -479,9 +496,7 @@ impl Generator {
                 }
                 _ = rate.tick() => self.workload.state.rotate_rates(),
                 _ = ramp.tick(), if !self.workload.state.membership.is_closed() => {
-                    let desired = self.workload.config.desired(self.workload.state.start.elapsed());
-                    self.workload.state.set_concurrency(desired);
-                    while self.workers.len() < usize::try_from(desired).unwrap_or(usize::MAX) && self.launch() {}
+                    self.ramp();
                 }
                 Some(result) = self.workers.join_next(), if !self.workers.is_empty() => {
                     match result {

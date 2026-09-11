@@ -93,7 +93,12 @@ async fn drain_counts_admitted_unpolled_workers_and_forbids_late_admission() {
     assert_eq!(stats["draining"], true);
     assert_eq!(stats["activeWorkers"], 1);
     assert!(!g.launch());
-    g.workers.join_next().await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(1), g.workers.join_next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(g.workload.state.snapshot()["activeWorkers"], 0);
     assert_eq!(g.workload.sequence.load(Ordering::Relaxed), 0);
     assert!(!g.launch());
@@ -366,6 +371,8 @@ async fn real_http_preserves_workload_bodies_credentials_read_mix_and_outcomes()
 async fn worker_panic_is_observed_and_all_other_workers_are_joined() {
     with_upstream(|url| async move {
         let mut g = owner(&[("LB_URL", &url), ("STREAMS", "1"), ("READ_EVERY", "0")]);
+        // A finite nonce tail bounds even a mutant that removes all HTTP awaits.
+        g.workload.sequence.store(u64::MAX - 100, Ordering::Relaxed);
         let state = &g.workload.state;
         assert!(
             std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -378,7 +385,7 @@ async fn worker_panic_is_observed_and_all_other_workers_are_joined() {
         let result = tokio::time::timeout(Duration::from_secs(5), g.serve(pending(), pending()))
             .await
             .unwrap();
-        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("panicked"));
         assert!(g.workers.is_empty());
         assert!(g.workload.state.membership.is_closed());
         assert_eq!(g.workload.state.membership.snapshot().1, 0);
@@ -451,4 +458,84 @@ async fn stats_and_drain_routes_keep_serving_the_same_final_ledger() {
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn rates_publish_only_after_the_first_complete_second() {
+    let mut g = owner(&[]);
+    let state = g.workload.state.clone();
+    state
+        .record(&g.workload.attempt(0).unwrap(), Duration::from_micros(1000))
+        .unwrap();
+    state.close();
+    let server = async move {
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert_eq!(state.snapshot()["achievedPerSec"], 0);
+        assert_eq!(
+            state.snapshot()["perUpstreamPerSec"],
+            serde_json::json!([0])
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(state.snapshot()["achievedPerSec"], 1);
+        assert_eq!(
+            state.snapshot()["perUpstreamPerSec"],
+            serde_json::json!([1])
+        );
+        Ok(())
+    };
+    g.serve(server, pending()).await.unwrap();
+    assert!(g.workers.is_empty());
+}
+
+#[test]
+fn multiple_routing_targets_share_the_implicit_aggregate_rate_bucket() {
+    let g = owner(&[
+        ("GEN_UPSTREAMS", "first;second;third"),
+        ("STREAMS", "17"),
+        ("READ_EVERY", "0"),
+    ]);
+    let mut targets = std::collections::BTreeSet::new();
+    for nonce in 0..100 {
+        let attempt = g.workload.attempt(nonce).unwrap();
+        targets.insert(attempt.target);
+        assert_eq!(attempt.attribution, 0);
+        g.workload
+            .state
+            .record(&attempt, Duration::from_micros(10))
+            .unwrap();
+    }
+    assert_eq!(targets, [0, 1, 2].into_iter().collect());
+    g.workload.state.rotate_rates();
+    assert_eq!(
+        g.workload.state.snapshot()["perUpstreamPerSec"],
+        serde_json::json!([100])
+    );
+}
+
+#[tokio::test]
+async fn each_ramp_admits_only_the_missing_workers_before_they_are_polled() {
+    let mut g = owner(&[("CONC_START", "3"), ("CONC_MAX", "3")]);
+    g.ramp();
+    assert_eq!(g.workers.len(), 3);
+    assert_eq!(g.workload.state.snapshot()["activeWorkers"], 3);
+    assert_eq!(g.workload.state.snapshot()["concurrency"], 3);
+    assert_eq!(g.workload.sequence.load(Ordering::Relaxed), 0);
+    g.ramp();
+    assert_eq!(
+        g.workers.len(),
+        3,
+        "unchanged target admits no extra workers"
+    );
+    assert_eq!(g.workload.state.snapshot()["activeWorkers"], 3);
+    g.workload.state.close();
+    g.workers.abort_all();
+    while let Some(result) = g.workers.join_next().await {
+        assert!(result.unwrap_err().is_cancelled());
+    }
+    assert_eq!(g.workload.state.snapshot()["activeWorkers"], 0);
+    g.ramp();
+    assert!(
+        g.workers.is_empty(),
+        "closed admission cannot restart on a ramp"
+    );
 }
