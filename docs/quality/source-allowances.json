@@ -1753,13 +1753,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::read_history2_keyed_cached",
-      "path": "src/history.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::read",
       "path": "src/history/canonical_span.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -4030,13 +4023,6 @@
       "count": 1,
       "owner": "crate::tail_codec",
       "path": "src/golden_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::bounded_discovery_tests",
-      "path": "src/history.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
