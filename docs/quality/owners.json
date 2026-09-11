@@ -1847,6 +1847,14 @@
       "path": "src/failpoints.rs",
       "reason": "The DST failpoint registry: one process-wide lazily initialised map keyed by point and stream name, armed and read only by the DST program; a per-runtime copy would let a parked point outlive the runtime that armed it.",
       "syntax": "std :: sync :: OnceLock < Registry >"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_refuses_while_in_flight",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
+      "syntax": "std::mem::forget"
     }
   ]
 }

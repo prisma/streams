@@ -56,6 +56,10 @@ impl LeaseRig {
     fn revoked(&mut self) -> bool {
         self.watch.revoked_with_clock(&self.state, &self.clock)
     }
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "LeaseRig::publish; the fixture publishes the policy and the grants as two independent switches the scenarios toggle separately; an enum would restate two booleans"
+    )]
     fn publish(&mut self, policy: bool, grants: bool) {
         self.version += 1;
         if policy {

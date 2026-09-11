@@ -49,6 +49,10 @@ async fn the_first_advance_seals_the_history_layout() {
         __maint,
     );
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "wait_absorbed; the fixture nests the absorbed-frontier read and its verdict inside the poll loop; flattening them would separate the verdict from the frontier it reads"
+    )]
     async fn wait_absorbed(
         engine: &Arc<crate::shard::ShardEngine>,
         hash: [u8; 16],

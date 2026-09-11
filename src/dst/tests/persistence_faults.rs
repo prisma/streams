@@ -355,6 +355,10 @@ fn delivered_records(complete: &str) -> Vec<u64> {
     clippy::too_many_lines,
     reason = "cut-resume scenario; two resuming subscribers, a swinging absorb boundary, the serial appends and the exact per-subscriber reconciliation form one causal sequence; helper phases would hide which reconnect skipped a durable record"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "cut_resume_never_skips_a_durable_record; the fixture nests the gap diagnostics inside the per-subscriber failure report; flattening them would separate the context lines from the gap they explain"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn cut_resume_never_skips_a_durable_record() {
     let _l = gap_lock().lock().await; // shared failpoint schedule

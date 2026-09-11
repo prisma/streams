@@ -52,6 +52,10 @@ impl slatedb::BlockTransformer for TestTransformer {
     clippy::disallowed_methods,
     reason = "main; the example reads its one path argument from the process environment; routing it through the server's configuration would couple an example to the runtime"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "main; the example nests the scan loop inside the per-range task it times; flattening it would separate the count from the range it measures"
+)]
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)

@@ -156,8 +156,8 @@ async fn latency(args: &Args) -> anyhow::Result<()> {
         let _ = s.get(&key).await?.bytes().await?;
         get_ms.push(t.elapsed().as_secs_f64() * 1000.0);
     }
-    put_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    get_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    put_ms.sort_by(f64::total_cmp);
+    get_ms.sort_by(f64::total_cmp);
     println!(
         "10KiB PUT ms: min={:.0} p50={:.0} max={:.0}",
         put_ms[0],

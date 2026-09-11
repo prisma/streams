@@ -1557,20 +1557,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
-      "path": "src/dst/tests/runtime_sweep.rs",
-      "syntax": "allow (non_snake_case)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::TraceState::event",
-      "path": "src/dst/trace_store.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::AppState::engine_for",
       "path": "src/http.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"

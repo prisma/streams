@@ -60,6 +60,10 @@ impl OpLog {
 
     /// Audit what a reader actually drained. `observed` is per routing key,
     /// in read order.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "OpLog::audit; the audit nests each key's acknowledged-but-unreadable and out-of-order checks inside the per-key walk; flattening them would separate the verdicts from the key they judge"
+    )]
     pub(crate) fn audit(&self, observed: &HashMap<String, Vec<AttemptId>>) -> Result<(), String> {
         // The ledger must be self-consistent, or a harness bug could
         // silently weaken every check below.
@@ -330,11 +334,8 @@ impl Workload {
                 self.coverage.hit(mech::APPEND_REJECTED);
                 Outcome::Rejected
             }
-            Ok(Err(AppendErr::Moved | AppendErr::Closed { .. } | AppendErr::Internal(_))) => {
-                self.coverage.hit(mech::APPEND_UNKNOWN);
-                Outcome::Unknown
-            }
-            Err(_) => {
+            Ok(Err(AppendErr::Moved | AppendErr::Closed { .. } | AppendErr::Internal(_)))
+            | Err(_) => {
                 self.coverage.hit(mech::APPEND_UNKNOWN);
                 Outcome::Unknown
             }
@@ -375,6 +376,10 @@ impl Workload {
     #[expect(
         clippy::too_many_arguments,
         reason = "Workload::append_to; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Workload::append_to; the append log nests the duplicate mark inside the acknowledged arm of the outcome match inside the attempt loop; flattening it would separate the mark from the acknowledgement it qualifies"
     )]
     pub(crate) async fn append_to(
         &mut self,

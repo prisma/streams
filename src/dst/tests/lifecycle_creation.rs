@@ -70,6 +70,10 @@ async fn a_stale_initialization_never_becomes_visible() {
 /// body under a different key completed the creation with a key the
 /// descriptor's own fingerprint does not match — a stream that cannot
 /// decrypt its first record.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "an_initialization_cannot_be_resumed_with_another_key; the fixture nests the planted init claim inside the descriptor mutation inside the planting closure; flattening it would separate the claim from the descriptor it is planted on"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_initialization_cannot_be_resumed_with_another_key() {
     const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";

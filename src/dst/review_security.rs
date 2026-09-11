@@ -147,6 +147,10 @@ async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
     engine_shutdown(&rig.state).await;
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r16_unauthorized_watch_shapes_are_independent_of_existence; the fixture nests the deleted-versus-initializing stamp inside its descriptor mutation and the query sweep inside the cursor and key sweeps; flattening them would separate each shape from the descriptor and the shapes it is compared against"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r16_unauthorized_watch_shapes_are_independent_of_existence() {
     use axum::http::{Method, StatusCode};
