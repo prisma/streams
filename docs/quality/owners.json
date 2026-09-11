@@ -431,6 +431,22 @@
       "syntax": "tokio::task::JoinSet::spawn",
       "count": 2,
       "reason": "Pilot benchmark sweep owns all handles until point drain or terminal cleanup; the fixture injects a retained panic and sibling; Clippy checks the concrete JoinSet method and syntax does not infer receiver types."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::run_serves_completed_results_on_the_configured_port",
+      "syntax": "tokio::select",
+      "count": 3,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "macro-dsl",
+      "path": "src/bin/pilot/benchmark/tests.rs",
+      "owner": "crate::published_results",
+      "syntax": "tokio::select",
+      "count": 2,
+      "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
     }
   ]
 }

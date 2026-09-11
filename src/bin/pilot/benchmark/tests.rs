@@ -614,22 +614,25 @@ async fn prepare_creates_the_stream_for_append_and_warms_only_the_configured_rou
             .unwrap()
             .unwrap();
         for (method, path, body) in expected {
-            let request = http.request().await;
-            assert_eq!(
-                (request.method, request.uri.path(), request.body.len()),
-                (method.clone(), path, body)
-            );
-            if method != Method::GET {
-                assert_eq!(request.headers["authorization"], "Bearer test-auth");
-                assert_eq!(request.headers["stream-encryption-key"], "test-key");
-                assert_eq!(request.headers["content-type"], "application/json");
-            }
+            assert_prepared(&http.request().await, &method, path, body);
         }
         assert!(
             http.requests.try_recv().is_err(),
             "{verb}: nothing beyond the create and warm requests"
         );
         http.close().await;
+    }
+}
+
+fn assert_prepared(request: &Request, method: &Method, path: &str, body: usize) {
+    assert_eq!(
+        (&request.method, request.uri.path(), request.body.len()),
+        (method, path, body)
+    );
+    if *method != Method::GET {
+        assert_eq!(request.headers["authorization"], "Bearer test-auth");
+        assert_eq!(request.headers["stream-encryption-key"], "test-key");
+        assert_eq!(request.headers["content-type"], "application/json");
     }
 }
 
@@ -644,15 +647,14 @@ async fn run_serves_completed_results_on_the_configured_port() {
         .unwrap()
         .port();
     let target = http.target.clone();
-    let run = super::run(move |key| match key {
+    let mut run = Box::pin(super::run(move |key| match key {
         "TARGET" => Some(target.clone()),
         "AUTH_TOKEN" | "STREAM_KEY" => Some("test".into()),
         "SIZES" | "BATCHES" | "MAX_WORKERS" | "MEASURE_SECS" => Some("1".into()),
         "WARMUP_SECS" | "INTER_POINT_SECS" => Some("0".into()),
         "PORT" => Some(port.to_string()),
         _ => None,
-    });
-    tokio::pin!(run);
+    }));
     let create = tokio::select! {
         request = http.request() => request,
         result = &mut run => panic!("benchmark entry returned before creating the stream: {result:?}"),
@@ -675,18 +677,8 @@ async fn run_serves_completed_results_on_the_configured_port() {
     let results = loop {
         polls += 1;
         assert!(polls < 10_000, "sweep never published completed results");
-        let response = tokio::select! {
-            result = &mut run => panic!("benchmark entry returned before serving results: {result:?}"),
-            response = client.get().get(&url).send() => response,
-        };
-        if let Ok(response) = response {
-            let body = tokio::select! {
-                result = &mut run => panic!("benchmark entry returned while serving results: {result:?}"),
-                body = response.json::<serde_json::Value>() => body.unwrap(),
-            };
-            if body["done"] == true {
-                break body;
-            }
+        if let Some(results) = published_results(&mut run, &client, &url).await {
+            break results;
         }
         tokio::select! {
             result = &mut run => panic!("benchmark entry returned before serving results: {result:?}"),
@@ -702,4 +694,22 @@ async fn run_serves_completed_results_on_the_configured_port() {
         [("size", true), ("batch", true)]
     );
     http.close().await;
+}
+
+/// One results poll while the entry keeps running; `None` until the sweep
+/// reports itself done or while the results server is not yet answering.
+async fn published_results(
+    run: &mut (impl std::future::Future<Output = anyhow::Result<()>> + Unpin),
+    client: &super::RotatingClient,
+    url: &str,
+) -> Option<serde_json::Value> {
+    let response = tokio::select! {
+        result = &mut *run => panic!("benchmark entry returned before serving results: {result:?}"),
+        response = client.get().get(url).send() => response.ok()?,
+    };
+    let body = tokio::select! {
+        result = &mut *run => panic!("benchmark entry returned while serving results: {result:?}"),
+        body = response.json::<serde_json::Value>() => body.ok()?,
+    };
+    (body["done"] == true).then_some(body)
 }
