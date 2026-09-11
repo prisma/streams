@@ -1695,6 +1695,14 @@
       "path": "src/bin/pilot.rs",
       "reason": "The pilot binary keeps its modules under src/bin/pilot/; a bin root resolves plain child modules beside itself, so the explicit path names the same layout as its siblings.",
       "syntax": "path = \"pilot/lb.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sharddir/watchdog_policy_tests.rs",
+      "reason": "Watchdog policy test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin expiry under wall-clock jumps.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

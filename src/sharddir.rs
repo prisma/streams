@@ -139,6 +139,10 @@ impl UnreadyWindow {
 /// cadence, feeds the pure policy monotonic readings, and — until WP-15
 /// task supervision gives critical tasks a result policy — keeps the
 /// survival `process::exit` when the policy says Expired.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "spawn_unready_watchdog; the supervisor rejects a spawn only while it is stopping, when no exit deadline is owed; a rejected watchdog has nothing left to police"
+)]
 pub(crate) fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
@@ -179,85 +183,7 @@ pub(crate) fn spawn_unready_watchdog(
 }
 
 #[cfg(test)]
-mod watchdog_policy_tests {
-    use super::*;
-    use crate::runtime::{Clock, ManualClock};
-
-    const LIMIT: Duration = Duration::from_secs(300);
-
-    /// A large FORWARD wall-clock jump does not expire the watchdog:
-    /// only monotonic elapsed time counts.
-    #[test]
-    fn forward_wall_jump_does_not_expire() {
-        let clock = ManualClock::at(0);
-        let mut w = UnreadyWindow::default();
-        assert!(matches!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Waiting { .. }
-        ));
-        clock.jump_wall(3_600_000);
-        assert_eq!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Waiting {
-                elapsed: Duration::ZERO
-            }
-        );
-    }
-
-    /// A BACKWARD wall-clock jump does not postpone expiry.
-    #[test]
-    fn backward_wall_jump_does_not_postpone_expiry() {
-        let clock = ManualClock::at(0);
-        let mut w = UnreadyWindow::default();
-        w.observe(true, clock.monotonic(), LIMIT);
-        clock.jump_wall(-86_400_000);
-        clock.advance_monotonic(LIMIT);
-        assert_eq!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Expired { elapsed: LIMIT }
-        );
-    }
-
-    /// Expiry lands EXACTLY when monotonic elapsed reaches the limit.
-    #[test]
-    fn expires_exactly_at_monotonic_limit() {
-        let clock = ManualClock::at(0);
-        let mut w = UnreadyWindow::default();
-        w.observe(true, clock.monotonic(), LIMIT);
-        clock.advance_monotonic(LIMIT - Duration::from_millis(1));
-        assert!(matches!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Waiting { .. }
-        ));
-        clock.advance_monotonic(Duration::from_millis(1));
-        assert_eq!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Expired { elapsed: LIMIT }
-        );
-    }
-
-    /// Returning to ready clears the active window, and a later
-    /// unready period begins a FRESH window (elapsed restarts at zero).
-    #[test]
-    fn ready_clears_and_later_unready_starts_fresh() {
-        let clock = ManualClock::at(0);
-        let mut w = UnreadyWindow::default();
-        w.observe(true, clock.monotonic(), LIMIT);
-        clock.advance_monotonic(Duration::from_secs(200));
-        assert_eq!(
-            w.observe(false, clock.monotonic(), LIMIT),
-            WatchdogDecision::Healthy
-        );
-        clock.advance_monotonic(Duration::from_secs(200));
-        assert_eq!(
-            w.observe(true, clock.monotonic(), LIMIT),
-            WatchdogDecision::Waiting {
-                elapsed: Duration::ZERO
-            },
-            "a fresh window, not 400s of accumulated unreadiness"
-        );
-    }
-}
+mod watchdog_policy_tests;
 
 pub(crate) fn stats_json() -> serde_json::Value {
     serde_json::json!({
@@ -484,6 +410,10 @@ pub(crate) struct OpenGate {
 }
 
 impl OpenGate {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::unready_reason; a poisoned gate state may hold a half-recorded open, close or holdoff for a prefix; recovering it could serve, reopen or reap the wrong incarnation"
+    )]
     pub(crate) fn unready_reason(&self) -> Option<String> {
         self.inner.health.unready_reason().or_else(|| {
             self.inner
@@ -526,7 +456,23 @@ impl OpenGate {
 
     /// Get the engine for `prefix`, starting (or joining) a single-flight
     /// open if needed, waiting at most `wait` for it.
-    pub async fn get_or_open(&self, prefix: &str, wait: Duration) -> OpenOutcome {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "OpenGate::get_or_open; the single-flight decision, the owned open task with its deadline and reaper, and the bounded wait are one cancellation-proofing sequence; splitting it would hide which step owns the outcome a caller that gives up leaves behind"
+    )]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "OpenGate::get_or_open; the open task must outlive any caller that gives up and the reaper drives an abandoned open to its end; supervising them under a request task would recreate the leaked zombie writers the owned task replaced"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "OpenGate::get_or_open; every subscriber may have given up before the outcome lands; a send with no receivers has nothing to notify and the serving map already holds the result"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::get_or_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
+    )]
+    pub(crate) async fn get_or_open(&self, prefix: &str, wait: Duration) -> OpenOutcome {
         if self.inner.stopping.load(Ordering::SeqCst) {
             return closing_outcome();
         }
@@ -717,6 +663,14 @@ impl OpenGate {
         }
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "OpenGate::wait_retired; the retiring engine's wait is a bounded courtesy; whether it finished or timed out, the gate state is re-read before any decision"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::wait_retired; a poisoned gate state may hold a half-recorded open, close or holdoff for a prefix; recovering it could serve, reopen or reap the wrong incarnation"
+    )]
     async fn wait_retired(&self, prefix: &str, wait: Duration) -> Option<OpenOutcome> {
         let retiring = {
             let state = self.inner.st.lock().unwrap();
@@ -751,6 +705,10 @@ impl OpenGate {
     /// replaced changes nothing — and arms the holdoff, escalating if the
     /// engine died young, because rapid open→die cycles are exactly the
     /// storm this module exists to prevent. Returns whether it evicted.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::notify_closed; a poisoned gate state or serving map may hold a half-recorded retirement, and the resident matched under the same write guard is still present; recovering the former could retire the wrong incarnation and a fallible remove would deny a resident the guard just proved"
+    )]
     pub(crate) fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
         // PR 6.1.2-A: gate state FIRST, serving map second — the one
         // permitted order (see `ServingMap`). Holding both also makes
@@ -788,6 +746,10 @@ impl OpenGate {
     /// gate state, which deadlocked against `get_or_open` across
     /// unrelated prefixes. Closing the engine is deliberately NOT done
     /// here: the caller does it after both guards are released.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::retire_resident; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
+    )]
     pub(crate) fn retire_resident(
         &self,
         prefix: &str,
@@ -809,10 +771,18 @@ impl OpenGate {
         Retirement::Retired(resident.engine)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::stop; a poisoned gate state may hold a half-recorded open, close or holdoff for a prefix; recovering it could serve, reopen or reap the wrong incarnation"
+    )]
     pub(crate) fn stop(&self) {
         let _state = self.inner.st.lock().unwrap();
         self.inner.stopping.store(true, Ordering::SeqCst);
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpenGate::shutdown_pending; a poisoned gate state may hold a half-recorded open, close or holdoff for a prefix; recovering it could serve, reopen or reap the wrong incarnation"
+    )]
     pub(crate) fn shutdown_pending(&self) -> (Vec<crate::shard::EngineShutdown>, usize) {
         let state = self.inner.st.lock().unwrap();
         let engines = state
@@ -930,6 +900,10 @@ mod health_ownership_tests {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "publish_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
+)]
 fn publish_open(
     inner: &GateInner,
     prefix: &str,

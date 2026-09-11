@@ -4350,13 +4350,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::watchdog_policy_tests",
-      "path": "src/sharddir.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/sketch.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

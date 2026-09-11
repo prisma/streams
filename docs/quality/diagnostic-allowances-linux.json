@@ -1451,13 +1451,6 @@
       "path": "src/shard/transaction/maintenance.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "231d6abd8c2de05520a623540221e1240e8e00f97957b6de3ae81bbe05f998de",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/sharddir.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "3677867525e787826a62e542809b6747c414df4f1ab51d28a020d97ae2833fba",
       "item": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
@@ -4581,27 +4574,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "419355c12b518e5075227f14a98a28e07252e1ae4666613f3417dff4b61010ce",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "253fae6b9495918c5bb80ad482529df94fca169203b295d7ec0185cefef1382b",
-      "item": "crate::OpenGate::wait_retired",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "72447add959362fa3e40a11b1e3c4f834f16390e8a1f4af98c3b521f48b7c468",
-      "item": "crate::spawn_unready_watchdog",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "5787fa32bf1d1e540dfa222f6195d7726a7267e0fbacd3adba6fdae3203421e8",
       "item": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
       "lint": "clippy::let_underscore_must_use",
@@ -5846,14 +5818,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "060c2bea7d18a57b0458d605e30efac866e17f25f09cb49f09559018c9c7bac6",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::too_many_lines",
-      "metric": 155,
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "04536f2aa89e60d5cc8ec50cb6e2ab664bf57cb8036dc498b7045bb15aab9f17",
       "item": "crate::LiveFeed::read_and_publish",
       "lint": "clippy::too_many_lines",
@@ -6818,111 +6782,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "148178e9822a1f373406f54f1aeebd1cdfdccc0348bfc5fe1fae45da67cd9c25",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "1bab78b2f2e4b693c59a52499952ae7f2f04d1cb6af2dc25f2e330fee95ab03c",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5bf66af19c14708daa8ff5279b00e8b01b01ea5bb83171c3ea0d1a973f4a84cb",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "6adbb993747b32ffa159c8911e12901938b56b9eec90edee58cf7cb2e8d13876",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0ff8ce31620affb5dd2e66b173c5208e07b69a9356640e2e814baff7c5aae7ef",
-      "item": "crate::OpenGate::notify_closed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c344819345c7a8b0b337cbccdf204af843a14fa9ac30f6f59390ce42128fa33a",
-      "item": "crate::OpenGate::notify_closed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "de820d81a38772d5ab288e8f7f6833181da0f3ec67123c052d68143368c7aedf",
-      "item": "crate::OpenGate::notify_closed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2f809c655a90f45d57884b8ac78cbd98b011cdd281a0e21eaf28d8e21fdda151",
-      "item": "crate::OpenGate::retire_resident",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cd80cccc35282aab7f64da7cb4615b0bb51df7e3c8a71a2c3cfea3743733d35a",
-      "item": "crate::OpenGate::retire_resident",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4342cc85f96fec981bfb0214479b629c538bf2efd30589528dc968d6ef0ef603",
-      "item": "crate::OpenGate::shutdown_pending",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8fa21afb6e2d3f69a25f3e516819f5c2587c02b34fc0128a3622ff6b3980ff3e",
-      "item": "crate::OpenGate::stop",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "300e7c7cfaf225772e13cec1fb404ba596f9e307d8bcd8c43ab10a6ac7e22fd5",
-      "item": "crate::OpenGate::unready_reason",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1fc821486720073b6ca1cec35b426d51f72065a837d3514b3109e81c2f7cbfb7",
-      "item": "crate::OpenGate::wait_retired",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bfc7ce6b6ad6d2dcc2f8335e99cdac898e403f5f6273f4d2209b23ab7ca2e0f",
-      "item": "crate::publish_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "87951e0f8ee9513353d9c49dd65919ab3e7bbed2fa04ab1b2d5f15afc5041a31",
-      "item": "crate::publish_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/sharddir.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "5b8a22bf652127bca2a358155d9523c65a0e6e8707f86adaa0c19d2ab4ea924b",
       "item": "crate::ShardHealth::engine_failed",
       "lint": "clippy::unwrap_used",
@@ -7571,13 +7430,6 @@
       "item": "crate::read_frames",
       "lint": "unreachable_pub",
       "path": "src/shard/record.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b9d19f9ac529518d319c9f5eb8b649664d0271825c98ec25f2fc24b738638a0b",
-      "item": "crate::OpenGate::get_or_open",
-      "lint": "unreachable_pub",
-      "path": "src/sharddir.rs"
     },
     {
       "count": 1,
