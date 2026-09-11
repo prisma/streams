@@ -205,6 +205,18 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
         decode_row(&key, &key[..17], &raw[..raw.len() - 1]),
         Err(RecordCorruption::Frame)
     ));
+    // A ciphertext shorter than an AEAD tag can never authenticate, so a
+    // length-consistent frame carrying one is corrupt rather than short.
+    let header_len = crate::crypto::decode_frame(&raw)
+        .expect("fixture frame decodes")
+        .header_len;
+    let mut tagless = raw[..header_len].to_vec();
+    tagless.extend_from_slice(&8u32.to_be_bytes());
+    tagless.extend_from_slice(&[0; 8]);
+    assert!(matches!(
+        decode_row(&key, &key[..17], &tagless),
+        Err(RecordCorruption::Frame)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -228,12 +240,13 @@ async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress(
             frames: vec![(1, Bytes::from_static(b"broken"))],
             bytes: 6,
         });
-    assert!(engine.ring_read(&handle, 0, 512, 1024).is_none());
-    assert!(
-        engine
-            .ring_read_keyed(&handle, 0, 512, "wanted", 1024)
-            .is_none()
-    );
+    let window = crate::shard::RingScan {
+        from: 0,
+        to: 512,
+        max_bytes: 1024,
+    };
+    assert!(engine.ring_read(&handle, window, None).is_none());
+    assert!(engine.ring_read(&handle, window, Some("wanted")).is_none());
     let page = read_frames(&engine, &handle, 0, Some("wanted"), 1024, Deliver::Durable)
         .await
         .unwrap();

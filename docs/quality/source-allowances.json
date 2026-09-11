@@ -1564,20 +1564,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::install_reserved_claim",
-      "path": "src/application/lifecycle.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::take_over_abandoned",
-      "path": "src/application/lifecycle.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::ReadPlan < 'a >::segment",
       "path": "src/application/read.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -1615,13 +1601,6 @@
       "count": 1,
       "owner": "crate::TraceState::event",
       "path": "src/dst/trace_store.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_history2_keyed_cached",
-      "path": "src/history.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
@@ -1756,13 +1735,6 @@
       "owner": "crate",
       "path": "src/project_policy.rs",
       "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_frames_until",
-      "path": "src/shard/record.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
       "category": "exception",
@@ -3867,13 +3839,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::bounded_discovery_tests",
-      "path": "src/history.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/history.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -4002,48 +3967,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/segmap.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::billing_read_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::bounded_outbox_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::commit_command_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::maintenance_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::queue_publication_tests",
-      "path": "src/shard.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::storage_decode_tests",
-      "path": "src/shard.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

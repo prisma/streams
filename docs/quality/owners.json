@@ -1751,6 +1751,70 @@
       "path": "src/crypto/invocation_tests.rs",
       "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/maintenance_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/storage_decode_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/billing_read_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/commit_command_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/bounded_outbox_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/queue_publication_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/bounded_discovery_tests.rs",
+      "reason": "Discovery test module imports its enclosing production owner; the compiler resolves the parent exports and the fixture pins the pending capacity bound.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings.rs",
+      "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
+      "syntax": "path = \"postings/tests.rs\""
     }
   ]
 }

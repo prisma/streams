@@ -96,6 +96,26 @@ pub(crate) use runtime_handoff::on_slatedb_rt;
 /// runs the OS preflight, then constructs stores, builds the runtime
 /// owners and serves. Called from the binary's `run` facade; tests
 /// drive owners directly, not this.
+#[expect(
+    clippy::too_many_lines,
+    reason = "run; boot wires the stores, keys, runtime, caches and tasks in one visible dependency order; splitting it would hide which resource each later step relies on"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "run; the flush interval fits u64 milliseconds and the shared cache size fits usize on the 64-bit targets the service builds for; checked conversions would only restate the target width"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "run; the probe delete is best effort, the supervisor rejects a spawn only while stopping, and the capability publication is advisory; handled results would only restate what boot already logs"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "run; the runtime's task supervisor is fresh at boot, so it accepts the maintenance worker; a fallible spawn would leave the process serving without maintenance"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "run; a poisoned cache lock at boot would mean a half-built shared cache, and the auth file paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+)]
 pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // The executable has one process bootstrap: OS-resource setup, the
     // shared physical SlateDB executor, and process instrumentation start

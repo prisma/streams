@@ -6,6 +6,15 @@ use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+/// The durable scan window `[from, to)` a ring read serves within `max_bytes`.
+fn window(from: u64, to: u64, max_bytes: usize) -> crate::shard::RingScan {
+    crate::shard::RingScan {
+        from,
+        to,
+        max_bytes,
+    }
+}
+
 /// **Review #2's ring ordering + paging asks, pinned at offset level.**
 ///
 /// 1. Publish-before-NOTIFY: a waiter woken by the tail notify must find
@@ -63,7 +72,7 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let next = handle.state.lock().unwrap().durable.next;
     assert!(next > before_next);
     let hit = engine
-        .ring_read(&handle, before_next, next, 1 << 20)
+        .ring_read(&handle, window(before_next, next, 1 << 20), None)
         .expect("a woken reader must hit the ring, not fall to the DB");
     assert_eq!(hit.frames.len(), (next - before_next) as usize);
     assert!(matches!(
@@ -80,7 +89,7 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let end = handle.state.lock().unwrap().durable.next;
     let mid = end - 2;
     let part = engine
-        .ring_read(&handle, mid, end, 1 << 20)
+        .ring_read(&handle, window(mid, end, 1 << 20), None)
         .expect("mid-batch start must be servable from the ring");
     assert_eq!(part.frames.len(), 2, "exactly the batch tail");
     assert_eq!(part.last_offset, Some(end - 1));
@@ -237,7 +246,7 @@ async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
 
     // Publish-before-ack: the last acked offset is ring-resident NOW.
     let tail1 = a
-        .ring_read(&handle_a, next - 1, next, 1 << 20)
+        .ring_read(&handle_a, window(next - 1, next, 1 << 20), None)
         .expect("the ring must cover an offset the ack already exposed");
     assert_eq!(tail1.frames.len(), 1);
 
@@ -487,7 +496,9 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
             .is_err()
     );
 
-    let partial = engine.ring_read_keyed(&handle, 0, 4, "hot", 1).unwrap();
+    let partial = engine
+        .ring_read(&handle, window(0, 4, 1), Some("hot"))
+        .unwrap();
     assert!(partial.frames.is_empty());
     assert_eq!(partial.last_offset, Some(0));
     assert!(partial.proves_durable_ring(&engine, hash, 0));
@@ -505,14 +516,20 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
     append_sized(&other, hash, &key, "hot", 1024).await;
     let other_handle = other.stream_handle(hash).await.unwrap();
     assert!(
-        other.ring_read(&other_handle, 0, 1, usize::MAX).is_some(),
+        other
+            .ring_read(&other_handle, window(0, 1, usize::MAX), None)
+            .is_some(),
         "the other engine's ring must be enabled for the cross-owner control"
     );
     assert!(!partial.proves_durable_ring(&other, hash, 0));
-    assert!(other.ring_read(&handle, 0, 4, usize::MAX).is_none());
     assert!(
         other
-            .ring_read_keyed(&handle, 0, 4, "hot", usize::MAX)
+            .ring_read(&handle, window(0, 4, usize::MAX), None)
+            .is_none()
+    );
+    assert!(
+        other
+            .ring_read(&handle, window(0, 4, usize::MAX), Some("hot"))
             .is_none()
     );
     other.begin_close();
@@ -540,10 +557,14 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
             batch.frames.retain(|(off, _)| *off != 1);
         }
     }
-    assert!(engine.ring_read(&handle, 0, 4, usize::MAX).is_none());
     assert!(
         engine
-            .ring_read_keyed(&handle, 0, 4, "hot", usize::MAX)
+            .ring_read(&handle, window(0, 4, usize::MAX), None)
+            .is_none()
+    );
+    assert!(
+        engine
+            .ring_read(&handle, window(0, 4, usize::MAX), Some("hot"))
             .is_none()
     );
     let fallback =

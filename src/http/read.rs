@@ -55,6 +55,10 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
         ),
     }
 }
+#[expect(
+    clippy::unwrap_used,
+    reason = "resolve_response; a retry-after delay renders as decimal digits, which are always a valid header value; treating the conversion as fallible would drop the retry hint the client is owed"
+)]
 fn resolve_response(error: crate::shard_directory::ResolveError) -> Response {
     // Ownership is an application failure with a typed routing hint; only this
     // edge converts it into a gateway header.
@@ -124,6 +128,18 @@ fn raw_start(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "read_inner; the read handler parses, authorises, executes and renders in the order the wire contract promises; splitting it would hide which step each error status comes from"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_inner; the handler receives the request's typed context parts separately as the router extracted them; a bundle struct would exist for this single call site"
+)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "read_inner; the raw, filtered and wait switches are independent request options each parsed from its own query parameter; an enum would force one axis onto independent flags"
+)]
 pub(crate) async fn read_inner(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
@@ -236,6 +252,10 @@ pub(crate) async fn read_inner(
     render_raw_read(&state, &params, &headers, key.as_ref(), out)
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "read_payload; the raw and filtered switches are independent rendering options the caller resolved from the request; an enum would force one axis onto independent flags"
+)]
 pub(crate) fn read_payload(
     out: &ReadOutcome,
     frames: bool,
@@ -316,6 +336,18 @@ pub(crate) fn meter_read_outcome(state: &AppState, out: &ReadOutcome) {
         out.records.len() as u64,
     );
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "render_raw_read; the raw read renders its headers, expiry, timing and payload in the order the wire contract promises; splitting it would hide which header each outcome field feeds"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "render_raw_read; the remaining lifetime is a small positive number of seconds computed from a future expiry; a checked conversion would only restate the clock arithmetic"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "render_raw_read; the response builder holds a fixed status and header values validated when the descriptor and cursor were produced, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
 fn render_raw_read(
     state: &AppState,
     params: &ReadParams,
@@ -432,6 +464,14 @@ fn render_raw_read(
     response.body(Body::from(payload)).unwrap()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "serve_read_sse; the SSE read opens, drains and streams in the order the wire contract promises; splitting it would hide which step each event comes from"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "serve_read_sse; a topology schedule the rebalancer cannot take is re-driven by the next read of the same stream; a handled result would only restate that the schedule is advisory"
+)]
 pub(crate) async fn serve_read_sse(
     state: Arc<AppState>,
     command: ReadCommand,

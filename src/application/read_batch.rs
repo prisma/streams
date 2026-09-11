@@ -12,6 +12,10 @@ pub(crate) struct PlainPayload {
     range: Range<usize>,
 }
 impl AsRef<[u8]> for PlainPayload {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "PlainPayload::as_ref; the range was checked to cover its owner when the record was admitted; a fallible slice would return an empty payload for a record admission proved present"
+    )]
     fn as_ref(&self) -> &[u8] {
         &self.owner[self.range.clone()]
     }
@@ -49,6 +53,10 @@ impl<'a> IntoIterator for &'a PlainBatch {
 }
 impl Index<usize> for PlainBatch {
     type Output = PlainRec;
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "PlainBatch::index; Index panics on an out-of-range index by the trait's contract; a fallible lookup would change what indexing means for every caller"
+    )]
     fn index(&self, index: usize) -> &PlainRec {
         &self.records[index]
     }
@@ -66,7 +74,10 @@ impl PlainBatch {
     /// Only a complete single owner may escape to a binary response. Its
     /// storage and charge survive until the last body or byte owner drops.
     pub(crate) fn contiguous(&self) -> Option<Bytes> {
-        (self.blocks.len() == 1).then(|| self.blocks[0].owner.clone())
+        match self.blocks.as_slice() {
+            [block] => Some(block.owner.clone()),
+            _ => None,
+        }
     }
     pub(crate) fn retained_capacity(&self) -> usize {
         self.blocks.iter().map(|block| block.owner.len()).sum()
@@ -128,6 +139,14 @@ impl PlainBatch {
     }
     /// Scans, forks and SSE use this one selection/admission boundary.
     /// Complete owners transfer unchanged; partial owners are compacted.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PlainBatch::append_selected; the selection takes the source batch, the offset range, the selector, the budget and the lineage shift separately as the read resolved them; a request struct would exist for this single boundary"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "PlainBatch::append_selected; a lineage offset shift was validated against the fork's parent range before selection, so the remapped offset fits; a fallible remap would add an error path no validated lineage reaches"
+    )]
     pub(crate) fn append_selected(
         &mut self,
         mut source: Self,
@@ -167,11 +186,12 @@ impl PlainBatch {
         for mut block in source.blocks {
             let count = block.records.len();
             let mut planned = budget.clone();
-            if records.as_slice()[..count]
-                .iter()
-                .all(|record| eligible(record) && planned.admit(record.payload.len(), &record.rkey))
+            if let Some(head) = records.as_slice().get(..count)
+                && head.iter().all(|record| {
+                    eligible(record) && planned.admit(record.payload.len(), &record.rkey)
+                })
             {
-                result.last = Some(records.as_slice()[count - 1].off);
+                result.last = head.last().map(|record| record.off);
                 let first = self.records.len();
                 self.records
                     .extend(records.by_ref().take(count).map(|mut record| {
@@ -220,8 +240,8 @@ impl PlainBatch {
         }
         let first = self.records.len();
         for block in &mut source.blocks {
-            block.records.start += first;
-            block.records.end += first;
+            block.records.start = block.records.start.saturating_add(first);
+            block.records.end = block.records.end.saturating_add(first);
         }
         self.records.append(&mut source.records);
         self.blocks.append(&mut source.blocks);

@@ -85,6 +85,10 @@ pub(crate) struct WatchService {
 }
 
 impl WatchService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "WatchService::new; the service takes its registry, clock, key and limit collaborators separately as composition resolved them; a builder would exist for this single call site"
+    )]
     pub(crate) fn new(
         registry: Arc<Registry>,
         auth: Arc<crate::auth::AuthService>,
@@ -165,6 +169,14 @@ impl WatchService {
         Ok(descriptor.watch_definitions.clone())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "WatchService::authenticate; authentication takes the capability's signed fields separately as the wire presents them; a bundle struct would exist for this single call site"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "WatchService::authenticate; a poisoned lookup limiter may hold a half-counted window; recovering it could admit a lookup the limiter should have refused"
+    )]
     pub(crate) async fn authenticate<'a>(
         &self,
         stream: &TenantStreamRef,
@@ -354,6 +366,10 @@ impl WatchService {
 /// not: object keys are sorted (serde's map already is, JavaScript's
 /// is not), and a float with no fractional part is written as an
 /// integer, because serde writes `1.0` where JSON.stringify writes `1`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "canonical_arg; the argument was parsed as a finite whole number before it is rendered back; a checked conversion would only restate the parse"
+)]
 pub(crate) fn canonical_arg(v: &serde_json::Value) -> String {
     use serde_json::Value as V;
     match v {

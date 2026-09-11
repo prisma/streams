@@ -1,5 +1,21 @@
 use super::*;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CommitTransaction::delete_step; the delete step takes the consumer, its queue, the fence and the batch budget separately as the transaction resolved them; a request struct would exist for this single call site"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "CommitTransaction::delete_step; the delete step fences, scans, deletes and accounts in one transaction; splitting it would hide which rows each fence covers"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "CommitTransaction::delete_step; the consumer's queue entry was checked present just above under the same borrow; a fallible read would add a branch no checked step reaches"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::delete_step; a poisoned fence table or handle state may hold a half-applied fence or queue, and the queue state was populated in this step before it is read; recovering or failing either could delete rows a fence still protects"
+    )]
     pub(super) async fn delete_step(
         &mut self,
         local: &mut StreamOverlay,

@@ -40,6 +40,10 @@ pub(crate) enum ReadResultKind {
     Head,
     Handoff,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ReadOutcome; the outcome reports independent facts (up to date, closed, waited, filtered) that the wire renders as separate headers; an enum would force one axis onto independent flags"
+)]
 pub(crate) struct ReadOutcome {
     pub descriptor: StreamDesc,
     pub records: super::PlainBatch,
@@ -81,6 +85,10 @@ impl std::fmt::Display for ReadFailure {
 impl std::error::Error for ReadFailure {}
 
 impl ReadOutcome {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadOutcome::empty; an empty outcome still carries every fact the wire renders (cursor, closure, waiting, filtering); a builder would exist for this single call site"
+    )]
     fn empty(
         command: &ReadCommand,
         position: ReadPosition,
@@ -172,6 +180,18 @@ impl ReadService {
         Box::pin(self.execute_read(command)).await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ReadService::execute_read; one read resolves, waits, executes and meters in the order the wire contract promises; splitting it would hide which step each header reports"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ReadService::execute_read; a wait measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ReadService::execute_read; a topology schedule the rebalancer cannot take is re-driven by the next read of the same stream; a handled result would only restate that the schedule is advisory"
+    )]
     pub(crate) async fn execute_read(
         &self,
         mut command: ReadCommand,
@@ -358,6 +378,10 @@ impl ReadService {
         }
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ReadService::execute_fork_read; a poisoned handle state may hold a partially advanced boundary; recovering it could report a closure that was never committed"
+    )]
     async fn execute_fork_read(&self, command: ReadCommand) -> Result<ReadOutcome, ReadFailure> {
         let desc = &command.descriptor;
         let (_, handle) = self.handle_of(desc).await.map_err(ReadFailure::Storage)?;
@@ -438,6 +462,10 @@ impl ReadService {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "tail_state; a poisoned handle state may hold a partially advanced boundary; recovering it could serve a tail that was never committed"
+)]
 fn tail_state(handle: &StreamHandle, visibility: Deliver) -> (u64, bool, u64) {
     let state = handle.state.lock().unwrap();
     let durable = state.durable.next;
@@ -474,6 +502,10 @@ async fn wait_tail(
 
 /// A resolved local physical span carries all inputs that may cross the async
 /// history read. Completion derives scanned and durable cursors from one page.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ResolvedRead; a resolved read carries independent facts about its request (filtered, waiting, raw, fork) that the executor consults separately; an enum would force one axis onto independent flags"
+)]
 struct ResolvedRead<'a> {
     command: &'a ReadCommand,
     topology: &'a ReadTopology,
@@ -488,6 +520,14 @@ struct ResolvedRead<'a> {
     wait_micros: u64,
 }
 impl ResolvedRead<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ResolvedRead::execute; a read measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ResolvedRead::execute; a poisoned handle state may hold a partially advanced boundary; recovering it could serve a floor that was never committed"
+    )]
     async fn execute(self) -> Result<ReadOutcome, ReadFailure> {
         let command = self.command;
         let topology = self.topology;

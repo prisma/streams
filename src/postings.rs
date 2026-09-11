@@ -143,15 +143,21 @@ pub(crate) struct Page {
     pub runs: Vec<PostingRun>,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "encode_page; a page holds at most PAGE_MAX_ENCODED_BYTES / 4 runs, so the run count fits the u32 header field; a checked conversion would add an error path no admitted page reaches"
+)]
 pub(crate) fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(32 + runs.len() * 6);
+    let mut v = Vec::with_capacity(runs.len().saturating_mul(6).saturating_add(32));
     v.push(1u8);
     v.push(0u8); // codec: raw
     let mut off = first_offset;
     let mut total = 0u64;
     for r in runs {
-        off += r.gap_offsets + r.record_count as u64;
-        total += r.matching_frame_bytes;
+        off = off
+            .saturating_add(r.gap_offsets)
+            .saturating_add(u64::from(r.record_count));
+        total = total.saturating_add(r.matching_frame_bytes);
     }
     v.extend_from_slice(&first_offset.to_le_bytes());
     v.extend_from_slice(&off.to_le_bytes());
@@ -159,7 +165,7 @@ pub(crate) fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
     v.extend_from_slice(&total.to_le_bytes());
     for r in runs {
         put_varint(&mut v, r.gap_offsets);
-        put_varint(&mut v, r.record_count as u64);
+        put_varint(&mut v, u64::from(r.record_count));
         put_varint(&mut v, r.matching_frame_bytes);
         put_varint(&mut v, r.gap_frame_bytes_before);
     }
@@ -357,13 +363,16 @@ struct KeyAcc {
     done: Vec<(u64, u64, Vec<PostingRun>)>,
 }
 
+/// Every emitted page as `(rk_hash, bucket, page_first, encoded_value)`.
+pub(crate) type Pages = Vec<(RoutingKeyHash, u64, u64, Vec<u8>)>;
+
 impl PageBuilder {
     /// Account one canonical frame at `offset` with stored size
     /// `frame_bytes` for routing-key hash `key`. MUST be called in
     /// strictly ascending offset order across the whole chunk.
     pub(crate) fn note_frame(&mut self, key: RoutingKeyHash, offset: u64, frame_bytes: u64) {
         let walked_before = self.walked_bytes;
-        self.walked_bytes += frame_bytes;
+        self.walked_bytes = self.walked_bytes.saturating_add(frame_bytes);
         let bucket = bucket_of(offset);
         let acc = self.keys.entry(key).or_insert_with(|| KeyAcc {
             bucket,
@@ -379,8 +388,14 @@ impl PageBuilder {
         // — closes the page; a fresh page opens at this offset (pages
         // never span buckets, and multiple pages per bucket sort by
         // their page_first key component).
-        let page_full = acc.runs.len() * 12 + 40 >= PAGE_MAX_ENCODED_BYTES;
-        if bucket != acc.bucket || (page_full && acc.run_count == 0) {
+        let page_full =
+            acc.runs.len().saturating_mul(12).saturating_add(40) >= PAGE_MAX_ENCODED_BYTES;
+        // A full page closes only where its open run ends, at a gap, so
+        // the cap holds for keys whose runs never change bucket without
+        // ever cutting one run in two. A key seen for the first time has
+        // no runs yet, so its page is never full.
+        let at_gap = offset != acc.run_next;
+        if bucket != acc.bucket || (page_full && at_gap) {
             Self::close_run(acc);
             if !acc.runs.is_empty() {
                 acc.done
@@ -399,9 +414,9 @@ impl PageBuilder {
             // Opening a run: gaps are relative to the previous run's
             // end (page_first for the first run of a page).
             let gap_offsets = if acc.runs.is_empty() {
-                offset - acc.page_first
+                offset.saturating_sub(acc.page_first)
             } else {
-                offset - acc.run_next
+                offset.saturating_sub(acc.run_next)
             };
             let gap_bytes = walked_before.saturating_sub(acc.walked_at_run_end);
             acc.runs.push(PostingRun {
@@ -412,12 +427,16 @@ impl PageBuilder {
             });
             acc.run_next = offset;
         }
-        acc.run_count += 1;
-        acc.run_bytes += frame_bytes;
-        acc.run_next = offset + 1;
+        acc.run_count = acc.run_count.saturating_add(1);
+        acc.run_bytes = acc.run_bytes.saturating_add(frame_bytes);
+        acc.run_next = offset.saturating_add(1);
         acc.walked_at_run_end = self.walked_bytes;
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "PageBuilder::close_run; a run is pushed the moment run_count leaves zero, so a non-zero count proves an open run; a fallible read would add a branch no counted run reaches"
+    )]
     fn close_run(acc: &mut KeyAcc) {
         if acc.run_count == 0 {
             return;
@@ -432,7 +451,7 @@ impl PageBuilder {
     /// Emit every page: `(rk_hash, bucket, page_first, encoded_value)`,
     /// plus the total encoded postings bytes (the byte-ratio gate's
     /// numerator).
-    pub fn finish(mut self) -> (Vec<(RoutingKeyHash, u64, u64, Vec<u8>)>, u64) {
+    pub(crate) fn finish(mut self) -> (Pages, u64) {
         let mut out = Vec::new();
         let mut total = 0u64;
         for (key, mut acc) in self.keys.drain() {
@@ -443,7 +462,7 @@ impl PageBuilder {
             }
             for (bucket, first, runs) in acc.done {
                 let v = encode_page(first, &runs);
-                total += v.len() as u64;
+                total = total.saturating_add(v.len() as u64);
                 out.push((key, bucket, first, v));
             }
         }
@@ -502,6 +521,41 @@ pub(crate) struct Plan {
     pub complete: bool,
 }
 
+impl Plan {
+    /// Budget exhausted BY a run. With prior spans the partial already made
+    /// progress; with NONE, the first record must still be served (review
+    /// blocker: a run fatter than the whole scan budget used to plan ZERO
+    /// spans, so the read returned an empty page forever). Split the run to
+    /// a bounded prefix — per-record estimate, never fewer than one record;
+    /// the span executor's response budget truncates honestly if the
+    /// estimate under-counts.
+    fn serve_bounded_prefix(&mut self, r: &AbsRun, max_scan_bytes: u64) {
+        if !self.spans.is_empty() {
+            return;
+        }
+        // The run holds at least one record and per_rec is floored at one
+        // byte, so neither division has a zero divisor.
+        let per_rec = r
+            .matching_bytes
+            .checked_div(u64::from(r.count.max(1)))
+            .unwrap_or(1)
+            .max(1);
+        let budget_recs = max_scan_bytes
+            .checked_div(per_rec)
+            .unwrap_or(1)
+            .clamp(1, u64::from(r.count));
+        let end = r.start.saturating_add(budget_recs);
+        let bytes = per_rec.saturating_mul(budget_recs);
+        self.spans.push(Span {
+            start: r.start,
+            end,
+            matching_bytes: bytes,
+            scan_bytes: bytes,
+        });
+        self.consumed_to = end;
+    }
+}
+
 /// Plan bounded canonical spans over absolute runs (ascending, within
 /// one requested range). Coalesces a following run into the current
 /// span when the intervening gap is small in BYTES; otherwise opens a
@@ -523,7 +577,7 @@ pub(crate) fn plan_spans_iter(
     };
     let mut scan_total = 0u64;
     for r in runs {
-        let r_end = r.start + r.count as u64;
+        let r_end = r.start.saturating_add(u64::from(r.count));
         let r_bytes = r.matching_bytes;
         let contiguous = plan.spans.last().is_some_and(|s| s.end == r.start);
         // Amplification guard on gap coalescing: the combined span's
@@ -535,8 +589,8 @@ pub(crate) fn plan_spans_iter(
         let at_last_slot = plan.spans.len() >= cfg.max_spans;
         let amp_ok = |s: &Span| {
             let gap = if contiguous { 0 } else { r.gap_bytes_before };
-            let scan = (s.scan_bytes + gap + r_bytes) as f64;
-            let matching = (s.matching_bytes + r_bytes) as f64;
+            let scan = s.scan_bytes.saturating_add(gap).saturating_add(r_bytes) as f64;
+            let matching = s.matching_bytes.saturating_add(r_bytes) as f64;
             let limit = if at_last_slot {
                 cfg.hard_amplification
             } else {
@@ -549,45 +603,26 @@ pub(crate) fn plan_spans_iter(
                 if (contiguous
                     || (r.gap_bytes_before != GAP_UNKNOWN
                         && r.gap_bytes_before <= cfg.max_gap_bytes))
-                    && scan_total + if contiguous { 0 } else { r.gap_bytes_before } + r_bytes
+                    && scan_total
+                        .saturating_add(if contiguous { 0 } else { r.gap_bytes_before })
+                        .saturating_add(r_bytes)
                         <= cfg.max_scan_bytes
                     && amp_ok(s) =>
             {
                 // Coalesce into the open span (cheap, ratio-safe gap).
                 s.end = r_end;
-                s.matching_bytes += r_bytes;
+                s.matching_bytes = s.matching_bytes.saturating_add(r_bytes);
                 let gap = if contiguous { 0 } else { r.gap_bytes_before };
-                s.scan_bytes += gap + r_bytes;
-                scan_total += gap + r_bytes;
+                s.scan_bytes = s.scan_bytes.saturating_add(gap).saturating_add(r_bytes);
+                scan_total = scan_total.saturating_add(gap).saturating_add(r_bytes);
             }
             _ => {
                 if plan.spans.len() >= cfg.max_spans {
                     plan.complete = false;
                     return plan;
                 }
-                if scan_total + r_bytes > cfg.max_scan_bytes {
-                    // Budget exhausted BY this run. With prior spans the
-                    // partial already made progress; with NONE, the first
-                    // record must still be served (review blocker: a run
-                    // fatter than the whole scan budget used to plan ZERO
-                    // spans, so the read returned an empty page forever).
-                    // Split the run to a bounded prefix — per-record
-                    // estimate, never fewer than one record; the span
-                    // executor's response budget truncates honestly if
-                    // the estimate under-counts.
-                    if plan.spans.is_empty() {
-                        let per_rec = (r.matching_bytes / r.count.max(1) as u64).max(1);
-                        let budget_recs = (cfg.max_scan_bytes / per_rec).clamp(1, r.count as u64);
-                        let end = r.start + budget_recs;
-                        let bytes = per_rec * budget_recs;
-                        plan.spans.push(Span {
-                            start: r.start,
-                            end,
-                            matching_bytes: bytes,
-                            scan_bytes: bytes,
-                        });
-                        plan.consumed_to = end;
-                    }
+                if scan_total.saturating_add(r_bytes) > cfg.max_scan_bytes {
+                    plan.serve_bounded_prefix(&r, cfg.max_scan_bytes);
                     plan.complete = false;
                     return plan;
                 }
@@ -597,7 +632,7 @@ pub(crate) fn plan_spans_iter(
                     matching_bytes: r_bytes,
                     scan_bytes: r_bytes,
                 });
-                scan_total += r_bytes;
+                scan_total = scan_total.saturating_add(r_bytes);
             }
         }
         plan.consumed_to = r_end;
@@ -609,295 +644,8 @@ pub(crate) fn plan_spans_iter(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        AbsRun, BUCKET_OFFSETS, GAP_UNKNOWN, PageBuilder, PlanCfg, PostingRun, RoutingKeyHash,
-        decode_page, decode_page_abs, encode_page, get_varint, plan_spans, put_varint,
-    };
-
-    fn run(start: u64, count: u32, bytes: u64, gap_bytes: u64) -> AbsRun {
-        AbsRun {
-            start,
-            count,
-            matching_bytes: bytes,
-            gap_bytes_before: gap_bytes,
-        }
-    }
-
-    /// Review finding 6: tiny matches around a large-but-under-64KiB
-    /// gap must NOT coalesce into one high-amplification scan — the
-    /// hard 4x (and target 2x) ratio gates it.
-    #[test]
-    fn amplification_bound_refuses_expensive_gaps() {
-        let cfg = PlanCfg::default();
-        // The reviewer's example: 1 KiB + 60 KiB gap + 1 KiB = ~31x.
-        let plan = plan_spans(
-            &[run(0, 1, 1024, 0), run(100, 1, 1024, 60 * 1024)],
-            101,
-            &cfg,
-        );
-        assert_eq!(plan.spans.len(), 2, "exact spans, not one 62 KiB scan");
-        assert!(plan.complete);
-        for s in &plan.spans {
-            assert!(
-                (s.scan_bytes as f64) <= (s.matching_bytes as f64) * cfg.hard_amplification,
-                "span amp {}/{} exceeds hard bound",
-                s.scan_bytes,
-                s.matching_bytes,
-            );
-        }
-
-        // A cheap gap (ratio under target) still coalesces.
-        let plan = plan_spans(&[run(0, 4, 4096, 0), run(100, 4, 4096, 2048)], 104, &cfg);
-        assert_eq!(plan.spans.len(), 1, "cheap gap coalesces");
-        assert!(plan.complete);
-    }
-
-    /// One tiny match per postings page across many pages: every span
-    /// stays exact and the plan stays span-bounded with honest partials.
-    #[test]
-    fn fragmented_key_stays_exact_and_bounded() {
-        let cfg = PlanCfg::default();
-        let mut runs = Vec::new();
-        for i in 0..12u64 {
-            // 256 B matches separated by 32 KiB gaps: 129x if coalesced.
-            runs.push(run(i * 1000, 1, 256, if i == 0 { 0 } else { 32 * 1024 }));
-        }
-        let plan = plan_spans(&runs, 12_000, &cfg);
-        assert_eq!(plan.spans.len(), cfg.max_spans, "span-bounded");
-        assert!(!plan.complete, "honest partial past the span budget");
-        assert_eq!(
-            plan.consumed_to, 7_001,
-            "cursor covers exactly the planned prefix"
-        );
-        for s in &plan.spans {
-            assert_eq!(s.scan_bytes, s.matching_bytes, "every span exact");
-        }
-    }
-
-    /// Contiguous runs never trip the amplification guard.
-    #[test]
-    fn contiguous_runs_coalesce_regardless_of_amp() {
-        let cfg = PlanCfg::default();
-        let plan = plan_spans(&[run(0, 2, 200, 0), run(2, 2, 200, GAP_UNKNOWN)], 4, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert!(plan.complete);
-    }
-
-    /// Review blocker: a first run fatter than the whole scan budget
-    /// must still plan a bounded prefix — never zero spans.
-    #[test]
-    fn oversized_first_run_plans_bounded_prefix() {
-        let cfg = PlanCfg {
-            max_scan_bytes: 16 * 1024 * 1024,
-            ..Default::default()
-        };
-        // One 32 MiB record: budget/record floor still allows exactly it.
-        let plan = plan_spans(&[run(10, 1, 32 * 1024 * 1024, 0)], 11, &cfg);
-        let [span] = plan.spans.as_slice() else {
-            panic!("the oversized first record must produce exactly one span");
-        };
-        assert_eq!((span.start, span.end), (10, 11));
-        assert!(!plan.complete);
-        assert_eq!(plan.consumed_to, 11);
-
-        // A 24 MiB contiguous run of 1 MiB records: ~16 records fit.
-        let plan = plan_spans(&[run(0, 24, 24 * 1024 * 1024, 0)], 24, &cfg);
-        let [span] = plan.spans.as_slice() else {
-            panic!("a bounded prefix must produce exactly one span");
-        };
-        assert_eq!((span.start, span.end), (0, 16), "budget/per-record prefix");
-        assert!(!plan.complete);
-        assert_eq!(plan.consumed_to, 16, "cursor advances to the prefix end");
-    }
-
-    /// A fat run AFTER planned spans returns an honest partial whose
-    /// consumed_to covers the planned prefix only.
-    #[test]
-    fn oversized_mid_run_partial_keeps_progress() {
-        let cfg = PlanCfg {
-            max_scan_bytes: 1024,
-            ..Default::default()
-        };
-        let plan = plan_spans(
-            &[run(0, 2, 400, 0), run(100, 1, 10_000, GAP_UNKNOWN)],
-            101,
-            &cfg,
-        );
-        assert_eq!(plan.spans.len(), 1);
-        assert!(!plan.complete);
-        assert_eq!(plan.consumed_to, 2, "progress = what was actually planned");
-    }
-
-    /// No runs in the window: the plan consumes the whole match-free
-    /// range (overall completion is the caller's provable_to gate).
-    #[test]
-    fn empty_window_consumes_range() {
-        let plan = plan_spans(&[], 500, &PlanCfg::default());
-        assert!(plan.spans.is_empty());
-        assert!(plan.complete);
-        assert_eq!(plan.consumed_to, 500);
-    }
-
-    #[test]
-    fn varint_roundtrip_edges() {
-        for x in [0u64, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
-            let mut v = Vec::new();
-            put_varint(&mut v, x);
-            let mut input = v.as_slice();
-            assert_eq!(get_varint(&mut input), Some(x));
-            assert!(input.is_empty());
-        }
-    }
-
-    #[test]
-    fn page_codec_roundtrip() {
-        let runs = vec![
-            PostingRun {
-                gap_offsets: 0,
-                record_count: 3,
-                matching_frame_bytes: 900,
-                gap_frame_bytes_before: 0,
-            },
-            PostingRun {
-                gap_offsets: 41,
-                record_count: 1,
-                matching_frame_bytes: 128,
-                gap_frame_bytes_before: 17_000,
-            },
-        ];
-        let v = encode_page(1000, &runs);
-        let page = decode_page(&v).unwrap();
-        assert_eq!(page.runs, runs);
-        assert_eq!(page.first_offset, 1000);
-        assert_eq!(page.last_offset_exclusive, 1000 + 3 + 41 + 1);
-        assert_eq!(page.matching_frame_bytes, 1028);
-        let abs = decode_page_abs(1000, &v).unwrap();
-        assert_eq!(abs, [run(1000, 3, 900, 0), run(1044, 1, 128, 17_000)]);
-        // Key/header disagreement = corruption.
-        assert!(decode_page_abs(999, &v).is_none());
-        // Header/runs disagreement = corruption.
-        let mut bad = v;
-        let (_, [last_byte, ..]) = bad.split_at_mut(10) else {
-            panic!("the encoded page must contain its last-offset header");
-        };
-        *last_byte ^= 1; // perturb last_offset_exclusive
-        assert!(decode_page(&bad).is_none());
-    }
-
-    #[test]
-    fn builder_splits_runs_and_buckets() {
-        let ka = RoutingKeyHash([1u8; 16]);
-        let kb = RoutingKeyHash([2u8; 16]);
-        let mut b = PageBuilder::default();
-        // Interleaved: a a b a  | gap |  a, then a crosses a bucket edge.
-        b.note_frame(ka, 10, 100);
-        b.note_frame(ka, 11, 100);
-        b.note_frame(kb, 12, 50);
-        b.note_frame(ka, 13, 100);
-        b.note_frame(kb, 20, 60);
-        let edge = BUCKET_OFFSETS;
-        b.note_frame(ka, edge - 1, 100);
-        b.note_frame(ka, edge, 100);
-        let (pages, total) = b.finish();
-        assert!(total > 0);
-        assert_eq!(pages.len(), 3, "two A buckets and one B bucket");
-        let a_pages: Vec<_> = pages.iter().filter(|p| p.0 == ka).collect();
-        assert_eq!(a_pages.len(), 2, "bucket edge must split the page");
-        let p0 = a_pages.iter().find(|p| p.1 == 0).unwrap();
-        let abs = decode_page_abs(p0.2, &p0.3).unwrap();
-        // Runs for a in bucket 0: [10,12) at 10..11, [13,14), [edge-1,edge).
-        // The gaps contain kb@12 (50 bytes) and kb@20 (60 bytes).
-        assert_eq!(
-            abs,
-            [
-                run(10, 2, 200, 0),
-                run(13, 1, 100, 50),
-                run(edge - 1, 1, 100, 60)
-            ]
-        );
-        let p1 = a_pages.iter().find(|p| p.1 == 1).unwrap();
-        let abs1 = decode_page_abs(p1.2, &p1.3).unwrap();
-        assert_eq!(abs1, [run(edge, 1, 100, 0)]);
-
-        let b_pages: Vec<_> = pages.iter().filter(|p| p.0 == kb).collect();
-        let [b_page] = b_pages.as_slice() else {
-            panic!("B must occupy exactly one page");
-        };
-        let abs_b = decode_page_abs(b_page.2, &b_page.3).unwrap();
-        // Gap before b@20: frame a@13 (100 bytes).
-        assert_eq!(abs_b, [run(12, 1, 50, 0), run(20, 1, 60, 100)]);
-    }
-
-    #[test]
-    fn cross_page_seams_never_coalesce() {
-        let cfg = PlanCfg::default();
-        // Two singleton runs from DIFFERENT pages, 20k offsets apart,
-        // seam bytes unknown: must be two spans, never one giant scan.
-        let runs = vec![
-            run(5, 1, 1_000, 0),
-            AbsRun {
-                start: 20_005,
-                count: 1,
-                matching_bytes: 1_000,
-                gap_bytes_before: GAP_UNKNOWN,
-            },
-        ];
-        let plan = plan_spans(&runs, 40_000, &cfg);
-        let [first, second] = plan.spans.as_slice() else {
-            panic!("unknown seams must open a second span");
-        };
-        assert_eq!((first.start, first.end), (5, 6));
-        assert_eq!((second.start, second.end), (20_005, 20_006));
-        // Truly contiguous across a seam still merges.
-        let runs = vec![
-            run(5, 1, 1_000, 0),
-            AbsRun {
-                start: 6,
-                count: 1,
-                matching_bytes: 1_000,
-                gap_bytes_before: GAP_UNKNOWN,
-            },
-        ];
-        let plan = plan_spans(&runs, 40_000, &cfg);
-        assert_eq!(plan.spans.len(), 1, "contiguous offsets are one span");
-    }
-
-    #[test]
-    fn planner_coalesces_cheap_gaps_and_bounds_spans() {
-        let cfg = PlanCfg::default();
-        // Two runs separated by a tiny gap coalesce into one span.
-        let plan = plan_spans(&[run(0, 10, 4_000, 0), run(15, 5, 2_000, 1_000)], 100, &cfg);
-        let [span] = plan.spans.as_slice() else {
-            panic!("the cheap gap must coalesce into one span");
-        };
-        assert_eq!((span.start, span.end), (0, 20));
-        assert!(plan.complete);
-        assert_eq!(plan.consumed_to, 100, "match-free tail is consumed");
-
-        // A big gap opens a second span.
-        let plan = plan_spans(
-            &[run(0, 10, 4_000, 0), run(50_000, 5, 2_000, 10_000_000)],
-            60_000,
-            &cfg,
-        );
-        assert_eq!(plan.spans.len(), 2);
-
-        // Span budget: the ninth distinct run is deferred honestly.
-        let mut runs9 = Vec::new();
-        for i in 0..9u64 {
-            runs9.push(run(i * 1_000_000, 1, 100, 10_000_000));
-        }
-        let plan = plan_spans(&runs9, 9_000_000, &cfg);
-        assert_eq!(plan.spans.len(), 8);
-        assert!(!plan.complete);
-        assert_eq!(
-            plan.consumed_to,
-            7 * 1_000_000 + 1,
-            "cursor resumes at the first unplanned run"
-        );
-    }
-}
+#[path = "postings/tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "postings/codec_tests.rs"]

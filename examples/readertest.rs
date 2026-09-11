@@ -3,6 +3,10 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use std::sync::Arc;
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "streams_slate_key; the example's key is its own fixture, so decoding it cannot fail; a fallible decode would only restate the panic at startup"
+)]
 fn streams_slate_key(b64: &str) -> [u8; 32] {
     use base64::Engine;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -40,6 +44,14 @@ impl slatedb::BlockTransformer for TestTransformer {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::expect_used,
+    reason = "main; the example takes one database path argument and cannot run without it; a fallible parse would only restate the usage panic"
+)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "main; the example reads its one path argument from the process environment; routing it through the server's configuration would couple an example to the runtime"
+)]
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
