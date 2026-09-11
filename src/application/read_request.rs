@@ -192,6 +192,10 @@ impl ReadService {
         clippy::let_underscore_must_use,
         reason = "ReadService::execute_read; a topology schedule the rebalancer cannot take is re-driven by the next read of the same stream; a handled result would only restate that the schedule is advisory"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "ReadService::execute_read; the read nests the remote redirect inside the not-owner branch and the refresh and resume decisions inside the long-poll wait; flattening them would separate the decisions from the wait and the ownership verdict they follow"
+    )]
     pub(crate) async fn execute_read(
         &self,
         mut command: ReadCommand,

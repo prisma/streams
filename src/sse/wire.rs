@@ -34,6 +34,10 @@ pub(crate) fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
 }
 
 /// Product control: signed key cursor + product field names.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "sse_control_product; the control frame carries its two flags as the independent facts the wire format spells out separately; an enum would restate two booleans"
+)]
 pub(crate) fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bool) -> String {
     let mut fields = vec![format!("\"nextCursor\":\"{cursor_tok}\"")];
     if up_to_date {
@@ -52,6 +56,10 @@ pub(crate) fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bo
 /// (`encode_ep(0, o) == Offset::encode(o)`), so unsplit raw
 /// transcripts do not change; successor segments carry the
 /// segment-aware token the legacy lineage streamer already proved.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "sse_control_ep; the control frame carries its two flags as the independent facts the wire format spells out separately; an enum would restate two booleans"
+)]
 pub(crate) fn sse_control_ep(
     seg_id: u32,
     next: u64,

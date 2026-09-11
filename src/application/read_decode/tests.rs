@@ -14,6 +14,10 @@ fn page() -> ReadPage {
         completed: true,
     }
 }
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "o2b_mixed_compressed_pages_preserve_failure_and_withholding_boundaries; the fixture's offsets are counters below 256 that seed and check each payload byte; checked conversions would only restate the fixture's size"
+)]
 #[tokio::test]
 async fn o2b_mixed_compressed_pages_preserve_failure_and_withholding_boundaries() {
     let key = StreamKey([7; 32]);

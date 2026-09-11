@@ -118,6 +118,10 @@ mod tests {
             .map(|event| event.event_id)
             .collect()
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id; the fixture nests the drained-body assertions inside the drain callback inside the pinned drain; flattening them would separate the assertions from the body they judge"
+    )]
     #[tokio::test]
     async fn cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id() {
         let repository =

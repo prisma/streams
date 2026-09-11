@@ -18,6 +18,10 @@ impl FrameDecryptor {
     }
     /// Append authenticated plaintext to caller-owned bounded page storage.
     /// No slice is published until AEAD and page admission both succeed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "FrameDecryptor::decrypt_append; the append decrypts one frame into the caller's plaintext and auth buffers under the page limit; a request struct would restate the buffers it fills"
+    )]
     pub(crate) fn decrypt_append(
         &self,
         frame: &DecodedFrame<'_>,

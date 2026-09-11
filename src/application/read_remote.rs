@@ -89,6 +89,10 @@ pub(crate) struct RemoteSpanPage {
 /// owner must be a nonempty canonical instance name, different from
 /// the one just contacted, and present in the TRUSTED peer table —
 /// a URL from the peer is never accepted.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "remote_span_page; the remote page takes the peer, owner, descriptor, target, range and budget as the read resolved them; a request struct would exist only for this signature"
+)]
 pub(crate) async fn remote_span_page(
     peer: &crate::peer::PeerClient,
     initial_owner: &str,
@@ -137,6 +141,14 @@ pub(crate) async fn remote_span_page(
 }
 
 /// One page against ONE peer base, with the full response mapping.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "scan_page_once; one page against one peer takes the peer, base, descriptor, target, range, budget and key as the redirect loop resolved them; a request struct would exist only for this signature"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "scan_page_once; a fleet request carries no streaming body, so it is clonable; a fallible clone would add a branch no fleet request reaches"
+)]
 async fn scan_page_once(
     peer: &crate::peer::PeerClient,
     base: &str,
@@ -305,6 +317,10 @@ impl WireReadPage {
 /// The public read coordinator's peer adapter. Bounded pages only; live waits
 /// stay with the effective owner. Redirect destinations come from the trusted
 /// peer table and at most one ownership redirect is followed.
+#[expect(
+    clippy::expect_used,
+    reason = "remote_read_page; a fleet request carries no streaming body, so it is clonable; a fallible clone would add a branch no fleet request reaches"
+)]
 pub(crate) async fn remote_read_page(
     peer: &crate::peer::PeerClient,
     initial_owner: &str,

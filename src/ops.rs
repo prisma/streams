@@ -641,6 +641,10 @@ pub(crate) struct AlertState {
     clippy::too_many_lines,
     reason = "evaluate_alerts; every alert rule reads the same snapshot and publishes into the same alert map in one pass; splitting the rules would hide which rule cleared or raised each alert"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "evaluate_alerts; the debt count nests the threshold and page verdicts inside the per-engine page loop; flattening them would separate the verdicts from the page they read"
+)]
 pub(crate) async fn evaluate_alerts(
     state: &std::sync::Arc<crate::http::AppState>,
     snap: &OpsSnapshot,

@@ -59,7 +59,13 @@ pub(crate) enum RetirementReason {
     /// The runtime (or a test rig) is going away. Production shutdown
     /// closes engines through the supervisor today; the rigs retire
     /// explicitly, which is the same protocol.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "Shutdown; production closes engines through the supervisor and only the rigs retire explicitly; the variant stays so both protocols are one enum"
+        )
+    )]
     Shutdown,
 }
 
@@ -79,7 +85,16 @@ pub(crate) enum RetireOutcome {
     /// closed. The engine is returned only so the caller can OBSERVE
     /// it — its lifecycle is already settled — which is why production
     /// callers ignore it and the proofs assert on it.
-    Retired(#[cfg_attr(not(test), allow(dead_code))] Arc<ShardEngine>),
+    Retired(
+        #[cfg_attr(
+            not(test),
+            allow(
+                dead_code,
+                reason = "Retired; production callers ignore the retired engine because its lifecycle is settled; the proofs assert on it"
+            )
+        )]
+        Arc<ShardEngine>,
+    ),
     /// The decision declined: the SAME engine was reinstated under the
     /// same guard — no observable empty-slot window existed.
     Kept,
@@ -359,6 +374,10 @@ impl ShardDirectory {
     /// Stops admission and observes the same retirement owners on every call.
     /// A deadline cancels observers only; late opens and database closes remain
     /// fenced in the gate until their owners establish termination.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "ShardDirectory::shutdown; the drain nests the joined-report verdict inside the no-pending branch of the wait loop; flattening it would separate the verdict from the drain it concludes"
+    )]
     pub(crate) async fn shutdown(&self, grace: Duration) -> Result<(), String> {
         self.inner.gate.stop();
         for prefix in self.held_prefixes() {
@@ -529,6 +548,10 @@ mod directory_tests {
 
     /// An open slower than the caller's patience is a retryable,
     /// typed refusal — never an abandoned or duplicated open.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "slow_open_is_reported_as_retryable; the fixture issues a second resolve only to join the in-flight open; its outcome is not the claim"
+    )]
     #[tokio::test]
     async fn slow_open_is_reported_as_retryable() {
         let (dir, _o, calls) = directory("", || anyhow::bail!("unreachable"));

@@ -32,6 +32,10 @@ fn r06a_wire_metadata_record_and_required_progress_limits() {
     assert!(format!("{error:?}").contains("record limit"));
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body; the fixture spawns the one-shot server it releases and joins itself; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+)]
 #[tokio::test]
 async fn r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

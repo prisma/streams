@@ -6,6 +6,10 @@ use super::read_budget::PageBudget;
 use super::read_keys::ReadKeys;
 use crate::crypto::Decrypted;
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "decode_frames_into; the decode nests the first-record oversize verdict and the truncation of an admitted-then-refused append inside the per-frame loop; flattening them would separate the verdicts from the frame they refuse"
+)]
 pub(super) fn decode_frames_into(
     frames: &[crate::shard::record::CheckedFrame],
     keys: &mut ReadKeys<'_>,
