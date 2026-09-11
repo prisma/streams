@@ -25,7 +25,10 @@ impl ResultPage {
         true
     }
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read; the canonical span read takes the partition, route, incarnation, range, filter, budget and sink the gather planned separately; a request struct would restate the plan per span"
+)]
 pub(super) async fn read(
     part: &Arc<Db>,
     route: RouteHash,

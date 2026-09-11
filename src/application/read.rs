@@ -29,7 +29,10 @@ pub(crate) struct ReadPlan<'a> {
 }
 
 impl<'a> ReadPlan<'a> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadPlan::segment; the constructor takes every field of the plan it builds, as the caller resolved them; a builder would restate the plan's own fields"
+    )]
     pub(crate) fn segment(
         key: &'a StreamKey,
         epoch: &'a [u8; 16],
@@ -57,7 +60,10 @@ impl<'a> ReadPlan<'a> {
 }
 
 /// Compatibility call shape for in-crate engine probes; there is one executor.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_merged; the compatibility call shape lists the segment plan's fields positionally for the in-crate engine probes; a plan struct is what it builds"
+)]
 pub(crate) async fn read_merged(
     key: &StreamKey,
     epoch: &[u8; 16],
@@ -112,13 +118,27 @@ pub(crate) struct ReadPage {
 /// (`src/dst.rs`). A second copy of this boundary logic would be a copy
 /// that can drift, and drift here means the oracle stops testing what
 /// production does.
-#[allow(clippy::too_many_arguments)]
 /// Round-13 CODE-RED bisect: the repro's stream carries ONLY rk=""
 /// records, so keyed reads must be dense too — armed by the test.
 #[cfg(test)]
 pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "execute_segment; the ring, history and tail legs of one segment read share the boundary the plan fixed; splitting them would separate the legs from the boundary that orders them"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "execute_segment; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a page past a length never made durable"
+)]
+#[cfg_attr(
+    test,
+    expect(
+        clippy::excessive_nesting,
+        reason = "execute_segment; the keyed-dense audit nests the offset walk inside the test-armed check of the history leg; flattening it would separate the audit from the leg it inspects"
+    )
+)]
 async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let ReadPlan {
         key,
@@ -327,6 +347,10 @@ pub(crate) struct ReadService {
 }
 
 impl ReadService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadService::new; the service is assembled from its registry, shard directory, peer, ownership and topology collaborators as bootstrap wires them; a builder would restate the service's own fields"
+    )]
     pub(crate) fn new(
         registry: Arc<Registry>,
         shards: ShardDirectory,
@@ -406,22 +430,20 @@ fn fork_chain_of(state: &ReadService, desc: &StreamDesc) -> ForkChainFuture {
                 )
             });
             chain.push((cur, boundary, epoch));
-            match parent {
-                None => break,
-                Some((src, src_ref, want_epoch)) => {
-                    let d = match state_reg.get(&src_ref).await {
-                        Ok(Some(d)) if !d.deleted => d,
-                        _ => return Err(format!("fork source '{src}' is gone")),
-                    };
-                    if !want_epoch.is_empty() && d.stream_epoch != want_epoch {
-                        return Err(format!(
-                            "fork source '{src}' is a different incarnation                              (expected {want_epoch}, found {})",
-                            d.stream_epoch
-                        ));
-                    }
-                    cur = d;
-                }
+            let Some((src, src_ref, want_epoch)) = parent else {
+                break;
+            };
+            let d = match state_reg.get(&src_ref).await {
+                Ok(Some(d)) if !d.deleted => d,
+                _ => return Err(format!("fork source '{src}' is gone")),
+            };
+            if !want_epoch.is_empty() && d.stream_epoch != want_epoch {
+                return Err(format!(
+                    "fork source '{src}' is a different incarnation                              (expected {want_epoch}, found {})",
+                    d.stream_epoch
+                ));
             }
+            cur = d;
         }
         Ok(chain)
     })
@@ -435,7 +457,10 @@ fn fork_chain_of(state: &ReadService, desc: &StreamDesc) -> ForkChainFuture {
 /// matching record: match-free scanned ranges and drained ancestors
 /// count as progress (follow-up review finding 6), so filtered
 /// callers never rescan a range the chain already proved empty.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "read_stitched; a poisoned stream state may hold a half-advanced durable frontier; recovering it could stitch a page past a length never made durable"
+)]
 pub(crate) async fn read_stitched(
     state: &ReadService,
     desc: &StreamDesc,
@@ -775,6 +800,10 @@ async fn decode_history_range(
 /// A tail page is accepted only after ruling out a concurrent durable trim.
 /// A retained dense durable-ring interval already proves what was inspected.
 /// Other filtered scans still need the remotely durable boundary/layout tuple.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "absorption_race; the race check takes the engine, hash, page, cursor, end and filter flag the read loop already holds; a context struct would exist only for this signature"
+)]
 async fn absorption_race(
     engine: &Arc<ShardEngine>,
     hash: [u8; 16],
@@ -833,6 +862,10 @@ async fn absorption_race(
 #[cfg(test)]
 mod o2_tests {
     use super::*;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "o2_batch_publishes_one_owner_only_after_authentication_and_admission; the fixture's offsets are counters below 256 that seed and check each payload byte; checked conversions would only restate the fixture's size"
+    )]
     #[test]
     fn o2_batch_publishes_one_owner_only_after_authentication_and_admission() {
         let key = crate::crypto::StreamKey([7; 32]);

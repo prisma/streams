@@ -148,6 +148,13 @@ impl State {
         self.hot_keys.retain(|name, _| live.contains(name));
     }
 
+    #[cfg_attr(
+        test,
+        expect(
+            clippy::excessive_nesting,
+            reason = "State::forget_previous_incarnation; the test-only visit counter nests inside the retain closure of the incarnation sweep; flattening it would separate the count from the sweep it audits"
+        )
+    )]
     fn forget_previous_incarnation(&mut self, name: &crate::tenant::TenantStreamRef, epoch: &str) {
         #[cfg(test)]
         let mut visited = 0;
@@ -365,11 +372,7 @@ fn evaluate_state(
             if let Some((k, _)) = top.top_share() {
                 hot_updates
                     .entry(name.clone())
-                    .and_modify(|prior| {
-                        if k < prior.0 {
-                            *prior = RoutingKeyHash(k);
-                        }
-                    })
+                    .and_modify(|prior| prior.0 = prior.0.min(k))
                     .or_insert(RoutingKeyHash(k));
             }
             INEFFECTIVE_SPLIT_AVOIDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -788,6 +791,10 @@ mod tests {
         assert!(state.hot_keys.is_empty());
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "segment_order_cannot_erase_a_hot_key_or_change_decisions; the fixture's segment ids are 0, 1 and 2; a checked conversion would only restate the fixture"
+    )]
     #[test]
     fn segment_order_cannot_erase_a_hot_key_or_change_decisions() {
         let name = test_desc("hot-and-cold").sref();

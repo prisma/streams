@@ -344,7 +344,15 @@ pub(crate) async fn refresh_once(
 /// are meaningful from the first request), then a fixed cadence. The
 /// cadence must be well inside `POLICY_STALENESS_MAX_SECS` or the cell
 /// oscillates into staleness refusals; boot enforces that.
-pub fn spawn_refresher(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "spawn_refresher; the refresher takes the auth service, its three sources, the cadence and the supervisor as boot wires them; a bundle struct would exist only for this signature"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "spawn_refresher; the supervisor rejects a spawn only while it is stopping, when no refresh is owed; a rejected refresher has nothing left to fetch"
+)]
+pub(crate) fn spawn_refresher(
     auth: Arc<AuthService>,
     keys: Box<dyn KeySource>,
     policies: Box<dyn PolicySource>,
@@ -444,6 +452,10 @@ mod tests {
         assert_eq!(report.finished(), vec!["auth-refresher"]);
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "refresh_once_publishes_from_files_and_survives_a_broken_one; the fixture removes its temporary directory on the way out; a failed removal leaves nothing the assertions depend on"
+    )]
     #[tokio::test]
     async fn refresh_once_publishes_from_files_and_survives_a_broken_one() {
         let dir = std::env::temp_dir().join(format!("mt-feed-{}", std::process::id()));

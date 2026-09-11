@@ -50,6 +50,10 @@ impl DeploymentIdentity {
     /// already be canonical (`canonical_name` ran at the route boundary);
     /// the checked construction keeps unvalidated bytes out of registry
     /// paths and identity hashes.
+    #[expect(
+        clippy::expect_used,
+        reason = "DeploymentIdentity::raw_adapter_sref; the raw adapters pass names they already validated as canonical; a fallible lookup would add a branch no adapter reaches"
+    )]
     // mt-lint: allow(name-param-shared-core): the raw adapters' ONE identity source — a canonical name becomes deployment-tenant identity here and nowhere else (SR-6)
     pub(crate) fn raw_adapter_sref(&self, canonical_name: &str) -> TenantStreamRef {
         TenantStreamRef::new(

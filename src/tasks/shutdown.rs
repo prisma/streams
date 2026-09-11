@@ -13,6 +13,10 @@ type Finalizer = (
 impl TaskSupervisor {
     /// A terminal error without proof of resource termination requires the
     /// owner's replacement fence and readiness failure to remain in place.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TaskSupervisor::incomplete_shutdown_failure; a poisoned supervisor state may hold a half-recorded phase, task map or report; recovering it could report a shutdown that never completed or hide one that failed"
+    )]
     pub(crate) fn incomplete_shutdown_failure(&self) -> Option<String> {
         let state = self.inner.state.lock().unwrap();
         if state.phase != Phase::ShuttingDown {
@@ -33,6 +37,22 @@ impl TaskSupervisor {
         self.launch_shutdown(grace, Some((label, Box::pin(finalizer))));
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TaskSupervisor::launch_shutdown; a poisoned supervisor state may hold a half-recorded phase, task map or report; recovering it could report a shutdown that never completed or hide one that failed"
+    )]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "TaskSupervisor::launch_shutdown; the shutdown driver outlives the supervised set it joins and publishes the report every observer waits on; a supervised driver would wait on itself"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "TaskSupervisor::launch_shutdown; the driver nests the phase decision inside the report publication inside the spawned shutdown; flattening it would separate the phase from the report that proves it"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "TaskSupervisor::launch_shutdown; a watch send fails only when every observer is gone and the cancel flag is idempotent; handled results would only restate that nobody is left to inform"
+    )]
     fn launch_shutdown(&self, grace: Duration, finalizer: Option<Finalizer>) -> Completion {
         let mut st = self.inner.state.lock().unwrap();
         if let Some(rx) = &st.completion {
@@ -84,6 +104,10 @@ impl TaskSupervisor {
 
     /// Observe an owner-started shutdown without racing it to install a driver
     /// lacking the owner's resource finalizer.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TaskSupervisor::observe_shutdown; a poisoned supervisor state may hold a half-recorded phase, task map or report; recovering it could report a shutdown that never completed or hide one that failed"
+    )]
     pub(crate) async fn observe_shutdown(&self) -> ShutdownReport {
         let mut rx = loop {
             let notified = self.inner.workers_done.notified();
@@ -145,6 +169,10 @@ impl TaskSupervisor {
     }
 }
 /// The one shutdown sequence, owned by the driver task.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "drive_shutdown; the cancel flag is a watch whose send fails only when every worker is gone; a handled result would only restate that there is nobody left to cancel"
+)]
 async fn drive_shutdown(
     inner: &Arc<Inner>,
     tasks: BTreeMap<TaskId, Supervised>,
