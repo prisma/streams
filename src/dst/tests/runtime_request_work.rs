@@ -38,6 +38,21 @@ async fn setup(
     (rig, store, descriptors)
 }
 
+/// Whether a renewal touch was admitted; only an admission refusal may reject it.
+fn admit_touch(
+    service: &Arc<crate::application::creation::CreationService>,
+    desc: &crate::registry::StreamDesc,
+) -> bool {
+    match service.touch_ttl(desc) {
+        Ok(ticket) => {
+            drop(ticket);
+            true
+        }
+        Err(crate::application::request_work::WorkError::Overloaded) => false,
+        Err(other) => panic!("only admission refusals may reject a renewal touch: {other}"),
+    }
+}
+
 async fn entered(count: &std::sync::atomic::AtomicU64) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while count.load(Ordering::SeqCst) == 0 {
@@ -53,11 +68,18 @@ async fn r09a_request_ttl_jobs_bound_retained_keys_across_projects() {
     let (rig, store, descriptors) = setup(160).await;
     let service = rig.state.creation_service();
     let held = store.hold_class(StoreOp::Put, ObjClass::Other, 256);
-    let _ = service.touch_ttl(&descriptors[0]);
+    drop(
+        service
+            .touch_ttl(&descriptors[0])
+            .expect("the first touch is admitted while its CAS is held"),
+    );
     entered(&held).await;
+    let mut refused = 0;
     for desc in &descriptors {
         for _ in 0..4 {
-            let _ = service.touch_ttl(desc);
+            if !admit_touch(&service, desc) {
+                refused += 1;
+            }
         }
     }
     let retained = service.pending_ttl_for_tests();
@@ -65,6 +87,7 @@ async fn r09a_request_ttl_jobs_bound_retained_keys_across_projects() {
     assert!(active <= 8 && queued <= 64);
     assert_eq!(keys, active + queued);
     assert!(rejected > 0, "overflow must be explicit admission refusal");
+    assert!(refused > 0, "callers must observe the admission refusals");
     let (independent, _, own_descriptors) = setup(1).await;
     independent
         .state
@@ -109,7 +132,11 @@ async fn r09a_runtime_shutdown_owns_the_entered_request_cas() {
     let service = rig.state.creation_service();
     let held = store.hold_class(StoreOp::Put, ObjClass::Other, 1);
     // Discarding the request's observer does not discard the job owner.
-    let _ = service.touch_ttl(&descriptors[0]);
+    drop(
+        service
+            .touch_ttl(&descriptors[0])
+            .expect("the touch is admitted while its CAS is held"),
+    );
     entered(&held).await;
     rig.tasks.shutdown(Duration::from_secs(1)).await;
     let retained_after_shutdown = service.pending_ttl_for_tests();
@@ -252,11 +279,20 @@ async fn r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects
     desc.expires_at_ms = Some(crate::shard::now_ms() + 300_000);
     let original = rig.state.registry.create(desc).await.unwrap().1;
     let held = store.hold_class(StoreOp::Put, ObjClass::Other, 256);
-    let _ = service.touch_ttl(&descriptors[0]);
+    drop(
+        service
+            .touch_ttl(&descriptors[0])
+            .expect("the first touch is admitted while its CAS is held"),
+    );
     entered(&held).await;
-    for desc in &descriptors {
-        let _ = service.touch_ttl(desc);
-    }
+    let refused = descriptors
+        .iter()
+        .filter(|desc| !admit_touch(&service, desc))
+        .count();
+    assert!(
+        refused > 0,
+        "the renewal queue must overflow before the HTTP refusals are checked"
+    );
     for (method, body) in [("GET", &b""[..]), ("POST", &b"payload"[..])] {
         let (status, headers, body) = hreq(
             rig.addr,

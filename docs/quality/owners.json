@@ -895,6 +895,14 @@
       "path": "src/dst/tests/seal_recovery.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
+      "syntax": "std::thread::spawn"
     }
   ]
 }

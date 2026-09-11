@@ -12,6 +12,10 @@ use super::fixture_storage::mem;
 /// exactly one project under its OWN workspace: A's invoice shows
 /// only A's volume under ws_a, B's only B's under ws_b, and the
 /// project-level rollups agree.
+#[expect(
+    clippy::too_many_lines,
+    reason = "cross-project attribution scenario; same-named streams in two projects are driven through append, read and rollup on one rig; helper phases would hide which project a row was attributed to"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_name_cross_project_usage_attributes_exactly() {
     let _xr = crate::billing::billing_clock_lock().read().await;
@@ -92,7 +96,10 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    assert!(
+        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
+        "this rig installs its rollup once"
+    );
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -231,6 +238,10 @@ async fn same_name_cross_project_usage_attributes_exactly() {
 /// and the reconciler actually detects disagreement — an injected
 /// corrupt aggregate is reported, so a clean verdict is never
 /// vacuous.
+#[expect(
+    clippy::too_many_lines,
+    reason = "invoice reconciliation scenario; balancing, late usage and injected corruption are checked against the same frozen invoice base; helper phases would hide which reconciliation step detected the corruption"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn invoice_reconciliation_balances_and_detects_corruption() {
     let _xr = crate::billing::billing_clock_lock().read().await;
@@ -310,7 +321,10 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    assert!(
+        state.rollup.install(std::sync::Arc::new(rollup)).is_ok(),
+        "this rig installs its rollup once"
+    );
 
     #[derive(serde::Serialize)]
     struct C<'a> {
