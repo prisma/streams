@@ -1855,6 +1855,38 @@
       "path": "src/dst/trace_store_tests/streams.rs",
       "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
       "syntax": "std::mem::forget"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/product/usage.rs",
+      "reason": "Product usage handlers import their enclosing product surface; the compiler resolves the parent exports and the handlers only render rollup reads.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/catalog.rs",
+      "reason": "Registry catalog page imports its enclosing registry owner; the compiler resolves the parent exports and the page only lists and decodes descriptors.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::product_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::project_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
     }
   ]
 }

@@ -3194,13 +3194,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::product_usage",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::product_watch_wait",
       "path": "src/product.rs",
@@ -3210,13 +3203,6 @@
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::product_watches_list",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::project_usage",
       "path": "src/product.rs",
       "syntax": "serde_json::json"
     },
