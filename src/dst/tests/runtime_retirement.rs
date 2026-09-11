@@ -37,6 +37,43 @@ async fn open_engine_with_on_close(
     )
 }
 
+/// An opener that reports each engine's own close, as production wires it.
+fn notifying_opener(
+    store: Arc<dyn ObjectStore>,
+    notifier: crate::shard_directory::ShardCloseNotifier,
+) -> crate::sharddir::OpenFn {
+    Box::new(
+        move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
+            let st = store.clone();
+            let notifier = notifier.clone();
+            let p = prefix.clone();
+            let on_close: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                notifier.closed(&p, incarnation);
+            });
+            Box::pin(async move { Ok(open_engine_with_on_close(st, &prefix, on_close).await) })
+        },
+    )
+}
+
+/// An opener without close notification; `fail` names a prefix whose open
+/// must fail after reaching the gate window.
+fn plain_opener(
+    store: Arc<dyn ObjectStore>,
+    fail: Option<&'static str>,
+) -> crate::sharddir::OpenFn {
+    Box::new(
+        move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+            let st = store.clone();
+            Box::pin(async move {
+                if Some(prefix.as_str()) == fail {
+                    anyhow::bail!("the opening side never needs an engine");
+                }
+                Ok(open_engine(st, &prefix).await)
+            })
+        },
+    )
+}
+
 /// PR 6.1.1-B: ONE retirement protocol, proven through the REAL close
 /// path. Retiring a shard must remove exactly that resident, arm the
 /// anti-flap holdoff and close the engine as ONE step — the previous
@@ -58,21 +95,7 @@ async fn retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacemen
         },
         // The opener wires the close notifier exactly as production and
         // the principal rig do: an engine's own close evicts itself.
-        |notifier| {
-            Box::new(
-                move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
-                    let st = st.clone();
-                    let notifier = notifier.clone();
-                    Box::pin(async move {
-                        let p = prefix.clone();
-                        let cb: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                            notifier.closed(&p, incarnation);
-                        });
-                        Ok(open_engine_with_on_close(st, &prefix, cb).await)
-                    })
-                },
-            )
-        },
+        |notifier| notifying_opener(st, notifier),
     );
     let prefix = "0";
     let crate::sharddir::OpenOutcome::Ready(a) = dir
@@ -155,14 +178,7 @@ async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
             open_deadline: std::time::Duration::from_secs(60),
             open_wait: std::time::Duration::from_millis(50),
         },
-        |_notifier| {
-            Box::new(
-                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
-                    let st = st.clone();
-                    Box::pin(async move { Ok(open_engine(st, &prefix).await) })
-                },
-            )
-        },
+        |_notifier| plain_opener(st, None),
     );
     let prefix = "0";
     let crate::sharddir::OpenOutcome::Ready(a) = dir
@@ -219,6 +235,10 @@ async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
 /// the gate state lock, immediately before the serving-map re-check.
 /// Against the old order this test hangs and fails on its deadline;
 /// against one order both sides complete.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "gate lock-order fixture; each side needs a runtime of its own so it can block on the other's lock, and both threads are joined after their completion channels report; a shared runtime could not hold the forced interleaving"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
     use std::sync::mpsc;
@@ -231,22 +251,10 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
             open_deadline: std::time::Duration::from_secs(60),
             open_wait: std::time::Duration::from_secs(30),
         },
-        |_notifier| {
-            Box::new(
-                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
-                    let st = st.clone();
-                    Box::pin(async move {
-                        // The opening side only has to REACH the gate
-                        // state window; what it opens is irrelevant, and
-                        // failing keeps the proof free of store timing.
-                        if prefix == "1" {
-                            anyhow::bail!("the opening side never needs an engine");
-                        }
-                        Ok(open_engine(st, &prefix).await)
-                    })
-                },
-            )
-        },
+        // The opening side only has to REACH the gate state window; what
+        // it opens is irrelevant, and failing keeps the proof free of
+        // store timing.
+        |_notifier| plain_opener(st, Some("1")),
     );
 
     // "0" must hold a resident: an absent slot returns before the
@@ -264,14 +272,20 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
     // The OPENING side: parks holding the gate state.
     let (open_done_tx, open_done) = mpsc::channel();
     let opening = dir.clone();
-    std::thread::spawn(move || {
+    let opener = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .expect("opening runtime");
-        let _ = rt.block_on(opening.open_or_wait("1", std::time::Duration::from_secs(30)));
-        let _ = open_done_tx.send(());
+        let opened = rt.block_on(opening.open_or_wait("1", std::time::Duration::from_secs(30)));
+        assert!(
+            !matches!(opened, crate::sharddir::OpenOutcome::Ready(_)),
+            "the opening side is designed to fail its open after reaching the window"
+        );
+        open_done_tx
+            .send(())
+            .expect("the test is waiting for the opening side");
     });
     assert!(
         gate.test_park()
@@ -283,7 +297,7 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
     let (entered_tx, entered) = mpsc::channel();
     let (retire_done_tx, retire_done) = mpsc::channel();
     let retiring = dir.clone();
-    std::thread::spawn(move || {
+    let retirer = std::thread::spawn(move || {
         // Retirement closes the engine, and closing spawns the db close:
         // this thread needs a reactor of its own.
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -292,13 +306,17 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
             .build()
             .expect("retiring runtime");
         let _guard = rt.enter();
-        let _ = entered_tx.send(());
+        entered_tx
+            .send(())
+            .expect("the test is waiting for the retiring side to start");
         retiring.retire(
             "0",
             crate::shard_directory::RetirementReason::Shutdown,
             |_, _| true,
         );
-        let _ = retire_done_tx.send(());
+        retire_done_tx
+            .send(())
+            .expect("the test is waiting for the retiring side");
     });
     entered
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -319,6 +337,8 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
     retire_done
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("the retirement deadlocked against an open of another prefix");
+    opener.join().expect("the opening thread completed");
+    retirer.join().expect("the retiring thread completed");
     assert!(!dir.is_open("0"), "the retirement completed");
 }
 

@@ -1,6 +1,6 @@
 //! Billing usage.
 
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{engine_shutdown, http_rig, install_read_spool, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -71,6 +71,10 @@ async fn reserved_namespace_refuses_customer_credentials() {
 /// read meter sees exact payload bytes (never framing, brackets or
 /// encryption expansion), operations count where data doesn't, and
 /// internal relays add nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "read metering matrix scenario; every delivery mode, cursor shape and byte accounting case is checked against one rig and one ledger; splitting the matrix into helpers would hide which case charged which bytes"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn read_meter_covers_the_matrix_exactly() {
     let store = mem();
@@ -264,6 +268,10 @@ impl Drop for ClockGuard {
 /// elapsed duration. Plus the durable-outbox battery: duplicates add
 /// zero, acks are version-fenced, month rollover writes exact finals,
 /// hard delete zeroes the gauge.
+#[expect(
+    clippy::too_many_lines,
+    reason = "billing metadata scenario; the exact, durable and acknowledgeable properties are proved on one append sequence through restart; helper phases would hide which boundary the metadata survived"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_meta_is_exact_durable_and_ackable() {
     let _xw = crate::billing::billing_clock_lock().write().await;
@@ -431,6 +439,10 @@ async fn billing_meta_is_exact_durable_and_ackable() {
 /// Replaying the drain and the rollup page must change NOTHING
 /// (idempotence at both hops), and the dashboard answer is a point
 /// read with exact numbers.
+#[expect(
+    clippy::too_many_lines,
+    reason = "usage pipeline scenario; appends, rollup absorption, restart and the exactly-once totals form one causal sequence on one rig; splitting the phases would hide which boundary could double count"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn usage_pipeline_end_to_end_exactly_once() {
     // Month-sensitive on the REAL clock: hold the read side so the
@@ -442,7 +454,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    install_rollup(&state, rollup);
 
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -678,7 +690,7 @@ async fn ops_metrics_and_alerts_flow() {
         crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
             .await
             .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    install_rollup(&state, rollup);
 
     // Two snapshot emissions land in the same minute bucket.
     crate::ops::emit_metrics_once(&state).await.expect("emit 1");
@@ -762,6 +774,10 @@ async fn ops_metrics_and_alerts_flow() {
 /// ack lost" re-emits an IDENTICAL snapshot the rollup deduplicates to
 /// zero, and §17.2's batching gate — N dirty streams drain as ONE
 /// ledger append, and an idle drain appends nothing at all.
+#[expect(
+    clippy::too_many_lines,
+    reason = "telemetry crash-point scenario; each crash point and cost gate is exercised against the same pipeline state; helper phases would hide which crash point the gate protected"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn telemetry_crash_points_and_cost_gates() {
     // Month-sensitive on the REAL clock: hold the read side so the
@@ -772,7 +788,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    install_rollup(&state, rollup);
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     // Three streams, one record each.
     for i in 0..3 {
@@ -899,7 +915,7 @@ async fn read_batches_survive_crash_in_the_spool() {
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
-    let _ = state.billing.install_read_spool(std::sync::Arc::new(spool));
+    install_read_spool(&state, spool);
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,
