@@ -105,10 +105,14 @@ struct Shared {
 
 impl Shared {
     fn now_ns(&self) -> u64 {
-        self.t0.elapsed().as_nanos() as u64
+        u64::try_from(self.t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "client; the builder holds only static timeouts and pool sizes, so building the bench client cannot fail; a fallible build would only restate the panic at startup"
+)]
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .pool_max_idle_per_host(4096)
@@ -125,6 +129,10 @@ fn client() -> reqwest::Client {
 // retired wait-url signature is kept LOCALLY here only so the bin
 // compiles; the live watch surface uses §15 capabilities
 // (crypto::watch_capability_sig). Candidate for deletion.
+#[expect(
+    clippy::expect_used,
+    reason = "legacy_wait_url_sig; HMAC-SHA256 accepts a key of any length, so constructing the signer cannot fail; a fallible construction would add an error path no key reaches"
+)]
 fn legacy_wait_url_sig(sig_key: &[u8; 32], watch_key_hex: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -136,6 +144,26 @@ fn legacy_wait_url_sig(sig_key: &[u8; 32], watch_key_hex: &str) -> String {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "main; the bench's argument parsing, task fan-out and report are one measurement sequence; splitting it would hide which knob each phase reads"
+)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "main; the bench owns its consumer and generator tasks for the whole run and joins them at the end; a supervisor would add lifecycle machinery to a measurement binary"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "main; the first-unobserved stamp is set once by whichever task wins the exchange and a finished consumer's join carries nothing; treating either as fallible would add error paths a measurement does not need"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "main; the histogram bounds are compile-time constants within hdrhistogram's accepted range; a fallible construction would only restate the panic at startup"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "main; tenant selection hashes a 64-bit transaction id on a 64-bit target; a checked conversion would only restate the pointer width the bench assumes"
+)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let http = client();

@@ -91,10 +91,6 @@ impl OpsEvent {
         self.shard = Some(prefix.to_string());
         self
     }
-    pub fn instance(mut self, i: &str) -> Self {
-        self.instance = Some(i.to_string());
-        self
-    }
     pub(crate) fn warn(mut self) -> Self {
         self.severity = "warn".into();
         self
@@ -147,6 +143,10 @@ impl OpsService {
         }
         g.queue.push_back(ev);
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpsService::recent; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    )]
     pub(crate) fn recent(&self, limit: usize) -> Vec<OpsEvent> {
         self.queue
             .lock()
@@ -158,6 +158,10 @@ impl OpsService {
             .cloned()
             .collect()
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "OpsService::open_alerts; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    )]
     pub(crate) fn open_alerts(&self) -> Vec<AlertState> {
         self.alerts
             .lock()
@@ -179,6 +183,18 @@ struct PendingOps<'a> {
     body: Vec<u8>,
 }
 impl<'a> PendingOps<'a> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PendingOps::take; the batch takes its byte, count and age budgets separately as the drain configured them; a budget struct would exist for this single call site"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "PendingOps::take; the queue was checked non-empty under the same guard, so its first event is present; a fallible pop would deny a record the guard proved"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PendingOps::take; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    )]
     fn take(
         queue: &'a Mutex<OpsQueue>,
         dropped: &'a AtomicU64,
@@ -368,7 +384,11 @@ pub(crate) struct OpsSnapshot {
 pub(crate) static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Collect the instance snapshot from the live plane.
-pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
+#[expect(
+    clippy::too_many_lines,
+    reason = "collect_snapshot; the snapshot gathers every runtime gauge once under one clock reading; splitting it would let the fields describe different instants"
+)]
+pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
     let mut counters = std::collections::BTreeMap::new();
     let mut gauges = std::collections::BTreeMap::new();
     counters.insert("fleet_ops_total".into(), state.admission.fleet_ops());
@@ -617,7 +637,14 @@ pub(crate) struct AlertState {
     clippy::unwrap_used,
     reason = "evaluate_alerts; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
 )]
-pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap: &OpsSnapshot) {
+#[expect(
+    clippy::too_many_lines,
+    reason = "evaluate_alerts; every alert rule reads the same snapshot and publishes into the same alert map in one pass; splitting the rules would hide which rule cleared or raised each alert"
+)]
+pub(crate) async fn evaluate_alerts(
+    state: &std::sync::Arc<crate::http::AppState>,
+    snap: &OpsSnapshot,
+) {
     let g = |k: &str| snap.gauges.get(k).copied().unwrap_or(0);
     // (fingerprint, breached, human summary)
     let threshold = usage_outbox_alert_threshold(&state.config.billing);
