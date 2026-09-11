@@ -641,11 +641,11 @@ impl PersistedDescriptor {
     /// which is what makes a cross-project reference unrepresentable
     /// rather than merely checked (MULTITENANCY Stage 4 same-project
     /// fork/DLQ rule).
-    // mt-lint: allow(name-param-shared-core): THE sanctioned constructor — derives the ref from the descriptor's OWN project (stored references resolve only through here)
     #[expect(
         clippy::expect_used,
         reason = "PersistedDescriptor::ref_in_project; stored stream references are validated when written, so reconstructing the checked name cannot fail; a fallible reconstruction would let a stored reference be reported as invalid"
     )]
+    // mt-lint: allow(name-param-shared-core): THE sanctioned constructor — derives the ref from the descriptor's OWN project (stored references resolve only through here)
     pub(crate) fn ref_in_project(&self, name: &str) -> crate::tenant::TenantStreamRef {
         crate::tenant::TenantStreamRef::new(
             self.project_id.clone(),

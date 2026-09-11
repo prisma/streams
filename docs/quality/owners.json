@@ -1403,6 +1403,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::layout_gate_refuses_foreign_namespaces",
+      "path": "src/registry/tests.rs",
+      "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::tests::macro(proptest::proptest)",
       "path": "src/rollup/allocation.rs",
       "reason": "Exact month-allocation properties; the pinned macro generates tests of the unchanged production owner compiled in both service and invariant harness; syntax tokens remain inventoried.",
