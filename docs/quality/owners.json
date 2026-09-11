@@ -1543,6 +1543,14 @@
       "path": "src/product/tests.rs",
       "reason": "Product transport test module imports its enclosing production owner; the compiler resolves the parent exports and the tests pin wire messages and responses.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::trace_gather",
+      "path": "src/history/gather.rs",
+      "reason": "Test-only drain trace of the gather pass; the DST harness switches it on through the process environment, and it prints the staged frames without touching absorber state.",
+      "syntax": "std::env::var"
     }
   ]
 }

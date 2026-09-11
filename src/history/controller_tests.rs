@@ -1,6 +1,7 @@
 use super::*;
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::shard::{AppendFinish, AppendReq, ShardConfig};
+use bytes::Bytes;
 use std::sync::atomic::Ordering;
 
 async fn active_absorber_cancel(hold_store: bool) {
