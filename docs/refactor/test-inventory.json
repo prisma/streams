@@ -3670,7 +3670,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "11c34b45c296bbac8fb8fdf728c246d7bf4ba5d2fe42ba8ff90c2363dcf7a722",
+    "function_sha256": "6899d06893228d2c6aa01f9ab723e3929e53760535c778996a31396b3280be7f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
@@ -3795,7 +3795,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1fb64dd2883bca33c7d981b21a9a35bae5b230b9003c4903356d02e1790e37d3",
+    "function_sha256": "12b5708f4a26f90d4aadeabc397c26b7c5774fc6fb1ae125bc8b7192a096de1f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/producer_protocol.rs",
