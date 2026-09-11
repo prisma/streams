@@ -527,7 +527,7 @@
     "disposition": "Unit-level process-budget pin exists; the warm-active hit-rate gate is campaign-level.",
     "closure_evidence": {
       "source_tests": [
-        "src/postings_cache.rs::million_key_shape_holds_process_budget"
+        "src/postings_cache/tests.rs::million_key_shape_holds_process_budget"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
       "remaining": "Pending: many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate."
