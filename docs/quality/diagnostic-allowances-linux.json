@@ -234,13 +234,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "a5f5937ee4525626b44e145d1b6c3d46897d21ddb60b36a4eddbabdf5a6f6c52",
-      "item": "crate::Registry::update",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "7ee1c713aaeb6ae1517ff821dc13a6770c23457901a682788edbc0a586bf9e86",
       "item": "crate::read_frames_until",
       "lint": "clippy::allow_attributes_without_reason",
@@ -2774,20 +2767,6 @@
       "path": "src/registry.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "c518688ae2322fcc1819d4e630b977ce869eb14e925a73e5c126750dc9e53d45",
-      "item": "crate::tests::catalog_provider_progress_survives_empty_filtered_pages_and_prefetch",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4136188302d71ca66d2c4766353bc7ec88aae34ca0f3925d51a74de3c1cfc0d9",
-      "item": "crate::tests::typed_mutation_never_leaks_a_lost_attempts_decision",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/registry.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "922d5806a61e4942d1df2829ab59f4f25f480a7ca55c4455ef6312ace8638fd9",
       "item": "crate::<ManualClock as Clock>::sleep",
@@ -3990,62 +3969,6 @@
       "item": "crate::mac_key",
       "lint": "clippy::expect_used",
       "path": "src/product_cursor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e477efe8d5b78c6532cde2e2475a9170aa6798bed6b9313717eb36e7e378f82e",
-      "item": "crate::PersistedDescriptor::key_point",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ef689d055712207ab549bbe151851c5ea27605a0e6990ef985a11eacb12c0e68",
-      "item": "crate::PersistedDescriptor::ref_in_project",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8192c2f81db450452115ffb74de5ba7ff3ceb8d1d668fd097b44f18043f3266a",
-      "item": "crate::PersistedDescriptor::resolve_segment",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "678d814c6b8bfbaaf5e1cc41bab63c1876abd461883629757121ccbe262408ce",
-      "item": "crate::PersistedDescriptor::sref",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1d9cd1a7532111ce4e166fe2c835617054de43e4c34b6ff911b96b0be06d0b90",
-      "item": "crate::Registry::create",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "41be909a87177f9dd859cecaf670183960cf3957683902eb3d8da49ed643b81e",
-      "item": "crate::Registry::mutate_incarnation",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3ada769d6f73ff36087e910c63dd520362463d4ce8b172e3011db74d10d70afe",
-      "item": "crate::Registry::recreate",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a8faed53909aae084352120f7dbc0e4033f30a1ca482918aa2e46149729662a3",
-      "item": "crate::load_or_init_topology",
-      "lint": "clippy::expect_used",
-      "path": "src/registry.rs"
     },
     {
       "count": 1,
@@ -6768,41 +6691,6 @@
       "item": "crate::PendingOps < 'a >::take",
       "lint": "clippy::unwrap_used",
       "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8845e6d33d2494f13b2a21cc897d78a452ed44819b7574ed8a55dbac41cf26ed",
-      "item": "crate::Registry::cache_insert",
-      "lint": "clippy::unwrap_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f490b7902df0c313b2d69990109a6837e7273777e63126315a0b0b1e323758dc",
-      "item": "crate::Registry::cache_len",
-      "lint": "clippy::unwrap_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "df8aaafcea6f88e3d32061898c971824961b57a36f1ba977d85c0fd30fefed14",
-      "item": "crate::Registry::get",
-      "lint": "clippy::unwrap_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5fb3d3d62200dda067084e1b6f89e16e4202216c0e5dbd47d1367b058888b56b",
-      "item": "crate::Registry::invalidate",
-      "lint": "clippy::unwrap_used",
-      "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "264fa3265dae76509a7be7330789b67fbf939f9089fa7f68072b4ea2ed47613d",
-      "item": "crate::Registry::list_page",
-      "lint": "clippy::unwrap_used",
-      "path": "src/registry.rs"
     },
     {
       "count": 1,

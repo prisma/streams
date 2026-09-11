@@ -1893,13 +1893,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::Registry::update",
-      "path": "src/registry.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::read_frames_until",
       "path": "src/shard/record.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -3510,13 +3503,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::tests::layout_gate_refuses_foreign_namespaces",
-      "path": "src/registry.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::UsageRollup::mark_artifact_published",
       "path": "src/rollup.rs",
       "syntax": "serde_json::json"
@@ -4149,13 +4135,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/product_cursor.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/registry.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
