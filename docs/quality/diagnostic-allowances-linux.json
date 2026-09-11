@@ -52,13 +52,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "0d7cf44665d7f30c2e5b37861c794e57506e549aa69d08279792fa3214690614",
-      "item": "crate",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "ce15662a05f21b1e241a4a02b1aae232fc715824c763e30d4684c7b474106b39",
       "item": "crate::tenant",
       "lint": "clippy::allow_attributes_without_reason",
@@ -3199,188 +3192,6 @@
       "item": "crate::resume_incarnation",
       "lint": "clippy::excessive_nesting",
       "path": "src/application/topology.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "002ffee63c624e72aefb2a77d6f08fe0d712d6b573607ae602d7504ae19bb587",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "061f33d0eb9fa6a32d6603a6861d3ea83d9072dddc3674c13608026d5b132c14",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "20f69c2890fa9cb22214f2347420bfd0586480c7cfa1fd4c9f877f0d6c9837ce",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3e0b7205aeb4c52e1ed47111ce83906cf4d8c535e2ff9b4f888aa300e51fb149",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4af34f8613dd6de4a9302635a150ab3aa9eb7b7c8d35873b240e37ebfe83c95b",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "53ce137bb0bae24a7ffabcf19855724a9d80b6d1244125723aa7eaedc2868af9",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8676bf97fabeb3bab277dd7234ead9683c6ff6ebde00550867417b3462e395f6",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8badd2fc8cc671028828ebfa56f9b9533c88c148ee50d352483134f824a50ea6",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f6222dc5013d3ec56f37fed76f5c40488dbd375ea52abcd1f578f6ed5416cb6d",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fc1c03ed33d09e8a9cb1bf1b9645268a9ee2ee643d8334a3931cf034458f8b9b",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7dcef92667500f6488d651074b06ce30d1a344837742521418286b977e6c7ac6",
-      "item": "crate::AuthService::publish_jwks",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "962245ddde2823d50da14906e3f306ea0c97533e562b13651704cdd748f719f9",
-      "item": "crate::AuthService::publish_jwks",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c721c06ebd816faf289202af08d5104f0f69923c758d4381a8f72f8355b011a9",
-      "item": "crate::AuthService::publish_jwks",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "02572d8b162d5b250efd7db431ddd2ed062edd714b725cc1dd818ae0f7e0630d",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0ad124f9369eeb5570eb3c581635913adfbc8aa27852fb5c8ed2f79b51348fbc",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "303ed66dd22208ead73a0e98be3a78190fa583a4c6f6ed8d16e49936874496c8",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "37bb6886f7a46f9398499cc796a46b3b5af0626598e214a4c28c00b682b42399",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "46cdf1094e3e3808f1fff31fd8b7c9769b54c8ebfb08817d21b26e963f1aba9c",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5bd5f66f9747c21b8b19d542e275ca0076c03ef67dfdc170694c3b4165a252f8",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "64dec230612e24e96abef595ce483992c282fee332a98be8c431729985c3b340",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6b59705d719a0a9e579de752a68e2a4347b9dcc9735055cc0576da79a35f088d",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9b587ee9deace3cf3d3d572c0faa0657883334f02351b6a0c5c4e1370453648c",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b5d9e2ece9f6a09af2b4df0a358f363d6eeefd7aa2c96f8406795afa3d12b6aa",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bda7ad8aaae5cf8ce5324116c107bdd009245ce35cfc67a407bef905219bab48",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d165ac97dd36f655ae7da8d420f3a57d29332736f9a7fa22a08108c3bd089596",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f9178e255f1f7f546a9cc002401eb41e3f061c71bd08db55e586582a360d416b",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/auth.rs"
     },
     {
       "count": 1,
@@ -8424,20 +8235,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "0c0d385ca7e5d2dd2e88814bc1fd21913f84855847707b7bdcb3835a65556cab",
-      "item": "crate::tests::stale_snapshot_cannot_restore_a_previous_owner",
-      "lint": "clippy::redundant_clone",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "72153d162bef5720e6754c35a0124c881c18238377f301f580de4a0a03619020",
-      "item": "crate::tests::stale_snapshot_cannot_unrevoke_a_credential",
-      "lint": "clippy::redundant_clone",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "e40a1f520ed0c889ee48022587a80f737ab7f3fa446cc69f96a9faeeeb938d27",
       "item": "crate::certified_memprofile_errors",
       "lint": "clippy::redundant_clone",
@@ -9230,22 +9027,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 182,
       "path": "src/application/read_request.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2357fb1eca51da8ae1d7fb984081d11c6a72c0bdb065a31a9bb8ecdfdbdfa7bb",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::too_many_lines",
-      "metric": 107,
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9cec72f1d95e0352468a692e6d698b497e0f710f7037ca5b83f9f04c00b32014",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::too_many_lines",
-      "metric": 118,
-      "path": "src/auth.rs"
     },
     {
       "count": 1,
@@ -10822,27 +10603,6 @@
       "item": "crate::observe_denial",
       "lint": "clippy::unwrap_used",
       "path": "src/audit.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c2fd9e20bf21f9134797652ce5185a35efff489085badfaa8021a581ae62137e",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "clippy::unwrap_used",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2edd09081fd834044e543b2e96656ab02ca63e58ae1a0ba5f05c9fa6be9c550b",
-      "item": "crate::AuthService::publish_jwks",
-      "lint": "clippy::unwrap_used",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3aa7431620534c83d2ba18952c82aa0f385e368cbaaaf3b6b9871021b38ec17c",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "clippy::unwrap_used",
-      "path": "src/auth.rs"
     },
     {
       "count": 1,
@@ -13384,41 +13144,6 @@
       "item": "crate::tag",
       "lint": "unreachable_pub",
       "path": "src/audit.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cabc88c8204036154037d44a311cde0c384370a5274565902e4a7bb218a1abfc",
-      "item": "crate::AuthService::lease_check",
-      "lint": "unreachable_pub",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "528ecfc3330a3aaae8a4b23124dbaa3af55bb53bf303596c03bda7757cef8317",
-      "item": "crate::AuthService::publish_grants",
-      "lint": "unreachable_pub",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "05e0e937c836e3aa3da71e98c1090ed8f49186c7bc0066c3875e1bb5796be609",
-      "item": "crate::AuthService::publish_policies",
-      "lint": "unreachable_pub",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ac22a8816dc7a2287574e8b298927eb6455753aa0bfb404000d79dd4b3e7b508",
-      "item": "crate::AuthService::verify_customer",
-      "lint": "unreachable_pub",
-      "path": "src/auth.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c11b3343d8d4ce46cef2cf76f3928b648dd61442fb669b9773494fe6673b792b",
-      "item": "crate::AuthService::verify_internal",
-      "lint": "unreachable_pub",
-      "path": "src/auth.rs"
     },
     {
       "count": 1,
