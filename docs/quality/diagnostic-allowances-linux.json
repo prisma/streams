@@ -14633,13 +14633,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6516b3c8b711c23a8af66361c4bf63557d1317cf0f421889a46a68d99495af43",
-      "item": "crate::mech::AFTER_DURABLE_BEFORE_ACK",
-      "lint": "dead_code",
-      "path": "src/dst/mod.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "f3255ca3e71639b9a0ca6912945433030f584778c2042d960ff77ca1a8ca55a2",
       "item": "crate::Absorber::data_store",
       "lint": "dead_code",
@@ -14679,34 +14672,6 @@
       "item": "crate::MessageId::decode",
       "lint": "dead_code",
       "path": "src/product_cursor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d2088683bdbcba964cb0fcaccecb1887f832fc0797ae66eb25b54f189429d78d",
-      "item": "crate::DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION",
-      "lint": "dead_code",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "729ad43965f1916abc135248dd036227edb6706b496df574cd4efe3fce8f2d0d",
-      "item": "crate::DURABLE_STREAMS_PROTOCOL_COMMIT",
-      "lint": "dead_code",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ab83be1a98bc3670d9b1973a9ae7fd55f42564abc2ae38987239599d7da404b0",
-      "item": "crate::DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION",
-      "lint": "dead_code",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fb70813fb94c0e116da147db2a0b265d471820b9e80ee53737cda50bae8f866b",
-      "item": "crate::pinned",
-      "lint": "dead_code",
-      "path": "src/protocol_pin.rs"
     },
     {
       "count": 1,
@@ -15123,13 +15088,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "979f852debf772b2b68d5485b11cadda6b6267a5727860dad1ff53c8177ed9b8",
-      "item": "crate::mech::AFTER_DURABLE_BEFORE_ACK",
-      "lint": "unreachable_pub",
-      "path": "src/dst/mod.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c763d0f3cfb9fc6c2a70582986128c5f6429e69766fd24b2dcdccf4822e9e58b",
       "item": "crate::Workload::append",
       "lint": "unreachable_pub",
@@ -15281,34 +15239,6 @@
       "item": "crate::MessageId::decode",
       "lint": "unreachable_pub",
       "path": "src/product_cursor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1e01a170fce846adb8f8916fabfd19fa591f292194b9dfb71a41534aea873d46",
-      "item": "crate::DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION",
-      "lint": "unreachable_pub",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7f1c0b5a86500d73a25e7e8588bf5d3fb6f799f966b903ce6c87cbad1779bf56",
-      "item": "crate::DURABLE_STREAMS_PROTOCOL_COMMIT",
-      "lint": "unreachable_pub",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "30d6932695793e229d5baeedb643cbc8f2ab93cf9a5dbb0b957106e84d521623",
-      "item": "crate::DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION",
-      "lint": "unreachable_pub",
-      "path": "src/protocol_pin.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "861d19519ba0ec1c251612a0d6f4c86cfb1f6b5ff0bc148230717ee920f46315",
-      "item": "crate::pinned",
-      "lint": "unreachable_pub",
-      "path": "src/protocol_pin.rs"
     },
     {
       "count": 1,
