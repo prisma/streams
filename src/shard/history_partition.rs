@@ -23,13 +23,25 @@ pub(super) struct HistoryPartition {
     state: Mutex<State>,
 }
 impl HistoryPartition {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "HistoryPartition::get; a poisoned partition state may hold a half-opened database or a stale stopping flag; recovering it could hand out a database that never finished opening or reopen one that is stopping"
+    )]
     pub(super) fn get(&self) -> Option<Arc<Db>> {
         self.state.lock().unwrap().db.clone()
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "HistoryPartition::stop; a poisoned partition state may hold a half-opened database or a stale stopping flag; recovering it could hand out a database that never finished opening or reopen one that is stopping"
+    )]
     pub(super) fn stop(&self) {
         self.state.lock().unwrap().stopping = true;
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "HistoryPartition::open; a poisoned partition state may hold a half-opened database or a stale stopping flag; recovering it could hand out a database that never finished opening or reopen one that is stopping"
+    )]
     pub(super) async fn open<F, Fut>(self: &Arc<Self>, build: F) -> Result<Arc<Db>, slatedb::Error>
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -94,6 +106,10 @@ impl HistoryPartition {
 
     /// Only the engine's retained shutdown driver calls this. In particular,
     /// no request cancellation can drop this join or an in-progress Db::close.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "HistoryPartition::close; a poisoned partition state may hold a half-opened database or a stale stopping flag; recovering it could hand out a database that never finished opening or reopen one that is stopping"
+    )]
     pub(super) async fn close(&self) -> Result<(), String> {
         self.stop();
         let opening = self.state.lock().unwrap().opening.take();

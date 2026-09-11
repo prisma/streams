@@ -15,7 +15,8 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool tail_ring; do
+REGISTERED=(src/bin/pilot/benchmark.rs src/bin/pilot/benchmark/config.rs src/bin/pilot/benchmark/window.rs src/bin/pilot/generator.rs src/bin/pilot/generator/membership.rs)
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler tail_ring; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -30,8 +31,13 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     touch) file=src/touch.rs; filter=touch:: ;;
     read_accumulator) file=src/billing/read_accumulator.rs; filter=billing ;;
     read_spool) file=src/billing/read_spool.rs; filter=billing ;;
+    shard_directory) file=src/shard_directory.rs; filter=shard_directory:: ;;
+    history_partition) file=src/shard/history_partition.rs; filter=shard:: ;;
+    ops) file=src/ops.rs; filter=ops:: ;;
+    scaler) file=src/scaler3.rs; filter=scaler3:: ;;
     tail_ring) file=src/shard/tail_ring.rs; filter="shard:: dst_tests::reads_ring::" ;;
   esac
+  REGISTERED+=("$file")
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
   cargo mutants --list --json --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" \
@@ -39,7 +45,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == tail_ring ]]; then
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == tail_ring ]]; then
     # These owners use actual service clocks, task handles and storage types.
     # Keep their code and tests in the service crate without substitute models.
     package=streams-slate
@@ -119,6 +125,19 @@ else
   echo 'pilot-generator: no executable mutants in the actual diff'
 fi
 if [[ "$TOTAL" == 0 ]]; then
-  echo 'No executable mutations selected; register the changed critical owner before claiming mutation verification.' >&2
-  exit 1
+  # An empty selection is reported, never claimed as a passing experiment. It
+  # is acceptable only when every executable critical file in the actual diff
+  # belongs to a registered owner whose scope simply selected no mutant.
+  uncovered=$(python3 - "$QUALITY_MUTANTS_OUT/plan.json" "${REGISTERED[@]}" <<'PYTHON'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+registered = set(sys.argv[2:])
+print('\n'.join(sorted(set(plan.get('mutation_source_files', [])) - registered)))
+PYTHON
+)
+  if [[ -n "$uncovered" ]]; then
+    printf 'No executable mutations selected; register the changed critical owner before claiming mutation verification:\n%s\n' "$uncovered" >&2
+    exit 1
+  fi
+  echo 'No executable mutations in the registered owners of this diff; no mutation experiment is claimed.'
 fi

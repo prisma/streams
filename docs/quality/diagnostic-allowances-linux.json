@@ -7115,20 +7115,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "e32ac0d4cde76926b403e738c8437a294877ca29837c3f46315ff08af57558ac",
-      "item": "crate::<PendingOps < '_ > as Drop>::drop",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8ae8129a49e3efaed3e2811d0de1bf201d663dd34042f23dab085becf3109b37",
-      "item": "crate::OpsService::emit",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d56c49e1e1392486eebb9f7c1a3e1fd01c986b3e6ff4df11b14a9ff98bd84080",
       "item": "crate::OpsService::open_alerts",
       "lint": "clippy::unwrap_used",
@@ -7145,13 +7131,6 @@
       "count": 1,
       "fingerprint": "47e8ab445f5509d735997911b9d36f4bf2df88fb47bc7698297281970076238e",
       "item": "crate::PendingOps < 'a >::take",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dca9955def316131a90e87d3eb2be6aa0b52eed0f78819b2a24fce99a24de612",
-      "item": "crate::evaluate_alerts",
       "lint": "clippy::unwrap_used",
       "path": "src/ops.rs"
     },
@@ -7367,13 +7346,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d62a01a8709dda8f9da9e658e261d80fe4e4c8cfecc1b1494af677d7e37c3f4e",
-      "item": "crate::Scaler::stats_json",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "422d6380f078f9cb196bf26b4137ca805c9fb5d5ca12ef3756e96a64a5f559b4",
       "item": "crate::State::prune",
       "lint": "clippy::unwrap_used",
@@ -7584,62 +7556,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "79b0c74dd4e1d2c4e72252bcb2cffcc8ddf008e2f82a758c89d0060938834ad3",
-      "item": "crate::HistoryPartition::close",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f991aee60a1246dcf1e952b7b54f0b2509ed6ff65b523f52c91e527f4d9cd288",
-      "item": "crate::HistoryPartition::get",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "11694433c84dfbc3b5c83c133a136e9f48935ea6b7dee233961067de8fa6d1ce",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "20fd68733e1d904f37b01fef7ea8c1284d5d6996754d9eccfe8b72bd5fd0f649",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "451f14984eeeba41b2809ed7c588edf64ffef5812ee87952c7adaa082438b3f4",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "51b6e2846ff0783dd2c4e859c6e57deaa8e8cc9bbb2afb29768895bc2800316f",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "64584ab84b04f94198e9ba81f79143123c429e27c9bbaa173c6c5efcd86e8f18",
-      "item": "crate::HistoryPartition::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "12109447c7ad46715366e03871c872776990a941b2a009c1394ef814de63bb1e",
-      "item": "crate::HistoryPartition::stop",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard/history_partition.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d201efd4aca1686ba03567dafaa11b393689eb3470a4ed5b8a2e5c86c08d9043",
       "item": "crate::EngineTasks::failed",
       "lint": "clippy::unwrap_used",
@@ -7812,55 +7728,6 @@
       "item": "crate::CommitTransaction < '_ >::queue",
       "lint": "clippy::unwrap_used",
       "path": "src/shard/transaction/queue/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4512c6bee4bd46d8f038a753e2e9dca797b650b0446328692bbda9964bc078d2",
-      "item": "crate::ShardDirectory::engines",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fd27c488bbc775cf9318e5a3e087c5b67c2ec65105b8ed477b13941b6236b166",
-      "item": "crate::ShardDirectory::engines_by_prefix",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4ed5950b4bc457f77314abe46865ecf3df72df6505b0828751888ba3cbe3d518",
-      "item": "crate::ShardDirectory::held_prefixes",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "66f2edbc7326689d2b74e68e1774ab115559ba6985e18c55abf599cd868e12af",
-      "item": "crate::ShardDirectory::is_open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e53cf65636664be50fccc2433b3ffc6ed6531a1fcc1c1955875a95eda100b851",
-      "item": "crate::ShardDirectory::open",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9227d86f00766a871a6e50abc6ac9357c4e5bf0ceaac752a28c738476be0461f",
-      "item": "crate::ShardDirectory::open_count",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f24871da0b2ea73b7e98fb80cbac67d2f6f53171c5ba9039ca1aaec57b7faca4",
-      "item": "crate::ShardDirectory::resolve",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard_directory.rs"
     },
     {
       "count": 1,
