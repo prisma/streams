@@ -15,10 +15,13 @@
 
 use crate::crypto::StreamKey;
 
-pub const KIND_KEY_V2: u8 = 0x12;
-pub const KIND_SCAN_V2: u8 = 0x22;
-pub const KIND_MSG_V2: u8 = 0x32;
-pub const KIND_LEASE_V2: u8 = 0x42;
+#[path = "product_cursor/decode.rs"]
+mod decode;
+
+pub(crate) const KIND_KEY_V2: u8 = 0x12;
+pub(crate) const KIND_SCAN_V2: u8 = 0x22;
+pub(crate) const KIND_MSG_V2: u8 = 0x32;
+pub(crate) const KIND_LEASE_V2: u8 = 0x42;
 
 const MAC_LEN: usize = 16;
 
@@ -26,7 +29,7 @@ const MAC_LEN: usize = 16;
 /// position and the consumed segment-local offset, bound to the stream
 /// incarnation and the exact routing key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyCursor {
+pub(crate) struct KeyCursor {
     /// Stream incarnation (epoch bytes) the cursor belongs to.
     pub epoch: [u8; 16],
     /// Routing-key hash — the cursor is valid for exactly this key.
@@ -77,7 +80,7 @@ fn unb64(s: &str) -> Option<Vec<u8>> {
 }
 
 impl KeyCursor {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
         p.push(KIND_KEY_V2);
         p.extend_from_slice(&self.epoch);
@@ -88,62 +91,12 @@ impl KeyCursor {
         p.extend_from_slice(&mac);
         b64(&p)
     }
-
-    /// Decode + authenticate. `expect_epoch`/`expect_key_hash` bind the
-    /// cursor to the REQUESTED stream incarnation and routing key: a
-    /// cursor for any other stream or key is invalid_cursor, never a
-    /// silent cross-read.
-    pub fn decode(
-        s: &str,
-        project: &crate::tenant::ProjectId,
-        key: &StreamKey,
-        expect_epoch: &[u8; 16],
-        expect_key_hash: &[u8; 16],
-    ) -> Result<KeyCursor, &'static str> {
-        let raw = unb64(s).ok_or("invalid_cursor")?;
-        if raw.first() != Some(&KIND_KEY_V2) {
-            // A scan cursor (or protocol offset) on a key endpoint is a
-            // DIFFERENT token class, rejected explicitly — checked
-            // before the length so the class error is stable.
-            return Err("wrong_cursor_kind");
-        }
-        if raw.len() != 1 + 16 + 16 + 4 + 8 + MAC_LEN {
-            return Err("invalid_cursor");
-        }
-        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
-        let mut epoch = [0u8; 16];
-        epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(project, key, &epoch), payload);
-        // Constant-time-ish compare (16 bytes; not secret-dependent
-        // branching on contents).
-        if mac
-            .iter()
-            .zip(want.iter())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            != 0
-        {
-            return Err("invalid_cursor");
-        }
-        let mut key_hash = [0u8; 16];
-        key_hash.copy_from_slice(&payload[17..33]);
-        let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
-        let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
-        if &epoch != expect_epoch || &key_hash != expect_key_hash {
-            return Err("invalid_cursor");
-        }
-        Ok(KeyCursor {
-            epoch,
-            key_hash,
-            seg_id,
-            offset,
-        })
-    }
 }
 
 /// Snapshot-bounded scan cursor (spec Stage 6 §5.3): the whole snapshot
 /// is embedded so creating a scan adds no control-plane request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScanCursor {
+pub(crate) struct ScanCursor {
     pub epoch: [u8; 16],
     pub map_version: u64,
     /// (segment id, end_exclusive) captured at snapshot creation, in
@@ -155,7 +108,7 @@ pub struct ScanCursor {
     pub expires_at_ms: i64,
 }
 
-pub const SCAN_CURSOR_MAX: usize = 16 * 1024;
+pub(crate) const SCAN_CURSOR_MAX: usize = 16 * 1024;
 
 /// Catalog cursor (review item 3): versioned and PROJECT-BOUND — a
 /// listing cursor from one project replayed under another is
@@ -164,15 +117,15 @@ pub const SCAN_CURSOR_MAX: usize = 16 * 1024;
 /// STREAMS_CURSOR_KEY so page walks verify across instances; a
 /// keyless single instance still gets the binding, and cursors from a
 /// differently-configured process fail closed on shape).
-pub const KIND_CATALOG_V1: u8 = 0x51;
+pub(crate) const KIND_CATALOG_V1: u8 = 0x51;
 
-pub struct CatalogCursor {
+pub(crate) struct CatalogCursor {
     pub project: crate::tenant::ProjectId,
     pub last_name: String,
 }
 
 impl CatalogCursor {
-    pub fn encode(&self, key: Option<&[u8; 32]>) -> String {
+    pub(crate) fn encode(&self, key: Option<&[u8; 32]>) -> String {
         let pb = self.project.as_str().as_bytes();
         let mut p = Vec::with_capacity(1 + 2 + pb.len() + self.last_name.len() + MAC_LEN);
         p.push(KIND_CATALOG_V1);
@@ -185,56 +138,10 @@ impl CatalogCursor {
         }
         b64(&p)
     }
-
-    /// Decode, verify (when keyed), and REQUIRE the bound project to
-    /// be the request's listing authority.
-    pub fn decode(
-        s: &str,
-        expect_project: &crate::tenant::ProjectId,
-        key: Option<&[u8; 32]>,
-    ) -> Option<String> {
-        let raw = unb64(s)?;
-        let body = match key {
-            Some(k) => {
-                if raw.len() < 1 + 2 + MAC_LEN {
-                    return None;
-                }
-                let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
-                let want = mac16(k, payload);
-                if mac
-                    .iter()
-                    .zip(want.iter())
-                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                    != 0
-                {
-                    return None;
-                }
-                payload
-            }
-            None => {
-                if raw.len() < 1 + 2 {
-                    return None;
-                }
-                &raw[..]
-            }
-        };
-        if body.first() != Some(&KIND_CATALOG_V1) {
-            return None;
-        }
-        let plen = u16::from_le_bytes([body[1], body[2]]) as usize;
-        if body.len() < 3 + plen {
-            return None;
-        }
-        let project = std::str::from_utf8(&body[3..3 + plen]).ok()?;
-        if project != expect_project.as_str() {
-            return None;
-        }
-        String::from_utf8(body[3 + plen..].to_vec()).ok()
-    }
 }
 
 impl ScanCursor {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(64 + self.segments.len() * 12);
         p.push(KIND_SCAN_V2);
         p.extend_from_slice(&self.epoch);
@@ -251,78 +158,13 @@ impl ScanCursor {
         p.extend_from_slice(&mac);
         b64(&p)
     }
-
-    pub fn decode(
-        s: &str,
-        project: &crate::tenant::ProjectId,
-        key: &StreamKey,
-        expect_epoch: &[u8; 16],
-        now_ms: i64,
-    ) -> Result<ScanCursor, &'static str> {
-        if s.len() > SCAN_CURSOR_MAX * 4 / 3 + 4 {
-            return Err("invalid_cursor");
-        }
-        let raw = unb64(s).ok_or("invalid_cursor")?;
-        // Class before length: a KEY cursor is shorter than the scan
-        // minimum, so a length-first check would report the wrong error
-        // for the wrong-endpoint case.
-        if raw.first() != Some(&KIND_SCAN_V2) {
-            return Err("wrong_cursor_kind");
-        }
-        if raw.len() < 1 + 16 + 8 + 4 + 4 + 8 + 8 + MAC_LEN {
-            return Err("invalid_cursor");
-        }
-        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
-        let mut epoch = [0u8; 16];
-        epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(project, key, &epoch), payload);
-        if mac
-            .iter()
-            .zip(want.iter())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            != 0
-        {
-            return Err("invalid_cursor");
-        }
-        let map_version = u64::from_le_bytes(payload[17..25].try_into().unwrap());
-        let n = u32::from_le_bytes(payload[25..29].try_into().unwrap()) as usize;
-        let need = 29 + n * 12 + 4 + 8 + 8;
-        if payload.len() != need || n > 4096 {
-            return Err("invalid_cursor");
-        }
-        let mut segments = Vec::with_capacity(n);
-        let mut at = 29;
-        for _ in 0..n {
-            let id = u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
-            let end = u64::from_le_bytes(payload[at + 4..at + 12].try_into().unwrap());
-            segments.push((id, end));
-            at += 12;
-        }
-        let current_index = u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
-        let current_offset = u64::from_le_bytes(payload[at + 4..at + 12].try_into().unwrap());
-        let expires_at_ms = i64::from_le_bytes(payload[at + 12..at + 20].try_into().unwrap());
-        if &epoch != expect_epoch {
-            return Err("invalid_cursor");
-        }
-        if now_ms > expires_at_ms {
-            return Err("scan_expired");
-        }
-        Ok(ScanCursor {
-            epoch,
-            map_version,
-            segments,
-            current_index,
-            current_offset,
-            expires_at_ms,
-        })
-    }
 }
 
 /// Opaque consumer message identity (spec Stage 2 §2.4): stream
 /// incarnation + routing-key hash + segment + offset, MAC'd like every
 /// product token. Clients never see internal offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageId {
+pub(crate) struct MessageId {
     pub epoch: [u8; 16],
     pub key_hash: [u8; 16],
     pub seg_id: u32,
@@ -330,7 +172,7 @@ pub struct MessageId {
 }
 
 impl MessageId {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
         p.push(KIND_MSG_V2);
         p.extend_from_slice(&self.epoch);
@@ -341,53 +183,13 @@ impl MessageId {
         p.extend_from_slice(&mac);
         b64(&p)
     }
-
-    pub fn decode(
-        s: &str,
-        project: &crate::tenant::ProjectId,
-        key: &StreamKey,
-        expect_epoch: &[u8; 16],
-    ) -> Result<MessageId, &'static str> {
-        let raw = unb64(s).ok_or("invalid_message_id")?;
-        if raw.first() != Some(&KIND_MSG_V2) {
-            return Err("wrong_token_kind");
-        }
-        if raw.len() != 1 + 16 + 16 + 4 + 8 + MAC_LEN {
-            return Err("invalid_message_id");
-        }
-        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
-        let mut epoch = [0u8; 16];
-        epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(project, key, &epoch), payload);
-        if mac
-            .iter()
-            .zip(want.iter())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            != 0
-        {
-            return Err("invalid_message_id");
-        }
-        let mut key_hash = [0u8; 16];
-        key_hash.copy_from_slice(&payload[17..33]);
-        let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
-        let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
-        if &epoch != expect_epoch {
-            return Err("invalid_message_id");
-        }
-        Ok(MessageId {
-            epoch,
-            key_hash,
-            seg_id,
-            offset,
-        })
-    }
 }
 
 /// Generation-fenced lease token (spec Stage 2 §2.7): the message
 /// identity plus the lease generation and deadline, unforgeable
 /// without the stream key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaseToken {
+pub(crate) struct LeaseToken {
     pub msg: MessageId,
     pub lease_gen: u32,
     /// The CONSUMER generation this lease was granted under (round
@@ -399,7 +201,7 @@ pub struct LeaseToken {
 }
 
 impl LeaseToken {
-    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN);
         p.push(KIND_LEASE_V2);
         p.extend_from_slice(&self.msg.epoch);
@@ -412,54 +214,6 @@ impl LeaseToken {
         let mac = mac16(&mac_key(project, key, &self.msg.epoch), &p);
         p.extend_from_slice(&mac);
         b64(&p)
-    }
-
-    pub fn decode(
-        s: &str,
-        project: &crate::tenant::ProjectId,
-        key: &StreamKey,
-        expect_epoch: &[u8; 16],
-    ) -> Result<LeaseToken, &'static str> {
-        let raw = unb64(s).ok_or("invalid_lease_token")?;
-        if raw.first() != Some(&KIND_LEASE_V2) {
-            return Err("wrong_token_kind");
-        }
-        if raw.len() != 1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN {
-            return Err("invalid_lease_token");
-        }
-        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
-        let mut epoch = [0u8; 16];
-        epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(project, key, &epoch), payload);
-        if mac
-            .iter()
-            .zip(want.iter())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            != 0
-        {
-            return Err("invalid_lease_token");
-        }
-        let mut key_hash = [0u8; 16];
-        key_hash.copy_from_slice(&payload[17..33]);
-        let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
-        let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
-        let lease_gen = u32::from_le_bytes(payload[45..49].try_into().unwrap());
-        let consumer_gen = u64::from_le_bytes(payload[49..57].try_into().unwrap());
-        let deadline_ms = i64::from_le_bytes(payload[57..65].try_into().unwrap());
-        if &epoch != expect_epoch {
-            return Err("invalid_lease_token");
-        }
-        Ok(LeaseToken {
-            msg: MessageId {
-                epoch,
-                key_hash,
-                seg_id,
-                offset,
-            },
-            lease_gen,
-            consumer_gen,
-            deadline_ms,
-        })
     }
 }
 
@@ -640,3 +394,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "product_cursor/regressions.rs"]
+mod regressions;

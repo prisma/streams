@@ -31,28 +31,28 @@ use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow, ValidatedRuns};
 /// Default PROCESS-WIDE decoded-byte budget (spec §7.1; review finding
 /// 7: one budget for the whole process — engines share one cache in
 /// production via `process_cache`, sized by env POSTINGS_CACHE_BYTES).
-pub const POSTINGS_CACHE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const POSTINGS_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Estimated heap overhead per cache entry beyond the raw runs: the
 /// 32-byte key, HashMap bucket, Entry, Arc<PostingsSlice> header and
 /// allocator slack. The budget must account for what the process
 /// actually holds, not just run payloads (review finding 7).
-pub const ENTRY_OVERHEAD_BYTES: usize = 176;
+pub(crate) const ENTRY_OVERHEAD_BYTES: usize = 176;
 
 /// Bound on tracked per-segment warm records (each ~120 B): past this,
 /// the least-recent record is dropped — losing a warm record only
 /// weakens future claims (fresh installs fall back to chunk-only), it
 /// never breaks one already made.
-pub const WARM_MAX_SEGMENTS: usize = 8_192;
+pub(crate) const WARM_MAX_SEGMENTS: usize = 8_192;
 
 /// Idle eviction horizon (spec §7.1).
-pub const POSTINGS_CACHE_IDLE: Duration = Duration::from_secs(600);
+pub(crate) const POSTINGS_CACHE_IDLE: Duration = Duration::from_secs(600);
 /// Cold-load forward window (spec §7.2).
-pub const LOAD_MAX_BUCKETS: u64 = 64;
-pub const LOAD_MAX_ENCODED_BYTES: u64 = 1024 * 1024;
+pub(crate) const LOAD_MAX_BUCKETS: u64 = 64;
+pub(crate) const LOAD_MAX_ENCODED_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
-pub struct PostingsSlice {
+pub(crate) struct PostingsSlice {
     pub first_bucket: u64,
     pub last_bucket_exclusive: u64,
     /// The slice's runs are COMPLETE over [covered_from, indexed_to_offset):
@@ -103,7 +103,7 @@ struct Inner {
     warm: HashMap<[u8; 16], SegWarm>,
 }
 
-pub struct PostingsCache {
+pub(crate) struct PostingsCache {
     inner: Mutex<Inner>,
     max_bytes: usize,
     pub hits: AtomicU64,
@@ -119,7 +119,7 @@ pub struct PostingsCache {
 }
 
 /// Outcome of a cache consultation for one read.
-pub enum CacheRuns {
+pub(crate) enum CacheRuns {
     /// An immutable run window covering the request range plus
     /// how far the index provably covers. `provable_to >= upto` means
     /// the whole request range is index-verified.
@@ -131,7 +131,7 @@ pub enum CacheRuns {
 }
 
 impl PostingsCache {
-    pub fn new(max_bytes: usize) -> Arc<PostingsCache> {
+    pub(crate) fn new(max_bytes: usize) -> Arc<PostingsCache> {
         Arc::new(PostingsCache {
             inner: Mutex::new(Inner {
                 slices: HashMap::new(),
@@ -153,7 +153,7 @@ impl PostingsCache {
         })
     }
 
-    pub fn stats(&self) -> serde_json::Value {
+    pub(crate) fn stats(&self) -> serde_json::Value {
         let (bytes, entries) = {
             let g = self.inner.lock().unwrap();
             (g.total_bytes, g.slices.len())
@@ -730,7 +730,7 @@ impl PostingsCache {
     /// Test-only: the (covered_from, indexed_to, runs) of one cached
     /// slice, for flake diagnosis.
     #[cfg(test)]
-    pub fn debug_slice(
+    pub(crate) fn debug_slice(
         &self,
         inc: &SegmentHash,
         kh: &crate::crypto::RoutingKeyHash,
@@ -750,7 +750,7 @@ impl PostingsCache {
     /// absence proof (the swept key could re-appear and a fresh install
     /// must not claim its pre-sweep history was empty); warm records
     /// idle past the horizon are dropped outright.
-    pub fn sweep_idle(&self, idle: Duration) -> usize {
+    pub(crate) fn sweep_idle(&self, idle: Duration) -> usize {
         let cutoff = Instant::now() - idle;
         let mut g = self.inner.lock().unwrap();
         let before = g.slices.len();

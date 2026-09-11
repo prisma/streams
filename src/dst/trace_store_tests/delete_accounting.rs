@@ -1,17 +1,10 @@
 //! delete_stream: exactly-once delegation + the typed operation ledger.
 
-#![allow(unused_imports)]
-use std::sync::Arc;
-
-use object_store::path::Path as ObjPath;
-use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OsResult,
-};
-
 use super::super::{TraceEventKind, TraceOutcome, TraceStore};
-use super::*;
+use super::{delete_err, spy};
 use crate::dst::{ObjClass, StoreOp};
+use object_store::ObjectStore;
+use object_store::path::Path as ObjPath;
 
 /// Three inputs, three scripted results: one inner call, everything
 /// passes through, input and result both traced.

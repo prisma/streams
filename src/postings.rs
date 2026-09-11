@@ -32,27 +32,27 @@ use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 
 #[path = "postings/validated.rs"]
 mod validated;
-pub use validated::{RunWindow, ValidatedRuns};
+pub(crate) use validated::{RunWindow, ValidatedRuns};
 
 /// Segment-local offsets per postings bucket. Fixed so that
 /// `bucket = offset / BUCKET_OFFSETS` is directly calculable.
 /// A format constant, not an operator mode (spec §6.4).
-pub const BUCKET_OFFSETS: u64 = 65_536;
+pub(crate) const BUCKET_OFFSETS: u64 = 65_536;
 
 /// Hard cap on one encoded page (spec §6.4). The builder splits a
 /// bucket into multiple pages (distinct `page_first`) at this size.
-pub const PAGE_MAX_ENCODED_BYTES: usize = 32 * 1024;
+pub(crate) const PAGE_MAX_ENCODED_BYTES: usize = 32 * 1024;
 
-pub fn bucket_of(offset: u64) -> u64 {
+pub(crate) fn bucket_of(offset: u64) -> u64 {
     offset / BUCKET_OFFSETS
 }
 
 /// 16-byte routing-key hash (the postings key discriminator).
-pub fn rk_hash(rk: &str) -> RoutingKeyHash {
+pub(crate) fn rk_hash(rk: &str) -> RoutingKeyHash {
     RoutingKeyHash::of(rk)
 }
 
-pub fn postings_key(
+pub(crate) fn postings_key(
     route: RouteHash,
     inc: SegmentHash,
     rk_hash: &RoutingKeyHash,
@@ -72,7 +72,7 @@ pub fn postings_key(
 /// Scan range covering every page of `rk_hash` whose bucket intersects
 /// [from_offset, upto_offset). Buckets are big-endian directly after
 /// the key hash, so one contiguous range covers them all.
-pub fn postings_range(
+pub(crate) fn postings_range(
     route: RouteHash,
     inc: SegmentHash,
     rk_hash: &RoutingKeyHash,
@@ -88,7 +88,7 @@ pub fn postings_range(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PostingRun {
+pub(crate) struct PostingRun {
     pub gap_offsets: u64,
     pub record_count: u32,
     pub matching_frame_bytes: u64,
@@ -107,24 +107,20 @@ fn put_varint(v: &mut Vec<u8>, mut x: u64) {
     }
 }
 
-fn get_varint(v: &[u8], at: &mut usize) -> Option<u64> {
-    let mut out: u64 = 0;
-    let mut shift = 0u32;
-    loop {
-        let b = *v.get(*at)?;
-        *at += 1;
-        if shift == 63 && b & 0x7f > 1 {
+fn get_varint(input: &mut &[u8]) -> Option<u64> {
+    let mut out = 0u64;
+    for shift in (0..=63).step_by(7) {
+        let (&byte, rest) = input.split_first()?;
+        *input = rest;
+        if shift == 63 && byte & 0x7f > 1 {
             return None;
         }
-        out |= ((b & 0x7f) as u64) << shift;
-        if b & 0x80 == 0 {
+        out |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
             return Some(out);
         }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
     }
+    None
 }
 
 /// PostingsPageV1 (spec §6.4). Self-describing header + varint runs:
@@ -140,14 +136,14 @@ fn get_varint(v: &[u8], at: &mut usize) -> Option<u64> {
 ///       gap_frame_bytes_before
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Page {
+pub(crate) struct Page {
     pub first_offset: u64,
     pub last_offset_exclusive: u64,
     pub matching_frame_bytes: u64,
     pub runs: Vec<PostingRun>,
 }
 
-pub fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
+pub(crate) fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
     let mut v = Vec::with_capacity(32 + runs.len() * 6);
     v.push(1u8);
     v.push(0u8); // codec: raw
@@ -170,25 +166,36 @@ pub fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
     v
 }
 
-pub fn decode_page(v: &[u8]) -> Option<Page> {
-    if v.len() < 30 || v.len() > PAGE_MAX_ENCODED_BYTES || v[0] != 1 || v[1] != 0 {
+/// Admit the untrusted allocation count before reserving decoded runs.
+/// Each run needs at least four one-byte varints in the capped page body.
+fn admitted_run_count(raw: &[u8; 4], encoded_bytes: usize) -> Option<usize> {
+    let count = usize::try_from(u32::from_le_bytes(*raw)).ok()?;
+    (count > 0 && count <= encoded_bytes / 4).then_some(count)
+}
+
+pub(crate) fn decode_page(v: &[u8]) -> Option<Page> {
+    if v.len() > PAGE_MAX_ENCODED_BYTES {
         return None;
     }
-    let first_offset = u64::from_le_bytes(v[2..10].try_into().ok()?);
-    let last_offset_exclusive = u64::from_le_bytes(v[10..18].try_into().ok()?);
-    let n = u32::from_le_bytes(v[18..22].try_into().ok()?) as usize;
-    let matching_frame_bytes = u64::from_le_bytes(v[22..30].try_into().ok()?);
-    if n == 0 || n > BUCKET_OFFSETS as usize || n > (v.len() - 30) / 4 {
+    let ([version, codec], input) = v.split_first_chunk::<2>()?;
+    if *version != 1 || *codec != 0 {
         return None;
     }
-    let mut at = 30usize;
+    let (first, input) = input.split_first_chunk::<8>()?;
+    let (last, input) = input.split_first_chunk::<8>()?;
+    let (count, input) = input.split_first_chunk::<4>()?;
+    let (matching, mut input) = input.split_first_chunk::<8>()?;
+    let first_offset = u64::from_le_bytes(*first);
+    let last_offset_exclusive = u64::from_le_bytes(*last);
+    let n = admitted_run_count(count, input.len())?;
+    let matching_frame_bytes = u64::from_le_bytes(*matching);
     let mut runs = Vec::with_capacity(n);
     for _ in 0..n {
         runs.push(PostingRun {
-            gap_offsets: get_varint(v, &mut at)?,
-            record_count: u32::try_from(get_varint(v, &mut at)?).ok()?,
-            matching_frame_bytes: get_varint(v, &mut at)?,
-            gap_frame_bytes_before: get_varint(v, &mut at)?,
+            gap_offsets: get_varint(&mut input)?,
+            record_count: u32::try_from(get_varint(&mut input)?).ok()?,
+            matching_frame_bytes: get_varint(&mut input)?,
+            gap_frame_bytes_before: get_varint(&mut input)?,
         });
     }
     // Posting monotonicity (spec §13.3): the header must agree with
@@ -204,8 +211,8 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
             .checked_add(u64::from(r.record_count))?;
         total = total.checked_add(r.matching_frame_bytes)?;
     }
-    if at != v.len()
-        || runs[0].gap_offsets != 0
+    if !input.is_empty()
+        || runs.first()?.gap_offsets != 0
         || off != last_offset_exclusive
         || total != matching_frame_bytes
     {
@@ -221,7 +228,7 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
 
 /// One decoded run at an absolute offset position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbsRun {
+pub(crate) struct AbsRun {
     pub start: u64,
     pub count: u32,
     pub matching_bytes: u64,
@@ -234,7 +241,7 @@ pub struct AbsRun {
 
 /// Cross-page gap marker: the byte cost is unknown, so coalescing is
 /// forbidden unless the offsets are literally contiguous.
-pub const GAP_UNKNOWN: u64 = u64::MAX;
+pub(crate) const GAP_UNKNOWN: u64 = u64::MAX;
 
 /// Append one page's decoded runs onto an accumulating list, marking
 /// the seam: unless the page's first run continues EXACTLY at the
@@ -243,7 +250,7 @@ pub const GAP_UNKNOWN: u64 = u64::MAX;
 /// carries gap_bytes_before=0 and the planner coalesces arbitrarily
 /// distant pages into one giant span (measured: a 40k-offset stream
 /// scanned WHOLE for a 2-record key — 10,000x amplification).
-pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> {
+pub(crate) fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> {
     validated::validate(&page)?;
     let prev_end = match all.last() {
         Some(r) => Some(r.start.checked_add(u64::from(r.count))?),
@@ -266,7 +273,7 @@ pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> 
 
 /// Decode a page into absolute runs. `page_first` (from the KEY) must
 /// agree with the page header — a mismatch is corruption.
-pub fn decode_page_abs(page_first: u64, v: &[u8]) -> Option<Vec<AbsRun>> {
+pub(crate) fn decode_page_abs(page_first: u64, v: &[u8]) -> Option<Vec<AbsRun>> {
     let page = decode_page(v)?;
     if page.first_offset != page_first {
         return None;
@@ -296,16 +303,22 @@ pub(crate) fn decode_stored_page(
     key: &[u8],
     value: &[u8],
 ) -> Option<Vec<AbsRun>> {
-    if key.len() != 65
-        || key[..16] != route.0
-        || key[16..32] != inc.0
-        || key[32] != b'p'
-        || key[33..49] != kh.0
+    let (stored_route, input) = key.split_first_chunk::<16>()?;
+    let (stored_inc, input) = input.split_first_chunk::<16>()?;
+    let (kind, input) = input.split_first()?;
+    let (stored_hash, input) = input.split_first_chunk::<16>()?;
+    let (bucket, input) = input.split_first_chunk::<8>()?;
+    let (first, rest) = input.split_first_chunk::<8>()?;
+    if !rest.is_empty()
+        || stored_route != &route.0
+        || stored_inc != &inc.0
+        || *kind != b'p'
+        || stored_hash != &kh.0
     {
         return None;
     }
-    let bucket = u64::from_be_bytes(key[49..57].try_into().ok()?);
-    let first = u64::from_be_bytes(key[57..65].try_into().ok()?);
+    let bucket = u64::from_be_bytes(*bucket);
+    let first = u64::from_be_bytes(*first);
     let runs = decode_page_abs(first, value)?;
     let last = runs.last()?;
     let end = last.start.checked_add(u64::from(last.count))?;
@@ -321,7 +334,7 @@ pub(crate) fn decode_stored_page(
 /// contiguous frame walk, offsets strictly ascending). Emits pages
 /// split at bucket boundaries; gap byte accounting is intra-page.
 #[derive(Default)]
-pub struct PageBuilder {
+pub(crate) struct PageBuilder {
     /// Total stored frame bytes walked so far (all keys).
     walked_bytes: u64,
     keys: std::collections::HashMap<RoutingKeyHash, KeyAcc>,
@@ -348,7 +361,7 @@ impl PageBuilder {
     /// Account one canonical frame at `offset` with stored size
     /// `frame_bytes` for routing-key hash `key`. MUST be called in
     /// strictly ascending offset order across the whole chunk.
-    pub fn note_frame(&mut self, key: RoutingKeyHash, offset: u64, frame_bytes: u64) {
+    pub(crate) fn note_frame(&mut self, key: RoutingKeyHash, offset: u64, frame_bytes: u64) {
         let walked_before = self.walked_bytes;
         self.walked_bytes += frame_bytes;
         let bucket = bucket_of(offset);
@@ -441,7 +454,7 @@ impl PageBuilder {
 // ---- read planner ------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
-pub struct PlanCfg {
+pub(crate) struct PlanCfg {
     pub max_spans: usize,
     pub max_gap_bytes: u64,
     pub max_scan_bytes: u64,
@@ -469,7 +482,7 @@ impl Default for PlanCfg {
 
 /// One canonical scan span the reader will issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
+pub(crate) struct Span {
     pub start: u64,
     /// Exclusive end offset.
     pub end: u64,
@@ -480,7 +493,7 @@ pub struct Span {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Plan {
+pub(crate) struct Plan {
     pub spans: Vec<Span>,
     /// The read provably consumed matches up to here (exclusive): the
     /// caller's cursor advances to this even over match-free ranges.
@@ -494,7 +507,7 @@ pub struct Plan {
 /// span when the intervening gap is small in BYTES; otherwise opens a
 /// new span. Stops at span/byte budgets with an honest partial.
 #[cfg(test)]
-pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
+pub(crate) fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
     plan_spans_iter(runs.iter().copied(), upto, cfg)
 }
 
@@ -597,7 +610,10 @@ pub(crate) fn plan_spans_iter(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        AbsRun, BUCKET_OFFSETS, GAP_UNKNOWN, PageBuilder, PlanCfg, PostingRun, RoutingKeyHash,
+        decode_page, decode_page_abs, encode_page, get_varint, plan_spans, put_varint,
+    };
 
     fn run(start: u64, count: u32, bytes: u64, gap_bytes: u64) -> AbsRun {
         AbsRun {
@@ -651,8 +667,7 @@ mod tests {
         assert_eq!(plan.spans.len(), cfg.max_spans, "span-bounded");
         assert!(!plan.complete, "honest partial past the span budget");
         assert_eq!(
-            plan.consumed_to,
-            runs[cfg.max_spans - 1].start + 1,
+            plan.consumed_to, 7_001,
             "cursor covers exactly the planned prefix"
         );
         for s in &plan.spans {
@@ -679,16 +694,19 @@ mod tests {
         };
         // One 32 MiB record: budget/record floor still allows exactly it.
         let plan = plan_spans(&[run(10, 1, 32 * 1024 * 1024, 0)], 11, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!((plan.spans[0].start, plan.spans[0].end), (10, 11));
+        let [span] = plan.spans.as_slice() else {
+            panic!("the oversized first record must produce exactly one span");
+        };
+        assert_eq!((span.start, span.end), (10, 11));
         assert!(!plan.complete);
         assert_eq!(plan.consumed_to, 11);
 
         // A 24 MiB contiguous run of 1 MiB records: ~16 records fit.
         let plan = plan_spans(&[run(0, 24, 24 * 1024 * 1024, 0)], 24, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!(plan.spans[0].start, 0);
-        assert_eq!(plan.spans[0].end, 16, "budget/per-record prefix");
+        let [span] = plan.spans.as_slice() else {
+            panic!("a bounded prefix must produce exactly one span");
+        };
+        assert_eq!((span.start, span.end), (0, 16), "budget/per-record prefix");
         assert!(!plan.complete);
         assert_eq!(plan.consumed_to, 16, "cursor advances to the prefix end");
     }
@@ -726,9 +744,9 @@ mod tests {
         for x in [0u64, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
             let mut v = Vec::new();
             put_varint(&mut v, x);
-            let mut at = 0;
-            assert_eq!(get_varint(&v, &mut at), Some(x));
-            assert_eq!(at, v.len());
+            let mut input = v.as_slice();
+            assert_eq!(get_varint(&mut input), Some(x));
+            assert!(input.is_empty());
         }
     }
 
@@ -755,13 +773,15 @@ mod tests {
         assert_eq!(page.last_offset_exclusive, 1000 + 3 + 41 + 1);
         assert_eq!(page.matching_frame_bytes, 1028);
         let abs = decode_page_abs(1000, &v).unwrap();
-        assert_eq!(abs[0].start, 1000);
-        assert_eq!(abs[1].start, 1000 + 3 + 41);
+        assert_eq!(abs, [run(1000, 3, 900, 0), run(1044, 1, 128, 17_000)]);
         // Key/header disagreement = corruption.
         assert!(decode_page_abs(999, &v).is_none());
         // Header/runs disagreement = corruption.
-        let mut bad = v.clone();
-        bad[10] ^= 1; // perturb last_offset_exclusive
+        let mut bad = v;
+        let (_, [last_byte, ..]) = bad.split_at_mut(10) else {
+            panic!("the encoded page must contain its last-offset header");
+        };
+        *last_byte ^= 1; // perturb last_offset_exclusive
         assert!(decode_page(&bad).is_none());
     }
 
@@ -781,30 +801,32 @@ mod tests {
         b.note_frame(ka, edge, 100);
         let (pages, total) = b.finish();
         assert!(total > 0);
+        assert_eq!(pages.len(), 3, "two A buckets and one B bucket");
         let a_pages: Vec<_> = pages.iter().filter(|p| p.0 == ka).collect();
         assert_eq!(a_pages.len(), 2, "bucket edge must split the page");
         let p0 = a_pages.iter().find(|p| p.1 == 0).unwrap();
         let abs = decode_page_abs(p0.2, &p0.3).unwrap();
         // Runs for a in bucket 0: [10,12) at 10..11, [13,14), [edge-1,edge).
-        assert_eq!(abs[0].start, 10);
-        assert_eq!(abs[0].count, 2);
-        assert_eq!(abs[1].start, 13);
-        assert_eq!(abs[1].count, 1);
-        // The gap before run [13]: frame kb@12 (50 bytes) sits between.
-        assert_eq!(abs[1].gap_bytes_before, 50);
-        assert_eq!(abs[2].start, edge - 1);
+        // The gaps contain kb@12 (50 bytes) and kb@20 (60 bytes).
+        assert_eq!(
+            abs,
+            [
+                run(10, 2, 200, 0),
+                run(13, 1, 100, 50),
+                run(edge - 1, 1, 100, 60)
+            ]
+        );
         let p1 = a_pages.iter().find(|p| p.1 == 1).unwrap();
         let abs1 = decode_page_abs(p1.2, &p1.3).unwrap();
-        assert_eq!(abs1[0].start, edge);
-        assert_eq!(abs1[0].count, 1);
+        assert_eq!(abs1, [run(edge, 1, 100, 0)]);
 
         let b_pages: Vec<_> = pages.iter().filter(|p| p.0 == kb).collect();
-        assert_eq!(b_pages.len(), 1);
-        let abs_b = decode_page_abs(b_pages[0].2, &b_pages[0].3).unwrap();
-        assert_eq!(abs_b[0].start, 12);
-        assert_eq!(abs_b[1].start, 20);
+        let [b_page] = b_pages.as_slice() else {
+            panic!("B must occupy exactly one page");
+        };
+        let abs_b = decode_page_abs(b_page.2, &b_page.3).unwrap();
         // Gap before b@20: frame a@13 (100 bytes).
-        assert_eq!(abs_b[1].gap_bytes_before, 100);
+        assert_eq!(abs_b, [run(12, 1, 50, 0), run(20, 1, 60, 100)]);
     }
 
     #[test]
@@ -822,9 +844,11 @@ mod tests {
             },
         ];
         let plan = plan_spans(&runs, 40_000, &cfg);
-        assert_eq!(plan.spans.len(), 2, "unknown seams must open a new span");
-        assert_eq!(plan.spans[0].end, 6);
-        assert_eq!(plan.spans[1].start, 20_005);
+        let [first, second] = plan.spans.as_slice() else {
+            panic!("unknown seams must open a second span");
+        };
+        assert_eq!((first.start, first.end), (5, 6));
+        assert_eq!((second.start, second.end), (20_005, 20_006));
         // Truly contiguous across a seam still merges.
         let runs = vec![
             run(5, 1, 1_000, 0),
@@ -844,9 +868,10 @@ mod tests {
         let cfg = PlanCfg::default();
         // Two runs separated by a tiny gap coalesce into one span.
         let plan = plan_spans(&[run(0, 10, 4_000, 0), run(15, 5, 2_000, 1_000)], 100, &cfg);
-        assert_eq!(plan.spans.len(), 1);
-        assert_eq!(plan.spans[0].start, 0);
-        assert_eq!(plan.spans[0].end, 20);
+        let [span] = plan.spans.as_slice() else {
+            panic!("the cheap gap must coalesce into one span");
+        };
+        assert_eq!((span.start, span.end), (0, 20));
         assert!(plan.complete);
         assert_eq!(plan.consumed_to, 100, "match-free tail is consumed");
 
@@ -873,3 +898,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "postings/codec_tests.rs"]
+mod codec_tests;

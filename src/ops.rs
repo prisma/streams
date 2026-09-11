@@ -26,12 +26,12 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const OPS_QUEUE_CAP: usize = 4096;
+pub(crate) const OPS_QUEUE_CAP: usize = 4096;
 /// Recent ring for the operator's live view (§12.5).
-pub const RECENT_CAP: usize = 256;
+pub(crate) const RECENT_CAP: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OpsEvent {
+pub(crate) struct OpsEvent {
     pub v: u16,
     pub event_id: String,
     pub event_time_ms: i64,
@@ -61,7 +61,7 @@ pub struct OpsEvent {
 }
 
 impl OpsEvent {
-    pub fn new(event_type: &str, event_id: String) -> Self {
+    pub(crate) fn new(event_type: &str, event_id: String) -> Self {
         OpsEvent {
             v: 1,
             event_id,
@@ -81,13 +81,13 @@ impl OpsEvent {
     /// Stamp CUSTOMER-stream identity: the tenant-qualified ref plus
     /// the incarnation. Taking `TenantStreamRef` (not a bare name) is
     /// the SR-6 guarantee that no customer op event omits its project.
-    pub fn stream(mut self, sref: &crate::tenant::TenantStreamRef, epoch: &str) -> Self {
+    pub(crate) fn stream(mut self, sref: &crate::tenant::TenantStreamRef, epoch: &str) -> Self {
         self.project_id = Some(sref.project_id().as_str().to_string());
         self.stream_id = Some(epoch.to_string());
         self.stream_name = Some(sref.name().as_str().to_string());
         self
     }
-    pub fn shard(mut self, prefix: &str) -> Self {
+    pub(crate) fn shard(mut self, prefix: &str) -> Self {
         self.shard = Some(prefix.to_string());
         self
     }
@@ -95,11 +95,11 @@ impl OpsEvent {
         self.instance = Some(i.to_string());
         self
     }
-    pub fn warn(mut self) -> Self {
+    pub(crate) fn warn(mut self) -> Self {
         self.severity = "warn".into();
         self
     }
-    pub fn fields(mut self, f: serde_json::Value) -> Self {
+    pub(crate) fn fields(mut self, f: serde_json::Value) -> Self {
         self.fields = f;
         self
     }
@@ -114,7 +114,7 @@ struct OpsQueue {
 /// Runtime-owned journal, recent view, drop debt and alert lifecycle.
 /// A second server cannot drain or resolve this server's observations.
 #[derive(Default)]
-pub struct OpsService {
+pub(crate) struct OpsService {
     queue: Mutex<OpsQueue>,
     dropped: AtomicU64,
     gap: AtomicU64,
@@ -123,14 +123,14 @@ pub struct OpsService {
     alerts: Mutex<std::collections::HashMap<String, AlertState>>,
 }
 impl OpsService {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
-    pub fn dropped(&self) -> u64 {
+    pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
     /// Never fails the transition: bounded overflow becomes durable gap debt.
-    pub fn emit(&self, ev: OpsEvent) {
+    pub(crate) fn emit(&self, ev: OpsEvent) {
         let mut g = self.queue.lock().unwrap();
         g.recent.push_back(ev.clone());
         if g.recent.len() > RECENT_CAP {
@@ -143,7 +143,7 @@ impl OpsService {
         }
         g.queue.push_back(ev);
     }
-    pub fn recent(&self, limit: usize) -> Vec<OpsEvent> {
+    pub(crate) fn recent(&self, limit: usize) -> Vec<OpsEvent> {
         self.queue
             .lock()
             .unwrap()
@@ -154,7 +154,7 @@ impl OpsService {
             .cloned()
             .collect()
     }
-    pub fn open_alerts(&self) -> Vec<AlertState> {
+    pub(crate) fn open_alerts(&self) -> Vec<AlertState> {
         self.alerts
             .lock()
             .unwrap()
@@ -267,7 +267,7 @@ where
 
 /// Drain queued events to `_ops_events`. Called from the telemetry
 /// task; requeues on failure (order preserved).
-pub async fn drain_ops_once(
+pub(crate) async fn drain_ops_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
     let Some(key) = state.billing.usage_key() else {
@@ -341,7 +341,7 @@ mod tests {
 /// instantaneous. Store-latency histograms remain on the live
 /// `/v1/debug/timings` surface; the snapshot carries their summary.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OpsSnapshot {
+pub(crate) struct OpsSnapshot {
     pub v: u16,
     pub ts_ms: i64,
     pub cell: String,
@@ -357,7 +357,7 @@ pub struct OpsSnapshot {
 /// Peak sampled RSS (MB) since the last ops scrape — fed by the 250 ms
 /// process sampler, drained (swap 0) by each snapshot, so a spike
 /// between snapshots is never invisible.
-pub static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Collect the instance snapshot from the live plane.
 pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
@@ -569,7 +569,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
 
 /// Emit one snapshot to `_ops_metrics` (§11.2 cadence: the telemetry
 /// task calls this every METRICS_INTERVAL_SECS, default 15).
-pub async fn emit_metrics_once(
+pub(crate) async fn emit_metrics_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<(), String> {
     let Some(key) = state.billing.usage_key() else {
@@ -592,7 +592,7 @@ async fn metrics_ledger_append(
 // ---- alerts (§13.2) --------------------------------------------------
 
 #[derive(Clone, Debug, Serialize)]
-pub struct AlertState {
+pub(crate) struct AlertState {
     pub fingerprint: String,
     pub summary: String,
     pub opened_at_ms: i64,

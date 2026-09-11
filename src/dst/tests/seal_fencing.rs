@@ -20,6 +20,14 @@ use super::fixture_storage::mem;
 /// carrying the old generation — it must land nothing and close
 /// nothing, or the collection ends up physically closed behind a
 /// descriptor that says somebody else's seal is still working.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal generation fixture; the held close is released and joined before checking the winning claim and stored records; running it inline cannot expose the takeover race"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal generation scenario; arrangement takeover and durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would obscure the fence proof"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_superseded_close_cannot_write_or_close() {
     let _serial = gap_lock().lock().await;
@@ -344,6 +352,10 @@ async fn an_exact_retry_renews_its_lease() {
 /// delete+recreate, must NOT proceed to claim and seal the
 /// replacement — the exact ABA the round-7 tests could not reach
 /// because they stopped at claim installation.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal incarnation fixture; the held marking request is released and joined before examining the replacement; running it inline cannot expose deletion between acknowledgement and mark"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resumed_mark_never_seals_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -425,6 +437,10 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
 /// DIFFERENT operation: it must not join the valid close's intent,
 /// collect the deferred ct-mismatch verdict, and tear down an intent
 /// it never owned.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal operation-identity fixture; the held valid close is released and joined after the competing invalid request; serializing the requests would remove the identity race"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
     let _serial = gap_lock().lock().await;

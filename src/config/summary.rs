@@ -29,7 +29,7 @@ impl ServerConfig {
                 "slatedb_rt_threads": self.engine.slatedb_rt_threads,
             },
             "shard": {
-                "open_deadline_ms": self.shard.open_deadline.as_millis() as u64,
+                "open_deadline_ms": u64::try_from(self.shard.open_deadline.as_millis()).unwrap_or(u64::MAX),
                 "open_wait_ms": self.shard.open_wait_ms,
                 "unready_exit_after_secs": self.shard.unready_exit_after_secs,
             },
@@ -39,7 +39,7 @@ impl ServerConfig {
                 "absorb_global_gathers": self.history.absorb_global_gathers,
                 "cache_bytes": self.history.cache_bytes,
                 "compactor_off": self.history.compactor_off,
-                "gc_interval_ms": self.history.gc_interval.map(|d| d.as_millis() as u64),
+                "gc_interval_ms": self.history.gc_interval.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
             },
             "postings": { "cache_bytes": self.postings.cache_bytes },
             "sse": {

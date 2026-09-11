@@ -8,13 +8,13 @@
 use crate::auth::AuthMode;
 
 #[derive(Clone, Debug)]
-pub struct DeploymentBearer {
+pub(crate) struct DeploymentBearer {
     token: Option<String>,
     default_key: Option<String>,
 }
 
 impl DeploymentBearer {
-    pub fn new(token: Option<String>, default_key: Option<String>) -> Self {
+    pub(crate) fn new(token: Option<String>, default_key: Option<String>) -> Self {
         Self { token, default_key }
     }
 
@@ -23,7 +23,7 @@ impl DeploymentBearer {
     /// exists only in Off mode. Shadow and enforce are multi-tenant
     /// postures — an unconfigured bearer there must close the surface,
     /// not open it.
-    pub fn authorizes(&self, presented: Option<&str>, mode: AuthMode) -> bool {
+    pub(crate) fn authorizes(&self, presented: Option<&str>, mode: AuthMode) -> bool {
         match &self.token {
             None => mode == AuthMode::Off,
             Some(t) => presented
@@ -33,7 +33,7 @@ impl DeploymentBearer {
     }
 
     /// The conformance suite's default stream key, when configured.
-    pub fn default_key(&self) -> Option<&str> {
+    pub(crate) fn default_key(&self) -> Option<&str> {
         self.default_key.as_deref()
     }
 }

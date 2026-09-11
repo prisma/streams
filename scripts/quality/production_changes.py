@@ -8,7 +8,57 @@ import re
 from common import syntax
 
 
-def normalized_source(source, parsed):
+def attribute_key(fact):
+    loc = fact['location']
+    return (fact['value'], loc['line'], loc['column'], loc['end_line'], loc['end_column'])
+
+
+def fixed_attribute_inputs(before, after, old_facts, new_facts):
+    """Opaque outer attributes may observe their complete item and its spans.
+
+    Freeze the complete enclosing declaration byte-for-byte, including every
+    attribute and nested token, at identical line/column AND byte positions.
+    This does not interpret a derive name or assume it is a standard macro.
+    Inner attributes and items without a parsed enclosing declaration stay
+    conservative. The normal comparison still rejects source introspection.
+    """
+    def inputs(source, parsed):
+        if 'tokens' not in parsed:
+            return {}
+        offsets = [0, *[i + 1 for i, char in enumerate(source) if char == '\n']]
+
+        def span(node):
+            loc = node['location']
+            return (offsets[loc['line'] - 1] + loc['column'],
+                    offsets[loc['end_line'] - 1] + loc['end_column'])
+
+        items = [(item, *span(item)) for item in parsed['items'] if item['kind'] in {
+            'module', 'function', 'impl', 'struct', 'enum', 'trait', 'const', 'static', 'type'
+        }]
+        result = {}
+        for fact in parsed['facts']:
+            if fact['kind'] != 'attribute':
+                continue
+            start, end = span(fact)
+            if source[max(0, start - 2):start] != '#[' or source[end:end + 1] != ']':
+                continue  # Never treat an inner attribute or macro interior as an outer one.
+            containers = [(item, left, right) for item, left, right in items
+                          if left <= start - 2 and end + 1 <= right]
+            if not containers:
+                continue
+            item, left, right = min(containers, key=lambda entry: entry[2] - entry[1])
+            result[attribute_key(fact)] = (
+                item['kind'], item['qualified'], item['location'],
+                len(source[:left].encode('utf-8')), len(source[:right].encode('utf-8')),
+                source[left:right],
+            )
+        return result
+
+    old, new = inputs(before, old_facts), inputs(after, new_facts)
+    return {key for key in old.keys() & new.keys() if old[key] == new[key]}
+
+
+def normalized_source(source, parsed, fixed_attributes=()):
     # Opaque templates cannot establish this proof. Do not use the scanner's
     # filename-based test hints: only a direct Rust cfg(test) can erase an item.
     if 'tokens' not in parsed:
@@ -71,9 +121,11 @@ def normalized_source(source, parsed):
     for fact in parsed['facts']:
         if erased(fact):
             continue
-        # A custom attribute/derive can inspect the annotations supplied to it.
-        # Retain checks instead of assuming its expansion commutes with erasure.
-        if fact['kind'] == 'attribute' and re.split(r'[ (=]', fact['value'], maxsplit=1)[0] not in builtins:
+        # A custom attribute/derive can inspect its complete supplied item.
+        # Retain checks unless both that item and all its positions are fixed.
+        if (fact['kind'] == 'attribute'
+                and re.split(r'[ (=]', fact['value'], maxsplit=1)[0] not in builtins
+                and attribute_key(fact) not in fixed_attributes):
             return None
         if fact['kind'] in {'macro', 'import-target'} and fact['value'].split('::')[-1].strip() in sensitive:
             return None
@@ -162,8 +214,9 @@ def unchanged_production(before, after, old_facts, new_facts):
         if old_prefix is not None and new_prefix is not None and old_prefix == new_prefix:
             fixed_prefixes.append(path)
             continue
-        old = normalized_source(before[path], old_facts[path])
-        new = normalized_source(after[path], new_facts[path])
+        fixed = fixed_attribute_inputs(before[path], after[path], old_facts[path], new_facts[path])
+        old = normalized_source(before[path], old_facts[path], fixed)
+        new = normalized_source(after[path], new_facts[path], fixed)
         if old is None or new is None:
             continue
         old_source, old_vis = old

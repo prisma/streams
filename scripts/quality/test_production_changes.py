@@ -123,6 +123,57 @@ class ProductionChanges(unittest.TestCase):
         before = 'fn f(){}'
         self.assertTrue(self.unchanged(before, before + '#[cfg(test)] #[custom] mod tests {}'))
 
+    def test_fixed_outer_macro_inputs_allow_annotations_on_unrelated_methods(self):
+        for attribute in ('derive(Clone)', 'derive(custom::Proof)', 'aliased::attribute'):
+            prefix = '#[' + attribute + ']\nstruct A { value: u8 }\n'
+            body = 'impl A { fn value(&self)->u8 { self.value } }'
+            after = body.replace('fn value', '#[expect(clippy::unwrap_used, reason="owner; proof; necessity")] fn value')
+            with self.subTest(attribute=attribute):
+                self.assertTrue(self.unchanged(prefix + body, prefix + after))
+                self.assertTrue(self.unchanged(prefix + after, prefix + body))
+                self.assertFalse(self.unchanged(prefix + body, prefix + after.replace('self.value }', '0 }')))
+
+    def test_conditionally_constructed_macro_attributes_remain_conservative(self):
+        before = '#[cfg_attr(feature="live", custom::derive)] struct A;\nfn f(){}'
+        self.assertFalse(self.unchanged(before, before.replace('fn f', '#[allow(dead_code)] fn f')))
+
+    def test_changed_or_moved_macro_inputs_still_retain_checks(self):
+        prefix = '#[derive(custom::Proof)]\nstruct A { value: u8 }\n'
+        body = 'impl A { fn value(&self)->u8 { self.value } }'
+        annotation = '#[allow(dead_code)] '
+        for after in (
+            annotation + prefix + body,
+            prefix.replace('value: u8', '#[allow(dead_code)] value: u8') + body,
+            prefix.replace('struct A', 'pub(crate) struct A') + body,
+            prefix.replace('custom::Proof', 'custom::Other') + body,
+            prefix.replace('value: u8', 'value: u16') + body,
+            '\n' + prefix + body,
+        ):
+            with self.subTest(after=after):
+                self.assertFalse(self.unchanged(prefix + body, after))
+        # Identical line/column locations are insufficient when UTF-8 byte
+        # positions move. The opaque macro may observe byte ranges as well.
+        self.assertFalse(self.unchanged('// a\n' + prefix + body,
+                                       '// é\n' + prefix + annotation + body))
+
+    def test_fixed_input_proof_cannot_erase_inside_an_outer_macro_owner(self):
+        for before, after in (
+            ('#[custom] impl A { fn f(){} }', '#[custom] impl A { #[allow(dead_code)] fn f(){} }'),
+            ('#[custom] mod owner { #[cfg(test)] fn a(){} }', '#[custom] mod owner { #[cfg(test)] fn b(){} }'),
+            ('#[custom] trait A { fn f(); }', '#[custom] trait A { #[allow(dead_code)] fn f(); }'),
+            ('#![custom]\nstruct A;\nfn f(){}', '#![custom]\nstruct A;\n#[allow(dead_code)] fn f(){}'),
+        ):
+            with self.subTest(before=before):
+                self.assertFalse(self.unchanged(before, after))
+
+    def test_fixed_derive_does_not_hide_introspection_or_opaque_item_macros(self):
+        prefix = '#[derive(custom::Proof)] struct A;\n'
+        for body in ('fn f(){ let _ = line!(); }',
+                     'use std::include_str as source; fn f(){ let _ = source!("a"); }',
+                     'macro_rules! m { () => { 1 } } fn f(){}',
+                     'opaque! { fn other(){} } fn f(){}'):
+            self.assertFalse(self.unchanged(prefix + body, prefix + '#[allow(dead_code)] ' + body))
+
     def test_trailing_test_module_keeps_opaque_production_inputs_fixed(self):
         for prefix in ('#[derive(Clone)] struct A;\n',
                        '#[async_trait::async_trait] trait A { async fn read(&self); }\n'):

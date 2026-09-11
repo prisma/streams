@@ -23,14 +23,22 @@
 
 use serde::{Deserialize, Serialize};
 
+mod read_accumulator;
+pub(crate) use read_accumulator::{
+    READ_FLUSH_INTERVAL_MS, READ_SEALED_MAX_BATCHES, ReadUsageAccumulator, RowDelta,
+};
+
+mod read_spool;
+pub(crate) use read_spool::ReadSpool;
+
 // ---------------------------------------------------------------------
 // Reserved system streams
 // ---------------------------------------------------------------------
 
-pub const USAGE_STREAM: &str = "_usage";
-pub const OPS_METRICS_STREAM: &str = "_ops_metrics";
-pub const OPS_EVENTS_STREAM: &str = "_ops_events";
-pub const AUDIT_EVENTS_STREAM: &str = "_audit_events";
+pub(crate) const USAGE_STREAM: &str = "_usage";
+pub(crate) const OPS_METRICS_STREAM: &str = "_ops_metrics";
+pub(crate) const OPS_EVENTS_STREAM: &str = "_ops_events";
+pub(crate) const AUDIT_EVENTS_STREAM: &str = "_audit_events";
 
 /// The reserved internal namespaces. Reserved streams are invisible to
 /// the customer catalog, refused on every public surface (raw and
@@ -39,7 +47,7 @@ pub const AUDIT_EVENTS_STREAM: &str = "_audit_events";
 /// `_`-prefix (not just the three current names) keeps the namespace
 /// available for future system streams without a migration.
 // mt-lint: allow(name-param-shared-core): name-SHAPE predicate (reserved prefix), no identity derived
-pub fn is_reserved_stream(name: &str) -> bool {
+pub(crate) fn is_reserved_stream(name: &str) -> bool {
     name.starts_with('_')
 }
 
@@ -52,7 +60,7 @@ pub fn is_reserved_stream(name: &str) -> bool {
 /// name yields a NEW identity, and a stale observation for the old one
 /// can never mutate the new stream's rollup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct BillingIdentity {
+pub(crate) struct BillingIdentity {
     pub account_id: String,
     pub project_id: String,
     /// Immutable resource incarnation: hex stream_epoch.
@@ -65,7 +73,7 @@ pub struct BillingIdentity {
 /// (source, seq) batches from a restarted process can never collide
 /// with — or re-bill — batches from the previous life.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeterSource {
+pub(crate) struct MeterSource {
     pub cell: String,
     pub instance: String,
     pub boot: String,
@@ -78,7 +86,7 @@ pub struct MeterSource {
 /// can no longer move ingest between invoice months or park the
 /// storage clock in the future to dodge accrual. Tests inject months
 /// here instead of abusing the public header.
-pub fn billing_now_ms() -> i64 {
+pub(crate) fn billing_now_ms() -> i64 {
     #[cfg(test)]
     {
         let v = BILLING_CLOCK_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
@@ -90,13 +98,13 @@ pub fn billing_now_ms() -> i64 {
 }
 
 #[cfg(test)]
-pub static BILLING_CLOCK_OVERRIDE: std::sync::atomic::AtomicI64 =
+pub(crate) static BILLING_CLOCK_OVERRIDE: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
 /// Serializes month-sensitive tests: the clock-injecting test takes
 /// write; tests asserting real-now months take read.
 #[cfg(test)]
-pub fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
+pub(crate) fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
     static L: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
     L.get_or_init(|| tokio::sync::RwLock::new(()))
 }
@@ -106,7 +114,7 @@ pub fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
 // ---------------------------------------------------------------------
 
 /// (year, month 1..=12) of a UTC millisecond timestamp.
-pub fn utc_year_month(ms: i64) -> (i32, u32) {
+pub(crate) fn utc_year_month(ms: i64) -> (i32, u32) {
     let days = ms.div_euclid(86_400_000);
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -121,7 +129,7 @@ pub fn utc_year_month(ms: i64) -> (i32, u32) {
 }
 
 /// First instant of (year, month), UTC, in ms.
-pub fn month_start_ms(year: i32, month: u32) -> i64 {
+pub(crate) fn month_start_ms(year: i32, month: u32) -> i64 {
     let y = i64::from(if month <= 2 { year - 1 } else { year });
     let m = i64::from(month);
     let era = y.div_euclid(400);
@@ -132,7 +140,7 @@ pub fn month_start_ms(year: i32, month: u32) -> i64 {
     (era * 146_097 + doe - 719_468) * 86_400_000
 }
 
-pub fn next_month(year: i32, month: u32) -> (i32, u32) {
+pub(crate) fn next_month(year: i32, month: u32) -> (i32, u32) {
     if month == 12 {
         (year + 1, 1)
     } else {
@@ -141,12 +149,12 @@ pub fn next_month(year: i32, month: u32) -> (i32, u32) {
 }
 
 /// Display/key form: "2026-08".
-pub fn month_str(year: i32, month: u32) -> String {
+pub(crate) fn month_str(year: i32, month: u32) -> String {
     format!("{year:04}-{month:02}")
 }
 
 /// Parse "YYYY-MM". Strict: exactly 7 chars, month 1..=12.
-pub fn parse_month(s: &str) -> Option<(i32, u32)> {
+pub(crate) fn parse_month(s: &str) -> Option<(i32, u32)> {
     let (y, m) = s.split_once('-')?;
     if y.len() != 4 || m.len() != 2 {
         return None;
@@ -171,7 +179,7 @@ pub fn parse_month(s: &str) -> Option<(i32, u32)> {
 /// write, and `#[serde(default)]` gives forward evolution without a
 /// hand-rolled binary version ladder.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SegmentBillingMetaV1 {
+pub(crate) struct SegmentBillingMetaV1 {
     #[serde(default)]
     pub v: u16,
     // Identity, captured at first append and immutable for the life of
@@ -228,7 +236,7 @@ pub struct SegmentBillingMetaV1 {
 }
 
 impl SegmentBillingMetaV1 {
-    pub fn month_byte_ms(&self) -> u128 {
+    pub(crate) fn month_byte_ms(&self) -> u128 {
         self.month_storage_byte_ms.parse().unwrap_or(0)
     }
 
@@ -236,7 +244,7 @@ impl SegmentBillingMetaV1 {
     /// boundaries. Each closed month's final accumulators are handed to
     /// `on_month_close` BEFORE the month fields reset — the committer
     /// stages them into the usage outbox in the same WriteBatch.
-    pub fn advance_storage_clock(
+    pub(crate) fn advance_storage_clock(
         &mut self,
         now_ms: i64,
         mut on_month_close: impl FnMut(&SegmentBillingMetaV1),
@@ -280,14 +288,14 @@ impl SegmentBillingMetaV1 {
 /// submit hash addresses. One Arc per request, built where the
 /// descriptor is already in hand.
 #[derive(Clone, Debug)]
-pub struct BillingRef {
+pub(crate) struct BillingRef {
     pub identity: BillingIdentity,
     pub segment_id: u32,
 }
 
 impl SegmentBillingMetaV1 {
     /// The `_usage` view of this row (live or closed-month final).
-    pub fn to_snapshot(&self, month_final: bool) -> SegmentSnapshot {
+    pub(crate) fn to_snapshot(&self, month_final: bool) -> SegmentSnapshot {
         SegmentSnapshot {
             identity: BillingIdentity {
                 account_id: self.account_id.clone(),
@@ -317,7 +325,7 @@ impl SegmentBillingMetaV1 {
 /// deterministic for snapshots and lifecycle observations (replays
 /// deduplicate downstream); read batches identify by (source, seq).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UsageEnvelope {
+pub(crate) struct UsageEnvelope {
     pub v: u16,
     pub event_id: String,
     pub event_time_ms: i64,
@@ -329,7 +337,7 @@ pub struct UsageEnvelope {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum UsagePayload {
+pub(crate) enum UsagePayload {
     SegmentSnapshot(SegmentSnapshot),
     ReadBatch(ReadBatch),
     StreamLifecycle(StreamLifecycle),
@@ -339,7 +347,7 @@ pub enum UsagePayload {
 /// Exact durable ingest/storage state for one segment, either the live
 /// row (`month_final: false`) or a closed month's final numbers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SegmentSnapshot {
+pub(crate) struct SegmentSnapshot {
     #[serde(flatten)]
     pub identity: BillingIdentity,
     pub segment_id: u32,
@@ -358,7 +366,7 @@ pub struct SegmentSnapshot {
 impl SegmentSnapshot {
     /// Deterministic id: same (segment incarnation, month, version) →
     /// same id, so a re-emitted snapshot deduplicates.
-    pub fn deterministic_event_id(&self) -> String {
+    pub(crate) fn deterministic_event_id(&self) -> String {
         format!(
             "snap/{}/{}/{}/{}{}",
             self.identity.stream_id,
@@ -372,7 +380,7 @@ impl SegmentSnapshot {
 
 /// Externally delivered read usage, as deltas over [from_ms, to_ms).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadBatch {
+pub(crate) struct ReadBatch {
     pub source: MeterSource,
     pub seq: u64,
     pub from_ms: i64,
@@ -381,7 +389,7 @@ pub struct ReadBatch {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadRow {
+pub(crate) struct ReadRow {
     #[serde(flatten)]
     pub identity: BillingIdentity,
     #[serde(default)]
@@ -397,7 +405,7 @@ pub struct ReadRow {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StreamLifecycle {
+pub(crate) struct StreamLifecycle {
     #[serde(flatten)]
     pub identity: BillingIdentity,
     /// created | soft_deleted | hard_deleted | expired | fork_retained
@@ -406,7 +414,7 @@ pub struct StreamLifecycle {
 }
 
 impl StreamLifecycle {
-    pub fn deterministic_event_id(&self) -> String {
+    pub(crate) fn deterministic_event_id(&self) -> String {
         format!("life/{}/{}", self.identity.stream_id, self.transition)
     }
 }
@@ -414,7 +422,7 @@ impl StreamLifecycle {
 /// Explicit post-close correction — finalized months are never silently
 /// rewritten.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UsageCorrection {
+pub(crate) struct UsageCorrection {
     #[serde(flatten)]
     pub identity: BillingIdentity,
     pub month: String,
@@ -455,7 +463,7 @@ pub struct UsageCorrection {
 
 /// `<seg-hash>'B'` → SegmentBillingMetaV1 (JSON). Tag byte `B` is
 /// unused by any other row family in the shard keyspace.
-pub fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
     k.extend_from_slice(hash);
     k.push(b'B');
@@ -467,9 +475,9 @@ pub fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
 /// absorber's dirty index (shard.rs): sorts outside every stream's key
 /// range, scanned once by the drainer, deleted through the committer so
 /// acknowledgment serializes with concurrent appends.
-pub const USAGE_DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
+pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
 
-pub fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
+pub(crate) fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(33);
     k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
     k.push(b'U');
@@ -481,7 +489,7 @@ pub fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
 /// `<0xFF sentinel>'V'<seg-hash><"YYYY-MM">` → SegmentSnapshot (JSON,
 /// self-contained). Rare — one per segment-month — and deleted after
 /// the ledger acknowledges.
-pub fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
+pub(crate) fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
     let mut k = Vec::with_capacity(40);
     k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
     k.push(b'V');
@@ -708,176 +716,10 @@ mod tests {
 // coordinator
 // ---------------------------------------------------------------------
 
-/// Flush thresholds (§7.2). The active map seals into a batch on any of
-/// these; a sealed batch is what the drainer appends to `_usage`.
-pub const READ_FLUSH_INTERVAL_MS: i64 = 10_000;
-pub const READ_FLUSH_MAX_ENTRIES: usize = 10_000;
-pub const READ_FLUSH_MAX_EST_BYTES: usize = 1 << 20;
-/// Sealed batches waiting for the ledger. When the ledger is down long
-/// enough to fill this, sealing PAUSES and deltas keep merging into the
-/// active map — attribution is never discarded (§14.1), memory stays
-/// bounded by stream cardinality, and the lag is visible.
-pub const READ_SEALED_MAX_BATCHES: usize = 64;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RowDelta {
-    pub read_payload_bytes: u64,
-    pub read_records: u64,
-    pub read_operations: u64,
-    pub queue_operations: u64,
-    pub append_requests: u64,
-}
-
-struct ActiveMap {
-    rows: std::collections::HashMap<BillingIdentity, RowDelta>,
-    opened_ms: i64,
-    /// Rough encoded-size estimate (identity strings + numbers), used
-    /// only against READ_FLUSH_MAX_EST_BYTES.
-    est_bytes: usize,
-}
-
-pub struct ReadUsageAccumulator {
-    active: std::sync::Mutex<ActiveMap>,
-    sealed: std::sync::Mutex<std::collections::VecDeque<ReadBatch>>,
-    seq: std::sync::atomic::AtomicU64,
-    source: MeterSource,
-    /// Batches that could not seal because the sealed queue was full —
-    /// a telemetry-lag signal, not data loss (rows kept merging).
-    pub seal_deferrals: std::sync::atomic::AtomicU64,
-}
-
-impl ReadUsageAccumulator {
-    pub fn new(source: MeterSource) -> Self {
-        ReadUsageAccumulator {
-            active: std::sync::Mutex::new(ActiveMap {
-                rows: std::collections::HashMap::new(),
-                opened_ms: 0,
-                est_bytes: 0,
-            }),
-            sealed: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            seq: std::sync::atomic::AtomicU64::new(0),
-            source,
-            seal_deferrals: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    /// Add one observation. Reserved system streams are never metered
-    /// (self-metering exclusion, §8.4).
-    pub fn meter(&self, id: &BillingIdentity, d: RowDelta) {
-        if is_reserved_stream(&id.stream_name) {
-            return;
-        }
-        let mut a = self.active.lock().unwrap();
-        if a.rows.is_empty() {
-            a.opened_ms = crate::shard::now_ms();
-        }
-        match a.rows.get_mut(id) {
-            Some(row) => {
-                row.read_payload_bytes += d.read_payload_bytes;
-                row.read_records += d.read_records;
-                row.read_operations += d.read_operations;
-                row.queue_operations += d.queue_operations;
-                row.append_requests += d.append_requests;
-                a.est_bytes += 8;
-            }
-            None => {
-                a.est_bytes += 120
-                    + id.account_id.len()
-                    + id.project_id.len()
-                    + id.stream_id.len()
-                    + id.stream_name.len();
-                a.rows.insert(id.clone(), d);
-            }
-        }
-        if a.rows.len() >= READ_FLUSH_MAX_ENTRIES || a.est_bytes >= READ_FLUSH_MAX_EST_BYTES {
-            self.seal_locked(&mut a);
-        }
-    }
-
-    fn seal_locked(&self, a: &mut ActiveMap) {
-        if a.rows.is_empty() {
-            return;
-        }
-        let mut sealed = self.sealed.lock().unwrap();
-        if sealed.len() >= READ_SEALED_MAX_BATCHES {
-            // Ledger outage: keep merging instead of sealing. Rotation
-            // resumes as soon as the drainer catches up.
-            self.seal_deferrals
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return;
-        }
-        let rows = std::mem::take(&mut a.rows)
-            .into_iter()
-            .map(|(identity, d)| ReadRow {
-                identity,
-                read_payload_bytes: d.read_payload_bytes,
-                read_records: d.read_records,
-                read_operations: d.read_operations,
-                queue_operations: d.queue_operations,
-                append_requests: d.append_requests,
-            })
-            .collect();
-        let now = crate::shard::now_ms();
-        sealed.push_back(ReadBatch {
-            source: self.source.clone(),
-            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-            from_ms: a.opened_ms,
-            to_ms: now,
-            rows,
-        });
-        a.est_bytes = 0;
-        a.opened_ms = now;
-    }
-
-    /// Timer/shutdown entry: seal if the active interval is at least
-    /// `max_age_ms` old (0 = unconditionally).
-    pub fn seal_if_aged(&self, max_age_ms: i64) {
-        let mut a = self.active.lock().unwrap();
-        if a.rows.is_empty() {
-            return;
-        }
-        if max_age_ms == 0 || crate::shard::now_ms() - a.opened_ms >= max_age_ms {
-            self.seal_locked(&mut a);
-        }
-    }
-
-    /// Hand up to `max` sealed batches to the drainer. The drainer
-    /// requeues on emission failure — a batch leaves this process only
-    /// after `_usage` acknowledged it.
-    pub fn drain_sealed(&self, max: usize) -> Vec<ReadBatch> {
-        let mut sealed = self.sealed.lock().unwrap();
-        let n = sealed.len().min(max);
-        sealed.drain(..n).collect()
-    }
-
-    /// Failed emission: put the batches back at the FRONT, original
-    /// order, so sequence numbers stay as monotone as delivery allows.
-    pub fn requeue(&self, batches: Vec<ReadBatch>) {
-        let mut sealed = self.sealed.lock().unwrap();
-        for b in batches.into_iter().rev() {
-            sealed.push_front(b);
-        }
-    }
-
-    /// (active rows, active est bytes, sealed batches) — the §14.2 lag
-    /// gauges, and the "maximum possible loss" numerator.
-    pub fn unflushed(&self) -> (usize, usize, usize) {
-        let a = self.active.lock().unwrap();
-        let s = self.sealed.lock().unwrap();
-        (a.rows.len(), a.est_bytes, s.len())
-    }
-
-    /// Test/operator view of the live (unsealed) rows.
-    pub fn snapshot_active(&self) -> Vec<(BillingIdentity, RowDelta)> {
-        let a = self.active.lock().unwrap();
-        a.rows.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-    }
-}
-
 /// The BillingIdentity for a descriptor, with deployment defaults for
 /// descriptors created before the cutover. Counts feed misses — use
 /// on METERING paths only.
-pub fn identity_of(
+pub(crate) fn identity_of(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
 ) -> BillingIdentity {
@@ -887,7 +729,7 @@ pub fn identity_of(
 /// Same resolution WITHOUT the miss counter — for read-only query
 /// paths (usage GETs), so dashboard polling of a feed-lagged project
 /// cannot inflate a counter named "meter events".
-pub fn identity_of_query(
+pub(crate) fn identity_of_query(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
 ) -> BillingIdentity {
@@ -947,7 +789,7 @@ pub(crate) fn identity_with_capabilities(
 /// (attributed to the deployment account) — exported in the ops
 /// snapshot as unowned_meter_events_total; a nonzero steady rate means
 /// the feed is lying or lagging.
-pub static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
+pub(crate) static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Segment rows whose STORED workspace disagrees with the current
@@ -956,11 +798,11 @@ pub static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
 /// the stored identity mid-month would double-count (rollup deltas are
 /// absolute per account row); the committer heals at the next month
 /// boundary. Exported as segment_identity_drift_total.
-pub static SEGMENT_IDENTITY_DRIFT: std::sync::atomic::AtomicU64 =
+pub(crate) static SEGMENT_IDENTITY_DRIFT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Meter one externally delivered read page (op + payload bytes).
-pub fn meter_read(
+pub(crate) fn meter_read(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
     bytes: u64,
@@ -978,7 +820,7 @@ pub fn meter_read(
 }
 
 /// Meter SSE/subscription payload chunks (no extra operation count).
-pub fn meter_read_chunk(
+pub(crate) fn meter_read_chunk(
     acc: &ReadUsageAccumulator,
     id: &BillingIdentity,
     bytes: u64,
@@ -996,7 +838,7 @@ pub fn meter_read_chunk(
 
 /// Meter a queue operation with delivered payload (pull; redelivery
 /// meters again by design §4.2).
-pub fn meter_pull(
+pub(crate) fn meter_pull(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
     bytes: u64,
@@ -1014,7 +856,7 @@ pub fn meter_pull(
 }
 
 /// Meter a zero-data queue operation (settle/extend/config).
-pub fn meter_queue_op(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
+pub(crate) fn meter_queue_op(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
     state.billing.meter_read(
         &identity_of(state, desc),
         RowDelta {
@@ -1066,7 +908,7 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
 
 /// BILLING_MODE=required: production billing — volatile fallbacks are
 /// refused and billing infrastructure failures are fatal at startup.
-pub fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
+pub(crate) fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
     cfg.mode_env.as_deref() == Some("required")
 }
 
@@ -1075,7 +917,7 @@ pub fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
 /// remainder requeue at the accumulator head (round-22 item 2a) — a
 /// fault after batch k of n must leave batches k..n in memory and
 /// 1..k in the spool, nothing dropped.
-pub async fn spool_sealed(
+pub(crate) async fn spool_sealed(
     acc: &ReadUsageAccumulator,
     spool: &ReadSpool,
     max: usize,
@@ -1498,7 +1340,7 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
 
 /// The drainer task: every TELEMETRY_DRAIN_SECS (default 2), one drain
 /// round. Errors log and retry — the durable outbox holds the truth.
-pub fn spawn_telemetry(
+pub(crate) fn spawn_telemetry(
     state: std::sync::Arc<crate::http::AppState>,
     tasks: &crate::tasks::TaskSupervisor,
 ) {
@@ -1638,7 +1480,7 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
 
 /// One ops-metrics rollup step (§13.1): consume `_ops_metrics` from
 /// its own cursor into raw + m1 tiers.
-pub async fn ops_rollup_step(
+pub(crate) async fn ops_rollup_step(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
     let Some(rollup) = state.rollup.get() else {
@@ -1689,7 +1531,7 @@ pub static ARTIFACT_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic
 /// financial-integrity alarm and the row stays pending for an
 /// operator, never silently marked published. Anything else stays
 /// pending and retries next tick and after restart.
-pub async fn publish_artifacts(
+pub(crate) async fn publish_artifacts(
     rollup: &crate::rollup::UsageRollup,
     store: &std::sync::Arc<dyn object_store::ObjectStore>,
     prefix: &str,
@@ -1796,7 +1638,7 @@ pub async fn publish_artifacts(
 /// Open the rollup DB and register it on the state. Required mode
 /// calls this synchronously BEFORE serving (round-22 item 10): a
 /// rollup instance that cannot open its database is not ready.
-pub async fn open_rollup(
+pub(crate) async fn open_rollup(
     state: &std::sync::Arc<crate::http::AppState>,
     prefix: &str,
 ) -> anyhow::Result<()> {
@@ -1814,7 +1656,7 @@ pub async fn open_rollup(
     Ok(())
 }
 
-pub fn spawn_rollup(
+pub(crate) fn spawn_rollup(
     state: std::sync::Arc<crate::http::AppState>,
     prefix: String,
     tasks: &crate::tasks::TaskSupervisor,
@@ -1955,329 +1797,6 @@ pub(crate) fn telemetry_settings(
     }
 }
 
-/// Sealed read batches enter durable custody here before the usage ledger;
-/// removal follows only a durable ledger acknowledgement. The runtime shares
-/// one bounded cache between this database and its usage rollup.
-pub struct ReadSpool {
-    db: std::sync::Arc<slatedb::Db>,
-    next: std::sync::atomic::AtomicU64,
-    /// Corrupt rows moved to `quarantine/` since open (plus any found
-    /// at open) — nonzero means reads may be under-billed and an
-    /// operator must inspect; the rows themselves are preserved.
-    quarantined: std::sync::atomic::AtomicU64,
-    /// Exact resident (pending-key -> encoded len) map, maintained at
-    /// open/persist/remove/quarantine — the depth and byte gauges the
-    /// OOM review asks for, WITHOUT a scan per metrics tick.
-    sizes: std::sync::Mutex<std::collections::HashMap<Vec<u8>, u64>>,
-    pending_rows: std::sync::atomic::AtomicU64,
-    pending_bytes: std::sync::atomic::AtomicU64,
-    /// Test fault injection: -1 = never fail; N >= 0 = allow N more
-    /// successful persists, then fail every one after.
-    #[cfg(test)]
-    pub fail_after: std::sync::atomic::AtomicI64,
-}
-
-/// Until spool readability is proved, cancellation/errors retain an explicit
-/// close owner. The SlateDB runtime keeps that one close alive to completion.
-struct SpoolOpenGuard(Option<std::sync::Arc<slatedb::Db>>);
-
-impl Drop for SpoolOpenGuard {
-    fn drop(&mut self) {
-        if let Some(db) = self.0.take() {
-            crate::bootstrap::slatedb_runtime().spawn(async move {
-                if let Err(error) = db.close().await {
-                    tracing::warn!("abandoned read spool close failed: {error}");
-                }
-            });
-        }
-    }
-}
-
-impl ReadSpool {
-    /// Test-only convenience: a fresh cache, with no ambient shared state.
-    #[cfg(test)]
-    pub async fn open(
-        store: std::sync::Arc<dyn object_store::ObjectStore>,
-        prefix: &str,
-        instance: &str,
-        cfg: &crate::config::ServerConfig,
-    ) -> anyhow::Result<Self> {
-        Self::open_with_cache(
-            store,
-            prefix,
-            instance,
-            cfg,
-            crate::runtime::TelemetryResources::new(cfg.billing.telemetry_cache_bytes).cache,
-        )
-        .await
-    }
-
-    /// Production callers supply their runtime's shared telemetry cache.
-    pub async fn open_with_cache(
-        store: std::sync::Arc<dyn object_store::ObjectStore>,
-        prefix: &str,
-        instance: &str,
-        cfg: &crate::config::ServerConfig,
-        cache: std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>,
-    ) -> anyhow::Result<Self> {
-        let inst = if instance.is_empty() {
-            "solo"
-        } else {
-            instance
-        };
-        let path = if prefix.is_empty() {
-            format!("telemetry/read-spool/{inst}")
-        } else {
-            format!("{prefix}/telemetry/read-spool/{inst}")
-        };
-        let settings = telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
-        let db = crate::bootstrap::on_slatedb_rt(async move {
-            slatedb::Db::builder(path.as_str(), store)
-                .with_settings(settings)
-                .with_db_cache(cache)
-                .build()
-                .await
-        })
-        .await?;
-        let db = std::sync::Arc::new(db);
-        let mut opening = SpoolOpenGuard(Some(db.clone()));
-        let next = match db.get(&b"meta/next-seq"[..]).await? {
-            Some(v) => crate::shard::decode_cursor(&v)?,
-            None => 0,
-        };
-        // Rows quarantined by earlier boots stay on the books: the
-        // corruption alert survives restarts until an operator clears
-        // the quarantine explicitly.
-        let mut prior = 0u64;
-        let mut it = db.scan_prefix(&b"quarantine/"[..], ..).await?;
-        while (it.next().await?).is_some() {
-            prior += 1;
-        }
-        let mut sizes = std::collections::HashMap::new();
-        let mut it = db.scan_prefix(&b"rb/"[..], ..).await?;
-        while let Some(kv) = it.next().await? {
-            sizes.insert(kv.key.to_vec(), kv.value.len() as u64);
-        }
-        let rows = sizes.len() as u64;
-        let bytes: u64 = sizes.values().sum();
-        let sp = ReadSpool {
-            db,
-            next: std::sync::atomic::AtomicU64::new(next),
-            quarantined: std::sync::atomic::AtomicU64::new(prior),
-            sizes: std::sync::Mutex::new(sizes),
-            pending_rows: std::sync::atomic::AtomicU64::new(rows),
-            pending_bytes: std::sync::atomic::AtomicU64::new(bytes),
-            #[cfg(test)]
-            fail_after: std::sync::atomic::AtomicI64::new(-1),
-        };
-        // Round-22 item 2b: an openable spool whose PENDING rows cannot
-        // be scanned is not "ready" — prove readability before use.
-        sp.pending(16).await?;
-        opening.0.take();
-        Ok(sp)
-    }
-
-    fn key(seq: u64) -> Vec<u8> {
-        let mut k = b"rb/".to_vec();
-        k.extend_from_slice(&seq.to_be_bytes());
-        k
-    }
-
-    /// Durably persist one sealed batch. Returns its spool key.
-    pub async fn persist(&self, b: &ReadBatch) -> anyhow::Result<Vec<u8>> {
-        let keys = self.persist_all(std::slice::from_ref(b)).await?;
-        Ok(keys.into_iter().next().expect("one key per batch"))
-    }
-
-    /// Durably persist a WHOLE drain round in ONE WriteBatch with ONE
-    /// flush (OOM review item 5): a flush per sealed batch minted a
-    /// tiny L0 per batch and fed compaction churn on the two-thread
-    /// SlateDB runtime the history compactor also needs. All-or-
-    /// nothing: on error, NOTHING in `batches` is durable and the
-    /// caller requeues the whole slice.
-    pub async fn persist_all(&self, batches: &[ReadBatch]) -> anyhow::Result<Vec<Vec<u8>>> {
-        #[cfg(test)]
-        {
-            let left = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
-            if left == 0 {
-                anyhow::bail!("injected spool fault");
-            }
-            if left > 0 {
-                self.fail_after
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        if batches.is_empty() {
-            return Ok(Vec::new());
-        }
-        let seq0 = self
-            .next
-            .fetch_add(batches.len() as u64, std::sync::atomic::Ordering::SeqCst);
-        let mut wb = slatedb::WriteBatch::new();
-        let mut keys = Vec::with_capacity(batches.len());
-        let mut encoded = Vec::with_capacity(batches.len());
-        for (i, b) in batches.iter().enumerate() {
-            let key = Self::key(seq0 + i as u64);
-            let v = serde_json::to_vec(b)?;
-            encoded.push((key.clone(), v.len() as u64));
-            wb.put(key.clone(), v);
-            keys.push(key);
-        }
-        wb.put(
-            &b"meta/next-seq"[..],
-            &(seq0 + batches.len() as u64).to_le_bytes()[..],
-        );
-        self.db.write(wb).await?;
-        // The build runs with wal_disable (the engines own their WAL
-        // cadence), so an explicit flush is what makes "spooled" mean
-        // OBJECT-STORE durable — the entire point of this spool.
-        self.db.flush().await?;
-        {
-            let mut sizes = self.sizes.lock().unwrap();
-            for (k, len) in encoded {
-                sizes.insert(k, len);
-                self.pending_bytes
-                    .fetch_add(len, std::sync::atomic::Ordering::Relaxed);
-                self.pending_rows
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        Ok(keys)
-    }
-
-    /// Oldest pending batches (recovered across restarts). A row that
-    /// does not decode is QUARANTINED (round-22 item 2c): moved to
-    /// `quarantine/<key>` in one batch — preserved for forensics,
-    /// never re-parsed, never silently skipped — counted, logged at
-    /// error level, and raised as an alert by the ops evaluator.
-    /// Scan/store faults still propagate as errors (fail closed);
-    /// only decode failures quarantine.
-    pub async fn pending(&self, max: usize) -> anyhow::Result<Vec<(Vec<u8>, ReadBatch)>> {
-        let mut out = Vec::new();
-        let mut corrupt: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut iter = self.db.scan_prefix(&b"rb/"[..], ..).await?;
-        while let Some(kv) = iter.next().await? {
-            match serde_json::from_slice(&kv.value) {
-                Ok(b) => {
-                    out.push((kv.key.to_vec(), b));
-                    if out.len() >= max {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "read spool row corrupt ({} bytes at {}): {e} — quarantining; \
-                         reads in this batch are NOT billed until an operator recovers it",
-                        kv.value.len(),
-                        String::from_utf8_lossy(&kv.key),
-                    );
-                    corrupt.push((kv.key.to_vec(), kv.value.to_vec()));
-                }
-            }
-        }
-        if !corrupt.is_empty() {
-            let mut wb = slatedb::WriteBatch::new();
-            for (k, v) in &corrupt {
-                let mut qk = b"quarantine/".to_vec();
-                qk.extend_from_slice(k);
-                wb.put(qk, v.clone());
-                wb.delete(k.clone());
-            }
-            self.db.write(wb).await?;
-            self.db.flush().await?;
-            self.quarantined
-                .fetch_add(corrupt.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            let mut sizes = self.sizes.lock().unwrap();
-            for (k, _) in &corrupt {
-                if let Some(len) = sizes.remove(k) {
-                    self.pending_bytes
-                        .fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
-                    self.pending_rows
-                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// L0 posture of the spool DB itself (round-trip of the same
-    /// in-memory manifest probe the history partitions use): the
-    /// bounded-settings claim, observable.
-    pub fn l0_stats(&self) -> (u64, u64, u64, u64) {
-        crate::history::history_l0_stats(&self.db)
-    }
-
-    /// Quarantined-row count (this boot + found at open). Nonzero is
-    /// an open alert until the quarantine is cleared by an operator.
-    pub fn quarantined_count(&self) -> u64 {
-        self.quarantined.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    pub async fn put_raw(&self, key: &[u8], val: &[u8]) -> anyhow::Result<()> {
-        let mut wb = slatedb::WriteBatch::new();
-        wb.put(key, val);
-        self.db.write(wb).await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub async fn close_for_tests(&self) {
-        self.db.close().await.unwrap();
-    }
-
-    #[cfg(test)]
-    pub async fn quarantine_rows(&self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        let mut it = self.db.scan_prefix(&b"quarantine/"[..], ..).await.unwrap();
-        while let Some(kv) = it.next().await.unwrap() {
-            out.push(kv.key.to_vec());
-        }
-        out
-    }
-
-    /// Remove batches the ledger has durably acknowledged.
-    pub async fn remove(&self, keys: &[Vec<u8>]) -> anyhow::Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        let mut wb = slatedb::WriteBatch::new();
-        for k in keys {
-            wb.delete(k.clone());
-        }
-        self.db.write(wb).await?;
-        {
-            let mut sizes = self.sizes.lock().unwrap();
-            for k in keys {
-                if let Some(len) = sizes.remove(k) {
-                    self.pending_bytes
-                        .fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
-                    self.pending_rows
-                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// (rows, encoded bytes) resident in the spool — exact, lock-cheap
-    /// gauges for the ops snapshot and the readiness surface.
-    pub fn resident(&self) -> (u64, u64) {
-        (
-            self.pending_rows.load(std::sync::atomic::Ordering::Relaxed),
-            self.pending_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
-    }
-
-    pub async fn depth(&self) -> usize {
-        // Health reads use the exact counters rebuilt during open and updated
-        // on spool puts/removals. They must not materialize the durable backlog
-        // or turn a failed scan into a reassuring zero-depth answer.
-        self.resident().0.try_into().unwrap_or(usize::MAX)
-    }
-}
-
 /// Open every shard THIS instance owns so its billing outbox becomes
 /// drainable (round-21 blocker 4): the drainer must not depend on
 /// customer traffic to rediscover dirty usage after a crash or an
@@ -2315,13 +1834,13 @@ pub(crate) struct SweepSched {
 
 /// Sweep-resident engine count (ops gauge): how many engines exist
 /// ONLY because debt discovery opened them.
-pub fn sweep_resident_engines(state: &std::sync::Arc<crate::http::AppState>) -> u64 {
+pub(crate) fn sweep_resident_engines(state: &std::sync::Arc<crate::http::AppState>) -> u64 {
     state.billing.sweep_resident_engines() as u64
 }
 
 /// Engines whose custody the scheduler currently holds, DERIVED from
 /// the serving map (no counter to maintain or leak).
-pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
+pub(crate) fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
     state
         .shards
         .engines()
@@ -2340,7 +1859,7 @@ pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
 /// engine (discovery must not lose to a transient scan fault), and a
 /// customer engine that raced into the mark window costs one benign
 /// re-open on its next request.
-pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
+pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
     let budget = sweep_resident_budget(&state.config.billing);
     let cycle = state.billing.next_sweep_cycle();
 
@@ -2474,7 +1993,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
 /// retention let a `_usage` outage keep every owned shard resident,
 /// bypassing the bound entirely). Validated at startup: zero would
 /// silently starve all cold-debt drain, so it is rejected there.
-pub fn sweep_resident_budget(cfg: &crate::config::BillingConfig) -> usize {
+pub(crate) fn sweep_resident_budget(cfg: &crate::config::BillingConfig) -> usize {
     cfg.sweep_maint_resident.max(1)
 }
 
@@ -2522,7 +2041,7 @@ static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// Called from every EXTERNAL engine resolution (http engine_for fast
 /// path and its gate Ready path). Held-count is DERIVED from custody
 /// flags in the serving map, so revocation is just the swap.
-pub fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>) {
+pub(crate) fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>) {
     let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     engine
         .last_external_seq
@@ -2607,11 +2126,11 @@ fn custody_intact(
 }
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
-pub fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
+pub(crate) fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
     state.billing.sweep_peak()
 }
 #[cfg(test)]
-pub fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
+pub(crate) fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
     state.billing.reset_sweep_peak();
 }
 /// Close an engine the scheduler owns. Removal from the map happens
@@ -2729,7 +2248,7 @@ pub static WALK_DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// clean AND the name recreated under a new epoch before the next
 /// sweep replaces the tombstone this walk needs; that incarnation's
 /// gauge is then reachable only through the dirty-path reconciler.
-pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
+pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.billing.usage_key().is_none() {
         return;
     }
@@ -2844,7 +2363,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
 /// safe end to end because every record downstream deduplicates by
 /// deterministic id / source sequence.
 // mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants (_usage, _ops_*), never customer input
-pub async fn system_append(
+pub(crate) async fn system_append(
     state: &std::sync::Arc<crate::http::AppState>,
     stream: &str,
     key: &str,
@@ -2934,7 +2453,7 @@ pub async fn system_append(
 /// incarnation-bound internal segment read. Returns (json body, next
 /// cursor).
 // mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants, never customer input
-pub async fn system_read(
+pub(crate) async fn system_read(
     state: &std::sync::Arc<crate::http::AppState>,
     stream: &str,
     key: &str,

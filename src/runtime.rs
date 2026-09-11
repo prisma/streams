@@ -17,8 +17,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub mod telemetry;
-pub use telemetry::TelemetryResources;
+pub(crate) mod telemetry;
+pub(crate) use telemetry::TelemetryResources;
 
 /// A server-trusted WALL-clock reading, milliseconds since the Unix
 /// epoch — for external timestamps (records, descriptors, billing).
@@ -28,10 +28,10 @@ pub use telemetry::TelemetryResources;
 /// can launder a customer value into trusted time. Never use it to
 /// measure elapsed time — wall clocks jump; see [`MonotonicNow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TrustedNow(i64);
+pub(crate) struct TrustedNow(i64);
 
 impl TrustedNow {
-    pub fn ms(self) -> i64 {
+    pub(crate) fn ms(self) -> i64 {
         self.0
     }
 }
@@ -44,23 +44,23 @@ impl TrustedNow {
 /// with the wall clock, which is a regression a forward jump turns
 /// into a spurious exit and a backward jump into a suppressed one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MonotonicNow(Duration);
+pub(crate) struct MonotonicNow(Duration);
 
 impl MonotonicNow {
-    pub fn millis(self) -> i64 {
+    pub(crate) fn millis(self) -> i64 {
         self.0.as_millis().min(i64::MAX as u128) as i64
     }
     /// Elapsed since `earlier` (saturating: a reading from the same
     /// runtime is never earlier than a later one, but the type stays
     /// total).
-    pub fn since(self, earlier: MonotonicNow) -> Duration {
+    pub(crate) fn since(self, earlier: MonotonicNow) -> Duration {
         self.0.saturating_sub(earlier.0)
     }
 }
 
 /// The time capability, with two DISTINCT time domains. Implementations
 /// must be cheap to call and safe to share (`Arc<dyn Clock>`).
-pub trait Clock: Send + Sync + fmt::Debug {
+pub(crate) trait Clock: Send + Sync + fmt::Debug {
     /// Trusted wall clock (Unix ms) — timestamps, never durations.
     fn now(&self) -> TrustedNow;
     /// Monotonic reading — elapsed time, deadlines, never timestamps.
@@ -75,7 +75,7 @@ pub trait Clock: Send + Sync + fmt::Debug {
 /// Production clock: the OS wall clock for timestamps, a per-runtime
 /// `Instant` origin for elapsed time, and the tokio timer for sleeps.
 #[derive(Debug)]
-pub struct SystemClock {
+pub(crate) struct SystemClock {
     origin: std::time::Instant,
 }
 
@@ -110,13 +110,13 @@ impl Clock for SystemClock {
 /// test implementation exists ONLY under `cfg(test)`, so release
 /// builds cannot even name a predictable source — token/security code
 /// cannot accidentally receive one (PR 4 proof obligation 3).
-pub trait Entropy: Send + Sync + fmt::Debug {
+pub(crate) trait Entropy: Send + Sync + fmt::Debug {
     fn fill(&self, dest: &mut [u8]);
 }
 
 /// Production entropy: the process CSPRNG (`rand::rng`).
 #[derive(Debug, Default)]
-pub struct OsEntropy;
+pub(crate) struct OsEntropy;
 
 impl Entropy for OsEntropy {
     fn fill(&self, dest: &mut [u8]) {
@@ -129,7 +129,7 @@ impl Entropy for OsEntropy {
 /// runtime's own entropy, never from a process-global once-cell. Two
 /// runtimes in one process therefore never share a boot id.
 #[derive(Debug, Clone)]
-pub struct RuntimeIdentity {
+pub(crate) struct RuntimeIdentity {
     /// 16 random bytes, hex — a fresh value per runtime construction.
     pub boot_id: String,
     /// The operator-facing instance name (metrics tag).
@@ -138,7 +138,7 @@ pub struct RuntimeIdentity {
 
 /// The per-runtime capability bundle owners receive at construction.
 #[derive(Clone)]
-pub struct RuntimeCaps {
+pub(crate) struct RuntimeCaps {
     pub(crate) request_work: Arc<crate::application::request_work::RequestWork>,
     pub store_io: Arc<crate::store_timing::StoreResources>,
     pub ops: Arc<crate::ops::OpsService>,
@@ -163,7 +163,7 @@ impl fmt::Debug for RuntimeCaps {
 }
 
 impl RuntimeCaps {
-    pub fn with_config(mut self, config: &crate::config::ServerConfig) -> Self {
+    pub(crate) fn with_config(mut self, config: &crate::config::ServerConfig) -> Self {
         self.usage = Arc::new(crate::usage::UsageService::new(
             &config.admission,
             self.clock.clone(),
@@ -188,7 +188,7 @@ impl RuntimeCaps {
 
     /// Production capabilities: OS clock, OS CSPRNG, and a boot id
     /// minted from that CSPRNG.
-    pub fn production(instance: &str) -> Self {
+    pub(crate) fn production(instance: &str) -> Self {
         Self::with(
             Arc::new(SystemClock::default()),
             Arc::new(OsEntropy),
@@ -208,7 +208,7 @@ impl RuntimeCaps {
     /// draws from `epoch_source`. Deterministic rigs give each domain
     /// its own seeded stream so the ORDER in which concurrent tasks
     /// draw epochs can never perturb the boot id (or vice versa).
-    pub fn with_sources(
+    pub(crate) fn with_sources(
         clock: Arc<dyn Clock>,
         identity_source: &dyn Entropy,
         epoch_source: Arc<dyn Entropy>,
@@ -254,7 +254,7 @@ impl RuntimeCaps {
     /// Mint a 16-byte epoch from this runtime's entropy (consumer
     /// generations, fencing epochs). Replaces the ambient
     /// `http::rand_epoch`.
-    pub fn epoch(&self) -> [u8; 16] {
+    pub(crate) fn epoch(&self) -> [u8; 16] {
         let mut e = [0u8; 16];
         self.entropy.fill(&mut e);
         e
@@ -271,7 +271,7 @@ impl RuntimeCaps {
 /// runtimes in one test cannot couple through it.
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct ManualClock {
+pub(crate) struct ManualClock {
     inner: Arc<ManualInner>,
 }
 
@@ -285,7 +285,7 @@ struct ManualInner {
 
 #[cfg(test)]
 impl ManualClock {
-    pub fn at(start_ms: i64) -> Self {
+    pub(crate) fn at(start_ms: i64) -> Self {
         Self {
             inner: Arc::new(ManualInner {
                 wall_ms: std::sync::Mutex::new(start_ms),
@@ -296,20 +296,20 @@ impl ManualClock {
     }
 
     /// Ordinary passage of time: both domains move together.
-    pub fn advance(&self, by: Duration) {
+    pub(crate) fn advance(&self, by: Duration) {
         *self.inner.wall_ms.lock().unwrap() += by.as_millis() as i64;
         self.advance_monotonic(by);
     }
 
     /// Elapsed time only (what timeouts observe).
-    pub fn advance_monotonic(&self, by: Duration) {
+    pub(crate) fn advance_monotonic(&self, by: Duration) {
         *self.inner.mono.lock().unwrap() += by;
         self.inner.wake.notify_waiters();
     }
 
     /// A wall-clock STEP (NTP correction, VM restore) — forward or
     /// backward. Monotonic time and pending sleeps are untouched.
-    pub fn jump_wall(&self, delta_ms: i64) {
+    pub(crate) fn jump_wall(&self, delta_ms: i64) {
         *self.inner.wall_ms.lock().unwrap() += delta_ms;
     }
 }
@@ -348,13 +348,13 @@ impl Clock for ManualClock {
 /// never accidentally receive one.
 #[cfg(test)]
 #[derive(Debug)]
-pub struct SeededEntropy {
+pub(crate) struct SeededEntropy {
     state: std::sync::Mutex<u64>,
 }
 
 #[cfg(test)]
 impl SeededEntropy {
-    pub fn seeded(seed: u64) -> Self {
+    pub(crate) fn seeded(seed: u64) -> Self {
         Self {
             state: std::sync::Mutex::new(seed),
         }
@@ -364,7 +364,7 @@ impl SeededEntropy {
     /// sequences for "runtime-identity", "stream-epoch",
     /// "touch-journal", … so unrelated id domains cannot couple
     /// through concurrent draw order.
-    pub fn domain(seed: u64, domain: &str) -> Self {
+    pub(crate) fn domain(seed: u64, domain: &str) -> Self {
         // FNV-1a over the label, folded into the seed.
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for b in domain.bytes() {

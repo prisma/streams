@@ -18,6 +18,7 @@ pub(super) struct HttpRigOptions {
     pub(super) shard: crate::shard::ShardConfig,
     pub(super) per_segment_slots: i64,
     pub(super) max_request_body_bytes: Option<usize>,
+    pub(super) admission: Option<crate::config::AdmissionConfig>,
     /// Static account bearer (the negative authorization matrix).
     pub(super) auth: Option<String>,
     /// A NAMED instance makes ring ownership real: setting
@@ -44,6 +45,7 @@ impl Default for HttpRigOptions {
             shard: crate::shard::ShardConfig::default(),
             per_segment_slots: 0,
             max_request_body_bytes: None,
+            admission: None,
             auth: None,
             instance: None,
             open_park: None,
@@ -83,6 +85,29 @@ pub(super) struct HttpRig {
 }
 
 impl HttpRig {
+    /// Terminal process teardown: join its server/workers, then fence and drain
+    /// shard opens and engine close owners through the production protocol.
+    pub(super) async fn shutdown(&self) {
+        let report = self.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+        assert!(
+            report.aborted.is_empty(),
+            "rig needed task aborts: {report:?}"
+        );
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|(_, outcome)| *outcome == crate::tasks::TaskOutcome::Finished),
+            "rig worker failed: {report:?}"
+        );
+        self.state
+            .shards
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(self.state.shards.open_count(), 0);
+    }
+
     pub(super) fn parts(self) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
         (self.state, self.addr)
     }
@@ -294,6 +319,32 @@ pub(super) fn rig_opener(
     )
 }
 
+/// Resolve the fixture's hermetic CLI and admission inputs before any runtime
+/// owner is constructed, so its configured limits agree with the HTTP surface.
+fn fixture_config(
+    max_request_body_bytes: Option<usize>,
+    instance_name: Option<&str>,
+    admission: Option<crate::config::AdmissionConfig>,
+) -> Arc<crate::config::ServerConfig> {
+    let mut rig_config = crate::config::ServerConfig::load(
+        {
+            let mut cli = crate::config::CliArgs::deterministic();
+            if let Some(limit) = max_request_body_bytes {
+                cli.max_request_body_bytes = limit;
+            }
+            if let Some(name) = instance_name.map(str::to_owned) {
+                cli.instance_name = name;
+            }
+            cli
+        },
+        &crate::config::MapEnvironment::empty(),
+    );
+    if let Some(admission) = admission {
+        rig_config.admission = admission;
+    }
+    Arc::new(rig_config)
+}
+
 /// Build a rig from ONE process runtime and the focused options.
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
@@ -306,6 +357,7 @@ pub(super) async fn http_rig_build(
         shard: shard_cfg,
         per_segment_slots,
         max_request_body_bytes,
+        admission,
         auth,
         instance: instance_name,
         open_park,
@@ -344,19 +396,7 @@ pub(super) async fn http_rig_build(
     // so a rig's config claimed to be "streams" whatever the test called
     // it — and any assembly reading the config disagreed with the
     // runtime it was assembling.
-    let rig_config = Arc::new(crate::config::ServerConfig::load(
-        {
-            let mut cli = crate::config::CliArgs::deterministic();
-            if let Some(limit) = max_request_body_bytes {
-                cli.max_request_body_bytes = limit;
-            }
-            if let Some(name) = instance_name.clone() {
-                cli.instance_name = name;
-            }
-            cli
-        },
-        &crate::config::MapEnvironment::empty(),
-    ));
+    let rig_config = fixture_config(max_request_body_bytes, instance_name.as_deref(), admission);
     let mut rig_runtime = rig_runtime.with_config(&rig_config);
     let protocol_clock: Arc<dyn crate::runtime::Clock> =
         Arc::new(crate::runtime::SystemClock::default());

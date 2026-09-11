@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Fp {
+pub(crate) enum Fp {
     // Flags (the site checks and acts; nothing parks).
     StopAfterTombstone,
     StopBeforeMarkCommitted,
@@ -71,7 +71,7 @@ pub enum Fp {
 }
 
 impl Fp {
-    pub const ALL: [Fp; 25] = [
+    pub(crate) const ALL: [Fp; 25] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -244,7 +244,7 @@ fn gate() -> &'static tokio::sync::Notify {
     N.get_or_init(tokio::sync::Notify::new)
 }
 
-pub fn arm(fp: Fp, name: &str) {
+pub(crate) fn arm(fp: Fp, name: &str) {
     let mut g = reg().lock().unwrap();
     let st = g.entry((fp, name.to_string())).or_default();
     if !st.armed && !st.held {
@@ -253,7 +253,7 @@ pub fn arm(fp: Fp, name: &str) {
     st.armed = true;
 }
 
-pub fn release(fp: Fp, name: &str) {
+pub(crate) fn release(fp: Fp, name: &str) {
     if let Some(st) = reg().lock().unwrap().get_mut(&(fp, name.to_string())) {
         if st.armed || st.held {
             ACTIVE[fp.idx()].fetch_sub(1, std::sync::atomic::Ordering::Release);
@@ -267,7 +267,7 @@ pub fn release(fp: Fp, name: &str) {
 /// Requests of `name` that have ARRIVED at this failpoint since the
 /// process started (monotone; per name, so parallel tests compose
 /// without watching each other's parks).
-pub fn parked(fp: Fp, name: &str) -> usize {
+pub(crate) fn parked(fp: Fp, name: &str) -> usize {
     reg()
         .lock()
         .unwrap()
@@ -363,187 +363,187 @@ pub(crate) async fn pause_oneshot(fp: Fp, name: &str) {
 
 // ---- narrative sugar (the site contract, one line each) ----------
 
-pub fn stop_after_tombstone(name: &str) {
+pub(crate) fn stop_after_tombstone(name: &str) {
     arm(Fp::StopAfterTombstone, name);
 }
-pub fn stop_after_tombstone_off(name: &str) {
+pub(crate) fn stop_after_tombstone_off(name: &str) {
     release(Fp::StopAfterTombstone, name);
 }
 pub(crate) fn should_stop_after_tombstone(name: &str) -> bool {
     hit(Fp::StopAfterTombstone, name)
 }
-pub fn stop_before_mark_committed(name: &str) {
+pub(crate) fn stop_before_mark_committed(name: &str) {
     arm(Fp::StopBeforeMarkCommitted, name);
 }
-pub fn stop_before_mark_committed_off(name: &str) {
+pub(crate) fn stop_before_mark_committed_off(name: &str) {
     release(Fp::StopBeforeMarkCommitted, name);
 }
 pub(crate) fn should_stop_before_mark_committed(name: &str) -> bool {
     hit(Fp::StopBeforeMarkCommitted, name)
 }
-pub fn stop_after_seal_intent(name: &str) {
+pub(crate) fn stop_after_seal_intent(name: &str) {
     arm(Fp::StopAfterSealIntent, name);
 }
-pub fn stop_after_seal_intent_off(name: &str) {
+pub(crate) fn stop_after_seal_intent_off(name: &str) {
     release(Fp::StopAfterSealIntent, name);
 }
 pub(crate) fn should_stop_after_seal_intent(name: &str) -> bool {
     hit(Fp::StopAfterSealIntent, name)
 }
 
-pub fn park_create_before_ready(name: &str) {
+pub(crate) fn park_create_before_ready(name: &str) {
     arm(Fp::CreateBeforeReady, name);
 }
-pub fn release_create_before_ready(name: &str) {
+pub(crate) fn release_create_before_ready(name: &str) {
     release(Fp::CreateBeforeReady, name);
 }
 pub(crate) async fn pause_create_before_ready(name: &str) {
     pause(Fp::CreateBeforeReady, name).await;
 }
 
-pub fn park_append_before_enqueue(name: &str) {
+pub(crate) fn park_append_before_enqueue(name: &str) {
     arm(Fp::AppendBeforeEnqueue, name);
 }
-pub fn release_append_before_enqueue(name: &str) {
+pub(crate) fn release_append_before_enqueue(name: &str) {
     release(Fp::AppendBeforeEnqueue, name);
 }
 pub(crate) async fn pause_append_before_enqueue(name: &str) {
     pause(Fp::AppendBeforeEnqueue, name).await;
 }
 
-pub fn park_close_before_enqueue(name: &str) {
+pub(crate) fn park_close_before_enqueue(name: &str) {
     arm(Fp::CloseBeforeEnqueue, name);
 }
-pub fn release_close_before_enqueue(name: &str) {
+pub(crate) fn release_close_before_enqueue(name: &str) {
     release(Fp::CloseBeforeEnqueue, name);
 }
 pub(crate) async fn pause_close_before_enqueue(name: &str) {
     pause_oneshot(Fp::CloseBeforeEnqueue, name).await;
 }
 
-pub fn park_close_before_mark(name: &str) {
+pub(crate) fn park_close_before_mark(name: &str) {
     arm(Fp::CloseBeforeMark, name);
 }
-pub fn release_close_before_mark(name: &str) {
+pub(crate) fn release_close_before_mark(name: &str) {
     release(Fp::CloseBeforeMark, name);
 }
 pub(crate) async fn pause_close_before_mark(name: &str) {
     pause(Fp::CloseBeforeMark, name).await;
 }
 
-pub fn park_product_seal_before_claim(name: &str) {
+pub(crate) fn park_product_seal_before_claim(name: &str) {
     arm(Fp::ProductSealBeforeClaim, name);
 }
-pub fn release_product_seal_before_claim(name: &str) {
+pub(crate) fn release_product_seal_before_claim(name: &str) {
     release(Fp::ProductSealBeforeClaim, name);
 }
-pub async fn pause_product_seal_before_claim(name: &str) {
+pub(crate) async fn pause_product_seal_before_claim(name: &str) {
     pause(Fp::ProductSealBeforeClaim, name).await;
 }
 
-pub fn park_product_final_before_append(name: &str) {
+pub(crate) fn park_product_final_before_append(name: &str) {
     arm(Fp::ProductFinalBeforeAppend, name);
 }
-pub fn release_product_final_before_append(name: &str) {
+pub(crate) fn release_product_final_before_append(name: &str) {
     release(Fp::ProductFinalBeforeAppend, name);
 }
-pub async fn pause_product_final_before_append(name: &str) {
+pub(crate) async fn pause_product_final_before_append(name: &str) {
     pause(Fp::ProductFinalBeforeAppend, name).await;
 }
 
-pub fn park_fork_before_source_ref(name: &str) {
+pub(crate) fn park_fork_before_source_ref(name: &str) {
     arm(Fp::ForkBeforeSourceRef, name);
 }
-pub fn release_fork_before_source_ref(name: &str) {
+pub(crate) fn release_fork_before_source_ref(name: &str) {
     release(Fp::ForkBeforeSourceRef, name);
 }
 pub(crate) async fn pause_fork_before_source_ref(name: &str) {
     pause(Fp::ForkBeforeSourceRef, name).await;
 }
 
-pub fn park_init_before_seed(name: &str) {
+pub(crate) fn park_init_before_seed(name: &str) {
     arm(Fp::InitBeforeSeed, name);
 }
-pub fn release_init_before_seed(name: &str) {
+pub(crate) fn release_init_before_seed(name: &str) {
     release(Fp::InitBeforeSeed, name);
 }
 pub(crate) async fn pause_init_before_seed(name: &str) {
     pause(Fp::InitBeforeSeed, name).await;
 }
 
-pub fn park_fork_after_source_ref(name: &str) {
+pub(crate) fn park_fork_after_source_ref(name: &str) {
     arm(Fp::ForkAfterSourceRef, name);
 }
-pub fn release_fork_after_source_ref(name: &str) {
+pub(crate) fn release_fork_after_source_ref(name: &str) {
     release(Fp::ForkAfterSourceRef, name);
 }
 pub(crate) async fn pause_fork_after_source_ref(name: &str) {
     pause(Fp::ForkAfterSourceRef, name).await;
 }
 
-pub fn park_release_after_epoch_check(name: &str) {
+pub(crate) fn park_release_after_epoch_check(name: &str) {
     arm(Fp::ReleaseAfterEpochCheck, name);
 }
-pub fn release_release_after_epoch_check(name: &str) {
+pub(crate) fn release_release_after_epoch_check(name: &str) {
     release(Fp::ReleaseAfterEpochCheck, name);
 }
 pub(crate) async fn pause_release_after_epoch_check(name: &str) {
     pause(Fp::ReleaseAfterEpochCheck, name).await;
 }
 
-pub fn park_pull_before_receive(name: &str) {
+pub(crate) fn park_pull_before_receive(name: &str) {
     arm(Fp::PullBeforeReceive, name);
 }
-pub fn release_pull_before_receive(name: &str) {
+pub(crate) fn release_pull_before_receive(name: &str) {
     release(Fp::PullBeforeReceive, name);
 }
 pub(crate) async fn pause_pull_before_receive(name: &str) {
     pause(Fp::PullBeforeReceive, name).await;
 }
 
-pub fn park_consumer_saga_before_refresh(name: &str) {
+pub(crate) fn park_consumer_saga_before_refresh(name: &str) {
     arm(Fp::ConsumerSagaBeforeRefresh, name);
 }
-pub fn release_consumer_saga_before_refresh(name: &str) {
+pub(crate) fn release_consumer_saga_before_refresh(name: &str) {
     release(Fp::ConsumerSagaBeforeRefresh, name);
 }
 pub(crate) async fn pause_consumer_saga_before_refresh(name: &str) {
     pause(Fp::ConsumerSagaBeforeRefresh, name).await;
 }
 
-pub fn park_delete_before_decision(name: &str) {
+pub(crate) fn park_delete_before_decision(name: &str) {
     arm(Fp::DeleteBeforeDecision, name);
 }
-pub fn release_delete_before_decision(name: &str) {
+pub(crate) fn release_delete_before_decision(name: &str) {
     release(Fp::DeleteBeforeDecision, name);
 }
 pub(crate) async fn pause_delete_before_decision(name: &str) {
     pause(Fp::DeleteBeforeDecision, name).await;
 }
-pub fn arm_scaler_before_publish(name: &str) {
+pub(crate) fn arm_scaler_before_publish(name: &str) {
     arm(Fp::ScalerBeforePublish, name);
 }
-pub fn release_scaler_before_publish(name: &str) {
+pub(crate) fn release_scaler_before_publish(name: &str) {
     release(Fp::ScalerBeforePublish, name);
 }
 pub(crate) async fn pause_scaler_before_publish(name: &str) {
     pause(Fp::ScalerBeforePublish, name).await;
 }
 
-pub fn park_sse_before_lease_gate(name: &str) {
+pub(crate) fn park_sse_before_lease_gate(name: &str) {
     arm(Fp::SseBeforeLeaseGate, name);
 }
-pub fn release_sse_before_lease_gate(name: &str) {
+pub(crate) fn release_sse_before_lease_gate(name: &str) {
     release(Fp::SseBeforeLeaseGate, name);
 }
 pub(crate) async fn pause_sse_before_lease_gate(name: &str) {
     pause(Fp::SseBeforeLeaseGate, name).await;
 }
 
-pub fn stop_before_sealed_publish(name: &str) {
+pub(crate) fn stop_before_sealed_publish(name: &str) {
     arm(Fp::StopBeforeSealedPublish, name);
 }
-pub fn stop_before_sealed_publish_off(name: &str) {
+pub(crate) fn stop_before_sealed_publish_off(name: &str) {
     release(Fp::StopBeforeSealedPublish, name);
 }
 pub(crate) fn should_stop_before_sealed_publish(name: &str) -> bool {

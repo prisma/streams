@@ -14,45 +14,45 @@ use std::sync::Arc;
 /// Review round 3: subscriber-side canary counters.
 pub(crate) mod sse_stats {
     use std::sync::atomic::AtomicU64;
-    pub static DELIVERED_RECORDS: AtomicU64 = AtomicU64::new(0);
-    pub static BELOW_FLOOR_CATCHUPS: AtomicU64 = AtomicU64::new(0);
-    pub static DISCONNECT_SEND_TIMEOUT: AtomicU64 = AtomicU64::new(0);
-    pub static DISCONNECT_CLIENT_CLOSED: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static DELIVERED_RECORDS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static BELOW_FLOOR_CATCHUPS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static DISCONNECT_SEND_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static DISCONNECT_CLIENT_CLOSED: AtomicU64 = AtomicU64::new(0);
     // LiveFeed engine counters (follow-up review: field observability).
     /// Shared-admission refusals (zero budget or zero ring).
-    pub static FEED_CAPACITY_REJECTED: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CAPACITY_REJECTED: AtomicU64 = AtomicU64::new(0);
     /// Source reads that returned an empty partial page.
-    pub static FEED_NO_PROGRESS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_NO_PROGRESS: AtomicU64 = AtomicU64::new(0);
     /// Source reads that failed outright.
-    pub static FEED_SOURCE_FAILED: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_SOURCE_FAILED: AtomicU64 = AtomicU64::new(0);
     /// Batches dropped without retention: larger than the feed ring.
-    pub static FEED_OVERSIZE_DROPPED: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_OVERSIZE_DROPPED: AtomicU64 = AtomicU64::new(0);
     /// Publications without retention: process budget exhausted.
-    pub static FEED_UNCACHED_PUBLISH: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_UNCACHED_PUBLISH: AtomicU64 = AtomicU64::new(0);
     /// Publications without retention: the PROJECT's own allowance
     /// exhausted (round-10 isolation — the offender takes the
     /// uncached posture; the cell ceiling was not the refusal).
-    pub static FEED_PROJECT_CAP_UNCACHED: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_PROJECT_CAP_UNCACHED: AtomicU64 = AtomicU64::new(0);
     /// Live sessions disconnected for genuine lag (below the floor
     /// AFTER having reached live).
-    pub static FEED_LAG_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_LAG_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
     /// Sessions disconnected WITHOUT a terminal control because the
     /// incarnation moved on, the topology was incompatible, a
     /// transition did not settle in bounds, or a raw session met a
     /// source swap (Stage 6 typed disconnect-and-resume).
-    pub static FEED_TOPOLOGY_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_TOPOLOGY_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
     /// Typed source cutoffs by reason (Stage 7 canary telemetry).
-    pub static FEED_CUTOFF_INCARNATION: AtomicU64 = AtomicU64::new(0);
-    pub static FEED_CUTOFF_WRONG_OWNER: AtomicU64 = AtomicU64::new(0);
-    pub static FEED_CUTOFF_INCOMPATIBLE: AtomicU64 = AtomicU64::new(0);
-    pub static FEED_CUTOFF_TARGET_MISMATCH: AtomicU64 = AtomicU64::new(0);
-    pub static FEED_CUTOFF_FLEET_AUTH: AtomicU64 = AtomicU64::new(0);
-    pub static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_INCARNATION: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_WRONG_OWNER: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_INCOMPATIBLE: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_TARGET_MISMATCH: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_FLEET_AUTH: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
     /// session that had not reached live yet — NOT a disconnect).
-    pub static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);
     /// Feed version publications (one per actual state change).
-    pub static FEED_VERSION_BUMPS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_VERSION_BUMPS: AtomicU64 = AtomicU64::new(0);
 }
 
 /// Review round 3 F1: lease terminations by reason (canary counter).

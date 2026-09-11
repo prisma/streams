@@ -26,7 +26,7 @@ use crate::sketch::KeyDistribution;
 type ScalePolicy = crate::config::ScaleConfig;
 
 /// Runtime-owned policy, sketches and monotonic cooldown clock.
-pub struct Scaler {
+pub(crate) struct Scaler {
     state: Mutex<State>,
     policy: ScalePolicy,
     limits: crate::usage::Limits,
@@ -40,7 +40,7 @@ impl std::fmt::Debug for Scaler {
     }
 }
 impl Scaler {
-    pub fn new(
+    pub(crate) fn new(
         policy: &ScalePolicy,
         admission: &crate::config::AdmissionConfig,
         clock: Arc<dyn crate::runtime::Clock>,
@@ -60,14 +60,18 @@ impl Scaler {
 }
 
 /// Counters (spec §14).
-pub static SEGMENT_SPLITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static SEGMENT_MERGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static INEFFECTIVE_SPLIT_AVOIDED: std::sync::atomic::AtomicU64 =
+pub(crate) static SEGMENT_SPLITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static SEGMENT_MAP_REFRESHES: std::sync::atomic::AtomicU64 =
+pub(crate) static SEGMENT_MERGES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static INEFFECTIVE_SPLIT_AVOIDED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SEGMENT_MAP_REFRESHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 struct SegSketch {
     /// The incarnation this sketch's heat belongs to. A name can be
@@ -175,7 +179,7 @@ impl State {
 }
 
 impl Scaler {
-    pub fn hot_keys_all(&self) -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
+    pub(crate) fn hot_keys_all(&self) -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
         let mut hot: Vec<_> = self
             .state
             .lock()
@@ -193,7 +197,7 @@ impl Scaler {
 
     /// Feed one admitted append into the segment's sketch. A known segment
     /// uses constant-time map lookups and EWMA bumps under a short lock.
-    pub fn note_append(
+    pub(crate) fn note_append(
         &self,
         desc: &StreamDesc,
         seg: &crate::registry::SegRoute,
@@ -438,7 +442,7 @@ fn evaluate_state(
 // Transport compatibility entry points contain no transition decisions.
 // The same topology owner serves HTTP, append, live reads and autonomous scaling.
 #[cfg(test)]
-pub async fn execute_split(
+pub(crate) async fn execute_split(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
     seg_id: u32,
@@ -449,7 +453,7 @@ pub async fn execute_split(
 }
 
 #[cfg(test)]
-pub async fn execute_split_fenced(
+pub(crate) async fn execute_split_fenced(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
     expect_epoch: &str,
@@ -467,7 +471,7 @@ pub async fn execute_split_fenced(
 }
 
 #[cfg(test)]
-pub async fn execute_merge(
+pub(crate) async fn execute_merge(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
     a_id: u32,
@@ -477,7 +481,7 @@ pub async fn execute_merge(
 }
 
 #[cfg(test)]
-pub async fn resume(
+pub(crate) async fn resume(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
 ) -> bool {
@@ -490,7 +494,10 @@ pub(crate) mod controller;
 
 /// The evaluation loop keeps at most 4096 pending hints and executes at most
 /// 16 per turn, serially per incarnation, under a shared 60-second deadline.
-pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
+pub(crate) fn start(
+    st: std::sync::Weak<crate::http::AppState>,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
     let _ = tasks.spawn(
         "scaler",
         crate::tasks::Policy::Critical,
@@ -554,7 +561,7 @@ impl Scaler {
         }
     }
 
-    pub fn stats_json(&self) -> serde_json::Value {
+    pub(crate) fn stats_json(&self) -> serde_json::Value {
         use std::sync::atomic::Ordering::Relaxed;
         let hot: Vec<String> = self
             .hot_keys_all()

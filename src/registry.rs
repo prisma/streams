@@ -183,13 +183,13 @@ pub struct PersistedDescriptor {
 /// The storage-layout generation this binary writes and the ONLY one it
 /// reads. There are no layout bridges: opening a namespace written by a
 /// different layout is refused (pre-launch hard cutover).
-pub const LAYOUT_VERSION: u32 = 4;
+pub(crate) const LAYOUT_VERSION: u32 = 4;
 
 /// Seal-in-progress marker (audit P0). Present = Sealing: normal
 /// appends are refused, only the matching seal operation may write its
 /// final record, and any request observing it resumes the transition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SealState {
+pub(crate) struct SealState {
     /// Identifies the sealing request (its final-record identity), so a
     /// retry resumes rather than appending a second final record.
     pub operation_id: String,
@@ -222,7 +222,7 @@ pub struct SealState {
 /// `Sealed`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-pub enum SealIntent {
+pub(crate) enum SealIntent {
     /// Close the segments; nothing else outstanding.
     #[default]
     Empty,
@@ -242,7 +242,7 @@ pub enum SealIntent {
 impl SealState {
     /// A seal that still owes a final record. Any OTHER seal request
     /// must refuse to finish it.
-    pub fn owes_final(&self) -> bool {
+    pub(crate) fn owes_final(&self) -> bool {
         matches!(
             self.intent,
             SealIntent::Final {
@@ -255,7 +255,7 @@ impl SealState {
 
 /// Creation-in-progress marker (audit P0). Absent = Ready.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InitState {
+pub(crate) struct InitState {
     /// Identifies the creating request; a retry carrying the same hash
     /// resumes, a different one conflicts.
     pub request_hash: String,
@@ -273,7 +273,7 @@ pub struct InitState {
 /// How long an Initializing claim is honored before another request may
 /// take it over (the creator is a single in-process task; a crash or
 /// cancellation must not wedge the name forever).
-pub const INIT_CLAIM_MS: i64 = 15_000;
+pub(crate) const INIT_CLAIM_MS: i64 = 15_000;
 
 /// How long a seal claim holds the collection before ANOTHER seal may
 /// take it over.
@@ -290,7 +290,7 @@ pub const INIT_CLAIM_MS: i64 = 15_000;
 /// The window only has to outlast a request that is genuinely in
 /// flight between its intent CAS and its committer verdict; past that,
 /// every client has long since given up.
-pub const SEAL_CLAIM_MS: i64 = 15_000;
+pub(crate) const SEAL_CLAIM_MS: i64 = 15_000;
 
 /// A pure mutation decision for [`Registry::mutate_incarnation`].
 pub enum Mutation<T> {
@@ -304,7 +304,7 @@ pub enum Mutation<T> {
 /// terminal state is named — no bool that conflates "declined" with
 /// "wrong incarnation" with "gone".
 #[derive(Debug, Clone, PartialEq)]
-pub enum MutationResult<T> {
+pub(crate) enum MutationResult<T> {
     Applied(T),
     Declined(T),
     IncarnationChanged,
@@ -313,7 +313,7 @@ pub enum MutationResult<T> {
 
 /// Fork parentage (pinned DS protocol fork contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ForkRef {
+pub(crate) struct ForkRef {
     /// Source stream NAME (path form normalized away at parse).
     pub source: String,
     /// Source incarnation at fork time (stale references are integrity
@@ -336,7 +336,7 @@ impl ForkRef {
     /// Identity for the idempotent-PUT compare: everything the CALLER
     /// specified. `fork_id` is server-generated (this incarnation's
     /// epoch) and must not make a replayed create look different.
-    pub fn same_identity(&self, other: &ForkRef) -> bool {
+    pub(crate) fn same_identity(&self, other: &ForkRef) -> bool {
         // Exact, including the incarnation. The empty-epoch wildcard
         // existed for descriptors written before forks carried one;
         // under the layout-3 clean namespace there are none, and it let
@@ -353,7 +353,7 @@ impl ForkRef {
 /// ordered JSON-pointer fields whose canonical extracted values derive
 /// the watch key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WatchDefinition {
+pub(crate) struct WatchDefinition {
     pub name: String,
     pub fields: Vec<String>,
 }
@@ -361,7 +361,7 @@ pub struct WatchDefinition {
 /// One resolved append/read target under the unified routing model:
 /// which segment of the stream owns a routing key right now.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SegRoute {
+pub(crate) struct SegRoute {
     pub seg_id: u32,
     /// Engine identity (record keyspace / history `inc` hash).
     pub identity: [u8; 16],
@@ -390,7 +390,7 @@ pub struct SegRoute {
 /// descriptor: conversion validates identity, lifecycle and topology once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "PersistedDescriptor", into = "PersistedDescriptor")]
-pub struct StreamDesc {
+pub(crate) struct StreamDesc {
     persisted: PersistedDescriptor,
     epoch: [u8; 16],
 }
@@ -417,7 +417,7 @@ impl TryFrom<PersistedDescriptor> for StreamDesc {
 }
 
 #[derive(Debug)]
-pub enum Lifecycle<'a> {
+pub(crate) enum Lifecycle<'a> {
     Active,
     Initializing(&'a InitState),
     Sealing,
@@ -427,19 +427,19 @@ pub enum Lifecycle<'a> {
 }
 
 impl StreamDesc {
-    pub fn key_point(routing_key: &str) -> u64 {
+    pub(crate) fn key_point(routing_key: &str) -> u64 {
         PersistedDescriptor::key_point(routing_key)
     }
     pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
         Some(self.epoch)
     }
-    pub fn epoch(&self) -> [u8; 16] {
+    pub(crate) fn epoch(&self) -> [u8; 16] {
         self.epoch
     }
-    pub fn to_persisted(&self) -> PersistedDescriptor {
+    pub(crate) fn to_persisted(&self) -> PersistedDescriptor {
         self.persisted.clone()
     }
-    pub fn lifecycle(&self) -> Lifecycle<'_> {
+    pub(crate) fn lifecycle(&self) -> Lifecycle<'_> {
         if self.deleted {
             Lifecycle::Deleted {
                 parent_ref_pending: self.parent_ref_pending,
@@ -614,14 +614,14 @@ fn default_content_type() -> String {
 }
 
 impl PersistedDescriptor {
-    pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
+    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
         crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
     }
 
     /// The project-qualified identity of this stream. Names are
     /// validated at decode/create, so reconstructing the checked type
     /// is an invariant, not a convenience.
-    pub fn sref(&self) -> crate::tenant::TenantStreamRef {
+    pub(crate) fn sref(&self) -> crate::tenant::TenantStreamRef {
         crate::tenant::TenantStreamRef::new(
             self.project_id.clone(),
             crate::tenant::CanonicalStreamName::new(&self.name)
@@ -638,7 +638,7 @@ impl PersistedDescriptor {
     /// rather than merely checked (MULTITENANCY Stage 4 same-project
     /// fork/DLQ rule).
     // mt-lint: allow(name-param-shared-core): THE sanctioned constructor — derives the ref from the descriptor's OWN project (stored references resolve only through here)
-    pub fn ref_in_project(&self, name: &str) -> crate::tenant::TenantStreamRef {
+    pub(crate) fn ref_in_project(&self, name: &str) -> crate::tenant::TenantStreamRef {
         crate::tenant::TenantStreamRef::new(
             self.project_id.clone(),
             crate::tenant::CanonicalStreamName::new(name)
@@ -650,18 +650,18 @@ impl PersistedDescriptor {
     /// storage-v1 + project_id + name + stream_epoch — so a recreated
     /// stream gets a fresh keyspace (delete/recreate isolation) and two
     /// projects sharing a name never share a byte.
-    pub fn storage_hash(&self) -> [u8; 16] {
+    pub(crate) fn storage_hash(&self) -> [u8; 16] {
         crate::crypto::SegmentHash::for_stream(&self.sref(), &self.stream_epoch).0
     }
 
-    pub fn is_json(&self) -> bool {
+    pub(crate) fn is_json(&self) -> bool {
         media_type(&self.content_type) == "application/json"
     }
 
     /// Fixed-point position of a routing key in the [0,1) keyspace —
     /// the coordinate the segment map partitions. The empty/default key
     /// is an ordinary key at stream_hash("")'s position.
-    pub fn key_point(routing_key: &str) -> u64 {
+    pub(crate) fn key_point(routing_key: &str) -> u64 {
         let h = crate::crypto::stream_hash(routing_key);
         u64::from_be_bytes(h[..8].try_into().expect("hash prefix"))
     }
@@ -670,7 +670,7 @@ impl PersistedDescriptor {
     /// Segment 0 is ALWAYS `storage_hash()` — that equality is what
     /// makes every pre-v3 total-order stream already-migrated, with its
     /// whole history as segment 0 and zero data movement.
-    pub fn dynamic_segment_identity(&self, seg_id: u32) -> [u8; 16] {
+    pub(crate) fn dynamic_segment_identity(&self, seg_id: u32) -> [u8; 16] {
         if seg_id == 0 {
             return self.storage_hash();
         }
@@ -694,7 +694,7 @@ impl PersistedDescriptor {
     /// routes — review blocker 1: a split must add capacity, not just
     /// lineage), the shard-prefix hash for prefix-pinned segments, and
     /// the parent stream route for the implicit/seg-0 case.
-    pub fn segment_route(&self, seg: &crate::segmap::SegmentDesc) -> [u8; 16] {
+    pub(crate) fn segment_route(&self, seg: &crate::segmap::SegmentDesc) -> [u8; 16] {
         if seg.route_hash != [0u8; 16] {
             seg.route_hash
         } else if seg.shard_prefix.is_empty() {
@@ -706,7 +706,7 @@ impl PersistedDescriptor {
 
     /// Unknown explicit segments have no routing authority. The parent
     /// route belongs only to the absent-map implicit segment zero.
-    pub fn segment_route_by_id(&self, seg_id: u32) -> Option<[u8; 16]> {
+    pub(crate) fn segment_route_by_id(&self, seg_id: u32) -> Option<[u8; 16]> {
         match &self.segments {
             Some(map) => map.get(seg_id).map(|segment| self.segment_route(segment)),
             None if seg_id == 0 => Some(crate::crypto::RouteHash::for_stream(&self.sref()).0),
@@ -714,7 +714,7 @@ impl PersistedDescriptor {
         }
     }
 
-    pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
+    pub(crate) fn resolve_segment(&self, routing_key: &str) -> SegRoute {
         let parent_route = crate::crypto::RouteHash::for_stream(&self.sref()).0;
         let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
         let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
@@ -766,7 +766,7 @@ impl PersistedDescriptor {
 }
 
 /// Media type with parameters stripped, lowercased.
-pub fn media_type(ct: &str) -> String {
+pub(crate) fn media_type(ct: &str) -> String {
     ct.split(';')
         .next()
         .unwrap_or("")
@@ -778,7 +778,7 @@ pub fn media_type(ct: &str) -> String {
 /// Only Conflict is retried internally. A PUT failure without an explicit
 /// conditional conflict may have committed and is therefore ambiguous.
 #[derive(Debug)]
-pub enum MutationError {
+pub(crate) enum MutationError {
     ReadUnavailable(object_store::Error),
     InvalidData(object_store::Error),
     MissingConditionalToken(object_store::Error),
@@ -809,7 +809,7 @@ impl std::error::Error for MutationError {
     }
 }
 
-pub struct Registry {
+pub(crate) struct Registry {
     store: Arc<dyn ObjectStore>,
     /// §10.4 system-root scoping; validated cell id from config.
     cell: Arc<str>,
@@ -878,7 +878,7 @@ fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
 /// Why a generation-fenced mutation did not apply.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg(test)]
-pub enum IncarnationCas {
+pub(crate) enum IncarnationCas {
     Applied,
     /// The mutation itself declined (its own precondition failed).
     Declined,
@@ -887,7 +887,7 @@ pub enum IncarnationCas {
     IncarnationChanged,
 }
 
-pub struct CatalogPage {
+pub(crate) struct CatalogPage {
     pub streams: Vec<StreamDesc>,
     /// Name to continue after, when more may follow.
     pub next_after: Option<String>,
@@ -912,7 +912,7 @@ impl Registry {
     /// PR 3.2.1: takes the PROVEN [`crate::tenant::CellId`] — the old
     /// `&str` signature re-validated here and `expect`-ed, contradicting
     /// the validated-configuration boundary.
-    pub fn new(store: Arc<dyn ObjectStore>, cell: &crate::tenant::CellId) -> Registry {
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, cell: &crate::tenant::CellId) -> Registry {
         Registry {
             store,
             cell: Arc::from(cell.as_str()),
@@ -949,7 +949,7 @@ impl Registry {
         cache.insert(sref, entry);
     }
 
-    pub fn cache_len(&self) -> usize {
+    pub(crate) fn cache_len(&self) -> usize {
         self.cache.lock().unwrap().len()
     }
 
@@ -968,7 +968,7 @@ impl Registry {
         );
     }
 
-    pub async fn get(
+    pub(crate) async fn get(
         &self,
         sref: &crate::tenant::TenantStreamRef,
     ) -> Result<Option<StreamDesc>, object_store::Error> {
@@ -1041,7 +1041,7 @@ impl Registry {
     }
 
     /// Create a descriptor; on a lost CAS race, return the winner's.
-    pub async fn create(
+    pub(crate) async fn create(
         &self,
         desc: impl Into<PersistedDescriptor>,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
@@ -1088,7 +1088,7 @@ impl Registry {
     /// descriptor is still dead per `still_dead`. Racing recreators get
     /// exactly one winner; a loser observes the winner's live descriptor
     /// (`(false, winner)`) instead of overwriting its incarnation.
-    pub async fn recreate(
+    pub(crate) async fn recreate(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         fresh: impl Into<PersistedDescriptor>,
@@ -1154,7 +1154,7 @@ impl Registry {
     #[allow(dead_code)]
     // production callers converted to fenced APIs; kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision
     #[cfg(test)]
-    pub async fn update<F: Fn(&mut PersistedDescriptor)>(
+    pub(crate) async fn update<F: Fn(&mut PersistedDescriptor)>(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         apply: F,
@@ -1197,7 +1197,7 @@ impl Registry {
 
     /// Test compatibility adapter for old incarnation-outcome fixtures.
     #[cfg(test)]
-    pub async fn cas_update_incarnation_outcome(
+    pub(crate) async fn cas_update_incarnation_outcome(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
@@ -1235,7 +1235,7 @@ impl Registry {
     /// descriptor are distinct outcomes, never silent declines.
     /// Tombstones are visible to `decide` (fork-debt cleanup writes
     /// them) under the same identity discipline.
-    pub async fn mutate_incarnation<T>(
+    pub(crate) async fn mutate_incarnation<T>(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
@@ -1319,7 +1319,7 @@ impl Registry {
     }
 
     #[cfg(test)]
-    pub async fn cas_update_retry(
+    pub(crate) async fn cas_update_retry(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
@@ -1342,7 +1342,7 @@ impl Registry {
     }
 
     #[cfg(test)]
-    pub async fn cas_update(
+    pub(crate) async fn cas_update(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
@@ -1397,7 +1397,7 @@ impl Registry {
         Ok(true)
     }
 
-    pub fn invalidate(&self, sref: &crate::tenant::TenantStreamRef) {
+    pub(crate) fn invalidate(&self, sref: &crate::tenant::TenantStreamRef) {
         self.cache.lock().unwrap().remove(sref);
     }
 
@@ -1406,7 +1406,7 @@ impl Registry {
     /// segment map after a sweep).
     #[cfg(test)]
     // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
-    pub fn fail_next_get(&self, name: &str) {
+    pub(crate) fn fail_next_get(&self, name: &str) {
         self.fail_next_get.lock().unwrap().insert(name.to_string());
     }
 
@@ -1414,7 +1414,7 @@ impl Registry {
     /// project (drives the fail-closed seed path).
     #[cfg(test)]
     // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
-    pub fn fail_next_list(&self, project: &str) {
+    pub(crate) fn fail_next_list(&self, project: &str) {
         self.fail_next_list
             .lock()
             .unwrap()
@@ -1428,7 +1428,7 @@ impl Registry {
     /// lands inside another mutator's read-modify-write window.
     #[cfg(test)]
     // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
-    pub fn fail_next_put(&self, name: &str) {
+    pub(crate) fn fail_next_put(&self, name: &str) {
         self.fail_next_put.lock().unwrap().insert(name.to_string());
     }
 
@@ -1451,7 +1451,7 @@ impl Registry {
 
     /// Visible and reconciliation catalogs share provider progress,
     /// bounded ordered fetches, decoding and continuation semantics.
-    pub async fn list_page(
+    pub(crate) async fn list_page(
         &self,
         project: &crate::tenant::ProjectId,
         after: Option<&str>,
@@ -1463,7 +1463,7 @@ impl Registry {
         self.catalog_page(project, after, limit, false).await
     }
 
-    pub async fn list_page_raw(
+    pub(crate) async fn list_page_raw(
         &self,
         project: &crate::tenant::ProjectId,
         after: Option<&str>,
@@ -1585,7 +1585,7 @@ fn catalog_error(message: &str) -> object_store::Error {
 // ---- shard topology ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Topology {
+pub(crate) struct Topology {
     pub version: u64,
     /// Complete binary prefix code over the stream-hash bit space. "" = one
     /// shard covering everything.
@@ -1607,7 +1607,7 @@ pub struct Topology {
 
 const TOPOLOGY_PATH: &str = "topology.json";
 
-pub async fn load_or_init_topology(
+pub(crate) async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
     initial_shards: crate::config::validation::InitialShards,
     body_ceiling: usize,
@@ -1675,7 +1675,7 @@ pub(crate) fn hash_bits(hash: &[u8; 16]) -> String {
 
 /// Longest-prefix match of the stream hash's leading bits against the shard
 /// set. `shards` must form a complete prefix code.
-pub fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
+pub(crate) fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
     let bits = hash_bits(hash);
     shards
         .iter()
@@ -1686,7 +1686,7 @@ pub fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
 }
 
 /// Does `hash` fall inside the shard identified by bit-prefix `prefix`?
-pub fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
+pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
     hash_bits(hash).starts_with(prefix)
 }
 

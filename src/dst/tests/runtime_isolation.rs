@@ -202,7 +202,6 @@ async fn observe_rig_identities(runtime: RigRuntime) -> RigIdentities {
     let journal = state.touch.journal(
         desc.storage_hash(),
         crate::crypto::RouteHash::for_stream(&desc.sref()),
-        &crate::product::watch_pinned(&desc),
     );
     let registry_ops = trace
         .events()

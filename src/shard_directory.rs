@@ -14,7 +14,7 @@ use crate::sharddir::{EngineIncarnation, OpenFn, OpenGate, OpenOutcome};
 
 /// How a resolution counts for sweep custody (R29).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Adoption {
+pub(crate) enum Adoption {
     /// Customer traffic: stamps the adoption sequence, revoking any
     /// sweep custody so the scheduler cannot close the engine under it.
     External,
@@ -26,7 +26,7 @@ pub enum Adoption {
 /// Why a shard could not be resolved here. Transport-neutral: the HTTP
 /// adapter maps these to 409/503/500 in exactly one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolveError {
+pub(crate) enum ResolveError {
     /// The ring assigns the shard to `owner`; the caller redirects there
     /// (a stale router must correct itself, never fence the owner).
     NotOwner {
@@ -49,7 +49,7 @@ pub enum ResolveError {
 /// Why a shard is being retired. Recorded on the retirement so the
 /// reason a prefix went cold is visible where the decision was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RetirementReason {
+pub(crate) enum RetirementReason {
     /// The ring moved the shard to another instance.
     OwnershipMoved,
     /// The fleet loop is handing the shard over.
@@ -74,7 +74,7 @@ impl RetirementReason {
     }
 }
 
-pub enum RetireOutcome {
+pub(crate) enum RetireOutcome {
     /// Removed from the serving map, the holdoff armed and the engine
     /// closed. The engine is returned only so the caller can OBSERVE
     /// it — its lifecycle is already settled — which is why production
@@ -93,7 +93,7 @@ pub enum RetireOutcome {
 /// adoption stamps under the READ guard, single-flight bounded opens)
 /// lives here; no caller reaches the map.
 #[derive(Clone)]
-pub struct ShardDirectory {
+pub(crate) struct ShardDirectory {
     inner: Arc<DirInner>,
 }
 
@@ -114,7 +114,7 @@ struct DirInner {
 /// one open attempt, and how long a request waits on an in-flight open
 /// before a retryable refusal.
 #[derive(Clone, Copy, Debug)]
-pub struct OpenTiming {
+pub(crate) struct OpenTiming {
     pub open_deadline: Duration,
     pub open_wait: Duration,
 }
@@ -124,7 +124,7 @@ pub struct OpenTiming {
 /// directory's internals weakly and nothing else: an opener cannot see
 /// the runtime, only tell its directory that a resident is gone.
 #[derive(Clone)]
-pub struct ShardCloseNotifier {
+pub(crate) struct ShardCloseNotifier {
     inner: Weak<DirInner>,
 }
 
@@ -133,7 +133,7 @@ impl ShardCloseNotifier {
     /// map and arms the anti-flap holdoff — only if it is still the
     /// resident; a late notification for a replaced engine is ignored.
     /// Returns whether it evicted.
-    pub fn closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
+    pub(crate) fn closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
         match self.inner.upgrade() {
             Some(dir) => dir.gate.notify_closed(prefix, incarnation),
             None => false,
@@ -142,14 +142,14 @@ impl ShardCloseNotifier {
 }
 
 impl ShardDirectory {
-    pub fn unready_reason(&self) -> Option<String> {
+    pub(crate) fn unready_reason(&self) -> Option<String> {
         self.inner.gate.unready_reason()
     }
 
     /// Build the directory, its serving map and its open gate together.
     /// `opener` receives the close notifier it must wire into every
     /// engine it produces; it captures nothing else of the runtime.
-    pub fn new(
+    pub(crate) fn new(
         prefixes: Vec<String>,
         ownership: crate::ownership::OwnershipService,
         timing: OpenTiming,
@@ -175,7 +175,7 @@ impl ShardDirectory {
     /// The close capability for engines opened outside the opener
     /// (tests, adoption paths).
     #[cfg(test)]
-    pub fn close_notifier(&self) -> ShardCloseNotifier {
+    pub(crate) fn close_notifier(&self) -> ShardCloseNotifier {
         ShardCloseNotifier {
             inner: Arc::downgrade(&self.inner),
         }
@@ -183,29 +183,29 @@ impl ShardDirectory {
 
     /// Tests only: the resident's incarnation and a holdoff reset.
     #[cfg(test)]
-    pub fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
+    pub(crate) fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
         self.inner.gate.resident_incarnation(prefix)
     }
 
     #[cfg(test)]
-    pub fn clear_holdoff(&self, prefix: &str) {
+    pub(crate) fn clear_holdoff(&self, prefix: &str) {
         self.inner.gate.clear_holdoff(prefix)
     }
 
     /// Tests only: this directory's open gate, so the lock-order proof
     /// can reach the forced-interleaving park.
     #[cfg(test)]
-    pub fn gate_for_tests(&self) -> crate::sharddir::OpenGate {
+    pub(crate) fn gate_for_tests(&self) -> crate::sharddir::OpenGate {
         self.inner.gate.clone()
     }
 
     /// The topology's shard prefixes (layout-4 bit prefixes).
-    pub fn prefixes(&self) -> &[String] {
+    pub(crate) fn prefixes(&self) -> &[String] {
         &self.inner.prefixes
     }
 
     /// The prefix a route hash lands in.
-    pub fn prefix_for(&self, hash: &[u8; 16]) -> String {
+    pub(crate) fn prefix_for(&self, hash: &[u8; 16]) -> String {
         crate::registry::shard_for_hash(&self.inner.prefixes, hash)
     }
 
@@ -215,7 +215,7 @@ impl ShardDirectory {
     /// is closed and the caller redirected, never served from a view
     /// frozen at the fence point. A shard that was just fenced away is
     /// held off (anti-flap while the router converges).
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         &self,
         hash: &[u8; 16],
         adoption: Adoption,
@@ -280,12 +280,12 @@ impl ShardDirectory {
     /// Open (or join the single-flight open of) `prefix` with an explicit
     /// patience — the fleet's eager move-in and the sweep's discovery,
     /// which honor the same holdoffs as the request path.
-    pub async fn open_or_wait(&self, prefix: &str, wait: Duration) -> OpenOutcome {
+    pub(crate) async fn open_or_wait(&self, prefix: &str, wait: Duration) -> OpenOutcome {
         self.inner.gate.get_or_open(prefix, wait).await
     }
 
     /// The resident engine for `prefix`, if open (no adoption stamp).
-    pub fn open(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
+    pub(crate) fn open(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
         self.inner
             .shards
             .read()
@@ -294,17 +294,17 @@ impl ShardDirectory {
             .map(|r| r.engine.clone())
     }
 
-    pub fn is_open(&self, prefix: &str) -> bool {
+    pub(crate) fn is_open(&self, prefix: &str) -> bool {
         self.inner.shards.read().unwrap().contains_key(prefix)
     }
 
-    pub fn open_count(&self) -> usize {
+    pub(crate) fn open_count(&self) -> usize {
         self.inner.shards.read().unwrap().len()
     }
 
     /// Every open engine — the instance's memory and pipelines. An
     /// owned-but-cold shard is absent BY DESIGN.
-    pub fn engines(&self) -> Vec<Arc<ShardEngine>> {
+    pub(crate) fn engines(&self) -> Vec<Arc<ShardEngine>> {
         self.inner
             .shards
             .read()
@@ -314,7 +314,7 @@ impl ShardDirectory {
             .collect()
     }
 
-    pub fn engines_by_prefix(&self) -> Vec<(String, Arc<ShardEngine>)> {
+    pub(crate) fn engines_by_prefix(&self) -> Vec<(String, Arc<ShardEngine>)> {
         self.inner
             .shards
             .read()
@@ -324,14 +324,14 @@ impl ShardDirectory {
             .collect()
     }
 
-    pub fn held_prefixes(&self) -> Vec<String> {
+    pub(crate) fn held_prefixes(&self) -> Vec<String> {
         self.inner.shards.read().unwrap().keys().cloned().collect()
     }
 
     /// Stops admission and observes the same retirement owners on every call.
     /// A deadline cancels observers only; late opens and database closes remain
     /// fenced in the gate until their owners establish termination.
-    pub async fn shutdown(&self, grace: Duration) -> Result<(), String> {
+    pub(crate) async fn shutdown(&self, grace: Duration) -> Result<(), String> {
         self.inner.gate.stop();
         for prefix in self.held_prefixes() {
             self.retire(&prefix, RetirementReason::Shutdown, |_, _| true);
@@ -383,7 +383,7 @@ impl ShardDirectory {
     /// own close callback then arrives with its incarnation and finds
     /// nothing to do: retirement is idempotent, and a late callback
     /// from a retired incarnation can never touch a replacement.
-    pub fn retire(
+    pub(crate) fn retire(
         &self,
         prefix: &str,
         reason: RetirementReason,

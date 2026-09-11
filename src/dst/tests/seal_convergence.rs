@@ -256,6 +256,10 @@ async fn concurrent_plain_seals_serialize_into_one_terminal_transition() {
 /// resumable failure with entered-proof that the injected group
 /// failure really fired; then one plain retry must converge to a
 /// terminal Sealed collection with the subscriber protocol intact.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal convergence scenario; entered failure proofs bounded retries and the single terminal SSE control form one fault history; fragmenting it would hide the relationship between retry and delivery"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seal_converges_through_transient_commit_group_failures() {
     let (state, addr, _promoter, mut sck) = hub_rig_stream("scv").await;

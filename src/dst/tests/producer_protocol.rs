@@ -3,10 +3,75 @@
 use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
-use super::fixture_storage::{mem, skey};
+use super::fixture_storage::{mem, open_engine_with_settings, skey};
 use crate::dst::{FaultPlan, FaultStore};
-use object_store::ObjectStore;
-use std::sync::Arc;
+
+/// These are distinct wire operations: seals carry neither data nor a producer.
+enum LaneWrite {
+    Sequence(Option<String>),
+    Producer { id: &'static str, seq: u64 },
+    Seal,
+}
+
+/// Own the common packet shape while each scenario controls its lane and operation.
+struct LaneSender<'a> {
+    engine: &'a crate::shard::ShardEngine,
+    key: &'a crate::crypto::StreamKey,
+    body: &'static [u8],
+}
+
+impl LaneSender<'_> {
+    async fn send(
+        &self,
+        identity: [u8; 16],
+        lineage: Vec<[u8; 16]>,
+        routing_key: String,
+        operation: LaneWrite,
+    ) -> Result<crate::shard::AppendAck, crate::shard::AppendErr> {
+        let subkey = crate::crypto::derive_subkey(self.key, &identity, &routing_key, 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash: identity,
+            route: identity,
+            entries: vec![bytes::Bytes::from_static(self.body)],
+            usage: crate::usage::counters(&identity),
+            key_hash: crate::crypto::stream_hash(&routing_key),
+            routing_key,
+            producer_lineage: lineage,
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            finish: crate::shard::AppendFinish::Open,
+            producer: None,
+            deferred_error: None,
+            sealed_reject_new: None,
+            touch: None,
+            seal_gen: None,
+            billing: None,
+            resp: tx,
+        };
+        match operation {
+            LaneWrite::Sequence(seq) => req.seq = seq,
+            LaneWrite::Producer { id, seq } => {
+                req.producer = Some(crate::shard::ProducerReq {
+                    id: id.into(),
+                    epoch: 1,
+                    seq,
+                    request_hash: None,
+                });
+            }
+            LaneWrite::Seal => {
+                req.entries.clear();
+                req.finish = crate::shard::AppendFinish::Close;
+            }
+        }
+        assert!(self.engine.try_enqueue(req).is_ok());
+        rx.await.expect("resp")
+    }
+}
 
 /// ROUTING-V3 §3.6: Stream-Seq is scoped to the ROUTING KEY. Two keys
 /// advance independent lanes on one segment; a regression within one
@@ -17,63 +82,29 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
     let store = FaultStore::uniform(inner.clone(), 108, FaultPlan::new(0, 0, 0));
     let key = skey();
     let hash = [0xB7u8; 16];
-    let db = slatedb::Db::builder("dst-keyseq", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
+    let engine = open_engine_with_settings(
+        store.clone(),
+        "dst-keyseq",
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-keyseq".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
+        },
+    )
+    .await;
+    let sender = LaneSender {
+        engine: &engine,
+        key: &key,
+        body: b"{}",
+    };
     let send = |rk: &'static str, seq: &'static str| {
-        let engine = engine.clone();
-        let key = key.clone();
-        async move {
-            let subkey = crate::crypto::derive_subkey(&key, &hash, rk, 0);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let req = crate::shard::AppendReq {
-                enqueued_at: std::time::Instant::now(),
-                hash,
-                route: hash,
-                entries: vec![bytes::Bytes::from_static(b"{}")],
-                usage: crate::usage::counters(&hash),
-                routing_key: rk.to_string(),
-                key_hash: crate::crypto::stream_hash(rk),
-                producer_lineage: Vec::new(),
-                key_version: 0,
-                subkey,
-                ts_hint_ms: None,
-                seq: Some(seq.to_string()),
-                bytes: 0,
-                finish: crate::shard::AppendFinish::Open,
-                producer: None,
-                deferred_error: None,
-                sealed_reject_new: None,
-                touch: None,
-                seal_gen: None,
-                billing: None,
-                resp: tx,
-            };
-            assert!(engine.try_enqueue(req).is_ok());
-            rx.await.expect("resp")
-        }
+        sender.send(
+            hash,
+            Vec::new(),
+            rk.to_owned(),
+            LaneWrite::Sequence(Some(seq.to_owned())),
+        )
     };
     assert!(send("a", "s1").await.is_ok());
     assert!(send("b", "s1").await.is_ok(), "key b has its own lane");
@@ -101,80 +132,29 @@ async fn producer_retries_across_a_split_commit_once() {
     let key = skey();
     let parent = [0xC1u8; 16];
     let child = [0xC2u8; 16];
-    let db = slatedb::Db::builder("dst-splitprod", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
+    let engine = open_engine_with_settings(
+        store.clone(),
+        "dst-splitprod",
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-splitprod".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: u64, close: bool| {
-        let engine = engine.clone();
-        let key = key.clone();
-        async move {
-            let subkey = crate::crypto::derive_subkey(&key, &identity, "pk", 0);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let req = crate::shard::AppendReq {
-                enqueued_at: std::time::Instant::now(),
-                hash: identity,
-                route: identity,
-                entries: if close {
-                    Vec::new()
-                } else {
-                    vec![bytes::Bytes::from_static(b"{\"p\":1}")]
-                },
-                usage: crate::usage::counters(&identity),
-                routing_key: "pk".to_string(),
-                key_hash: crate::crypto::stream_hash("pk"),
-                producer_lineage: lineage,
-                key_version: 0,
-                subkey,
-                ts_hint_ms: None,
-                seq: None,
-                bytes: 0,
-                finish: if close {
-                    crate::shard::AppendFinish::Close
-                } else {
-                    crate::shard::AppendFinish::Open
-                },
-                producer: if close {
-                    None
-                } else {
-                    Some(crate::shard::ProducerReq {
-                        id: "prod-1".into(),
-                        epoch: 1,
-                        seq,
-                        request_hash: None,
-                    })
-                },
-                deferred_error: None,
-                sealed_reject_new: None,
-                touch: None,
-                seal_gen: None,
-                billing: None,
-                resp: tx,
-            };
-            assert!(engine.try_enqueue(req).is_ok());
-            rx.await.expect("resp")
-        }
+        },
+    )
+    .await;
+    let sender = LaneSender {
+        engine: &engine,
+        key: &key,
+        body: br#"{"p":1}"#,
+    };
+    let send = |identity, lineage, seq, close| {
+        let operation = if close {
+            LaneWrite::Seal
+        } else {
+            LaneWrite::Producer { id: "prod-1", seq }
+        };
+        sender.send(identity, lineage, "pk".into(), operation)
     };
 
     // Commit (epoch 1, seq 0) on the parent, then seal it — the split.
@@ -221,72 +201,29 @@ async fn stream_seq_resolves_through_predecessors() {
     let key = skey();
     let parent = [0xD1u8; 16];
     let child = [0xD2u8; 16];
-    let db = slatedb::Db::builder("dst-seqchain", store.clone())
-        .with_settings(slatedb::config::Settings {
+    let engine = open_engine_with_settings(
+        store.clone(),
+        "dst-seqchain",
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-seqchain".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: Option<&str>, close: bool| {
-        let engine = engine.clone();
-        let key = key.clone();
-        let seq = seq.map(|s| s.to_string());
-        async move {
-            let subkey = crate::crypto::derive_subkey(&key, &identity, "sk", 0);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let req = crate::shard::AppendReq {
-                enqueued_at: std::time::Instant::now(),
-                hash: identity,
-                route: identity,
-                entries: if close {
-                    Vec::new()
-                } else {
-                    vec![bytes::Bytes::from_static(b"{\"s\":1}")]
-                },
-                usage: crate::usage::counters(&identity),
-                routing_key: "sk".to_string(),
-                key_hash: crate::crypto::stream_hash("sk"),
-                producer_lineage: lineage,
-                key_version: 0,
-                subkey,
-                ts_hint_ms: None,
-                seq,
-                bytes: 0,
-                finish: if close {
-                    crate::shard::AppendFinish::Close
-                } else {
-                    crate::shard::AppendFinish::Open
-                },
-                producer: None,
-                deferred_error: None,
-                sealed_reject_new: None,
-                touch: None,
-                seal_gen: None,
-                billing: None,
-                resp: tx,
-            };
-            assert!(engine.try_enqueue(req).is_ok());
-            rx.await.expect("resp")
-        }
+        },
+    )
+    .await;
+    let sender = LaneSender {
+        engine: &engine,
+        key: &key,
+        body: br#"{"s":1}"#,
+    };
+    let send = |identity, lineage, seq: Option<&str>, close| {
+        let operation = if close {
+            LaneWrite::Seal
+        } else {
+            LaneWrite::Sequence(seq.map(str::to_owned))
+        };
+        sender.send(identity, lineage, "sk".into(), operation)
     };
 
     send(parent, vec![], Some("s10"), false)
@@ -321,81 +258,29 @@ async fn producer_lanes_scoped_per_routing_key() {
     let key = skey();
     let parent = [0xD3u8; 16];
     let child = [0xD4u8; 16];
-    let db = slatedb::Db::builder("dst-prodkeys", store.clone())
-        .with_settings(slatedb::config::Settings {
+    let engine = open_engine_with_settings(
+        store.clone(),
+        "dst-prodkeys",
+        crate::shard::ShardConfig::default(),
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-prodkeys".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, rk: &str, seq: u64, close: bool| {
-        let engine = engine.clone();
-        let key = key.clone();
-        let rk = rk.to_string();
-        async move {
-            let subkey = crate::crypto::derive_subkey(&key, &identity, &rk, 0);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let req = crate::shard::AppendReq {
-                enqueued_at: std::time::Instant::now(),
-                hash: identity,
-                route: identity,
-                entries: if close {
-                    Vec::new()
-                } else {
-                    vec![bytes::Bytes::from_static(b"{\"p\":1}")]
-                },
-                usage: crate::usage::counters(&identity),
-                routing_key: rk.clone(),
-                key_hash: crate::crypto::stream_hash(&rk),
-                producer_lineage: lineage,
-                key_version: 0,
-                subkey,
-                ts_hint_ms: None,
-                seq: None,
-                bytes: 0,
-                finish: if close {
-                    crate::shard::AppendFinish::Close
-                } else {
-                    crate::shard::AppendFinish::Open
-                },
-                producer: if close {
-                    None
-                } else {
-                    Some(crate::shard::ProducerReq {
-                        id: "prod-x".into(),
-                        epoch: 1,
-                        seq,
-                        request_hash: None,
-                    })
-                },
-                deferred_error: None,
-                sealed_reject_new: None,
-                touch: None,
-                seal_gen: None,
-                billing: None,
-                resp: tx,
-            };
-            assert!(engine.try_enqueue(req).is_ok());
-            rx.await.expect("resp")
-        }
+        },
+    )
+    .await;
+    let sender = LaneSender {
+        engine: &engine,
+        key: &key,
+        body: br#"{"p":1}"#,
+    };
+    let send = |identity, lineage, rk: &str, seq, close| {
+        let operation = if close {
+            LaneWrite::Seal
+        } else {
+            LaneWrite::Producer { id: "prod-x", seq }
+        };
+        sender.send(identity, lineage, rk.to_owned(), operation)
     };
 
     // Alternating sequences on two keys, ONE producer id: independent
@@ -531,69 +416,8 @@ async fn product_append_and_append_many() {
     .expect("cursor decodes");
     assert_eq!(c.offset, 1, "cursor after the first single append");
 
-    // Validation: empty batch, invalid JSON, oversized routing key.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records:batch",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"[]",
-    )
-    .await;
-    assert_eq!(st, 400);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "empty_batch");
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{not json",
-    )
-    .await;
-    assert_eq!(st, 400);
-    let long_key = "k".repeat(1025);
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records",
-        &[
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("prisma-routing-key", &long_key),
-        ],
-        b"1",
-    )
-    .await;
-    assert_eq!(st, 400);
-
-    // Bytes stream: batch is 405; single stores the body as one record.
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/blobs",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"bytes"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/blobs/records:batch",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"xx",
-    )
-    .await;
-    assert_eq!(st, 405, "{}", String::from_utf8_lossy(&b));
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/blobs/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"raw-bytes-here",
-    )
-    .await;
-    assert_eq!(st, 200);
+    assert_invalid_json_appends_are_rejected(addr).await;
+    assert_bytes_stream_operation_contract(addr).await;
     engine_shutdown(&state).await;
 }
 
@@ -674,20 +498,12 @@ async fn product_producer_hash_discipline() {
     )
     .await;
     assert_eq!(st, 201);
-    let hdr = |seq: &'static str| {
-        vec![
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("prisma-routing-key", "g"),
-            ("producer-id", "checkout"),
-            ("producer-epoch", "1"),
-            ("producer-seq", seq),
-        ]
-    };
+
     let (st, _, b) = preq(
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("0"),
+        &producer_headers("0"),
         b"{\"n\":1}",
     )
     .await;
@@ -698,7 +514,7 @@ async fn product_producer_hash_discipline() {
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("1"),
+        &producer_headers("1"),
         b"{\"n\":2}",
     )
     .await;
@@ -719,7 +535,7 @@ async fn product_producer_hash_discipline() {
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("1"),
+        &producer_headers("1"),
         b"{\"n\":2}",
     )
     .await;
@@ -756,94 +572,8 @@ async fn product_producer_hash_discipline() {
     .unwrap();
     assert_eq!(kc0.offset, 1, "first append's cursor");
 
-    // Older-seq retry: still a duplicate (no reuse conflict).
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("0"),
-        b"{\"n\":1}",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["duplicate"], true);
-
-    // Same tuple, different body: 409 producer_sequence_reused, nothing
-    // stored.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("1"),
-        b"{\"n\":99}",
-    )
-    .await;
-    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "producer_sequence_reused");
-    let (st, _, b) = preq(
-        addr,
-        "GET",
-        "/v1/streams/ph/records?routingKey=g",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
-    assert_eq!(recs.len(), 3, "the reused sequence stored nothing");
-
-    // Gap: 409 producer_gap with expected/received details.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("5"),
-        b"{\"n\":5}",
-    )
-    .await;
-    assert_eq!(st, 409);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "producer_gap");
-    assert_eq!(v["error"]["details"]["expected"], 2);
-    assert_eq!(v["error"]["details"]["received"], 5);
-
-    // Stale epoch: 403 stale_producer_epoch with the current epoch.
-    let stale = vec![
-        ("prisma-encryption-key", PRISMA_KEY),
-        ("prisma-routing-key", "g"),
-        ("producer-id", "checkout"),
-        ("producer-epoch", "0"),
-        ("producer-seq", "0"),
-    ];
-    let (st, _, b) = preq(addr, "POST", "/v1/streams/ph/records", &stale, b"{\"n\":0}").await;
-    assert_eq!(st, 403);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "stale_producer_epoch");
-    assert_eq!(v["error"]["details"]["currentEpoch"], 1);
-
-    // Raw standards route: the pinned protocol's duplicate contract
-    // does NOT compare bodies — same tuple, different body, still 204.
-    let (st, _, _) = hreq(
-        addr,
-        "PUT",
-        "/v1/stream/rawdup",
-        &[("content-type", "application/json")],
-        b"",
-    )
-    .await;
-    assert!(st == 200 || st == 201);
-    let rawh = [
-        ("content-type", "application/json"),
-        ("producer-id", "p"),
-        ("producer-epoch", "1"),
-        ("producer-seq", "0"),
-    ];
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[1]").await;
-    assert!(st == 200 || st == 204);
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[2]").await;
-    assert_eq!(st, 204, "raw duplicate never compares bodies");
+    assert_producer_conflict_taxonomy(addr).await;
+    assert_raw_duplicates_ignore_body(addr).await;
     engine_shutdown(&state).await;
 }
 
@@ -894,4 +624,176 @@ async fn product_producer_hash_survives_split() {
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["error"]["code"], "producer_sequence_reused");
     engine_shutdown(&state).await;
+}
+
+// Assertion phases retain the calling scenario's server and previously committed records.
+fn producer_headers(seq: &str) -> [(&str, &str); 5] {
+    [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "1"),
+        ("producer-seq", seq),
+    ]
+}
+
+async fn assert_invalid_json_appends_are_rejected(addr: std::net::SocketAddr) {
+    // Validation: empty batch, invalid JSON, oversized routing key.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"[]",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "empty_batch");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{not json",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let long_key = "k".repeat(1025);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", &long_key),
+        ],
+        b"1",
+    )
+    .await;
+    assert_eq!(st, 400);
+}
+
+async fn assert_bytes_stream_operation_contract(addr: std::net::SocketAddr) {
+    // Bytes stream: batch is 405; single stores the body as one record.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/blobs",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"bytes"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"xx",
+    )
+    .await;
+    assert_eq!(st, 405, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"raw-bytes-here",
+    )
+    .await;
+    assert_eq!(st, 200);
+}
+
+async fn assert_producer_conflict_taxonomy(addr: std::net::SocketAddr) {
+    // Older-seq retry: still a duplicate (no reuse conflict).
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("0"),
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true);
+
+    // Same tuple, different body: 409 producer_sequence_reused, nothing
+    // stored.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("1"),
+        b"{\"n\":99}",
+    )
+    .await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_sequence_reused");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/ph/records?routingKey=g",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "the reused sequence stored nothing");
+
+    // Gap: 409 producer_gap with expected/received details.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("5"),
+        b"{\"n\":5}",
+    )
+    .await;
+    assert_eq!(st, 409);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_gap");
+    assert_eq!(v["error"]["details"]["expected"], 2);
+    assert_eq!(v["error"]["details"]["received"], 5);
+
+    // Stale epoch: 403 stale_producer_epoch with the current epoch.
+    let stale = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/ph/records", &stale, b"{\"n\":0}").await;
+    assert_eq!(st, 403);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "stale_producer_epoch");
+    assert_eq!(v["error"]["details"]["currentEpoch"], 1);
+}
+
+async fn assert_raw_duplicates_ignore_body(addr: std::net::SocketAddr) {
+    // Raw standards route: the pinned protocol's duplicate contract
+    // does NOT compare bodies — same tuple, different body, still 204.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/rawdup",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let rawh = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[1]").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[2]").await;
+    assert_eq!(st, 204, "raw duplicate never compares bodies");
 }

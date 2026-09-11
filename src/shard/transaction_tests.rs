@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! R03-A: every row and batch-dependent effect of one mixed transaction.
 use super::*;
 use crate::queue::{ConsumerConfig, ConsumerLifecycle, ConsumerRecord, QueueOp, QueueOut};
@@ -39,7 +40,7 @@ impl Fixture {
             None,
             Default::default(),
         );
-        let journal = crate::touch::TouchJournal::start(&crate::runtime::OsEntropy, &[]);
+        let journal = crate::touch::TouchJournal::start(&crate::runtime::OsEntropy);
         Self {
             engine,
             cfg,

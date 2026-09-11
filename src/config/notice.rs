@@ -11,7 +11,7 @@
 //! numbers: this module depends on nothing else in the crate.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigNotice {
+pub(crate) enum ConfigNotice {
     MemoryProfileCertified {
         profile: String,
     },
@@ -52,7 +52,7 @@ pub enum ConfigNotice {
 
 impl ConfigNotice {
     /// Severity for the emitter: `true` = warning, `false` = info.
-    pub fn is_warning(&self) -> bool {
+    pub(crate) fn is_warning(&self) -> bool {
         !matches!(self, Self::MemoryProfileCertified { .. })
     }
 }

@@ -17,7 +17,7 @@
 ///
 /// Construction is the whole point: once a value of this type exists,
 /// the sources are registered and waiting on them cannot fail.
-pub struct TerminationSource {
+pub(crate) struct TerminationSource {
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
@@ -36,7 +36,7 @@ impl TerminationSource {
     /// This is a PREFLIGHT: it must run before the first supervised task
     /// is spawned, so that a registration failure returns from startup
     /// with nothing left running behind it.
-    pub fn prepare() -> anyhow::Result<Self> {
+    pub(crate) fn prepare() -> anyhow::Result<Self> {
         #[cfg(unix)]
         {
             use anyhow::Context;
@@ -69,7 +69,7 @@ impl TerminationSource {
 
     /// Wait for the first termination signal. Waits only on sources that
     /// `prepare` already installed, so this cannot fail.
-    pub async fn recv(&mut self) {
+    pub(crate) async fn recv(&mut self) {
         #[cfg(unix)]
         {
             tokio::select! {

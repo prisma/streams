@@ -61,7 +61,7 @@ fn evict_one_idle_at(
 }
 
 #[derive(Debug, Clone)]
-pub struct Limits {
+pub(crate) struct Limits {
     pub bytes_per_sec: f64,
     pub reqs_per_sec: f64,
     pub recs_per_sec: f64,
@@ -76,7 +76,7 @@ struct Bucket {
 }
 
 #[derive(Default)]
-pub struct Counters {
+pub(crate) struct Counters {
     /// Process-unique incarnation id (0 for ad-hoc test constructions):
     /// the billing emitter uses this to tell two incarnations of the
     /// same stream apart. Plain counter-regression detection misses the
@@ -116,14 +116,14 @@ struct StreamUsage {
 /// shedding — the 2026-08-11 soak's ~4,900 rec/s plateau was exactly
 /// explained by LIMIT_RECS_PER_SEC=5,000 while the report credited the
 /// maintenance gate, because nothing recorded WHICH refusal fired.
-pub static LIMIT_REFUSALS_BYTES: std::sync::atomic::AtomicU64 =
+pub(crate) static LIMIT_REFUSALS_BYTES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static LIMIT_REFUSALS_REQUESTS: std::sync::atomic::AtomicU64 =
+pub(crate) static LIMIT_REFUSALS_REQUESTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static LIMIT_REFUSALS_RECORDS: std::sync::atomic::AtomicU64 =
+pub(crate) static LIMIT_REFUSALS_RECORDS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-pub fn note_limit_refusal(hit: &LimitHit) {
+pub(crate) fn note_limit_refusal(hit: &LimitHit) {
     let c = match hit {
         LimitHit::Bytes { .. } => &LIMIT_REFUSALS_BYTES,
         LimitHit::Requests { .. } => &LIMIT_REFUSALS_REQUESTS,
@@ -132,7 +132,7 @@ pub fn note_limit_refusal(hit: &LimitHit) {
     c.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn limit_refusals_json() -> serde_json::Value {
+pub(crate) fn limit_refusals_json() -> serde_json::Value {
     serde_json::json!({
         "limit_bytes_per_sec": LIMIT_REFUSALS_BYTES.load(Ordering::Relaxed),
         "limit_requests_per_sec": LIMIT_REFUSALS_REQUESTS.load(Ordering::Relaxed),
@@ -141,21 +141,21 @@ pub fn limit_refusals_json() -> serde_json::Value {
 }
 
 /// Which limit an append violated, with a suggested retry delay.
-pub enum LimitHit {
+pub(crate) enum LimitHit {
     Bytes { retry_ms: u64 },
     Requests { retry_ms: u64 },
     Records { retry_ms: u64 },
 }
 
 impl LimitHit {
-    pub fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             LimitHit::Bytes { .. } => "limit_bytes_per_sec",
             LimitHit::Requests { .. } => "limit_requests_per_sec",
             LimitHit::Records { .. } => "limit_records_per_sec",
         }
     }
-    pub fn message(&self, l: &Limits) -> String {
+    pub(crate) fn message(&self, l: &Limits) -> String {
         match self {
             LimitHit::Bytes { .. } => format!(
                 "stream ingest limit exceeded: {:.1} MB/s per stream shard",
@@ -171,7 +171,7 @@ impl LimitHit {
             ),
         }
     }
-    pub fn retry_ms(&self) -> u64 {
+    pub(crate) fn retry_ms(&self) -> u64 {
         match self {
             LimitHit::Bytes { retry_ms }
             | LimitHit::Requests { retry_ms }
@@ -227,7 +227,7 @@ fn admit_on(
 /// One runtime's usage policy, admission state and maintenance signals.
 /// Every engine and transport in that runtime shares this handle; another
 /// runtime cannot consume its tokens, counters or backlog state.
-pub struct UsageService {
+pub(crate) struct UsageService {
     limits: Limits,
     clock: Arc<dyn Clock>,
     map: Mutex<HashMap<[u8; 16], StreamUsage>>,
@@ -250,7 +250,7 @@ impl std::fmt::Debug for UsageService {
     }
 }
 impl UsageService {
-    pub fn new(cfg: &crate::config::AdmissionConfig, clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn new(cfg: &crate::config::AdmissionConfig, clock: Arc<dyn Clock>) -> Self {
         let limits = Limits {
             bytes_per_sec: cfg.limit_bytes_per_sec,
             reqs_per_sec: cfg.limit_reqs_per_sec,
@@ -277,10 +277,10 @@ impl UsageService {
             shard_lag_map: Mutex::new(HashMap::new()),
         }
     }
-    pub fn limits(&self) -> &Limits {
+    pub(crate) fn limits(&self) -> &Limits {
         &self.limits
     }
-    pub fn overflow_stats(&self) -> (u64, u64, u64, u64) {
+    pub(crate) fn overflow_stats(&self) -> (u64, u64, u64, u64) {
         let c = &self.overflow_counters;
         (
             self.overflow_admits.load(Ordering::Relaxed),
@@ -290,7 +290,11 @@ impl UsageService {
         )
     }
 
-    pub fn tracked_streams(&self) -> usize {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::tracked_streams; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn tracked_streams(&self) -> usize {
         self.map.lock().unwrap().len()
     }
 
@@ -300,7 +304,11 @@ impl UsageService {
     }
 
     /// Permanent capacity check used before publishing lifecycle intent.
-    pub fn permanently_unadmittable(&self, bytes: u64, records: u64) -> Option<&'static str> {
+    pub(crate) fn permanently_unadmittable(
+        &self,
+        bytes: u64,
+        records: u64,
+    ) -> Option<&'static str> {
         let l = self.limits();
         if l.bytes_per_sec > 0.0 && bytes as f64 > l.bytes_per_sec * l.burst_secs {
             return Some("bytes");
@@ -320,7 +328,7 @@ impl UsageService {
 
     /// Choose the accounting handle atomically with whole-request admission.
     /// Overflow shares one conservative bucket and one accounted counter set.
-    pub fn admit_append(
+    pub(crate) fn admit_append(
         &self,
         hash: &[u8; 16],
         bytes: u64,
@@ -329,6 +337,10 @@ impl UsageService {
         self.admit_append_in(&self.map, &self.overflow_bucket, hash, bytes, records)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::admit_append_in; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
     fn admit_append_in(
         &self,
         map: &Mutex<HashMap<[u8; 16], StreamUsage>>,
@@ -371,7 +383,11 @@ impl UsageService {
     }
 
     /// Resolve a counter without charging tokens, for read/deferred/close paths.
-    pub fn counters(&self, hash: &[u8; 16]) -> std::sync::Arc<Counters> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::counters; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn counters(&self, hash: &[u8; 16]) -> std::sync::Arc<Counters> {
         let l = self.limits();
         let mut m = self.map.lock().unwrap();
         let n = m.len();
@@ -397,16 +413,28 @@ impl UsageService {
         }
     }
 
-    pub fn set_absorb_lag(&self, hash: SegmentHash, secs: u64) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::set_absorb_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn set_absorb_lag(&self, hash: SegmentHash, secs: u64) {
         self.lag_map.lock().unwrap().insert(hash, secs);
     }
 
-    pub fn clear_absorb_lag(&self, hash: SegmentHash) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::clear_absorb_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn clear_absorb_lag(&self, hash: SegmentHash) {
         self.lag_map.lock().unwrap().remove(&hash);
     }
 
     /// Join tenant route identity to segment identities within this runtime.
-    pub fn link_storage(&self, usage_hash: RouteHash, storage_hash: SegmentHash) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::link_storage; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn link_storage(&self, usage_hash: RouteHash, storage_hash: SegmentHash) {
         let mut m = self.storage_links.lock().unwrap();
         if m.len() >= MAX_TRACKED && !m.contains_key(&usage_hash) {
             return;
@@ -414,7 +442,11 @@ impl UsageService {
         m.entry(usage_hash).or_default().insert(storage_hash);
     }
 
-    pub fn absorb_lag_for_usage(&self, usage_hash: RouteHash) -> u64 {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::absorb_lag_for_usage; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn absorb_lag_for_usage(&self, usage_hash: RouteHash) -> u64 {
         let links = self.storage_links.lock().unwrap();
         let Some(set) = links.get(&usage_hash) else {
             return 0;
@@ -426,7 +458,11 @@ impl UsageService {
             .unwrap_or(0)
     }
 
-    pub fn absorb_backlog_summary(&self) -> (usize, u64) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::absorb_backlog_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn absorb_backlog_summary(&self) -> (usize, u64) {
         let m = self.lag_map.lock().unwrap();
         let lagging = m.values().filter(|v| **v > 0).count();
         let max = m.values().copied().max().unwrap_or(0);
@@ -434,7 +470,11 @@ impl UsageService {
     }
 
     /// One row per engine; closing that engine removes its contribution.
-    pub fn set_absorb_pending_summary(
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::set_absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn set_absorb_pending_summary(
         &self,
         shard_prefix: &str,
         eligible: u64,
@@ -446,12 +486,16 @@ impl UsageService {
             .insert(shard_prefix.to_string(), (eligible, oldest_eligible_secs));
     }
 
-    pub fn clear_absorb_pending_summary(&self, shard_prefix: &str) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::clear_absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn clear_absorb_pending_summary(&self, shard_prefix: &str) {
         self.pending_summary.lock().unwrap().remove(shard_prefix);
     }
 
     #[cfg(test)]
-    pub fn absorb_pending_summary_for(&self, shard_prefix: &str) -> Option<(u64, u64)> {
+    pub(crate) fn absorb_pending_summary_for(&self, shard_prefix: &str) -> Option<(u64, u64)> {
         self.pending_summary
             .lock()
             .unwrap()
@@ -459,7 +503,11 @@ impl UsageService {
             .copied()
     }
 
-    pub fn absorb_pending_summary(&self) -> (u64, u64) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn absorb_pending_summary(&self) -> (u64, u64) {
         self.pending_summary
             .lock()
             .unwrap()
@@ -468,7 +516,7 @@ impl UsageService {
     }
 
     #[cfg(test)]
-    pub fn absorb_lag(&self, hash: SegmentHash) -> u64 {
+    pub(crate) fn absorb_lag(&self, hash: SegmentHash) -> u64 {
         self.lag_map
             .lock()
             .unwrap()
@@ -477,7 +525,11 @@ impl UsageService {
             .unwrap_or(0)
     }
 
-    pub fn absorb_lag_max(&self) -> u64 {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::absorb_lag_max; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn absorb_lag_max(&self) -> u64 {
         self.lag_map
             .lock()
             .unwrap()
@@ -487,18 +539,30 @@ impl UsageService {
             .unwrap_or(0)
     }
 
-    pub fn set_shard_lag(&self, prefix: &str, secs: u64) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::set_shard_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn set_shard_lag(&self, prefix: &str, secs: u64) {
         self.shard_lag_map
             .lock()
             .unwrap()
             .insert(prefix.to_string(), secs);
     }
 
-    pub fn clear_shard_lag(&self, prefix: &str) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::clear_shard_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn clear_shard_lag(&self, prefix: &str) {
         self.shard_lag_map.lock().unwrap().remove(prefix);
     }
 
-    pub fn shard_lag_all(&self) -> Vec<(String, u64)> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::shard_lag_all; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
+    pub(crate) fn shard_lag_all(&self) -> Vec<(String, u64)> {
         self.shard_lag_map
             .lock()
             .unwrap()
@@ -508,6 +572,10 @@ impl UsageService {
     }
 
     /// Per-stream counters from this owner; overflow is explicitly aggregated.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "UsageService::snapshot; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
+    )]
     pub fn snapshot(&self) -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64, u64)> {
         self.map
             .lock()
@@ -542,7 +610,7 @@ fn test_usage() -> &'static UsageService {
     })
 }
 #[cfg(test)]
-pub fn limits() -> &'static Limits {
+pub(crate) fn limits() -> &'static Limits {
     test_usage().limits()
 }
 #[cfg(test)]
@@ -554,12 +622,12 @@ fn evict_one_idle(m: &mut HashMap<[u8; 16], StreamUsage>, idle: std::time::Durat
     evict_one_idle_at(m, idle, test_usage().clock.monotonic())
 }
 #[cfg(test)]
-pub fn overflow_stats() -> (u64, u64, u64, u64) {
+pub(crate) fn overflow_stats() -> (u64, u64, u64, u64) {
     test_usage().overflow_stats()
 }
 
 #[cfg(test)]
-pub fn admit_append(
+pub(crate) fn admit_append(
     hash: &[u8; 16],
     bytes: u64,
     records: u64,
@@ -568,7 +636,7 @@ pub fn admit_append(
 }
 
 #[cfg(test)]
-pub(crate) fn admit_append_in(
+fn admit_append_in(
     map: &Mutex<HashMap<[u8; 16], StreamUsage>>,
     overflow: &Mutex<Bucket>,
     hash: &[u8; 16],
@@ -579,57 +647,57 @@ pub(crate) fn admit_append_in(
 }
 
 #[cfg(test)]
-pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
+pub(crate) fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
     test_usage().counters(hash)
 }
 
 #[cfg(test)]
-pub fn set_absorb_lag(hash: SegmentHash, secs: u64) {
+pub(crate) fn set_absorb_lag(hash: SegmentHash, secs: u64) {
     test_usage().set_absorb_lag(hash, secs)
 }
 
 #[cfg(test)]
-pub fn clear_absorb_lag(hash: SegmentHash) {
+pub(crate) fn clear_absorb_lag(hash: SegmentHash) {
     test_usage().clear_absorb_lag(hash)
 }
 
 #[cfg(test)]
-pub fn link_storage(usage_hash: RouteHash, storage_hash: SegmentHash) {
+pub(crate) fn link_storage(usage_hash: RouteHash, storage_hash: SegmentHash) {
     test_usage().link_storage(usage_hash, storage_hash)
 }
 
 #[cfg(test)]
-pub fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
+pub(crate) fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
     test_usage().absorb_lag_for_usage(usage_hash)
 }
 
 #[cfg(test)]
-pub fn absorb_backlog_summary() -> (usize, u64) {
+pub(crate) fn absorb_backlog_summary() -> (usize, u64) {
     test_usage().absorb_backlog_summary()
 }
 
 #[cfg(test)]
-pub fn absorb_lag(hash: SegmentHash) -> u64 {
+pub(crate) fn absorb_lag(hash: SegmentHash) -> u64 {
     test_usage().absorb_lag(hash)
 }
 
 #[cfg(test)]
-pub fn absorb_lag_max() -> u64 {
+pub(crate) fn absorb_lag_max() -> u64 {
     test_usage().absorb_lag_max()
 }
 
 #[cfg(test)]
-pub fn set_shard_lag(prefix: &str, secs: u64) {
+pub(crate) fn set_shard_lag(prefix: &str, secs: u64) {
     test_usage().set_shard_lag(prefix, secs)
 }
 
 #[cfg(test)]
-pub fn clear_shard_lag(prefix: &str) {
+pub(crate) fn clear_shard_lag(prefix: &str) {
     test_usage().clear_shard_lag(prefix)
 }
 
 #[cfg(test)]
-pub fn shard_lag_all() -> Vec<(String, u64)> {
+pub(crate) fn shard_lag_all() -> Vec<(String, u64)> {
     test_usage().shard_lag_all()
 }
 
@@ -710,6 +778,24 @@ mod shard_lag_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_usage_state_cannot_publish_new_counters() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let usage = UsageService::new(
+            &crate::config::AdmissionConfig::default(),
+            Arc::new(crate::runtime::ManualClock::at(0)),
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _guard = usage.map.lock().unwrap();
+                panic!("interrupt an accounting state transition");
+            }))
+            .is_err()
+        );
+        assert!(usage.map.is_poisoned());
+        assert!(catch_unwind(AssertUnwindSafe(|| usage.counters(&[1; 16]))).is_err());
+    }
 
     #[test]
     fn buckets_enforce_and_reject_whole() {
