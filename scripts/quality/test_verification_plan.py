@@ -55,6 +55,16 @@ class Triggers(unittest.TestCase):
             self.assertTrue(checks['compiler'])
             self.assertFalse(checks['mutants'])  # No changed production mutation scope.
 
+    def test_mutation_source_files_name_exactly_the_critical_executable_changes(self):
+        checks = plan(['src/shard_directory.rs', 'src/ops.rs', 'src/sse/feed.rs', 'src/history.rs', 'docs/x.md'],
+                      visibility_only=['src/history.rs'], production_unchanged=['src/ops.rs'],
+                      formatted_visibility=['src/sse/feed.rs'])
+        self.assertEqual(checks['mutation_source_files'], ['src/shard_directory.rs'])
+        self.assertTrue(checks['mutants'])
+        quiet = plan(['src/shard_directory.rs'], production_unchanged=['src/shard_directory.rs'])
+        self.assertEqual(quiet['mutation_source_files'], [])
+        self.assertFalse(quiet['mutants'])
+
     def test_pilot_benchmark_changes_select_lifecycle_and_mutations(self):
         for path in ('src/bin/pilot/benchmark.rs', 'src/bin/pilot/benchmark/window.rs', 'src/bin/pilot/benchmark/config.rs'):
             checks = plan([path])
