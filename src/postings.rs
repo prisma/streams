@@ -390,7 +390,12 @@ impl PageBuilder {
         // their page_first key component).
         let page_full =
             acc.runs.len().saturating_mul(12).saturating_add(40) >= PAGE_MAX_ENCODED_BYTES;
-        if bucket != acc.bucket || (page_full && acc.run_count == 0) {
+        // A full page closes only where its open run ends, at a gap, so
+        // the cap holds for keys whose runs never change bucket without
+        // ever cutting one run in two. A key seen for the first time has
+        // no runs yet, so its page is never full.
+        let at_gap = offset != acc.run_next;
+        if bucket != acc.bucket || (page_full && at_gap) {
             Self::close_run(acc);
             if !acc.runs.is_empty() {
                 acc.done
@@ -641,8 +646,9 @@ pub(crate) fn plan_spans_iter(
 #[cfg(test)]
 mod tests {
     use super::{
-        AbsRun, BUCKET_OFFSETS, GAP_UNKNOWN, PageBuilder, PlanCfg, PostingRun, RoutingKeyHash,
-        decode_page, decode_page_abs, encode_page, get_varint, plan_spans, put_varint,
+        AbsRun, BUCKET_OFFSETS, GAP_UNKNOWN, PAGE_MAX_ENCODED_BYTES, PageBuilder, PlanCfg,
+        PostingRun, RoutingKeyHash, decode_page, decode_page_abs, encode_page, get_varint,
+        plan_spans, put_varint,
     };
 
     fn run(start: u64, count: u32, bytes: u64, gap_bytes: u64) -> AbsRun {
@@ -668,6 +674,41 @@ mod tests {
         let (_, _, first, encoded) = pages.first().expect("one page");
         assert_eq!(*first, 0);
         assert_eq!(decode_page(encoded).map(|page| page.runs.len()), Some(3));
+    }
+
+    /// A bucket whose gapped runs would exceed the encoded-size cap is split
+    /// into more than one page at a run boundary, and every page decodes.
+    #[test]
+    fn a_full_page_splits_at_the_next_run_boundary() {
+        let key = RoutingKeyHash([9; 16]);
+        let mut builder = PageBuilder::default();
+        let runs = 2_800u64;
+        for i in 0..runs {
+            // Three contiguous frames per run: the page fills while a
+            // run is open, and the split must wait for the next gap.
+            for frame in 0..3 {
+                builder.note_frame(key, i * 4 + frame, 64);
+            }
+        }
+        let (pages, _) = builder.finish();
+        assert!(
+            pages.len() >= 2,
+            "the cap splits the bucket: {} pages",
+            pages.len()
+        );
+        let decoded: usize = pages
+            .iter()
+            .map(|(_, _, _, encoded)| {
+                assert!(encoded.len() <= PAGE_MAX_ENCODED_BYTES);
+                let page = decode_page(encoded).expect("every page decodes");
+                assert!(
+                    page.runs.iter().all(|run| run.record_count == 3),
+                    "no run is cut in two by the page cap"
+                );
+                page.runs.len()
+            })
+            .sum();
+        assert_eq!(decoded as u64, runs);
     }
 
     /// A known gap wider than max_gap_bytes opens a new span even when the
