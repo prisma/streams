@@ -871,13 +871,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "8d081e146fbe00e656ac63a31f062bb04d1085b70a4b878a380beec92dc04a3e",
-      "item": "crate::CheckedFrame::metadata",
-      "lint": "clippy::arithmetic_side_effects",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c6ca46333280941cc3d9e0533fb04c013cfbc0e35fcd776a233242943a9b421d",
       "item": "crate::validate_boundary",
       "lint": "clippy::cast_possible_truncation",
@@ -1645,20 +1638,6 @@
       "item": "crate::r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/shard/read_budget_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "81af4e418a94e7e8a2ef439897e0c608e85c6f01e4a1b701ce90d6ee588dfdf3",
-      "item": "crate::CheckedFrame::metadata",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c6482aa1a95cf57efd0243d44a4753976e7e211edd86af7c5b51d90c8959d1ed",
-      "item": "crate::CheckedFrame::metadata",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/shard/record/checked.rs"
     },
     {
       "count": 1,
@@ -7367,13 +7346,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "e123781805a3b6a7fad766f0b64f207259ffa62a823eb6edb23a3702863fa392",
-      "item": "crate::CheckedFrame::view",
-      "lint": "clippy::expect_used",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d4520aa9a818ffc0a377095d6b69fd6e43376bf842497604b9dbfbc6a96521c9",
       "item": "crate::CommitTransaction < '_ >::delete_step",
       "lint": "clippy::expect_used",
@@ -7889,62 +7861,6 @@
       "item": "crate::read_frames_until",
       "lint": "clippy::indexing_slicing",
       "path": "src/shard/record.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0a3e80314f29e7400f4f56521b5a3ca07f2eef6520e6266cbdc3eb5de1bfba73",
-      "item": "crate::CheckedFrame::view",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "30111b2ebc5f7efc5aca651e907bc95dfb81bbaeb20c79ff2755cb8d05e5d0eb",
-      "item": "crate::CheckedFrame::view",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "96976e7903b2bcb044f9aca78b6a7a446f73940fc95595a10e8150e45df3e4f0",
-      "item": "crate::tests::o1_checked_views_retain_exact_metadata_and_borrow_admitted_storage",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "aae31df46bf64c47238bb2bfda36ba0239c3b0c18901d5c443d13f19f00776ce",
-      "item": "crate::tests::o1_checked_views_retain_exact_metadata_and_borrow_admitted_storage",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c5157a837774f91fb125f9f07e20264da8c9acca9528b55b6beb8ba627b680db",
-      "item": "crate::tests::o1_checked_views_retain_exact_metadata_and_borrow_admitted_storage",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b6ff52a5454748623924151a75f5102761039d6a7eada4513d4f6e3c0093cc87",
-      "item": "crate::tests::o1_structural_admission_never_substitutes_for_authentication",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c89f4b96b16ad08434ff0afb3f73bd9d02a8657bcec6b12d1fcc460518036e9d",
-      "item": "crate::tests::o1_structural_admission_never_substitutes_for_authentication",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ea73407652ab3cb1ed14e1e64b00b54ce255a9374f0e29740e8350074ff3665c",
-      "item": "crate::tests::o1_structural_admission_never_substitutes_for_authentication",
-      "lint": "clippy::indexing_slicing",
-      "path": "src/shard/record/checked.rs"
     },
     {
       "count": 1,
