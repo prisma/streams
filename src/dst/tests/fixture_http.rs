@@ -688,6 +688,22 @@ pub(super) async fn await_published(state: &Arc<crate::http::AppState>, stream: 
 /// purpose: a test shutdown is a QUIESCENCE boundary for one instance,
 /// not the possession yield the holdoff exists to damp. Production waits
 /// it out; a restart test reopens the same storage deliberately.
+/// Installs the rig's rollup consumer; a rig installs it exactly once.
+pub(super) fn install_rollup(state: &crate::http::AppState, rollup: crate::rollup::UsageRollup) {
+    assert!(
+        state.rollup.install(Arc::new(rollup)).is_ok(),
+        "this rig installs its rollup once"
+    );
+}
+
+/// Installs the rig's read spool; a rig installs it exactly once.
+pub(super) fn install_read_spool(state: &crate::http::AppState, spool: crate::billing::ReadSpool) {
+    assert!(
+        state.billing.install_read_spool(Arc::new(spool)).is_ok(),
+        "this rig installs its read spool once"
+    );
+}
+
 pub(super) async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
     for prefix in state.shards.held_prefixes() {
         match state.shards.retire(
