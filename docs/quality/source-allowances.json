@@ -1718,34 +1718,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::Workload::append_to",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::attempt",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::attempt_with_deadline",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::run",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
       "path": "src/dst/tests/runtime_sweep.rs",
       "syntax": "allow (non_snake_case)"

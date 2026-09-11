@@ -150,34 +150,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1e34a87c9b148a32b7f3afade087122f6afe8d473aeeaa5fb841c9a888b10d04",
-      "item": "crate::Workload::append_to",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7fc59315c1d42448d115b0b1c9b81c20c0c6f98738137b71803c5adbedfcfcc4",
-      "item": "crate::Workload::attempt",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2816e7f144bf4aebd55d6504f2f578d022616699384958e98203828b985a1760",
-      "item": "crate::Workload::attempt_with_deadline",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4ae7b7097e54f26dcaa12a6174f151e32eda7220e0398e7bbb57dda0a434ff43",
-      "item": "crate::Workload::run",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d1ab2ef2c5d52cc346cc433c770edfd4dc2a508ec0ec7c27d5aef2937602fdad",
       "item": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
       "lint": "clippy::allow_attributes_without_reason",
@@ -766,20 +738,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "d3a613cc0ecc6440294e324ee6df16ecfac897e778c5fa66de753bb7cc2c6737",
-      "item": "crate::Shared::now_ns",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "47d483be5c9b9c5c4cf5747b3be255d79686eff2c7d40a2166dd36ff26dea88c",
-      "item": "crate::main",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "5d4543f50732bf79c19d141cd8c3fd9c69c9871a3a587131ef78f272371ee9ea",
       "item": "crate::lb",
       "lint": "clippy::cast_possible_truncation",
@@ -861,13 +819,6 @@
       "item": "crate::o2_in_place_append_reuses_storage_and_rolls_back_failed_authentication",
       "lint": "clippy::cast_possible_truncation",
       "path": "src/crypto/decrypt/tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "22e00ea1a46470c9ff5b533f2857a962ce4ba7d4fd3767970ad0cfbfb58215de",
-      "item": "crate::drain_observed",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/runtime.rs"
     },
     {
       "count": 1,
@@ -1465,20 +1416,6 @@
       "path": "src/application/read_wire_tests.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "13ee9dc030af51f790bc376e3214eaba16b0fb50cbb4ca7720f283950c586762",
-      "item": "crate::main",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c57ace43ac7c030c655cb8a2ac26e519f13a24dfd47e90528d79c1e493e104d4",
-      "item": "crate::main",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/bin/livebench.rs"
-    },
-    {
       "count": 4,
       "fingerprint": "5a2ebba67e5c57d0fde0089f8ae0bbe03b909773161a3d0924f3d8efdbfac2ea",
       "item": "crate::lb",
@@ -1505,13 +1442,6 @@
       "item": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
       "lint": "clippy::disallowed_methods",
       "path": "src/bootstrap/runtime_handoff.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "94bb2bddea1c5d3ee17f652b597cf794b9598bcceb10add418a30cc96bfd0bc0",
-      "item": "crate::drain_observed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/runtime.rs"
     },
     {
       "count": 1,
@@ -4084,13 +4014,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "545f1d0009e1862bed415bcaf3044a2511da8eebdb03ea7fd3a9013ed616c47d",
-      "item": "crate::legacy_wait_url_sig",
-      "lint": "clippy::expect_used",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "35f463daaf1b1a62be62dd5f709cf1be226d4a22c65b71e45084ef8453bb4a6b",
       "item": "crate::lb",
       "lint": "clippy::expect_used",
@@ -4235,13 +4158,6 @@
       "item": "crate::AbsorbReservation < '_ >::grow",
       "lint": "clippy::expect_used",
       "path": "src/history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b4995f91cc7c837542535f290b30e307458b26f18fe0339f033200fbcda65da9",
-      "item": "crate::PendingOps < 'a >::take",
-      "lint": "clippy::expect_used",
-      "path": "src/ops.rs"
     },
     {
       "count": 1,
@@ -4676,20 +4592,6 @@
       "item": "crate::handle",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/bin/edgesim.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "524ba65170911958cabd6ef453bf8854154253912f248c4705a4d49d49688980",
-      "item": "crate::main",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ba094425c2a097e79e622f328ab39d883279351a8fad2c5769b1821956e885d2",
-      "item": "crate::main",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/bin/livebench.rs"
     },
     {
       "count": 1,
@@ -5691,14 +5593,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "36ec6c8c621df03bff5e6461d15aa13f40d8f127a04606a74b499da767a2a622",
-      "item": "crate::Workload::append",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "ce371c8a7f3ddb11e926091c9f2cc881492b5e945391e7dd663d82f58ae84aad",
       "item": "crate::rig_opener",
       "lint": "clippy::too_many_arguments",
@@ -5792,14 +5686,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 7,
       "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "192ecbfd0bd42ce3943b41bdae03160ef03a8b35c86c488483c8cfa20792dbf3",
-      "item": "crate::PendingOps < 'a >::take",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/ops.rs"
     },
     {
       "count": 1,
@@ -6155,14 +6041,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "aca0b0f6c62d61cb101d6962a14435f935a60f492e344cdc04d7a86fcaba765d",
-      "item": "crate::main",
-      "lint": "clippy::too_many_lines",
-      "metric": 314,
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "211b5a6bebe863293836e702dd17ccaff176c53458fe9c1aa836ee8daeec28e8",
       "item": "crate::lb",
       "lint": "clippy::too_many_lines",
@@ -6288,22 +6166,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 131,
       "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1cd15c81cdaf7f20af6739760e2b1cdfe42ba14e6fbd98023ad51ad6477a9944",
-      "item": "crate::collect_snapshot",
-      "lint": "clippy::too_many_lines",
-      "metric": 190,
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c249dd217bc3630bd0c64546243ed7cca473b45d37c6daafdf421158a302bf85",
-      "item": "crate::evaluate_alerts",
-      "lint": "clippy::too_many_lines",
-      "metric": 118,
-      "path": "src/ops.rs"
     },
     {
       "count": 1,
@@ -6851,20 +6713,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "620eb8cd5ec7695bbe226f8ad922928a5866c7ea0071bf4e2b96a25784e4750f",
-      "item": "crate::client",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b3a240b8767ed6d24c0c2396145f9d1628a4bea5f4f0eeb11769e5c55877fe93",
-      "item": "crate::main",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "0c5326b4661ad7ef2b067a121de21d4df2beef192afb629c5c70c15c00e9239c",
       "item": "crate::lb",
       "lint": "clippy::unwrap_used",
@@ -7177,27 +7025,6 @@
       "item": "crate::resolve_response",
       "lint": "clippy::unwrap_used",
       "path": "src/http/read.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d56c49e1e1392486eebb9f7c1a3e1fd01c986b3e6ff4df11b14a9ff98bd84080",
-      "item": "crate::OpsService::open_alerts",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5d3837ae655ea9c46f25f3f59e7407409c3feaf4b16d22519868adc6dd359763",
-      "item": "crate::OpsService::recent",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "47e8ab445f5509d735997911b9d36f4bf2df88fb47bc7698297281970076238e",
-      "item": "crate::PendingOps < 'a >::take",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ops.rs"
     },
     {
       "count": 2,
@@ -8265,13 +8092,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "bb06496080d8a34ba7df18385bea0a8e111f5782fa9945d4d10634d29f5009ed",
-      "item": "crate::OpsEvent::instance",
-      "lint": "dead_code",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "07b246bcb93d9b4b1953254c4a1d8c3b216cd8bb5010b54f2ec546a36b4c9fa8",
       "item": "crate::PostingsSlice::last_bucket_exclusive",
       "lint": "dead_code",
@@ -8377,13 +8197,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "c763d0f3cfb9fc6c2a70582986128c5f6429e69766fd24b2dcdccf4822e9e58b",
-      "item": "crate::Workload::append",
-      "lint": "unreachable_pub",
-      "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6ca31a8ab2daa6134a18669c50ca283247b46bcd9efc9a73d74cbc16d2f0fa5e",
       "item": "crate::TraceStore::with_options",
       "lint": "unreachable_pub",
@@ -8423,27 +8236,6 @@
       "item": "crate::router",
       "lint": "unreachable_pub",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "92a3e3980ef1bf9e488493b1fd1fc93e2607b7b2f161bdfab13981d0b03eb7e5",
-      "item": "crate::OpsEvent::instance",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c66641226b3312bdb033f50b6d24d6e40d6214399fb8c2b58763bb3c80c60459",
-      "item": "crate::collect_snapshot",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1cfed09921038399948d178aeb183f2ffeb6d54ae41572c47e002056b231eb42",
-      "item": "crate::evaluate_alerts",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
     },
     {
       "count": 1,
