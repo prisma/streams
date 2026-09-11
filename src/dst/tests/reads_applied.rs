@@ -155,8 +155,8 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
         1,
         "durable read is blind to r2"
     );
-    assert!(h.get("prisma-pending-from").is_none());
-    assert!(h.get("prisma-durable-cursor").is_none());
+    assert!(!h.contains_key("prisma-pending-from"));
+    assert!(!h.contains_key("prisma-durable-cursor"));
 
     // Raw route: `deliver` does not exist on the pinned surface (serde
     // skips it) — the same query is silently durable.
@@ -259,7 +259,7 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     .await;
     assert_eq!(st, 200);
     assert!(
-        h.get("prisma-pending-from").is_none(),
+        !h.contains_key("prisma-pending-from"),
         "nothing provisional once durable caught up: {h:?}"
     );
     engine_shutdown(&state).await;
