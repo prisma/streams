@@ -1,3 +1,6 @@
+//! Postings cache fixtures: write-through installs, warm extensions,
+//! the process budget at scale and eviction poisoning.
+#![cfg(test)]
 use super::*;
 
 fn run(start: u64, count: u32) -> AbsRun {
@@ -143,6 +146,20 @@ async fn warm_extension_bridges_matchfree_hole() {
     );
 }
 
+/// One write-through chunk of a segment's keys: `per_chunk` distinct keys,
+/// each carrying a two-offset run at its own position in the chunk.
+fn chunk_keys(seg: u8, chunk: u64, per_chunk: u64) -> Vec<([u8; 16], Vec<AbsRun>)> {
+    let base = chunk * 1_000;
+    (0..per_chunk)
+        .map(|i| {
+            let key_id = chunk * per_chunk + i;
+            let mut kh = [seg; 16];
+            kh[..8].copy_from_slice(&key_id.to_le_bytes());
+            (kh, vec![run(base + i, 2)])
+        })
+        .collect()
+}
+
 /// Review finding 7's scale shape, cache-level and suite-sized (the
 /// field campaign runs the full 1M x 32-engine version): a large
 /// cold key population written through 32 segments must not blow
@@ -161,15 +178,12 @@ async fn million_key_shape_holds_process_budget() {
         let inc = SegmentHash([seg.wrapping_add(50); 16]);
         for chunk in 0..8u64 {
             let base = chunk * 1_000;
-            let per_key: Vec<([u8; 16], Vec<AbsRun>)> = (0..per_seg_keys / 8)
-                .map(|i| {
-                    let key_id = chunk * (per_seg_keys / 8) + i;
-                    let mut kh = [seg; 16];
-                    kh[..8].copy_from_slice(&key_id.to_le_bytes());
-                    (kh, vec![run(base + i, 2)])
-                })
-                .collect();
-            cache.install_chunk(inc, base, base + 1_000, per_key);
+            cache.install_chunk(
+                inc,
+                base,
+                base + 1_000,
+                chunk_keys(seg, chunk, per_seg_keys / 8),
+            );
         }
     }
     let (bytes, entries) = {

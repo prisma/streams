@@ -409,6 +409,10 @@ impl PostingsCache {
         reason = "PostingsCache::runs_for; a keyed read names its partition, segment, key and offset window separately, as the planner produced them; a query struct would repeat the same fields at every call"
     )]
     #[expect(
+        clippy::let_underscore_must_use,
+        reason = "PostingsCache::runs_for; the loader may drop its sender before this waiter polls, and a closed channel means the load already published or gave up; the map is re-read below either way"
+    )]
+    #[expect(
         clippy::unwrap_used,
         reason = "PostingsCache::runs_for; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
     )]
@@ -509,10 +513,6 @@ impl PostingsCache {
                 }
                 Decision::Wait(mut rx) => {
                     self.coalesced.fetch_add(1, Ordering::Relaxed);
-                    #[expect(
-                        clippy::let_underscore_must_use,
-                        reason = "PostingsCache::runs_for; the loader may drop its sender before this waiter polls, and a closed channel means the load already published or gave up; the map is re-read below either way"
-                    )]
                     let _ = rx.changed().await;
                 }
                 Decision::Lead { tx, existing } => {
@@ -540,10 +540,6 @@ impl PostingsCache {
                         g.inflight.get(&key).cloned()
                     }
                     .unwrap_or_else(|| tokio::sync::watch::channel(true).1);
-                    #[expect(
-                        clippy::let_underscore_must_use,
-                        reason = "PostingsCache::runs_for; the loader may drop its sender before this waiter polls, and a closed channel means the load already published or gave up; the map is re-read below either way"
-                    )]
                     let _ = rx.changed().await;
                 }
             }

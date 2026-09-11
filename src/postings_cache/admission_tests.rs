@@ -1,3 +1,5 @@
+//! An invalid install cannot publish a warm absence proof.
+#![cfg(test)]
 use super::*;
 #[test]
 fn o4a_invalid_install_cannot_publish_a_warm_absence_proof() {

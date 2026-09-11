@@ -1,3 +1,5 @@
+//! A straddling install is split at the bucket boundary, not dropped.
+#![cfg(test)]
 use super::*;
 use crate::crypto::SegmentHash;
 

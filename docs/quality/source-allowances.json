@@ -1809,20 +1809,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::PostingsCache::maybe_prefetch",
-      "path": "src/postings_cache.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 2,
-      "owner": "crate::PostingsCache::spawn_load",
-      "path": "src/postings_cache.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::canonical_name",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
@@ -4212,27 +4198,6 @@
       "count": 1,
       "owner": "crate",
       "path": "src/postings/validated/tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::admission_tests",
-      "path": "src/postings_cache.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::straddle_tests",
-      "path": "src/postings_cache.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/postings_cache.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
