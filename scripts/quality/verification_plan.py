@@ -26,10 +26,13 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
     lifecycle = any(p.startswith(lifecycle_prefixes) for p in implementation)
     buffers = any(p.startswith(buffer_prefixes) for p in implementation)
     mutation_source = [p for p in implementation if p not in formatted_visibility]
-    mutants = any(p.startswith(codec_prefixes + quota_prefixes + lifecycle_prefixes + buffer_prefixes) for p in mutation_source)
+    critical = codec_prefixes + quota_prefixes + lifecycle_prefixes + buffer_prefixes
+    mutation_source_files = sorted(p for p in mutation_source if p.startswith(critical))
+    mutants = bool(mutation_source_files)
     return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or quota or tooling,
             'loom': lifecycle or tooling, 'miri': buffers or tooling,
             'mutants': mutants, 'changed_rust_files': source,
+            'mutation_source_files': mutation_source_files,
             'visibility_only_files': sorted(visibility_only),
             'production_unchanged_files': sorted(production_unchanged),
             'formatted_visibility_files': sorted(formatted_visibility)}

@@ -215,6 +215,10 @@ impl ShardDirectory {
     /// is closed and the caller redirected, never served from a view
     /// frozen at the fence point. A shard that was just fenced away is
     /// held off (anti-flap while the router converges).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::resolve; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) async fn resolve(
         &self,
         hash: &[u8; 16],
@@ -285,6 +289,10 @@ impl ShardDirectory {
     }
 
     /// The resident engine for `prefix`, if open (no adoption stamp).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::open; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn open(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
         self.inner
             .shards
@@ -294,16 +302,28 @@ impl ShardDirectory {
             .map(|r| r.engine.clone())
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::is_open; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn is_open(&self, prefix: &str) -> bool {
         self.inner.shards.read().unwrap().contains_key(prefix)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::open_count; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn open_count(&self) -> usize {
         self.inner.shards.read().unwrap().len()
     }
 
     /// Every open engine — the instance's memory and pipelines. An
     /// owned-but-cold shard is absent BY DESIGN.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::engines; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn engines(&self) -> Vec<Arc<ShardEngine>> {
         self.inner
             .shards
@@ -314,6 +334,10 @@ impl ShardDirectory {
             .collect()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::engines_by_prefix; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn engines_by_prefix(&self) -> Vec<(String, Arc<ShardEngine>)> {
         self.inner
             .shards
@@ -324,6 +348,10 @@ impl ShardDirectory {
             .collect()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardDirectory::held_prefixes; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
+    )]
     pub(crate) fn held_prefixes(&self) -> Vec<String> {
         self.inner.shards.read().unwrap().keys().cloned().collect()
     }
