@@ -1,7 +1,7 @@
 //! Single-stream sweep with one joined worker set and immutable point ownership.
 #![warn(clippy::wildcard_enum_match_arm)]
 
-use super::{RotatingClient, env};
+use super::RotatingClient;
 use anyhow::Context;
 use axum::{Router, extract::State, routing::get};
 use bytes::Bytes;
@@ -270,31 +270,33 @@ impl Sweep {
         )?);
         let concurrency = self.config.concurrency(point, workload.body.len());
         let (stop, receiver) = watch::channel(false);
-        for step in 1..=6_usize {
-            let ramp = concurrency / 6 * step + concurrency % 6 * step / 6;
-            self.launch(&workload, &receiver, ramp.max(concurrency.min(4)));
-            self.wait(self.config.warmup / 6).await?;
+        for (target, pause) in ramp(concurrency, self.config.warmup) {
+            self.launch(&workload, &receiver, target);
+            self.wait(pause).await?;
         }
         workload.window.lock().unwrap().start()?;
         let started = Instant::now();
         let mut collapsed = false;
-        let mut last = (started, workload.window.lock().unwrap().snapshot());
-        while started.elapsed() < self.config.measure {
-            self.wait(
-                Duration::from_secs(5).min(self.config.measure.saturating_sub(started.elapsed())),
-            )
-            .await?;
+        let mut progress = Progress::new(
+            point,
+            self.config.verb,
+            started,
+            workload.window.lock().unwrap().snapshot(),
+        );
+        loop {
+            let remaining = self.config.measure.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            self.wait(Duration::from_secs(5).min(remaining)).await?;
             let snapshot = workload.window.lock().unwrap().snapshot();
-            if started.elapsed() >= Duration::from_secs(45)
-                && snapshot.ok == 0
-                && snapshot.errors > 50
-            {
+            if collapse(started.elapsed(), &snapshot) {
                 collapsed = true;
                 break;
             }
-            if last.0.elapsed() >= Duration::from_secs(15) {
-                log_window(point, self.config.verb, started.elapsed(), &last, &snapshot);
-                last = (Instant::now(), snapshot);
+            let now = Instant::now();
+            if progress.due(now) {
+                println!("{}", progress.report(now, snapshot));
             }
         }
         let snapshot = workload.window.lock().unwrap().freeze();
@@ -317,26 +319,68 @@ impl Sweep {
     }
 }
 
-fn log_window(
+/// Warmup schedule: six equal pauses whose worker targets grow linearly,
+/// spreading the division remainder across the steps and never launching
+/// fewer than min(concurrency, 4) workers.
+fn ramp(concurrency: usize, warmup: Duration) -> [(usize, Duration); 6] {
+    std::array::from_fn(|index| {
+        let step = index + 1;
+        let target = concurrency / 6 * step + concurrency % 6 * step / 6;
+        (target.max(concurrency.min(4)), warmup / 6)
+    })
+}
+
+/// A point collapses once 45 measured seconds produced errors and no success.
+fn collapse(elapsed: Duration, snapshot: &Snapshot) -> bool {
+    elapsed >= Duration::from_secs(45) && snapshot.ok == 0 && snapshot.errors > 50
+}
+
+/// Progress lines between measurement snapshots, at most one per 15 seconds,
+/// each reporting the rates since the previous line.
+struct Progress {
     point: Point,
     verb: Verb,
-    elapsed: Duration,
-    last: &(Instant, Snapshot),
-    now: &Snapshot,
-) {
-    let dt = last.0.elapsed().as_secs_f64();
-    let requests = now.ok.saturating_sub(last.1.ok) as f64 / dt;
-    let events = if verb == Verb::Append {
-        requests * point.batch as f64
-    } else {
-        0.0
-    };
-    println!(
-        "bench window t={:>5.0}s: {requests:.0} req/s {events:.0} ev/s {:.2} MB/s errs+{}",
-        elapsed.as_secs_f64(),
-        now.bytes.saturating_sub(last.1.bytes) as f64 / dt / 1e6,
-        now.errors.saturating_sub(last.1.errors)
-    );
+    started: Instant,
+    since: Instant,
+    last: Snapshot,
+}
+
+impl Progress {
+    fn new(point: Point, verb: Verb, started: Instant, snapshot: Snapshot) -> Self {
+        Self {
+            point,
+            verb,
+            started,
+            since: started,
+            last: snapshot,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now.duration_since(self.since) >= Duration::from_secs(15)
+    }
+
+    fn report(&mut self, now: Instant, snapshot: Snapshot) -> String {
+        let dt = now
+            .duration_since(self.since)
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let requests = snapshot.ok.saturating_sub(self.last.ok) as f64 / dt;
+        let events = if self.verb == Verb::Append {
+            requests * self.point.batch as f64
+        } else {
+            0.0
+        };
+        let line = format!(
+            "bench window t={:>5.0}s: {requests:.0} req/s {events:.0} ev/s {:.2} MB/s errs+{}",
+            now.duration_since(self.started).as_secs_f64(),
+            snapshot.bytes.saturating_sub(self.last.bytes) as f64 / dt / 1e6,
+            snapshot.errors.saturating_sub(self.last.errors)
+        );
+        self.since = now;
+        self.last = snapshot;
+        line
+    }
 }
 
 #[expect(
@@ -375,8 +419,8 @@ fn app(results: Arc<Mutex<Results>>) -> Router {
     })).with_state(results)
 }
 
-pub(super) async fn run() -> anyhow::Result<()> {
-    let config = Config::load(env)?;
+pub(super) async fn run(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<()> {
+    let config = Config::load(lookup)?;
     let listener =
         tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, config.port)).await?;
     let mut sweep = Sweep::new(config);

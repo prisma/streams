@@ -1,10 +1,13 @@
 #![cfg(test)]
-use super::{Config, Point, Results, Snapshot, Sweep, Verb, Window, Workload, app, preview, row};
+use super::{
+    Config, Point, Progress, Results, Snapshot, Sweep, Verb, Window, Workload, app, collapse,
+    preview, ramp, row,
+};
 use axum::{
     Router,
     body::Bytes,
     extract::State,
-    http::{HeaderMap, StatusCode, Uri},
+    http::{HeaderMap, Method, StatusCode, Uri},
     routing::any,
 };
 use std::sync::{Arc, Mutex};
@@ -189,6 +192,7 @@ fn output_schema_accounts_for_actual_append_or_probe_work() {
 }
 
 struct Request {
+    method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
@@ -222,19 +226,27 @@ impl Http {
             release: release.clone(),
             status,
         };
-        let router =
-            Router::new()
-                .fallback(any(
-                    |State(state): State<ServerState>,
-                     uri: Uri,
-                     headers: HeaderMap,
-                     body: Bytes| async move {
-                        state.requests.send(Request { uri, headers, body }).unwrap();
-                        state.release.acquire().await.unwrap().forget();
-                        (state.status, "🦀".repeat(201))
-                    },
-                ))
-                .with_state(state);
+        let router = Router::new()
+            .fallback(any(
+                |State(state): State<ServerState>,
+                 method: Method,
+                 uri: Uri,
+                 headers: HeaderMap,
+                 body: Bytes| async move {
+                    state
+                        .requests
+                        .send(Request {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                        })
+                        .unwrap();
+                    state.release.acquire().await.unwrap().forget();
+                    (state.status, "🦀".repeat(201))
+                },
+            ))
+            .with_state(state);
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
@@ -244,6 +256,14 @@ impl Http {
             release,
             server,
         }
+    }
+
+    /// Bounded so a mutant that stops issuing requests fails instead of hanging.
+    async fn request(&mut self) -> Request {
+        tokio::time::timeout(Duration::from_secs(10), self.requests.recv())
+            .await
+            .expect("fixture request within ten seconds")
+            .expect("fixture server alive")
     }
 
     async fn close(self) {
@@ -384,7 +404,7 @@ async fn server_exit_aborts_and_joins_workers_even_during_preparation() {
     sweep.launch(&workload, &stop, 1);
     drop(workload);
     let server = async {
-        http.requests.recv().await.unwrap();
+        http.request().await;
         Err(std::io::Error::other("fixture server exit"))
     };
     assert!(
@@ -475,4 +495,211 @@ fn quality_loom_completion_and_freeze_use_the_actual_window_transitions() {
         assert!(final_state.ok <= 2);
         assert_eq!(final_state.bytes, final_state.ok * 7);
     });
+}
+
+#[test]
+fn warmup_ramp_spreads_targets_across_six_equal_pauses_with_a_floor_of_four() {
+    let seconds =
+        |steps: [(usize, u64); 6]| steps.map(|(target, s)| (target, Duration::from_secs(s)));
+    assert_eq!(
+        ramp(13, Duration::from_secs(6)),
+        seconds([(4, 1), (4, 1), (6, 1), (8, 1), (10, 1), (13, 1)])
+    );
+    assert_eq!(
+        ramp(1024, Duration::from_secs(12)),
+        seconds([(170, 2), (341, 2), (512, 2), (682, 2), (853, 2), (1024, 2)])
+    );
+    assert_eq!(ramp(2, Duration::ZERO), [(2, Duration::ZERO); 6]);
+    assert_eq!(
+        ramp(5, Duration::from_secs(3)).map(|(target, _)| target),
+        [4, 4, 4, 4, 4, 5]
+    );
+}
+
+#[test]
+fn collapse_requires_45_measured_seconds_of_errors_without_success() {
+    let snapshot = |ok, errors| Snapshot {
+        ok,
+        errors,
+        throttles: 0,
+        bytes: 0,
+        p50_ms: 0.0,
+        p99_ms: 0.0,
+    };
+    let limit = Duration::from_secs(45);
+    assert!(collapse(limit, &snapshot(0, 51)));
+    assert!(collapse(Duration::from_secs(46), &snapshot(0, 1000)));
+    assert!(!collapse(
+        limit - Duration::from_millis(1),
+        &snapshot(0, 51)
+    ));
+    assert!(!collapse(limit, &snapshot(1, 51)));
+    assert!(!collapse(limit, &snapshot(0, 50)));
+    assert!(!collapse(limit, &snapshot(0, 0)));
+    assert!(!collapse(Duration::from_secs(100), &snapshot(1, 0)));
+}
+
+#[test]
+fn progress_lines_are_due_every_15_seconds_and_report_deltas_since_the_last_line() {
+    let point = Point {
+        sweep: "batch",
+        event_bytes: 16,
+        batch: 4,
+    };
+    let snapshot = |ok, bytes, errors| Snapshot {
+        ok,
+        errors,
+        throttles: 0,
+        bytes,
+        p50_ms: 0.0,
+        p99_ms: 0.0,
+    };
+    let started = tokio::time::Instant::now();
+    let mut progress = Progress::new(point, Verb::Append, started, snapshot(10, 1_000_000, 1));
+    assert!(!progress.due(started + Duration::from_millis(14_999)));
+    assert!(progress.due(started + Duration::from_secs(15)));
+    let first = started + Duration::from_secs(20);
+    assert_eq!(
+        progress.report(first, snapshot(30, 21_000_000, 4)),
+        "bench window t=   20s: 1 req/s 4 ev/s 1.00 MB/s errs+3"
+    );
+    assert!(!progress.due(first + Duration::from_millis(14_999)));
+    assert!(progress.due(first + Duration::from_secs(15)));
+    assert_eq!(
+        progress.report(first + Duration::from_secs(10), snapshot(50, 31_000_000, 4)),
+        "bench window t=   30s: 2 req/s 8 ev/s 1.00 MB/s errs+0"
+    );
+    let mut probe = Progress::new(point, Verb::Health, started, snapshot(0, 0, 0));
+    assert_eq!(
+        probe.report(started + Duration::from_secs(15), snapshot(30, 0, 2)),
+        "bench window t=   15s: 2 req/s 0 ev/s 0.00 MB/s errs+2"
+    );
+}
+
+#[tokio::test]
+async fn error_reports_are_bounded_over_the_workload_lifetime() {
+    let workload = Workload::new(
+        Arc::new(config(&[])),
+        super::RotatingClient::new(),
+        Point {
+            sweep: "size",
+            event_bytes: 8,
+            batch: 1,
+        },
+    )
+    .unwrap();
+    assert!(workload.report_error());
+    assert!(workload.report_error());
+    assert!(workload.report_error());
+    assert!(!workload.report_error());
+    workload.window.lock().unwrap().start().unwrap();
+    assert!(!workload.report_error());
+}
+
+#[tokio::test]
+async fn prepare_creates_the_stream_for_append_and_warms_only_the_configured_route() {
+    let stream = "/v1/stream/bench-ordered";
+    for (verb, expected) in [
+        (
+            "append",
+            vec![(Method::PUT, stream, 0), (Method::POST, stream, 14)],
+        ),
+        ("health", vec![(Method::GET, "/health", 0)]),
+    ] {
+        let mut http = Http::new(StatusCode::OK).await;
+        http.release.add_permits(expected.len());
+        let sweep = Sweep::new(config(&[("TARGET", &http.target), ("BENCH_VERB", verb)]));
+        tokio::time::timeout(Duration::from_secs(10), sweep.prepare())
+            .await
+            .unwrap()
+            .unwrap();
+        for (method, path, body) in expected {
+            let request = http.request().await;
+            assert_eq!(
+                (request.method, request.uri.path(), request.body.len()),
+                (method.clone(), path, body)
+            );
+            if method != Method::GET {
+                assert_eq!(request.headers["authorization"], "Bearer test-auth");
+                assert_eq!(request.headers["stream-encryption-key"], "test-key");
+                assert_eq!(request.headers["content-type"], "application/json");
+            }
+        }
+        assert!(
+            http.requests.try_recv().is_err(),
+            "{verb}: nothing beyond the create and warm requests"
+        );
+        http.close().await;
+    }
+}
+
+#[tokio::test]
+async fn run_serves_completed_results_on_the_configured_port() {
+    let mut http = Http::new(StatusCode::OK).await;
+    http.release.add_permits(Semaphore::MAX_PERMITS);
+    let port = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let target = http.target.clone();
+    let run = super::run(move |key| match key {
+        "TARGET" => Some(target.clone()),
+        "AUTH_TOKEN" | "STREAM_KEY" => Some("test".into()),
+        "SIZES" | "BATCHES" | "MAX_WORKERS" | "MEASURE_SECS" => Some("1".into()),
+        "WARMUP_SECS" | "INTER_POINT_SECS" => Some("0".into()),
+        "PORT" => Some(port.to_string()),
+        _ => None,
+    });
+    tokio::pin!(run);
+    let create = tokio::select! {
+        request = http.request() => request,
+        result = &mut run => panic!("benchmark entry returned before creating the stream: {result:?}"),
+    };
+    assert_eq!(
+        (create.method, create.uri.path()),
+        (Method::PUT, "/v1/stream/bench-ordered")
+    );
+    let warm = tokio::select! {
+        request = http.request() => request,
+        result = &mut run => panic!("benchmark entry returned before warming: {result:?}"),
+    };
+    assert_eq!((warm.method, warm.body.len()), (Method::POST, 14));
+    // Real HTTP has reached the fixture. The fixed pauses and the one-second
+    // measurements may now elapse on the paused clock; outcomes are not asserted.
+    tokio::time::pause();
+    let client = super::RotatingClient::new();
+    let url = format!("http://127.0.0.1:{port}/");
+    let mut polls = 0;
+    let results = loop {
+        polls += 1;
+        assert!(polls < 10_000, "sweep never published completed results");
+        let response = tokio::select! {
+            result = &mut run => panic!("benchmark entry returned before serving results: {result:?}"),
+            response = client.get().get(&url).send() => response,
+        };
+        if let Ok(response) = response {
+            let body = tokio::select! {
+                result = &mut run => panic!("benchmark entry returned while serving results: {result:?}"),
+                body = response.json::<serde_json::Value>() => body.unwrap(),
+            };
+            if body["done"] == true {
+                break body;
+            }
+        }
+        tokio::select! {
+            result = &mut run => panic!("benchmark entry returned before serving results: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    };
+    assert_eq!(results["points"], 2);
+    let rows = results["results"].as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row["sweep"].as_str().unwrap(), row["collapsed"] == false))
+            .collect::<Vec<_>>(),
+        [("size", true), ("batch", true)]
+    );
+    http.close().await;
 }

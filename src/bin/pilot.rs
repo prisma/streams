@@ -225,7 +225,7 @@ async fn main() -> anyhow::Result<()> {
     match mode.as_str() {
         "lb" => lb().await,
         "gen" => generator().await,
-        "bench" => benchmark::run().await?,
+        "bench" => benchmark::run(env).await?,
         m => {
             eprintln!("unknown MODE '{m}' (want lb|gen)");
             std::process::exit(1);
