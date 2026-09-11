@@ -1578,20 +1578,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::install_reserved_claim",
-      "path": "src/application/lifecycle.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::take_over_abandoned",
-      "path": "src/application/lifecycle.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::ReadPlan < 'a >::segment",
       "path": "src/application/read.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
