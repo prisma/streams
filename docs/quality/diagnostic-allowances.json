@@ -7969,13 +7969,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "5a4ade8c0eb93bbe06dd6ef8f1872c3f3b24332ddc3a615bdf3b785a644b15cd",
-      "item": "crate::pressure_tests::eviction_cannot_remove_a_project_with_pressure",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "302e3c7c82f1df09202eeca04e2062c95db31eb86e826e9f8018165af401bd9e",
       "item": "crate::start",
       "lint": "clippy::let_underscore_must_use",
@@ -12090,104 +12083,6 @@
       "item": "crate::<StaticPolicySource as PolicySource>::fetch",
       "lint": "clippy::unwrap_used",
       "path": "src/project_policy.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "73bf35415db693d90365c1b2d16a6d1ea7fbd5925e58d4758fd842e84c00336b",
-      "item": "crate::<StreamReservation as Drop>::drop",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "297674222765c60723e24ba100903496a89ea0ba7d9d1f37e732a9233c4dca2a",
-      "item": "crate::QuotaRegistry::admit",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ab17aaf732116f46eb0d9c09cf896a20404cf180a7368ec70989383f7c04b5e3",
-      "item": "crate::QuotaRegistry::admit",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "14f5a61860aab24344f1623909faa044bb2873ab617f2df119b0ec888005e1a8",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4e189aa963bd9211d029f2a7c6ac2754866cd9fe1114b6ffa3c1cd501ed3a132",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "74483b2e3425c6b903a31da4ae77aecf2e23c0d2baaf1e1fb4ed6a76ed807ef9",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8cc5be2cf4155e011c3ae6a24bb4d8346a6f3c49b3561f592c54f77a3445ee51",
-      "item": "crate::QuotaRegistry::check_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f1cb7ae2b3a86b3b69497647d9ceb0673a7ccf391641ca1bdfc50e495ea82a37",
-      "item": "crate::QuotaRegistry::debit_read",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bacd8a3c25192490f1098dcd81c5ebb3f0d9e9917616f4eb44aa711646e43dd1",
-      "item": "crate::QuotaRegistry::memory_pressure_json",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9e1365680203e7ed03a88eba34ec5cc0ccb58b68711dbcb596442901a76da5b9",
-      "item": "crate::QuotaRegistry::needs_stream_seed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1774fb207fc33bf05171fa7b104a53cdadc3d2c0c5ea0918ffd57284d105109a",
-      "item": "crate::QuotaRegistry::release_stream",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f17a33644091b68987682cf86d76d31f566d26cc8d3aad7a9e47f6a889330c98",
-      "item": "crate::QuotaRegistry::reserve_stream",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8843a1a44f570c44cf0a27962329461f8271cc1e2d7eabc030fff859d8bdddf7",
-      "item": "crate::QuotaRegistry::stats",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0995a142c780a4506defd7633c85a393bc0dec7d6140985e929e2ecf07b7fb3e",
-      "item": "crate::QuotaRegistry::tracked",
-      "lint": "clippy::unwrap_used",
-      "path": "src/quota.rs"
     },
     {
       "count": 1,

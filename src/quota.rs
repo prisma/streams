@@ -424,6 +424,10 @@ impl StreamReservation {
 }
 
 impl Drop for StreamReservation {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "StreamReservation::drop; a poisoned count may have been partially updated before cancellation; decrementing recovered state could free a slot still occupied by a live stream"
+    )]
     fn drop(&mut self) {
         if !self.committed {
             let mut st = self.admission.streams.lock().unwrap();
@@ -510,6 +514,10 @@ impl QuotaRegistry {
     /// (from the CURRENT policy snapshot — never token claims, §17.2).
     /// Quota value 0 = not configured at this level (cell safety
     /// limits still apply elsewhere).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::admit; a poisoned entry or project map may be partially updated; recovery could mint fresh request credit or orphan charged state"
+    )]
     pub(crate) fn admit(
         &self,
         project: &ProjectId,
@@ -611,6 +619,10 @@ impl QuotaRegistry {
     /// second's budget is still admitted when the bucket is full
     /// (otherwise it could never succeed); it drives the bucket
     /// negative and later appends wait it out.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::admit_append; either poisoned bucket or its project map may contain an incomplete charge; recovery could admit beyond a limit or charge only half a batch"
+    )]
     pub fn admit_append(
         &self,
         project: &ProjectId,
@@ -687,6 +699,10 @@ impl QuotaRegistry {
     /// Read admission (§17.2): reads are refused while the project's
     /// read-byte bucket is IN DEBT from earlier responses. The check is
     /// cheap and runs before serving; the debit lands after.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::check_read; a poisoned balance cannot prove whether existing debt has cleared; recovery could admit more work against an untrusted balance"
+    )]
     pub(crate) fn check_read(
         &self,
         project: &ProjectId,
@@ -713,6 +729,10 @@ impl QuotaRegistry {
     /// Post-hoc read debit with the SERVED byte count. Deliberately
     /// unconditional and negative-capable: the response was already
     /// sent, so the debt is real either way.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::debit_read; a poisoned balance may contain a partial debit; recovery could lose the cost of bytes already delivered"
+    )]
     pub(crate) fn debit_read(
         &self,
         project: &ProjectId,
@@ -757,6 +777,10 @@ impl QuotaRegistry {
     /// SR2-4: does the project's stream count still need its catalog
     /// seed? The caller counts (async, catalog pages) only when this
     /// says so, then passes the count to `reserve_stream`.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::needs_stream_seed; a poisoned count may have an incomplete seeded flag or count; treating it as valid could bypass the catalog seed"
+    )]
     pub(crate) fn needs_stream_seed(&self, project: &ProjectId) -> bool {
         self.tracked(project)
             .map(|a| !a.streams.lock().unwrap().seeded)
@@ -775,6 +799,10 @@ impl QuotaRegistry {
     /// docs/CONTROL-PLANE-INTEGRATION.md §9. `seed` supplies the
     /// catalog count when this project has not been seeded since boot;
     /// the first reservation wins the seed, later ones ignore theirs.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::reserve_stream; a poisoned count cannot prove current occupancy; recovering zero or partial counts could exceed the stream limit"
+    )]
     pub(crate) fn reserve_stream(
         &self,
         project: &ProjectId,
@@ -811,6 +839,10 @@ impl QuotaRegistry {
     /// SR2-4: a terminal hard delete frees the slot. Unseeded (or
     /// untracked) projects no-op — their next seed recounts the
     /// catalog, which already reflects the deletion.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::release_stream; a poisoned count may contain an incomplete reservation or release; decrementing recovered state could free occupied capacity"
+    )]
     pub(crate) fn release_stream(&self, project: &ProjectId) {
         if let Some(a) = self.tracked(project) {
             let mut st = a.streams.lock().unwrap();
@@ -844,6 +876,10 @@ impl QuotaRegistry {
         Ok(Some(QueuedBytesGuard { admission, bytes }))
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::tracked; a poisoned map may have an incomplete entry publication; recovery could orphan an existing project charge"
+    )]
     fn tracked(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
         self.projects.lock().unwrap().get(project).cloned()
     }
@@ -858,6 +894,10 @@ impl QuotaRegistry {
 
     /// Bounded per-project pressure rows + process aggregates for
     /// /v1/debug/load.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::memory_pressure_json; a poisoned project map may omit still-charged entries; recovering it would report an incomplete memory-pressure view"
+    )]
     pub(crate) fn memory_pressure_json(&self, high: u64, limit: usize) -> serde_json::Value {
         let m = self.projects.lock().unwrap();
         let mut engaged = 0u64;
@@ -903,6 +943,10 @@ impl QuotaRegistry {
     }
 
     /// Operator visibility: (projects tracked, total inflight).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "QuotaRegistry::stats; a poisoned project map may omit active guards; recovering it would misreport live occupancy"
+    )]
     pub(crate) fn stats(&self) -> (usize, u64) {
         let m = self.projects.lock().unwrap();
         let inflight = m.values().map(|a| a.inflight.load(Ordering::Relaxed)).sum();
@@ -911,586 +955,13 @@ impl QuotaRegistry {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn q(rps: u64, inflight: u64) -> ProjectQuotas {
-        ProjectQuotas {
-            requests_per_sec: rps,
-            max_inflight_requests: inflight,
-            ..Default::default()
-        }
-    }
-
-    fn pid(s: &str) -> ProjectId {
-        ProjectId::new(s).unwrap()
-    }
-
-    /// Workload-cert W1xW2 shape (bench/WORKLOAD-CERT-PLAN.md): 10,000
-    /// resident tenants, 100 active per 5s window rotating over the
-    /// whole population = 20 first-seen projects/s sustained. With
-    /// IDLE_EVICT_MS of un-evictable recency, steady-state demand is
-    /// 20/s x 300s = 6,000 tracked entries — the cap must hold the
-    /// certified tenant population, not just its active window.
-    #[test]
-    fn cert_rotation_over_ten_thousand_tenants_never_hits_tracker_capacity() {
-        let r = QuotaRegistry::default();
-        let quotas = ProjectQuotas::default();
-        let t0: i64 = 1_000_000;
-        let name = |i: usize| pid(&format!("cert_{i}"));
-        let mut refused = 0usize;
-        // 10,000 distinct projects, 20 new per second (cert pacing),
-        // each holding its guard only for the request instant.
-        for i in 0..10_000usize {
-            let now = t0 + (i as i64) * 50; // 20/s
-            match r.admit(&name(i), &quotas, now) {
-                Ok(_g) => {}
-                Err(QuotaRefusal::TrackerCapacity) => refused += 1,
-                Err(e) => panic!("unexpected refusal {e:?}"),
-            }
-        }
-        assert_eq!(
-            refused, 0,
-            "the certification rotation must never see TrackerCapacity"
-        );
-    }
-
-    /// SR-6 tracker-capacity churn: at the cap the tracker refuses
-    /// NEW projects with the typed refusal while every entry is
-    /// recent, evicts the idle mass (never a project with live
-    /// guards) once the horizon passes, and re-tracks returning
-    /// projects — a tracker that filled once must not refuse until
-    /// restart, and must never orphan an entry whose guards are held.
-    #[test]
-    fn tracker_capacity_churn_evicts_idle_never_active() {
-        let r = QuotaRegistry::default();
-        let quotas = q(0, 2);
-        let t0: i64 = 1_000_000;
-        let name = |i: usize| pid(&format!("churn_{i}"));
-        // Pin churn_0 with BOTH its concurrency slots held live.
-        let _g0 = r.admit(&name(0), &quotas, t0).expect("pin 1");
-        let _g1 = r.admit(&name(0), &quotas, t0).expect("pin 2");
-        for i in 1..MAX_TRACKED_PROJECTS {
-            r.admit(&name(i), &quotas, t0).expect("fill");
-        }
-        // At capacity with every entry recent: typed refusal —
-        // track-or-refuse, never merge into a stranger's buckets.
-        match r.admit(&name(MAX_TRACKED_PROJECTS), &quotas, t0 + 1_000) {
-            Err(QuotaRefusal::TrackerCapacity) => {}
-            Ok(_) => panic!("expected TrackerCapacity, got admission"),
-            Err(e) => panic!("expected TrackerCapacity, got {e:?}"),
-        }
-        // Past the idle horizon the idle mass is evictable: thousands
-        // of NEW projects admit (the first triggers the sweep).
-        let t1 = t0 + IDLE_EVICT_MS + 1_000;
-        for i in 0..2_000 {
-            r.admit(&name(MAX_TRACKED_PROJECTS + 1 + i), &quotas, t1)
-                .expect("churn admit");
-        }
-        // churn_0 sat idle far past the horizon through the sweep, but
-        // its guards are live: retention is observable as its inflight
-        // count — the third admit refuses on concurrency. (Had the
-        // sweep orphaned it, a FRESH entry with inflight=0 would have
-        // admitted here.)
-        match r.admit(&name(0), &quotas, t1) {
-            Err(QuotaRefusal::Concurrency) => {}
-            Ok(_) => panic!("pinned project was evicted (fresh entry admitted)"),
-            Err(e) => panic!("pinned project was evicted: {e:?}"),
-        }
-        // An idle-evicted project simply re-tracks on return (full
-        // burst — documented, an idle project lost no debt worth
-        // keeping at this horizon).
-        r.admit(&name(1), &quotas, t1)
-            .expect("evicted project returns");
-    }
-
-    #[test]
-    fn rate_bucket_admits_burst_then_refuses_then_refills() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_a");
-        let quotas = q(2, 0);
-        assert!(r.admit(&p, &quotas, 1_000).is_ok());
-        assert!(r.admit(&p, &quotas, 1_000).is_ok());
-        match r.admit(&p, &quotas, 1_000) {
-            Err(QuotaRefusal::Rate { retry_after_secs }) => assert!(retry_after_secs >= 1),
-            _ => panic!("third request in the same second must be rate-refused"),
-        }
-        // 500ms later: one token refilled (2/sec).
-        assert!(r.admit(&p, &quotas, 1_500).is_ok());
-        assert!(matches!(
-            r.admit(&p, &quotas, 1_500),
-            Err(QuotaRefusal::Rate { .. })
-        ));
-    }
-
-    #[test]
-    fn zero_rate_is_unlimited_and_projects_never_share_buckets() {
-        let r = QuotaRegistry::default();
-        let a = pid("proj_a");
-        let b = pid("proj_b");
-        for _ in 0..100 {
-            assert!(r.admit(&a, &q(0, 0), 1_000).is_ok());
-        }
-        // Project A being hot must not consume B's tokens.
-        let limited = q(1, 0);
-        assert!(r.admit(&b, &limited, 1_000).is_ok());
-        assert!(matches!(
-            r.admit(&b, &limited, 1_000),
-            Err(QuotaRefusal::Rate { .. })
-        ));
-        assert!(r.admit(&a, &q(0, 0), 1_000).is_ok(), "A unaffected by B");
-    }
-
-    #[test]
-    fn concurrency_releases_with_the_guard() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_c");
-        let quotas = q(0, 2);
-        let g1 = r.admit(&p, &quotas, 1_000).unwrap();
-        let _g2 = r.admit(&p, &quotas, 1_000).unwrap();
-        assert!(matches!(
-            r.admit(&p, &quotas, 1_000),
-            Err(QuotaRefusal::Concurrency)
-        ));
-        drop(g1);
-        assert!(r.admit(&p, &quotas, 1_000).is_ok());
-    }
-
-    #[test]
-    fn append_volume_buckets_meter_bytes_and_records() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_v");
-        let quotas = ProjectQuotas {
-            append_bytes_per_sec: 1_000,
-            append_records_per_sec: 10,
-            ..Default::default()
-        };
-        // Track the project first (as the request-rate admit does).
-        let _g = r.admit(&p, &quotas, 1_000).unwrap();
-        assert!(r.admit_append(&p, &quotas, 600, 5, 1_000).is_ok());
-        assert!(r.admit_append(&p, &quotas, 400, 5, 1_000).is_ok());
-        // Bytes bucket dry (and records bucket dry).
-        assert!(matches!(
-            r.admit_append(&p, &quotas, 1, 1, 1_000),
-            Err(QuotaRefusal::Rate { .. })
-        ));
-        // Half a second later: 500 bytes / 5 records refilled.
-        assert!(r.admit_append(&p, &quotas, 500, 5, 1_500).is_ok());
-        assert!(matches!(
-            r.admit_append(&p, &quotas, 1, 0, 1_500),
-            Err(QuotaRefusal::Rate { .. })
-        ));
-    }
-
-    #[test]
-    fn oversized_single_append_admits_once_then_waits() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_o");
-        let quotas = ProjectQuotas {
-            append_bytes_per_sec: 100,
-            ..Default::default()
-        };
-        let _g = r.admit(&p, &quotas, 1_000).unwrap();
-        // 5x one second's budget: admitted from a full bucket (it
-        // could otherwise never succeed), driving the bucket negative.
-        assert!(r.admit_append(&p, &quotas, 500, 1, 1_000).is_ok());
-        // The debt is real: even a tiny append waits it out...
-        match r.admit_append(&p, &quotas, 1, 0, 1_000) {
-            Err(QuotaRefusal::Rate { retry_after_secs }) => {
-                assert!(retry_after_secs >= 4, "debt horizon: {retry_after_secs}")
-            }
-            _ => panic!("bucket must be in debt"),
-        }
-        // ...and clears after the debt window.
-        assert!(r.admit_append(&p, &quotas, 50, 0, 7_000).is_ok());
-    }
-
-    #[test]
-    fn read_debit_runs_negative_and_blocks_until_refilled() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_r");
-        let quotas = ProjectQuotas {
-            read_bytes_per_sec: 100,
-            ..Default::default()
-        };
-        let _g = r.admit(&p, &quotas, 1_000).unwrap();
-        // First read passes (no debt), serves 350 bytes -> level -250.
-        assert!(r.check_read(&p, &quotas, 1_000).is_ok());
-        r.debit_read(&p, &quotas, 350, 1_000);
-        match r.check_read(&p, &quotas, 1_000) {
-            Err(QuotaRefusal::Rate { retry_after_secs }) => {
-                assert!(retry_after_secs >= 2, "debt horizon: {retry_after_secs}")
-            }
-            _ => panic!("in-debt bucket must refuse reads"),
-        }
-        // 2.6s later the 250-byte debt has refilled past zero.
-        assert!(r.check_read(&p, &quotas, 3_600).is_ok());
-    }
-
-    #[test]
-    fn subscription_slots_release_with_the_guard() {
-        let r = QuotaRegistry::default();
-        let p = pid("proj_s");
-        let quotas = ProjectQuotas {
-            max_live_subscriptions: 1,
-            ..Default::default()
-        };
-        let _g = r.admit(&p, &quotas, 1_000).unwrap();
-        let s1 = r.admit_subscription(&p, &quotas).unwrap();
-        assert!(s1.is_some());
-        assert!(matches!(
-            r.admit_subscription(&p, &quotas),
-            Err(QuotaRefusal::Concurrency)
-        ));
-        drop(s1);
-        assert!(r.admit_subscription(&p, &quotas).unwrap().is_some());
-        // Round-13.3: unlimited (0) still COUNTS — the guard exists so
-        // the subscription is visible as memory pressure; only the
-        // refusal line is gone.
-        let unlimited = ProjectQuotas::default();
-        let g = r.admit_subscription(&p, &unlimited).unwrap();
-        assert!(g.is_some(), "counting guard under an unconfigured quota");
-    }
-
-    #[test]
-    fn refused_batch_charges_nothing_atomic_debit() {
-        // Review item 5: bytes budget generous, records budget tiny.
-        // A batch that the RECORDS bucket refuses must not burn BYTES.
-        let r = QuotaRegistry::default();
-        let p = pid("proj_at");
-        let quotas = ProjectQuotas {
-            append_bytes_per_sec: 1_000,
-            append_records_per_sec: 2,
-            ..Default::default()
-        };
-        let _g = r.admit(&p, &quotas, 1_000).unwrap();
-        // Spend one record so the records bucket is NOT full (the
-        // oversized-from-full rule must not apply).
-        assert!(r.admit_append(&p, &quotas, 100, 1, 1_000).is_ok());
-        // Refused on records (needs 2, has 1) — bytes must be
-        // untouched by the refused attempt.
-        assert!(matches!(
-            r.admit_append(&p, &quotas, 800, 2, 1_000),
-            Err(QuotaRefusal::Rate { .. })
-        ));
-        // Exactly the remaining byte budget still fits: had the
-        // refused batch charged bytes, this would fail.
-        assert!(r.admit_append(&p, &quotas, 900, 1, 1_000).is_ok());
-    }
-
-    #[test]
-    fn tracker_evicts_idle_projects_never_active_ones() {
-        let r = QuotaRegistry::default();
-        // Fill the tracker at t=0; keep p0 ACTIVE via a held guard.
-        let g0 = r.admit(&pid("p0"), &q(0, 0), 0).unwrap();
-        for i in 1..MAX_TRACKED_PROJECTS {
-            let _ = r.admit(&pid(&format!("p{i}")), &q(0, 0), 0).unwrap();
-        }
-        // Before the idle horizon: full tracker refuses the newcomer.
-        assert!(matches!(
-            r.admit(&pid("p_new"), &q(0, 0), IDLE_EVICT_MS - 1),
-            Err(QuotaRefusal::TrackerCapacity)
-        ));
-        // Past the horizon: idle entries evict, the newcomer fits...
-        assert!(r.admit(&pid("p_new"), &q(0, 0), IDLE_EVICT_MS + 1).is_ok());
-        // ...and ONLY the project with INFLIGHT work survived the
-        // sweep beside the newcomer (p_new's own guard dropped at the
-        // assert, so p0's held guard is the one live slot).
-        let (tracked, inflight) = r.stats();
-        assert_eq!(tracked, 2, "p0 (active) + p_new: {tracked}");
-        assert_eq!(inflight, 1, "p0's held guard: {inflight}");
-        drop(g0);
-    }
-
-    #[test]
-    fn tracker_bound_refuses_new_projects_only() {
-        let r = QuotaRegistry::default();
-        for i in 0..MAX_TRACKED_PROJECTS {
-            assert!(r.admit(&pid(&format!("p{i}")), &q(0, 0), 1_000).is_ok());
-        }
-        assert!(matches!(
-            r.admit(&pid("p_new"), &q(0, 0), 1_000),
-            Err(QuotaRefusal::TrackerCapacity)
-        ));
-        // Already-tracked projects are untouched by tracker pressure.
-        assert!(r.admit(&pid("p0"), &q(0, 0), 1_000).is_ok());
-    }
-}
+mod tests;
 
 #[cfg(test)]
-mod pressure_tests {
-    use super::*;
-
-    fn pid(s: &str) -> ProjectId {
-        ProjectId::new(s).unwrap()
-    }
-    fn adm(r: &QuotaRegistry, name: &str) -> Arc<ProjectAdmission> {
-        let p = pid(name);
-        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
-        r.pressure_handle(&p).unwrap()
-    }
-
-    /// Battery 1: static subscription pressure alone reaches the high
-    /// watermark and engages the latch (reducing append headroom).
-    #[test]
-    fn static_subscription_pressure_engages_the_latch() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p1");
-        for _ in 0..4 {
-            a.live_subs.fetch_add(1, Ordering::Relaxed);
-        }
-        let high = 3 * PRESSURE_SUB_WEIGHT_BYTES; // 4 subs > high
-        assert!(a.memory_gate(&pid("p1"), high, 75), "engages over high");
-        assert_eq!(a.memory_engage_count.load(Ordering::Relaxed), 1);
-    }
-
-    /// Battery 2: a feed is charged once per feed via its guard —
-    /// never per subscriber — and releases exactly once on drop.
-    #[test]
-    fn feed_weight_charges_once_per_feed() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p2");
-        let g1 = FeedPressureGuard::acquire(a.clone());
-        assert_eq!(a.estimated_pressure_bytes(), PRESSURE_FEED_WEIGHT_BYTES);
-        let g2 = FeedPressureGuard::acquire(a.clone());
-        assert_eq!(a.estimated_pressure_bytes(), 2 * PRESSURE_FEED_WEIGHT_BYTES);
-        drop(g1);
-        drop(g2);
-        assert_eq!(a.estimated_pressure_bytes(), 0);
-    }
-
-    /// Battery 3: retained SSE bytes enter the model EXACTLY once,
-    /// unweighted (the budget mirrors its own reservation; the model
-    /// never re-estimates it).
-    #[test]
-    fn retained_bytes_are_not_double_counted() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p3");
-        a.retained_sse_add(100_000);
-        assert_eq!(a.estimated_pressure_bytes(), 100_000);
-        a.retained_sse_sub(40_000);
-        assert_eq!(a.estimated_pressure_bytes(), 60_000);
-        a.retained_sse_sub(1_000_000); // over-release clamps, never wraps
-        assert_eq!(a.estimated_pressure_bytes(), 0);
-    }
-
-    /// Battery 4: the buffered-body guard releases on EVERY exit path
-    /// (parse failure, cancellation, refusal are all drops).
-    #[test]
-    fn body_guard_releases_on_drop() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p4");
-        let mut g = BufferedBodyGuard::reserve(a.clone(), 1_000);
-        g.grow(2_000);
-        assert_eq!(a.estimated_pressure_bytes(), 3_000);
-        drop(g);
-        assert_eq!(a.estimated_pressure_bytes(), 0);
-    }
-
-    /// Battery 5: body -> queued transfer has no transient double
-    /// charge (the body guard ends before the queued charge begins).
-    #[test]
-    fn body_to_queued_transfer_never_double_charges() {
-        let r = QuotaRegistry::default();
-        let p = pid("p5");
-        let a = adm(&r, "p5");
-        let g = BufferedBodyGuard::reserve(a.clone(), 5_000);
-        assert_eq!(a.estimated_pressure_bytes(), 5_000);
-        drop(g); // the transfer point
-        let quotas = ProjectQuotas {
-            queued_append_bytes: 1 << 20,
-            ..Default::default()
-        };
-        let _q = r.charge_queued(&p, &quotas, 5_000).unwrap();
-        assert_eq!(
-            a.estimated_pressure_bytes(),
-            5_000,
-            "queued only — never body+queued at once"
-        );
-    }
-
-    /// Battery 6+7+8: exact frame-debt attribution — adds exact,
-    /// retires exact, dirty-stream count moves ONLY on 0->pos and
-    /// pos->0 edges.
-    #[test]
-    fn frame_debt_attribution_is_exact_with_edge_only_dirty_count() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p6");
-        let b = StreamPressureBinding::bind(a.clone(), 0);
-        b.frames_added(1_000);
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 1_000);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
-        b.frames_added(500); // still ONE dirty stream
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
-        b.frames_retired(600); // partial: stays dirty
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 900);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
-        b.frames_retired(900); // pos -> 0
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
-        b.frames_added(10); // 0 -> pos again
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
-        drop(b); // release outstanding attribution
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
-    }
-
-    /// Battery 9 (unit leg): binding to a stream with existing durable
-    /// debt seeds from the tail — never from zero — and drop releases
-    /// exactly the seed plus subsequent net.
-    #[test]
-    fn binding_seeds_existing_durable_debt() {
-        let r = QuotaRegistry::default();
-        let a = adm(&r, "p9");
-        let b = StreamPressureBinding::bind(a.clone(), 5_000_000);
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 5_000_000);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
-        b.frames_retired(5_000_000);
-        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
-        drop(b);
-        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
-    }
-
-    /// Battery 11: the latch engages at high, HOLDS between the
-    /// release point and high (no flap), and releases only below
-    /// high x release_pct.
-    #[test]
-    fn hysteresis_latch_does_not_flap() {
-        let r = QuotaRegistry::default();
-        let p = pid("p11");
-        let a = adm(&r, "p11");
-        let high = 100 * 1024;
-        a.retained_sse_add(101 * 1024);
-        assert!(a.memory_gate(&p, high, 75), "engage over high");
-        a.retained_sse_sub(21 * 1024); // 80 KiB: between 75 KiB and high
-        assert!(a.memory_gate(&p, high, 75), "held engaged in the band");
-        assert!(a.memory_gate(&p, high, 75), "still engaged (no flap)");
-        a.retained_sse_sub(10 * 1024); // 70 KiB < 75 KiB release point
-        assert!(!a.memory_gate(&p, high, 75), "releases below the point");
-        assert!(!a.memory_gate(&p, high, 75), "stays released");
-        assert_eq!(a.memory_engage_count.load(Ordering::Relaxed), 1);
-    }
-
-    /// Battery 12: tracker eviction can NEVER remove a project holding
-    /// pressure — orphaned attribution would leak forever.
-    #[test]
-    fn eviction_cannot_remove_a_project_with_pressure() {
-        let r = QuotaRegistry::default();
-        let old_ms = 1_000;
-        // Fill the tracker with idle projects at an ancient timestamp.
-        for i in 0..MAX_TRACKED_PROJECTS {
-            let _ = r.admit(&pid(&format!("f{i}")), &ProjectQuotas::default(), old_ms);
-        }
-        // One of them holds pressure (a live feed's static charge).
-        let pinned = r.pressure_handle(&pid("f7")).unwrap();
-        let _feed = FeedPressureGuard::acquire(pinned);
-        // A NEW project far past the idle horizon forces the eviction
-        // sweep; the pressured entry must survive it.
-        let now = old_ms + IDLE_EVICT_MS + 1;
-        let _ = r
-            .admit(&pid("fresh"), &ProjectQuotas::default(), now)
-            .unwrap();
-        assert!(
-            r.pressure_handle(&pid("f7")).is_some(),
-            "pressure pins the entry through eviction"
-        );
-        assert!(
-            r.pressure_handle(&pid("f8")).is_none(),
-            "idle peers evicted"
-        );
-    }
-
-    /// Battery 13: project A engaging its latch never rejects
-    /// project B (isolation is the whole point).
-    #[test]
-    fn engaged_project_does_not_reject_neighbors() {
-        let r = QuotaRegistry::default();
-        let pa = pid("pa");
-        let pb = pid("pb");
-        let a = adm(&r, "pa");
-        let b = adm(&r, "pb");
-        let high = 64 * 1024;
-        a.retained_sse_add(65 * 1024);
-        assert!(a.memory_gate(&pa, high, 75), "A engaged");
-        assert!(!b.memory_gate(&pb, high, 75), "B unaffected");
-    }
-
-    /// Battery 14 (backstop ordering): with the per-project gate OFF
-    /// (high = 0) nothing is refused here — several compliant projects
-    /// reaching the cell ceiling remains the GLOBAL RSS gate's job.
-    #[test]
-    fn per_project_gate_off_defers_to_the_global_gate() {
-        let r = QuotaRegistry::default();
-        let p = pid("p14");
-        let a = adm(&r, "p14");
-        a.retained_sse_add(1 << 30);
-        assert!(
-            !a.memory_gate(&p, 0, 75),
-            "0 = off; the global gate owns it"
-        );
-    }
-}
+mod pressure_tests;
 
 #[cfg(test)]
-mod pressure_counting_tests {
-    use super::*;
+mod pressure_counting_tests;
 
-    fn pid(s: &str) -> ProjectId {
-        ProjectId::new(s).unwrap()
-    }
-
-    /// Round-13.3 red (field A1 finding): the pressure model's EXACT
-    /// dimensions must count UNCONDITIONALLY — live subscriptions were
-    /// only counted when max_live_subscriptions was configured as a
-    /// refusal quota, so a default-quota noisy project showed subs=0
-    /// pressure while holding 200 connections.
-    #[test]
-    fn live_subs_count_without_a_configured_quota() {
-        let r = QuotaRegistry::default();
-        let p = pid("c1");
-        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
-        let g = r.admit_subscription(&p, &ProjectQuotas::default()).unwrap();
-        assert!(
-            g.is_some(),
-            "an unconfigured quota still returns a counting guard"
-        );
-        let a = r.pressure_handle(&p).unwrap();
-        assert_eq!(
-            a.estimated_pressure_bytes(),
-            PRESSURE_SUB_WEIGHT_BYTES,
-            "the subscription is pressure even with no refusal quota"
-        );
-        drop(g);
-        assert_eq!(a.estimated_pressure_bytes(), 0);
-    }
-
-    /// Round-13.3 red (field A1 finding): queued append bytes are the
-    /// standing committer-queue memory — they must charge pressure
-    /// even when queued_append_bytes is not configured as a ceiling
-    /// (the noisy project held ~12 MB of 10-second queue that the
-    /// model could not see).
-    #[test]
-    fn queued_bytes_charge_without_a_configured_ceiling() {
-        let r = QuotaRegistry::default();
-        let p = pid("c2");
-        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
-        let g = r
-            .charge_queued(&p, &ProjectQuotas::default(), 500_000)
-            .unwrap();
-        assert!(g.is_some(), "an unconfigured ceiling still charges");
-        let a = r.pressure_handle(&p).unwrap();
-        assert_eq!(a.estimated_pressure_bytes(), 500_000);
-        drop(g);
-        assert_eq!(a.estimated_pressure_bytes(), 0);
-        // And the configured ceiling still refuses at its line.
-        let q = ProjectQuotas {
-            queued_append_bytes: 100,
-            ..Default::default()
-        };
-        assert!(matches!(
-            r.charge_queued(&p, &q, 500),
-            Err(QuotaRefusal::QueuedBytes)
-        ));
-        assert_eq!(a.estimated_pressure_bytes(), 0, "refusal rolls back");
-    }
-}
+#[cfg(test)]
+mod poison_tests;

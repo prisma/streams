@@ -4644,27 +4644,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::pressure_counting_tests",
-      "path": "src/quota.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::pressure_tests",
-      "path": "src/quota.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/quota.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/registry.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
