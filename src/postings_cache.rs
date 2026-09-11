@@ -616,6 +616,10 @@ impl PostingsCache {
         reason = "PostingsCache::spawn_load; the single-flight loader publishes into the cache and notifies waiters, and every waiter bounds its own wait on the watch channel; a supervised handle would hold a task nothing joins"
     )]
     #[expect(
+        clippy::let_underscore_must_use,
+        reason = "PostingsCache::spawn_load; every waiter may have left before the load lands; a send with no receivers has nothing to notify"
+    )]
+    #[expect(
         clippy::unwrap_used,
         reason = "PostingsCache::spawn_load; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
     )]
@@ -708,10 +712,6 @@ impl PostingsCache {
             if is_prefetch {
                 cache.prefetch_completed.fetch_add(1, Ordering::Relaxed);
             }
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "PostingsCache::spawn_load; every waiter may have left before the load lands; a send with no receivers has nothing to notify"
-            )]
             let _ = tx.send(true);
         });
     }
