@@ -912,20 +912,6 @@
     },
     {
       "category": "effect",
-      "count": 1,
-      "owner": "crate::bench_append",
-      "path": "src/bin/bench.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::bench_read",
-      "path": "src/bin/bench.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 3,
       "owner": "crate::main",
       "path": "src/bin/livebench.rs",
