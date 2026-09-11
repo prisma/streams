@@ -1956,13 +1956,6 @@
     },
     {
       "count": 2,
-      "fingerprint": "6f62849a713612816b5a24676c0f2f7b36ecb915c3fb714fcc6f6c6db84ed901",
-      "item": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 2,
       "fingerprint": "381a7e5c1d5d5792ecd0a4e154940af63126ca25c5ff2c51ce8c6e51b62ea8bf",
       "item": "crate::noisy_neighbor_cannot_degrade_a_compliant_project",
       "lint": "clippy::disallowed_methods",
@@ -3059,27 +3052,6 @@
       "item": "crate::open_gate_escalates_holdoff_for_engines_that_die_young",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/runtime_open_gate.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7c1bdb4da6a831935676f2b1d590ddaf2d41efa202197373bc0eb5cb10fdbfa1",
-      "item": "crate::a_declined_retirement_keeps_the_engine_and_arms_nothing",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "db13d29001bce659931216b3c4a78cce20198908112cfb9d6e85def5771cd490",
-      "item": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a1a85c3986db13c10ad206a5d9d7f5c62423f144290508bb511aceb6c5a579d3",
-      "item": "crate::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/runtime_retirement.rs"
     },
     {
       "count": 1,
@@ -5631,52 +5603,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "c05c6292bbe021ed1ebac76172290a67ecd45be876f6c9e3352185a903cbbae1",
-      "item": "crate::invoice_reconciliation_balances_and_detects_corruption",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_attribution.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a99c8244453c210698ea72faf32b3269a1362c6b12379c6e4f5f6bc8f1728083",
-      "item": "crate::same_name_cross_project_usage_attributes_exactly",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_attribution.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "88f47529d21b6f01cbb3f4f038cc84ed7d52ef820898a220fc9dfbfd9a667e8e",
       "item": "crate::expiry_closes_the_storage_gauge",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/dst/tests/billing_maintenance.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "edf71bcafdc77b0e30162de45144ca59aa72ffb23604fba9de9ce8a50bb6356f",
-      "item": "crate::ops_metrics_and_alerts_flow",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "24b78c9dfd83a5450b5d8a3cc804cc4a99c511b77054c15943587ae5dec73acf",
-      "item": "crate::read_batches_survive_crash_in_the_spool",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a5d37aec1d50d543f052e2740d1c6a6134f91eeb7e1284e171f16df22c6aceeb",
-      "item": "crate::telemetry_crash_points_and_cost_gates",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "adb538e5b15225accae563bf970c9e70a243861dc65d6b7acc10dd65f3bd7cff",
-      "item": "crate::usage_pipeline_end_to_end_exactly_once",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/billing_usage.rs"
     },
     {
       "count": 1,
@@ -5771,73 +5701,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "b5dd3dfd38cb6e78e4cdced10e3c69c837fc2cb17fb1d80f155e575e54702393",
-      "item": "crate::r09a_request_ttl_jobs_bound_retained_keys_across_projects",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f6e8d1a004e03413e530158859b968e6cc7401860b209ba173655bcd43ef70d5",
-      "item": "crate::r09a_request_ttl_jobs_bound_retained_keys_across_projects",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f7009a3f960b89dc8b434c52b380d9f84eafa6ca72c087c3acd2363f40955380",
-      "item": "crate::r09a_runtime_shutdown_owns_the_entered_request_cas",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "10a1fa829df632b2763053b1db0313e9928ffbda0e7903866c9416ae71402c8c",
-      "item": "crate::r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "634dc9cf29d51f414101042e6b75642f19e0944a04c3c150a4621b4841ac84de",
-      "item": "crate::r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "43c71615ea975a477ffae10f841299492be4dd807c8f82b9bf8bf09697ebdf86",
-      "item": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8bf924ae8fe630bf7c5af4b974098da122478780feb88ced4d5a0dc7fb761dbb",
-      "item": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dd8de7e4ba229c33defb0960ad98ba59cb237e35c7ce3ef612476c47af462991",
-      "item": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/runtime_retirement.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "b635928dcb8e9632df7d4f118b1c5182888d6b769533c304035885c939845aee",
       "item": "crate::drain_billing_clean",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/dst/tests/runtime_sweep.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "03f3c6e89808820b65dcd4f69290904800396e7d8d2b64a801dd5745679302fd",
-      "item": "crate::valid_transfer_bills_each_workspace_on_its_own_side",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/security_subscription.rs"
     },
     {
       "count": 1,
@@ -7246,54 +7113,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "00f1773243664aabcb4402027904ae6d8bd1396046178d5a10dee426269100ab",
-      "item": "crate::invoice_reconciliation_balances_and_detects_corruption",
-      "lint": "clippy::too_many_lines",
-      "metric": 228,
-      "path": "src/dst/tests/billing_attribution.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "084e9a9fa7b2962442059b1acbfac39b57202dd6eea389144039f2f1292f6b89",
-      "item": "crate::same_name_cross_project_usage_attributes_exactly",
-      "lint": "clippy::too_many_lines",
-      "metric": 195,
-      "path": "src/dst/tests/billing_attribution.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7d776582e73d0ff45e5f074c5ffa6b84932e51702fc39c54ae6a2ae798188e3c",
-      "item": "crate::billing_meta_is_exact_durable_and_ackable",
-      "lint": "clippy::too_many_lines",
-      "metric": 138,
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "99318a432d25d0f898fa2015cc9fc6c6ab18b3a942eed8b01836b0156860c080",
-      "item": "crate::read_meter_covers_the_matrix_exactly",
-      "lint": "clippy::too_many_lines",
-      "metric": 157,
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a073c811543b71bf908ddedf3726ee874a9a84b96a645f696cd313d207010b2b",
-      "item": "crate::telemetry_crash_points_and_cost_gates",
-      "lint": "clippy::too_many_lines",
-      "metric": 107,
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2108041fd3f45c0100bf8acbb64ea01b535b2c3ffde74155c063595da41f2320",
-      "item": "crate::usage_pipeline_end_to_end_exactly_once",
-      "lint": "clippy::too_many_lines",
-      "metric": 124,
-      "path": "src/dst/tests/billing_usage.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "47aaae18157c047c2fd8e4c4be89f8bbacbec6b82c07d4e5763d826e1ee06da8",
       "item": "crate::a_receive_after_delete_in_the_same_group_is_refused",
       "lint": "clippy::too_many_lines",
@@ -7425,7 +7244,7 @@
       "fingerprint": "889e1d2a055667775c467c2b9d0380723ba288f78e6767ebc567fed96ba7c1ca",
       "item": "crate::http_rig_build",
       "lint": "clippy::too_many_lines",
-      "metric": 173,
+      "metric": 162,
       "path": "src/dst/tests/fixture_http.rs"
     },
     {
@@ -7707,30 +7526,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 163,
       "path": "src/dst/tests/security_policy.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "afde84ca7340ea528eb5a2af650f0fb9cf994547110fa6630077d22dd9ee954c",
-      "item": "crate::subscription_terminates_at_token_expiry",
-      "lint": "clippy::too_many_lines",
-      "metric": 131,
-      "path": "src/dst/tests/security_subscription.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1ed3a0c3fbf73078174a2c666e396d058a1d3a3fe188d1856809857f8e30aa33",
-      "item": "crate::suspension_terminates_established_subscriptions",
-      "lint": "clippy::too_many_lines",
-      "metric": 151,
-      "path": "src/dst/tests/security_subscription.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "93b735aa0746c255d1129a10fbdb8934399c92a7c78e4e26b505106e22d0f76b",
-      "item": "crate::transfer_terminates_established_subscriptions",
-      "lint": "clippy::too_many_lines",
-      "metric": 159,
-      "path": "src/dst/tests/security_subscription.rs"
     },
     {
       "count": 1,
