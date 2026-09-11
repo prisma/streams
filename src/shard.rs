@@ -440,7 +440,14 @@ pub(crate) fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> 
 /// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
 /// is an error here — callers that can meet one go through
 /// `decode_shard_maint_row` and the rebuild path.
-pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "decode_shard_maint; the maintenance row decoder is the DST billing fixtures' witness of what the committer staged; deleting it would strip the decode those fixtures pin"
+    )
+)]
+pub(crate) fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
     match decode_shard_maint_row(v)? {
         ShardMaintRow::Exact(m) => Ok(m),
         ShardMaintRow::LegacyPayloadUnit => {
@@ -563,6 +570,10 @@ async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintena
     Ok(rebuilt)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "decode_dirty_value; the stored rows are fixed-width, so every eight-byte field slice converts; a fallible decode would add an error path no stored row reaches"
+)]
 pub(crate) fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
     // Preserve complete legacy fields (16/24 bytes) and current v2 (32).
     // Partial fields or unknown extensions are corrupt, never an empty marker.
@@ -686,6 +697,10 @@ impl StreamHandle {
     /// lock ordering against the committer's publish site guarantees
     /// the seed and the group-delta attribution never double- or
     /// under-count a group.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "StreamHandle::bind_pressure; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn bind_pressure(&self, adm: std::sync::Arc<crate::quota::ProjectAdmission>) {
         if self.pressure.get().is_some() {
             return;
@@ -1346,7 +1361,23 @@ pub(crate) fn inject_dirty_scan_faults(prefix: &str, n: u32) {
 }
 
 impl ShardEngine {
-    pub fn start(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ShardEngine::start; the committer, acker, pump and trim tickers are spawned from one place so their channels and handles are wired in one visible order; splitting it would hide which task owns each channel end"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ShardEngine::start; the engine takes its prefix, database, store, config, signal channel, park and maintenance row separately as the opener resolved them; a builder would exist for this single call site"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::start; a trim tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
+    )]
+    pub(crate) fn start(
         prefix: String,
         db: Arc<Db>,
         data_store: Arc<dyn object_store::ObjectStore>,
@@ -1770,7 +1801,17 @@ impl ShardEngine {
 
     /// Observe the engine's one owned shutdown. Timeout/cancellation only
     /// stops this observer; workers and storage closure retain their owner.
-    pub async fn await_terminated(&self, timeout: std::time::Duration) -> Result<(), String> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::await_terminated; the termination wait is the lifecycle fixtures' join point and the service does not block on it; deleting it would strip the join those fixtures pin"
+        )
+    )]
+    pub(crate) async fn await_terminated(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
         self.begin_close();
         self.shutdown_handle().wait(timeout).await
     }
@@ -1843,6 +1884,14 @@ impl ShardEngine {
     /// requests already queued here hang until the new owner's fence
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::begin_close; a close signal with no remaining subscribers has nothing to wake; a handled send would only restate that the engine is closing"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::begin_close; the stranded groups were collected under the queue guard that proved them present; a fallible take would add a branch no close reaches"
+    )]
     pub(crate) fn begin_close(&self) {
         // This is the terminal handoff, shared with transaction publication,
         // no-write attachment and durable dispatch. Recover poisoning so a
@@ -1927,6 +1976,10 @@ impl ShardEngine {
     /// L0-full, so groups pile up here waiting for the durable watermark.
     /// The 2026-07-22 final gate run proved commit_blocked_ms alone misses
     /// this mode entirely (wedge_shed=0 through a 10-minute wedge).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::oldest_inflight_ms; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn oldest_inflight_ms(&self) -> i64 {
         self.in_flight
             .lock()
@@ -1942,7 +1995,18 @@ impl ShardEngine {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
     }
 
-    pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::submit_absorbed; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST billing fixtures' way to stage maintenance state and the service submits batches; deleting it would strip the submit those fixtures pin"
+        )
+    )]
+    pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
         let _ = self
             .tx
             .send(CommitOp::Absorbed {
@@ -1954,23 +2018,14 @@ impl ShardEngine {
             .await;
     }
 
-    /// v2 boundary advance: the range is in the shared partition.
-    pub async fn submit_absorbed_v2(&self, hash: [u8; 16], upto: u64, bytes: u64) {
-        let _ = self
-            .tx
-            .send(CommitOp::Absorbed {
-                hash,
-                upto,
-                bytes,
-                v2: true,
-            })
-            .await;
-    }
-
     /// One gather's boundary advances as a SINGLE committer message:
     /// every covered stream lands in the same write batch by
     /// construction (per-stream sends only coalesced opportunistically).
     /// Entries are (hash, new upto, frame bytes copied).
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::submit_absorbed_batch_v2; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
     pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
         if streams.is_empty() {
             return;
@@ -2047,6 +2102,10 @@ impl ShardEngine {
         Ok(None)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::load_producer_chain; the stored rows are fixed-width, so every eight-byte field slice converts; a fallible decode would add an error path no stored row reaches"
+    )]
     async fn load_producer_chain(
         &self,
         own: &[u8; 16],
@@ -2093,6 +2152,10 @@ impl ShardEngine {
     }
 
     /// Published maintenance state for admission decisions.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::maintenance_snapshot; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn maintenance_snapshot(&self) -> ShardMaintenance {
         *self.maintenance.read().unwrap()
     }
@@ -2100,6 +2163,10 @@ impl ShardEngine {
     /// Publish new maintenance state. Callers must only do this AFTER
     /// the write carrying the durable row has succeeded — that ordering
     /// is the entire fix for phantom backlog.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::publish_maintenance; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn publish_maintenance(&self, m: ShardMaintenance) {
         *self.maintenance.write().unwrap() = m;
     }
@@ -2195,19 +2262,38 @@ impl ShardEngine {
 
     /// Enroll a stream in TrimTick maintenance (startup marker scan; the
     /// committer maintains the set itself for live streams).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::note_trim_debt; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn note_trim_debt(&self, hash: [u8; 16]) {
         self.trim_debt.lock().unwrap().insert(hash);
     }
 
     /// Queue one budgeted trim-maintenance pulse NOW (tests drive drain
     /// cadence with this; the 5 s flush ticker is the production driver).
-    pub fn pump_trim_tick(&self) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::pump_trim_tick; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::pump_trim_tick; the manual trim tick is the DST recovery fixture's way to drive maintenance and the service ticks from its own timer; deleting it would strip the tick that fixture pins"
+        )
+    )]
+    pub(crate) fn pump_trim_tick(&self) {
         let _ = self.tx.try_send(CommitOp::TrimTick);
     }
 
     /// (streams owing trims, last group's deletes, max deletes in any
     /// one group, cumulative deletes) — the mature-second-wave gate
     /// reads max ≤ trim_global_budget from here.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::trim_stats; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn trim_stats(&self) -> (usize, u64, u64, u64) {
         (
             self.trim_debt.lock().unwrap().len(),
@@ -2322,7 +2408,14 @@ impl ShardEngine {
             .map_err(|_| "committer dropped request".to_string())?
     }
 
-    pub async fn stream_handle(&self, hash: [u8; 16]) -> Result<Arc<StreamHandle>, slatedb::Error> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::stream_handle; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
+    pub(crate) async fn stream_handle(
+        &self,
+        hash: [u8; 16],
+    ) -> Result<Arc<StreamHandle>, slatedb::Error> {
         if let Some(h) = self.streams.lock().unwrap().get(&hash) {
             h.last_touch_ms
                 .store(now_ms() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -2372,7 +2465,15 @@ impl ShardEngine {
     /// were dropped. A later touch reloads durable state from the shard
     /// DB, and the dirty-stream index keeps unabsorbed evictees
     /// discoverable.
-    pub fn evict_idle_handles(&self, idle: std::time::Duration, max_resident: usize) -> usize {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::evict_idle_handles; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
+    pub(crate) fn evict_idle_handles(
+        &self,
+        idle: std::time::Duration,
+        max_resident: usize,
+    ) -> usize {
         let mut map = self.streams.lock().unwrap();
         let before = map.len();
         if !idle.is_zero() {
@@ -2402,18 +2503,34 @@ impl ShardEngine {
         before - map.len()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::resident_streams; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn resident_streams(&self) -> usize {
         self.streams.lock().unwrap().len()
     }
 
     /// Peek a resident handle's absorbed boundary WITHOUT materializing
     /// one (materialization is exactly what memory pruning must avoid).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::resident_absorbed; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn resident_absorbed(&self, hash: &[u8; 16]) -> Option<u64> {
         let h = self.streams.lock().unwrap().get(hash).cloned()?;
         let st = h.state.lock().unwrap();
         Some(st.durable.absorbed)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ShardEngine::committer_loop; the commit loop's batching, fencing and dispatch are one ordered state machine; splitting it would hide which state each group is left in"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::committer_loop; a caller that gave up before its reply has no receiver; a handled send would only restate that the request was abandoned"
+    )]
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
         // The close signal is the ONLY way out: this task holds the engine
         // and the engine holds a sender, so `rx` can never report closed.
@@ -2611,6 +2728,13 @@ impl ShardEngine {
             .map_err(|e| e.to_string())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ShardEngine::count_consumer_state_rows; the row count is the consumer fixtures' witness of what the committer retired and the service never scans for it; deleting it would strip the count those fixtures pin"
+        )
+    )]
     pub async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],
@@ -2673,6 +2797,10 @@ impl ShardEngine {
     /// unbounded (no wall-clock expiry can be proven safe against a
     /// queue with no residence bound), so its cardinality must be
     /// visible before it could ever become material.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::seal_fence_stats; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn seal_fence_stats(&self) -> (usize, u64) {
         let f = self.seal_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
@@ -2844,7 +2972,16 @@ impl ShardEngine {
     /// Acknowledge `_usage` durability for a segment's snapshot at
     /// `version` (+ exact month-final rows). Fire-and-forget through
     /// the committer — see CommitOp::UsageAck.
-    pub fn submit_usage_ack(&self, hash: [u8; 16], version: u64, month_final_keys: Vec<Vec<u8>>) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::submit_usage_ack; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
+    pub(crate) fn submit_usage_ack(
+        &self,
+        hash: [u8; 16],
+        version: u64,
+        month_final_keys: Vec<Vec<u8>>,
+    ) {
         let _ = self.tx.try_send(CommitOp::UsageAck {
             hash,
             scope: UsageAckScope::ThroughVersion(version),
@@ -2852,6 +2989,10 @@ impl ShardEngine {
         });
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::submit_usage_final_ack; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+    )]
     pub(crate) fn submit_usage_final_ack(&self, hash: [u8; 16], month_final_keys: Vec<Vec<u8>>) {
         let _ = self.tx.try_send(CommitOp::UsageAck {
             hash,
@@ -2891,6 +3032,10 @@ impl ShardEngine {
     /// safety, so its growth is surfaced instead of hidden. Any future
     /// cleanup must be proved by committer-queue progress, exactly like
     /// the seal fences; never wall-clock expiry.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::consumer_fence_stats; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     pub(crate) fn consumer_fence_stats(&self) -> (usize, u64) {
         let f = self.consumer_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
@@ -2940,6 +3085,14 @@ impl ShardEngine {
     /// dispatched. Called from the acker (watch-driven failsafe + the
     /// only path when the pump is off) and from the pump (explicit
     /// barrier right after its flush returns).
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "ShardEngine::dispatch_durable; a caller that gave up has no receiver and an absorb signal the pump cannot take is re-driven by its next tick; handled sends would only restate abandonment"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ShardEngine::dispatch_durable; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
     async fn dispatch_durable(&self, durable_seq: u64) -> u32 {
         let _order = self.dispatch_gate.lock().await;
         // Claim only proven remote-durable groups while this owner is live.
@@ -3037,343 +3190,10 @@ impl ShardEngine {
 }
 
 #[cfg(test)]
-mod maintenance_tests {
-    use super::*;
-    use std::sync::Arc;
-
-    /// R25-A: the delta rule. Retirement past the ledger is an ERROR —
-    /// clamping would hide the exact unit-divergence class this type
-    /// exists to prevent.
-    #[test]
-    fn apply_delta_is_checked_and_tracks_progress() {
-        let m = ShardMaintenance::default();
-        let m = m.apply_delta(1000, 0, 5_000).unwrap();
-        assert_eq!(m.unabsorbed_frame_bytes, 1000);
-        assert_eq!(m.backlog_started_ms, 5_000);
-        assert_eq!(m.last_progress_ms, 5_000);
-        assert_eq!(m.version, 1);
-
-        // Later append: the backlog-start clock must NOT restart.
-        let m = m.apply_delta(500, 0, 9_000).unwrap();
-        assert_eq!(m.backlog_started_ms, 5_000, "backlog start must not reset");
-
-        // Retirement refreshes the PROGRESS clock — the stall signal is
-        // "time since durable progress", not "age of oldest record",
-        // which stays permanently old under continuous traffic.
-        let m = m.apply_delta(0, 600, 12_000).unwrap();
-        assert_eq!(m.unabsorbed_frame_bytes, 900);
-        assert_eq!(m.last_progress_ms, 12_000);
-        assert_eq!(m.no_progress_secs(20_000), 8);
-
-        // Full drain retires both clocks.
-        let m = m.apply_delta(0, 900, 15_000).unwrap();
-        assert_eq!(m.unabsorbed_frame_bytes, 0);
-        assert_eq!(m.backlog_started_ms, 0);
-        assert_eq!(m.no_progress_secs(99_000), 0);
-
-        // Over-retirement is a loud error, never a silent clamp.
-        assert!(
-            ShardMaintenance::default().apply_delta(10, 11, 1).is_err(),
-            "retiring more than exists must fail"
-        );
-    }
-
-    /// R25-A/R26-4: the codec round-trips v2; the R24 16-byte row is
-    /// classified LEGACY — its payload-unit value is never surfaced as
-    /// frame bytes (it can under- OR overstate, and understatement makes
-    /// the first exact retirement read as over-retirement forever).
-    #[test]
-    fn codec_roundtrips_v2_and_refuses_v1_values() {
-        let m = ShardMaintenance {
-            version: 7,
-            unabsorbed_frame_bytes: 123_456,
-            backlog_started_ms: 111,
-            last_progress_ms: 222,
-        };
-        let got = decode_shard_maint(&encode_shard_maint(&m)).unwrap();
-        assert_eq!(got, m);
-
-        // R24 layout: [bytes u64][oldest_ms i64], 16 untagged bytes.
-        let mut v1 = [0u8; 16];
-        v1[..8].copy_from_slice(&987_654u64.to_le_bytes());
-        v1[8..].copy_from_slice(&42i64.to_le_bytes());
-        assert!(
-            matches!(
-                decode_shard_maint_row(&v1),
-                Ok(ShardMaintRow::LegacyPayloadUnit)
-            ),
-            "16-byte row must classify as legacy"
-        );
-        assert!(
-            decode_shard_maint(&v1).is_err(),
-            "the strict decode must never surface a payload-unit value"
-        );
-
-        assert!(
-            decode_shard_maint(&[0u8; 7]).is_err(),
-            "corrupt row must error"
-        );
-        let mut bad = [0u8; 40];
-        bad[0] = 99;
-        assert!(
-            decode_shard_maint(&bad).is_err(),
-            "unknown version must error"
-        );
-    }
-
-    /// R25-A: load semantics against a real DB — present row loads (with
-    /// the progress clock initialized for v1 rows), missing row rebuilds
-    /// from the dirty index + tails and PERSISTS the rebuilt row.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn load_or_rebuild_covers_present_missing_and_corrupt() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-
-        // 1. Present v2 row: loads exactly.
-        let db = Db::builder("m1/shard", store.clone())
-            .build()
-            .await
-            .unwrap();
-        let m = ShardMaintenance {
-            version: 3,
-            unabsorbed_frame_bytes: 555,
-            backlog_started_ms: 10,
-            last_progress_ms: 20,
-        };
-        let mut wb = WriteBatch::new();
-        wb.put(shard_maint_key(), encode_shard_maint(&m));
-        db.write_with_options(wb, &WriteOptions::default())
-            .await
-            .unwrap();
-        assert_eq!(load_or_rebuild_maintenance(&db).await.unwrap(), m);
-        db.close().await.unwrap();
-
-        // 2. Present v1 row (payload-unit 777): the value is IGNORED and
-        // the ledger is rebuilt from the exact tails (R26-4). The
-        // persisted replacement is a v2 row.
-        let db = Db::builder("m2/shard", store.clone())
-            .build()
-            .await
-            .unwrap();
-        let mut v1 = [0u8; 16];
-        v1[..8].copy_from_slice(&777u64.to_le_bytes());
-        let h0 = [9u8; 16];
-        let mut wb = WriteBatch::new();
-        wb.put(shard_maint_key(), v1);
-        wb.put(
-            tail_key(&h0),
-            encode_tail(&TailFields {
-                next: 5,
-                absorbed: 2,
-                unabsorbed_bytes: 300,
-                ..Default::default()
-            }),
-        );
-        wb.put(
-            dirty_key(&h0),
-            dirty_value(&StreamMaintenance {
-                absorbed: 2,
-                next: 5,
-                ..Default::default()
-            }),
-        );
-        db.write_with_options(wb, &WriteOptions::default())
-            .await
-            .unwrap();
-        let got = load_or_rebuild_maintenance(&db).await.unwrap();
-        assert_eq!(
-            got.unabsorbed_frame_bytes, 300,
-            "legacy value must be rebuilt from tails, never converted"
-        );
-        assert!(
-            got.last_progress_ms > 0,
-            "rebuilt backlog must start the stall clock"
-        );
-        let raw = db
-            .get(shard_maint_key())
-            .await
-            .unwrap()
-            .expect("row replaced");
-        assert_eq!(raw.len(), 40, "the legacy row must be replaced by v2");
-        db.close().await.unwrap();
-
-        // 3. Missing row: rebuild from dirty index + tails, then persist.
-        let db = Db::builder("m3/shard", store.clone())
-            .build()
-            .await
-            .unwrap();
-        let h1 = [1u8; 16];
-        let h2 = [2u8; 16];
-        let mut wb = WriteBatch::new();
-        for (h, bytes) in [(h1, 300u64), (h2, 400u64)] {
-            let t = TailFields {
-                next: 10,
-                absorbed: 4,
-                unabsorbed_bytes: bytes,
-                ..Default::default()
-            };
-            wb.put(tail_key(&h), encode_tail(&t));
-            wb.put(
-                dirty_key(&h),
-                dirty_value(&StreamMaintenance {
-                    absorbed: 4,
-                    next: 10,
-                    ..Default::default()
-                }),
-            );
-        }
-        db.write_with_options(wb, &WriteOptions::default())
-            .await
-            .unwrap();
-        let got = load_or_rebuild_maintenance(&db).await.unwrap();
-        assert_eq!(got.unabsorbed_frame_bytes, 700, "rebuild sums tail gauges");
-        // And it persisted: a second load takes the row path.
-        let raw = db
-            .get(shard_maint_key())
-            .await
-            .unwrap()
-            .expect("row persisted");
-        assert_eq!(
-            decode_shard_maint(&raw).unwrap().unabsorbed_frame_bytes,
-            700
-        );
-        db.close().await.unwrap();
-
-        // 4. Corrupt row: an engine-open FAILURE, never zero backlog.
-        let db = Db::builder("m4/shard", store.clone())
-            .build()
-            .await
-            .unwrap();
-        let mut wb = WriteBatch::new();
-        wb.put(shard_maint_key(), vec![9u8; 11]);
-        db.write_with_options(wb, &WriteOptions::default())
-            .await
-            .unwrap();
-        assert!(
-            load_or_rebuild_maintenance(&db).await.is_err(),
-            "corrupt maintenance row must fail the open"
-        );
-        db.close().await.unwrap();
-    }
-}
+mod maintenance_tests;
 
 #[cfg(test)]
-mod storage_decode_tests {
-    use super::*;
-
-    #[test]
-    fn r12_supported_tail_versions_and_extensions() {
-        let tail = TailFields {
-            next: 9,
-            absorbed: 4,
-            trimmed: 2,
-            trim_safe_to: 3,
-            seq: Some("lane".into()),
-            ..Default::default()
-        };
-        let full = encode_tail(&tail);
-        let base = 44 + 4;
-        for extension in [0, 16, 24, 32] {
-            let decoded = stored_tail(&full[..base + extension]).unwrap();
-            assert_eq!(decoded.next, 9);
-            assert_eq!(decoded.seq.as_deref(), Some("lane"));
-        }
-        let mut v2 = full.clone();
-        v2[0] = 2;
-        v2.remove(41); // v2 has no flags
-        assert_eq!(stored_tail(&v2[..43 + 4]).unwrap().next, 9);
-        for len in 0..full.len() {
-            if ![base, base + 16, base + 24].contains(&len) {
-                assert!(stored_tail(&full[..len]).is_err(), "len={len}");
-            }
-        }
-        let mut invalid = full.clone();
-        invalid[0] = 99;
-        assert!(stored_tail(&invalid).is_err());
-        let mut invalid = full.clone();
-        invalid[41] = 4;
-        assert!(stored_tail(&invalid).is_err());
-        let mut invalid = full;
-        invalid[25..33].copy_from_slice(&10u64.to_le_bytes());
-        assert!(stored_tail(&invalid).is_err());
-    }
-
-    #[test]
-    fn r12_cursor_requires_exact_width() {
-        for len in 0..=9 {
-            let result = decode_cursor(&vec![0; len]);
-            assert_eq!(result.is_ok(), len == 8, "len={len}");
-        }
-        assert_eq!(decode_cursor(&123u64.to_le_bytes()).unwrap(), 123);
-    }
-
-    #[test]
-    fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
-        let tail = TailFields {
-            next: 9,
-            absorbed: 4,
-            trimmed: 2,
-            trim_safe_to: 3,
-            ..Default::default()
-        };
-        for version in [2, 3] {
-            let mut encoded = encode_tail(&tail);
-            if version == 2 {
-                encoded[0] = 2;
-                encoded.remove(41);
-            }
-            encoded.extend_from_slice(&[0xee; 7]);
-            assert_eq!(stored_tail(&encoded).unwrap().next, tail.next);
-            for (at, value) in [(25, 10u64), (33, 5), (encoded.len() - 23, 5)] {
-                let mut inconsistent = encoded.clone();
-                inconsistent[at..at + 8].copy_from_slice(&value.to_le_bytes());
-                assert!(decode_tail(&inconsistent).is_some(), "byte layout is valid");
-                assert!(stored_tail(&inconsistent).is_err(), "state is invalid");
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());
-        let hash = [12; 16];
-        let mut wb = WriteBatch::new();
-        wb.put(record_key(&hash, 0), b"retained ciphertext");
-        wb.put(tail_key(&hash), b"broken tail");
-        db.write(wb).await.unwrap().await_durable().await.unwrap();
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r12".into(),
-            db.clone(),
-            store,
-            ShardConfig::default(),
-            tx,
-            None,
-            ShardMaintenance::default(),
-        );
-        assert!(engine.stream_handle(hash).await.is_err());
-        assert!(engine.tail_fields(&hash).await.is_err());
-        assert!(engine.durable_absorbed(&hash).await.is_err());
-        assert!(engine.seed_fork_tail(hash, [1; 16], 0).await.is_err());
-        assert_eq!(
-            db.get(record_key(&hash, 0))
-                .await
-                .unwrap()
-                .unwrap()
-                .as_ref(),
-            b"retained ciphertext"
-        );
-        assert_eq!(
-            db.get(tail_key(&hash)).await.unwrap().unwrap().as_ref(),
-            b"broken tail"
-        );
-        assert!(!engine.streams.lock().unwrap().contains_key(&hash));
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod storage_decode_tests;
 
 #[cfg(test)]
 fn billing_read_faults() -> &'static Mutex<HashMap<String, ()>> {
@@ -3382,565 +3202,16 @@ fn billing_read_faults() -> &'static Mutex<HashMap<String, ()>> {
 }
 
 #[cfg(test)]
-mod billing_read_tests {
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(Db::builder("r13", store.clone()).build().await.unwrap());
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r13".into(),
-            db.clone(),
-            store,
-            ShardConfig::default(),
-            tx,
-            None,
-            ShardMaintenance::default(),
-        );
-        let hash = [13; 16];
-        let meta = crate::billing::SegmentBillingMetaV1 {
-            v: 1,
-            stream_id: "existing".into(),
-            usage_version: 8,
-            ingest_payload_bytes_total: 923,
-            owned_frame_bytes_current: 876,
-            ..Default::default()
-        };
-        let encoded = serde_json::to_vec(&meta).unwrap();
-        let dirty = crate::billing::usage_dirty_key(&hash);
-        let key = crate::billing::billing_meta_key(&hash);
-        let final_key = crate::billing::usage_month_final_key(&hash, 2026, 7);
-        for corrupt in [false, true] {
-            let before = if corrupt {
-                b"invalid financial state".to_vec()
-            } else {
-                encoded.clone()
-            };
-            let mut wb = WriteBatch::new();
-            wb.put(key.clone(), before.clone());
-            wb.put(dirty.clone(), 8u64.to_le_bytes());
-            wb.put(final_key.clone(), b"owed snapshot");
-            wb.put(record_key(&hash, 0), b"retained record");
-            db.write(wb).await.unwrap();
-            for action in 0..3 {
-                if !corrupt {
-                    billing_read_faults()
-                        .lock()
-                        .unwrap()
-                        .insert("r13".into(), ());
-                }
-                let accounting = match action {
-                    0 => CommitOp::UsageAck {
-                        hash,
-                        scope: UsageAckScope::ThroughVersion(7),
-                        month_final_keys: vec![final_key.clone()],
-                    },
-                    1 => CommitOp::BillingClose {
-                        hash,
-                        close_ms: 1000,
-                    },
-                    _ => CommitOp::BillingRetained {
-                        hash,
-                        retained: true,
-                    },
-                };
-                let (tx, rx) = oneshot::channel();
-                engine
-                    .commit_group(
-                        vec![
-                            CommitOp::Queue {
-                                hash,
-                                op: crate::queue::QueueOp::ConfigGet {
-                                    consumer: "c".into(),
-                                },
-                                resp: tx,
-                            },
-                            accounting,
-                        ],
-                        &ShardConfig::default(),
-                    )
-                    .await;
-                assert!(
-                    rx.await.unwrap().is_err(),
-                    "no group success on required read failure"
-                );
-                assert_eq!(db.get(&key).await.unwrap().unwrap().as_ref(), &before);
-                assert_eq!(
-                    db.get(&dirty).await.unwrap().unwrap().as_ref(),
-                    &8u64.to_le_bytes()
-                );
-                assert_eq!(
-                    db.get(&final_key).await.unwrap().unwrap().as_ref(),
-                    b"owed snapshot"
-                );
-                assert_eq!(
-                    db.get(record_key(&hash, 0))
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .as_ref(),
-                    b"retained record"
-                );
-            }
-        }
-        db.put(&key, encoded).await.unwrap();
-        engine
-            .commit_group(
-                vec![CommitOp::UsageAck {
-                    hash,
-                    scope: UsageAckScope::ThroughVersion(7),
-                    month_final_keys: vec![],
-                }],
-                &ShardConfig::default(),
-            )
-            .await;
-        assert_eq!(
-            db.get(&dirty).await.unwrap().unwrap().as_ref(),
-            &8u64.to_le_bytes()
-        );
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod billing_read_tests;
 
 #[cfg(test)]
-mod commit_command_tests {
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
-        let store = crate::dst::FaultStore::new(
-            Arc::new(object_store::memory::InMemory::new()),
-            303,
-            crate::dst::FaultProfile::clean(),
-        );
-        let db = Arc::new(
-            Db::builder("r03-barriers", store.clone())
-                .with_settings(slatedb::config::Settings {
-                    flush_interval: Some(std::time::Duration::from_millis(5)),
-                    ..Default::default()
-                })
-                .build()
-                .await
-                .unwrap(),
-        );
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r03-barriers".into(),
-            db.clone(),
-            store.clone(),
-            ShardConfig::default(),
-            tx,
-            None,
-            ShardMaintenance::default(),
-        );
-        let hash = [3; 16];
-        let handle = engine.stream_handle(hash).await.unwrap();
-        let commit_gate = engine.test_hold_commit().await;
-        let dispatch_gate = engine.test_hold_dispatch().await;
-        let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
-        let (ctx, mut close) = oneshot::channel();
-        let (ftx, mut fence) = oneshot::channel();
-        engine
-            .try_close(CloseReq {
-                hash,
-                generation: Some(1),
-                resp: ctx,
-            })
-            .unwrap();
-        engine
-            .try_seal_fence(SealFenceReq {
-                hash,
-                generation: 2,
-                resp: ftx,
-            })
-            .unwrap();
-        assert!(matches!(
-            close.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        assert!(
-            !handle.state.lock().unwrap().applied.closed,
-            "nothing applied before write gate"
-        );
-        drop(commit_gate);
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while engaged.load(Ordering::SeqCst) == 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(handle.state.lock().unwrap().applied.closed);
-        let remote = slatedb::config::ReadOptions {
-            durability_filter: DurabilityLevel::Remote,
-            ..Default::default()
-        };
-        assert!(
-            db.get_with_options(tail_key(&hash), &remote)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(matches!(
-            close.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        assert!(matches!(
-            fence.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        store.release_hold();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while db
-                .get_with_options(tail_key(&hash), &remote)
-                .await
-                .unwrap()
-                .is_none()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(
-            matches!(close.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
-            "remote durability alone does not bypass dispatch"
-        );
-        assert!(matches!(
-            fence.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        ));
-        drop(dispatch_gate);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), close)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .closed
-        );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), fence)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap()
-                .closed
-        );
-        engine.begin_close();
-        engine
-            .await_terminated(std::time::Duration::from_secs(5))
-            .await
-            .unwrap();
-        let _ = db.close().await;
-        let reopened = Db::builder("r03-barriers", store).build().await.unwrap();
-        assert!(
-            stored_tail(&reopened.get(tail_key(&hash)).await.unwrap().unwrap())
-                .unwrap()
-                .closed
-        );
-        reopened.close().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r03_failed_group_discards_close_and_fence_effects_together() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(
-            Db::builder("r03-reject", store.clone())
-                .build()
-                .await
-                .unwrap(),
-        );
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r03-reject".into(),
-            db.clone(),
-            store,
-            ShardConfig::default(),
-            tx,
-            None,
-            ShardMaintenance::default(),
-        );
-        let hash = [4; 16];
-        let (ctx, close) = oneshot::channel();
-        let (ftx, fence) = oneshot::channel();
-        engine.fail_next_group_for(hash);
-        engine
-            .commit_group(
-                vec![
-                    CommitOp::Close(CloseReq {
-                        hash,
-                        generation: Some(1),
-                        resp: ctx,
-                    }),
-                    CommitOp::SealFence(SealFenceReq {
-                        hash,
-                        generation: 2,
-                        resp: ftx,
-                    }),
-                ],
-                &ShardConfig::default(),
-            )
-            .await;
-        assert!(close.await.unwrap().is_err());
-        assert!(fence.await.unwrap().is_err());
-        assert!(db.get(tail_key(&hash)).await.unwrap().is_none());
-        assert!(
-            !engine
-                .stream_handle(hash)
-                .await
-                .unwrap()
-                .state
-                .lock()
-                .unwrap()
-                .applied
-                .closed
-        );
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod commit_command_tests;
 
 #[cfg(test)]
-mod bounded_outbox_tests {
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(
-            Db::builder("r09-outbox", store.clone())
-                .build()
-                .await
-                .unwrap(),
-        );
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r09-outbox".into(),
-            db.clone(),
-            store,
-            ShardConfig::default(),
-            tx,
-            None,
-            Default::default(),
-        );
-        let mut batch = WriteBatch::new();
-        for id in 0..130u64 {
-            let mut hash = [0; 16];
-            hash[..8].copy_from_slice(&id.to_be_bytes());
-            batch.put(crate::billing::usage_dirty_key(&hash), 8u64.to_le_bytes());
-        }
-        let hash = [0; 16];
-        let meta = crate::billing::SegmentBillingMetaV1 {
-            v: 1,
-            stream_id: "s".into(),
-            usage_version: 8,
-            month_year: 2026,
-            month_month: 7,
-            ..Default::default()
-        };
-        batch.put(
-            crate::billing::billing_meta_key(&hash),
-            serde_json::to_vec(&meta).unwrap(),
-        );
-        for n in 0..35u32 {
-            batch.put(
-                crate::billing::usage_month_final_key(&hash, 2020 + (n / 12) as i32, n % 12 + 1),
-                serde_json::to_vec(&meta.to_snapshot(true)).unwrap(),
-            );
-        }
-        db.write(batch).await.unwrap();
-        assert!(engine.has_billing_debt().await.unwrap());
-        let (first, more) = engine.usage_dirty_page(None, 64).await.unwrap();
-        assert!(more);
-        assert_eq!(first.len(), 64);
-        let (second, more) = engine
-            .usage_dirty_page(Some(first.last().unwrap().0), 64)
-            .await
-            .unwrap();
-        assert!(more);
-        assert_eq!(second.len(), 64);
-        assert!(first.last().unwrap().0 < second[0].0);
-        let (last, more) = engine
-            .usage_dirty_page(Some(second.last().unwrap().0), 64)
-            .await
-            .unwrap();
-        assert!(!more);
-        assert_eq!(last.len(), 2);
-        let (finals, more) = engine.usage_month_finals_page(hash, 32).await.unwrap();
-        assert!(more);
-        assert_eq!(finals.len(), 32);
-        engine
-            .commit_group(
-                vec![CommitOp::UsageAck {
-                    hash,
-                    scope: UsageAckScope::FinalRowsOnly,
-                    month_final_keys: finals.into_iter().map(|(key, _)| key).collect(),
-                }],
-                &ShardConfig::default(),
-            )
-            .await;
-        let (remaining, more) = engine.usage_month_finals_page(hash, 32).await.unwrap();
-        assert!(!more);
-        assert_eq!(remaining.len(), 3);
-        assert_eq!(
-            db.get(crate::billing::usage_dirty_key(&hash))
-                .await
-                .unwrap()
-                .unwrap()
-                .as_ref(),
-            &8u64.to_le_bytes()
-        );
-        engine
-            .commit_group(
-                vec![CommitOp::UsageAck {
-                    hash,
-                    scope: UsageAckScope::ThroughVersion(8),
-                    month_final_keys: remaining.into_iter().map(|(key, _)| key).collect(),
-                }],
-                &ShardConfig::default(),
-            )
-            .await;
-        assert!(
-            db.get(crate::billing::usage_dirty_key(&hash))
-                .await
-                .unwrap()
-                .is_none()
-        );
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod bounded_outbox_tests;
 
 #[cfg(test)]
-mod queue_publication_tests {
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch() {
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(
-            Db::builder("r03-queue-refusal", store.clone())
-                .build()
-                .await
-                .unwrap(),
-        );
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
-            "r03-queue-refusal".into(),
-            db.clone(),
-            store,
-            ShardConfig::default(),
-            tx,
-            None,
-            Default::default(),
-        );
-        let hash = [37; 16];
-        for fail in [true, false] {
-            let (created_tx, mut created) = oneshot::channel();
-            let (conflict_tx, mut conflict) = oneshot::channel();
-            let (close_tx, mut closed) = oneshot::channel();
-            if fail {
-                engine.fail_next_group_for(hash);
-            }
-            let dispatch = engine.test_hold_dispatch().await;
-            engine
-                .commit_group(
-                    vec![
-                        CommitOp::Queue {
-                            hash,
-                            op: crate::queue::QueueOp::ConfigPut {
-                                consumer: "c".into(),
-                                cfg: Default::default(),
-                            },
-                            resp: created_tx,
-                        },
-                        CommitOp::Queue {
-                            hash,
-                            op: crate::queue::QueueOp::ConfigLifecycle {
-                                consumer: "c".into(),
-                                expect_gen: 2,
-                                deleting: true,
-                            },
-                            resp: conflict_tx,
-                        },
-                        CommitOp::Close(CloseReq {
-                            hash,
-                            generation: None,
-                            resp: close_tx,
-                        }),
-                    ],
-                    &ShardConfig::default(),
-                )
-                .await;
-            if fail {
-                // The conflict was derived from the uncommitted ConfigPut.
-                // If the group fails, the consumer generation never existed.
-                assert!(
-                    created
-                        .await
-                        .unwrap()
-                        .unwrap_err()
-                        .contains("group write failed")
-                );
-                assert!(
-                    conflict
-                        .await
-                        .unwrap()
-                        .unwrap_err()
-                        .contains("group write failed")
-                );
-                assert!(matches!(closed.await.unwrap(), Err(AppendErr::Internal(_))));
-                assert!(
-                    db.get(crate::queue::config_key(&hash, "c"))
-                        .await
-                        .unwrap()
-                        .is_none()
-                );
-            } else {
-                assert!(matches!(
-                    created.try_recv(),
-                    Err(oneshot::error::TryRecvError::Empty)
-                ));
-                assert!(matches!(
-                    conflict.try_recv(),
-                    Err(oneshot::error::TryRecvError::Empty)
-                ));
-                assert!(matches!(
-                    closed.try_recv(),
-                    Err(oneshot::error::TryRecvError::Empty)
-                ));
-                drop(dispatch);
-                assert!(
-                    tokio::time::timeout(std::time::Duration::from_secs(10), created)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .is_ok()
-                );
-                assert!(
-                    tokio::time::timeout(std::time::Duration::from_secs(10), conflict)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap_err()
-                        .contains("consumer_generation_conflict")
-                );
-                assert!(closed.await.unwrap().unwrap().closed);
-                continue;
-            }
-        }
-        engine.begin_close();
-        let _ = db.close().await;
-    }
-}
+mod queue_publication_tests;
 
 #[cfg(test)]
 #[path = "shard/durability_frontier_tests.rs"]

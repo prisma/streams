@@ -52,5 +52,14 @@
     "to_file": "src/crypto/invocation_tests.rs",
     "function_sha256": "165487534c5ca524b49594629f085aee7bbe23b7f32c490248cdab6fd797c7bc",
     "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version",
+    "finding": "warning cleanup",
+    "from_commit": "6ea617d4fbc1863f3e7e80865116ebce46495e09",
+    "from_file": "src/shard.rs",
+    "to_file": "src/shard/billing_read_tests.rs",
+    "function_sha256": "df3f9bbc59ebd3ec652cd1e083739cfdc144a674ba3264b5b089d8903a3a2f60",
+    "reason": "Accounting-read mechanism test moved with its module into the file-split test module; it now carries the reasoned expectations for its length, its ignored delivery result and its nesting, with the same inputs and assertions."
   }
 ]
