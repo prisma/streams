@@ -202,28 +202,34 @@ impl Lb {
     /// instances, so a newly-desired sleeping ordinal would deadlock dark
     /// (found in run 5: desired=4, live=1 forever). Ping desired-but-stale
     /// ordinals out of band; one /health GET wakes them.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "lb::Lb::wake_stale_ordinals; a wake ping is fire-and-forget: the request itself starts a sleeping ordinal and its response carries nothing; joining it would stall the poll on every cold start"
-    )]
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "lb::Lb::wake_stale_ordinals; the ping's outcome is irrelevant once the request has left; a cold or dark instance answers nothing worth recording"
-    )]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "lb::Lb::wake_stale_ordinals; a poisoned upstream table may hold a half-adopted URL; recovering it could ping an address no deploy published"
-    )]
     fn wake_stale_ordinals(&self, d: usize, ages_ms: &[i64]) {
         for i in 1..=d {
             if ages_ms.get(i - 1).map(|a| *a >= 8_000).unwrap_or(true) {
-                let url = format!("{}/health", self.upstreams.read().unwrap()[i - 1]);
-                let c = self.http.get();
-                tokio::spawn(async move {
-                    let _ = c.get(url).timeout(Duration::from_secs(20)).send().await;
-                });
+                self.wake_ordinal(i);
             }
         }
+    }
+
+    /// One /health GET, fire-and-forget: the request itself starts a
+    /// sleeping ordinal and its response carries nothing.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "lb::Lb::wake_ordinal; a wake ping is fire-and-forget: the request itself starts a sleeping ordinal and its response carries nothing; joining it would stall the poll on every cold start"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "lb::Lb::wake_ordinal; the ping's outcome is irrelevant once the request has left; a cold or dark instance answers nothing worth recording"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "lb::Lb::wake_ordinal; a poisoned upstream table may hold a half-adopted URL; recovering it could ping an address no deploy published"
+    )]
+    fn wake_ordinal(&self, i: usize) {
+        let url = format!("{}/health", self.upstreams.read().unwrap()[i - 1]);
+        let c = self.http.get();
+        tokio::spawn(async move {
+            let _ = c.get(url).timeout(Duration::from_secs(20)).send().await;
+        });
     }
 
     #[expect(
@@ -346,7 +352,7 @@ fn spawn_ticker(lb: Arc<Lb>) {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let gv = generator_stats(&poll, gen_url.as_deref()).await;
-            lb.record_tick(gv);
+            lb.record_tick(&gv);
         }
     });
 }
@@ -371,7 +377,7 @@ impl Lb {
         clippy::unwrap_used,
         reason = "lb::Lb::record_tick; a poisoned history, generator or fleet view may hold a half-written sample; recovering it could chart a tick no poll completed"
     )]
-    fn record_tick(&self, gv: Value) {
+    fn record_tick(&self, gv: &Value) {
         let per: Vec<u64> = self
             .stats
             .iter()

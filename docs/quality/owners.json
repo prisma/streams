@@ -1539,7 +1539,7 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::Lb::wake_stale_ordinals",
+      "owner": "crate::Lb::wake_ordinal",
       "path": "src/bin/pilot/lb.rs",
       "reason": "Fire-and-forget wake ping: the request itself starts a sleeping ordinal and its response carries nothing; joining it would stall the fleet poll on every cold start.",
       "syntax": "tokio::spawn"
@@ -1615,6 +1615,14 @@
       "path": "src/bin/pilot/lb.rs",
       "reason": "Pilot router per-upstream counters; the compiler checks the expansion and the dashboard reads the fields.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::lb",
+      "path": "src/bin/pilot.rs",
+      "reason": "The pilot binary keeps its modules under src/bin/pilot/; a bin root resolves plain child modules beside itself, so the explicit path names the same layout as its siblings.",
+      "syntax": "path = \"pilot/lb.rs\""
     }
   ]
 }

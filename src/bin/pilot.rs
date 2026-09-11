@@ -12,6 +12,8 @@
 #[path = "pilot/client.rs"]
 mod http_client;
 use http_client::RotatingClient;
+#[cfg(test)]
+use http_client::client;
 
 #[path = "pilot/proxy.rs"]
 mod routing;

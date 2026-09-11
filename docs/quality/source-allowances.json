@@ -926,13 +926,6 @@
     },
     {
       "category": "effect",
-      "count": 4,
-      "owner": "crate::lb",
-      "path": "src/bin/pilot.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 1,
       "owner": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
       "path": "src/bootstrap/runtime_handoff.rs",
@@ -3050,13 +3043,6 @@
       "count": 4,
       "owner": "crate::main",
       "path": "src/bin/livebench.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 8,
-      "owner": "crate::lb",
-      "path": "src/bin/pilot.rs",
       "syntax": "serde_json::json"
     },
     {
