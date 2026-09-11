@@ -17,6 +17,14 @@ use super::fixture_storage::{mem, skey};
 /// contains the STORAGE hash must not touch the journal. Pre-fix this
 /// failed both ways (route-vs-storage hash-domain mismatch: journals
 /// keyed by storage_hash, close matched route-space prefixes).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "watch routing fixture; each parked waiter is joined after the touch that should wake it; the waiter must be parked before the touch is issued"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "watch routing scenario; two parked waiters, the touches routed by route hash versus storage hash and their wake verdicts form one causal sequence; helper phases would hide which hash woke which waiter"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     let store = mem();
@@ -188,6 +196,14 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     engine_shutdown(&state).await;
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "product watch fixture; the parked waiter is joined after the matching append; it must be parked before the append is issued"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "product watch scenario; arranging the capability, parking the waiter, appending matching and non-matching records and checking the wake are one causal sequence; helper phases would hide which record woke the waiter"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_watch_wakes_on_matching_append() {
     let store = mem();
@@ -555,6 +571,10 @@ async fn watch_capability_respects_project_suspension() {
 /// RED (Søren review): capability waits bypass project admission — a
 /// project at its inflight ceiling can still open unbounded 25-second
 /// waiters through capability URLs.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "admission ceiling fixture; the long waiter is joined after the refused second waiter is observed; it must hold the project's admission slot concurrently"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn watch_capability_waits_occupy_project_admission() {
     let scopes = "streams.create streams.records.append streams.records.read \
@@ -634,7 +654,12 @@ async fn watch_capability_waits_occupy_project_admission() {
         st,
         String::from_utf8_lossy(&b)
     );
-    let _ = h.await;
+    let (st, _, b) = h.await.unwrap();
+    assert!(
+        st == 200 || st == 204,
+        "the admitted waiter must complete normally: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
     engine_shutdown(&state).await;
 }
 
