@@ -424,7 +424,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7495cff20d401f28f05e13fe8994c5c6b0e394896865607aa442fbb578b11fbd",
+    "function_sha256": "13cb7c74d5330864db937d49c848bc50dd770895da83227db341ee6790bba756",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
@@ -482,13 +482,13 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c6ba31b8916927f57c500b202087c940705a03f1ac72e0f783b0aa381b74e0c4",
+    "function_sha256": "fd0ce0ad545b676490fef9acb884f2e4228724730b5fe25fa9fb8ef2e9dfa4db",
     "mechanisms": [],
     "configuration": [
       "let before = crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\");",
       "crate::failpoints::park_create_before_ready(\"abacreate\");",
-      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\") > before",
-      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\")",
+      "crate::failpoints::Fp::CreateBeforeReady,",
+      "crate::failpoints::Fp::CreateBeforeReady,",
       "crate::failpoints::release_create_before_ready(\"abacreate\");"
     ],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
@@ -5855,7 +5855,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "143108edf1c629465eaf4262614f2a82105d543b10fa5afc0ad49e3fb0826c87",
+    "function_sha256": "b7285dc9fb3884c82a9a1dafce205f601f1c96fd78cd8b76b2fedbf8e887d1db",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/watch_observation.rs",

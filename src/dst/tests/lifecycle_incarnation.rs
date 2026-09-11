@@ -13,6 +13,14 @@ use super::fixture_storage::mem;
 /// => tombstone). The resumed release must carry its SNAPSHOT's epoch
 /// into the mutation — B stays byte-for-byte untouched, and the stale
 /// release reports CONCLUSIVE so the debt converges.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "fork release fixture; the parked release is released and joined before its verdict is examined; running it inline cannot park it between its epoch check and its mutation"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "fork release scenario; parking the release, deleting and recreating underneath it and checking the replacement form one causal sequence; helper phases would hide which incarnation the release touched"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     let _serial = gap_lock().lock().await;
@@ -155,6 +163,10 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
 /// must still succeed. Without the fence the stale one clears the
 /// replacement's claim, publishing it as ready before its records land
 /// and leaving its rightful creator to fail.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked creation fixture; both creators are released and joined before their verdicts are compared; both must be parked in the same readiness window at once"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -167,24 +179,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     crate::failpoints::park_create_before_ready("abacreate");
     let stale =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
-    let mut first_epoch = String::new();
-    for _ in 0..300 {
-        state
-            .registry
-            .invalidate(&state.deployment.raw_adapter_sref("abacreate"));
-        if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, "abacreate") > before
-        {
-            if let Ok(Some(d)) = state
-                .registry
-                .get(&state.deployment.raw_adapter_sref("abacreate"))
-                .await
-            {
-                first_epoch = d.stream_epoch.clone();
-            }
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let first_epoch = parked_epoch(
+        &state,
+        crate::failpoints::Fp::CreateBeforeReady,
+        "abacreate",
+        before,
+    )
+    .await;
     assert!(
         !first_epoch.is_empty(),
         "the first creator never reached its window"
@@ -200,25 +201,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     );
     let live =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
-    let mut second_epoch = String::new();
-    for _ in 0..300 {
-        if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, "abacreate")
-            > before + 1
-        {
-            state
-                .registry
-                .invalidate(&state.deployment.raw_adapter_sref("abacreate"));
-            if let Ok(Some(d)) = state
-                .registry
-                .get(&state.deployment.raw_adapter_sref("abacreate"))
-                .await
-            {
-                second_epoch = d.stream_epoch.clone();
-            }
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let second_epoch = parked_epoch(
+        &state,
+        crate::failpoints::Fp::CreateBeforeReady,
+        "abacreate",
+        before + 1,
+    )
+    .await;
     assert!(
         !second_epoch.is_empty(),
         "the replacement never reached the window"
@@ -264,9 +253,41 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     engine_shutdown(&state).await;
 }
 
+/// The epoch of `name` once more operations than `threshold` are parked at
+/// `fp`; empty if no operation reaches that window.
+async fn parked_epoch(
+    state: &crate::http::AppState,
+    fp: crate::failpoints::Fp,
+    name: &str,
+    threshold: usize,
+) -> String {
+    for _ in 0..300 {
+        if crate::failpoints::parked(fp, name) <= threshold {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            continue;
+        }
+        state
+            .registry
+            .invalidate(&state.deployment.raw_adapter_sref(name));
+        return match state
+            .registry
+            .get(&state.deployment.raw_adapter_sref(name))
+            .await
+        {
+            Ok(Some(d)) => d.stream_epoch.clone(),
+            _ => String::new(),
+        };
+    }
+    String::new()
+}
+
 /// Seal → delete → recreate. A seal is issued against the incarnation
 /// the caller asked to close; applying it to a replacement closes a
 /// collection nobody asked to close.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal incarnation scenario; the parked seal, the delete and recreate underneath it and the replacement's open state form one causal sequence; helper phases would hide which incarnation the seal closed"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -396,6 +417,10 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
 /// Delete → recreate → the parked delete resumes. It must not delete
 /// the replacement: the caller asked to delete what was there when they
 /// asked, and a name is not an identity.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked deletion fixture; the parked deleter is released and joined before the replacement is examined; running it inline cannot park it before its decision"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_delete_never_removes_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -599,6 +624,10 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
 /// published. Driven through the real create path with a failpoint in
 /// the window the audit named: after the source reference is installed,
 /// before readiness.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "parked fork creation fixture; the creator is released and joined before its status is checked; it must be parked before readiness while the source is deleted"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn creation_does_not_report_success_after_a_concurrent_delete() {
     let _serial = gap_lock().lock().await;
