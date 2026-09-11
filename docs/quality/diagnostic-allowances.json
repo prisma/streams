@@ -2138,13 +2138,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "9003e48c48be20f5a64b71e50c32c28cdf7f333edbf3b9473f6b42ab13b80fed",
-      "item": "crate::drain_ownership_tests::r09_cancelled_optional_read_drain_requeues_owned_batches",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "1a606e0a5599d5a1d9b1a31a2e186f89e9e17fd257edf4bd27843da7a8a8f993",
       "item": "crate::bench_append",
       "lint": "clippy::disallowed_methods",
@@ -7828,20 +7821,6 @@
       "path": "src/billing.rs"
     },
     {
-      "count": 1,
-      "fingerprint": "b3186c3f55926703c7b4c47d8648a1ebc6fdc2ed6ab3d315d0ec0cacab722b11",
-      "item": "crate::drain_fairness_tests::r09_budget_exhaustion_on_first_engine_still_rotates_every_engine",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cf7d5e26f47839e2962eda279dcf372050de4ebd431cea17dd44b32c69569f81",
-      "item": "crate::drain_ownership_tests::r09_cancelled_optional_read_drain_requeues_owned_batches",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/billing_service.rs"
-    },
-    {
       "count": 2,
       "fingerprint": "7173378122a4324be60221ea76125a97514babd68e77ef397ce80dfe49fbf543",
       "item": "crate::bench_append",
@@ -11601,97 +11580,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "3bc468f605d90698a065a33d9733a5c7bc88d014f70b746da7051d401b147a2f",
-      "item": "crate::BillingService::begin_drain_engine",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "775346e56fda08c32dfd0f288235e1cbcd7526b684c5ae3899c02c4bd204dd88",
-      "item": "crate::BillingService::claim_sweep_custody",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "978cba8964aa99f13e9b9719ef44df346700062992a17520aa68af8f4c8058e6",
-      "item": "crate::BillingService::drain_engines",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a26919cd765381fa66456ed655b812c48e369dcf3c742534fb71855e07972f4b",
-      "item": "crate::BillingService::drain_row_cursor",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7f3dcb3587447f9247258b69ff04a3c5344f803ce3fe35f2f5108d33c2a8651f",
-      "item": "crate::BillingService::note_sweep_cycle",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0388f0c2bc00a43cbed49a055ef44c5c11a0b8b080840553c2b355dde55177bb",
-      "item": "crate::BillingService::release_sweep_custody",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6b0c16832c0319b7c5763b1517eadfe443384f3bb5028d67b6878bba15fdc378",
-      "item": "crate::BillingService::release_sweep_custody",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "acbb8bb0428557b7a5c76aed22b2457ff514ce4bdd8172c734c22da1a9c6afa5",
-      "item": "crate::BillingService::set_drain_row_cursor",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "681552bc866a866a36a20447f6c9ba6632bb029eb145d6fc73ae17e831a78724",
-      "item": "crate::BillingService::set_sweep_walk_cursor",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "51c44dfa6dd2e51bd1eadcf236340b6fe86e850d998c4231c13a0ef40bfb0c28",
-      "item": "crate::BillingService::sweep_custody_prefixes",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7cb2468b71e198a9ddde878b22a2dccc4a42c3123dd866f40efd4d4ce3107b56",
-      "item": "crate::BillingService::sweep_custody_seq",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "13c1f06aeca8535038ee20049fead4544298978be33da4c08bbcceea467ef590",
-      "item": "crate::BillingService::sweep_resident_engines",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0941dc55a091e213a923ac70bd2c8d89c1996833a3b78bb45aab39163790eb45",
-      "item": "crate::BillingService::sweep_walk_cursor",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing_service.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2a64df04100de308a5d3621bac9a263574f196123008e6232c3a7d07c6ff8042",
       "item": "crate::bench_append",
       "lint": "clippy::unwrap_used",
@@ -14531,13 +14419,6 @@
       "item": "crate::rollup_step",
       "lint": "unreachable_pub",
       "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bcaca887a6bbfcc59c1a390febcc22db9a6c8583c11f639440d9fde964ffcc2c",
-      "item": "crate::BillingService::pending_spooled",
-      "lint": "unreachable_pub",
-      "path": "src/billing_service.rs"
     },
     {
       "count": 1,

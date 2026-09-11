@@ -115,6 +115,10 @@ impl BillingService {
 
     /// Fair bounded engine visits; cursors are advisory and durable outbox
     /// rows retain the work on cancellation, failure or owner replacement.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::drain_engines; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn drain_engines(
         &self,
         mut engines: Vec<Arc<crate::shard::ShardEngine>>,
@@ -133,10 +137,18 @@ impl BillingService {
         engines
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::begin_drain_engine; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn begin_drain_engine(&self, prefix: &str) {
         self.inner.drain_progress.lock().unwrap().engine_after = Some(prefix.to_string());
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::drain_row_cursor; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn drain_row_cursor(&self, prefix: &str) -> Option<[u8; 16]> {
         self.inner
             .drain_progress
@@ -147,6 +159,10 @@ impl BillingService {
             .copied()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::set_drain_row_cursor; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn set_drain_row_cursor(&self, prefix: &str, after: Option<[u8; 16]>) {
         let mut progress = self.inner.drain_progress.lock().unwrap();
         if let Some(after) = after {
@@ -215,7 +231,10 @@ impl BillingService {
     }
 
     /// The next spooled batches to publish, with their spool keys.
-    pub async fn pending_spooled(&self, max: usize) -> Result<Vec<(Vec<u8>, ReadBatch)>, String> {
+    pub(crate) async fn pending_spooled(
+        &self,
+        max: usize,
+    ) -> Result<Vec<(Vec<u8>, ReadBatch)>, String> {
         match self.inner.read_spool.get() {
             Some(spool) => spool.pending(max).await.map_err(|e| e.to_string()),
             None => Ok(Vec::new()),
@@ -254,6 +273,10 @@ impl BillingService {
 
     /// Record that the sweep scheduler holds `prefix` under custody
     /// value `seq`, and refresh the peak gauge.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::claim_sweep_custody; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn claim_sweep_custody(&self, prefix: &str, seq: u64, held_now: usize) {
         self.inner
             .sweep
@@ -268,12 +291,20 @@ impl BillingService {
     }
 
     /// Drop `prefix` from custody and forget its quantum accounting.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::release_sweep_custody; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn release_sweep_custody(&self, prefix: &str) {
         self.inner.sweep.opened.lock().unwrap().remove(prefix);
         self.inner.sweep.cycles.lock().unwrap().remove(prefix);
     }
 
     /// Count one residency cycle for `prefix`; returns the new count.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::note_sweep_cycle; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn note_sweep_cycle(&self, prefix: &str) -> usize {
         let mut c = self.inner.sweep.cycles.lock().unwrap();
         let e = c.entry(prefix.to_string()).or_insert(0);
@@ -282,12 +313,20 @@ impl BillingService {
     }
 
     /// How many engines exist only because debt discovery opened them.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::sweep_resident_engines; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn sweep_resident_engines(&self) -> usize {
         self.inner.sweep.opened.lock().unwrap().len()
     }
 
     /// The custody value the scheduler installed for `prefix`, if it
     /// holds it.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::sweep_custody_seq; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn sweep_custody_seq(&self, prefix: &str) -> Option<u64> {
         self.inner.sweep.opened.lock().unwrap().get(prefix).copied()
     }
@@ -318,6 +357,10 @@ impl BillingService {
     }
 
     /// The prefixes the scheduler currently holds under custody.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::sweep_custody_prefixes; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn sweep_custody_prefixes(&self) -> Vec<String> {
         self.inner
             .sweep
@@ -330,11 +373,19 @@ impl BillingService {
     }
 
     /// The tombstone walk's resume point.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::sweep_walk_cursor; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn sweep_walk_cursor(&self) -> Option<String> {
         self.inner.sweep.walk_cursor.lock().unwrap().clone()
     }
 
     /// Set (or clear, on a full circle) the walk's resume point.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "BillingService::set_sweep_walk_cursor; poisoned scheduler or outbox cursor state cannot be trusted; recovery or a lock wrapper would change the failure contract"
+    )]
     pub(crate) fn set_sweep_walk_cursor(&self, after: Option<String>) {
         *self.inner.sweep.walk_cursor.lock().unwrap() = after;
     }
@@ -350,6 +401,38 @@ mod tests {
             instance: "i".into(),
             boot: "b".into(),
         }))
+    }
+
+    #[test]
+    fn poisoned_outbox_progress_cannot_publish_a_cursor() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let service = BillingService::new(None, reads());
+        service.set_drain_row_cursor("001", Some([1; 16]));
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _guard = service.inner.drain_progress.lock().unwrap();
+                panic!("interrupt an outbox progress update");
+            }))
+            .is_err()
+        );
+        assert!(service.inner.drain_progress.is_poisoned());
+        assert!(catch_unwind(AssertUnwindSafe(|| service.drain_row_cursor("001"))).is_err());
+    }
+
+    #[test]
+    fn poisoned_sweep_progress_cannot_resume_a_walk() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let service = BillingService::new(None, reads());
+        service.set_sweep_walk_cursor(Some("001".into()));
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _guard = service.inner.sweep.walk_cursor.lock().unwrap();
+                panic!("interrupt a sweep progress update");
+            }))
+            .is_err()
+        );
+        assert!(service.inner.sweep.walk_cursor.is_poisoned());
+        assert!(catch_unwind(AssertUnwindSafe(|| service.sweep_walk_cursor())).is_err());
     }
 
     /// Off = no ledger key; the slots start empty and are per service.
@@ -405,6 +488,10 @@ mod drain_ownership_tests {
         }]);
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let task_service = service.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "billing drain cancellation fixture; the suspended task is explicitly aborted and joined; the supervisor does not expose the JoinHandle cancellation result under test"
+        )]
         let task = tokio::spawn(async move {
             let drain = task_service.read_drain(1);
             assert_eq!(drain.batches[0].seq, 7);
@@ -414,7 +501,11 @@ mod drain_ownership_tests {
         });
         entered_rx.await.unwrap();
         task.abort();
-        let _ = task.await;
+        assert!(
+            task.await
+                .expect_err("the drain was aborted")
+                .is_cancelled()
+        );
         let mut recovered = service.read_drain(1);
         assert_eq!(recovered.batches.len(), 1);
         assert_eq!(recovered.batches[0].seq, 7);
@@ -478,8 +569,10 @@ mod drain_fairness_tests {
             );
         }
         for engine in engines {
-            engine.begin_close();
-            let _ = engine.db.close().await;
+            engine
+                .await_terminated(std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
         }
     }
 }
