@@ -98,20 +98,11 @@ pub(crate) fn billing_now_ms() -> i64 {
 }
 
 #[cfg(test)]
-pub(crate) static BILLING_CLOCK_OVERRIDE: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(0);
-
-/// Serializes month-sensitive tests: the clock-injecting test takes
-/// write; tests asserting real-now months take read.
+mod test_clock;
 #[cfg(test)]
-pub(crate) fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
-    static L: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
-    L.get_or_init(|| tokio::sync::RwLock::new(()))
-}
+pub(crate) use test_clock::{BILLING_CLOCK_OVERRIDE, billing_clock_lock};
 
-// ---------------------------------------------------------------------
 // UTC month math (no chrono dependency; Hinnant civil-date algorithm)
-// ---------------------------------------------------------------------
 
 /// (year, month 1..=12) of a UTC millisecond timestamp.
 #[expect(
@@ -768,6 +759,10 @@ type UsageAck = (
 #[expect(
     clippy::too_many_lines,
     reason = "drain_once; one drain round is one ledger append whose admission, emission and acknowledgement must stay in a single visible sequence; splitting it would hide which side effect each crash interleaving reaches"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "drain_once; the drain nests the retention verdicts inside each dirty segment's descriptor branch; flattening them would separate the verdicts from the descriptor they judge"
 )]
 pub(crate) async fn drain_once(
     state: &std::sync::Arc<crate::http::AppState>,
@@ -2081,6 +2076,10 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// clean AND the name recreated under a new epoch before the next
 /// sweep replaces the tombstone this walk needs; that incarnation's
 /// gauge is then reachable only through the dirty-path reconciler.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "tombstone_walk; the walk nests the close stamp and the submit verdict inside each tombstone's engine branch; flattening them would separate the verdict from the tombstone it closes"
+)]
 pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.billing.usage_key().is_none() {
         return;

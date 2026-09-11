@@ -107,7 +107,7 @@ impl<'a> CommitTransaction<'a> {
         clippy::let_underscore_must_use,
         reason = "CommitTransaction::reject_op; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
     )]
-    fn reject_op(op: CommitOp, error: AppendErr) {
+    pub(super) fn reject_op(op: CommitOp, error: AppendErr) {
         match op {
             CommitOp::Append(req) => {
                 let _ = req.resp.send(Err(error));
