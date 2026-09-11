@@ -9416,20 +9416,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6a39c99b93ce96962e91c003061a019958284a1d9b6a84bcb1e969aad22532ec",
-      "item": "crate::<StaticGrantSource as GrantSource>::fetch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/project_policy.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bcc637ffa7a9904051265feab952fdb806745768b809528b9e8bb54c997e7bfb",
-      "item": "crate::<StaticPolicySource as PolicySource>::fetch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/project_policy.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "8845e6d33d2494f13b2a21cc897d78a452ed44819b7574ed8a55dbac41cf26ed",
       "item": "crate::Registry::cache_insert",
       "lint": "clippy::unwrap_used",
