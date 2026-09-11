@@ -3,6 +3,10 @@ use super::deletion::release_fork_ref;
 use super::raw::CreatePlan;
 use super::*;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "install; the anchor install is one conditional write over the source's fork reference plus the compensation each declined outcome requires; splitting it would separate the write from the compensation it orders"
+)]
 pub(super) async fn install(
     state: &Arc<CreationService>,
     plan: &CreatePlan,
@@ -187,6 +191,10 @@ enum ReferenceStamp {
     AlreadyPresent,
     TargetChanged,
 }
+#[expect(
+    clippy::expect_used,
+    reason = "stamp_fork_reference; the persisted copy carries the fork reference the match just observed; a fallible write would add a branch no observed reference reaches"
+)]
 fn stamp_fork_reference(current: &StreamDesc, fork_id: &str) -> Mutation<ReferenceStamp> {
     if current.deleted {
         return Mutation::Decline(ReferenceStamp::TargetChanged);

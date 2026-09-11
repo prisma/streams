@@ -11,6 +11,14 @@ use bytes::Bytes;
 use serde_json::json;
 use std::sync::Arc;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pull; the pull walks the lineage oldest-first and each segment's skip, stop and deliver verdicts depend on the walk so far; splitting it would separate the verdicts from the walk that orders them"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "pull; the walk nests each foreign segment's drain probe and each sealed segment's cursor check inside the lineage loop; flattening it would separate the skip from the segment it skips"
+)]
 pub(crate) async fn pull(
     context: AuthorizedConsumerContext,
     doc: PullInput,
@@ -210,6 +218,10 @@ pub(crate) async fn pull(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "foreign_segment_drained; the probe takes the descriptor, segment, consumer, generation, sealed end and owner separately as the walk resolved them; a probe struct would exist only for this signature"
+)]
 async fn foreign_segment_drained(
     state: &Arc<ConsumerService>,
     desc: &StreamDesc,
@@ -238,6 +250,7 @@ async fn foreign_segment_drained(
 
 /// Encode only leases granted by the committer, with the same key, stream
 /// epoch, segment and consumer generation used for the durable Receive.
+#[derive(Clone, Copy)]
 struct MessageContext<'a> {
     desc: &'a StreamDesc,
     key: &'a crate::crypto::StreamKey,
@@ -393,6 +406,10 @@ async fn read_coverage(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "settle; settlement decides the acknowledged, released, dead-lettered and expired outcomes against one durable Receive; splitting it would separate the outcomes from the leases they settle"
+)]
 pub(crate) async fn settle(
     context: AuthorizedConsumerContext,
     doc: SettleInput,
@@ -573,7 +590,18 @@ pub(crate) async fn settle(
 }
 
 // Preserve the explicit source incarnation and one bounded poisoned segment.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "dlq_and_settle; the dead-letter path takes the stream, consumer, key, epoch, identity, route and segment separately as settlement resolved them; a context struct would exist only for this signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "dlq_and_settle; the dead-letter appends and the settlement of the poisoned leases are one bounded sequence over the same leases; splitting it would separate the appends from the leases they release"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "dlq_and_settle; the dead-letter target's incarnation was checked before any message is appended; a second fallible read would add a branch no configured target reaches"
+)]
 async fn dlq_and_settle(
     state: &Arc<ConsumerService>,
     desc: &StreamDesc,
@@ -676,12 +704,14 @@ async fn dlq_and_settle(
                 ts_hint_ms: None,
                 key_version: 0,
             };
-            if let Err(error) = state.append.execute(command).await {
-                if error.definitively_rejected() {
+            match state.append.execute(command).await {
+                Ok(_) => {}
+                Err(error) if error.definitively_rejected() => {
                     blocked += 1;
                     tracing::warn!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,error=%error,"dead-letter delivery refused; source lease retained");
+                    continue;
                 }
-                continue;
+                Err(_) => continue,
             }
         }
         let engine = match state.engine_for(&route).await {

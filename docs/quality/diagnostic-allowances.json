@@ -3,13 +3,6 @@
   "warnings": [
     {
       "count": 1,
-      "fingerprint": "71a6fbd0e075f7bca826a065d8b76e484b4875a6f093f84e54435b13dc420bab",
-      "item": "crate::dlq_and_settle",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c9df997dfba8fe967a2e7dc756fd00658525c64c2b5b7caba402e69cc0ac2ff9",
       "item": "crate::ReadPlan < 'a >::segment",
       "lint": "clippy::allow_attributes_without_reason",
@@ -287,13 +280,6 @@
       "item": "crate::read_frames_until",
       "lint": "clippy::arithmetic_side_effects",
       "path": "src/shard/record.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c6ca46333280941cc3d9e0533fb04c013cfbc0e35fcd776a233242943a9b421d",
-      "item": "crate::validate_boundary",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/application/creation/fork.rs"
     },
     {
       "count": 1,
@@ -955,111 +941,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "4e1a3f179a244f81df2b9047242dda35a2955194fb9d9a2890da450bd1fe9b35",
-      "item": "crate::dlq_and_settle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "40534a041f5b422f47767b3bb700b718265f762e51dde78a4a0f98a24b7816d7",
-      "item": "crate::pull",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9f202dfb5f87c9c73eb680fa96b61b41237fbfe9d9b326b733805e33f52e6d35",
-      "item": "crate::pull",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ef4325435bbee056e68c6efe90654ffd71a5fcd935fee2eefea19f106399dcd2",
-      "item": "crate::pull",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "42ebb9c72561e888b59478a720e62e9546de1060541143151da6eb0b7285b98e",
-      "item": "crate::tests::r05_cancelled_ttl_attempt_releases_only_its_owned_slot",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "25d0f8111c690996070f43095a86bf7bafb1a92223936708c5044d225d02c98c",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "30f0c95408939467c14ca3ebbb543ed194ed31339dd5e24377cb7e974fafd400",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "350abd10e6ecc8bc3cebc3d28cf789f3a58e611cb76e0fad483ecd00daa0de65",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3c82ef4fa6edd14deb7e92e6e135a13763ecb50283c2ff0b61014b01adf4b79c",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5ae95c68a36189a6a97270a7d0b38556b11a7698362a79682ebcaea19619852b",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f85b889c8716747ed7035b9afcca76089da7c5e7a2cc7050fd7ea3784579470d",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fd3c924d424859c4b5dd84f87bcfcbd4e9d770521fa8405ec8bcf07efef2e380",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "00cb7e1681732ced8a5729d8a36bcfc4880ae70c60e13787aac0dee004851212",
-      "item": "crate::validate_boundary",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/fork.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9261bca38e050f6bc31edb34d7eac39535119dc56391181972edd1ae220b9d41",
-      "item": "crate::publish",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/initialization.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dbd216ac9137bf7a166271b93955bd5a65bff4a51bfd26ed592587c48b6b1393",
-      "item": "crate::CreationService::create_product",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/creation/product.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2152575a7b7844c0789cb5916bec1dc8286ff3e879ed34a90925fbda45e9d5d4",
       "item": "crate::execute_segment",
       "lint": "clippy::excessive_nesting",
@@ -1162,13 +1043,6 @@
       "item": "crate::Ticket::wait",
       "lint": "clippy::excessive_nesting",
       "path": "src/application/request_work.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7c8d260b0b1720495fd47fd9a739569d0cd61496f669c49020928ec9228ab033",
-      "item": "crate::resume_incarnation",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/application/topology.rs"
     },
     {
       "count": 1,
@@ -2789,62 +2663,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "20de1f0b3e58a074307b546329b9d4d2016b9e3096ec7fe706ce296a94ca3eeb",
-      "item": "crate::dlq_and_settle",
-      "lint": "clippy::expect_used",
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "44afff99d1565b8d7b2ed92e7462ceeb566de7406c6b40a222be52709179f081",
-      "item": "crate::relay_queue_cursor",
-      "lint": "clippy::expect_used",
-      "path": "src/application/consumer_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b4886b6b928cfc707944b06ef4a2af7a587347beda2fd9f5868f1aa1b6dbadab",
-      "item": "crate::relay_sweep_segment",
-      "lint": "clippy::expect_used",
-      "path": "src/application/consumer_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "77c7c5dcc68868ef977c9f613eb03268f9f78d53910c39f2e7637ad3a59f0e5e",
-      "item": "crate::json_entries",
-      "lint": "clippy::expect_used",
-      "path": "src/application/creation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "89b8ed38656716b2b492981f0be58883b33af405feabff434d78c5f2b9e53bf2",
-      "item": "crate::json_entries",
-      "lint": "clippy::expect_used",
-      "path": "src/application/creation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e717a00beba453e59d6b13536a1b7174ebd58c4ecdd25afc2c139b6e7f1e464d",
-      "item": "crate::stamp_fork_reference",
-      "lint": "clippy::expect_used",
-      "path": "src/application/creation/anchor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6ea231d3a69fe169353a15ad6f1f0ab948014b41d5246ae7acd76a629eb5bf6",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::expect_used",
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6b0356f48129c9473db129f483e5683ab5a24a6a5d4c03169a88f1849c6e937",
-      "item": "crate::decide_claim",
-      "lint": "clippy::expect_used",
-      "path": "src/application/lifecycle/claims.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4a99b9bc711cca4f8ce145d702591cbb9d238f349a6a3ae4a01bd97f0581a234",
       "item": "crate::PlainBatch::append_selected",
       "lint": "clippy::expect_used",
@@ -2863,27 +2681,6 @@
       "item": "crate::scan_page_once",
       "lint": "clippy::expect_used",
       "path": "src/application/read_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "350a8df21f66d6ec939ca1073f4340bfd87bebb9ca0b8f9bb748157b290498a9",
-      "item": "crate::resume_incarnation",
-      "lint": "clippy::expect_used",
-      "path": "src/application/topology.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6a3a8bf77c6a257cad8bd26381b57f40a7c711c0ac37fb282d7b3cfcaccf272b",
-      "item": "crate::resume_incarnation",
-      "lint": "clippy::expect_used",
-      "path": "src/application/topology.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f63dbc656498275beffa3c416eebdd2d65dff345d1e865ea87c39fc54c39a2bd",
-      "item": "crate::resume_merge",
-      "lint": "clippy::expect_used",
-      "path": "src/application/topology.rs"
     },
     {
       "count": 1,
@@ -3538,27 +3335,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2c081f6b7b6c7a95b3d5200429c04bb2ef3891bd456f08c3b91223c74591d9f3",
-      "item": "crate::begin_sealing_for_close",
-      "lint": "clippy::match_same_arms",
-      "path": "src/application/lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ede11c01c2cce57665b90ad067af4f52ef23c6570d0799286c0ec6e2c45e5fc6",
-      "item": "crate::prepare_execution",
-      "lint": "clippy::match_same_arms",
-      "path": "src/application/lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "136ef7ae296df02b2a77784e50d83e7c002bfe06711eae3173c3a5eac15bda79",
-      "item": "crate::final_err_disposition",
-      "lint": "clippy::match_same_arms",
-      "path": "src/application/lifecycle/claims.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "37ee8bcadbf20e419e2ef2f53503959ec976561d8125cdbc014d5be236660047",
       "item": "crate::Workload::attempt_with_deadline",
       "lint": "clippy::match_same_arms",
@@ -3577,13 +3353,6 @@
       "item": "crate::serve",
       "lint": "clippy::match_same_arms",
       "path": "src/sse/session.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f59ccdfbec270a6aa037979049d7b83004be4e8d9687dd7b8ff41e531a055e13",
-      "item": "crate::delivery_messages",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/application/consumer/delivery.rs"
     },
     {
       "count": 1,
@@ -3677,78 +3446,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/application/append/close.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a004b85b47935b9f8c546e222edc941b08d4784438c1aed2d2755b99ee0b9c5a",
-      "item": "crate::ConsumerService::authorize",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/consumer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c8b385496a7807aef5914035668bdd01377b4a05f5c7e7a93327efaed2e7da4b",
-      "item": "crate::ConsumerService::sweep_local",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/consumer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1bd0e2bc2288549e5b89d45e9af7a2d38ff937974b05ac5dade623715872c625",
-      "item": "crate::delete",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/consumer/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "37e4bf3e42dd068c2f5512ee518e42ffe1048dad1f52b1f0aedc90a20c821eaa",
-      "item": "crate::foreign_segment_drained",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5d14e23eb255b375e0ebc226868542a3010e20ae174f95e5252c6aae52bfaf50",
-      "item": "crate::relay_queue_cursor",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/consumer_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c251d3416705b4538bf921d7ea669437310db46d1cd2b80ec16b2bae0af602a7",
-      "item": "crate::relay_sweep_segment",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/application/consumer_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e5c5b995eea1c55603654eea93a399e9ebd26d09b3ec64ee683040fcd30cc0db",
-      "item": "crate::create_request_hash",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/creation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c34852f94b4bcefb8c68ef6a9101a3b477e52e7957f0cf6128adecf367e7e826",
-      "item": "crate::fresh_desc",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/creation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a3b4e0de159936b506a87bcb53a8a152b0da9fe9ece6bac69796ec68fd3032d4",
-      "item": "crate::seed",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/application/creation/initialization.rs"
     },
     {
       "count": 1,
@@ -4029,118 +3726,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 110,
       "path": "src/application/append/close.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eb9d5827b97abad3e0eecebc477d7999bdd1d8b2bcc6971401d60f868945c795",
-      "item": "crate::put",
-      "lint": "clippy::too_many_lines",
-      "metric": 143,
-      "path": "src/application/consumer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1c6913ca428c333ece9624cbccda5a9292d396656b0555350676dfc6b0bcbbfc",
-      "item": "crate::delete",
-      "lint": "clippy::too_many_lines",
-      "metric": 102,
-      "path": "src/application/consumer/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "68c3bbc636e54eb0d7a0b3046b27ba577775c395b0459146a40526a24538b0cb",
-      "item": "crate::resume_deletion",
-      "lint": "clippy::too_many_lines",
-      "metric": 108,
-      "path": "src/application/consumer/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b02eeaa06ec37e4467a96fc72aeeab3ec46c2ecd6a56fa6a5bcef0293a22d1cd",
-      "item": "crate::dlq_and_settle",
-      "lint": "clippy::too_many_lines",
-      "metric": 117,
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eff63a2b95e15d539627c196b8898f6818f6839e32a01634a269f0b325d75de7",
-      "item": "crate::pull",
-      "lint": "clippy::too_many_lines",
-      "metric": 176,
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ab52472a99cb01a7e0cd3de1de4eb79d1eacb8b64dae9e0a31242cc7880e866b",
-      "item": "crate::settle",
-      "lint": "clippy::too_many_lines",
-      "metric": 169,
-      "path": "src/application/consumer/delivery.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "50b05bc1d369ffae99037c8e2c349c80aaf4faab5d9b90920d3425b83f476bb5",
-      "item": "crate::install",
-      "lint": "clippy::too_many_lines",
-      "metric": 133,
-      "path": "src/application/creation/anchor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fa83d718a1c91c2a37610d3f40cc61e45ee106ef5dff6386f84f5d31634d3d57",
-      "item": "crate::resolve",
-      "lint": "clippy::too_many_lines",
-      "metric": 133,
-      "path": "src/application/creation/claim.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c89b878a58fc7d64767230e53a479b9cf1fdb06003587aa0fa72cb610e16e079",
-      "item": "crate::delete_lifecycle",
-      "lint": "clippy::too_many_lines",
-      "metric": 120,
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9db6f5b359c24116ab99b69948a73662f8fcf683641e2dba09724364eadfea29",
-      "item": "crate::release_fork_ref",
-      "lint": "clippy::too_many_lines",
-      "metric": 108,
-      "path": "src/application/creation/deletion.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1dac42c2def9beea11c272d9d65832db0638480e73b5ee8251b9a709ac859587",
-      "item": "crate::prepare",
-      "lint": "clippy::too_many_lines",
-      "metric": 124,
-      "path": "src/application/creation/fork.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "40b27f4264bc1f246e8ab117e877350614161c92de1552ba9f8500835720186d",
-      "item": "crate::validate_boundary",
-      "lint": "clippy::too_many_lines",
-      "metric": 110,
-      "path": "src/application/creation/fork.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "daeb36d3e3a8cc7674ea6e88b0ead58f9655b44576f270ff4e29b2903df33678",
-      "item": "crate::seed",
-      "lint": "clippy::too_many_lines",
-      "metric": 135,
-      "path": "src/application/creation/initialization.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6d05999b63302ffaf9b27bc05561ad0b8d53ad922a918f1c2baa9c4ce37a9085",
-      "item": "crate::CreationService::create_product",
-      "lint": "clippy::too_many_lines",
-      "metric": 117,
-      "path": "src/application/creation/product.rs"
     },
     {
       "count": 1,
@@ -4467,27 +4052,6 @@
       "item": "crate::product_request_hash",
       "lint": "clippy::unwrap_used",
       "path": "src/application/append/contract.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e0390ed8d951a6dce9f7f6ee0777469c41c75af09930b2e22cf955c848755b9f",
-      "item": "crate::ConsumerService::queue_position",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/consumer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "16ab9594855c427f4a65dfe38ea3629bd53a6ee4391a6dd8362f320c722b0551",
-      "item": "crate::validate_boundary",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/creation/fork.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "34a919c9b9e5cf280c9bf56bd2747b29062a42d307d5809f4cd67691660b3b6b",
-      "item": "crate::seed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/application/creation/initialization.rs"
     },
     {
       "count": 1,

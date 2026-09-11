@@ -61,6 +61,10 @@ pub(crate) enum SealClaim {
 }
 
 /// An attempt-local decision. No captured output can leak from a CAS that lost.
+#[expect(
+    clippy::expect_used,
+    reason = "decide_claim; the persisted copy carries the claim the match just observed; a fallible write would add a branch no observed claim reaches"
+)]
 pub(super) fn decide_claim(
     current: &StreamDesc,
     op_id: &str,
@@ -218,7 +222,6 @@ pub(crate) enum FinalDisposition {
 pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposition {
     use crate::shard::AppendErr::*;
     match e {
-        ProducerGap { .. } | ProducerEpochSeq => FinalDisposition::AmbiguousOrTransient,
         ProducerStale { .. }
         | ProducerSeqReused
         | CtMismatch
@@ -226,6 +229,8 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
         | SeqConflict { .. }
         | Closed { .. }
         | SealSuperseded => FinalDisposition::DefinitivelyRejected,
+        // A producer gap or epoch/sequence disagreement may still resolve
+        // once the producer catches up, like every other error.
         _ => FinalDisposition::AmbiguousOrTransient,
     }
 }

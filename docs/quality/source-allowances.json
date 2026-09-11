@@ -1557,13 +1557,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::dlq_and_settle",
-      "path": "src/application/consumer/delivery.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::ReadPlan < 'a >::segment",
       "path": "src/application/read.rs",
       "syntax": "allow (clippy :: too_many_arguments)"

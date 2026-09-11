@@ -9,6 +9,14 @@ use crate::application::consumer_remote::relay_sweep_segment;
 use crate::application::read_remote::InternalTarget;
 use std::sync::Arc;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "delete; consumer deletion takes the tenant, stream, consumer, generation and fencing parts separately as the handler resolved them; a delete struct would exist only for this signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "delete; the fence, the tombstone and the per-segment cleanup are one deletion whose resumption depends on which step landed; splitting them would separate the steps from the resumption they order"
+)]
 pub(crate) async fn delete(
     state: Arc<ConsumerService>,
     sref: crate::tenant::TenantStreamRef,
@@ -160,6 +168,10 @@ pub(crate) async fn delete(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "resume_deletion; resumption replays the per-segment cleanup a fenced deletion left behind in the order the debt records; splitting it would separate the steps from the debt that orders them"
+)]
 async fn resume_deletion(
     context: AuthorizedDeletionContext,
 ) -> Result<DeleteOutcome, ConsumerFailure> {

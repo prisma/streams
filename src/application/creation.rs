@@ -148,6 +148,10 @@ fn init_claim_stale(desc: &crate::registry::PersistedDescriptor) -> bool {
         .as_ref()
         .is_some_and(|init| now_ms() - init.claimed_ms > crate::registry::INIT_CLAIM_MS)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "create_request_hash; the request hash covers every field a client can vary, taken separately as the handler parsed them; a request struct would exist only to be hashed"
+)]
 pub(crate) fn create_request_hash(
     content_type: &str,
     ttl_secs: Option<u64>,
@@ -181,6 +185,10 @@ pub(crate) fn create_request_hash(
     }
     hex(&h.finalize()[..16])
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fresh_desc; a fresh descriptor is built from the resolved name, epoch, policy and fork parts separately as creation decided them; a builder would restate the descriptor's own fields"
+)]
 pub(crate) fn fresh_desc(
     service: &CreationService,
     sref: &crate::tenant::TenantStreamRef,
@@ -220,6 +228,10 @@ pub(crate) fn fresh_desc(
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "json_entries; a serde_json::Value serialises infallibly; a fallible path would add a branch no value reaches"
+)]
 pub(crate) fn json_entries(body: &[u8], allow_empty_array: bool) -> Result<Vec<Bytes>, String> {
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| "invalid JSON body".to_string())?;
@@ -250,6 +262,10 @@ mod tests {
     use crate::application::request_work::{Action, Key, Kind, RequestWork, WorkError};
     use std::{sync::Arc, time::Duration};
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "r05_cancelled_ttl_attempt_releases_only_its_owned_slot; the fixture nests the drain wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
+    )]
     #[tokio::test]
     async fn r05_cancelled_ttl_attempt_releases_only_its_owned_slot() {
         let project = crate::tenant::ProjectId::new("creation-test").unwrap();

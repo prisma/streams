@@ -4,6 +4,14 @@ use crate::application::read_remote::InternalTarget;
 use serde_json::json;
 use std::sync::Arc;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "relay_queue_cursor; the relay takes the owner, stream, consumer, generation and segment parts separately as the pull resolved them; a relay struct would exist only for this signature"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "relay_queue_cursor; a fleet GET request carries no streaming body, so it is clonable; a fallible clone would add a branch no fleet request reaches"
+)]
 pub(super) async fn relay_queue_cursor(
     state: &Arc<ConsumerService>,
     base: &str,
@@ -37,6 +45,14 @@ pub(super) async fn relay_queue_cursor(
     Some((v["cursor"].as_u64()?, v["tail"].as_u64()?))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "relay_sweep_segment; the relay takes the owner, stream, consumer, generation and segment parts separately as the sweep resolved them; a relay struct would exist only for this signature"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "relay_sweep_segment; a fleet sweep request carries no streaming body, so it is clonable; a fallible clone would add a branch no fleet request reaches"
+)]
 pub(super) async fn relay_sweep_segment(
     state: &Arc<ConsumerService>,
     base: &str,
