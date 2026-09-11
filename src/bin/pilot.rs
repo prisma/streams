@@ -9,6 +9,10 @@
 // the previous completes), so offered load self-paces to what the fleet
 // can absorb and congestion collapse is impossible by construction.
 
+#[path = "pilot/client.rs"]
+mod http_client;
+use http_client::{RotatingClient, client};
+
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -23,6 +27,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pilot process configuration; this independent workload binary owns its explicit environment inputs; routing them through server runtime state would couple separate executables"
+)]
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
@@ -101,6 +109,10 @@ struct FleetView {
     overrides: std::collections::HashMap<String, String>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "pilot object-store startup; missing credentials or invalid store configuration must stop the selected workload; defaults could publish measurements to an unintended store"
+)]
 fn fleet_store(prefix: &str) -> Arc<dyn object_store::ObjectStore> {
     let s3 = object_store::aws::AmazonS3Builder::new()
         .with_endpoint(env("S3_ENDPOINT").expect("S3_ENDPOINT"))
@@ -195,52 +207,6 @@ fn shard_for(topology: &[String], hash: &[u8; 16]) -> String {
         .max_by_key(|p| p.len())
         .cloned()
         .unwrap_or_default()
-}
-
-/// A client handle that is rebuilt every 60 s: the platform pins existing
-/// keep-alive connections to whatever replica/version first accepted them,
-/// so long-lived pools can stay stuck on stale replicas after a redeploy.
-/// Rotating the client closes the pool and re-resolves within a minute.
-#[derive(Clone)]
-struct RotatingClient(Arc<Mutex<reqwest::Client>>);
-
-impl RotatingClient {
-    fn new() -> Self {
-        let rc = RotatingClient(Arc::new(Mutex::new(client())));
-        let inner = rc.0.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                *inner.lock().unwrap() = client();
-            }
-        });
-        rc
-    }
-    fn get(&self) -> reqwest::Client {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        // http1_only is load-bearing: the platform edge negotiates h2 via
-        // ALPN, and h2 multiplexes everything over ONE TCP connection per
-        // host (bounded by the server's max-concurrent-streams and pinned
-        // to a single LB replica) — measured throughput FELL as workers
-        // doubled. HTTP/1.1 with a big pool gets one connection per
-        // in-flight request and spreads across replicas.
-        .http1_only()
-        .pool_max_idle_per_host(8192)
-        // <5 s: Compute suspends idle VMs after ~5 s and silently kills
-        // flows; a pooled socket idle past that is a corpse the next
-        // request eats. Same rule as the server's store client (RUNBOOK
-        // §3.1). The 60 s client rotation handles replica pinning; this
-        // handles dead sockets.
-        .pool_idle_timeout(Duration::from_secs(4))
-        .tcp_nodelay(true)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap()
 }
 
 #[tokio::main]
