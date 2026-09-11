@@ -53,3 +53,11 @@ mod quota_bucket;
 )]
 #[path = "../../../src/product_cursor.rs"]
 mod product_cursor;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compile the actual queue key codec and generation tests; unrelated service state and commands remain internal"
+)]
+#[path = "../../../src/queue.rs"]
+mod queue;

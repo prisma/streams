@@ -88,35 +88,46 @@ pub(crate) fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> V
 
 /// Canonical decoder for generation-qualified queue keys. Truncated or foreign
 /// rows are corruption, never evidence that a generation has been deleted.
+#[warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 pub(crate) fn decode_state_key<'a>(
     hash: &[u8; 16],
     tag: u8,
     key: &'a [u8],
 ) -> Result<(&'a str, u64, Option<u64>), &'static str> {
-    if key.get(..16) != Some(hash.as_slice()) || key.get(16) != Some(&tag) {
-        return Err("queue key identity mismatch");
+    let identity_error = "queue key identity mismatch";
+    let (prefix, rest) = key.split_first_chunk::<16>().ok_or(identity_error)?;
+    let (kind, rest) = rest.split_first().ok_or(identity_error)?;
+    if prefix != hash || *kind != tag {
+        return Err(identity_error);
     }
-    let rest = &key[17..];
-    let sep = rest
+    let separator_error = "queue key missing separator";
+    let separator = rest
         .iter()
-        .position(|b| *b == 0)
-        .ok_or("queue key missing separator")?;
-    let name = std::str::from_utf8(&rest[..sep]).map_err(|_| "queue key name is not UTF-8")?;
+        .position(|byte| *byte == 0)
+        .ok_or(separator_error)?;
+    let (name, tail) = rest.split_at_checked(separator).ok_or(separator_error)?;
+    let (_, tail) = tail.split_first().ok_or(separator_error)?;
+    let name = std::str::from_utf8(name).map_err(|_| "queue key name is not UTF-8")?;
     if name.is_empty() {
         return Err("queue key name is empty");
     }
-    let tail = &rest[sep + 1..];
-    let width = match tag {
-        b'c' => 8,
-        b'l' | b'x' => 16,
+    let width_error = "queue key has invalid width";
+    let (generation, offset) = match tag {
+        b'c' => (
+            u64::from_be_bytes(tail.try_into().map_err(|_| width_error)?),
+            None,
+        ),
+        b'l' | b'x' => {
+            let (generation, offset) = tail.split_first_chunk::<8>().ok_or(width_error)?;
+            (
+                u64::from_be_bytes(*generation),
+                Some(u64::from_be_bytes(
+                    offset.try_into().map_err(|_| width_error)?,
+                )),
+            )
+        }
         _ => return Err("unknown queue key tag"),
     };
-    if tail.len() != width {
-        return Err("queue key has invalid width");
-    }
-    let generation = u64::from_be_bytes(tail[..8].try_into().expect("checked width"));
-    let offset =
-        (width == 16).then(|| u64::from_be_bytes(tail[8..].try_into().expect("checked width")));
     Ok((name, generation, offset))
 }
 
@@ -245,12 +256,6 @@ pub(crate) fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
     k
 }
 
-/// Parse "<off>:<gen>" lease tokens (permissive: None on malformed).
-pub fn parse_token(t: &str) -> Option<(u64, u32)> {
-    let (o, g) = t.split_once(':')?;
-    Some((o.parse().ok()?, g.parse().ok()?))
-}
-
 pub(crate) enum QueueOp {
     Receive {
         consumer: String,
@@ -344,5 +349,108 @@ pub(crate) enum QueueOut {
     /// Answer to `ConfigDeleteStep`: `complete` means no dead-generation
     /// rows remain on this segment (the fence is installed either way);
     /// `deleted_rows` is what THIS step staged for deletion.
-    DeleteStep { complete: bool, deleted_rows: u64 },
+    DeleteStep {
+        complete: bool,
+        #[allow(
+            dead_code,
+            reason = "QueueOut::DeleteStep::deleted_rows; exact deletion counts are consumed by generation-fencing tests but not the production adapter; dropping this measured result would weaken stale-replay and bounded-deletion assertions"
+        )]
+        deleted_rows: u64,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ack_key, cursor_key, decode_state_key, lease_key, state_prefix};
+    use proptest::prop_assert_eq;
+
+    #[test]
+    fn queue_key_identity_and_name_errors_remain_distinct() {
+        let hash = [7; 16];
+        let valid = cursor_key(&hash, "worker", 9);
+        for end in 0..17 {
+            assert_eq!(
+                decode_state_key(&hash, b'c', valid.get(..end).unwrap()),
+                Err("queue key identity mismatch")
+            );
+        }
+        assert_eq!(
+            decode_state_key(&[8; 16], b'c', &valid),
+            Err("queue key identity mismatch")
+        );
+        assert_eq!(
+            decode_state_key(&hash, b'l', &valid),
+            Err("queue key identity mismatch")
+        );
+        let mut missing = hash.to_vec();
+        missing.extend_from_slice(b"cworker");
+        assert_eq!(
+            decode_state_key(&hash, b'c', &missing),
+            Err("queue key missing separator")
+        );
+        let empty = cursor_key(&hash, "", 0);
+        assert_eq!(
+            decode_state_key(&hash, b'c', &empty),
+            Err("queue key name is empty")
+        );
+        let mut invalid_utf8 = hash.to_vec();
+        invalid_utf8.extend_from_slice(&[b'c', 255, 0]);
+        invalid_utf8.extend_from_slice(&[0; 8]);
+        assert_eq!(
+            decode_state_key(&hash, b'c', &invalid_utf8),
+            Err("queue key name is not UTF-8")
+        );
+    }
+
+    #[test]
+    fn queue_key_tags_require_their_exact_numeric_width() {
+        let hash = [7; 16];
+        let cases = [(b'c', 8, None), (b'l', 16, Some(0)), (b'x', 16, Some(0))]
+            .into_iter()
+            .flat_map(|(tag, width, offset)| {
+                (0..=18).map(move |length| (tag, width, offset, length))
+            });
+        for (tag, width, offset, length) in cases {
+            let mut raw = state_prefix(&hash, tag, "worker");
+            raw.extend(std::iter::repeat_n(0, length));
+            let expected = if length == width {
+                Ok(("worker", 0, offset))
+            } else {
+                Err("queue key has invalid width")
+            };
+            assert_eq!(decode_state_key(&hash, tag, &raw), expected);
+        }
+        for length in [0, 8, 16] {
+            let mut raw = state_prefix(&hash, b'?', "worker");
+            raw.extend(std::iter::repeat_n(0, length));
+            assert_eq!(
+                decode_state_key(&hash, b'?', &raw),
+                Err("unknown queue key tag")
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn quality_queue_state_key_roundtrip(
+            name in "[a-z][a-z0-9-]{0,20}",
+            generation in proptest::num::u64::ANY,
+            offset in proptest::num::u64::ANY,
+        ) {
+            let hash = [7; 16];
+            let cursor = cursor_key(&hash, &name, generation);
+            let lease = lease_key(&hash, &name, generation, offset);
+            let ack = ack_key(&hash, &name, generation, offset);
+            prop_assert_eq!(decode_state_key(&hash, b'c', &cursor).unwrap(), (name.as_str(), generation, None));
+            prop_assert_eq!(decode_state_key(&hash, b'l', &lease).unwrap(), (name.as_str(), generation, Some(offset)));
+            prop_assert_eq!(decode_state_key(&hash, b'x', &ack).unwrap(), (name.as_str(), generation, Some(offset)));
+            for (tag, mut malformed) in [(b'c', cursor), (b'l', lease), (b'x', ack)] {
+                prop_assert_eq!(decode_state_key(&[8; 16], tag, &malformed), Err("queue key identity mismatch"));
+                prop_assert_eq!(malformed.pop().is_some(), true);
+                prop_assert_eq!(decode_state_key(&hash, tag, &malformed), Err("queue key has invalid width"));
+                malformed.extend_from_slice(&[0, 0]);
+                prop_assert_eq!(decode_state_key(&hash, tag, &malformed), Err("queue key has invalid width"));
+            }
+        }
+    }
 }
