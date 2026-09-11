@@ -1039,20 +1039,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "834c54943bdb5047336d7c14883f116c829c7b2f4fc4d30d63a86f0f6836cdcf",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4e0c268a8b752e0f2225b9fab60f54ef9514ebc09c5b312fa29e04bd440bca66",
-      "item": "crate::ShardEngine::ring_resident_bytes",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "11b0fc2ec277f6495d0d0e6cfe8e0783679d5a84953acd6f506a9cfb4a001461",
       "item": "crate::ShardEngine::stream_handle",
       "lint": "clippy::cast_sign_loss",
@@ -2490,41 +2476,6 @@
       "count": 1,
       "fingerprint": "11f73870f291f3e5d335afcf1f030cf28508450645ba29d98410a895aea787c6",
       "item": "crate::ShardEngine::dispatch_durable",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "023e67ff314c3bac912fa281d73b446a291500db26721f71c0f501b91b17dc26",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4c9ec9ee188cb8048ed8638ca682e2109a820b249d566fd58f23a05fc6ffd11f",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "84213955f784757b73d95357ec0dc59bb45dbc43e8658421bf6e197c83dc8b2f",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a02bd05311f16144047ebd079ecc3a4972f0791f495e94cdcd0fe1d29fc621c3",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e1349ab35d9dd99e81845f628bf3a016f2266bd83d949908b32add8fab52ba07",
-      "item": "crate::ShardEngine::ring_read_selected",
       "lint": "clippy::excessive_nesting",
       "path": "src/shard.rs"
     },
@@ -4909,22 +4860,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "3aad2ae6bf4ca6be4d15128eb54afe77bc76f3dac5bb64de39f49fd2daa9cd27",
-      "item": "crate::ShardEngine::ring_read_keyed",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a4cc2bf0be59225705b702a5a2cb00d0244f497084fc06db88f22f714a374b88",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "bb6b7825e0d5c923014ed6cee7da2555920b5e10b98dc7ce3e8b8b2ee77a7d41",
       "item": "crate::ShardEngine::start",
       "lint": "clippy::too_many_arguments",
@@ -5990,55 +5925,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2037f35458f4981949963bb0a33e4f09f129aca606486ad62234e15e95af8da8",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "27a4c22060f5d67c10171efc0247951c822ed10d1a79484f2a8f83ce34ae4e2d",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "36ada8f340271e74c66bc2ff81954cf09f12588dc6e79b859d92cd9d745417d7",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9f342b7be2c47e789382c7f0455db2b076d0f6e6766fa3cf216e0c7386e902bc",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb8dffd84f225e528daf582a0a64109e8c92db6204002b0a669463ff7fe65698",
-      "item": "crate::ShardEngine::ring_publish",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "12b835a2624f523a332c1b6765f06bf22c6194664dd6ecdd12b4f2dea3e90ab3",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5ff0cbc55e806c289b4d2db7a79010947e8e5623206d9c214ef9164b0299829d",
-      "item": "crate::ShardEngine::ring_read_selected",
-      "lint": "clippy::unwrap_used",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "5607cf75d7c05a043d2898c9e9bd70403bcbf0cf122881e09740f514ee764950",
       "item": "crate::ShardEngine::seal_fence_stats",
       "lint": "clippy::unwrap_used",
@@ -6832,13 +6718,6 @@
       "count": 1,
       "fingerprint": "9c10594d19855a5fba0afcfb736a79a2b1cc2e324eaf571e74cdd5630776a01f",
       "item": "crate::ShardEngine::pump_trim_tick",
-      "lint": "unreachable_pub",
-      "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e2bb21e047bb851d7737e6791ce7c12068102788b428ec6f95886c0d910c3a55",
-      "item": "crate::ShardEngine::ring_read_keyed",
       "lint": "unreachable_pub",
       "path": "src/shard.rs"
     },

@@ -23,9 +23,11 @@ pub(crate) use record::read_frames;
 pub(crate) use record::{FrameReadResult, read_frames_range};
 mod commit_handoff;
 use commit_handoff::{Attachment, CommitHandoff};
+pub(crate) use tail_ring::RingScan;
 mod commit_plan;
 mod history_partition;
 mod lifecycle;
+mod tail_ring;
 mod transaction;
 pub(crate) use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
@@ -2553,194 +2555,6 @@ impl ShardEngine {
         transaction::CommitTransaction::run(self, ops, cfg).await;
     }
 
-    /// Publish one group's frames for one stream into its ring, then
-    /// evict globally-oldest batches until the engine-wide budget is
-    /// non-negative. FIFO mirrors publish order across streams, so its
-    /// front IS the globally oldest batch.
-    fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &[(u64, Bytes)]) {
-        let bytes: usize = recs.iter().map(|(_, f)| f.len()).sum();
-        let (first, next) = (recs[0].0, recs[recs.len() - 1].0 + 1);
-        {
-            let mut ring = handle.ring.lock().unwrap();
-            // A shard handoff replays through a fresh engine, so within
-            // one engine offsets only grow. If a gap somehow appears
-            // (defensive: absorber trim races ahead), reset rather than
-            // serve a hole.
-            if ring.ceil().is_some_and(|c| c != first) {
-                let dropped = ring.bytes;
-                ring.batches.clear();
-                ring.bytes = 0;
-                self.ring_budget
-                    .fetch_add(dropped as i64, Ordering::Relaxed);
-                let mut fifo = self.ring_fifo.lock().unwrap();
-                fifo.retain(|h| !Arc::ptr_eq(h, handle));
-            }
-            ring.batches.push_back(RingBatch {
-                first,
-                next,
-                frames: recs.to_vec(),
-                bytes,
-            });
-            ring.bytes += bytes;
-        }
-        self.ring_fifo.lock().unwrap().push_back(handle.clone());
-        self.ring_published.fetch_add(1, Ordering::Relaxed);
-        let after = self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed) - bytes as i64;
-        let resident = (self.ring_cfg_bytes as i64 - after).max(0) as u64;
-        self.ring_peak_bytes.fetch_max(resident, Ordering::Relaxed);
-        while self.ring_budget.load(Ordering::Relaxed) < 0 {
-            let Some(victim) = self.ring_fifo.lock().unwrap().pop_front() else {
-                break;
-            };
-            let mut ring = victim.ring.lock().unwrap();
-            if let Some(b) = ring.batches.pop_front() {
-                ring.bytes -= b.bytes;
-                self.ring_budget
-                    .fetch_add(b.bytes as i64, Ordering::Relaxed);
-                self.ring_evicted.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    pub(crate) fn ring_resident_bytes(&self) -> u64 {
-        (self.ring_cfg_bytes as i64 - self.ring_budget.load(Ordering::Relaxed)).max(0) as u64
-    }
-
-    /// Serve [scan_from, scan_to) from the stream's ring if the ring
-    /// covers scan_from. Returns None when it does not (caller falls back
-    /// to the canonical scan). Mirrors the DB path's contract exactly:
-    /// stop at max_bytes, end = scan_to, last_offset = progress.
-    pub(crate) fn ring_read(
-        &self,
-        handle: &StreamHandle,
-        scan_from: u64,
-        scan_to: u64,
-        max_bytes: usize,
-    ) -> Option<FrameReadResult> {
-        self.ring_read_selected(handle, scan_from, scan_to, None, max_bytes)
-    }
-
-    /// #272: the ring read for FILTERED durable reads — the hub pump
-    /// (and any keyed tail chaser) reads one routing-key lane, and the
-    /// unfiltered-only gate sent every such read to the DB scan,
-    /// making the "ring-preferring" pump a fiction. Scans the covered
-    /// range once, decodes only frame HEADERS (the payloads stay
-    /// encrypted), keeps frames whose routing key matches, and — the
-    /// part a naive filter misses — returns the CONSUMED offset over
-    /// non-matching frames too, so keyed readers never rescan
-    /// match-free ranges (the same first-class scanned progress the DB
-    /// path reports). The stored-byte budget also charges filtered misses;
-    /// truncation reports the last scanned offset at the cut.
-    pub fn ring_read_keyed(
-        &self,
-        handle: &StreamHandle,
-        scan_from: u64,
-        scan_to: u64,
-        rk: &str,
-        max_bytes: usize,
-    ) -> Option<FrameReadResult> {
-        self.ring_read_selected(handle, scan_from, scan_to, Some(rk), max_bytes)
-    }
-
-    /// Both entry points use the same physical-owner, durable-frontier,
-    /// retained-density and stored-byte policy. Selection affects returned
-    /// frames only; every inspected row contributes to the coverage witness.
-    fn ring_read_selected(
-        &self,
-        handle: &StreamHandle,
-        scan_from: u64,
-        scan_to: u64,
-        selector: Option<&str>,
-        max_bytes: usize,
-    ) -> Option<FrameReadResult> {
-        if !self.ring_enabled
-            || handle.owner.as_ptr() != Arc::as_ptr(&self.db)
-            || scan_from >= scan_to
-            || scan_to > handle.state.lock().unwrap().durable.next
-        {
-            return None;
-        }
-        let ring = handle.ring.lock().unwrap();
-        let (Some(floor), Some(ceil)) = (ring.floor(), ring.ceil()) else {
-            self.ring_misses.fetch_add(1, Ordering::Relaxed);
-            self.ring_miss_empty.fetch_add(1, Ordering::Relaxed);
-            return None;
-        };
-        if scan_from < floor || scan_to > ceil {
-            self.ring_misses.fetch_add(1, Ordering::Relaxed);
-            if scan_from < floor {
-                self.ring_miss_below_floor.fetch_add(1, Ordering::Relaxed);
-            }
-            if scan_to > ceil {
-                self.ring_miss_above_ceil.fetch_add(1, Ordering::Relaxed);
-            }
-            return None;
-        }
-        let mut out = FrameReadResult {
-            frames: Vec::new(),
-            last_offset: None,
-            coverage: None,
-        };
-        let mut total = 0usize;
-        let mut expected = scan_from;
-        for b in ring.batches.iter() {
-            if b.next <= scan_from {
-                continue;
-            }
-            if b.first >= scan_to {
-                break;
-            }
-            for (off, f) in &b.frames {
-                if *off < scan_from {
-                    continue;
-                }
-                if *off >= scan_to {
-                    break;
-                }
-                // Floor/ceiling alone cannot prove density after eviction or
-                // malformed cached batch metadata. Every inspected row counts,
-                // including filtered misses and a byte-limited final row.
-                if *off != expected {
-                    return None;
-                }
-                let checked = record::CheckedFrame::from_ring(f, *off, selector).ok()?;
-                expected = off.checked_add(1)?;
-                total += f.len();
-                if let Some(checked) = checked {
-                    out.frames.push(checked);
-                }
-                // Consumed progress covers NON-matching frames too.
-                out.last_offset = Some(*off);
-                if total >= max_bytes {
-                    out.coverage = Some(record::DurableRingCoverage::new(
-                        self,
-                        handle.hash,
-                        scan_from,
-                        expected,
-                    ));
-                    self.ring_hits.fetch_add(1, Ordering::Relaxed);
-                    return Some(out);
-                }
-            }
-        }
-        if expected != scan_to {
-            return None;
-        }
-        out.coverage = Some(record::DurableRingCoverage::new(
-            self,
-            handle.hash,
-            scan_from,
-            expected,
-        ));
-        self.ring_hits.fetch_add(1, Ordering::Relaxed);
-        Some(out)
-    }
-
-    /// Test hook: fail the next commit group that contains an op for
-    /// the given segment identity — the deterministic stand-in for a
-    /// WriteBatch that reaches the store and dies. One-shot; the
-    /// tripped counter is the entered-proof a test asserts instead of
-    /// assuming its failpoint fired.
     /// Test hook: hold the COMMIT gate. While held, the committer
     /// takes at most one op and then parks before gathering; releasing
     /// the guard lets it drain everything queued meanwhile into ONE
@@ -4140,6 +3954,8 @@ mod record_scan_tests;
 
 #[cfg(test)]
 mod read_budget_tests;
+#[cfg(test)]
+mod tail_ring_tests;
 
 #[cfg(test)]
 mod task_lifecycle_tests;

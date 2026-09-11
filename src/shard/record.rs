@@ -136,7 +136,12 @@ pub(crate) async fn read_frames_range(
     // Durable-tail fast path: live readers chase offsets the ring still
     // holds; the scan below is the canonical fallback (restart, eviction,
     // lagging consumers, ring off).
-    if let Some(hit) = engine.ring_read(handle, scan_from, scan_to, max_bytes) {
+    let window = super::RingScan {
+        from: scan_from,
+        to: scan_to,
+        max_bytes,
+    };
+    if let Some(hit) = engine.ring_read(handle, window, None) {
         return Ok(hit);
     }
     let prefix = record_key(&hash, 0);
@@ -226,10 +231,12 @@ pub(crate) async fn read_frames_until(
     // plaintext, so the lane filter runs on the ring copy and the
     // consumed offset still covers non-matching frames.
     if deliver == Deliver::Durable {
-        let hit = match key_filter {
-            None => engine.ring_read(handle, scan_from, end, max_bytes),
-            Some(rk) => engine.ring_read_keyed(handle, scan_from, end, rk, max_bytes),
+        let window = super::RingScan {
+            from: scan_from,
+            to: end,
+            max_bytes,
         };
+        let hit = engine.ring_read(handle, window, key_filter);
         if let Some(hit) = hit {
             return Ok(hit);
         }

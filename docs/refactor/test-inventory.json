@@ -3278,7 +3278,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "4ad05f67f3e69efa89b1dc330bce60d9f64a86927e79e39b6f0ab2c73ed48f79",
+    "function_sha256": "63e975b1c399fa1df73dfa6f78cff6fe5d08dd65385431b9413e6a2446ca7565",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_ring.rs",
@@ -4834,7 +4834,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "13db6eea52f73841429d7376ff71a1ee1f982eb0f93727ac09c91f85581211cc",
+    "function_sha256": "8e34ffa97bb6da26b092c51980d0d05ea18cde6a631f01d0b2ec2d0510ca3081",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::CLEAN);"
@@ -5480,7 +5480,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "34c9889a8b863dcc87a149e0f8644334d861ca2d8f1aacc0f6677bf32740c612",
+    "function_sha256": "a17517e595ee37f48b7a00097d6f0e9bc5bce569f84b598be4381f928caf3528",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 13, FaultPlan::CLEAN);"
