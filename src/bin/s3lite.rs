@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -377,14 +377,8 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn handle(
-    State(state): State<Arc<AppState>>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let path = uri.path().to_string();
+async fn handle(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let path = request.uri().path();
 
     // Stats endpoints bypass latency injection.
     if path == "/_s3lite/stats" {
@@ -403,114 +397,131 @@ async fn handle(
 
     tokio::time::sleep(state.latency).await;
 
-    let query = query_map(&uri);
-    // Path: /{bucket} or /{bucket}/{key...}
-    let trimmed = path.trim_start_matches('/');
+    dispatch(&state, request).await
+}
+
+/// Parse and classify one HTTP request once; each operation owns its state
+/// transition and every returned response enters the physical-request ledger.
+async fn dispatch(state: &Arc<AppState>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let query = query_map(&parts.uri);
+    let trimmed = parts.uri.path().trim_start_matches('/');
     let (bucket, key) = match trimmed.split_once('/') {
-        Some((b, k)) => (b.to_string(), percent_decode(k, false)),
-        None => (trimmed.to_string(), String::new()),
+        Some((bucket, key)) => (bucket, percent_decode(key, false)),
+        None => (trimmed, String::new()),
     };
     if bucket.is_empty() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let full_key = format!("{bucket}/{key}");
-
-    let resp = dispatch(
-        &state,
-        method.clone(),
-        &bucket,
-        &key,
-        &full_key,
-        &query,
-        headers,
-        body,
-    )
-    .await;
-    state.stats.record(&method, &key, &query, resp.status());
-    resp
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn dispatch(
-    state: &Arc<AppState>,
-    method: Method,
-    bucket: &str,
-    key: &str,
-    full_key: &str,
-    query: &HashMap<String, String>,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    match (method.clone(), key.is_empty()) {
-        // ---- bucket-level ----
-        (Method::GET, true) => list_objects(state, bucket, query),
+    let response = match (parts.method.clone(), key.is_empty()) {
+        (Method::GET, true) => list_objects(state, bucket, &query),
         (Method::POST, true) if query.contains_key("delete") => {
             batch_delete(state, bucket, body).await
         }
-        (Method::HEAD, true) => StatusCode::OK.into_response(),
-        (Method::PUT, true) => StatusCode::OK.into_response(), // create bucket
-
-        // ---- object-level ----
+        (Method::HEAD | Method::PUT, true) => StatusCode::OK.into_response(),
         (Method::POST, false) if query.contains_key("uploads") => {
-            state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let id = format!(
-                "u{:x}",
-                state.upload_counter.fetch_add(1, Ordering::Relaxed)
-            );
-            state
-                .uploads
-                .lock()
-                .unwrap()
-                .insert(format!("{full_key}:{id}"), BTreeMap::new());
-            let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId></InitiateMultipartUploadResult>",
-                xml_escape(bucket),
-                xml_escape(key),
-                id
-            );
-            ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
+            initiate_multipart(state, bucket, &key, &full_key)
         }
         (Method::POST, false) if query.contains_key("uploadId") => {
-            complete_multipart(state, bucket, key, full_key, query).await
+            complete_multipart(state, bucket, &key, &full_key, &query).await
         }
         (Method::PUT, false) if query.contains_key("uploadId") => {
-            state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let part: u32 = query
-                .get("partNumber")
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(0);
-            let upload_id = query.get("uploadId").cloned().unwrap_or_default();
-            let data = match axum::body::to_bytes(body, usize::MAX).await {
-                Ok(b) => b,
-                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-            };
-            let mut uploads = state.uploads.lock().unwrap();
-            let Some(parts) = uploads.get_mut(&format!("{full_key}:{upload_id}")) else {
-                return s3_error(StatusCode::NOT_FOUND, "NoSuchUpload", "upload not found");
-            };
-            parts.insert(part, data);
-            let etag = state.next_etag();
-            ([(header::ETAG, etag)], "").into_response()
+            upload_part(state, &full_key, &query, body).await
         }
         (Method::DELETE, false) if query.contains_key("uploadId") => {
-            let upload_id = query.get("uploadId").cloned().unwrap_or_default();
-            state
-                .uploads
-                .lock()
-                .unwrap()
-                .remove(&format!("{full_key}:{upload_id}"));
-            StatusCode::NO_CONTENT.into_response()
+            abort_multipart(state, &full_key, &query)
         }
-        (Method::PUT, false) => put_object(state, full_key, &headers, body).await,
-        (Method::GET, false) => get_object(state, full_key, &headers, false),
-        (Method::HEAD, false) => get_object(state, full_key, &headers, true),
-        (Method::DELETE, false) => {
-            state.stats.delete.fetch_add(1, Ordering::Relaxed);
-            state.objects.lock().unwrap().remove(full_key);
-            StatusCode::NO_CONTENT.into_response()
-        }
+        (Method::PUT, false) => put_object(state, &full_key, &parts.headers, body).await,
+        (Method::GET, false) => get_object(state, &full_key, &parts.headers, false),
+        (Method::HEAD, false) => get_object(state, &full_key, &parts.headers, true),
+        (Method::DELETE, false) => delete_object(state, &full_key),
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
-    }
+    };
+    state
+        .stats
+        .record(&parts.method, &key, &query, response.status());
+    response
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart initiation; a poisoned upload registry cannot acknowledge a reliable upload identity; failing the emulator is safer than recovering partial state"
+)]
+fn initiate_multipart(state: &Arc<AppState>, bucket: &str, key: &str, full_key: &str) -> Response {
+    state.stats.multipart.fetch_add(1, Ordering::Relaxed);
+    let id = format!(
+        "u{:x}",
+        state.upload_counter.fetch_add(1, Ordering::Relaxed)
+    );
+    state
+        .uploads
+        .lock()
+        .unwrap()
+        .insert(format!("{full_key}:{id}"), BTreeMap::new());
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId></InitiateMultipartUploadResult>",
+        xml_escape(bucket),
+        xml_escape(key),
+        id
+    );
+    ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart part admission; acknowledged parts must belong to an intact upload registry; recovering poisoned state could manufacture successful object assembly"
+)]
+async fn upload_part(
+    state: &Arc<AppState>,
+    full_key: &str,
+    query: &HashMap<String, String>,
+    body: Body,
+) -> Response {
+    state.stats.multipart.fetch_add(1, Ordering::Relaxed);
+    let part = query
+        .get("partNumber")
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(0);
+    let upload_id = query.get("uploadId").cloned().unwrap_or_default();
+    let data = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(data) => data,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let mut uploads = state.uploads.lock().unwrap();
+    let Some(parts) = uploads.get_mut(&format!("{full_key}:{upload_id}")) else {
+        return s3_error(StatusCode::NOT_FOUND, "NoSuchUpload", "upload not found");
+    };
+    parts.insert(part, data);
+    ([(header::ETAG, state.next_etag())], "").into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart abort; aborted identities must be removed from intact upload state; silently recovering a poisoned map would hide incomplete cleanup"
+)]
+fn abort_multipart(
+    state: &Arc<AppState>,
+    full_key: &str,
+    query: &HashMap<String, String>,
+) -> Response {
+    let upload_id = query.get("uploadId").cloned().unwrap_or_default();
+    state
+        .uploads
+        .lock()
+        .unwrap()
+        .remove(&format!("{full_key}:{upload_id}"));
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator deletion; a delete acknowledgement must observe an intact object map; poisoned-state recovery would hide a failed storage operation"
+)]
+fn delete_object(state: &Arc<AppState>, full_key: &str) -> Response {
+    state.stats.delete.fetch_add(1, Ordering::Relaxed);
+    state.objects.lock().unwrap().remove(full_key);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
@@ -521,6 +532,10 @@ fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
     (status, [(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator conditional writes; preconditions and publication share one unpoisoned object-map lock; recovering partial state could falsely satisfy a compare-and-set"
+)]
 async fn put_object(
     state: &Arc<AppState>,
     full_key: &str,
@@ -710,6 +725,10 @@ fn parse_range(raw: &str, total: usize) -> Option<std::ops::Range<usize>> {
     Some(start..end + 1)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator object listing; pagination must observe an intact ordered object map; recovering a poisoned map could conceal lost or duplicated objects"
+)]
 fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
     state.stats.list.fetch_add(1, Ordering::Relaxed);
     let prefix = query.get("prefix").cloned().unwrap_or_default();
@@ -742,20 +761,20 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
         {
             continue;
         }
-        if let Some(delim) = &delimiter {
-            let after_prefix = &rel[prefix.len()..];
-            if let Some(pos) = after_prefix.find(delim.as_str()) {
-                let cp = format!("{}{}{}", prefix, &after_prefix[..pos], delim);
-                if common_prefixes.last() != Some(&cp) {
-                    if contents.len() + common_prefixes.len() >= max_keys {
-                        truncated = true;
-                        next_token = Some(rel.to_string());
-                        break;
-                    }
-                    common_prefixes.push(cp);
-                }
+        if let Some(delim) = &delimiter
+            && let Some(pos) = rel[prefix.len()..].find(delim.as_str())
+        {
+            let cp = format!("{}{}{}", prefix, &rel[prefix.len()..][..pos], delim);
+            if common_prefixes.last() == Some(&cp) {
                 continue;
             }
+            if contents.len() + common_prefixes.len() >= max_keys {
+                truncated = true;
+                next_token = Some(rel.to_string());
+                break;
+            }
+            common_prefixes.push(cp);
+            continue;
         }
         if contents.len() + common_prefixes.len() >= max_keys {
             truncated = true;
@@ -805,6 +824,10 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator batch deletion; each acknowledgement must remove from intact object state; recovering a poisoned map would hide failed storage operations"
+)]
 async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Response {
     state.stats.delete.fetch_add(1, Ordering::Relaxed);
     let data = match axum::body::to_bytes(body, usize::MAX).await {
@@ -844,6 +867,10 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator multipart completion; both the removed upload and published object require intact maps; recovering either poisoned map could acknowledge incomplete assembly"
+)]
 async fn complete_multipart(
     state: &Arc<AppState>,
     bucket: &str,
@@ -908,3 +935,7 @@ mod tests;
 #[cfg(test)]
 #[path = "s3lite/range_tests.rs"]
 mod range_tests;
+
+#[cfg(test)]
+#[path = "s3lite/operation_tests.rs"]
+mod operation_tests;

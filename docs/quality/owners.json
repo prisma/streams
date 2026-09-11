@@ -241,6 +241,30 @@
       "syntax": "std::env::var"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Stats::snapshot",
+      "path": "src/bin/s3lite.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::Stats::detailed_snapshot",
+      "path": "src/bin/s3lite.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/s3lite.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "path = \"s3lite/tests.rs\""
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::registration_cannot_race_shutdown",
@@ -705,30 +729,6 @@
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Stats::snapshot",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::Stats::detailed_snapshot",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "path = \"s3lite/tests.rs\""
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::range_tests",
@@ -743,6 +743,14 @@
       "path": "src/bin/s3lite/range_tests.rs",
       "reason": "The actual range parser must produce only nonempty ranges accepted by a backing slice; 1024 generated closed, open and suffix cases exercise its bounds.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::operation_tests",
+      "path": "src/bin/s3lite.rs",
+      "reason": "Directly cfg(test) protocol checks execute the canonical HTTP request dispatcher for conditional writes, listing, multipart lifecycle, deletion, failed bodies and poisoned state.",
+      "syntax": "path = \"s3lite/operation_tests.rs\""
     }
   ]
 }
