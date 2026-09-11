@@ -34,14 +34,15 @@ pub(crate) fn decode_row<'a>(
     prefix: &[u8],
     raw: &'a [u8],
 ) -> Result<DecodedFrame<'a>, RecordCorruption> {
-    if key.len() != prefix.len() + 8 {
+    if key.len() != prefix.len().saturating_add(8) {
         return Err(RecordCorruption::KeyWidth);
     }
     if !key.starts_with(prefix) {
         return Err(RecordCorruption::Namespace);
     }
     let offset = u64::from_be_bytes(
-        key[prefix.len()..]
+        key.get(prefix.len()..)
+            .ok_or(RecordCorruption::KeyWidth)?
             .try_into()
             .map_err(|_| RecordCorruption::KeyWidth)?,
     );
@@ -55,7 +56,11 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
     let frame = decode_frame(raw).ok_or(RecordCorruption::Frame)?;
     if raw.len() > crate::crypto::MAX_ENCODED_FRAME
         || frame.ciphertext.len() < 16
-        || frame.header_len + 4 + frame.ciphertext.len() != raw.len()
+        || frame
+            .header_len
+            .saturating_add(4)
+            .saturating_add(frame.ciphertext.len())
+            != raw.len()
     {
         return Err(RecordCorruption::Frame);
     }
@@ -117,6 +122,10 @@ impl FrameReadResult {
 /// ranges partition the log exactly — the absorber issues several of these
 /// concurrently to hide per-chunk object-store latency (a serial 8 MB chunk
 /// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "read_frames_range; the canonical record key carries a 17-byte namespace prefix by construction, so the slice is total; a fallible slice would add a corruption path no encoded key reaches"
+)]
 pub(crate) async fn read_frames_range(
     engine: &ShardEngine,
     handle: &StreamHandle,
@@ -157,7 +166,7 @@ pub(crate) async fn read_frames_range(
     while let Some(kv) = iter.next().await? {
         let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
         let off = frame.view().header.offset;
-        total += frame.len();
+        total = total.saturating_add(frame.len());
         out.frames.push(frame);
         out.last_offset = Some(off);
         if total >= max_bytes {
@@ -168,7 +177,11 @@ pub(crate) async fn read_frames_range(
 }
 
 #[cfg(test)]
-pub async fn read_frames(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_frames; a durable read names its engine, stream, start, key filter, byte budget and delivery separately as the application resolved them; a request struct would exist for this single boundary"
+)]
+pub(crate) async fn read_frames(
     engine: &ShardEngine,
     handle: &StreamHandle,
     scan_from: u64,
@@ -189,7 +202,18 @@ pub async fn read_frames(
 }
 
 /// Application pages bound examined offsets as well as selected bytes.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read_frames_until; a bounded durable read names its engine, stream, window, key filter, byte budget and delivery separately as the application resolved them; a request struct would exist for this single boundary"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "read_frames_until; the canonical record key carries a 17-byte namespace prefix by construction, so the slice is total; a fallible slice would add a corruption path no encoded key reaches"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "read_frames_until; a poisoned handle state may hold a partially advanced boundary; recovering it could serve frames past a boundary that was never committed"
+)]
 pub(crate) async fn read_frames_until(
     engine: &ShardEngine,
     handle: &StreamHandle,
@@ -255,7 +279,7 @@ pub(crate) async fn read_frames_until(
     while let Some(kv) = iter.next().await? {
         let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
         let off = frame.view().header.offset;
-        total += frame.len();
+        total = total.saturating_add(frame.len());
         if !key_filter.is_some_and(|kf| frame.view().header.routing_key != kf) {
             out.frames.push(frame);
         }
