@@ -61,7 +61,6 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     sse_auth) file=src/sse/auth.rs; filter=sse:: ;;
     sse_registry) file=src/sse/registry.rs; filter=sse:: ;;
     sse_service) file=src/sse/service.rs; filter=sse:: ;;
-    sse_session) file=src/sse/session.rs; filter=sse:: ;;
     sse_wire) file=src/sse/wire.rs; filter=sse:: ;;
     fleet) file=src/fleet.rs; filter=fleet:: ;;
     http) file=src/http.rs; filter=http:: ;;
