@@ -241,6 +241,30 @@
       "syntax": "std::env::var"
     },
     {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::env",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot workload process configuration; this independent binary owns its explicit environment inputs for generators and measurement stores; no service configuration or credentials are inferred.",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::http_client",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot HTTP pool owner; the explicit nested path keeps the binary entry in place without creating an autodiscovered client binary; the module owns construction and renewal together.",
+      "syntax": "path = \"pilot/client.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::renewal_uses_a_new_connection_and_keeps_in_flight_clients_usable",
+      "path": "src/bin/pilot/client.rs",
+      "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
+      "syntax": "tokio::spawn"
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::Stats::snapshot",
@@ -495,30 +519,6 @@
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Storage byte-time invariant harness; includes the unchanged production owner and its tests directly; no model, source rewrite or public service API.",
       "syntax": "path = \"../../../src/rollup/storage.rs\""
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::env",
-      "path": "src/bin/pilot.rs",
-      "reason": "Pilot workload process configuration; this independent binary owns its explicit environment inputs for generators and measurement stores; no service configuration or credentials are inferred.",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::http_client",
-      "path": "src/bin/pilot.rs",
-      "reason": "Pilot HTTP pool owner; the explicit nested path keeps the binary entry in place without creating an autodiscovered client binary; the module owns construction and renewal together.",
-      "syntax": "path = \"pilot/client.rs\""
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::tests::renewal_uses_a_new_connection_and_keeps_in_flight_clients_usable",
-      "path": "src/bin/pilot/client.rs",
-      "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
-      "syntax": "tokio::spawn"
     },
     {
       "category": "effect",
@@ -791,6 +791,38 @@
       "path": "src/bin/bench/tests.rs",
       "reason": "Terminal-ownership fixture puts an entered held sibling beside a failing worker; the production finisher must drop that sibling before returning. Typed Clippy checks both spawn sites.",
       "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::routing",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot routing and HTTP forwarding are one canonical owner; the explicit binary module path keeps transport handling separate from workload orchestration.",
+      "syntax": "path = \"pilot/proxy.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy tests use real loopback upstreams and explicit routing snapshots; compiler checks the binary test-module path.",
+      "syntax": "path = \"proxy/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/proxy/tests.rs",
+      "reason": "The HTTP fixture jointly drives its upstream server and client case; unwind capture signals graceful shutdown before the joined fixture returns.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::unavailable",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy has one canonical retryable-unavailable JSON body for both transport and unmarked platform responses; compiler checks serialization expansion.",
+      "syntax": "serde_json::json"
     }
   ]
 }
