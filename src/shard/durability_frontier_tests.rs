@@ -59,10 +59,15 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
     })
     .await
     .unwrap();
-    assert!(
-        handle.state.lock().unwrap().applied.closed,
-        "first group has crossed local write acceptance"
-    );
+    // Publication lands a moment after local acceptance, so the crossing is
+    // awaited rather than asserted at the instant the PUT engages.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !handle.state.lock().unwrap().applied.closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first group has crossed local write acceptance");
     let remote = slatedb::config::ReadOptions {
         durability_filter: DurabilityLevel::Remote,
         ..Default::default()

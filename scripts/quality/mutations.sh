@@ -65,8 +65,8 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     sse_wire) file=src/sse/wire.rs; filter=sse:: ;;
     fleet) file=src/fleet.rs; filter=fleet:: ;;
     http) file=src/http.rs; filter=http:: ;;
-    sse_source) file=src/sse/source.rs; filter="sse:: dst_tests::livefeed_ownership:: dst_tests::livefeed_swap::" ;;
-    sse_source_spans) file=src/sse/source/spans.rs; filter="sse:: dst_tests::livefeed_ownership:: dst_tests::livefeed_swap::" ;;
+    sse_source) file=src/sse/source.rs; filter=sse:: ;;
+    sse_source_spans) file=src/sse/source/spans.rs; filter=sse:: ;;
     sse_feed) file=src/sse/feed.rs; filter=sse:: ;;
     sse_feed_retention) file=src/sse/feed/retention.rs; filter=sse:: ;;
     sse_feed_test_support) file=src/sse/feed/test_support.rs; filter=sse:: ;;

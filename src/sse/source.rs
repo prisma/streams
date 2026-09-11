@@ -210,6 +210,12 @@ enum SpanReader {
     },
 }
 
+/// Is this instance the effective owner of `route`'s shard? None-ring
+/// (single instance) counts as ours.
+fn owned_here(state: &crate::application::read::ReadService, route: &[u8; 16]) -> bool {
+    state.ownership.is_mine(&state.shards.prefix_for(route))
+}
+
 impl LineageSpan {
     /// Linearized position AFTER this span's last record (sealed
     /// spans only; a live span is open-ended).
@@ -975,7 +981,7 @@ pub(crate) async fn refresh_transition(
 #[path = "source/spans.rs"]
 mod spans;
 pub(crate) use spans::FatalSpanCutoff;
-use spans::{locate_in_spans, owned_here};
+use spans::locate_in_spans;
 
 #[cfg(test)]
 #[path = "source/tests.rs"]
