@@ -1676,13 +1676,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::serve",
-      "path": "src/sse/session.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::LineageSource::sealed_span_page",
       "path": "src/sse/source.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
@@ -3707,13 +3700,6 @@
       "category": "unresolved-glob",
       "count": 1,
       "owner": "crate::tests",
-      "path": "src/fleet.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
       "path": "src/fleet/outbox.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
@@ -4084,13 +4070,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/sse/session.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate",
       "path": "src/sse/source/tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -4114,13 +4093,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/telemetry_batch.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/tenant.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
