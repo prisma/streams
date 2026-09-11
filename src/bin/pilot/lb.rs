@@ -3,9 +3,9 @@
 //! rebalancer overrides, wakes sleeping ordinals, and publishes what it
 //! observes — client-experienced latency and delivered rps — for the
 //! dashboard and the servers' scaler.
-use super::{
-    DASH, FleetView, Lb, RotatingClient, UpStat, client, env, epoch_millis, fleet_store, now_ms, proxy,
-};
+use super::http_client::{RotatingClient, client};
+use super::routing::proxy;
+use super::{DASH, FleetView, Lb, UpStat, env, epoch_millis, fleet_store, now_ms};
 use axum::Router;
 use axum::extract::State;
 use axum::response::Html;
@@ -304,8 +304,17 @@ fn heartbeat_entry(heartbeat: Option<&Value>, now_ms: i64) -> ((f64, f64, bool, 
     };
     let age = now_ms - h["ts_ms"].as_i64().unwrap_or(0);
     let live = age < 10_000;
-    let gauge = |key: &str| if live { h[key].as_f64().unwrap_or(0.0) } else { 0.0 };
-    ((gauge("rps"), gauge("ack_p50_ms"), live, gauge("cpu_pct")), age)
+    let gauge = |key: &str| {
+        if live {
+            h[key].as_f64().unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    };
+    (
+        (gauge("rps"), gauge("ack_p50_ms"), live, gauge("cpu_pct")),
+        age,
+    )
 }
 
 /// Ring active set: first `desired` ordinal instances minus the >30s-dark
@@ -346,7 +355,12 @@ async fn generator_stats(poll: &reqwest::Client, url: Option<&str>) -> Value {
     let Some(u) = url else {
         return json!(null);
     };
-    match poll.get(u).timeout(Duration::from_millis(1500)).send().await {
+    match poll
+        .get(u)
+        .timeout(Duration::from_millis(1500))
+        .send()
+        .await
+    {
         Ok(r) => r.json::<Value>().await.unwrap_or(json!(null)),
         Err(_) => json!(null),
     }
@@ -426,8 +440,13 @@ fn upstream_json(s: &UpStat) -> Value {
 
 // -------------------------------------------------------------- serve ---
 
-async fn stats(State(lb): State<Arc<Lb>>) -> ([(&'static str, &'static str); 1], axum::Json<Value>) {
-    ([("access-control-allow-origin", "*")], axum::Json(lb.stats_json()))
+async fn stats(
+    State(lb): State<Arc<Lb>>,
+) -> ([(&'static str, &'static str); 1], axum::Json<Value>) {
+    (
+        [("access-control-allow-origin", "*")],
+        axum::Json(lb.stats_json()),
+    )
 }
 
 #[expect(
