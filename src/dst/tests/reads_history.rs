@@ -367,6 +367,10 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
 /// cache — no new physical index load — and repeated reads keep
 /// hitting. (The ≥90% active-window hit-rate gate runs in the
 /// acceptance campaign; this pins the mechanism.)
+#[expect(
+    clippy::too_many_lines,
+    reason = "postings cache scenario; the first read, the cached second read and the physical load counts form one causal sequence; helper phases would hide which read loaded the index again"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeated_keyed_reads_hit_the_postings_cache() {
     let inner = mem();

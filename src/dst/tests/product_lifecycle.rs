@@ -282,6 +282,10 @@ async fn profiles_are_removed_from_every_surface() {
 /// create against a raw-created stream succeeds when the immutable
 /// config matches (empty capability config); equivalent duration
 /// spellings normalize to the same config.
+#[expect(
+    clippy::too_many_lines,
+    reason = "dual creation scenario; the raw idempotent PUT and the product create resolve against one incarnation in order; helper phases would hide which surface created a second incarnation"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn typed_creation_dual_contract() {
     let store = mem();
@@ -531,6 +535,10 @@ async fn product_seal_final_append_and_catalog() {
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
 /// with identical canonical data and lifecycle state, in both orders.
+#[expect(
+    clippy::too_many_lines,
+    reason = "dual-surface corpus scenario; the twelve equivalent operation pairs are checked against one stream in order; helper phases would hide which pair diverged"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dual_surface_equivalence_corpus() {
     let store = mem();

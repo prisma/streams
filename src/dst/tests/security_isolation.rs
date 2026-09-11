@@ -10,6 +10,10 @@ use super::fixture_storage::mem;
 /// stream name, write distinct records, and each reads back only its
 /// own; the catalog shows each credential its own project's streams
 /// only. This is the request path the layout-4 storage was built for.
+#[expect(
+    clippy::too_many_lines,
+    reason = "two-project isolation scenario; the verified principals, cross-project requests and each project's private view form one causal sequence; helper phases would hide which boundary leaked"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_cell_serves_two_projects_with_full_isolation() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -220,6 +224,10 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
 /// (c) keep A's worst-case latency bounded while B floods. The
 /// at-scale binary campaign (latency percentiles under real load)
 /// remains a field exercise for the release push.
+#[expect(
+    clippy::too_many_lines,
+    reason = "noisy-neighbor scenario; two projects on one enforce cell, the campaign against one and the compliant project's service form one causal sequence; helper phases would hide which mechanism let the noise through"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");

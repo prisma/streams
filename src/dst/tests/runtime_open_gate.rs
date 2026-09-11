@@ -306,6 +306,10 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
 /// per-poll directory LISTs return (the Class-A regression cost
 /// campaign 2 removed). Faults off, realistic store latency on: latency
 /// shapes timer interleaving but cannot suppress or add a poll.
+#[expect(
+    clippy::too_many_lines,
+    reason = "idle cost scenario; opening the engine, idling on the paused clock and counting store traffic against the poll cadence form one causal sequence; helper phases would hide which poll issued the extra traffic"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
     // The posture VALUES are part of the pin — the budget below scales

@@ -13,6 +13,10 @@ use super::fixture_storage::mem;
 /// cleanup (fence_below = 2) replays against the segment. Generation-2
 /// rows must remain intact — the cleanup deletes generations the fence
 /// declared dead, never every generation sharing the name.
+#[expect(
+    clippy::too_many_lines,
+    reason = "stale cleanup replay scenario; deleting the generation, recreating it and replaying the stale cleanup form one causal sequence; helper phases would hide which generation the replay erased"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
     let store = mem();
@@ -187,6 +191,10 @@ async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
 /// DELETE after a recreation is an idempotent 204 that leaves
 /// generation 2 Active and its rows untouched; a forged newer-than-
 /// record version is a 409; a missing version is a 400.
+#[expect(
+    clippy::too_many_lines,
+    reason = "stale delete retry scenario; the version token, the replacement consumer and the retried delete form one causal sequence; helper phases would hide which incarnation the retry deleted"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
     let store = mem();
@@ -349,6 +357,10 @@ async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
 /// and recreated under the same name and key (new epoch) with its own
 /// consumer and leases; the resumed saga must observe the epoch change
 /// and answer 204 without touching the replacement.
+#[expect(
+    clippy::too_many_lines,
+    reason = "parked saga scenario; parking the deletion saga, recreating the stream underneath and checking the replacement form one causal sequence; helper phases would hide which incarnation the saga rebound to"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_saga_never_touches_a_recreated_stream() {
     let _serial = gap_lock().lock().await;
@@ -491,6 +503,10 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
 /// makes progress, the dead rows drain to zero across many steps, and
 /// the LIVE generation's rows survive byte-count-identically. Then the
 /// real DELETE completes and recreation starts clean.
+#[expect(
+    clippy::too_many_lines,
+    reason = "bounded cleanup scenario; seeding dead-generation residue at scale, draining it in bounded steps and checking the live generation form one causal sequence; helper phases would hide which step touched the live rows"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation() {
     let store = mem();

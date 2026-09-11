@@ -8,6 +8,10 @@ use super::fixture_storage::{mem, skey};
 /// Stage 6: product keyed reads — signed cursors bind stream + key,
 /// pagination reassembles exactly, headers speak Prisma (never
 /// Stream-*), and state flags (up-to-date, sealed) survive translation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "product paging scenario; signed cursors bound to stream and key, exact reassembly and the response headers form one causal sequence; helper phases would hide which page broke the binding"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_read_pages_and_binds_cursors() {
     let store = mem();
@@ -379,6 +383,10 @@ async fn product_long_poll_times_out_and_wakes() {
 
 /// Stage 6: cross-key scan — every record at snapshot creation exactly
 /// once, later appends excluded, expiry honored, token classes enforced.
+#[expect(
+    clippy::too_many_lines,
+    reason = "snapshot scan scenario; the records at snapshot creation, later appends and expiry form one causal sequence; helper phases would hide which record leaked into or out of the snapshot"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_scan_is_snapshot_exact() {
     let store = mem();

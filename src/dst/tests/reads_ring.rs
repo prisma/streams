@@ -17,6 +17,10 @@ use std::sync::atomic::Ordering;
 /// 4. Budget progress: max_bytes=1 still returns the first record and
 ///    advances — an oversized record can never wedge a cursor, on the
 ///    ring path or the DB path.
+#[expect(
+    clippy::too_many_lines,
+    reason = "ring ordering scenario; publish-before-notify, paging and duplicate suppression are pinned at offset level in one sequence; helper phases would hide which offset was delivered twice"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let inner = mem();
@@ -421,6 +425,10 @@ async fn keyed_tail_reads_serve_from_ring() {
 
 /// The held operation is inside durable_absorbed itself, after handle warming.
 /// A retained dense keyed ring page never enters it; fallback and applied reads do.
+#[expect(
+    clippy::too_many_lines,
+    reason = "retained ring scenario; the held absorption, the warmed handle and the ring page's coverage form one causal sequence; helper phases would hide which marker the page skipped"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
     use crate::shard::{Deliver, record::TEST_MARKER_HOLD};
