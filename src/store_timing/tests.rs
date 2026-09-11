@@ -92,7 +92,7 @@ async fn bulk_gate_bounds_concurrent_bytes() {
     use std::sync::atomic::AtomicI64;
     let cap: u32 = 16 << 20;
     let op: u64 = 8 << 20;
-    let gate = Arc::new(BulkGate::new(cap));
+    let gate = Arc::new(BulkGate::new(std::num::NonZeroU32::new(cap).unwrap()));
     let cur = Arc::new(AtomicI64::new(0));
     let peak = Arc::new(AtomicI64::new(0));
     let mut js = Vec::new();
@@ -127,7 +127,7 @@ async fn bulk_gate_bounds_concurrent_bytes() {
 /// arithmetic overflow of the semaphore).
 #[tokio::test]
 async fn bulk_gate_oversized_op_clamps_and_completes() {
-    let gate = BulkGate::new(4 << 20);
+    let gate = BulkGate::new(std::num::NonZeroU32::new(4 << 20).unwrap());
     {
         let _p = gate.acquire(64 << 20).await; // 16x the cap
         assert_eq!(gate.inflight_bytes.load(Ordering::Relaxed), 4 << 20);
@@ -175,7 +175,7 @@ async fn bulk_gate_exempts_non_sst_classes() {
 #[tokio::test]
 async fn bulk_gate_waiter_proceeds_when_holder_releases() {
     use std::sync::Arc;
-    let gate = Arc::new(BulkGate::new(8 << 20));
+    let gate = Arc::new(BulkGate::new(std::num::NonZeroU32::new(8 << 20).unwrap()));
     let held = gate.acquire(8 << 20).await;
     let g2 = gate.clone();
     let waiter = tokio::spawn(async move {

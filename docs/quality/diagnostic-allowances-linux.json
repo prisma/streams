@@ -1326,27 +1326,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "22d578b1e5263235ceb32200f747b22ad76239015b7d8a9f5bc01e42182a720b",
-      "item": "crate::BulkGate::acquire",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "678eed2bf586a098c0efca7d9e29812018493484ca4379e55013a5b3f02cfa26",
-      "item": "crate::BulkGate::acquire",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d736e8d86340de749014f048e78a981302021207652f69fa54fcc4b5db555ff0",
-      "item": "crate::StoreResources::new",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "600c95d869121238690c36c6bb288384251ab6cd254720bdb70869962613f5c3",
       "item": "crate::append_component",
       "lint": "clippy::cast_possible_truncation",
@@ -4819,13 +4798,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "45c0a0b10502b8d4e84d5ad7001ba5da7175eada15828215c408fc9e407d585c",
-      "item": "crate::tests::runtime_store_concurrency_is_shared_locally_and_independent_of_first_access",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "13b437276e982f3894e983e01f345242c6c64c112cc803461289e2e5cd1de24e",
       "item": "crate::TaskSupervisor::launch_shutdown",
       "lint": "clippy::excessive_nesting",
@@ -5404,20 +5376,6 @@
       "item": "crate::locate_in_spans",
       "lint": "clippy::expect_used",
       "path": "src/sse/source.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "321fc658a283a88240bfc7e05c97b0f303b169fac6f8a1a00da941ffaa4b6df5",
-      "item": "crate::BulkGate::acquire",
-      "lint": "clippy::expect_used",
-      "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d4ae88137fb7eec2ac430fa129da458882df3d8ae28afc1455d2655064e844fd",
-      "item": "crate::StoreResources::permit",
-      "lint": "clippy::expect_used",
-      "path": "src/store_timing/resources.rs"
     },
     {
       "count": 1,
