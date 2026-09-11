@@ -388,6 +388,10 @@ async fn a_stale_delete_after_cross_key_recreation_is_untouched_204() {
 /// in-memory fence map is empty. The resumed generation-1 receive must
 /// still refuse, and must write no cursor, lease or ack row — the
 /// parent deletion may already have answered 204.
+#[expect(
+    clippy::too_many_lines,
+    reason = "consumer fence scenario; the in-flight pull, the fencing delete, the ownership move and the cleanup form one causal sequence; helper phases would hide which owner the fence survived"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consumer_fence_survives_ownership_move() {
     let store = mem();

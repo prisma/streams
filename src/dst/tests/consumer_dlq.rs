@@ -3,6 +3,10 @@ use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "dead-letter commit scenario; the failed commit, the retained source lease and the exact retry settling once form one causal sequence; helper phases would hide which step could settle twice"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once() {
     let (state, addr) = http_rig(mem()).await;

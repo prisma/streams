@@ -534,6 +534,10 @@ async fn long_keyed_run_pages_with_progress() {
 /// keys and splits the collection underneath it. The required
 /// cross-surface test: product keys + split, raw default-key traffic,
 /// raw reads see exactly their own records with resumable cursors.
+#[expect(
+    clippy::too_many_lines,
+    reason = "default-key route scenario; the raw route stays one strict sequence across the product's splits; helper phases would hide which split reordered the raw view"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_route_is_the_default_key_view_across_splits() {
     let _l = gap_lock().lock().await;

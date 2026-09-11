@@ -28,6 +28,10 @@ async fn rig() -> super::fixture_http::HttpRig {
         .store(true, std::sync::atomic::Ordering::Relaxed);
     rig
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "frozen scan retention scenario; retaining owners across segments, compacting and reading form one causal sequence; helper phases would hide which segment retained or dropped an owner"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn o2a_frozen_scan_compacts_retained_owners_across_segments_and_reads() {
     let rig = rig().await;

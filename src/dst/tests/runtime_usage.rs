@@ -5,6 +5,10 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use std::sync::{Arc, atomic::Ordering};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "usage counter scenario; admission and committed counters are driven through one runtime and read together; helper phases would hide which counter leaked across runtimes"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r10_append_admission_and_committed_counters_share_only_their_runtime() {
     let mut rigs = Vec::new();

@@ -25,6 +25,10 @@ use std::sync::Arc;
 /// the handoff by being read back from storage by the new owner — that is
 /// the property under test, and it is only observable via the duplicate
 /// response.
+#[expect(
+    clippy::too_many_lines,
+    reason = "producer handoff scenario; establishing producer state, handing off and retrying duplicates form one causal sequence; helper phases would hide which state the successor failed to inherit"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
     for seed in [5u64, 21] {
@@ -202,6 +206,10 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
 /// against the new owner. The retry must dedupe at the original offset —
 /// which the client never learned, so the test recovers it from the
 /// stream itself, exactly as a reconciling client would.
+#[expect(
+    clippy::too_many_lines,
+    reason = "ambiguous commit scenario; the durable commit with a lost response, the handoff and the deduplicated retry form one causal sequence; helper phases would hide which boundary lost or duplicated the record"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ambiguous_commit_survives_handoff_and_dedupes() {
     let inner = mem();

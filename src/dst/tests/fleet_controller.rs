@@ -85,6 +85,10 @@ impl ObjectStore for HeldDocument {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "fleet cancellation scenario; entering documents, cancelling under partial authority and checking the retained retry form one causal sequence; helper phases would hide which document lost its retry"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry() {
     for (path, write) in [

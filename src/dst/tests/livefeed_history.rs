@@ -74,6 +74,10 @@ async fn fork_materialized_partial_respects_the_record_ceiling() {
 /// foreign span (WrongOwner), so the child's owner could not serve a
 /// split stream's history at all. The live tail must still be local:
 /// remote ownership of the TAIL stays a typed WrongOwner cutoff.
+#[expect(
+    clippy::too_many_lines,
+    reason = "remote lineage scenario; two instances, the child's owner and the whole-lineage stream form one causal sequence; helper phases would hide which owner served the sealed predecessor"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     let store = mem();
@@ -552,6 +556,10 @@ async fn livefeed_connect_after_two_sequential_splits() {
 /// Merge continuation: split, append on the lane's child, MERGE the
 /// children, append on the merged successor — the same connection
 /// continues in place, cursors decode, no false terminal.
+#[expect(
+    clippy::too_many_lines,
+    reason = "merge continuation scenario; splitting, appending on a child, merging and appending on the successor while one subscriber follows form one causal sequence; helper phases would hide which topology step broke continuity"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_merge_continuation_in_place() {
     let store = mem();

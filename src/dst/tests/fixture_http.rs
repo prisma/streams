@@ -346,6 +346,10 @@ fn fixture_config(
 }
 
 /// Build a rig from ONE process runtime and the focused options.
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTTP rig builder; every runtime owner is wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
+)]
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
     runtime: RigRuntime,

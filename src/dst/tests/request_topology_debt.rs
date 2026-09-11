@@ -6,6 +6,10 @@ use super::fixture_storage::mem;
 use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
 use std::{sync::atomic::Ordering, time::Duration};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "topology debt scenario; cancelling the job, measuring the exact debt and opening a fresh read owner form one causal sequence; helper phases would hide which owner inherited the debt"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner() {
     let store = FaultStore::new(mem(), 911, FaultProfile::clean());

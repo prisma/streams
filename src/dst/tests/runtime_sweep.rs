@@ -686,6 +686,10 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
 /// closures within bounded sweeps — the walk's continuation cursor
 /// resumes at the deferred page instead of restarting at the first
 /// descriptor, and the residence quantum rotates the occupants out.
+#[expect(
+    clippy::too_many_lines,
+    reason = "walk fairness scenario; two shards' pinned debt, the occupied budget and the alternating walk form one causal sequence; helper phases would hide which shard the walk starved"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tombstone_walk_fairness_under_occupied_budget() {
     let _serial = sweep_lock().lock().await;

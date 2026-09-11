@@ -33,6 +33,10 @@ async fn sse_send_disconnects_a_stalled_subscriber() {
 /// Keyed SSE follows the lineage (review deferral, now wired): a
 /// subscriber from offset 0 receives every pre-split AND post-split
 /// record for its key in order, then an upToDate control.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lineage delivery scenario; subscribing from offset zero, splitting and receiving every pre-split and post-split record form one causal sequence; helper phases would hide which record the subscriber skipped"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sse_follows_lineage_across_split() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -160,6 +164,10 @@ async fn sse_follows_lineage_across_split() {
 
 /// Stage 6: product SSE control frames carry SIGNED key cursors with
 /// product field names — never a raw Stream-Next-Offset token.
+#[expect(
+    clippy::too_many_lines,
+    reason = "signed control scenario; the product control frames, their signed key cursors and the resumed subscription form one causal sequence; helper phases would hide which frame carried a raw cursor"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_sse_controls_carry_signed_cursors() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

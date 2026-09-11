@@ -245,6 +245,10 @@ async fn livefeed_mass_disconnect_tears_down_within_deadline() {
 /// Round-13 enforce-mode rig for the memory-pressure battery: one
 /// project ("proj-pm"), full data scopes, RS256 JWT — returns the
 /// bearer for wire requests.
+#[expect(
+    clippy::too_many_lines,
+    reason = "memory-pressure rig builder; the project, scopes, signing keys and pressure settings are wired in one place so the battery's dependency order stays visible; pass-through steps would hide which setting a scenario changed"
+)]
 async fn pm_enforce_rig(
     store: Arc<dyn ObjectStore>,
     runtime: RigRuntime,

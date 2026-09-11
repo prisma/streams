@@ -207,6 +207,10 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
 /// collection — the merge stays pending and resumable, and completes
 /// once the seal claim clears. (The split half has been pinned since
 /// round 3; this is its mirror.)
+#[expect(
+    clippy::too_many_lines,
+    reason = "merge under sealing scenario; the pending merge, the sealing collection and the resumable retry form one causal sequence; helper phases would hide which phase published under the seal"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn merge_phase_b_declines_under_sealing() {
     let _l = gap_lock().lock().await;

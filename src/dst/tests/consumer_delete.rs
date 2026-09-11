@@ -10,6 +10,10 @@ use super::fixture_storage::mem;
 /// cleanup FAILS mid-saga. The DELETE must not return 204; the retry
 /// finishes the cleanup; recreation inherits nothing — proven at the
 /// row level on both segments.
+#[expect(
+    clippy::too_many_lines,
+    reason = "split-consumer deletion scenario; leasing on both segments, failing one segment's cleanup and retrying to a clean state form one causal sequence; helper phases would hide which segment retained rows"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     let store = mem();
@@ -222,6 +226,10 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
 /// old-generation Receive must be REJECTED — no lease row of a deleted
 /// generation may land after its deletion finished — and a recreated
 /// consumer starts clean.
+#[expect(
+    clippy::too_many_lines,
+    reason = "parked-pull deletion scenario; loading the generation, parking before settlement, deleting underneath and checking the lease verdict form one causal sequence; helper phases would hide which generation the lease was refused against"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
     let _serial = gap_lock().lock().await;
