@@ -42,9 +42,12 @@ struct ReadPlan {
     route: RouteHash,
 }
 
+/// One chunk's postings runs per routing-key hash.
+type KeyRuns = Vec<([u8; 16], Vec<AbsRun>)>;
+
 /// (segment, chunk_from, chunk_to, per-key runs) for write-through cache
 /// warming — installed only after the batch flush succeeds.
-type WarmChunk = (SegmentHash, u64, u64, Vec<([u8; 16], Vec<AbsRun>)>);
+type WarmChunk = (SegmentHash, u64, u64, KeyRuns);
 
 /// The batch under construction: its rows, their modeled size, and what
 /// the flush must prove durable before it is published.
@@ -122,7 +125,7 @@ fn stage_postings(
     wb: &mut WriteBatch,
     plan: &ReadPlan,
     pages: PageBuilder,
-) -> anyhow::Result<Vec<([u8; 16], Vec<AbsRun>)>> {
+) -> anyhow::Result<KeyRuns> {
     let inc = SegmentHash(plan.hash);
     let (emitted, postings_bytes) = pages.finish();
     POSTINGS_PAGES_WRITTEN.fetch_add(emitted.len() as u64, Ordering::Relaxed);

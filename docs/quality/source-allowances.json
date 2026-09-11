@@ -1410,13 +1410,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::Absorber::absorb_gather_v2_with",
-      "path": "src/history.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::Absorber::start",
       "path": "src/history.rs",
       "syntax": "tokio::spawn"

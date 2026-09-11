@@ -17,14 +17,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use object_store::ObjectStore;
-use slatedb::config::{CompressionCodec, Settings, WriteOptions};
-use slatedb::{Db, WriteBatch};
+use slatedb::Db;
+use slatedb::config::{CompressionCodec, Settings};
 use tokio::sync::mpsc;
 
 use crate::crypto::{RouteHash, SegmentHash, StreamKey};
-use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
+use crate::shard::{AbsorbSignal, ShardEngine};
 
 #[cfg(test)]
 mod controller_tests;
@@ -1701,6 +1700,7 @@ mod tests {
 #[cfg(test)]
 mod bounded_discovery_tests {
     use super::*;
+    use slatedb::WriteBatch;
 
     #[test]
     fn r09_hot_prefix_cannot_starve_other_due_streams() {
