@@ -1535,6 +1535,54 @@
       "syntax": "tokio::select",
       "count": 2,
       "reason": "Pilot benchmark owner and regression harness; explicit selection, pinning and JSON expressions preserve worker custody and the existing result protocol; binary compilation and assertions exercise these expansions."
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::compress_tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/compress_tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/compress_tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::invocation_tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/invocation_tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/invocation_tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }
