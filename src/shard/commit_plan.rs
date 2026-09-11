@@ -44,6 +44,10 @@ pub(super) struct DurableEffects {
 }
 
 impl DurableEffects {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "DurableEffects::reply; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
     pub(super) fn reply(self) {
         for (reply, result) in self.acks {
             let _ = reply.send(result);
@@ -52,8 +56,12 @@ impl DurableEffects {
             let _ = reply.send(result);
         }
     }
-    pub fn reject(self, error: AppendErr) {
-        let queue_error = match &error {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "DurableEffects::reject; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
+    pub(super) fn reject(self, error: &AppendErr) {
+        let queue_error = match error {
             AppendErr::Moved => "shard fenced/moved; retry".to_owned(),
             error => format!("{error:?}"),
         };

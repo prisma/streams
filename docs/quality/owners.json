@@ -1855,6 +1855,38 @@
       "path": "src/dst/trace_store_tests/streams.rs",
       "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
       "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::HistoryPartition::open",
+      "path": "src/shard/history_partition.rs",
+      "reason": "The one history opener per partition: it outlives the request that started it, is joined through the partition's own state and publishes its result on a watch; no request-scoped supervisor may own it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::CommitTransaction < '_ >::absorbed",
+      "path": "src/shard/transaction/maintenance.rs",
+      "reason": "Test-only drain trace switched on by the DST harness through the process environment; nothing is read outside cfg(test).",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
+      "path": "src/shard/record_scan_tests.rs",
+      "reason": "Record-scan regression spawns the two readers it joins immediately so their panics surface as join errors; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r17a_cancelled_history_opener_stays_owned_until_late_store_close",
+      "path": "src/shard/task_lifecycle_tests.rs",
+      "reason": "Lifecycle regression spawns the history request it then cancels while the opener is held; nothing escapes the test.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

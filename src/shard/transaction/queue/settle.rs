@@ -1,5 +1,17 @@
 use super::*;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "CommitTransaction::settle; settlement applies acks, retries and extends against one loaded lease table; splitting it would separate the outcomes from the leases they settle"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "CommitTransaction::settle; the queue state was loaded before dispatch; a second fallible read would add a branch no dispatched op reaches"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::settle; the settlement nests each token's generation check inside the ack, retry and extend loops; flattening them would separate the stale verdicts from the lease they protect"
+    )]
     pub(super) fn settle(
         &mut self,
         local: &mut StreamOverlay,

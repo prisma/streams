@@ -42,6 +42,22 @@ impl HistoryPartition {
         clippy::unwrap_used,
         reason = "HistoryPartition::open; a poisoned partition state may hold a half-opened database or a stale stopping flag; recovering it could hand out a database that never finished opening or reopen one that is stopping"
     )]
+    #[expect(
+        clippy::expect_used,
+        reason = "HistoryPartition::open; a finished open task is joinable now; a fallible join would add a branch no finished task reaches"
+    )]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "HistoryPartition::open; the opener outlives the request that started it and is joined through the partition's own state, so no request-scoped supervisor may own it; a supervised opener would tie the partition to one caller's lifetime"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "HistoryPartition::open; the open nests the panic-caught build inside the spawned opener inside the state guard; flattening it would separate the result from the task that publishes it"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "HistoryPartition::open; the result watch fails to send only when every waiter is gone; a handled result would only restate that nobody waits"
+    )]
     pub(super) async fn open<F, Fut>(self: &Arc<Self>, build: F) -> Result<Arc<Db>, slatedb::Error>
     where
         F: FnOnce() -> Fut + Send + 'static,

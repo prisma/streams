@@ -202,6 +202,10 @@ fn assert_moved(result: Result<AppendAck, AppendErr>) {
     assert!(!response.headers().contains_key("stream-next-offset"));
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "duplicate_order; the fixture toggles retirement and attachment order as two independent switches; an enum would restate two booleans"
+)]
 async fn duplicate_order(retire: bool, attach_first: bool) {
     let fixture = Fixture::new(if attach_first {
         "r17b-attached"
@@ -372,6 +376,10 @@ async fn r17b_durable_dispatch_claim_before_retirement_keeps_its_completion() {
     ));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "r17b_late_successful_write_settles_without_publishing_retired_effects; the fixture stages the retirement, the late write and the settlement in the order the race requires; splitting it would separate the stages from the race they set up"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17b_late_successful_write_settles_without_publishing_retired_effects() {
     let mut fixture = Fixture::new("r17b-late-write").await;

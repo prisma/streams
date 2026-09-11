@@ -111,6 +111,10 @@ async fn r06a_compressed_database_pages_bound_plaintext_without_skipping() {
     assert_eq!(seen, (0..1600).collect::<Vec<_>>());
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "mixed_fixture; the fixture's offsets index its own small record table; a checked conversion would only restate the fixture"
+)]
 async fn mixed_fixture(
     compression: FrameCompression,
     ring: bool,
@@ -212,6 +216,14 @@ async fn mixed_fixture(
     (engine, key)
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress; the fixture nests the budget walk inside the compression, ring and history matrix; flattening it would separate the walk from the shape it runs under"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress; the fixture's offsets index its own small record table; a checked conversion would only restate the fixture"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress() {
     let records = vec![

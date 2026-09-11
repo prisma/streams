@@ -16,6 +16,10 @@ impl CommitTransaction<'_> {
         clippy::unwrap_used,
         reason = "CommitTransaction::delete_step; a poisoned fence table or handle state may hold a half-applied fence or queue, and the queue state was populated in this step before it is read; recovering or failing either could delete rows a fence still protects"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::delete_step; the delete step nests the budget checks inside each prefix scan and lease walk; flattening them would separate the checks from the rows they bound"
+    )]
     pub(super) async fn delete_step(
         &mut self,
         local: &mut StreamOverlay,
