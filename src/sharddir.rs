@@ -804,10 +804,6 @@ impl OpenGate {
 
     /// The incarnation of the engine currently serving `prefix`.
     #[cfg(test)]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "OpenGate::resident_incarnation; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"
-    )]
     pub(crate) fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
         self.inner
             .shards
@@ -820,10 +816,6 @@ impl OpenGate {
     /// Tests only: forget the anti-flap holdoff so a replacement can open
     /// at once (the holdoff itself is proven by the flap test).
     #[cfg(test)]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "OpenGate::clear_holdoff; a poisoned gate state may hold a half-recorded open, close or holdoff for a prefix; recovering it could serve, reopen or reap the wrong incarnation"
-    )]
     pub(crate) fn clear_holdoff(&self, prefix: &str) {
         if let Some(g) = self.inner.st.lock().unwrap().get_mut(prefix) {
             g.holdoff_until = None;
