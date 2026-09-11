@@ -2735,8 +2735,8 @@
     "tests": [
       {
         "name": "spool_fault_requeues_the_whole_round",
-        "file": "src/billing.rs",
-        "line": 630
+        "file": "src/billing/tests.rs",
+        "line": 139
       },
       {
         "name": "telemetry_crash_points_and_cost_gates",

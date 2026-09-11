@@ -11,11 +11,12 @@
 
 #[path = "pilot/client.rs"]
 mod http_client;
-use http_client::{RotatingClient, client};
+use http_client::RotatingClient;
+#[cfg(test)]
+use http_client::client;
 
 #[path = "pilot/proxy.rs"]
 mod routing;
-use routing::proxy;
 
 #[path = "pilot/benchmark.rs"]
 mod benchmark;
@@ -23,15 +24,13 @@ mod benchmark;
 #[path = "pilot/generator.rs"]
 mod workload_generator;
 
-use axum::Router;
-use axum::extract::State;
-use axum::response::Html;
-use axum::routing::get;
-use object_store::ObjectStoreExt;
+#[path = "pilot/lb.rs"]
+mod lb;
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[expect(
     clippy::disallowed_methods,
@@ -225,7 +224,7 @@ fn shard_for(topology: &[String], hash: &[u8; 16]) -> String {
 async fn main() -> anyhow::Result<()> {
     let mode = env("MODE").unwrap_or_else(|| std::env::args().nth(1).unwrap_or_default());
     match mode.as_str() {
-        "lb" => lb().await,
+        "lb" => lb::run().await,
         "gen" => workload_generator::run().await?,
         "bench" => benchmark::run(env).await?,
         m => {
@@ -238,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
 
 // ---------------------------------------------------------------- LB ----
 
+#[derive(Default)]
 struct UpStat {
     reqs: AtomicU64,
     errs: AtomicU64,
@@ -272,348 +272,6 @@ struct Lb {
     gen_stats: Mutex<serde_json::Value>,
     fleet: Mutex<FleetView>,
     http: RotatingClient,
-}
-
-async fn lb() {
-    let upstreams: Vec<String> = env("UPSTREAMS")
-        .expect("UPSTREAMS required")
-        .split([',', ';'])
-        .filter(|s| !s.is_empty())
-        .map(|s| s.trim().to_string())
-        .collect();
-    let stats = upstreams
-        .iter()
-        .map(|_| UpStat {
-            reqs: AtomicU64::new(0),
-            errs: AtomicU64::new(0),
-            window: AtomicU64::new(0),
-            ewma_us: AtomicU64::new(0),
-            last_us: AtomicU64::new(0),
-            cold_starts: AtomicU64::new(0),
-            last_seen_ms: AtomicU64::new(0),
-            replays: AtomicU64::new(0),
-            unmarked: AtomicU64::new(0),
-            eject_until_ms: AtomicU64::new(0),
-        })
-        .collect();
-    let n_up = upstreams.len();
-    let lb = Arc::new(Lb {
-        upstreams: std::sync::RwLock::new(upstreams),
-        stats,
-        history: Mutex::new(VecDeque::new()),
-        gen_stats: Mutex::new(serde_json::json!(null)),
-        fleet: Mutex::new(FleetView {
-            desired: 1,
-            ..Default::default()
-        }),
-        http: RotatingClient::new(),
-    });
-
-    // Router load report: the servers' ack latency cannot see edge-side
-    // queueing (run 7: clients at p50 1.6-2 s while server acks sat at
-    // 60-80 ms and the fleet SHRANK mid-congestion). Publish what the
-    // router observes — client-experienced latency + delivered rps — to
-    // the fleet prefix; the servers fold it into desired-count.
-    {
-        let lb = lb.clone();
-        let rstore = fleet_store(&env("FLEET_PREFIX").expect("FLEET_PREFIX"));
-        let router_name = env("ROUTER_NAME").unwrap_or_else(|| "router-1".into());
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                let (mut worst_ewma_us, mut total_window) = (0u64, 0u64);
-                for s in lb.stats.iter() {
-                    let seen = s.last_seen_ms.load(Ordering::Relaxed);
-                    let fresh = now_ms().saturating_sub(seen) < 10_000;
-                    if fresh {
-                        worst_ewma_us = worst_ewma_us.max(s.ewma_us.load(Ordering::Relaxed));
-                    }
-                    total_window += s.window.load(Ordering::Relaxed);
-                }
-                let _ = total_window; // window is reset by the 1 s ticker; rps comes from it there
-                let body = serde_json::json!({
-                    "router": router_name,
-                    "ts_ms": now_ms(),
-                    "client_p50_ms": worst_ewma_us as f64 / 1000.0,
-                });
-                let _ = rstore
-                    .put(
-                        &object_store::path::Path::from(format!("routers/{router_name}.json")),
-                        object_store::PutPayload::from(serde_json::to_vec(&body).unwrap()),
-                    )
-                    .await;
-            }
-        });
-    }
-
-    // Fleet poller: desired.json + heartbeats every 2 s, topology every 60 s.
-    // The LB emulates the platform: it routes to only the first `desired`
-    // upstreams, so the rest idle and scale to zero.
-    {
-        let lb = lb.clone();
-        let fstore = fleet_store(&env("FLEET_PREFIX").expect("FLEET_PREFIX"));
-        let dstore = fleet_store(&env("DATA_PREFIX").expect("DATA_PREFIX"));
-        tokio::spawn(async move {
-            let mut topo_age = 0u32;
-            loop {
-                // Single guard: two lock() temporaries in one expression
-                // would self-deadlock the std Mutex.
-                let (prev_desired, prev_topo, prev_ov) = {
-                    let f = lb.fleet.lock().unwrap();
-                    (f.desired, f.topology.clone(), f.overrides.clone())
-                };
-                let mut view = FleetView {
-                    desired: prev_desired,
-                    heartbeats: Vec::new(),
-                    active: Vec::new(),
-                    topology: prev_topo,
-                    overrides: prev_ov,
-                };
-                if let Ok(r) = fstore
-                    .get(&object_store::path::Path::from("fleet/desired.json"))
-                    .await
-                    && let Ok(raw) = r.bytes().await
-                    && let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw)
-                {
-                    view.desired = (d["count"].as_u64().unwrap_or(1) as usize).clamp(1, n_up);
-                }
-                // Rebalancer overrides: a successful read replaces the map
-                // (absent file = no overrides); a transient error keeps the
-                // previous view rather than flapping routing on a blip.
-                match fstore
-                    .get(&object_store::path::Path::from("fleet/overrides.json"))
-                    .await
-                {
-                    Ok(r) => {
-                        if let Ok(raw) = r.bytes().await
-                            && let Ok(o) = serde_json::from_slice::<serde_json::Value>(&raw)
-                        {
-                            view.overrides = o["entries"]
-                                .as_object()
-                                .map(|m| {
-                                    m.iter()
-                                        .filter_map(|(k, v)| {
-                                            v["to"].as_str().map(|t| (k.clone(), t.to_string()))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                        }
-                    }
-                    Err(object_store::Error::NotFound { .. }) => view.overrides.clear(),
-                    Err(_) => {}
-                }
-                let now_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64;
-                let mut ages_ms: Vec<i64> = Vec::new();
-                for i in 0..n_up {
-                    let p = object_store::path::Path::from(format!("fleet/streams-{}.json", i + 1));
-                    let mut entry = (0.0, 0.0, false, 0.0);
-                    let mut age = i64::MAX;
-                    if let Ok(r) = fstore.get(&p).await
-                        && let Ok(raw) = r.bytes().await
-                        && let Ok(h) = serde_json::from_slice::<serde_json::Value>(&raw)
-                    {
-                        let ts = h["ts_ms"].as_i64().unwrap_or(0);
-                        age = now_ms - ts;
-                        let live = age < 10_000;
-                        entry = (
-                            if live {
-                                h["rps"].as_f64().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            },
-                            if live {
-                                h["ack_p50_ms"].as_f64().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            },
-                            live,
-                            if live {
-                                h["cpu_pct"].as_f64().unwrap_or(0.0)
-                            } else {
-                                0.0
-                            },
-                        );
-                    }
-                    ages_ms.push(age);
-                    view.heartbeats.push(entry);
-                }
-                // Ring active set: first `desired` ordinal instances minus
-                // the >30s-dark (same rule as the servers' R2 check).
-                // Fallback: everyone asleep → unfiltered, so the first
-                // request wakes the ordinal owner.
-                let d = view.desired.clamp(1, n_up);
-                let mut active: Vec<String> = (1..=d)
-                    .filter(|i| ages_ms.get(i - 1).map(|a| *a < 30_000).unwrap_or(false))
-                    .map(|i| format!("streams-{i}"))
-                    .collect();
-                if active.is_empty() {
-                    active = (1..=d).map(|i| format!("streams-{i}")).collect();
-                }
-                view.active = active;
-                // Platform emulation: on real infrastructure, scale-out
-                // means the platform STARTS instance N+1. Here an instance
-                // starts on first request — but the live-set ring only
-                // routes to heartbeating instances, so a newly-desired
-                // sleeping ordinal would deadlock dark (found in run 5:
-                // desired=4, live=1 forever). Ping desired-but-stale
-                // ordinals out of band; one /health GET wakes them.
-                for i in 1..=d {
-                    if ages_ms.get(i - 1).map(|a| *a >= 8_000).unwrap_or(true) {
-                        let url = format!("{}/health", lb.upstreams.read().unwrap()[i - 1]);
-                        let c = lb.http.get();
-                        tokio::spawn(async move {
-                            let _ = c.get(url).timeout(Duration::from_secs(20)).send().await;
-                        });
-                    }
-                }
-                if (topo_age == 0 || view.topology.is_empty())
-                    && let Ok(r) = dstore
-                        .get(&object_store::path::Path::from("topology.json"))
-                        .await
-                    && let Ok(raw) = r.bytes().await
-                    && let Ok(t) = serde_json::from_slice::<serde_json::Value>(&raw)
-                    && let Some(shards) = t["shards"].as_array()
-                {
-                    view.topology = shards
-                        .iter()
-                        .filter_map(|s| s.as_str().map(String::from))
-                        .collect();
-                }
-                // Replaced instances publish their new preview URLs to
-                // fleet/urls.json (deploy step `urls`); adopt them so a
-                // kill+redeploy rejoins without touching this router.
-                if let Ok(r) = fstore
-                    .get(&object_store::path::Path::from("fleet/urls.json"))
-                    .await
-                    && let Ok(raw) = r.bytes().await
-                    && let Ok(m) =
-                        serde_json::from_slice::<std::collections::HashMap<String, String>>(&raw)
-                {
-                    let mut ups = lb.upstreams.write().unwrap();
-                    for (name, url) in m {
-                        if let Some(i) = name
-                            .strip_prefix("streams-")
-                            .and_then(|n| n.parse::<usize>().ok())
-                            .and_then(|n| n.checked_sub(1))
-                            && i < ups.len()
-                            && !url.is_empty()
-                            && ups[i] != url
-                        {
-                            println!("lb: upstream {name} -> {url}");
-                            ups[i] = url;
-                        }
-                    }
-                }
-                topo_age = (topo_age + 1) % 30;
-                *lb.fleet.lock().unwrap() = view;
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        });
-    }
-
-    // 1s ticker: roll the per-upstream request window into history and
-    // poll the generator's stats endpoint for the dashboard header.
-    {
-        let lb = lb.clone();
-        let gen_url = env("GEN_STATS_URL");
-        tokio::spawn(async move {
-            let poll = client();
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                let per: Vec<u64> = lb
-                    .stats
-                    .iter()
-                    .map(|s| s.window.swap(0, Ordering::Relaxed))
-                    .collect();
-                let gv = match &gen_url {
-                    Some(u) => match poll
-                        .get(u)
-                        .timeout(Duration::from_millis(1500))
-                        .send()
-                        .await
-                    {
-                        Ok(r) => r
-                            .json::<serde_json::Value>()
-                            .await
-                            .unwrap_or(serde_json::json!(null)),
-                        Err(_) => serde_json::json!(null),
-                    },
-                    None => serde_json::json!(null),
-                };
-                *lb.gen_stats.lock().unwrap() = gv.clone();
-                let fleet = lb.fleet.lock().unwrap().clone();
-                let hb_rps: Vec<f64> = fleet.heartbeats.iter().map(|(r, _, _, _)| *r).collect();
-                let hb_live: Vec<bool> = fleet.heartbeats.iter().map(|(_, _, l, _)| *l).collect();
-                let mut h = lb.history.lock().unwrap();
-                h.push_back(serde_json::json!({
-                    "t": now_ms(),
-                    "perUp": per,
-                    "hb": hb_rps,
-                    "live": hb_live,
-                    "desired": fleet.desired,
-                    "conc": gv.get("concurrency"),
-                    "ach": gv.get("achievedPerSec"),
-                }));
-                if h.len() > 900 {
-                    h.pop_front();
-                }
-            }
-        });
-    }
-
-    let app = Router::new()
-        .route("/", get(|| async { Html(DASH) }))
-        .route(
-            "/stats",
-            get(|State(lb): State<Arc<Lb>>| async move {
-                let stats: Vec<serde_json::Value> = lb
-                    .stats
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "reqs": s.reqs.load(Ordering::Relaxed),
-                            "errs": s.errs.load(Ordering::Relaxed),
-                            "ewmaMs": s.ewma_us.load(Ordering::Relaxed) as f64 / 1000.0,
-                            "lastMs": s.last_us.load(Ordering::Relaxed) as f64 / 1000.0,
-                            "coldStarts": s.cold_starts.load(Ordering::Relaxed),
-                            "replays": s.replays.load(Ordering::Relaxed),
-                            "unmarked": s.unmarked.load(Ordering::Relaxed),
-                            "ejected": s.eject_until_ms.load(Ordering::Relaxed) > now_ms(),
-                        })
-                    })
-                    .collect();
-                let history: Vec<serde_json::Value> =
-                    lb.history.lock().unwrap().iter().cloned().collect();
-                let gv = lb.gen_stats.lock().unwrap().clone();
-                let fleet = lb.fleet.lock().unwrap().clone();
-                (
-                    [("access-control-allow-origin", "*")],
-                    axum::Json(serde_json::json!({
-                        "upstreams": lb.stats.len(),
-                        "stats": stats,
-                        "gen": gv,
-                        "desired": fleet.desired,
-                        "heartbeats": fleet.heartbeats.iter().map(|(r, p50, l, cpu)| serde_json::json!({"rps": r, "ackMs": p50, "live": l, "cpu": cpu})).collect::<Vec<_>>(),
-                        "topology": fleet.topology,
-                        "overrides": fleet.overrides,
-                        "history": history,
-                    })),
-                )
-            }),
-        )
-        .fallback(proxy)
-        .with_state(lb);
-
-    let port = env("PORT").unwrap_or_else(|| "8080".into());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
-        .await
-        .unwrap();
-    println!("pilot lb listening on :{port}");
-    axum::serve(listener, app).await.unwrap();
 }
 
 // --------------------------------------------------------- dashboard ----

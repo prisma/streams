@@ -926,13 +926,6 @@
     },
     {
       "category": "effect",
-      "count": 4,
-      "owner": "crate::lb",
-      "path": "src/bin/pilot.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 1,
       "owner": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
       "path": "src/bootstrap/runtime_handoff.rs",
@@ -1608,132 +1601,6 @@
       "count": 1,
       "owner": "crate::read_stitched",
       "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::FrameCipher::encrypt_with_nonce",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::RouteHash::for_child",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::RouteHash::for_stream",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::SegmentHash::for_segment",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::SegmentHash::for_stream",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::WATCH_CAP_MAX_LIFETIME_SECS",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::WATCH_CAP_SKEW_SECS",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::decrypt_frame",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::secret_eq",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::verify_watch_capability",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::verify_watch_capability",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_project",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_sig",
-      "path": "src/crypto.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::watch_capability_sig",
-      "path": "src/crypto.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::append_to",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::attempt",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::attempt_with_deadline",
-      "path": "src/dst/runtime.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::Workload::run",
-      "path": "src/dst/runtime.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
@@ -2977,13 +2844,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 8,
-      "owner": "crate::lb",
-      "path": "src/bin/pilot.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::cas",
       "path": "src/bin/verify.rs",
@@ -3853,13 +3713,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/billing.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::drain_fairness_tests",
       "path": "src/billing_service.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -3918,27 +3771,6 @@
       "count": 1,
       "owner": "crate::config_validation_tests",
       "path": "src/config/validation_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::compress_tests",
-      "path": "src/crypto.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::invocation_tests",
-      "path": "src/crypto.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/crypto.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -4365,13 +4197,6 @@
       "category": "unresolved-glob",
       "count": 1,
       "owner": "crate::path_tests",
-      "path": "src/sharddir.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::watchdog_policy_tests",
       "path": "src/sharddir.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },

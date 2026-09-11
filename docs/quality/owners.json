@@ -1599,6 +1599,158 @@
       "path": "src/registry/tests.rs",
       "reason": "Registry test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin conditional writes, decode fail-closed and segment resolution.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/billing/tests.rs",
+      "reason": "Billing test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the spool settings, month splits and drain interleavings.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Lb::wake_ordinal",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Fire-and-forget wake ping: the request itself starts a sleeping ordinal and its response carries nothing; joining it would stall the fleet poll on every cold start.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_fleet_poller",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router daemon owned for the whole process lifetime; it produces nothing to join and ends with the process, so no supervisor handle is taken.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_load_report",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router daemon owned for the whole process lifetime; it produces nothing to join and ends with the process, so no supervisor handle is taken.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_ticker",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router daemon owned for the whole process lifetime; it produces nothing to join and ends with the process, so no supervisor handle is taken.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Lb::from_env",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router dashboard state seeded with a JSON null; the compiler checks the expansion.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Lb::load_report",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router load report document; the compiler checks the expansion and the servers read the fields.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Lb::record_tick",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router history sample; the compiler checks the expansion and the dashboard reads the fields.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::Lb::stats_json",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router dashboard snapshot; the compiler checks the expansions and the dashboard reads the fields.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::generator_stats",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router generator-stats fallbacks (JSON null); the compiler checks the expansions.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::upstream_json",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "Pilot router per-upstream counters; the compiler checks the expansion and the dashboard reads the fields.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::lb",
+      "path": "src/bin/pilot.rs",
+      "reason": "The pilot binary keeps its modules under src/bin/pilot/; a bin root resolves plain child modules beside itself, so the explicit path names the same layout as its siblings.",
+      "syntax": "path = \"pilot/lb.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sharddir/watchdog_policy_tests.rs",
+      "reason": "Watchdog policy test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin expiry under wall-clock jumps.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::compress_tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/compress_tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/compress_tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::invocation_tests",
+      "path": "src/crypto.rs",
+      "reason": "The crypto module is compiled by the service and, by path, by the side bins and the fuzz harness; the explicit test-module path keeps child resolution identical across those roots.",
+      "syntax": "path = \"crypto/invocation_tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/invocation_tests.rs",
+      "reason": "Crypto test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the frame codec round trips.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }
