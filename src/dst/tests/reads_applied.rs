@@ -51,6 +51,10 @@ async fn copy_store(src: &Arc<dyn ObjectStore>, dst: &Arc<dyn ObjectStore>) {
     clippy::excessive_nesting,
     reason = "applied-read regression; mutex assertion block ends before await; keeping the interleaving and its assertions together makes the safety argument reviewable"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "applied-read fixture; the held write, the parked long-poll and the waking write are all joined after the frozen dispatch is released; they must overlap to observe applied delivery before durability"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     let store = mem();
@@ -273,6 +277,10 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
 /// takeover) BOTH watermarks are back at the durable frontier — the
 /// exact loss window the mode's contract documents.
 #[expect(
+    clippy::disallowed_methods,
+    reason = "volatile-suffix fixture; the provisional append is owned until the fenced engine has terminated, then aborted and joined with its disposition checked; it must stay in flight through the crash window"
+)]
+#[expect(
     clippy::too_many_lines,
     clippy::excessive_nesting,
     reason = "applied-read regression; mutex assertion block ends before await; keeping the interleaving and its assertions together makes the safety argument reviewable"
@@ -335,7 +343,7 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let e2c = e2.clone();
     let k2 = key.clone();
-    let _hung = tokio::spawn(async move {
+    let hung = tokio::spawn(async move {
         // Applies immediately; the ack would need a flush that will not
         // come inside the window.
         let cov = FaultStore::uniform(mem(), 2, FaultPlan::new(0, 0, 0)).coverage();
@@ -402,7 +410,20 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
         .await
         .expect("terminate e3");
     e2.begin_close();
-    let _ = e2.await_terminated(std::time::Duration::from_secs(5)).await;
+    e2.await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .expect("the fenced engine terminates once closed");
+    hung.abort();
+    match hung.await {
+        Err(join) => assert!(
+            join.is_cancelled(),
+            "the parked append failed on its own: {join}"
+        ),
+        Ok(outcome) => assert!(
+            !matches!(outcome, crate::dst::runtime::Outcome::Acked { .. }),
+            "the lost provisional append was acknowledged: {outcome:?}"
+        ),
+    }
 }
 
 /// **A stale applied cursor is refused, never silently skipped past.**
@@ -411,6 +432,14 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
 /// applied mode is a 409 `cursor_beyond_tail`; the durable cursor from
 /// the same response resumes cleanly; and durable mode's handling of
 /// the same token is unchanged (guard is applied-only).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "stale-cursor fixture; the provisional write is joined after dispatch is released; it must stay in flight while the applied cursor is minted beyond the durable frontier"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "crash-restart cursor scenario; minting the cursor beyond durability, losing the suffix and presenting the cursor to the restarted server is one causal sequence; helper phases would hide which frontier refused it"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     let store = mem();
