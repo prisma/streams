@@ -895,6 +895,54 @@
       "path": "src/dst/tests/seal_recovery.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_receive_after_delete_in_the_same_group_is_refused",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group ordering fixture owns the delete and receive operation handles; both are joined after the held commit is released. Concurrent staging is required for the receive to follow the delete in one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the receive and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "reason": "Same-group atomicity fixture owns the settle and delete operation handles; both are joined after the held commit is released. Concurrent staging is required for the operations to share one write group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_waits_for_durability_before_reporting_closed",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability fence fixture owns the held close and the takeover handle; both are joined after dispatch is released. Concurrent execution is required to observe the takeover pending behind the barrier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::idempotent_successes_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Durability barrier fixture owns the original, duplicate and close request handles; each is joined after its release. Concurrent execution is required to observe them pending behind the held dispatch.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::state_dependent_conflicts_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "reason": "Definitive-conflict fixture owns the original and reuse request handles; both are joined after dispatch is released. Concurrent execution is required to observe the verdict pending on undurable state.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
