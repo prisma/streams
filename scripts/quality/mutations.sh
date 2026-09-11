@@ -77,7 +77,7 @@ mkdir -p "$output"
 cargo mutants --list --json --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" \
   --file src/bin/pilot/benchmark.rs --file src/bin/pilot/benchmark/config.rs \
   --file src/bin/pilot/benchmark/window.rs --package streams-slate > "$output/selected.json"
-count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$output/selected.json")
+count=$(python3 -c 'import json,sys; raw=open(sys.argv[1]).read().strip(); print(len(json.loads(raw)) if raw else 0)' "$output/selected.json")
 if [[ "$count" != 0 ]]; then
   TOTAL=$((TOTAL + count))
   cargo mutants --cargo-arg=--locked --cargo-arg=--bin=pilot \
@@ -97,7 +97,7 @@ mkdir -p "$output"
 cargo mutants --list --json --in-diff "$QUALITY_MUTANTS_OUT/pr.diff" \
   --file src/bin/pilot/generator.rs --file src/bin/pilot/generator/membership.rs \
   --package streams-slate > "$output/selected.json"
-count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$output/selected.json")
+count=$(python3 -c 'import json,sys; raw=open(sys.argv[1]).read().strip(); print(len(json.loads(raw)) if raw else 0)' "$output/selected.json")
 if [[ "$count" != 0 ]]; then
   TOTAL=$((TOTAL + count))
   cargo mutants --cargo-arg=--locked --cargo-arg=--bin=pilot --cargo-arg=--test=pilot_membership \
