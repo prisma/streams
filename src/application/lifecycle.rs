@@ -255,7 +255,10 @@ pub(crate) async fn claim_seal(
 ///
 /// A timestamp decides only when this protocol may START; whether the
 /// old operation is really gone is decided by the fence.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "take_over_abandoned; the seal transition takes the descriptor, claim, deadline and clock parts separately as the lifecycle service resolved them; a request struct would exist for this single call site"
+)]
 async fn take_over_abandoned(
     state: &LifecycleService,
     sref: &crate::tenant::TenantStreamRef,
@@ -339,7 +342,10 @@ async fn take_over_abandoned(
 /// would be refused: a collection held Sealing by its own recovery
 /// protocol. The counter check makes the newest reservation the only
 /// installable one; an older one restarts the protocol from the top.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "install_reserved_claim; the seal transition takes the descriptor, claim, deadline and clock parts separately as the lifecycle service resolved them; a request struct would exist for this single call site"
+)]
 pub(crate) async fn install_reserved_claim(
     state: &LifecycleService,
     sref: &crate::tenant::TenantStreamRef,
@@ -437,6 +443,10 @@ pub(crate) async fn begin_sealing_for_close(
 /// Renew an owed-final claim for its OWN exact retry: fresh lease,
 /// fresh generation. Returns the new generation, or None when the
 /// claim is no longer this operation's to renew.
+#[expect(
+    clippy::expect_used,
+    reason = "renew_owed_claim; the sealing claim was observed on the descriptor the caller passed, so it is present; a fallible re-read would turn an admitted transition into an error no state reaches"
+)]
 pub(crate) async fn renew_owed_claim(
     state: &LifecycleService,
     sref: &crate::tenant::TenantStreamRef,
@@ -510,6 +520,10 @@ pub(crate) async fn abandon_seal_intent(
 /// Record that a final-bearing seal's record is durable. Must happen
 /// before any segment closes: after this the transition can be finished
 /// by anyone, and before it, only by the operation that owes the record.
+#[expect(
+    clippy::expect_used,
+    reason = "mark_final_committed; the sealing claim was observed on the descriptor the caller passed, so it is present; a fallible re-read would turn an admitted transition into an error no state reaches"
+)]
 pub(crate) async fn mark_final_committed(
     state: &LifecycleService,
     sref: &crate::tenant::TenantStreamRef,

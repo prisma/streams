@@ -61,6 +61,10 @@ fn max_age(cache_control: &str) -> u64 {
         .unwrap_or(0)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "respond; the simulated response holds a fixed status and literal headers, so building it cannot fail; a fallible build would only restate the panic"
+)]
 fn respond(r: &CachedResp) -> Response {
     Response::builder()
         .status(StatusCode::from_u16(r.status).unwrap_or(StatusCode::BAD_GATEWAY))
@@ -70,6 +74,14 @@ fn respond(r: &CachedResp) -> Response {
         .unwrap()
 }
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "handle; every coalesced waiter may have left before the response lands; a send with no receivers has nothing to notify"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "handle; a poisoned edge cache or in-flight map may hold a half-recorded entry, and the coalesced response was inserted under the same guard; recovering or failing either would serve a response that never completed"
+)]
 async fn handle(State(state): State<Arc<AppState>>, method: Method, uri: Uri) -> Response {
     let url = uri
         .path_and_query()

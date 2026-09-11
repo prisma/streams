@@ -23,6 +23,14 @@ use crypto::{
 // any ambient configuration.
 const COMPRESSION: FrameCompression = FrameCompression::Disabled;
 
+#[expect(
+    clippy::expect_used,
+    reason = "main; the bench's key, frames and authentication inputs are its own fixtures, so decoding and verifying them cannot fail; a fallible bench would only restate the panic at startup"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "main; the iteration count is a bench argument far below usize on a 64-bit target; a checked conversion would only restate the pointer width the bench assumes"
+)]
 fn main() {
     use base64::Engine;
     let kb64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 32]);

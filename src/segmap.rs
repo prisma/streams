@@ -287,7 +287,11 @@ impl SegmentMap {
     /// (review blocker 1). The caller picks the routes: the low child
     /// conventionally inherits the parent's route (its predecessor data
     /// is already local), the high child moves.
-    pub fn split(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "SegmentMap::split; a split names the segment, the boundary, the new segments' ids, epochs and owners and the transition version separately as the rebalancer decided them; a request struct would exist for this single call site"
+    )]
+    pub(crate) fn split(
         &mut self,
         seg_id: u32,
         split_at: u64,
@@ -346,7 +350,15 @@ impl SegmentMap {
 
     /// Merge two ADJACENT live segments into one child on a PERSISTED
     /// route (same discipline as split — review blocker 1).
-    pub fn merge(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "SegmentMap::merge; a merge names both segments, the new segment's id, epoch and owner and the transition version separately as the rebalancer decided them; a request struct would exist for this single call site"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "SegmentMap::merge; both segment ids were validated live and adjacent before the merge, so the lookup finds them; a fallible find would add a branch no validated merge reaches"
+    )]
+    pub(crate) fn merge(
         &mut self,
         a_id: u32,
         b_id: u32,
