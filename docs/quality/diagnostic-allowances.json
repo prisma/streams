@@ -1004,13 +1004,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f0ca2a8a189c0f3de2e42d1937e719f2a9c3071ca098aacd407df0a42dd3d536",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d5be370059abb30c56ae98081eb68c137b9ff42e49bf9e04c6dde993dfdf51b8",
       "item": "crate::debug_load",
       "lint": "clippy::cast_possible_truncation",
@@ -1554,13 +1547,6 @@
       "item": "crate::tests::worst_frame_floor_serializes_oversized_gathers_without_starvation",
       "lint": "clippy::disallowed_methods",
       "path": "src/history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "49bc6187c6aacfa89c94684da254f037a14a7e40ad925905e03943a80e6db44b",
-      "item": "crate::Absorber::classify_due",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/history/worker.rs"
     },
     {
       "count": 1,
@@ -4924,13 +4910,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "302e3c7c82f1df09202eeca04e2062c95db31eb86e826e9f8018165af401bd9e",
-      "item": "crate::start",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "ee15ca1a5c845015e3118d17ceecbd358f29e96ba305155d9f0dddbc1dca8e8b",
       "item": "crate::ShardEngine::begin_close",
       "lint": "clippy::let_underscore_must_use",
@@ -6219,14 +6198,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "0f9d3762291970286ea06b181428bca1ff18d75447420ee3ad4d2a7536299825",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::too_many_lines",
-      "metric": 116,
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c73584523522a3762b0bcdd1dfd03bdea4d1afce1bb1c36bb3fd847421c42a62",
       "item": "crate::append_typed",
       "lint": "clippy::too_many_lines",
@@ -6392,14 +6363,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 186,
       "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f501996838b97f404389469109e0b4f168269154abd9fba251ea2807933938d3",
-      "item": "crate::evaluate_state",
-      "lint": "clippy::too_many_lines",
-      "metric": 124,
-      "path": "src/scaler3.rs"
     },
     {
       "count": 1,
@@ -6596,20 +6559,6 @@
       "item": "crate::PageBuilder::finish",
       "lint": "clippy::type_complexity",
       "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "36a758dc6795b59f46da25044631cef5dd47b796aca6b530e47f9f64abb2c54e",
-      "item": "crate::Scaler::evaluate",
-      "lint": "clippy::type_complexity",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "56a8b537678d56ea29577cbb03d6e2328793fc0a532b893e533ea63e5af9c92d",
-      "item": "crate::evaluate_state",
-      "lint": "clippy::type_complexity",
-      "path": "src/scaler3.rs"
     },
     {
       "count": 1,
@@ -7082,41 +7031,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "53114526664f1bc91dffca1b9b936644f973a9398574c2051c77cc4da776cc42",
-      "item": "crate::Absorber::classify_due",
-      "lint": "clippy::unwrap_used",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "12d4f686ebc7d0e17d9b558638026a5b5f8c3f3c021447c1ee98c9e24a6fcb00",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "aa60cbf8aea46255b4e02daaea10db12db5ba09b30456600d5450ebbdfbb33c5",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d1848ed678c8833858e5665e90302f45284ecd76e2f50c27ebb59cf8d70867c1",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e8f56726d892678233a89320a52312b5974a9c22be1fd4989637bd2e157c9279",
-      "item": "crate::Absorber::run",
-      "lint": "clippy::unwrap_used",
-      "path": "src/history/worker.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4cf780f4e1cc935f33696f5f0a6283d0ae302c87f4fea11186d6929c637b6658",
       "item": "crate::create_stream",
       "lint": "clippy::unwrap_used",
@@ -7380,41 +7294,6 @@
       "item": "crate::Registry::list_page",
       "lint": "clippy::unwrap_used",
       "path": "src/registry.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6dfa8e12465dca7d0cff6e27ed041e9d0f5ae22419a26334972cbb4addeeb0ae",
-      "item": "crate::Scaler::evaluate",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "83de2b6b7ace73581ae83c00c87c8e59440eb3b8af686a5d9d089816994d68cd",
-      "item": "crate::Scaler::hot_keys_all",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f8f2b3046b950718e35b71f47f39cb66011e4b23bc54f49dc2569adc62c697eb",
-      "item": "crate::Scaler::note_append",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "08c1b39a436db38dbf8738313cd077d6301fb23c58ca723d8703066fdbd7a4f8",
-      "item": "crate::Scaler::retire_segments",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "422d6380f078f9cb196bf26b4137ca805c9fb5d5ca12ef3756e96a64a5f559b4",
-      "item": "crate::State::prune",
-      "lint": "clippy::unwrap_used",
-      "path": "src/scaler3.rs"
     },
     {
       "count": 1,

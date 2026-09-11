@@ -201,9 +201,12 @@ impl Absorber {
             .usage
             .clear_absorb_pending_summary(&absorber.shard.prefix);
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "Absorber::classify_due; this test-only drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the absorber's configuration would put it on the production surface"
+    #[cfg_attr(
+        test,
+        expect(
+            clippy::disallowed_methods,
+            reason = "Absorber::classify_due; this test-only drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the absorber's configuration would put it on the production surface"
+        )
     )]
     #[expect(
         clippy::unwrap_used,

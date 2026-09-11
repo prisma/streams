@@ -310,6 +310,10 @@ type Decisions = (
     Vec<(crate::tenant::TenantStreamRef, String)>,
 );
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "evaluate_state; one pass ranks every sketched segment against the same policy and limits; splitting it would hide which rule chose each split or merge"
+)]
 fn evaluate_state(
     g: &mut State,
     now_ms: i64,
