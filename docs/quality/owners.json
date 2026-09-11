@@ -2087,6 +2087,38 @@
       "path": "src/sse/source.rs",
       "reason": "Lineage span rule; declared by path like the source's tests so the file name says what it holds; no copied source or public test API.",
       "syntax": "path = \"source/spans.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/product/usage.rs",
+      "reason": "Product usage handlers import their enclosing product surface; the compiler resolves the parent exports and the handlers only render rollup reads.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/catalog.rs",
+      "reason": "Registry catalog page imports its enclosing registry owner; the compiler resolves the parent exports and the page only lists and decodes descriptors.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::product_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::project_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
     }
   ]
 }

@@ -233,6 +233,11 @@ use crate::application::creation::ProductCreateConfig as ParsedCreate;
     clippy::result_large_err,
     reason = "transport boundary returns Axum wire response directly; application errors stay compact"
 )]
+#[expect(
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "parse_create_doc; the create document is validated field by field in one pass whose watch-field check nests inside the watch spec; splitting it or flattening the check would separate the fields from the document they validate"
+)]
 fn parse_create_doc(body: &Bytes) -> Result<ParsedCreate, Response> {
     if body.len() > MAX_CONFIG_BODY {
         return Err(perr(
@@ -1049,7 +1054,13 @@ async fn meter_op_if_ok(
     clippy::unwrap_used,
     reason = "product_entry; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
-pub async fn product_entry(
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "product_entry; the product entry takes every extractor axum resolved and dispatches every method and sub-path from one match whose admission refusal nests inside the tagged audit; a request struct, a split or a flattened refusal would separate the dispatch from the extractors and the refusal from the audit it tags"
+)]
+pub(crate) async fn product_entry(
     state: Arc<AppState>,
     path: String,
     method: Method,
@@ -1272,7 +1283,7 @@ pub async fn product_entry(
         }
         ProductRoute::Usage { name } => {
             return match method {
-                Method::GET => product_usage(state, &tenant, name, &query).await,
+                Method::GET => product_usage(state, tenant.stream_ref(&name), &query).await,
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
                     "method_not_allowed",
@@ -1392,6 +1403,10 @@ fn product_key(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_create; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
+)]
 async fn product_create(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -1568,6 +1583,11 @@ async fn product_metadata(
     clippy::expect_used,
     reason = "product_seal; the routing key was checked to be a valid header value when the seal document was admitted; a second fallible conversion would reject what admission already accepted"
 )]
+#[expect(
+    clippy::too_many_lines,
+    clippy::excessive_nesting,
+    reason = "product_seal; the seal validates the intent, claims, finalises and answers in one sequence whose header and disposition checks nest inside the final record path; splitting it or flattening the checks would separate the steps from the claim they share"
+)]
 async fn product_seal(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -1629,6 +1649,10 @@ async fn product_seal(
             // that the SDK sends whenever T admits it. The outer layer
             // is presence, the inner is the value.
             #[serde(default, deserialize_with = "deserialize_some")]
+            #[expect(
+                clippy::option_option,
+                reason = "final; absent, null and a value are three distinct wire states the seal contract names; a tri-state enum would restate serde's own null handling"
+            )]
             r#final: Option<Option<serde_json::Value>>,
             #[serde(default)]
             routing_key: Option<String>,
@@ -1910,6 +1934,10 @@ const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 /// as [value], the protocol's own one-level flattening rule, so an
 /// array-valued record stays ONE message; a batch passes its elements
 /// straight through.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_append_sealing; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
+)]
 async fn product_append_sealing(
     state: Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -1979,6 +2007,10 @@ fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> 
     None
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_append; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
+)]
 async fn product_append(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -1997,6 +2029,11 @@ async fn product_append(
 #[expect(
     clippy::too_many_arguments,
     reason = "product_append_inner; the parameters are the request's typed context parts, not tunables; a bundle struct for this single call site would only rename the same positional list"
+)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines,
+    reason = "product_append_inner; the append carries its sealing and close flags as the two independent facts the wire names and validates, admits and executes in one sequence; an enum or a split would restate the flags and separate the steps from the request they share"
 )]
 async fn product_append_inner(
     state: Arc<AppState>,
@@ -2506,6 +2543,10 @@ fn q_num<T: std::str::FromStr>(
 }
 
 fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "pct; the percent decoder nests the hex pair verdict inside the escape branch of the byte walk; flattening it would separate the verdict from the escape it decodes"
+    )]
     fn pct(v: &str) -> String {
         let b = v.as_bytes();
         let mut out = Vec::with_capacity(b.len());
@@ -2536,6 +2577,11 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "product_read; the read takes every extractor and authorization part the entry resolved and dispatches raw, keyed and long-poll reads from one place; a request struct or a split would separate the dispatch from the parts it needs"
+)]
 async fn product_read(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -2960,6 +3006,10 @@ pub(crate) fn render_product_read_failure(
     clippy::expect_used,
     reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail; mapping either into a substitute response would report a wire status the handler never decided"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "product_scan; the scan resolves, admits and pages the frozen cursor in one sequence; splitting it would separate the page from the cursor it advances"
+)]
 async fn product_scan(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3255,6 +3305,10 @@ fn consumer_key(headers: &HeaderMap) -> Result<String, Response> {
         )
     })
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_consumer_put; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
+)]
 async fn product_consumer_put(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3304,6 +3358,10 @@ async fn product_consumer_put(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_consumer_get; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
+)]
 async fn product_consumer_get(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3664,6 +3722,10 @@ pub(crate) async fn internal_queue_cursor(
 /// carries payloads only, and scan items surface routingKey per
 /// record). Parameters ride internal headers; the stream key rides its
 /// normal header because the payloads must be decrypted here.
+#[expect(
+    clippy::too_many_lines,
+    reason = "internal_segment_scan; the internal scan authenticates, decrypts and pages one segment in a single pass so the payloads never leave the decrypting owner; splitting it would separate the decryption from the page it fills"
+)]
 pub(crate) async fn internal_segment_scan(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -3790,6 +3852,10 @@ pub(crate) async fn internal_segment_scan(
 #[expect(
     clippy::unwrap_used,
     reason = "product_consumer_delete; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_consumer_delete; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
 )]
 async fn product_consumer_delete(
     state: Arc<AppState>,
@@ -3918,6 +3984,10 @@ async fn product_consumer_pull(
 #[expect(
     clippy::expect_used,
     reason = "product_consumer_settle; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "product_consumer_settle; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
 )]
 async fn product_consumer_settle(
     state: Arc<AppState>,
@@ -4106,7 +4176,15 @@ async fn product_watch_wait(
     clippy::unwrap_used,
     reason = "product_list; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
-pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMap) -> Response {
+#[expect(
+    clippy::too_many_lines,
+    reason = "product_list; the catalog listing gates, pages and renders in one sequence; splitting it would separate the page from the gate that admitted it"
+)]
+pub(crate) async fn product_list(
+    state: Arc<AppState>,
+    query: String,
+    headers: HeaderMap,
+) -> Response {
     // Its own route entry (not through product_entry): gate it here.
     // In enforce mode the principal is retained so the listing can be
     // filtered to the credential's §6.2 prefix grant — catalog.read
@@ -4238,334 +4316,9 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         .unwrap()
 }
 
-// ---- customer usage API (docs/OBSERVABILITY-BILLING.md §10) ----------
-
-/// GET /v1/streams/{name}/usage[?month=YYYY-MM] and .../usage/current.
-/// Control-plane metadata: bearer-authorized, NO record key required,
-/// answered from the rollup with a point read (never a ledger scan).
-#[expect(
-    clippy::unwrap_used,
-    reason = "product_usage; the month was parsed once at admission, so parsing it again cannot fail; a fallible re-parse would turn an already accepted request into a spurious error"
-)]
-async fn product_usage(
-    state: Arc<AppState>,
-    tenant: &crate::tenant::ProjectId,
-    name: String,
-    query: &str,
-) -> Response {
-    // R25-E: validate the query BEFORE availability checks — a
-    // malformed request is the CLIENT's error whatever this instance's
-    // billing posture, and a 503 for a typo'd parameter teaches callers
-    // to retry requests that can never succeed.
-    let q = match strict_query(query, &["month", "streamId"]) {
-        Ok(q) => q,
-        Err(r) => return r,
-    };
-    let Some(rollup) = state.rollup.get() else {
-        return perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "usage_unavailable",
-            "the usage rollup is not running on this instance",
-            None,
-            true,
-        );
-    };
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
-        Ok(Some(d)) => d,
-        Ok(None) => {
-            return perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            );
-        }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let now = crate::shard::now_ms();
-    let (cy, cm) = crate::billing::utc_year_month(now);
-    let current = crate::billing::month_str(cy, cm);
-    let month = q.get("month").cloned().unwrap_or_else(|| current.clone());
-    if crate::billing::parse_month(&month).is_none() {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_month",
-            "month must be YYYY-MM",
-            None,
-            false,
-        );
-    }
-    let mut id = crate::billing::identity_of_query(&state, &desc);
-    // Historical incarnation lookup (round-21 dashboard gap): after a
-    // delete/recreate, ?streamId= addresses a PRIOR incarnation's rows
-    // directly — invoice history survives the live resource.
-    if let Some(sid) = q.get("streamId").map(String::as_str) {
-        id.stream_id = sid.to_string();
-    }
-    let row: crate::rollup::MonthRow = match rollup
-        .month_row(&month, &id.account_id, &id.project_id, &id.stream_id)
-        .await
-    {
-        Ok(row) => row.unwrap_or_default(),
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let is_current = month == current;
-    // Round-21 blocker 2: a retained-but-idle stream has no month row
-    // yet for the CURRENT month — the durable segment index still knows
-    // its gauge, so provisional storage never reads as zero.
-    let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
-        let states = match rollup
-            .stream_segment_states(&id.account_id, &id.project_id, &id.stream_id)
-            .await
-        {
-            Ok(states) => states,
-            Err(error) => {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "usage_unavailable",
-                    &error.to_string(),
-                    None,
-                    true,
-                );
-            }
-        };
-        let mstart = {
-            let (y, m) = crate::billing::parse_month(&month).unwrap();
-            crate::billing::month_start_ms(y, m)
-        };
-        let bms: u128 = states
-            .iter()
-            .map(|s| {
-                let from = s.storage_accounted_through_ms.max(mstart);
-                (now - from).max(0) as u128 * s.owned_frame_bytes_current as u128
-            })
-            .sum();
-        let owned: u64 = states.iter().map(|s| s.owned_frame_bytes_current).sum();
-        (bms, owned)
-    } else {
-        (0, 0)
-    };
-    let byte_ms = if is_current {
-        row.storage_byte_ms_provisional(&month, now)
-            .max(fallback_byte_ms)
-    } else {
-        row.storage_byte_ms()
-    };
-    let month_ms = {
-        let (y, m) = crate::billing::parse_month(&month).unwrap();
-        let (ny, nm) = crate::billing::next_month(y, m);
-        (crate::billing::month_start_ms(ny, nm) - crate::billing::month_start_ms(y, m)) as u128
-    };
-    let avg_bytes = byte_ms / month_ms.max(1);
-    let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
-    let name_agg = match rollup
-        .name_row(&month, &id.account_id, &id.project_id, &id.stream_name)
-        .await
-    {
-        Ok(row) => row,
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let status = if row.finalized_at_ms.is_some() {
-        if row.corrections.is_empty() {
-            "finalized"
-        } else {
-            "corrected"
-        }
-    } else {
-        "provisional"
-    };
-    json_ok(&json!({
-        "projectId": id.project_id,
-        "streamId": id.stream_id,
-        "streamName": id.stream_name,
-        "month": month,
-        "status": status,
-        "ingestPayloadBytes": row.ingest_bytes(),
-        "ingestRecords": row.ingest_records(),
-        "readPayloadBytes": row.read_payload_bytes,
-        "readRecords": row.read_records,
-        "readOperations": row.read_operations,
-        "queueOperations": row.queue_operations,
-        "appendRequests": row.append_requests,
-        "storageByteSeconds": (byte_ms / 1000).to_string(),
-        "averageStoredBytes": avg_bytes as u64,
-        "gbMonth": gb_month,
-        "ownedStoredBytesNow": row.owned_bytes_now().max(fallback_owned),
-        "updatedAt": row.updated_ms,
-        "finalizedAt": row.finalized_at_ms,
-        "corrections": row.corrections.len(),
-        // Round-22 item 8: base + materialized corrections = what the
-        // invoice will actually say, plus the audit trail itself.
-        "effective": row.effective(),
-        "correctionTotals": row.corr,
-        "correctionList": row.corrections.iter().map(|c| serde_json::json!({
-            "id": c.correction_id,
-            "version": c.correction_version,
-            "sourceEventId": c.source_event_id,
-            "reason": c.reason,
-            "createdAt": c.created_at_ms,
-            "ingestPayloadBytesDelta": c.ingest_payload_bytes_delta,
-            "ingestRecordsDelta": c.ingest_records_delta,
-            "readPayloadBytesDelta": c.read_payload_bytes_delta,
-            "readRecordsDelta": c.read_records_delta,
-            "readOperationsDelta": c.read_operations_delta,
-            "queueOperationsDelta": c.queue_operations_delta,
-            "appendRequestsDelta": c.append_requests_delta,
-            "storageByteMsDelta": c.storage_byte_ms_delta,
-        })).collect::<Vec<_>>(),
-        "nameAggregate": name_agg.as_ref().map(|a| serde_json::json!({
-            "ingestPayloadBytes": a.ingest_bytes,
-            "readPayloadBytes": a.read_payload_bytes,
-            "storageByteSeconds": (a.storage_byte_ms.parse::<u128>().unwrap_or(0) / 1000).to_string(),
-        })),
-        "incarnations": name_agg.map(|a| a.incarnations).unwrap_or_default(),
-        "metering": {
-            "readFlushIntervalSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
-            "possibleReadLossWindowSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
-        }
-    }))
-}
-
-/// GET /v1/projects/{project}/usage[?month=YYYY-MM] (round-22 doc
-/// item D3): the project-level rollup answer — aggregate totals,
-/// correction sums, and effective values. Bearer-authenticated like
-/// every product control-plane read. Under the one-project-per-cell
-/// deployment contract the {project} segment must match this cell's
-/// configured project.
-pub(crate) async fn project_usage(
-    state: Arc<AppState>,
-    authority: &crate::tenant::ProjectId,
-    project: String,
-    query: &str,
-) -> Response {
-    let q = match strict_query(query, &["month"]) {
-        Ok(q) => q,
-        Err(r) => return r,
-    };
-
-    // Stage 5d: the path must name the AUTHORITATIVE project for this
-    // request — the verified principal's in enforce, the deployment
-    // tenant otherwise. Grammar-invalid and foreign ids get the same
-    // not-found answer (no grammar oracle), and the check precedes the
-    // availability probe: a wrong path is the client's error whatever
-    // this instance's rollup posture.
-    let names_authority = crate::tenant::ProjectId::new(&project)
-        .map(|p| p == *authority)
-        .unwrap_or(false);
-    if !names_authority {
-        // Journaled (§10.4): a verified principal probing FOREIGN
-        // project usage is the single most review-relevant denial
-        // class, deliberately shaped as 404 on the wire.
-        return crate::audit::tag_project(
-            crate::audit::tag(
-                perr(
-                    StatusCode::NOT_FOUND,
-                    "unknown_project",
-                    "the path does not name this request's project",
-                    None,
-                    false,
-                ),
-                "unknown_project",
-            ),
-            authority,
-        );
-    }
-    let Some(rollup) = state.rollup.get() else {
-        return perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "usage_unavailable",
-            "the usage rollup is not running on this instance",
-            None,
-            true,
-        );
-    };
-    let now = crate::shard::now_ms();
-    let (cy, cm) = crate::billing::utc_year_month(now);
-    let current = crate::billing::month_str(cy, cm);
-    let month = q.get("month").cloned().unwrap_or_else(|| current.clone());
-    if crate::billing::parse_month(&month).is_none() {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_month",
-            "month must be YYYY-MM",
-            None,
-            false,
-        );
-    }
-    // Stage 7: rows land under the workspace-at-event; query and
-    // report under the SAME resolution the meter used.
-    let account = if state.auth.mode != crate::auth::AuthMode::Off {
-        state
-            .auth
-            .workspace_for(authority)
-            .map(|w| w.as_str().to_string())
-            .unwrap_or_else(|| state.deployment.account_id().to_string())
-    } else {
-        state.deployment.account_id().to_string()
-    };
-    let agg = match rollup.project_row(&month, &account, &project).await {
-        Ok(row) => row.unwrap_or_default(),
-        Err(error) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "usage_unavailable",
-                &error.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
-    json_ok(&json!({
-        "accountId": account,
-        "projectId": project,
-        "month": month,
-        "ingestPayloadBytes": agg.ingest_bytes,
-        "ingestRecords": agg.ingest_records,
-        "readPayloadBytes": agg.read_payload_bytes,
-        "readRecords": agg.read_records,
-        "readOperations": agg.read_operations,
-        "queueOperations": agg.queue_operations,
-        "appendRequests": agg.append_requests,
-        "storageByteSeconds": (byte_ms / 1000).to_string(),
-        "correctionTotals": agg.corr,
-        "effective": {
-            "ingestPayloadBytes": crate::rollup::eff_u64(agg.ingest_bytes, agg.corr.ingest_payload_bytes_delta),
-            "ingestRecords": crate::rollup::eff_u64(agg.ingest_records, agg.corr.ingest_records_delta),
-            "readPayloadBytes": crate::rollup::eff_u64(agg.read_payload_bytes, agg.corr.read_payload_bytes_delta),
-            "readRecords": crate::rollup::eff_u64(agg.read_records, agg.corr.read_records_delta),
-            "readOperations": crate::rollup::eff_u64(agg.read_operations, agg.corr.read_operations_delta),
-            "queueOperations": crate::rollup::eff_u64(agg.queue_operations, agg.corr.queue_operations_delta),
-            "appendRequests": crate::rollup::eff_u64(agg.append_requests, agg.corr.append_requests_delta),
-            "storageByteSeconds": (crate::rollup::eff_u128(byte_ms, &agg.corr.storage_byte_ms_delta) / 1000).to_string(),
-        },
-    }))
-}
+mod usage;
+use usage::product_usage;
+pub(crate) use usage::project_usage;
 
 #[cfg(test)]
 pub(crate) use crate::application::lifecycle::EnterSeal;
