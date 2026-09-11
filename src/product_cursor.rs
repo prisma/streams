@@ -614,7 +614,7 @@ mod tests {
         assert!(MessageId::decode(&ms, &tp(), &key(), &[9; 16]).is_err());
         assert!(MessageId::decode(&ms, &tp(), &StreamKey([8u8; 32]), &[1; 16]).is_err());
         let lt = LeaseToken {
-            msg: m.clone(),
+            msg: m,
             lease_gen: 7,
             consumer_gen: 3,
             deadline_ms: 123_456,
