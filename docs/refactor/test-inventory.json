@@ -1128,7 +1128,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "2c9d3a16715dc16ef1a94a640861e9eb4fac3687e68d4fdee0c68cd09c14f82b",
+    "function_sha256": "686c9da7412fbe2fb4786d73d60763fdcbcdbcdaa45b0aa8bb88a611c47188f8",
     "mechanisms": [],
     "configuration": [
       "\"estimate must seed at the worst case\""
@@ -2013,7 +2013,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "20a29cce088ad4fb2b5c0df0efc5fde165382b427a4186fbae679b9010aac510",
+    "function_sha256": "30a47fa91794a019d57e02295ed8b21ea46b66f63b3b80a2d0f0ee373c9d1b28",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/history_gather.rs",
@@ -2024,11 +2024,12 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "3340a572873f033e39e92d382279e43dba1ab97939fa507979574572e735ae98",
+    "function_sha256": "3713462bcccc6cf794126b906e21eb9542d72a95f3299d0c8f15188edaa2be65",
     "mechanisms": [],
     "configuration": [
-      "let rig = |path: &'static str, seed: u64, cfg: crate::history::AbsorberConfig| {",
-      "seed,"
+      "let seed = 7501;",
+      "let (adv_serial, _e1) = gather_after_reopen(\"dst-rpar-1\", seed, serial_cfg, &key).await;",
+      "let (adv_par, _e2) = gather_after_reopen(\"dst-rpar-8\", seed, par_cfg, &key).await;"
     ],
     "file": "src/dst/tests/history_gather.rs",
     "scenarios": []
@@ -5147,7 +5148,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "f97b15245a9aa86d3c40b7dd261b21095e8489b86c5f9101556968b570dbfb7f",
+    "function_sha256": "174da5d260f9a1c648d98aa77529ac6fdc43a2431cf395375b4abd4e1db5b986",
     "mechanisms": [],
     "configuration": [
       "// Sparse seed: ~2 KiB per stream \u2014 the 10k-tenant field shape in"
