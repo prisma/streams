@@ -174,7 +174,10 @@ impl Workload {
     }
 
     /// One attempt, classified as the client would classify it.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload::attempt; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
     async fn attempt(
         &self,
         engine: &Arc<crate::shard::ShardEngine>,
@@ -247,7 +250,10 @@ impl Workload {
     /// leaves the server's append running and yields `Unknown`, which is
     /// exactly the operational shape storage faults produce (slow, not
     /// failed). Returns the raw outcome; the caller owns the ledger.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload::attempt_with_deadline; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
     pub(crate) async fn attempt_with_deadline(
         &self,
         engine: &Arc<crate::shard::ShardEngine>,
@@ -342,7 +348,11 @@ impl Workload {
     /// so the engine must suppress the duplicate (I6). Without it, a retry
     /// may legitimately commit twice — which is exactly why the oracle
     /// tracks operations rather than payloads.
-    pub async fn append(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload::append; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
+    pub(crate) async fn append(
         &mut self,
         engine: &Arc<crate::shard::ShardEngine>,
         hash: [u8; 16],
@@ -362,7 +372,10 @@ impl Workload {
     /// operation, same producer sequence, new owner. The retry is only
     /// idempotent if producer state survived the handoff — which is the
     /// property this exists to test.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload::append_to; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
     pub(crate) async fn append_to(
         &mut self,
         engines: &[&Arc<crate::shard::ShardEngine>],
@@ -431,7 +444,10 @@ impl Workload {
     }
 
     /// `per_key` operations for each routing key.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload::run; the DST workload takes the engine, stream, key, payload and fault knobs separately as each scenario states them; a request struct would hide which knob a scenario varies"
+    )]
     pub(crate) async fn run(
         &mut self,
         engine: &Arc<crate::shard::ShardEngine>,
@@ -461,6 +477,10 @@ impl Workload {
 /// One history-reader service per store, defaults suitable for
 /// correctness scenarios. Budget scenarios construct their own (pinned
 /// poll, chosen cap) and hold it across reads.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "drain_observed; this test-only drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the harness configuration would put it on every scenario's surface"
+)]
 pub(crate) async fn drain_observed(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],
@@ -514,7 +534,9 @@ pub(crate) async fn drain_observed(
             ) else {
                 continue;
             };
-            out.entry(k.to_string()).or_default().push((op, att as u32));
+            out.entry(k.to_string())
+                .or_default()
+                .push((op, u32::try_from(att).unwrap_or(u32::MAX)));
         }
         if res.completed {
             return out;
