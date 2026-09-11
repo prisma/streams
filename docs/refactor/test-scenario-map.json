@@ -1909,8 +1909,8 @@
     "tests": [
       {
         "name": "million_key_shape_holds_process_budget",
-        "file": "src/postings_cache.rs",
-        "line": 1020
+        "file": "src/postings_cache/tests.rs",
+        "line": 170
       }
     ],
     "mapped": true,

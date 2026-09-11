@@ -1551,6 +1551,30 @@
       "path": "src/history/gather.rs",
       "reason": "Test-only drain trace of the gather pass; the DST harness switches it on through the process environment, and it prints the staged frames without touching absorber state.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/admission_tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/straddle_tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings_cache/tests.rs",
+      "reason": "Postings cache test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the slice budget and admission proofs.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }
