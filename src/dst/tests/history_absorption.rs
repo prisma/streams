@@ -15,6 +15,31 @@ use std::sync::atomic::Ordering;
 /// entirely and read straight off the shard log, so history DB creation,
 /// block encryption, the absorbed-boundary publication, trimming and the
 /// merge were all untested.
+/// Looks at the stream's durable tail up to `tries` times, 25 ms apart,
+/// until `ready` holds; returns the last tail seen, if the handle existed.
+async fn durable_tail(
+    engine: &crate::shard::ShardEngine,
+    hash: [u8; 16],
+    tries: usize,
+    ready: impl Fn(&crate::shard::TailFields) -> bool,
+) -> Option<crate::shard::TailFields> {
+    let mut last = None;
+    for _ in 0..tries {
+        let Ok(handle) = engine.stream_handle(hash).await else {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            continue;
+        };
+        let tail = handle.state.lock().unwrap().durable.clone();
+        let done = ready(&tail);
+        last = Some(tail);
+        if done {
+            return last;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    last
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acked_records_survive_absorption_into_history() {
     let inner = mem();
@@ -31,16 +56,9 @@ async fn acked_records_survive_absorption_into_history() {
     assert!(log.total_acked() > 0, "nothing acked");
 
     // Wait for the absorbed boundary to advance past zero.
-    let mut absorbed = 0u64;
-    for _ in 0..400 {
-        if let Ok(h) = engine.stream_handle(hash).await {
-            absorbed = h.state.lock().unwrap().durable.absorbed;
-            if absorbed > 0 {
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    let absorbed = durable_tail(&engine, hash, 400, |t| t.absorbed > 0)
+        .await
+        .map_or(0, |t| t.absorbed);
     assert!(
         absorbed > 0,
         "the absorber never advanced the boundary — the scenario would only \
@@ -127,19 +145,10 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
     assert!(log.total_acked() > 0, "nothing acked");
 
     // No signal was ever delivered; only the sweep can find this stream.
-    let mut caught_up = false;
-    for _ in 0..400 {
-        if let Ok(h) = engine.stream_handle(hash).await {
-            let st = h.state.lock().unwrap();
-            if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
-                caught_up = true;
-            }
-        }
-        if caught_up {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    let caught = |t: &crate::shard::TailFields| t.absorbed > 0 && t.absorbed == t.next;
+    let caught_up = durable_tail(&engine, hash, 400, caught)
+        .await
+        .is_some_and(|t| caught(&t));
     assert!(
         caught_up,
         "the sweep never absorbed the signal-less stream — lost signals \
@@ -230,8 +239,9 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
             enqueued_at: std::time::Instant::now(),
             hash,
             route: hash,
-            entries: (0..RECORDS)
-                .map(|i| bytes::Bytes::from(vec![b'a' + i as u8; SIZE]))
+            entries: (b'a'..)
+                .take(RECORDS)
+                .map(|fill| bytes::Bytes::from(vec![fill; SIZE]))
                 .collect(),
             usage: crate::usage::counters(&hash),
             routing_key: "k".to_string(),
@@ -257,21 +267,10 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
 
     // Convergence: absorbed must REACH next. Before the fix this stuck
     // one record in and never moved again.
-    let mut drained = false;
-    let mut last_seen = (0u64, 0u64);
-    for _ in 0..400 {
-        if let Ok(h) = engine.stream_handle(hash).await {
-            let st = h.state.lock().unwrap();
-            last_seen = (st.durable.absorbed, st.durable.next);
-            if st.durable.next > 0 && st.durable.absorbed == st.durable.next {
-                drained = true;
-            }
-        }
-        if drained {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    let fully_drained = |t: &crate::shard::TailFields| t.next > 0 && t.absorbed == t.next;
+    let tail = durable_tail(&engine, hash, 400, fully_drained).await;
+    let last_seen = tail.as_ref().map_or((0, 0), |t| (t.absorbed, t.next));
+    let drained = tail.is_some_and(|t| fully_drained(&t));
     assert!(
         drained,
         "absorption stalled with records larger than the gather cap: \
@@ -343,22 +342,13 @@ async fn v2_absorbs_without_customer_keys() {
         .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
-    let mut absorbed = 0u64;
-    for _ in 0..400 {
-        if let Ok(h) = engine.stream_handle(hash).await {
-            let st = h.state.lock().unwrap();
-            absorbed = st.durable.absorbed;
-            if absorbed > 0 {
-                assert!(
-                    st.durable.history_v2,
-                    "absorption advanced without the v2 flag"
-                );
-            }
-        }
-        if absorbed > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let tail = durable_tail(&engine, hash, 400, |t| t.absorbed > 0).await;
+    let absorbed = tail.as_ref().map_or(0, |t| t.absorbed);
+    if absorbed > 0 {
+        assert!(
+            tail.is_some_and(|t| t.history_v2),
+            "absorption advanced without the v2 flag"
+        );
     }
     assert!(
         absorbed > 0,
@@ -398,16 +388,9 @@ async fn v2_history_survives_engine_handoff() {
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
-    let mut absorbed = 0u64;
-    for _ in 0..400 {
-        if let Ok(h) = a.stream_handle(hash).await {
-            absorbed = h.state.lock().unwrap().durable.absorbed;
-            if absorbed > 0 {
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    let absorbed = durable_tail(&a, hash, 400, |t| t.absorbed > 0)
+        .await
+        .map_or(0, |t| t.absorbed);
     assert!(absorbed > 0, "no v2 absorption before the handoff");
 
     // Successor opens the same shard; its first commit fences the old
@@ -528,21 +511,11 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         .store(false, Ordering::Relaxed);
 
     // BOTH streams must age-absorb — the tiny one especially.
+    let aged = |t: &crate::shard::TailFields| t.absorbed > 0 && t.absorbed == t.next;
     for (name, hash) in [("tiny", tiny), ("fat", fat)] {
-        let mut absorbed = false;
-        for _ in 0..400 {
-            let h = engine.stream_handle(hash).await.expect("handle");
-            {
-                let st = h.state.lock().unwrap();
-                if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
-                    absorbed = true;
-                }
-            }
-            if absorbed {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
+        let absorbed = durable_tail(&engine, hash, 400, aged)
+            .await
+            .is_some_and(|t| aged(&t));
         assert!(absorbed, "the {name} stream never age-absorbed");
     }
 
