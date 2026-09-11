@@ -1351,6 +1351,22 @@
       "path": "src/dst/tests/topology_lifecycle.rs",
       "reason": "Merge under sealing fixture owns the pending merge handle; it is joined after the seal is resolved. Concurrent execution is required to decline it under the sealing collection.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::blast_keys",
+      "path": "src/dst/tests/topology_scaling.rs",
+      "reason": "Capacity load fixture owns every client task; all are stopped through the shared flag and joined before the acknowledged count is returned. Concurrent clients are required to saturate the committer.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
