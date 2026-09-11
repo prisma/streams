@@ -1739,13 +1739,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::read_frames_until",
-      "path": "src/shard/record.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::serve",
       "path": "src/sse/session.rs",
       "syntax": "allow (clippy :: too_many_arguments)"

@@ -205,6 +205,18 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
         decode_row(&key, &key[..17], &raw[..raw.len() - 1]),
         Err(RecordCorruption::Frame)
     ));
+    // A ciphertext shorter than an AEAD tag can never authenticate, so a
+    // length-consistent frame carrying one is corrupt rather than short.
+    let header_len = crate::crypto::decode_frame(&raw)
+        .expect("fixture frame decodes")
+        .header_len;
+    let mut tagless = raw[..header_len].to_vec();
+    tagless.extend_from_slice(&8u32.to_be_bytes());
+    tagless.extend_from_slice(&[0; 8]);
+    assert!(matches!(
+        decode_row(&key, &key[..17], &tagless),
+        Err(RecordCorruption::Frame)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
