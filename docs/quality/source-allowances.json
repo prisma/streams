@@ -3937,13 +3937,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/billing.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::drain_fairness_tests",
       "path": "src/billing_service.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

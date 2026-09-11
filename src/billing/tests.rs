@@ -35,6 +35,10 @@ fn month_math_round_trips() {
     assert_eq!(parse_month("junk"), None);
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "storage_clock_splits_at_month_boundaries; the fixture advances the clock by positive epoch milliseconds, so the integral it checks is non-negative by construction; a checked conversion would only restate the arithmetic the assertion pins"
+)]
 #[test]
 fn storage_clock_splits_at_month_boundaries() {
     let mut m = SegmentBillingMetaV1 {
