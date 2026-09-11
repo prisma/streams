@@ -40,8 +40,8 @@ mod fault_store;
 mod runtime;
 mod trace_store;
 
-pub use fault_store::{FaultPlan, FaultProfile, FaultStore};
-pub use runtime::{AttemptId, OpLog, Outcome, Workload, drain_observed};
+pub(crate) use fault_store::{FaultPlan, FaultProfile, FaultStore};
+pub(crate) use runtime::{AttemptId, OpLog, Outcome, Workload, drain_observed};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -53,7 +53,7 @@ use std::sync::Mutex;
 /// `head` is absent deliberately: `ObjectStoreExt::head` is implemented on
 /// top of `get_opts`, so a HEAD arrives here as a `Get`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StoreOp {
+pub(crate) enum StoreOp {
     Put,
     Get,
     Delete,
@@ -65,7 +65,7 @@ pub enum StoreOp {
 /// production telemetry uses (`store_timing::classify`) — so a scenario
 /// that targets "the WAL" targets what `/v1/debug/store` calls the WAL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ObjClass {
+pub(crate) enum ObjClass {
     Wal,
     Manifest,
     Sst,
@@ -74,7 +74,7 @@ pub enum ObjClass {
 }
 
 impl ObjClass {
-    pub fn of(path: &str) -> Self {
+    pub(crate) fn of(path: &str) -> Self {
         match crate::store_timing::classify(path) {
             0 => ObjClass::Wal,
             1 => ObjClass::Manifest,
@@ -94,16 +94,16 @@ impl ObjClass {
 /// D3 and D4 passed their order checks for several passes while never once
 /// triggering the mechanism under test (`bench/docker/harness/README.md`).
 #[derive(Debug, Default)]
-pub struct Coverage {
+pub(crate) struct Coverage {
     counters: Mutex<HashMap<&'static str, u64>>,
 }
 
 impl Coverage {
-    pub fn hit(&self, name: &'static str) {
+    pub(crate) fn hit(&self, name: &'static str) {
         *self.counters.lock().unwrap().entry(name).or_insert(0) += 1;
     }
 
-    pub fn get(&self, name: &str) -> u64 {
+    pub(crate) fn get(&self, name: &str) -> u64 {
         self.counters
             .lock()
             .unwrap()
@@ -112,7 +112,7 @@ impl Coverage {
             .unwrap_or(0)
     }
 
-    pub fn snapshot(&self) -> Vec<(String, u64)> {
+    pub(crate) fn snapshot(&self) -> Vec<(String, u64)> {
         let mut v: Vec<(String, u64)> = self
             .counters
             .lock()
@@ -125,7 +125,7 @@ impl Coverage {
     }
 
     /// Fail the scenario if a mechanism it claims to test never fired.
-    pub fn require(&self, names: &[&str]) -> Result<(), String> {
+    pub(crate) fn require(&self, names: &[&str]) -> Result<(), String> {
         let missing: Vec<&str> = names.iter().copied().filter(|n| self.get(n) == 0).collect();
         if missing.is_empty() {
             Ok(())
@@ -139,20 +139,20 @@ impl Coverage {
 }
 
 /// Mechanism names. Scenarios `require` the ones they claim to test.
-pub mod mech {
-    pub const STORE_ERROR: &str = "store_error_before_dispatch";
-    pub const STORE_LOST_RESPONSE: &str = "store_success_response_lost";
-    pub const STORE_LATENCY: &str = "store_latency_injected";
-    pub const APPEND_ACKED: &str = "append_acked";
-    pub const APPEND_REJECTED: &str = "append_rejected";
-    pub const APPEND_UNKNOWN: &str = "append_unknown_outcome";
-    pub const APPEND_RETRIED: &str = "append_retried";
-    pub const PRODUCER_DUPLICATE: &str = "producer_duplicate_suppressed";
-    pub const OLD_OWNER_FENCED: &str = "old_owner_fenced";
+pub(crate) mod mech {
+    pub(crate) const STORE_ERROR: &str = "store_error_before_dispatch";
+    pub(crate) const STORE_LOST_RESPONSE: &str = "store_success_response_lost";
+    pub(crate) const STORE_LATENCY: &str = "store_latency_injected";
+    pub(crate) const APPEND_ACKED: &str = "append_acked";
+    pub(crate) const APPEND_REJECTED: &str = "append_rejected";
+    pub(crate) const APPEND_UNKNOWN: &str = "append_unknown_outcome";
+    pub(crate) const APPEND_RETRIED: &str = "append_retried";
+    pub(crate) const PRODUCER_DUPLICATE: &str = "producer_duplicate_suppressed";
+    pub(crate) const OLD_OWNER_FENCED: &str = "old_owner_fenced";
     pub const AFTER_DURABLE_BEFORE_ACK: &str = "after_durable_before_ack";
-    pub const CLIENT_DEADLINE_EXPIRED: &str = "client_deadline_expired";
-    pub const IN_FLIGHT_AT_FENCE: &str = "append_in_flight_at_fence";
-    pub const READ_FROM_HISTORY: &str = "read_served_from_history";
+    pub(crate) const CLIENT_DEADLINE_EXPIRED: &str = "client_deadline_expired";
+    pub(crate) const IN_FLIGHT_AT_FENCE: &str = "append_in_flight_at_fence";
+    pub(crate) const READ_FROM_HISTORY: &str = "read_served_from_history";
 }
 
 #[cfg(test)]

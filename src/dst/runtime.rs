@@ -11,11 +11,11 @@ use super::{Coverage, mech};
 // ---- the reference model --------------------------------------------
 
 /// Identity of one *attempt* at one logical client operation.
-pub type AttemptId = (u64, u32);
+pub(crate) type AttemptId = (u64, u32);
 
 /// Terminal state of one attempt, as the client would classify it.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
+pub(crate) enum Outcome {
     /// Durably acknowledged, with the offset the server reported.
     Acked { last_offset: u64, duplicate: bool },
     /// The server decided against it before committing anything.
@@ -27,7 +27,7 @@ pub enum Outcome {
 
 /// What the workload believes it did.
 #[derive(Default, Debug)]
-pub struct OpLog {
+pub(crate) struct OpLog {
     /// Per routing key, attempts that were acknowledged, in ack order.
     pub acked: HashMap<String, Vec<AttemptId>>,
     /// Attempts the server definitively rejected: they must never appear.
@@ -50,7 +50,7 @@ pub struct OpLog {
 }
 
 impl OpLog {
-    pub fn total_acked(&self) -> usize {
+    pub(crate) fn total_acked(&self) -> usize {
         self.acked.values().map(|v| v.len()).sum()
     }
 
@@ -60,7 +60,7 @@ impl OpLog {
 
     /// Audit what a reader actually drained. `observed` is per routing key,
     /// in read order.
-    pub fn audit(&self, observed: &HashMap<String, Vec<AttemptId>>) -> Result<(), String> {
+    pub(crate) fn audit(&self, observed: &HashMap<String, Vec<AttemptId>>) -> Result<(), String> {
         // The ledger must be self-consistent, or a harness bug could
         // silently weaken every check below.
         let acked = self.all_acked();
@@ -150,7 +150,7 @@ impl OpLog {
 // ---- workload --------------------------------------------------------
 
 /// Drives logical client operations, with retries, against a real engine.
-pub struct Workload {
+pub(crate) struct Workload {
     next_op: u64,
     /// Next producer sequence per routing key. Producer sequences are
     /// per-(producer id) and must start at 0 and be contiguous — an epoch
@@ -164,7 +164,7 @@ pub struct Workload {
 }
 
 impl Workload {
-    pub fn new(coverage: Arc<Coverage>) -> Self {
+    pub(crate) fn new(coverage: Arc<Coverage>) -> Self {
         Workload {
             next_op: 1,
             producer_seq: HashMap::new(),
@@ -248,7 +248,7 @@ impl Workload {
     /// exactly the operational shape storage faults produce (slow, not
     /// failed). Returns the raw outcome; the caller owns the ledger.
     #[allow(clippy::too_many_arguments)]
-    pub async fn attempt_with_deadline(
+    pub(crate) async fn attempt_with_deadline(
         &self,
         engine: &Arc<crate::shard::ShardEngine>,
         hash: [u8; 16],
@@ -363,7 +363,7 @@ impl Workload {
     /// idempotent if producer state survived the handoff — which is the
     /// property this exists to test.
     #[allow(clippy::too_many_arguments)]
-    pub async fn append_to(
+    pub(crate) async fn append_to(
         &mut self,
         engines: &[&Arc<crate::shard::ShardEngine>],
         hash: [u8; 16],
@@ -432,7 +432,7 @@ impl Workload {
 
     /// `per_key` operations for each routing key.
     #[allow(clippy::too_many_arguments)]
-    pub async fn run(
+    pub(crate) async fn run(
         &mut self,
         engine: &Arc<crate::shard::ShardEngine>,
         hash: [u8; 16],
@@ -461,7 +461,7 @@ impl Workload {
 /// One history-reader service per store, defaults suitable for
 /// correctness scenarios. Budget scenarios construct their own (pinned
 /// poll, chosen cap) and hold it across reads.
-pub async fn drain_observed(
+pub(crate) async fn drain_observed(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],
     key: &crate::crypto::StreamKey,
