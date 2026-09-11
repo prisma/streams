@@ -516,6 +516,41 @@ pub(crate) struct Plan {
     pub complete: bool,
 }
 
+impl Plan {
+    /// Budget exhausted BY a run. With prior spans the partial already made
+    /// progress; with NONE, the first record must still be served (review
+    /// blocker: a run fatter than the whole scan budget used to plan ZERO
+    /// spans, so the read returned an empty page forever). Split the run to
+    /// a bounded prefix — per-record estimate, never fewer than one record;
+    /// the span executor's response budget truncates honestly if the
+    /// estimate under-counts.
+    fn serve_bounded_prefix(&mut self, r: &AbsRun, max_scan_bytes: u64) {
+        if !self.spans.is_empty() {
+            return;
+        }
+        // The run holds at least one record and per_rec is floored at one
+        // byte, so neither division has a zero divisor.
+        let per_rec = r
+            .matching_bytes
+            .checked_div(u64::from(r.count.max(1)))
+            .unwrap_or(1)
+            .max(1);
+        let budget_recs = max_scan_bytes
+            .checked_div(per_rec)
+            .unwrap_or(1)
+            .clamp(1, u64::from(r.count));
+        let end = r.start.saturating_add(budget_recs);
+        let bytes = per_rec.saturating_mul(budget_recs);
+        self.spans.push(Span {
+            start: r.start,
+            end,
+            matching_bytes: bytes,
+            scan_bytes: bytes,
+        });
+        self.consumed_to = end;
+    }
+}
+
 /// Plan bounded canonical spans over absolute runs (ascending, within
 /// one requested range). Coalesces a following run into the current
 /// span when the intervening gap is small in BYTES; otherwise opens a
@@ -582,38 +617,7 @@ pub(crate) fn plan_spans_iter(
                     return plan;
                 }
                 if scan_total.saturating_add(r_bytes) > cfg.max_scan_bytes {
-                    // Budget exhausted BY this run. With prior spans the
-                    // partial already made progress; with NONE, the first
-                    // record must still be served (review blocker: a run
-                    // fatter than the whole scan budget used to plan ZERO
-                    // spans, so the read returned an empty page forever).
-                    // Split the run to a bounded prefix — per-record
-                    // estimate, never fewer than one record; the span
-                    // executor's response budget truncates honestly if
-                    // the estimate under-counts.
-                    if plan.spans.is_empty() {
-                        // The run holds at least one record and per_rec is floored at
-                        // one byte, so neither division has a zero divisor.
-                        let per_rec = r
-                            .matching_bytes
-                            .checked_div(u64::from(r.count.max(1)))
-                            .unwrap_or(1)
-                            .max(1);
-                        let budget_recs = cfg
-                            .max_scan_bytes
-                            .checked_div(per_rec)
-                            .unwrap_or(1)
-                            .clamp(1, u64::from(r.count));
-                        let end = r.start.saturating_add(budget_recs);
-                        let bytes = per_rec.saturating_mul(budget_recs);
-                        plan.spans.push(Span {
-                            start: r.start,
-                            end,
-                            matching_bytes: bytes,
-                            scan_bytes: bytes,
-                        });
-                        plan.consumed_to = end;
-                    }
+                    plan.serve_bounded_prefix(&r, cfg.max_scan_bytes);
                     plan.complete = false;
                     return plan;
                 }
