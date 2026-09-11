@@ -74,6 +74,14 @@ pub(crate) enum WaitOutcome {
 }
 
 impl TouchJournal {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "TouchJournal::start; the per-stream flusher is started under the journal map lock, where no supervisor is reachable, and it exits on its own once the journal closes; a supervised flusher would thread the supervisor through every journal creation for a task that ends itself"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "TouchJournal::start; the flusher nests the close verdict inside the tick loop of the spawned flusher; flattening it would separate the verdict from the tick that produced it"
+    )]
     pub(crate) fn start(entropy: &dyn crate::runtime::Entropy) -> Arc<TouchJournal> {
         let mut e = [0u8; 8];
         entropy.fill(&mut e);
@@ -102,6 +110,10 @@ impl TouchJournal {
     }
 
     /// Record touched key IDs (shard acker, post-durability).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TouchJournal::ingest; a poisoned journal may hold a half-ingested bucket; recovering it could flush or acknowledge touches that were never recorded"
+    )]
     pub(crate) fn ingest(&self, key_ids: &[u32], next_offset: u64) {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
@@ -123,6 +135,10 @@ impl TouchJournal {
         }
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TouchJournal::flush_bucket; a poisoned journal may hold a half-ingested bucket; recovering it could flush or acknowledge touches that were never recorded"
+    )]
     fn flush_bucket(&self, reap: bool) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
@@ -372,6 +388,10 @@ impl TouchRegistry {
         }
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TouchRegistry::journal; a poisoned journal map may hold a half-inserted or half-closed journal; recovering it could revive a journal a fence already closed"
+    )]
     pub(crate) fn journal(
         &self,
         hash: [u8; 16],
@@ -387,6 +407,10 @@ impl TouchRegistry {
     /// Fence/move of a shard: close + drop every journal whose stream's
     /// shard ROUTE hash falls in the shard's bit-prefix, waking all
     /// their waiters with stale.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "TouchRegistry::close_shard; a poisoned journal map may hold a half-inserted or half-closed journal; recovering it could revive a journal a fence already closed"
+    )]
     pub(crate) fn close_shard(&self, prefix: &str) {
         let mut map = self.map.lock().unwrap();
         let closing: Vec<[u8; 16]> = map

@@ -102,7 +102,11 @@ impl Fp {
     /// The site contract: WHERE the point fires, stated as the
     /// window it opens. This is the enumerable registry the DST
     /// program audits against.
-    pub fn site(self) -> &'static str {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Fp::site; the site registry states every failpoint's window in the one match the DST program audits; splitting it would separate the sites from the registry that enumerates them"
+    )]
+    pub(crate) fn site(self) -> &'static str {
         match self {
             Fp::StopAfterTombstone => {
                 "delete cascade: after the named generation is tombstoned \
@@ -233,9 +237,11 @@ fn active(fp: Fp) -> bool {
     ACTIVE[fp.idx()].load(std::sync::atomic::Ordering::Acquire) > 0
 }
 
-fn reg() -> &'static Mutex<HashMap<(Fp, String), FpState>> {
-    static M: std::sync::OnceLock<Mutex<HashMap<(Fp, String), FpState>>> =
-        std::sync::OnceLock::new();
+/// Every armed point, keyed by point and stream name.
+type Registry = Mutex<HashMap<(Fp, String), FpState>>;
+
+fn reg() -> &'static Registry {
+    static M: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

@@ -1815,6 +1815,38 @@
       "path": "src/postings.rs",
       "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
       "syntax": "path = \"postings/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TouchJournal::start",
+      "path": "src/touch.rs",
+      "reason": "Per-stream touch flusher started under the journal map lock and ended by the journal's own close; no supervisor is reachable at creation and the task owns nothing beyond its journal.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::launch_shutdown",
+      "path": "src/tasks/shutdown.rs",
+      "reason": "The one shutdown driver: it joins the supervised set and publishes the report every observer waits on, so it cannot itself be supervised.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "src/main.rs",
+      "reason": "Process entry reads the Tokio worker floor once before the runtime exists; no service configuration or credentials are inferred.",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::reg::M",
+      "path": "src/failpoints.rs",
+      "reason": "The DST failpoint registry: one process-wide lazily initialised map keyed by point and stream name, armed and read only by the DST program; a per-runtime copy would let a parked point outlive the runtime that armed it.",
+      "syntax": "std :: sync :: OnceLock < Registry >"
     }
   ]
 }

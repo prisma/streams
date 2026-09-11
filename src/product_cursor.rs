@@ -44,6 +44,10 @@ pub(crate) struct KeyCursor {
 /// stream key and epoch — a cursor minted for one project's stream
 /// can never authenticate against another project's same-named,
 /// same-keyed stream.
+#[expect(
+    clippy::expect_used,
+    reason = "mac_key; HMAC-SHA256 accepts a key of any length, so construction from the derived key cannot fail; a fallible path would add a branch no key reaches"
+)]
 fn mac_key(project: &crate::tenant::ProjectId, key: &StreamKey, epoch: &[u8; 16]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -56,6 +60,10 @@ fn mac_key(project: &crate::tenant::ProjectId, key: &StreamKey, epoch: &[u8; 16]
     out
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "mac16; HMAC-SHA256 accepts a key of any length, so construction from the derived key cannot fail; a fallible path would add a branch no key reaches"
+)]
 fn mac16(k: &[u8; 32], payload: &[u8]) -> [u8; MAC_LEN] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -129,7 +137,7 @@ impl CatalogCursor {
         let pb = self.project.as_str().as_bytes();
         let mut p = Vec::with_capacity(1 + 2 + pb.len() + self.last_name.len() + MAC_LEN);
         p.push(KIND_CATALOG_V1);
-        p.extend_from_slice(&(pb.len() as u16).to_le_bytes());
+        p.extend_from_slice(&u16::try_from(pb.len()).unwrap_or(u16::MAX).to_le_bytes());
         p.extend_from_slice(pb);
         p.extend_from_slice(self.last_name.as_bytes());
         if let Some(k) = key {
@@ -146,7 +154,11 @@ impl ScanCursor {
         p.push(KIND_SCAN_V2);
         p.extend_from_slice(&self.epoch);
         p.extend_from_slice(&self.map_version.to_le_bytes());
-        p.extend_from_slice(&(self.segments.len() as u32).to_le_bytes());
+        p.extend_from_slice(
+            &u32::try_from(self.segments.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
         for (id, end) in &self.segments {
             p.extend_from_slice(&id.to_le_bytes());
             p.extend_from_slice(&end.to_le_bytes());

@@ -13,7 +13,10 @@
 //! Stage 5 wires the real snapshot/delta feed without touching the
 //! verification logic.
 
-#![allow(dead_code)] // consumed across MT Stages 2b/4/5 as wiring lands
+#![allow(
+    dead_code,
+    reason = "project_policy; the policy types are consumed across MT Stages 2b/4/5 as their wiring lands; removing them now would re-add each one with its stage"
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

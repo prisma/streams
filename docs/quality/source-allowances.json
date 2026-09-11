@@ -1564,34 +1564,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::ReadPlan < 'a >::segment",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::TEST_ASSERT_KEYED_DENSE",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_merged",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_stitched",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
       "path": "src/dst/tests/runtime_sweep.rs",
       "syntax": "allow (non_snake_case)"
@@ -1601,13 +1573,6 @@
       "count": 1,
       "owner": "crate::TraceState::event",
       "path": "src/dst/trace_store.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read",
-      "path": "src/history/canonical_span.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
@@ -1728,13 +1693,6 @@
       "owner": "crate::verify_internal_target",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/project_policy.rs",
-      "syntax": "allow (dead_code)"
     },
     {
       "category": "exception",
@@ -1994,13 +1952,6 @@
       "owner": "crate::gate::N",
       "path": "src/failpoints.rs",
       "syntax": "std :: sync :: OnceLock < tokio :: sync :: Notify >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::reg::M",
-      "path": "src/failpoints.rs",
-      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < (Fp , String) , FpState > > >"
     },
     {
       "category": "global",

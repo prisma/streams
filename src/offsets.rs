@@ -71,7 +71,10 @@ fn decode_char(ch: char) -> Option<u8> {
         'I' | 'i' | 'L' | 'l' => Some(1),
         _ => {
             let up = ch.to_ascii_uppercase() as u8;
-            ALPHABET.iter().position(|&a| a == up).map(|p| p as u8)
+            ALPHABET
+                .iter()
+                .position(|&a| a == up)
+                .and_then(|p| u8::try_from(p).ok())
         }
     }
 }
