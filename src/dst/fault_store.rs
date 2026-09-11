@@ -354,7 +354,12 @@ impl FaultStore {
     /// and then opens a second owner on the same shard, and that open
     /// writes to the WAL too. An unbounded hold parks the handoff itself
     /// and the gate is never released.
-    pub fn hold_class(&self, op: StoreOp, class: ObjClass, max_parked: u64) -> Arc<AtomicU64> {
+    pub(crate) fn hold_class(
+        &self,
+        op: StoreOp,
+        class: ObjClass,
+        max_parked: u64,
+    ) -> Arc<AtomicU64> {
         let engaged = Arc::new(AtomicU64::new(0));
         *self.st.hold.lock().unwrap() = Some(Hold {
             op,

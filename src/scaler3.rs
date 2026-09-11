@@ -60,14 +60,18 @@ impl Scaler {
 }
 
 /// Counters (spec §14).
-pub static SEGMENT_SPLITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static SEGMENT_MERGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SEGMENT_SPLITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SEGMENT_MERGES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 pub(crate) static INEFFECTIVE_SPLIT_AVOIDED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub(crate) static SEGMENT_MAP_REFRESHES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 struct SegSketch {
     /// The incarnation this sketch's heat belongs to. A name can be
@@ -490,7 +494,10 @@ pub(crate) mod controller;
 
 /// The evaluation loop keeps at most 4096 pending hints and executes at most
 /// 16 per turn, serially per incarnation, under a shared 60-second deadline.
-pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
+pub(crate) fn start(
+    st: std::sync::Weak<crate::http::AppState>,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
     let _ = tasks.spawn(
         "scaler",
         crate::tasks::Policy::Critical,

@@ -12220,13 +12220,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "75fe14e8b9797b1d4025449aed5380127d3b6d18271469f4d61a36e5b3d6b2bb",
-      "item": "crate::tag",
-      "lint": "unreachable_pub",
-      "path": "src/audit.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4e88cb6514e617e1c971f3f310f8fa373479b64549b29331bfbbc294b88569cb",
       "item": "crate::spawn_refresher",
       "lint": "unreachable_pub",
@@ -12374,20 +12367,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "9836a2ebfe85e1e95e652a7dcb7f41b28f59858fa8050e23b242e6985312df91",
-      "item": "crate::DeploymentIdentity::new",
-      "lint": "unreachable_pub",
-      "path": "src/deployment.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6c9ef81528f2282600d10d253766ff019bd4262a3a79bcfba36115d911595ec",
-      "item": "crate::FaultStore::hold_class",
-      "lint": "unreachable_pub",
-      "path": "src/dst/fault_store.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c763d0f3cfb9fc6c2a70582986128c5f6429e69766fd24b2dcdccf4822e9e58b",
       "item": "crate::Workload::append",
       "lint": "unreachable_pub",
@@ -12448,13 +12427,6 @@
       "item": "crate::router",
       "lint": "unreachable_pub",
       "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fe486daf8db3e64704500790bc41d3f7f0416ce1b7b3b600b0a7e0833e827b7f",
-      "item": "crate::data",
-      "lint": "unreachable_pub",
-      "path": "src/operator.rs"
     },
     {
       "count": 1,
@@ -12560,41 +12532,6 @@
       "item": "crate::RuntimeCaps::with",
       "lint": "unreachable_pub",
       "path": "src/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "92ad8dda38c4ce96c5dcbf13cc7c96297324fb6bb5e7c4aeaa81718a745d0cc3",
-      "item": "crate::SEGMENT_MERGES",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2f97b9b8a85ded9f015c5fa40ce3eb8a530e319e047debf74d36f6de1e5fe444",
-      "item": "crate::SEGMENT_SPLITS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e3cd3a22da22d2f736f0ca59c9605eb642ce4b917d9ea8cf518ece57956935ba",
-      "item": "crate::SKETCH_EVICTIONS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f476b79e2b16d4c6903d823fa4f7b435a2a1485c7243d1b1c52c05508217e3d4",
-      "item": "crate::UNTRACKED_APPENDS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1e31d8d4d14b887882a1a11d6f67ff7e66ba65d63c3cdc2833b2eebff743030a",
-      "item": "crate::start",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
     },
     {
       "count": 1,
