@@ -3954,6 +3954,8 @@ mod record_scan_tests;
 
 #[cfg(test)]
 mod read_budget_tests;
+#[cfg(test)]
+mod tail_ring_tests;
 
 #[cfg(test)]
 mod task_lifecycle_tests;
