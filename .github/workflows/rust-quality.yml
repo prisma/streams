@@ -54,6 +54,7 @@ jobs:
         env:
           QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: |
+          cargo build --locked -p streams-quality-syntax
           python3 scripts/quality/verification_plan.py --out target/quality-plan
           python3 - <<'PY'
           import json, os
