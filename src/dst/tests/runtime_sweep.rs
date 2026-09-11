@@ -8,6 +8,10 @@ use std::sync::Arc;
 
 /// Drain billing debt until the sweep's own probes read clean, so the
 /// retention decision under test is the MAINTENANCE one.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "drain_billing_clean; the fixture drains billing debt until its own probes read clean; each pass's result is irrelevant to the cleanliness it polls for"
+)]
 async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&str]) {
     for _ in 0..200 {
         let _ = crate::billing::drain_once(state).await;
@@ -690,6 +694,10 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     clippy::too_many_lines,
     reason = "walk fairness scenario; two shards' pinned debt, the occupied budget and the alternating walk form one causal sequence; helper phases would hide which shard the walk starved"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "tombstone_walk_fairness_under_occupied_budget; the fixture nests the pin request inside the first-seen check of the shard walk; flattening it would separate the pin from the shard it occupies"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tombstone_walk_fairness_under_occupied_budget() {
     let _serial = sweep_lock().lock().await;
@@ -815,7 +823,10 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     );
 }
 
-#[allow(non_snake_case)]
+#[allow(
+    non_snake_case,
+    reason = "WALK_CLOSE_SUBMITS_SNAPSHOT; the snapshot is spelled as the constant it stands in for so the assertion reads as the invariant it pins; a snake-case name would hide that it is a fixed value"
+)]
 fn WALK_CLOSE_SUBMITS_SNAPSHOT() -> u64 {
     crate::billing::WALK_CLOSE_SUBMITS.load(std::sync::atomic::Ordering::Relaxed)
 }

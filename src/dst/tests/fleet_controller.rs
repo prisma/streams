@@ -23,6 +23,10 @@ impl std::fmt::Display for HeldDocument {
     }
 }
 impl HeldDocument {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "HeldDocument::enter; the permit is the park itself and is released the moment the test grants it; a held permit would keep the document entered after the test released it"
+    )]
     async fn enter(&self, path: &Path, write: bool) {
         if path.as_ref() == self.path && write == self.write {
             self.entered.fetch_add(1, Ordering::SeqCst);
@@ -88,6 +92,10 @@ impl ObjectStore for HeldDocument {
 #[expect(
     clippy::too_many_lines,
     reason = "fleet cancellation scenario; entering documents, cancelling under partial authority and checking the retained retry form one causal sequence; helper phases would hide which document lost its retry"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry; the fixture nests the entered wait and the desired-state poll inside the timeouts that bound them; flattening them would separate the waits from the bounds they must respect"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry() {

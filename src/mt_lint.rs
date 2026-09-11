@@ -147,6 +147,10 @@ impl<'a> Lint<'a> {
         }
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Lint::check_signature; the signature walk nests the type and name checks inside each typed input; flattening it would separate the checks from the input they classify"
+    )]
     fn check_signature(&mut self, line: usize, name: &str, sig: &syn::Signature) {
         let mut has_sref_param = false;
         let mut name_params: Vec<(String, String)> = Vec::new();
@@ -357,6 +361,10 @@ fn multitenancy_identity_lint() {
     // Recursive: new submodules are scanned the day they appear.
     // src/dst/ (harness + tests) and src/bin/ (single-tenant client
     // tools) stay out by directory.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "walk; the directory walk nests the excluded-tree check inside the directory branch; flattening it would separate the exclusion from the directory it prunes"
+    )]
     fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
             let p = e.path();

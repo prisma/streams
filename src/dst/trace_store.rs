@@ -182,7 +182,10 @@ struct TraceState {
 }
 
 impl TraceState {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TraceState::event; an event row takes the sequence, kind, operation, path, size, outcome, hash and detail as the tracer observed them; a row struct is what it builds"
+    )]
     fn event(
         &self,
         seq: u64,
@@ -217,6 +220,10 @@ impl TraceState {
     /// abandoned by async cancellation between dispatch and completion,
     /// leaving a permanent Pending event and a stuck active entry that
     /// made `reset()` refuse forever).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TraceState::begin_operation; an operation opens with the kind, operation, path, size, hash and detail the store call carried; an operation struct is the event it records"
+    )]
     fn begin_operation(
         self: &Arc<Self>,
         op: StoreOp,
@@ -225,7 +232,7 @@ impl TraceState {
         content_hash: Option<String>,
         detail: Option<String>,
     ) -> TraceOperation {
-        let ev = |seq| {
+        let ev = move |seq| {
             self.event(
                 seq,
                 TraceEventKind::Operation,
@@ -233,8 +240,8 @@ impl TraceState {
                 path,
                 bytes,
                 TraceOutcome::Pending,
-                content_hash.clone(),
-                detail.clone(),
+                content_hash,
+                detail,
             )
         };
         let mut log = self.log.lock().unwrap();
@@ -270,6 +277,10 @@ impl TraceState {
 
     /// Push an already-resolved observation (delete-stream items are
     /// complete facts at the moment they pass through).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TraceState::observe; an observation takes the kind, operation, path, detail and outcome as the tracer resolved them; an observation struct is the row it appends"
+    )]
     fn observe(
         &self,
         kind: TraceEventKind,
@@ -420,7 +431,11 @@ impl TraceStore {
     /// Explicit knobs. `content_hashes` opts into retaining a 16-hex-char
     /// sha256 prefix of each put payload; payload bytes themselves are
     /// never retained either way.
-    pub fn with_options(
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "TraceStore::with_options; redaction and content hashing are two independent retention switches the harness sets separately; an options enum would restate two booleans"
+    )]
+    pub(crate) fn with_options(
         inner: Arc<dyn ObjectStore>,
         redact: bool,
         content_hashes: bool,
@@ -631,6 +646,10 @@ impl ObjectStore for TraceStore {
     /// (PR 3.2): while it is alive — consuming inputs, producing
     /// outputs — `reset()` refuses; exhaustion or drop retires the
     /// lifetime exactly once.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "TraceStore::delete_stream; the traced unfold nests each result's observation inside the poll of the inner stream; flattening it would separate the observation from the result it records"
+    )]
     fn delete_stream(
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,

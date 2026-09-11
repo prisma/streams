@@ -241,6 +241,14 @@ pub(super) async fn http_rig_with_auth_service(
 /// directory lifecycle (a fenced or failed engine evicts itself and arms
 /// the anti-flap holdoff) instead of a rig-only shape with no close
 /// callback at all.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "rig_opener; the rig opener takes the store, keys, shard config, park, absorber config and close notifier the rig assembles separately; a rig struct would restate the rig itself"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "rig_opener; the opener nests the close callback inside the engine construction it must outlive; flattening it would separate the callback from the incarnation it reports"
+)]
 pub(super) fn rig_opener(
     store: Arc<dyn ObjectStore>,
     keys: Arc<crate::history::KeyCache>,
@@ -349,6 +357,10 @@ fn fixture_config(
 #[expect(
     clippy::too_many_lines,
     reason = "HTTP rig builder; every runtime owner is wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "http_rig_build; the supervisor rejects a spawn only while it is stopping, when the rig is being torn down; a rejected rig task has nothing left to serve"
 )]
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,

@@ -2160,7 +2160,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
     ],
-    "function_sha256": "ebd8cf2db4bf1a26a03716d8da99e98671cb514d9f8298a69702f50987631166",
+    "function_sha256": "c19966727f38f37212c94748fdbc1737679222c79fa8a2810079c4740890a7c9",
     "mechanisms": [
       "STORE_LATENCY"
     ],
@@ -2811,7 +2811,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6a83c50969fe771c13aa8f46f7fbbd163ebcf3a12191a9a8c96cd5797ede4a0e",
+    "function_sha256": "b81632e4d007350aa2784b7a0aa34f3358a943f4102aa5d84e63220658d12f78",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_history.rs",
@@ -4744,18 +4744,6 @@
     "scenarios": []
   },
   {
-    "name": "reset_refuses_while_in_flight",
-    "attributes": [
-      "#[tokio::test]",
-      "#[should_panic(expected = \"while operations are active\")]"
-    ],
-    "function_sha256": "8dbca7724f55e7f2f2d9c3a7fdad5701e038a944e2bdd39d259839d152c0ce70",
-    "mechanisms": [],
-    "configuration": [],
-    "file": "src/dst/trace_store_tests/streams.rs",
-    "scenarios": []
-  },
-  {
     "name": "restart_invalidates_process_local_touch_cursors",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5535,7 +5523,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a546f8f58f27f9b678a3b98253c10f7b695e3f7f36ed75f9e2772ae8ee0d0007",
+    "function_sha256": "db24635d68ea5f36ee93262da9a9e3df35767a2f5e3245972145871d0dfecfad",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 103, FaultPlan::new(0, 0, 0));"

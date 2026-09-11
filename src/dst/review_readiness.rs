@@ -7,6 +7,10 @@ use super::fixture_storage::mem;
 use crate::tasks::{Policy, TaskResult};
 use std::time::Duration;
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "readiness_endpoint_refuses_each_permanent_critical_exit; the fixture nests the unready wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
+)]
 #[tokio::test]
 async fn readiness_endpoint_refuses_each_permanent_critical_exit() {
     for outcome in 0..3 {

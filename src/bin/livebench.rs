@@ -164,6 +164,10 @@ fn legacy_wait_url_sig(sig_key: &[u8; 32], watch_key_hex: &str) -> String {
     clippy::cast_possible_truncation,
     reason = "main; tenant selection hashes a 64-bit transaction id on a 64-bit target; a checked conversion would only restate the pointer width the bench assumes"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "main; the bench nests each consumer's poll loop and each generator's publish loop inside the task it spawns for them; flattening them would separate the loops from the tasks whose lifetimes bound them"
+)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let http = client();

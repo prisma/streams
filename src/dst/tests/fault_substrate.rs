@@ -51,6 +51,10 @@ async fn fault_placement_is_a_pure_function_of_the_seed() {
 }
 
 /// A fault store that never injects proves nothing.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "faults_actually_fire; the fixture issues puts only to make the fault plan fire and counts the injections afterwards; each put's own outcome is the fault under test"
+)]
 #[tokio::test]
 async fn faults_actually_fire() {
     let s = FaultStore::uniform(mem(), 7, FaultPlan::new(20, 20, 30));
@@ -138,6 +142,10 @@ async fn deletes_and_reads_are_faulted_too() {
 /// only increment when a response was *actually* discarded. Counting the
 /// decision at roll time (the previous behaviour) let a scenario satisfy
 /// `require(STORE_LOST_RESPONSE)` on a verb that ignored the decision.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "lost_response_counter_tracks_applied_behaviour_only; the fixture issues a multipart put only to prove the lost-response fault cannot apply to it; the put's outcome is not the claim"
+)]
 #[tokio::test]
 async fn lost_response_counter_tracks_applied_behaviour_only() {
     let inner = mem();

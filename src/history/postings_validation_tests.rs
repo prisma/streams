@@ -160,6 +160,14 @@ async fn o4a_valid_page_seams_and_match_free_progress_remain_usable() {
     db.close().await.unwrap();
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "raw_page; the fixture's run counts are small tables it wrote itself; a checked conversion would only restate the fixture"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "raw_page; the fixture nests the varint continuation bit inside the per-field encoding loop of each run; flattening it would separate the bit from the field it continues"
+)]
 fn raw_page(first: u64, end: u64, total: u64, runs: &[[u64; 4]]) -> Vec<u8> {
     let mut value = vec![1, 0];
     value.extend_from_slice(&first.to_le_bytes());

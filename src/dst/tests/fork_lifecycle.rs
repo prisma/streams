@@ -807,6 +807,10 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     clippy::disallowed_methods,
     reason = "unknown child fixture; the parked creation is released and joined before the source reference is checked; it must park concurrently in its unknown state"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r05_unknown_child_state_preserves_its_source_reference; the fixture nests the park wait inside its timeout and the child's descriptor stamp inside its mutation; flattening them would separate the wait from its bound and the stamp from the descriptor it alters"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r05_unknown_child_state_preserves_its_source_reference() {
     let _serial = gap_lock().lock().await;

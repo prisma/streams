@@ -147,6 +147,10 @@ pub(super) async fn open_engine_with_absorber_layout(
 
 /// Drain the merged reader WITH a key filter (drain_observed hardcodes
 /// unfiltered reads): paginate read_merged and collect attempt ids.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "drain_filtered; the fixture's attempt numbers are small counters it wrote itself; a checked conversion would only restate the fixture"
+)]
 pub(super) async fn drain_filtered(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],

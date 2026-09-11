@@ -75,6 +75,10 @@ impl ObjectStore for DeleteSpy {
     async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, opts: CopyOptions) -> OsResult<()> {
         self.inner.copy_opts(from, to, opts).await
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "DeleteSpy::delete_stream; the scripted delete nests the consumed count inside the location match inside its unfold loop; flattening it would separate the count from the location it consumes"
+    )]
     fn delete_stream(
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,

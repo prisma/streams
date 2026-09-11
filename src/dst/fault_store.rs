@@ -122,7 +122,7 @@ fn mix(seed: u64, path: &str, op: u8, n: u64) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in path.as_bytes() {
         h ^= *b as u64;
-        h = h.wrapping_mul(0x1000_0000_1b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     let mut z = seed ^ h ^ ((op as u64) << 56) ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -211,6 +211,10 @@ impl FaultState {
 
     /// Latency / hold / error decision, shared by every verb.
     /// `Ok(true)` means "perform it, then discard the response".
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "FaultState::gate; the permit is the wait itself and is released the moment it is granted, so the gate paces operations without holding them; a bound permit would serialise the store"
+    )]
     async fn gate(&self, op: StoreOp, path: &str) -> OsResult<bool> {
         self.ops.fetch_add(1, Ordering::Relaxed);
         let class = ObjClass::of(path);
@@ -430,6 +434,10 @@ impl ObjectStore for FaultStore {
     /// recovery walked an untouched store. Faults apply at two points a
     /// real listing can fail: before the first item, and mid-stream after
     /// partial results (truncation with a terminal error).
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "FaultStore::list; the listing unfold nests the gate verdict inside the first-poll branch of the scripted stream; flattening it would separate the verdict from the poll it fails"
+    )]
     fn list(
         &self,
         prefix: Option<&ObjPath>,
@@ -515,6 +523,10 @@ impl ObjectStore for FaultStore {
     /// zombie DB in ladder pass 3. Leaving the most dangerous verb
     /// unfaulted was a real gap. A faulted delete leaves the object in
     /// place, which is how garbage accumulates when GC cannot keep up.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "FaultStore::delete_stream; the delete unfold nests the one-item inner stream and the lost-response verdict inside each location's step; flattening them would separate the verdict from the delete it may lose"
+    )]
     fn delete_stream(
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,

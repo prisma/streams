@@ -55,6 +55,10 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
     clippy::disallowed_methods,
     reason = "reopen storm reproduction; the detached open is the defect being reproduced and its abandonment is counted through the fenced opens and the empty serving map; owning the open would remove the storm the scenario exists to reproduce"
 )]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "naive_get_or_open; the fixture's opener hands the engine to whichever client still waits, and a send with no receiver means that client already timed out; that disconnect is the storm under test"
+)]
 async fn naive_get_or_open(
     lock: &tokio::sync::Mutex<()>,
     shards: &std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
@@ -133,6 +137,10 @@ async fn naive_get_or_open(
 /// storm's signature from docs/SOAK-REGIONS.md, scaled down: WAL read
 /// amplification ≥ 3× the WAL itself, multiple writers opened and fenced,
 /// and — the wedge — the serving map STILL empty when the dust settles.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "reopen_storm_reproduces_the_eu_central_wedge; the fixture drops each client's future at its timeout on purpose, exactly as the handler does; the outcome it discards is the disconnect under test"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn reopen_storm_reproduces_the_eu_central_wedge() {
     let inner = mem();
@@ -334,12 +342,10 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
             manifest_poll_interval: std::time::Duration::from_millis(
                 crate::DEFAULT_MANIFEST_POLL_MS,
             ),
-            compactor_options: {
-                let mut co = slatedb::config::CompactorOptions::default();
-                co.poll_interval =
-                    std::time::Duration::from_millis(crate::DEFAULT_COMPACTOR_POLL_MS);
-                Some(co)
-            },
+            compactor_options: Some(slatedb::config::CompactorOptions {
+                poll_interval: std::time::Duration::from_millis(crate::DEFAULT_COMPACTOR_POLL_MS),
+                ..Default::default()
+            }),
             ..Default::default()
         })
         .build()
@@ -514,6 +520,10 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
 /// An engine that keeps dying young must meet an escalating holdoff, not
 /// an eager reopen: rapid open→die cycles against a sick store ARE the
 /// storm, whatever kills the engine.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "open_gate_escalates_holdoff_for_engines_that_die_young; the fixture nests the retry sleep inside the wait arm of its open loop; flattening it would separate the sleep from the holdoff it honours"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     use crate::sharddir::{OpenGate, OpenOutcome};
@@ -584,6 +594,10 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
 /// eu-central-1 with an open looping in slatedb compactions recovery for
 /// 20+ minutes. One open, 648 coalesced waiters, zero storm — and an
 /// unavailable shard with no path back.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_hung_open_is_deadlined_and_its_late_engine_reaped; the permit is the park itself and is released the moment the test grants it; a held permit would keep the opener parked after release"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     use crate::sharddir::{OpenGate, OpenOutcome};

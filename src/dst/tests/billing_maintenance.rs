@@ -10,6 +10,10 @@ use std::sync::Arc;
 /// A stream whose TTL lapsed has a dead descriptor and a live gauge;
 /// the drain-time reconciler resubmits the closure until the gauge
 /// zeroes, and journals the lifecycle observation.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "expiry_closes_the_storage_gauge; the fixture drains billing debt until the gauge closes, and each pass's own result is irrelevant to the closure it polls for; a handled result would only restate the poll"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expiry_closes_the_storage_gauge() {
     let store = mem();

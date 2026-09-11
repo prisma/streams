@@ -34,6 +34,10 @@ fn window(from: u64, to: u64, max_bytes: usize) -> crate::shard::RingScan {
     clippy::disallowed_methods,
     reason = "ring ordering fixture; the appender is joined before the delivered offsets are compared; it must append concurrently with the parked waiter"
 )]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "ring_ordering_paging_and_duplicates_at_offset_level; the fixture's frame counts are small offsets it published itself; a checked conversion would only restate the fixture"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let inner = mem();
@@ -288,6 +292,10 @@ async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
 /// `read_merged`, is the 2026-07-27 boundary-race DST failure: records
 /// vanished from a `completed = true` page at exactly the sampled
 /// absorbed boundary.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "a_duplicate_absorbed_op_does_not_advance_the_trim; the fixture nests the absorbed poll inside the wait closure it builds per engine; flattening it would separate the poll from the engine it watches"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
     let inner = mem();

@@ -1815,6 +1815,14 @@
       "path": "src/postings.rs",
       "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
       "syntax": "path = \"postings/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_refuses_while_in_flight",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
+      "syntax": "std::mem::forget"
     }
   ]
 }
