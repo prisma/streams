@@ -30,7 +30,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     touch) file=src/touch.rs; filter=touch:: ;;
     read_accumulator) file=src/billing/read_accumulator.rs; filter=billing ;;
     read_spool) file=src/billing/read_spool.rs; filter=billing ;;
-    tail_ring) file=src/shard/tail_ring.rs; filter=shard:: ;;
+    tail_ring) file=src/shard/tail_ring.rs; filter="shard:: dst_tests::reads_ring::" ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
@@ -68,8 +68,17 @@ PYTHON
     continue
   fi
   TOTAL=$((TOTAL + count))
+  # An owner whose behaviour is exercised by more than one test module names
+  # every filter. cargo test takes one test name itself; the rest follow the
+  # separator so libtest runs the tests matching any of them.
+  read -r -a test_filters <<< "$filter"
+  test_args=("--cargo-test-arg=${test_filters[0]}")
+  if (( ${#test_filters[@]} > 1 )); then
+    test_args+=("--cargo-test-arg=--" "${test_filters[@]:1}")
+    for ((i = 2; i < ${#test_args[@]}; i++)); do test_args[i]="--cargo-test-arg=${test_args[i]}"; done
+  fi
   cargo mutants --cargo-arg=--locked --cargo-arg=--lib --cargo-arg="--target-dir=$QUALITY_MUTANTS_OUT/build" --baseline run --in-diff "$mutation_diff" \
-    --file "$mutation_file" --package "$package" --cargo-test-arg="$filter" \
+    --file "$mutation_file" --package "$package" "${test_args[@]}" \
     --profile quality --jobs 1 --timeout 90 --build-timeout 600 --gitignore true --output "$output"
 done
 # The benchmark owns its workers and measurement window in the pilot binary.
