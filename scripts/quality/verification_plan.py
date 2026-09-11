@@ -13,7 +13,7 @@ def plan(paths, visibility_only=()):
     tooling = any(p.startswith(('tools/quality-invariants/', 'fuzz/', 'scripts/quality/'))
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
-    codec = any(p.startswith(('src/crypto', 'src/postings', 'src/application/read_', 'src/shard/record')) for p in implementation)
+    codec = any(p.startswith(('src/crypto', 'src/postings', 'src/product_cursor', 'src/application/read_', 'src/shard/record')) for p in implementation)
     quota = any(p.startswith('src/quota') for p in implementation)
     lifecycle = any(p.startswith(('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse')) for p in implementation)
     buffers = any(p.startswith(('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')) for p in implementation)

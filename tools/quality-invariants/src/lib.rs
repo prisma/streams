@@ -45,3 +45,11 @@ mod application;
 )]
 #[path = "../../../src/quota/bucket.rs"]
 mod quota_bucket;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compiles the actual product cursor codecs and their tests; unrelated service APIs remain internal"
+)]
+#[path = "../../../src/product_cursor.rs"]
+mod product_cursor;
