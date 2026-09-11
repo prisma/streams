@@ -42,7 +42,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     transaction_append) file=src/shard/transaction/append.rs; filter=shard:: ;;
     record) file=src/shard/record.rs; filter=shard:: ;;
     fleet) file=src/fleet.rs; filter=fleet:: ;;
-    sse_session) file=src/sse/session.rs; filter=sse:: ;;
+    sse_session) file=src/sse/session.rs; filter="sse:: dst_tests::sse_delivery:: dst_tests::livefeed_swap::" ;;
     tasks_shutdown) file=src/tasks/shutdown.rs; filter=tasks:: ;;
     runtime) file=src/runtime.rs; filter=runtime:: ;;
     runtime_telemetry) file=src/runtime/telemetry.rs; filter=runtime:: ;;
