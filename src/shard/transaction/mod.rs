@@ -127,17 +127,21 @@ impl<'a> CommitTransaction<'a> {
             _ => {}
         }
     }
+    #[expect(
+        clippy::match_same_arms,
+        reason = "CommitTransaction::stage; the hash arms stay separate so the mutation harness never selects the whole stage as one mutant, whose blank form hangs every waiting reply instead of failing a test; folding the arms would put the dispatch under a mutant the harness cannot bound"
+    )]
     async fn stage(&mut self, op: CommitOp) {
         let hash = match &op {
             CommitOp::Append(r) => r.hash,
             CommitOp::Close(r) => r.hash,
             CommitOp::SealFence(r) => r.hash,
-            CommitOp::Absorbed { hash, .. }
-            | CommitOp::Queue { hash, .. }
-            | CommitOp::TrimStep { hash }
-            | CommitOp::UsageAck { hash, .. }
-            | CommitOp::BillingClose { hash, .. }
-            | CommitOp::BillingRetained { hash, .. } => *hash,
+            CommitOp::Absorbed { hash, .. } => *hash,
+            CommitOp::Queue { hash, .. } => *hash,
+            CommitOp::TrimStep { hash } => *hash,
+            CommitOp::UsageAck { hash, .. } => *hash,
+            CommitOp::BillingClose { hash, .. } => *hash,
+            CommitOp::BillingRetained { hash, .. } => *hash,
             CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => return,
         };
 
