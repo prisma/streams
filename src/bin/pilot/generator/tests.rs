@@ -256,7 +256,10 @@ async fn nonce_exhaustion_fails_the_run_and_joins_sibling_workers() {
     for _ in 0..3 {
         assert!(g.launch());
     }
-    let result = g.serve(pending(), pending()).await;
+    // Bounded: an owner that admits without launching would otherwise serve forever.
+    let result = tokio::time::timeout(Duration::from_secs(5), g.serve(pending(), pending()))
+        .await
+        .expect("nonce exhaustion must fail the run promptly");
     assert!(
         result
             .unwrap_err()
