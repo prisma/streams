@@ -303,6 +303,14 @@
       "path": "src/queue.rs",
       "syntax": "proptest::proptest",
       "reason": "Queue key properties; the pinned generator covers validated names and full-width generation/offset values; all cases execute the production codec."
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::main",
+      "path": "build.rs",
+      "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
+      "syntax": "std::env::var"
     }
   ]
 }

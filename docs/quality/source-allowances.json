@@ -884,13 +884,6 @@
     },
     {
       "category": "effect",
-      "count": 2,
-      "owner": "crate::main",
-      "path": "build.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
       "count": 1,
       "owner": "crate::main",
       "path": "examples/readertest.rs",
