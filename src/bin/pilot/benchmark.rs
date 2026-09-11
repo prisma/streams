@@ -238,15 +238,17 @@ impl Sweep {
         }
     }
 
-    async fn wait(&mut self, duration: Duration) -> anyhow::Result<()> {
+    /// Waits `duration` unless a worker exits first, which fails the sweep;
+    /// returns the time the wait ended.
+    async fn wait(&mut self, duration: Duration) -> anyhow::Result<Instant> {
         if duration.is_zero() {
-            return Ok(());
+            return Ok(Instant::now());
         }
         let deadline = Instant::now()
             .checked_add(duration)
             .context("benchmark deadline overflows")?;
         tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => Ok(()),
+            _ = tokio::time::sleep_until(deadline) => Ok(Instant::now()),
             result = self.workers.join_next(), if !self.workers.is_empty() => {
                 result.context("benchmark worker set unexpectedly empty")?.context("benchmark worker panicked")??;
                 anyhow::bail!("benchmark worker exited before point close")
@@ -288,13 +290,12 @@ impl Sweep {
             if remaining.is_zero() {
                 break;
             }
-            self.wait(Duration::from_secs(5).min(remaining)).await?;
+            let now = self.wait(Duration::from_secs(5).min(remaining)).await?;
             let snapshot = workload.window.lock().unwrap().snapshot();
-            if collapse(started.elapsed(), &snapshot) {
+            if collapse(now.duration_since(started), &snapshot) {
                 collapsed = true;
                 break;
             }
-            let now = Instant::now();
             if progress.due(now) {
                 println!("{}", progress.report(now, snapshot));
             }

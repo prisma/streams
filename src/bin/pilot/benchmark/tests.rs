@@ -420,6 +420,15 @@ async fn server_exit_aborts_and_joins_workers_even_during_preparation() {
     http.close().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn wait_sleeps_for_the_full_duration_when_no_worker_exits() {
+    let mut sweep = Sweep::new(config(&[]));
+    let started = tokio::time::Instant::now();
+    let woke = sweep.wait(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(woke, started + Duration::from_secs(5));
+    assert_eq!(sweep.wait(Duration::ZERO).await.unwrap(), woke);
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "benchmark worker failure regression; the sweep owns and joins this deliberately panicking worker and its sibling; observing panic cleanup requires a real task failure"
