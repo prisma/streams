@@ -1,17 +1,8 @@
 //! One lock owns id/event/lifetime association.
 
-#![allow(unused_imports)]
+use super::super::{TraceOutcome, TraceStore};
+use crate::dst::StoreOp;
 use std::sync::Arc;
-
-use object_store::path::Path as ObjPath;
-use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OsResult,
-};
-
-use super::super::{TraceEventKind, TraceOutcome, TraceStore};
-use super::*;
-use crate::dst::{ObjClass, StoreOp};
 
 // ---- PR 3.2: one lock owns id/event/lifetime association ----------
 

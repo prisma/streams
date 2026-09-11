@@ -16,7 +16,7 @@ pub(super) struct ReadKeys<'a> {
     cached: usize,
 }
 impl<'a> ReadKeys<'a> {
-    pub fn new(key: &'a StreamKey, epoch: &'a [u8; 16], segment: [u8; 16]) -> Self {
+    pub(super) fn new(key: &'a StreamKey, epoch: &'a [u8; 16], segment: [u8; 16]) -> Self {
         Self {
             key,
             epoch,
@@ -26,7 +26,7 @@ impl<'a> ReadKeys<'a> {
         }
     }
     #[cfg(test)]
-    pub fn decrypt(
+    pub(super) fn decrypt(
         &mut self,
         frame: &DecodedFrame<'_>,
         raw: &[u8],

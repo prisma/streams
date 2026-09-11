@@ -6,10 +6,16 @@
 use clap::{Parser, Subcommand};
 
 #[path = "../crypto.rs"]
-#[allow(dead_code)] // this tool never encrypts frames
+#[allow(
+    dead_code,
+    reason = "Key CLI crypto inclusion; the tool compiles the canonical module but uses only its key and offline decoder APIs; conditional binary and test builds leave different service-only methods unused"
+)]
 mod crypto;
 #[path = "../tenant.rs"]
-#[allow(dead_code)] // shared identity module; side bins use only crypto
+#[allow(
+    dead_code,
+    reason = "Key CLI identity inclusion; canonical crypto types depend on this module while the tool uses no runtime tenant registry; conditional binary and test builds leave different service-only methods unused"
+)]
 mod tenant;
 #[derive(Parser)]
 #[command(name = "streams-keys", about = "Stream key lifecycle + envelope tool")]
@@ -73,7 +79,8 @@ fn main() -> anyhow::Result<()> {
     match Args::parse().cmd {
         Cmd::Generate => {
             let mut key = [0u8; 32];
-            getrandom(&mut key)?;
+            use rand::RngCore;
+            rand::rng().fill_bytes(&mut key);
             println!("{}", crypto::StreamKey(key).to_b64());
         }
         Cmd::Fingerprint { key, epoch } => {
@@ -127,11 +134,5 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
-    Ok(())
-}
-
-fn getrandom(buf: &mut [u8]) -> anyhow::Result<()> {
-    use rand::RngCore;
-    rand::rng().fill_bytes(buf);
     Ok(())
 }

@@ -6,7 +6,7 @@
     "tests": [
       {
         "name": "the_gather_window_waits_for_ack_dispatch",
-        "file": "src/dst/tests/durability_failures.rs",
+        "file": "src/dst/tests/durability_gather.rs",
         "line": 22
       },
       {

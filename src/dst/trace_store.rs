@@ -22,7 +22,7 @@ mod trace_store_tests;
 /// Outcome of one traced operation, coarse enough that traces stay
 /// comparable across runs and stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraceOutcome {
+pub(super) enum TraceOutcome {
     /// Dispatched but not yet resolved — only ever visible in a snapshot
     /// taken while the operation is in flight.
     Pending,
@@ -63,7 +63,7 @@ impl TraceOutcome {
 /// which let a diagnostic observation masquerade as an attempted store
 /// operation and double-count deletes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraceEventKind {
+pub(super) enum TraceEventKind {
     /// One attempted store operation (put/get/list/copy/multipart leg).
     Operation,
     /// Diagnostic observation: one input item a traced delete stream
@@ -79,7 +79,7 @@ pub enum TraceEventKind {
 
 /// One trace entry, in trace-lock acquisition order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoreTraceEvent {
+pub(super) struct StoreTraceEvent {
     /// Monotonic event id, unique for the life of the `TraceStore` and
     /// allocated under the same lock that inserts the event — so the
     /// vector order IS id order. NOT dense: `reset()` keeps the id
@@ -393,7 +393,7 @@ impl Drop for TraceOperation {
 /// filled in afterwards BY ID through the log's id→index map, and a
 /// snapshot taken mid-flight shows `TraceOutcome::Pending`.
 #[derive(Debug)]
-pub struct TraceStore {
+pub(super) struct TraceStore {
     inner: Arc<dyn ObjectStore>,
     st: Arc<TraceState>,
 }
@@ -406,14 +406,14 @@ impl std::fmt::Display for TraceStore {
 
 impl TraceStore {
     /// Safe default: paths redacted, payload hashes off.
-    pub fn new(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
+    pub(super) fn new(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
         Self::with_options(inner, true, false)
     }
 
     /// Verbatim paths. Only for fixtures whose paths carry no tenant or
     /// stream material — redaction is the default precisely because real
     /// paths embed both.
-    pub fn verbatim(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
+    pub(super) fn verbatim(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
         Self::with_options(inner, false, false)
     }
 
@@ -438,7 +438,7 @@ impl TraceStore {
     /// Snapshot of every trace entry so far — operations AND the
     /// diagnostic delete observations — in id order. This is the
     /// observation report; `operation_counts()` is the operation ledger.
-    pub fn events(&self) -> Vec<StoreTraceEvent> {
+    pub(super) fn events(&self) -> Vec<StoreTraceEvent> {
         self.st.log.lock().unwrap().events.clone()
     }
 
@@ -448,7 +448,7 @@ impl TraceStore {
     /// dropped, and a delete stream that is still alive. Silently
     /// clearing under an open lifetime would let a late fact outlive
     /// the wipe and corrupt the comparison this type exists to make.
-    pub fn reset(&self) {
+    pub(super) fn reset(&self) {
         let mut log = self.st.log.lock().unwrap();
         if !log.active.is_empty() {
             let n = log.active.len();
@@ -471,7 +471,7 @@ impl TraceStore {
     /// was not handed a path). A cost baseline therefore answers "how
     /// many store operations were attempted", not "how many diagnostic
     /// observations happened" — use `events()` for the latter.
-    pub fn operation_counts(&self) -> Vec<(StoreOp, ObjClass, u64)> {
+    pub(super) fn operation_counts(&self) -> Vec<(StoreOp, ObjClass, u64)> {
         let mut m: HashMap<(StoreOp, ObjClass), u64> = HashMap::new();
         for e in self.st.log.lock().unwrap().events.iter() {
             let attempted = match e.kind {

@@ -70,6 +70,15 @@ mark their containing function as test-only. Unknown syntax or a failed Git or
 parser read cannot establish unchanged production source. Executable positive
 and negative controls cover these boundaries in the planner test suite.
 
+An unchanged outer custom attribute or derive may also retain its exact input
+while an unrelated item changes only lint annotations. This requires the entire
+annotated declaration, including nested tokens and all attributes, to remain
+byte-identical at identical line, column and UTF-8 byte positions. No macro name
+is treated as inherently safe. Changes inside that declaration, moved inputs,
+custom inner or conditionally constructed attributes, opaque item macros and
+source introspection retain checks. The remaining production source must still pass the parsed token
+comparison. Positive and negative controls cover these boundaries.
+
 A separate, stricter byte comparison may remove only trailing root items with
 an explicit `#[cfg(test)]` while preserving the entire production prefix and
 all its item locations. Unchanged custom attributes and derives are eligible

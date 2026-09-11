@@ -10,7 +10,7 @@ use super::feed::FeedMemoryBudget;
 use super::registry::FeedRegistry;
 
 #[derive(Clone)]
-pub struct LiveFeedService {
+pub(crate) struct LiveFeedService {
     inner: Arc<Inner>,
 }
 
@@ -25,7 +25,7 @@ struct Inner {
 }
 
 /// What the debug surface shows about live feeds.
-pub struct LiveFeedSnapshot {
+pub(crate) struct LiveFeedSnapshot {
     pub live_feeds: usize,
     pub reserved_bytes: u64,
     /// (project, reserved bytes, cap hits) — rows exist only while a
@@ -34,7 +34,7 @@ pub struct LiveFeedSnapshot {
 }
 
 impl LiveFeedService {
-    pub fn from_config(cfg: &crate::config::SseConfig) -> Self {
+    pub(crate) fn from_config(cfg: &crate::config::SseConfig) -> Self {
         Self {
             inner: Arc::new(Inner {
                 registry: Arc::new(FeedRegistry::new()),
@@ -51,7 +51,7 @@ impl LiveFeedService {
     /// the caller's). `bind` runs inside the creation closure, exactly
     /// once per feed, so a new feed's project pressure entry is live
     /// before its first publication reserves bytes.
-    pub fn subscribe(
+    pub(crate) fn subscribe(
         &self,
         key: super::feed::FeedKey,
         src: Arc<dyn super::feed::FeedSourceRead>,
@@ -74,40 +74,40 @@ impl LiveFeedService {
     }
 
     /// Wake every parked session (an ownership view changed).
-    pub fn wake_all_sessions(&self) {
+    pub(crate) fn wake_all_sessions(&self) {
         self.inner.registry.wake_all_sessions();
     }
 
     #[cfg(test)]
-    pub fn registry(&self) -> &Arc<FeedRegistry> {
+    pub(crate) fn registry(&self) -> &Arc<FeedRegistry> {
         &self.inner.registry
     }
 
     #[cfg(test)]
-    pub fn budget(&self) -> &Arc<FeedMemoryBudget> {
+    pub(crate) fn budget(&self) -> &Arc<FeedMemoryBudget> {
         &self.inner.budget
     }
 
     /// The ring allowance a feed reserves when it enters shared mode.
-    pub fn ring_bytes(&self) -> usize {
+    pub(crate) fn ring_bytes(&self) -> usize {
         self.inner.ring_bytes.load(Ordering::Relaxed)
     }
 
-    pub fn heartbeat_ms(&self) -> u64 {
+    pub(crate) fn heartbeat_ms(&self) -> u64 {
         self.inner.heartbeat_ms.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    pub fn set_ring_bytes(&self, bytes: usize) {
+    pub(crate) fn set_ring_bytes(&self, bytes: usize) {
         self.inner.ring_bytes.store(bytes, Ordering::Relaxed);
     }
 
     #[cfg(test)]
-    pub fn set_heartbeat_ms(&self, ms: u64) {
+    pub(crate) fn set_heartbeat_ms(&self, ms: u64) {
         self.inner.heartbeat_ms.store(ms, Ordering::Relaxed);
     }
 
-    pub fn snapshot(&self) -> LiveFeedSnapshot {
+    pub(crate) fn snapshot(&self) -> LiveFeedSnapshot {
         LiveFeedSnapshot {
             live_feeds: self.inner.registry.len(),
             reserved_bytes: self.inner.budget.reserved(),

@@ -20,11 +20,12 @@
 //! refuses to boot while `registry::LAYOUT_VERSION < 4`; the default
 //! mode is `Off`.
 
-#![allow(dead_code)] // wired into the request path at the layout-4 switch
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod publication;
+use publication::HighWater;
 
 use arc_swap::ArcSwap;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -35,24 +36,22 @@ use crate::tenant::{
 };
 
 /// §5 recommended constraints.
-pub const MAX_TOKEN_BYTES: usize = 8 * 1024;
-pub const CLOCK_SKEW_SECS: i64 = 30;
-pub const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;
+pub(crate) const MAX_TOKEN_BYTES: usize = 8 * 1024;
+pub(crate) const CLOCK_SKEW_SECS: i64 = 30;
+pub(crate) const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;
 /// §7.1: policy/credential data unavailable beyond this window fails
 /// closed. Generous relative to the 30–60s refresh cadence so a brief
 /// Control Plane blip does not take the data plane down with it.
-pub const POLICY_STALENESS_MAX_SECS: i64 = 300;
+pub(crate) const POLICY_STALENESS_MAX_SECS: i64 = 300;
 /// Keys rotate far slower than policy, but a cell that cannot refresh
 /// its key set for this long must stop trusting it (review item 6) —
 /// a revoked signing key must not verify forever on a wedged feed.
-pub const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
+pub(crate) const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
 
-/// Separate trust boundaries (§14): three audiences, three verify
-/// entry points. A customer token can never satisfy an internal or
-/// operator check and vice versa.
-pub const AUD_CUSTOMER: &str = "prisma-streams-data";
-pub const AUD_INTERNAL: &str = "prisma-streams-internal";
-pub const AUD_OPERATOR: &str = "prisma-streams-operator";
+/// Separate JWT trust boundaries (§14): a customer token can never satisfy
+/// a fleet workload check and vice versa. Operator access uses its own bearer.
+pub(crate) const AUD_CUSTOMER: &str = "prisma-streams-data";
+pub(crate) const AUD_INTERNAL: &str = "prisma-streams-internal";
 
 /// Explicit algorithm allowlist (§5). RS256 is what Prisma Auth mints
 /// today; EdDSA is pre-approved for the planned key migration. Anything
@@ -61,14 +60,14 @@ pub const AUD_OPERATOR: &str = "prisma-streams-operator";
 const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::EdDSA];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AuthMode {
+pub(crate) enum AuthMode {
     Off,
     Shadow,
     Enforce,
 }
 
 impl AuthMode {
-    pub fn from_env(raw: Option<&str>) -> anyhow::Result<Self> {
+    pub(crate) fn from_env(raw: Option<&str>) -> anyhow::Result<Self> {
         match raw.unwrap_or("off") {
             "off" => Ok(AuthMode::Off),
             "shadow" => Ok(AuthMode::Shadow),
@@ -93,7 +92,7 @@ impl AuthMode {
 /// Every distinct fail-closed reason, for metrics and (in shadow mode)
 /// field diagnosis. `WrongCell` is special-cased by the HTTP layer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AuthError {
+pub(crate) enum AuthError {
     TokenTooLarge,
     Malformed(&'static str),
     KidMissing,
@@ -130,7 +129,7 @@ pub enum AuthError {
 
 impl AuthError {
     /// Stable metric key.
-    pub fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             AuthError::TokenTooLarge => "token_too_large",
             AuthError::Malformed(_) => "malformed",
@@ -170,24 +169,18 @@ impl AuthError {
 /// the cached credential grant at the same grant_version, so neither
 /// a stale cache nor a widened token can grant beyond the other.
 #[derive(Clone, Debug)]
-pub struct RequestPrincipal {
-    pub workspace_id: WorkspaceId,
+pub(crate) struct RequestPrincipal {
     pub project_id: ProjectId,
     /// Review item 5: the quotas from the EXACT policy snapshot this
     /// request verified against — quota admission must never re-read
     /// a later snapshot (a project vanishing between the two reads
     /// used to yield unlimited quotas).
     pub quotas: crate::project_policy::ProjectQuotas,
-    pub project_policy_version: u64,
-    pub cell_id: Arc<str>,
     pub credential_id: Arc<str>,
-    pub subject: Arc<str>,
     pub ownership_version: u64,
     pub grant_version: u64,
     pub scopes: ScopeSet,
     pub grant: StreamGrant,
-    pub token_id: Arc<str>,
-    pub issued_at: i64,
     pub expires_at: i64,
 }
 
@@ -198,7 +191,7 @@ pub struct RequestPrincipal {
 /// must not keep receiving records through a connection opened
 /// before a transfer, suspension, revocation, or expiry.
 #[derive(Clone, Debug)]
-pub struct AuthLease {
+pub(crate) struct AuthLease {
     pub project_id: ProjectId,
     pub credential_id: Arc<str>,
     pub ownership_version: u64,
@@ -209,7 +202,7 @@ pub struct AuthLease {
 /// Review round 3 F1: the reasons a live subscription's lease stops
 /// being valid. Exported as termination counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LeaseInvalidReason {
+pub(crate) enum LeaseInvalidReason {
     TokenExpired,
     PolicyStale,
     GrantsStale,
@@ -223,7 +216,7 @@ pub enum LeaseInvalidReason {
 }
 
 impl LeaseInvalidReason {
-    pub const ALL: [LeaseInvalidReason; 10] = [
+    pub(crate) const ALL: [LeaseInvalidReason; 10] = [
         Self::TokenExpired,
         Self::PolicyStale,
         Self::GrantsStale,
@@ -235,7 +228,7 @@ impl LeaseInvalidReason {
         Self::GrantChanged,
         Self::CredentialExpired,
     ];
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::TokenExpired => "token_expired",
             Self::PolicyStale => "policy_stale",
@@ -249,7 +242,7 @@ impl LeaseInvalidReason {
             Self::CredentialExpired => "credential_expired",
         }
     }
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
@@ -257,7 +250,7 @@ impl LeaseInvalidReason {
 impl RequestPrincipal {
     /// Review V4: the compact facts a live subscription must keep
     /// re-proving for as long as it stays open.
-    pub fn lease(&self) -> AuthLease {
+    pub(crate) fn lease(&self) -> AuthLease {
         AuthLease {
             project_id: self.project_id.clone(),
             credential_id: self.credential_id.clone(),
@@ -268,7 +261,7 @@ impl RequestPrincipal {
     }
 
     /// §6.1 route/method matrix entry point.
-    pub fn require(&self, scope: Scope) -> Result<(), AuthError> {
+    pub(crate) fn require(&self, scope: Scope) -> Result<(), AuthError> {
         if self.scopes.has(scope) {
             Ok(())
         } else {
@@ -278,7 +271,7 @@ impl RequestPrincipal {
 
     /// §6.2 component-aware prefix authorization.
     // mt-lint: allow(name-param-shared-core): authorization predicate — evaluates the name against THIS principal's own prefix grant; the project is the principal itself
-    pub fn require_stream(&self, canonical_name: &str) -> Result<(), AuthError> {
+    pub(crate) fn require_stream(&self, canonical_name: &str) -> Result<(), AuthError> {
         if self.grant.permits(canonical_name) {
             Ok(())
         } else {
@@ -290,7 +283,7 @@ impl RequestPrincipal {
 /// §14.1 fleet workload principal (minimal Stage 2b shape; Stage 4
 /// binds it to InternalStreamTarget verification).
 #[derive(Clone, Debug)]
-pub struct InternalPrincipal {
+pub(crate) struct InternalPrincipal {
     pub subject: Arc<str>,
     pub cell_id: Arc<str>,
     pub operations: Vec<String>,
@@ -305,7 +298,7 @@ pub struct InternalPrincipal {
 /// the token header's alg must equal the key's declared alg — the
 /// allowlist alone still permitted verifying an RSA key under any
 /// allowlisted algorithm the header claimed.
-pub struct JwksKey {
+pub(crate) struct JwksKey {
     pub alg: Algorithm,
     pub key: DecodingKey,
     /// SR3-3: canonical fingerprint of the key MATERIAL (sha256 of the
@@ -316,14 +309,14 @@ pub struct JwksKey {
 }
 
 /// SR3-3: the key-material fingerprint stored per kid.
-pub fn key_fp(pem: &[u8]) -> [u8; 32] {
+pub(crate) fn key_fp(pem: &[u8]) -> [u8; 32] {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(pem);
     h.finalize().into()
 }
 
-pub struct JwksSnapshot {
+pub(crate) struct JwksSnapshot {
     // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
     pub keys: HashMap<String, JwksKey>,
     pub fetched_at_unix: i64,
@@ -331,7 +324,7 @@ pub struct JwksSnapshot {
 }
 
 impl JwksSnapshot {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             keys: HashMap::new(),
             fetched_at_unix: 0,
@@ -378,7 +371,7 @@ struct RawInternalClaims {
 }
 
 #[derive(Default)]
-pub struct ShadowCounters {
+pub(crate) struct ShadowCounters {
     pub ok: AtomicU64,
     pub missing: AtomicU64,
     pub failed: AtomicU64,
@@ -388,7 +381,7 @@ pub struct ShadowCounters {
 /// §7.1. Request-path reads are lock-free snapshot loads; refreshers
 /// publish via the `publish_*` methods (Stage 5 wires the real feed;
 /// tests publish fixtures directly).
-pub struct AuthService {
+pub(crate) struct AuthService {
     pub mode: AuthMode,
     issuer: String,
     cell_id: Arc<str>,
@@ -423,98 +416,10 @@ pub struct AuthService {
     pub shadow: ShadowCounters,
 }
 
-const HIGH_WATER_MAX: usize = 65_536;
-
-/// Per-project retained feed history (SR-4 + SR2 finding 2).
-#[derive(Clone)]
-struct ProjHw {
-    /// Max (ownership_version, policy_version) ever seen.
-    o_hw: u64,
-    p_hw: u64,
-    /// Round-4 finding 3: the workspace bound to `o_hw`. The
-    /// direct-transition check compares a new policy against a project
-    /// still PRESENT in the current snapshot — an omit-and-reintroduce
-    /// sequence hid behind that, moving the workspace at an UNCHANGED
-    /// ownership_version (no transfer event, no credential revocation,
-    /// no billing split). The workspace at the high-water ownership
-    /// version survives omissions, so the coupling holds across them.
-    workspace_at_o_hw: crate::tenant::WorkspaceId,
-    /// Version pair at the moment the project was last OMITTED from a
-    /// full snapshot. Reintroduction requires strictly exceeding one
-    /// of them — a replayed pre-omission snapshot cannot resurrect it.
-    omitted_at: Option<(u64, u64)>,
-    /// Semantic fingerprint of the last content seen at (o_hw, p_hw):
-    /// an EQUAL version pair must carry identical content — versions
-    /// pin bytes, and a same-version status or quota flip is a
-    /// publisher defect, refused.
-    fp_at: (u64, u64),
-    fp: [u8; 32],
-}
-
-/// Per-credential retained feed history (SR-4 + SR2 finding 2).
-#[derive(Clone)]
-struct CredHw {
-    /// Max grant_version ever seen.
-    v_hw: u64,
-    /// Max version ever seen NOT Active (revoked/disabled/expired).
-    dead: Option<u64>,
-    /// grant_version at the last omission from a full snapshot.
-    omitted_at: Option<u64>,
-    /// Semantic fingerprint of the content at v_hw.
-    fp_at: u64,
-    fp: [u8; 32],
-}
-
-/// PROCESS-LOCAL, BOUNDED (`HIGH_WATER_MAX` FIFO). The durable
-/// security guarantee is the Control-Plane feed contract (versions
-/// only move forward; full snapshots); this table is defense in depth
-/// against a MISBEHAVING PUBLISHER within one process lifetime — a
-/// restart or FIFO eviction resets it, deliberately and documented.
-#[derive(Default)]
-struct HighWater {
-    projects: std::collections::HashMap<crate::tenant::ProjectId, ProjHw>,
-    p_order: std::collections::VecDeque<crate::tenant::ProjectId>,
-    // mt-lint: allow(name-keyed-map): credential id (feed high-water table)
-    credentials: std::collections::HashMap<Arc<str>, CredHw>,
-    c_order: std::collections::VecDeque<Arc<str>>,
-    /// SR3-3: every kid EVER seen, with its material fingerprint and
-    /// whether it has been retired (omitted from a full snapshot). A
-    /// retired kid never returns, at ANY generation; a known kid never
-    /// changes material.
-    // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
-    kids: std::collections::HashMap<String, KidHw>,
-    k_order: std::collections::VecDeque<String>,
-    /// SR3-3: per-feed (generation, canonical digest) of the LAST
-    /// accepted snapshot — the same generation must always carry the
-    /// same digest (catches an entry ADDED under a published
-    /// generation, which per-ID checks cannot see).
-    jwks_gen: Option<(u64, [u8; 32])>,
-    policy_gen: Option<(u64, [u8; 32])>,
-    grant_gen: Option<(u64, [u8; 32])>,
-}
-
-#[derive(Clone)]
-struct KidHw {
-    fp: [u8; 32],
-    alg_dbg: String,
-    retired: bool,
-}
-
-/// Canonical semantic fingerprint. Debug formatting is deterministic
-/// for these derive(Debug) scalar/vec types, and the table never
-/// crosses a process boundary, so the encoding cannot skew between
-/// writer and checker.
-fn feed_fp(debug: impl std::fmt::Debug) -> [u8; 32] {
-    use sha2::Digest;
-    let mut h = sha2::Sha256::new();
-    h.update(format!("{debug:?}").as_bytes());
-    h.finalize().into()
-}
-
 /// Read `exp` from a JWT WITHOUT verifying it — used only to schedule
 /// refreshes of this instance's OWN outbound workload token (§14.1);
 /// authorization always happens at the receiving peer.
-pub fn unverified_exp(token: &str) -> Option<i64> {
+pub(crate) fn unverified_exp(token: &str) -> Option<i64> {
     use base64::Engine;
     let mid = token.split('.').nth(1)?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -527,7 +432,7 @@ pub fn unverified_exp(token: &str) -> Option<i64> {
 }
 
 impl AuthService {
-    pub fn new(mode: AuthMode, issuer: String, cell_id: &str) -> anyhow::Result<Self> {
+    pub(crate) fn new(mode: AuthMode, issuer: String, cell_id: &str) -> anyhow::Result<Self> {
         validate_cell_id(cell_id)
             .map_err(|e| anyhow::anyhow!("invalid cell id {cell_id:?}: {e}"))?;
         Ok(Self {
@@ -561,24 +466,29 @@ impl AuthService {
     /// FEED must not resurrect removed entries at lower versions —
     /// recorded as the feed contract.
     /// Effective policy/grant staleness window (seconds).
-    pub fn staleness_max_secs(&self) -> i64 {
+    pub(crate) fn staleness_max_secs(&self) -> i64 {
         self.staleness_max_secs.load(Ordering::Relaxed)
     }
 
     /// TEST HOOK: shorten the staleness window so feed-staleness legs
     /// run in seconds. Production never calls this.
-    pub fn set_staleness_max_secs(&self, secs: i64) {
+    #[cfg(test)]
+    pub(crate) fn set_staleness_max_secs(&self, secs: i64) {
         self.staleness_max_secs.store(secs, Ordering::Relaxed);
     }
 
     /// Review V4: current auth publication generation (any feed).
-    pub fn auth_generation(&self) -> u64 {
+    pub(crate) fn auth_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
     /// Review round 3 F1: why a lease stopped being valid — exported
     /// as a termination counter and used to pick the next deadline.
-    pub fn lease_check(&self, l: &AuthLease, now_unix: i64) -> Result<(), LeaseInvalidReason> {
+    pub(crate) fn lease_check(
+        &self,
+        l: &AuthLease,
+        now_unix: i64,
+    ) -> Result<(), LeaseInvalidReason> {
         use LeaseInvalidReason as R;
         if now_unix >= l.expires_at {
             return Err(R::TokenExpired);
@@ -620,17 +530,11 @@ impl AuthService {
         Ok(())
     }
 
-    /// Review V4: is this lease still authorized under the CURRENT
-    /// snapshots? (Boolean view of `lease_check`.)
-    pub fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
-        self.lease_check(l, now_unix).is_ok()
-    }
-
     /// Review round 3 F1: the next instant at which this lease MUST be
     /// re-proved even if no feed publishes — the earliest of token
     /// expiry, credential expiry, and each feed's staleness boundary.
     /// A clean refresh (even an identical replay) moves it forward.
-    pub fn lease_deadline(&self, l: &AuthLease) -> i64 {
+    pub(crate) fn lease_deadline(&self, l: &AuthLease) -> i64 {
         let w = self.staleness_max_secs();
         let mut d = l.expires_at;
         d = d.min(self.projects.load().fetched_at_unix + w);
@@ -649,379 +553,15 @@ impl AuthService {
     /// Review round 3 F2: a watch on the publication generation — no
     /// lost wakeups, immediate notification to parked response bodies,
     /// current value visible to new receivers.
-    pub fn generation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub(crate) fn generation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
         self.gen_tx.subscribe()
-    }
-
-    pub fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
-        let cur = self.jwks.load();
-        if snapshot.feed_version < cur.feed_version {
-            return Err("jwks feed_version regressed");
-        }
-        // SR3-3 (round-3 finding 3): signing-key lifecycle rules —
-        //   * a kid names ONE algorithm and ONE public key forever;
-        //   * once omitted from a full snapshot, a kid is RETIRED and
-        //     never returns, at ANY later generation;
-        //   * the same generation always carries the same canonical
-        //     digest (identical replay ok; content drift refused).
-        // ALL checks run before ANY mutation.
-        let digest = {
-            use sha2::Digest;
-            let mut kids: Vec<_> = snapshot
-                .keys
-                .iter()
-                .map(|(k, v)| (k.clone(), format!("{:?}", v.alg), v.fp))
-                .collect();
-            kids.sort();
-            let mut h = sha2::Sha256::new();
-            for (k, a, fp) in &kids {
-                h.update(k.as_bytes());
-                h.update([0u8]);
-                h.update(a.as_bytes());
-                h.update([0u8]);
-                h.update(fp);
-            }
-            let out: [u8; 32] = h.finalize().into();
-            out
-        };
-        let mut hw = self.high_water.lock().unwrap();
-        if let Some((g, d)) = hw.jwks_gen
-            && snapshot.feed_version == g
-            && digest != d
-        {
-            return Err("same jwks generation with a different key set");
-        }
-        for (kid, key) in &snapshot.keys {
-            if let Some(k) = hw.kids.get(kid.as_str()) {
-                if k.retired {
-                    return Err("retired kid reintroduced (SR3 tombstone)");
-                }
-                if k.fp != key.fp || k.alg_dbg != format!("{:?}", key.alg) {
-                    return Err("kid rebound to different key material");
-                }
-            }
-        }
-        for (kid, key) in &snapshot.keys {
-            if !hw.kids.contains_key(kid.as_str()) {
-                if hw.kids.len() >= HIGH_WATER_MAX
-                    && let Some(old) = hw.k_order.pop_front()
-                {
-                    hw.kids.remove(&old);
-                }
-                hw.kids.insert(
-                    kid.clone(),
-                    KidHw {
-                        fp: key.fp,
-                        alg_dbg: format!("{:?}", key.alg),
-                        retired: false,
-                    },
-                );
-                hw.k_order.push_back(kid.clone());
-            }
-        }
-        // Retire every kid the FULL snapshot dropped.
-        for kid in cur.keys.keys() {
-            if !snapshot.keys.contains_key(kid)
-                && let Some(k) = hw.kids.get_mut(kid.as_str())
-            {
-                k.retired = true;
-            }
-        }
-        hw.jwks_gen = Some((snapshot.feed_version, digest));
-        drop(hw);
-        self.jwks.store(Arc::new(snapshot));
-        self.unknown_kid_seen.store(0, Ordering::Relaxed);
-        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        // Round-4 finding 5: send_replace, never send — send() REFUSES
-        // at zero receivers and drops the value, so every publication
-        // landing between two subscribers (or before the first) was
-        // lost to the watch and new bodies started from a stale
-        // generation. The atomic above stays the cheap fast path; the
-        // watch value must simply always equal it.
-        self.gen_tx.send_replace(g);
-        Ok(())
-    }
-
-    pub fn publish_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
-        let cur = self.projects.load();
-        if snapshot.feed_version < cur.feed_version {
-            return Err("policy feed_version regressed");
-        }
-        // SR-4 + SR2 finding 2: versions are compared against the
-        // retained HIGH-WATER marks; an OMISSION from a full snapshot
-        // tombstones the entry at its last version pair (strictly
-        // newer to reintroduce); an EQUAL version pair must carry
-        // IDENTICAL content. ALL checks run before ANY mutation — a
-        // refused snapshot leaves no trace.
-        let mut hw = self.high_water.lock().unwrap();
-        // SR3-3: the same policy generation must carry the same
-        // canonical digest — a NEW project slipped under an
-        // already-published generation is invisible to per-ID checks.
-        let digest = {
-            let mut rows: Vec<_> = snapshot
-                .projects
-                .values()
-                .map(|p| format!("{p:?}"))
-                .collect();
-            rows.sort();
-            feed_fp(&rows)
-        };
-        if let Some((g, d)) = hw.policy_gen
-            && snapshot.feed_version == g
-            && digest != d
-        {
-            return Err("same policy generation with different content");
-        }
-        for (pid, np) in &snapshot.projects {
-            if let Some(e) = hw.projects.get(pid) {
-                if np.ownership_version < e.o_hw {
-                    return Err("ownership_version below high-water");
-                }
-                if np.project_policy_version < e.p_hw {
-                    return Err("project_policy_version below high-water");
-                }
-                // Round-4 finding 3: the workspace bound to the
-                // HIGH-WATER ownership version survives omissions. A
-                // workspace change at an unchanged ownership_version is
-                // refused even when the current snapshot no longer
-                // contains the project — omit-and-reintroduce must not
-                // bypass the transfer coupling.
-                if np.ownership_version == e.o_hw && np.workspace_id != e.workspace_at_o_hw {
-                    return Err("workspace changed without ownership_version increment");
-                }
-                if let Some((oo, op)) = e.omitted_at
-                    && np.ownership_version <= oo
-                    && np.project_policy_version <= op
-                {
-                    return Err(
-                        "omitted project reintroduced without a newer version (SR2 tombstone)",
-                    );
-                }
-                if (np.ownership_version, np.project_policy_version) == e.fp_at
-                    && feed_fp(np) != e.fp
-                {
-                    return Err("same project version with different content");
-                }
-            }
-            if let Some(op) = cur.projects.get(pid) {
-                if np.ownership_version < op.ownership_version {
-                    return Err("ownership_version regressed");
-                }
-                if np.project_policy_version < op.project_policy_version {
-                    return Err("project_policy_version regressed");
-                }
-                // Review round 3 F3: the contract ties a workspace
-                // (owner) change to an ownership_version increment. A
-                // higher policy version must not smuggle an owner
-                // change past the lease/transfer machinery.
-                if np.workspace_id != op.workspace_id
-                    && np.ownership_version <= op.ownership_version
-                {
-                    return Err("workspace changed without ownership_version increment");
-                }
-            }
-        }
-        for (pid, np) in &snapshot.projects {
-            let vpair = (np.ownership_version, np.project_policy_version);
-            match hw.projects.get_mut(pid) {
-                Some(e) => {
-                    if np.ownership_version > e.o_hw {
-                        e.o_hw = np.ownership_version;
-                        // Round-4 finding 3: the workspace travels with
-                        // the ownership high-water.
-                        e.workspace_at_o_hw = np.workspace_id.clone();
-                    }
-                    e.p_hw = e.p_hw.max(np.project_policy_version);
-                    if vpair >= e.fp_at {
-                        e.fp_at = vpair;
-                        e.fp = feed_fp(np);
-                    }
-                    // A strictly newer version clears the tombstone.
-                    if let Some((oo, op)) = e.omitted_at
-                        && (np.ownership_version > oo || np.project_policy_version > op)
-                    {
-                        e.omitted_at = None;
-                    }
-                }
-                None => {
-                    if hw.projects.len() >= HIGH_WATER_MAX
-                        && let Some(old) = hw.p_order.pop_front()
-                    {
-                        hw.projects.remove(&old);
-                    }
-                    hw.projects.insert(
-                        pid.clone(),
-                        ProjHw {
-                            o_hw: np.ownership_version,
-                            p_hw: np.project_policy_version,
-                            workspace_at_o_hw: np.workspace_id.clone(),
-                            omitted_at: None,
-                            fp_at: vpair,
-                            fp: feed_fp(np),
-                        },
-                    );
-                    hw.p_order.push_back(pid.clone());
-                }
-            }
-        }
-        // Tombstone every project the FULL snapshot dropped.
-        for (pid, op) in &cur.projects {
-            if !snapshot.projects.contains_key(pid)
-                && let Some(e) = hw.projects.get_mut(pid)
-            {
-                e.omitted_at = Some((
-                    e.omitted_at
-                        .map_or(op.ownership_version, |(a, _)| a.max(op.ownership_version)),
-                    e.omitted_at.map_or(op.project_policy_version, |(_, b)| {
-                        b.max(op.project_policy_version)
-                    }),
-                ));
-            }
-        }
-        hw.policy_gen = Some((snapshot.feed_version, digest));
-        drop(hw);
-        self.projects.store(Arc::new(snapshot));
-        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        // Round-4 finding 5: send_replace, never send — send() REFUSES
-        // at zero receivers and drops the value, so every publication
-        // landing between two subscribers (or before the first) was
-        // lost to the watch and new bodies started from a stale
-        // generation. The atomic above stays the cheap fast path; the
-        // watch value must simply always equal it.
-        self.gen_tx.send_replace(g);
-        Ok(())
-    }
-
-    pub fn publish_grants(&self, snapshot: GrantSnapshot) -> Result<(), &'static str> {
-        let cur = self.credentials.load();
-        if snapshot.feed_version < cur.feed_version {
-            return Err("grant feed_version regressed");
-        }
-        // SR-4: high-water checks survive snapshot omission — a revoked
-        // credential removed from the feed and later reintroduced
-        // Active at an old (or the same) version is refused; only a
-        // STRICTLY newer grant_version than any version it was ever
-        // seen dead at can reactivate it.
-        let mut hw = self.high_water.lock().unwrap();
-        // SR3-3: generation digest, as for policies.
-        let digest = {
-            let mut rows: Vec<_> = snapshot
-                .credentials
-                .values()
-                .map(|c| format!("{c:?}"))
-                .collect();
-            rows.sort();
-            feed_fp(&rows)
-        };
-        if let Some((g, d)) = hw.grant_gen
-            && snapshot.feed_version == g
-            && digest != d
-        {
-            return Err("same grant generation with different content");
-        }
-        for (id, nc) in &snapshot.credentials {
-            if let Some(e) = hw.credentials.get(id.as_ref()) {
-                if nc.grant_version < e.v_hw {
-                    return Err("grant_version below high-water");
-                }
-                if nc.status == CredentialStatus::Active
-                    && e.dead.is_some_and(|d| nc.grant_version <= d)
-                {
-                    return Err("revoked credential reactivated without a newer grant_version");
-                }
-                if e.omitted_at.is_some_and(|o| nc.grant_version <= o) {
-                    return Err(
-                        "omitted credential reintroduced without a newer grant_version (SR2 tombstone)",
-                    );
-                }
-                if nc.grant_version == e.fp_at && feed_fp(nc) != e.fp {
-                    return Err("same grant_version with different content");
-                }
-            }
-            if let Some(oc) = cur.credentials.get(id) {
-                if nc.grant_version < oc.grant_version {
-                    return Err("grant_version regressed");
-                }
-                let was_dead = matches!(
-                    oc.status,
-                    CredentialStatus::Revoked | CredentialStatus::Disabled
-                );
-                if was_dead
-                    && nc.status == CredentialStatus::Active
-                    && nc.grant_version <= oc.grant_version
-                {
-                    // Un-revocation is an explicit act, never a replay:
-                    // it must arrive under a STRICTLY newer version.
-                    return Err("revoked credential reactivated without a newer grant_version");
-                }
-            }
-        }
-        for (id, nc) in &snapshot.credentials {
-            let dead = !matches!(nc.status, CredentialStatus::Active);
-            match hw.credentials.get_mut(id.as_ref()) {
-                Some(e) => {
-                    e.v_hw = e.v_hw.max(nc.grant_version);
-                    if dead {
-                        e.dead = Some(e.dead.map_or(nc.grant_version, |d| d.max(nc.grant_version)));
-                    }
-                    if nc.grant_version >= e.fp_at {
-                        e.fp_at = nc.grant_version;
-                        e.fp = feed_fp(nc);
-                    }
-                    if e.omitted_at.is_some_and(|o| nc.grant_version > o) {
-                        e.omitted_at = None;
-                    }
-                }
-                None => {
-                    if hw.credentials.len() >= HIGH_WATER_MAX
-                        && let Some(old) = hw.c_order.pop_front()
-                    {
-                        hw.credentials.remove(&old);
-                    }
-                    hw.credentials.insert(
-                        id.clone(),
-                        CredHw {
-                            v_hw: nc.grant_version,
-                            dead: dead.then_some(nc.grant_version),
-                            omitted_at: None,
-                            fp_at: nc.grant_version,
-                            fp: feed_fp(nc),
-                        },
-                    );
-                    hw.c_order.push_back(id.clone());
-                }
-            }
-        }
-        // Tombstone every credential the FULL snapshot dropped.
-        for (id, oc) in &cur.credentials {
-            if !snapshot.credentials.contains_key(id)
-                && let Some(e) = hw.credentials.get_mut(id.as_ref())
-            {
-                e.omitted_at = Some(
-                    e.omitted_at
-                        .map_or(oc.grant_version, |o| o.max(oc.grant_version)),
-                );
-            }
-        }
-        hw.grant_gen = Some((snapshot.feed_version, digest));
-        drop(hw);
-        self.credentials.store(Arc::new(snapshot));
-        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        // Round-4 finding 5: send_replace, never send — send() REFUSES
-        // at zero receivers and drops the value, so every publication
-        // landing between two subscribers (or before the first) was
-        // lost to the watch and new bodies started from a stale
-        // generation. The atomic above stays the cheap fast path; the
-        // watch value must simply always equal it.
-        self.gen_tx.send_replace(g);
-        Ok(())
     }
 
     /// SR-4: nudge the refresher out of cadence — at most once per 30s
     /// — so a freshly rotated signing key is fetched when its first
     /// token arrives instead of failing requests until the next tick.
     /// Returns whether the nudge fired (rate-limit observable in tests).
-    pub fn request_kid_refresh(&self) -> bool {
+    pub(crate) fn request_kid_refresh(&self) -> bool {
         let now = crate::shard::now_ms();
         let last = self.last_kid_wake_ms.load(Ordering::Relaxed);
         if now - last < 30_000 {
@@ -1114,7 +654,11 @@ impl AuthService {
 
     /// §5 + §7.1: the customer-token pipeline. Pure in (token, now,
     /// published snapshots) — no ambient clock, no I/O.
-    pub fn verify_customer(&self, token: &str, now: i64) -> Result<RequestPrincipal, AuthError> {
+    pub(crate) fn verify_customer(
+        &self,
+        token: &str,
+        now: i64,
+    ) -> Result<RequestPrincipal, AuthError> {
         let c: RawClaims = self.verify_signature(token, now)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
@@ -1220,26 +764,24 @@ impl AuthService {
         let grant = intersect_grants(&token_grant, &cred.grant);
 
         Ok(RequestPrincipal {
-            workspace_id,
             quotas: policy.quotas.clone(),
-            project_policy_version: policy.project_policy_version,
             project_id,
-            cell_id: self.cell_id.clone(),
             credential_id: Arc::from(c.credential_id.as_str()),
-            subject: Arc::from(c.sub.as_str()),
             ownership_version: c.ownership_version,
             grant_version: c.grant_version,
             scopes,
             grant,
-            token_id: Arc::from(c.jti.as_str()),
-            issued_at: c.iat,
             expires_at: c.exp,
         })
     }
 
     /// §14.1: fleet workload token (separate audience; no project
     /// authority — target binding is Stage 4's delegated capability).
-    pub fn verify_internal(&self, token: &str, now: i64) -> Result<InternalPrincipal, AuthError> {
+    pub(crate) fn verify_internal(
+        &self,
+        token: &str,
+        now: i64,
+    ) -> Result<InternalPrincipal, AuthError> {
         let c: RawInternalClaims = self.verify_signature(token, now)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
@@ -1268,7 +810,7 @@ impl AuthService {
     /// Wired into the request path (behind `mode == Shadow`) at the
     /// layout-4 switch; exposed here so field diagnostics land in
     /// /v1/debug/load before enforcement ever turns on.
-    pub fn shadow_observe(&self, bearer: Option<&str>, now: i64) {
+    pub(crate) fn shadow_observe(&self, bearer: Option<&str>, now: i64) {
         let Some(token) = bearer else {
             self.shadow.missing.fetch_add(1, Ordering::Relaxed);
             return;
@@ -1286,24 +828,9 @@ impl AuthService {
         }
     }
 
-    /// The CURRENT policy quotas for a project (§17.2: enforcement
-    /// reads the policy, never token claims). None = project not in
-    /// the snapshot; callers treat that as no-quota because the
-    /// request already passed verification against the same snapshot.
-    pub fn quotas_for(
-        &self,
-        project: &crate::tenant::ProjectId,
-    ) -> Option<crate::project_policy::ProjectQuotas> {
-        self.projects
-            .load()
-            .projects
-            .get(project)
-            .map(|p| p.quotas.clone())
-    }
-
     /// Stage 7: the workspace that owns `project` in the CURRENT
     /// policy snapshot — billing's workspace-at-event resolution.
-    pub fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
+    pub(crate) fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
         self.projects
             .load()
             .projects
@@ -1322,7 +849,7 @@ impl AuthService {
     /// (`PolicyStale` -> retryable 503), never open on a stale
     /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
     /// (not served here); the caller's uniform refusal applies.
-    pub fn status_and_quotas(
+    pub(crate) fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
         now: i64,
@@ -1346,7 +873,7 @@ impl AuthService {
     /// Snapshot freshness for the operator surface: whether each feed
     /// has EVER been published, how old it is against the fail-closed
     /// window, and what it contains.
-    pub fn feed_json(&self, now: i64) -> serde_json::Value {
+    pub(crate) fn feed_json(&self, now: i64) -> serde_json::Value {
         let jwks = self.jwks.load();
         let policies = self.projects.load();
         let grants = self.credentials.load();
@@ -1375,7 +902,7 @@ impl AuthService {
         })
     }
 
-    pub fn shadow_json(&self) -> serde_json::Value {
+    pub(crate) fn shadow_json(&self) -> serde_json::Value {
         serde_json::json!({
             "mode": match self.mode {
                 AuthMode::Off => "off",
@@ -1395,7 +922,7 @@ impl AuthService {
 /// inputs permit it. For component-prefix sets that is exactly: keep
 /// each prefix that the other side covers (the deeper of any covering
 /// pair survives).
-pub fn intersect_grants(a: &StreamGrant, b: &StreamGrant) -> StreamGrant {
+pub(crate) fn intersect_grants(a: &StreamGrant, b: &StreamGrant) -> StreamGrant {
     match (a, b) {
         (StreamGrant::All, g) | (g, StreamGrant::All) => g.clone(),
         (StreamGrant::Prefixes(pa), StreamGrant::Prefixes(pb)) => {
@@ -1549,7 +1076,8 @@ mod tests {
         let svc = service();
         let p = svc.verify_customer(&sign(&claims()), NOW).unwrap();
         assert_eq!(p.project_id.as_str(), "proj_456");
-        assert_eq!(p.workspace_id.as_str(), "ws_789");
+        assert_eq!(p.credential_id.as_ref(), "strcred_123");
+        assert_eq!(p.expires_at, claims().exp);
         assert_eq!(p.ownership_version, 12);
         assert_eq!(p.grant_version, 7);
         // Effective scopes = token ∩ credential: streams.create is in
@@ -1862,7 +1390,7 @@ mod tests {
         assert!(svc.publish_grants(stale.clone()).is_err());
         // ...and even a same-feed-version forgery that re-activates at
         // the same grant_version is refused by the un-revocation rule.
-        let mut forged = stale.clone();
+        let mut forged = stale;
         forged.feed_version = 9;
         forged.credentials.insert(
             Arc::from("strcred_123"),
@@ -1906,7 +1434,7 @@ mod tests {
             },
         );
         svc.publish_policies(PolicySnapshot {
-            projects: projects.clone(),
+            projects,
             fetched_at_unix: NOW,
             feed_version: 41,
         })
@@ -1918,7 +1446,7 @@ mod tests {
         old_projects.insert(
             pid.clone(),
             ProjectPolicy {
-                project_id: pid.clone(),
+                project_id: pid,
                 workspace_id: WorkspaceId::new("ws_789").unwrap(),
                 cell_id: Arc::from(CELL),
                 project_policy_version: 40,

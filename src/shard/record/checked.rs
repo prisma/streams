@@ -35,6 +35,11 @@ impl CheckedFrame {
         }
         Ok(Some(Self::retain(raw.clone(), Self::metadata(&parsed))))
     }
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        reason = "CheckedFrame metadata owner; decode_at has accepted a u16 routing length and at most 12 nonce bytes so both retained ends are at most 65570; repeating checked conversions or widening every retained frame would duplicate the admission proof"
+    )]
     fn metadata(frame: &DecodedFrame<'_>) -> (u64, i64, u32, u32, u32, u8) {
         (
             frame.header.offset,
@@ -66,6 +71,11 @@ impl CheckedFrame {
             version,
         }
     }
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::expect_used,
+        reason = "CheckedFrame borrowed view; private offsets and UTF-8 were admitted against these exact immutable Bytes and callers cannot mutate either; reparsing or returning an optional view would discard the retained proof"
+    )]
     pub(crate) fn view(&self) -> DecodedFrame<'_> {
         DecodedFrame {
             header: ReadFrameHeader {
@@ -110,6 +120,10 @@ mod tests {
     use super::*;
     use crate::crypto::{FrameCipher, FrameCompression, decrypt_frame};
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "CheckedFrame storage-identity regression; canonical 25-byte keys and successfully admitted frame ranges establish every slice; direct pointer comparisons prove borrowing without an extra helper or copied oracle"
+    )]
     #[test]
     fn o1_checked_views_retain_exact_metadata_and_borrow_admitted_storage() {
         let long = "x".repeat(u16::MAX as usize);
@@ -160,6 +174,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "CheckedFrame corruption regression; the encoded nonempty other-key frame and canonical 25-byte key establish these mutation positions; direct byte edits keep the corrupted tag and UTF-8 cases explicit"
+    )]
     #[test]
     fn o1_structural_admission_never_substitutes_for_authentication() {
         let mut raw = FrameCipher::new(&[7; 32], &[8; 16], FrameCompression::Disabled)

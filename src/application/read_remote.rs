@@ -20,7 +20,7 @@ pub(crate) struct InternalTarget {
 }
 
 impl InternalTarget {
-    pub fn of(desc: &StreamDesc, seg_id: u32) -> Option<Self> {
+    pub(crate) fn of(desc: &StreamDesc, seg_id: u32) -> Option<Self> {
         desc.segment_route_by_id(seg_id)?;
         Some(InternalTarget {
             project_id: desc.project_id.clone(),
@@ -29,7 +29,7 @@ impl InternalTarget {
             identity: desc.dynamic_segment_identity(seg_id),
         })
     }
-    pub fn headers(&self) -> [(&'static str, String); 4] {
+    pub(crate) fn headers(&self) -> [(&'static str, String); 4] {
         [
             (
                 "streams-internal-project",
