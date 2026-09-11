@@ -22,7 +22,7 @@ use slatedb::config::{CompressionCodec, Settings, WriteOptions};
 use slatedb::{Db, WriteBatch};
 use tokio::sync::mpsc;
 
-use crate::crypto::{RouteHash, SegmentHash, StreamKey, hex};
+use crate::crypto::{RouteHash, SegmentHash, StreamKey};
 use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
 #[cfg(test)]
@@ -521,10 +521,6 @@ pub(crate) fn history_settings(
         },
         ..Default::default()
     }
-}
-
-pub fn history_db_path(hash: &[u8; 16]) -> String {
-    format!("streams/{}", hex(hash))
 }
 
 // ---- key cache (transient; fed by keyed requests) ----
