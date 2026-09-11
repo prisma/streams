@@ -1,9 +1,8 @@
 //! Security lineage.
 
 use super::fixture_auth::sr_rig;
-use super::fixture_http::{engine_shutdown, http_rig_with_auth_service};
+use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
-use super::fixture_storage::mem;
 
 /// RED (Søren review, blocker 1): a product DELETE authorized for
 /// project B must operate on B end to end. Today delete_stream loads
@@ -13,115 +12,10 @@ use super::fixture_storage::mem;
 /// bug deletes A and leaves B alive behind a 204.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_stays_inside_the_requesting_project() {
-    const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
-    const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
-    let now = crate::shard::now_ms() / 1000;
-    let svc = std::sync::Arc::new(
-        crate::auth::AuthService::new(
-            crate::auth::AuthMode::Enforce,
-            "https://auth.prisma.io".into(),
-            "test-cell",
-        )
-        .unwrap(),
-    );
-    let mut keys = std::collections::HashMap::new();
-    keys.insert(
-        "del-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
-    );
-    svc.publish_jwks(crate::auth::JwksSnapshot {
-        keys,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.lifecycle.manage";
-    let pid = crate::tenant::ProjectId::new("proj-delb").unwrap();
-    let mut projects = std::collections::HashMap::new();
-    projects.insert(
-        pid.clone(),
-        crate::project_policy::ProjectPolicy {
-            project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_delb").unwrap(),
-            cell_id: std::sync::Arc::from("test-cell"),
-            project_policy_version: 1,
-            ownership_version: 1,
-            status: crate::project_policy::ProjectStatus::Active,
-            quotas: crate::project_policy::ProjectQuotas::default(),
-        },
-    );
-    let mut credentials = std::collections::HashMap::new();
-    credentials.insert(
-        std::sync::Arc::from("c_delb"),
-        crate::project_policy::CredentialGrant {
-            credential_id: std::sync::Arc::from("c_delb"),
-            project_id: pid,
-            grant_version: 1,
-            status: crate::project_policy::CredentialStatus::Active,
-            scopes: crate::tenant::ScopeSet::parse(scopes).0,
-            grant: crate::tenant::StreamGrant::All,
-            expires_at: None,
-        },
-    );
-    svc.publish_policies(crate::project_policy::PolicySnapshot {
-        projects,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    svc.publish_grants(crate::project_policy::GrantSnapshot {
-        credentials,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
-
-    #[derive(serde::Serialize)]
-    struct C<'a> {
-        iss: &'a str,
-        aud: &'a str,
-        sub: &'a str,
-        credential_id: &'a str,
-        project_id: &'a str,
-        workspace_id: &'a str,
-        cell_id: &'a str,
-        ownership_version: u64,
-        grant_version: u64,
-        scope: &'a str,
-        jti: &'a str,
-        iat: i64,
-        exp: i64,
-    }
-    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    header.kid = Some("del-1".into());
-    let token = jsonwebtoken::encode(
-        &header,
-        &C {
-            iss: "https://auth.prisma.io",
-            aud: "prisma-streams-data",
-            sub: "u",
-            credential_id: "c_delb",
-            project_id: "proj-delb",
-            workspace_id: "ws_delb",
-            cell_id: "test-cell",
-            ownership_version: 1,
-            grant_version: 1,
-            scope: scopes,
-            jti: "t",
-            iat: now - 60,
-            exp: now + 600,
-        },
-        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-    )
-    .unwrap();
-    let auth_hdr = format!("Bearer {token}");
-    let auth = ("authorization", auth_hdr.as_str());
+    let (state, addr, token) = sr_rig("proj-delb", "ws_delb", "c_delb", "del-1", scopes).await;
+    let auth = ("authorization", token.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
     // D (deployment tenant) owns "orders" via the raw surface, SAME
@@ -284,6 +178,10 @@ async fn transition_append_stays_inside_the_requesting_project() {
 /// segment outside the stream's lineage refreshes via state.deployment.raw_adapter_sref(name)
 /// and recurses into the DEPLOYMENT tenant's descriptor. With same
 /// name and (validly) the same key, B's read serves A's records.
+#[expect(
+    clippy::too_many_lines,
+    reason = "lineage isolation fixture; the complete conflicting maps and signed cursor are the oracle inputs; splitting their declarations would hide the cross-project mismatch under test"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stale_lineage_read_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \

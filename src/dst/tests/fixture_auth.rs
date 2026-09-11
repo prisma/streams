@@ -5,6 +5,38 @@ use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 use std::sync::Arc;
 
+/// Independent fixture wire claims shared by both customer-token issuers.
+#[derive(serde::Serialize)]
+struct AccessClaims<'a> {
+    iss: &'a str,
+    aud: &'a str,
+    sub: &'a str,
+    credential_id: &'a str,
+    project_id: &'a str,
+    workspace_id: &'a str,
+    cell_id: &'a str,
+    ownership_version: u64,
+    grant_version: u64,
+    scope: &'a str,
+    jti: &'a str,
+    iat: i64,
+    exp: i64,
+}
+
+impl AccessClaims<'_> {
+    fn bearer(&self, kid: &str) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(kid.to_string());
+        let token = jsonwebtoken::encode(
+            &header,
+            self,
+            &jsonwebtoken::EncodingKey::from_rsa_pem(RIG_PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        format!("Bearer {token}")
+    }
+}
+
 /// One-project enforce rig for the Søren-review red tests: publishes
 /// jwks+policy+grant for a single project and mints one token.
 pub(super) async fn sr_rig(
@@ -18,7 +50,6 @@ pub(super) async fn sr_rig(
     std::net::SocketAddr,
     String,
 ) {
-    const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
     let svc = std::sync::Arc::new(
@@ -85,45 +116,22 @@ pub(super) async fn sr_rig(
     .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
 
-    #[derive(serde::Serialize)]
-    struct C<'a> {
-        iss: &'a str,
-        aud: &'a str,
-        sub: &'a str,
-        credential_id: &'a str,
-        project_id: &'a str,
-        workspace_id: &'a str,
-        cell_id: &'a str,
-        ownership_version: u64,
-        grant_version: u64,
-        scope: &'a str,
-        jti: &'a str,
-        iat: i64,
-        exp: i64,
-    }
-    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    header.kid = Some(kid.to_string());
-    let token = jsonwebtoken::encode(
-        &header,
-        &C {
-            iss: "https://auth.prisma.io",
-            aud: "prisma-streams-data",
-            sub: "u",
-            credential_id: cred,
-            project_id: project,
-            workspace_id: ws,
-            cell_id: "test-cell",
-            ownership_version: 1,
-            grant_version: 1,
-            scope: scopes,
-            jti: "t",
-            iat: now - 60,
-            exp: now + 600,
-        },
-        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-    )
-    .unwrap();
-    (state, addr, format!("Bearer {token}"))
+    let claims = AccessClaims {
+        iss: "https://auth.prisma.io",
+        aud: "prisma-streams-data",
+        sub: "u",
+        credential_id: cred,
+        project_id: project,
+        workspace_id: ws,
+        cell_id: "test-cell",
+        ownership_version: 1,
+        grant_version: 1,
+        scope: scopes,
+        jti: "t",
+        iat: now - 60,
+        exp: now + 600,
+    };
+    (state, addr, claims.bearer(kid))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +293,10 @@ pub(super) async fn auth_rig(
     (svc, state, addr)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "authentication fixture; seven independent signed bindings drive mismatch and expiry regressions; bundling them would hide which authority input each negative test changes"
+)]
 pub(super) fn mint_token(
     cred: &str,
     project: &str,
@@ -294,46 +306,23 @@ pub(super) fn mint_token(
     jti: &str,
     exp_in: i64,
 ) -> String {
-    #[derive(serde::Serialize)]
-    struct C<'a> {
-        iss: &'a str,
-        aud: &'a str,
-        sub: &'a str,
-        credential_id: &'a str,
-        project_id: &'a str,
-        workspace_id: &'a str,
-        cell_id: &'a str,
-        ownership_version: u64,
-        grant_version: u64,
-        scope: &'a str,
-        jti: &'a str,
-        iat: i64,
-        exp: i64,
-    }
     let now = crate::shard::now_ms() / 1000;
-    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    header.kid = Some("rig-1".into());
-    let tok = jsonwebtoken::encode(
-        &header,
-        &C {
-            iss: "https://auth.prisma.io",
-            aud: "prisma-streams-data",
-            sub: "u",
-            credential_id: cred,
-            project_id: project,
-            workspace_id: ws,
-            cell_id: "test-cell",
-            ownership_version: ov,
-            grant_version: gv,
-            scope: RIG_SCOPES,
-            jti,
-            iat: now - 60,
-            exp: now + exp_in,
-        },
-        &jsonwebtoken::EncodingKey::from_rsa_pem(RIG_PRIV.as_bytes()).unwrap(),
-    )
-    .unwrap();
-    format!("Bearer {tok}")
+    AccessClaims {
+        iss: "https://auth.prisma.io",
+        aud: "prisma-streams-data",
+        sub: "u",
+        credential_id: cred,
+        project_id: project,
+        workspace_id: ws,
+        cell_id: "test-cell",
+        ownership_version: ov,
+        grant_version: gv,
+        scope: RIG_SCOPES,
+        jti,
+        iat: now - 60,
+        exp: now + exp_in,
+    }
+    .bearer("rig-1")
 }
 
 pub(super) async fn rig_create(addr: std::net::SocketAddr, name: &str, bearer: &str) {
