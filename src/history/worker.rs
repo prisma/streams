@@ -9,6 +9,14 @@ use std::{
 };
 use tokio::sync::mpsc;
 impl Absorber {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Absorber::run; the tick, discovery, gather and retirement phases share one loop's pending roster and reservation; splitting it would hide which phase retires each pending entry"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Absorber::run; the eight-byte phase prefix of a sixteen-byte hash always fits a u64, and a poisoned discovery cursor or lane-mark map may hold a half-advanced position; recovering the latter could rescan a page forever or trust a mark the layout seal dropped"
+    )]
     pub(super) async fn run(self, mut rx: mpsc::Receiver<AbsorbSignal>) {
         let absorber = self;
 
@@ -43,7 +51,7 @@ impl Absorber {
         // peaks; staggered phases spread them across the tick.
         let phase = {
             let h = crate::crypto::stream_hash(&absorber.shard.prefix);
-            let tick_ms = absorber.cfg.tick.as_millis().max(1) as u64;
+            let tick_ms = u64::try_from(absorber.cfg.tick.as_millis().max(1)).unwrap_or(u64::MAX);
             Duration::from_millis(u64::from_le_bytes(h[..8].try_into().unwrap()) % tick_ms)
         };
         let mut tick =
@@ -193,6 +201,14 @@ impl Absorber {
             .usage
             .clear_absorb_pending_summary(&absorber.shard.prefix);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Absorber::classify_due; this test-only drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the absorber's configuration would put it on the production surface"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Absorber::classify_due; a poisoned handle state may hold a partially advanced boundary; recovering it could gather from a boundary that was never committed"
+    )]
     async fn classify_due(
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,

@@ -117,6 +117,10 @@ impl State {
     /// Sketches, summaries, and cooldowns each have a finite retention
     /// budget. Cooldowns may survive a parent's retirement until a child
     /// receives traffic, but never beyond their useful horizon or capacity.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "State::prune; the sketch table just exceeded its cap, so at least one entry exists to pick as the victim; a fallible pick would turn the cap into a no-op"
+    )]
     fn prune(&mut self, now: i64, policy: &ScalePolicy) {
         self.sketches
             .retain(|_, sk| now.saturating_sub(sk.last_fed_ms) < SKETCH_IDLE_MS);
@@ -179,6 +183,10 @@ impl State {
 }
 
 impl Scaler {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Scaler::hot_keys_all; a poisoned scaler state may hold a partially updated segment tally; recovering it could report a topology that was never decided"
+    )]
     pub(crate) fn hot_keys_all(&self) -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
         let mut hot: Vec<_> = self
             .state
@@ -197,6 +205,10 @@ impl Scaler {
 
     /// Feed one admitted append into the segment's sketch. A known segment
     /// uses constant-time map lookups and EWMA bumps under a short lock.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Scaler::note_append; a poisoned scaler state may hold a partially updated segment tally; recovering it could report a topology that was never decided"
+    )]
     pub(crate) fn note_append(
         &self,
         desc: &StreamDesc,
@@ -277,12 +289,11 @@ impl Scaler {
 
     /// One evaluation pass over every sketched segment. Returns the split
     /// decisions taken (stream, seg_id) — the driver executes them.
-    pub(crate) fn evaluate(
-        &self,
-    ) -> (
-        Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
-        Vec<(crate::tenant::TenantStreamRef, String)>,
-    ) {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Scaler::evaluate; a poisoned scaler state may hold a partially updated segment tally; recovering it could report a topology that was never decided"
+    )]
+    pub(crate) fn evaluate(&self) -> Decisions {
         evaluate_state(
             &mut self.state.lock().unwrap(),
             self.clock.monotonic().millis(),
@@ -292,15 +303,19 @@ impl Scaler {
     }
 }
 
+/// One evaluation pass's decisions: the splits to execute as (stream,
+/// segment, position, bytes) and the merges as (stream, segment).
+type Decisions = (
+    Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
+    Vec<(crate::tenant::TenantStreamRef, String)>,
+);
+
 fn evaluate_state(
     g: &mut State,
     now_ms: i64,
     pol: &ScalePolicy,
     lim: &crate::usage::Limits,
-) -> (
-    Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
-    Vec<(crate::tenant::TenantStreamRef, String)>,
-) {
+) -> Decisions {
     let mut out = Vec::new();
     g.prune(now_ms, pol);
     let mut hot_updates: HashMap<crate::tenant::TenantStreamRef, RoutingKeyHash> = HashMap::new();
@@ -494,6 +509,10 @@ pub(crate) mod controller;
 
 /// The evaluation loop keeps at most 4096 pending hints and executes at most
 /// 16 per turn, serially per incarnation, under a shared 60-second deadline.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "start; the supervisor rejects a spawn only while it is stopping, when no evaluation is owed; a rejected scaler has nothing left to decide"
+)]
 pub(crate) fn start(
     st: std::sync::Weak<crate::http::AppState>,
     tasks: &crate::tasks::TaskSupervisor,
@@ -550,6 +569,10 @@ pub(crate) fn start(
 }
 
 impl Scaler {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Scaler::retire_segments; a poisoned scaler state may hold a partially updated segment tally; recovering it could report a topology that was never decided"
+    )]
     pub(crate) fn retire_segments(
         &self,
         stream: &crate::tenant::TenantStreamRef,
