@@ -65,6 +65,10 @@ pub(super) async fn clear_parent_debt(
     state.registry.invalidate(sref);
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "release_fork_ref; one conditional write over the source's fork reference whose absent, foreign, recreated-source and released outcomes each decide conclusiveness; splitting it would separate the read from the verdict it justifies"
+)]
 pub(super) fn release_fork_ref(
     state: &Arc<CreationService>,
     src_ref: crate::tenant::TenantStreamRef,
@@ -253,7 +257,6 @@ fn delete_lifecycle(
     // the deployment tenant's same-named stream while B's own survived.
     let state = state.clone();
     let sref = sref.clone();
-    let name = sref.name().as_str().to_string();
     Box::pin(async move {
         let d = match state.registry.get(&sref).await.map_err(|e| e.to_string())? {
             Some(d) => d,
@@ -268,71 +271,7 @@ fn delete_lifecycle(
         // generation that was tombstoned but never released its own
         // parent is reachable by deleting it again.
         if let crate::registry::Lifecycle::Deleted { parent_ref_pending } = d.lifecycle() {
-            if parent_ref_pending && let Some((src, fid, sep)) = parent.clone() {
-                // Clear the debt only on a CONCLUSIVE release: an
-                // absent reference on a live source may still be
-                // installed by a creator in flight, and this very
-                // retry is what repairs that crash later. A source
-                // recreated since the fork is conclusive too — the
-                // incarnation this debt was owed to is gone.
-                if release_fork_ref(&state, d.ref_in_project(&src), &fid, &sep).await? {
-                    clear_parent_debt(&state, &d.sref(), &d.stream_epoch, Some((&src, &fid)))
-                        .await?;
-                }
-            }
-            // Then walk UP. A crashed cascade leaves the debt on a
-            // hidden intermediate generation, and the only request a
-            // client will ever retry is the original delete of the leaf.
-            // Repairing only this descriptor left the ancestor pinned
-            // and reported success.
-            // Each hop resolves in the project of the descriptor that
-            // HOLDS the reference (chain-invariant today, structurally
-            // per-hop).
-            let mut next = d.forked_from.as_ref().map(|f| d.ref_in_project(&f.source));
-            for _ in 0..64 {
-                let Some(anc_ref) = next else { break };
-                let Some(anc) = state
-                    .registry
-                    .get(&anc_ref)
-                    .await
-                    .map_err(|e| e.to_string())?
-                else {
-                    break;
-                };
-                if !(anc.deleted && anc.parent_ref_pending) {
-                    break;
-                }
-                let conclusive = match anc.forked_from.as_ref() {
-                    Some(gp) => {
-                        release_fork_ref(
-                            &state,
-                            anc.ref_in_project(&gp.source),
-                            &gp.fork_id,
-                            &gp.source_epoch,
-                        )
-                        .await?
-                    }
-                    None => true,
-                };
-                if conclusive {
-                    let debt = anc
-                        .forked_from
-                        .as_ref()
-                        .map(|gp| (gp.source.clone(), gp.fork_id.clone()));
-                    clear_parent_debt(
-                        &state,
-                        &anc_ref,
-                        &anc.stream_epoch,
-                        debt.as_ref().map(|(a, b)| (a.as_str(), b.as_str())),
-                    )
-                    .await?;
-                }
-                next = anc
-                    .forked_from
-                    .as_ref()
-                    .map(|g| anc.ref_in_project(&g.source));
-            }
-            return Ok(());
+            return repair_tombstone(&state, &d, parent_ref_pending).await;
         }
         // Soft-versus-hard is decided INSIDE the CAS, against the
         // children the descriptor has at that instant. Deciding it from
@@ -344,7 +283,7 @@ fn delete_lifecycle(
         // The debt is recorded in the SAME write as the tombstone, so a
         // crash between them is impossible.
         #[cfg(test)]
-        crate::failpoints::pause_delete_before_decision(&name).await;
+        crate::failpoints::pause_delete_before_decision(sref.name().as_str()).await;
         let epoch = d.stream_epoch.clone();
         // Round-22 item 7: ONE logical close instant, decided here,
         // stamped into the tombstone write below and used by every
@@ -389,27 +328,7 @@ fn delete_lifecycle(
         // committer queue is backpressure, never a silent drop; a
         // submission that still fails is safe because the debt lives
         // on the tombstone and the sweep reconciler retries it.
-        {
-            let seg_ids: Vec<u32> = d
-                .segments
-                .as_ref()
-                .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
-                .unwrap_or_else(|| vec![0]);
-            for sid in seg_ids {
-                let identity = d.dynamic_segment_identity(sid);
-                let route = d
-                    .segment_route_by_id(sid)
-                    .expect("segment selected from validated topology");
-                if let Ok(engine) = state.resolve(&route).await
-                    && let Err(e) = engine.submit_billing_close(identity, close_stamp).await
-                {
-                    tracing::warn!(
-                        "delete {name}: billing close submit failed \
-                             (tombstone debt persists; sweep retries): {e}"
-                    );
-                }
-            }
-        }
+        submit_billing_closes(&state, &d, close_stamp).await;
         if let Some((src, fid, sep)) = parent {
             // Released CONCLUSIVELY: the tombstone owes nothing more.
             // This is `update`, not `cas_update`, because the
@@ -433,6 +352,116 @@ enum DeleteTransition {
     Retained,
     Tombstoned,
 }
+/// Pay a tombstone's unpaid parent debt, then walk UP the fork chain: a
+/// crashed cascade leaves the debt on a hidden intermediate generation, and
+/// the only request a client will ever retry is the original delete of the
+/// leaf, so repairing only its descriptor left the ancestor pinned.
+async fn repair_tombstone(
+    state: &Arc<CreationService>,
+    d: &StreamDesc,
+    parent_ref_pending: bool,
+) -> Result<(), String> {
+    let parent = d
+        .forked_from
+        .as_ref()
+        .map(|f| (f.source.clone(), f.fork_id.clone(), f.source_epoch.clone()));
+    if parent_ref_pending && let Some((src, fid, sep)) = parent {
+        // Clear the debt only on a CONCLUSIVE release: an
+        // absent reference on a live source may still be
+        // installed by a creator in flight, and this very
+        // retry is what repairs that crash later. A source
+        // recreated since the fork is conclusive too — the
+        // incarnation this debt was owed to is gone.
+        if release_fork_ref(state, d.ref_in_project(&src), &fid, &sep).await? {
+            clear_parent_debt(state, &d.sref(), &d.stream_epoch, Some((&src, &fid))).await?;
+        }
+    }
+    // Then walk UP. A crashed cascade leaves the debt on a
+    // hidden intermediate generation, and the only request a
+    // client will ever retry is the original delete of the leaf.
+    // Repairing only this descriptor left the ancestor pinned
+    // and reported success.
+    // Each hop resolves in the project of the descriptor that
+    // HOLDS the reference (chain-invariant today, structurally
+    // per-hop).
+    let mut next = d.forked_from.as_ref().map(|f| d.ref_in_project(&f.source));
+    for _ in 0..64 {
+        let Some(anc_ref) = next else { break };
+        let Some(anc) = state
+            .registry
+            .get(&anc_ref)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            break;
+        };
+        if !(anc.deleted && anc.parent_ref_pending) {
+            break;
+        }
+        let conclusive = match anc.forked_from.as_ref() {
+            Some(gp) => {
+                release_fork_ref(
+                    state,
+                    anc.ref_in_project(&gp.source),
+                    &gp.fork_id,
+                    &gp.source_epoch,
+                )
+                .await?
+            }
+            None => true,
+        };
+        if conclusive {
+            let debt = anc
+                .forked_from
+                .as_ref()
+                .map(|gp| (gp.source.clone(), gp.fork_id.clone()));
+            clear_parent_debt(
+                state,
+                &anc_ref,
+                &anc.stream_epoch,
+                debt.as_ref().map(|(a, b)| (a.as_str(), b.as_str())),
+            )
+            .await?;
+        }
+        next = anc
+            .forked_from
+            .as_ref()
+            .map(|g| anc.ref_in_project(&g.source));
+    }
+    Ok(())
+}
+
+/// Advance every segment's storage clock to the persisted close stamp and
+/// zero its gauge. Submission is awaited: a full committer queue is
+/// backpressure, never a silent drop, and a submission that still fails is
+/// safe because the debt lives on the tombstone and the sweep retries it.
+#[expect(
+    clippy::expect_used,
+    reason = "submit_billing_closes; every segment id is read from the descriptor's own validated topology, whose routes are total over its segments; a fallible lookup would add a branch no listed segment reaches"
+)]
+async fn submit_billing_closes(state: &Arc<CreationService>, d: &StreamDesc, close_stamp: i64) {
+    let seg_ids: Vec<u32> = d
+        .segments
+        .as_ref()
+        .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
+        .unwrap_or_else(|| vec![0]);
+    for sid in seg_ids {
+        let identity = d.dynamic_segment_identity(sid);
+        let route = d
+            .segment_route_by_id(sid)
+            .expect("segment selected from validated topology");
+        if let Ok(engine) = state.resolve(&route).await
+            && let Err(e) = engine.submit_billing_close(identity, close_stamp).await
+        {
+            tracing::warn!(
+                "delete {}: billing close submit failed \
+                     (tombstone debt persists; sweep retries): {e}",
+                d.name
+            );
+        }
+    }
+}
+
 fn delete_transition(current: &StreamDesc, close_ms: i64) -> Mutation<DeleteTransition> {
     if current.deleted {
         return Mutation::Decline(DeleteTransition::AlreadyDeleted);

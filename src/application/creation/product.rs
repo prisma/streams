@@ -17,6 +17,10 @@ impl From<CreationError> for ProductCreateError {
     }
 }
 impl CreationService {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "create_product; the winner, retained-name and fresh-create branches are one decision over the product's name; splitting them would separate the decision from the write it guards"
+    )]
     pub(crate) async fn create_product(
         self: &Arc<Self>,
         sref: crate::tenant::TenantStreamRef,
@@ -115,15 +119,14 @@ impl CreationService {
                     })?;
                 if created {
                     (true, winner)
+                } else if winner.soft_deleted || !winner.fork_children.is_empty() {
+                    return Err(CreationError::new(
+                        CreationFailure::Conflict,
+                        "gone",
+                        "name is retained for live forks",
+                    )
+                    .into());
                 } else {
-                    if winner.soft_deleted || !winner.fork_children.is_empty() {
-                        return Err(CreationError::new(
-                            CreationFailure::Conflict,
-                            "gone",
-                            "name is retained for live forks",
-                        )
-                        .into());
-                    }
                     (false, validate_live(winner)?)
                 }
             }

@@ -21,6 +21,10 @@ pub(super) struct PreparedFork {
     pub content_type: String,
     pub ttl_secs: Option<u64>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "prepare; fork preparation validates the source, its lifecycle, the boundary and the child's policy in the order a fork request must fail; splitting it would separate the checks from the order that decides which error a client sees"
+)]
 pub(super) async fn prepare(
     state: &Arc<CreationService>,
     input: Preparation<'_>,
@@ -176,6 +180,22 @@ struct Boundary {
     sub: u64,
     materialize: Option<Bytes>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "validate_boundary; the boundary walk reads the source record at the fork offset and certifies the materialized partial in one pass; splitting it would separate the partial from the record it is cut from"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "validate_boundary; a poisoned stream state may hold a half-advanced durable frontier; recovering it could validate a boundary against a length never made durable"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "validate_boundary; the sub-offset was checked against the record's length, itself a usize; a checked conversion would only restate that bound"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "validate_boundary; the walk nests the ceiling verdict inside the partial-record branch of the boundary check; flattening it would separate the verdict from the partial it certifies"
+)]
 async fn validate_boundary(
     state: &Arc<CreationService>,
     src: &StreamDesc,
