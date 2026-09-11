@@ -16,7 +16,7 @@ BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_ba
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
 REGISTERED=(src/bin/pilot/benchmark.rs src/bin/pilot/benchmark/config.rs src/bin/pilot/benchmark/window.rs src/bin/pilot/generator.rs src/bin/pilot/generator/membership.rs)
-for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler postings_cache sharddir crypto tail_ring shard bootstrap read_request http_read queue_cleanup transaction_append record tasks_shutdown runtime runtime_telemetry product_cursor quota_registry; do
+for owner in postings_codec postings batch retained quota cursors queue rollup_allocation rollup_storage tasks touch read_accumulator read_spool shard_directory history_partition ops scaler postings_cache sharddir crypto tail_ring shard bootstrap read_request http_read queue_cleanup transaction_append record tasks_shutdown runtime runtime_telemetry product_cursor quota_registry fleet sse_session; do
   case "$owner" in
     postings_codec) file=src/postings.rs; filter=postings:: ;;
     postings) file=src/postings/validated.rs; filter=postings:: ;;
@@ -41,6 +41,8 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
     queue_cleanup) file=src/shard/transaction/queue/cleanup.rs; filter=shard:: ;;
     transaction_append) file=src/shard/transaction/append.rs; filter=shard:: ;;
     record) file=src/shard/record.rs; filter=shard:: ;;
+    fleet) file=src/fleet.rs; filter=fleet:: ;;
+    sse_session) file=src/sse/session.rs; filter=sse:: ;;
     tasks_shutdown) file=src/tasks/shutdown.rs; filter=tasks:: ;;
     runtime) file=src/runtime.rs; filter=runtime:: ;;
     runtime_telemetry) file=src/runtime/telemetry.rs; filter=runtime:: ;;
@@ -60,7 +62,7 @@ for owner in postings_codec postings batch retained quota cursors queue rollup_a
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == postings_cache || "$owner" == sharddir || "$owner" == crypto || "$owner" == tail_ring || "$owner" == shard || "$owner" == bootstrap || "$owner" == read_request || "$owner" == http_read || "$owner" == queue_cleanup || "$owner" == transaction_append || "$owner" == record || "$owner" == tasks_shutdown || "$owner" == runtime || "$owner" == runtime_telemetry || "$owner" == product_cursor || "$owner" == quota_registry ]]; then
+  if [[ "$owner" == tasks || "$owner" == touch || "$owner" == read_accumulator || "$owner" == read_spool || "$owner" == shard_directory || "$owner" == history_partition || "$owner" == ops || "$owner" == scaler || "$owner" == postings_cache || "$owner" == sharddir || "$owner" == crypto || "$owner" == tail_ring || "$owner" == shard || "$owner" == bootstrap || "$owner" == read_request || "$owner" == http_read || "$owner" == queue_cleanup || "$owner" == transaction_append || "$owner" == record || "$owner" == tasks_shutdown || "$owner" == runtime || "$owner" == runtime_telemetry || "$owner" == product_cursor || "$owner" == quota_registry || "$owner" == fleet || "$owner" == sse_session ]]; then
     # These owners use actual service clocks, task handles and storage types.
     # Keep their code and tests in the service crate without substitute models.
     package=streams-slate

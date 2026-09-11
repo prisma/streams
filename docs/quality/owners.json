@@ -1855,6 +1855,46 @@
       "path": "src/dst/trace_store_tests/streams.rs",
       "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
       "syntax": "std::mem::forget"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/fleet/tests.rs",
+      "reason": "Fleet test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin peer choice, the return-home budget and victim selection.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/session/tests.rs",
+      "reason": "SSE session test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin cursor and segment naming.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/tenant/tests.rs",
+      "reason": "Tenant test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the identity grammar.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/tenant.rs",
+      "reason": "Tenant grammar tests; declared by path because the fuzz and invariant harness crates compile the tenant module by path; no copied grammar or public test API.",
+      "syntax": "path = \"tenant/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "reason": "The SSE driver task is owned by the subscription it drives and ends with the session; a supervised driver would tie a request-scoped task to the runtime supervisor.",
+      "syntax": "tokio::spawn"
     }
   ]
 }
