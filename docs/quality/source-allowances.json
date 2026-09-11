@@ -1655,27 +1655,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::tenant",
-      "path": "src/bin/cryptobench.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::crypto",
-      "path": "src/bin/livebench.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::tenant",
-      "path": "src/bin/livebench.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::dispatch",
       "path": "src/bin/s3lite.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
