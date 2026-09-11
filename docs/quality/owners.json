@@ -727,6 +727,22 @@
       "path": "src/bin/s3lite.rs",
       "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
       "syntax": "path = \"s3lite/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::range_tests",
+      "path": "src/bin/s3lite.rs",
+      "reason": "Directly cfg(test) HTTP range regressions execute the canonical emulator object handler, including retained metadata after body discard.",
+      "syntax": "path = \"s3lite/range_tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/bin/s3lite/range_tests.rs",
+      "reason": "The actual range parser must produce only nonempty ranges accepted by a backing slice; 1024 generated closed, open and suffix cases exercise its bounds.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

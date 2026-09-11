@@ -870,13 +870,6 @@
       "path": "src/bin/pilot.rs"
     },
     {
-      "count": 2,
-      "fingerprint": "e153543039aa4913076f41a8cc41c4e6963a4a28207f44cee7d9a06e27fcdb99",
-      "item": "crate::get_object",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
       "count": 1,
       "fingerprint": "72f00fb5f017b1e2a9bab87cbe4b0004002f93b0af2b775e1622f6c9396673c9",
       "item": "crate::run",
@@ -9323,27 +9316,6 @@
       "count": 1,
       "fingerprint": "fb020b701e7fc2cb5930d831e2f081b305f033399226e537173a63b71d45d4dc",
       "item": "crate::dispatch",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "286b2fb24f8658c38725de135393a16188b438a44007f9dc7fe90d8c915037ae",
-      "item": "crate::get_object",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "40b07b3f43c05c50c7424a943f380ba9e3c05446412b61709dacdc022a48f53f",
-      "item": "crate::get_object",
-      "lint": "clippy::unwrap_used",
-      "path": "src/bin/s3lite.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f96a9b822b9ffc7749e0daceb594d07cda30279dba9d3c4e58f4acf80a7cf8af",
-      "item": "crate::get_object",
       "lint": "clippy::unwrap_used",
       "path": "src/bin/s3lite.rs"
     },

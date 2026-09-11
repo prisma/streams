@@ -44,7 +44,7 @@ struct StoredObject {
     etag: String,
     last_modified: chrono::DateTime<chrono::Utc>,
     /// Original body length (equals data.len() unless discarded).
-    orig_len: u64,
+    orig_len: usize,
     discarded: bool,
 }
 
@@ -564,7 +564,7 @@ async fn put_object(
         }
     }
     let etag = state.next_etag();
-    let orig_len = data.len() as u64;
+    let orig_len = data.len();
     let discard = state
         .discard_substr
         .as_deref()
@@ -583,6 +583,10 @@ async fn put_object(
     ([(header::ETAG, etag)], "").into_response()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "S3 emulator GET snapshot; the object map must be unpoisoned and internally generated ETag/date/range headers must be valid; recovering partial state or malformed metadata would hide an emulator invariant failure"
+)]
 fn get_object(
     state: &Arc<AppState>,
     full_key: &str,
@@ -618,26 +622,30 @@ fn get_object(
             .body(Body::empty())
             .unwrap();
     }
-    let total = if obj.discarded {
-        obj.orig_len
-    } else {
-        obj.data.len() as u64
-    };
+    // HEAD uses retained object metadata, including when benchmark mode has
+    // discarded the payload. No HEAD request may index that absent body.
+    let total = obj.orig_len;
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
-        .and_then(|r| parse_range(r, total));
-
-    let (status, slice, content_range) = match range {
-        Some((start, end)) => {
-            let s = obj.data.slice(start as usize..(end + 1) as usize);
-            (
-                StatusCode::PARTIAL_CONTENT,
-                s,
-                Some(format!("bytes {start}-{end}/{total}")),
-            )
-        }
-        None => (StatusCode::OK, obj.data.clone(), None),
+        .and_then(|raw| parse_range(raw, total));
+    let (status, selected, content_range) = match range {
+        Some(selected) => (
+            StatusCode::PARTIAL_CONTENT,
+            selected.clone(),
+            Some(format!(
+                "bytes {}-{}/{total}",
+                selected.start,
+                selected.end - 1
+            )),
+        ),
+        None => (StatusCode::OK, 0..total, None),
+    };
+    let content_length = selected.len();
+    let slice = if head_only {
+        Bytes::new()
+    } else {
+        obj.data.slice(selected)
     };
     if !head_only {
         state
@@ -656,7 +664,7 @@ fn get_object(
                 .format("%a, %d %b %Y %H:%M:%S GMT")
                 .to_string(),
         )
-        .header(header::CONTENT_LENGTH, slice.len());
+        .header(header::CONTENT_LENGTH, content_length);
     if let Some(cr) = content_range {
         builder = builder.header(header::CONTENT_RANGE, cr);
     }
@@ -668,7 +676,7 @@ fn get_object(
     builder.body(body).unwrap()
 }
 
-fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
+fn parse_range(raw: &str, total: usize) -> Option<std::ops::Range<usize>> {
     if total == 0 {
         return None;
     }
@@ -677,23 +685,29 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
 
     if start_s.is_empty() {
         // suffix range: bytes=-N
-        let n: u64 = end_s.parse().ok()?;
-        let n = n.min(total);
-        return Some((total - n, total - 1));
+        let n = usize::try_from(end_s.parse::<u64>().ok()?)
+            .unwrap_or(usize::MAX)
+            .min(total);
+        if n == 0 {
+            return None;
+        }
+        return Some(total - n..total);
     }
-    let start: u64 = start_s.parse().ok()?;
+    let start = usize::try_from(start_s.parse::<u64>().ok()?).ok()?;
     if start >= total {
         return None;
     }
     let end = if end_s.is_empty() {
         total - 1
     } else {
-        end_s.parse::<u64>().ok()?.min(total - 1)
+        usize::try_from(end_s.parse::<u64>().ok()?)
+            .unwrap_or(usize::MAX)
+            .min(total - 1)
     };
     if end < start {
         return None;
     }
-    Some((start, end))
+    Some(start..end + 1)
 }
 
 fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
@@ -856,7 +870,7 @@ async fn complete_multipart(
         .put_bytes
         .fetch_add(data.len() as u64, Ordering::Relaxed);
     let etag = state.next_etag();
-    let orig_len = data.len() as u64;
+    let orig_len = data.len();
     let discard = state
         .discard_substr
         .as_deref()
@@ -890,3 +904,7 @@ async fn complete_multipart(
 #[cfg(test)]
 #[path = "s3lite/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "s3lite/range_tests.rs"]
+mod range_tests;
