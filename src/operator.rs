@@ -46,7 +46,7 @@ fn operator_gate(
     )
 }
 
-pub async fn page(
+pub(crate) async fn page(
     State(state): State<Arc<crate::http::AppState>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -63,7 +63,7 @@ pub async fn page(
         .into_response()
 }
 
-pub async fn runbook(
+pub(crate) async fn runbook(
     State(state): State<Arc<crate::http::AppState>>,
     headers: axum::http::HeaderMap,
 ) -> Response {

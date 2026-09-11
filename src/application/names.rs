@@ -1,11 +1,11 @@
 //! Product-addressable names shared by application workflows and route parsing.
 const RESERVED_FINAL_SEGMENTS: [&str; 3] = ["records", "consumers", "watches"];
 
-pub struct ProductStreamName(crate::tenant::CanonicalStreamName);
+pub(crate) struct ProductStreamName(crate::tenant::CanonicalStreamName);
 
 /// Why a name is not product-addressable. Wire messages are pinned to
 /// the exact pre-WP-03 strings (characterization rule: same wire).
-pub enum ProductNameError {
+pub(crate) enum ProductNameError {
     Structural(crate::tenant::NameError),
     ReservedSubresourceName,
     SubresourceShapedName,
@@ -63,11 +63,11 @@ impl TryFrom<&str> for ProductStreamName {
 }
 
 impl ProductStreamName {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
-    pub fn into_canonical(self) -> crate::tenant::CanonicalStreamName {
+    pub(crate) fn into_canonical(self) -> crate::tenant::CanonicalStreamName {
         self.0
     }
 }

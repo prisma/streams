@@ -14906,66 +14906,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "6cb15a135eec3f9cbfb3550a8eeabd57b5c9a255a8b4d6c1ef88d0019fb5861d",
-      "item": "crate::ProductNameError",
-      "lint": "unreachable_pub",
-      "path": "src/application/names.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9ad3acf69eae82e07278fbc0eda15422e2fd81afa3f1052771edc31b77fbb18e",
-      "item": "crate::ProductStreamName",
-      "lint": "unreachable_pub",
-      "path": "src/application/names.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c939edc45dd0b2f720eada3c433829eac506e1a439ddd1dcf4ab2c5e0dc35500",
-      "item": "crate::ProductStreamName::as_str",
-      "lint": "unreachable_pub",
-      "path": "src/application/names.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "973382069313b207c9450217d40d9c484a0ec0f3c94490895297760281bdb750",
-      "item": "crate::ProductStreamName::into_canonical",
-      "lint": "unreachable_pub",
-      "path": "src/application/names.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "895c7bd666ca5b23c1b2e129c932032a6d4fc3806a23648fe37888e699935825",
-      "item": "crate::ReadKeys < 'a >::decrypt",
-      "lint": "unreachable_pub",
-      "path": "src/application/read_keys.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6f9e09351d720c9c506a52ccd20e480959b3cd0d1f73585effd5349d41084d3c",
       "item": "crate::ReadKeys < 'a >::decrypt_append",
       "lint": "unreachable_pub",
       "path": "src/application/read_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "43d027920d1e0cc2740e2685d9966dab526b65302d37b0c3c630d14e95619d7e",
-      "item": "crate::ReadKeys < 'a >::new",
-      "lint": "unreachable_pub",
-      "path": "src/application/read_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e949213c3dafc21fddc6f303f5ef8d95d479943306d943924757c31506b91fb5",
-      "item": "crate::InternalTarget::headers",
-      "lint": "unreachable_pub",
-      "path": "src/application/read_remote.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4d9aab2f4e070bfd7af7f42b9b00a7b8144e41255890af41b1cd5b257ec62418",
-      "item": "crate::InternalTarget::of",
-      "lint": "unreachable_pub",
-      "path": "src/application/read_remote.rs"
     },
     {
       "count": 1,
@@ -15088,234 +15032,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "406db3b79595df69902650218ed1e6276edf60f8421f68ea3c9867138dd12d65",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "bbbc07ee2746e42bd27f7bb777faeb9ba2e488b605d0bb337ff6462bae7102cf",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "86b45b21b38060107772bcbbe6d6d8321bc97e6f55ace1e028bc4c9933dde421",
       "item": "crate::run",
       "lint": "unreachable_pub",
       "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "52151fbdfc041823c42233e4778fb4d0f55a3a61816c533d7336ccb3fbffe826",
-      "item": "crate::init_slatedb_runtime_threads",
-      "lint": "unreachable_pub",
-      "path": "src/bootstrap/process_executor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d03e3640cc3b0393df6bb52290b1881f9fe8eb769fd513c4d65dbc4a817235b8",
-      "item": "crate::slatedb_runtime",
-      "lint": "unreachable_pub",
-      "path": "src/bootstrap/process_executor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "17bce14900a065323138b6f1e20799a19cb08ccc767eaab1c8cac499787f742c",
-      "item": "crate::on_slatedb_rt",
-      "lint": "unreachable_pub",
-      "path": "src/bootstrap/runtime_handoff.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9059309c80763c19d3cf8d665177d89e8388cac2e8c6c67309e0533ac49eea43",
-      "item": "crate::MapEnvironment",
-      "lint": "unreachable_pub",
-      "path": "src/config/environment.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2c3cc69000ea4f7fc145a34dd3e134f6a5266ba9693eb574058854a45806db7d",
-      "item": "crate::MapEnvironment::empty",
-      "lint": "unreachable_pub",
-      "path": "src/config/environment.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "09a594b3eab22aa9f417fb1d37211c9628a617e43b7949516ed96a59320f93b3",
-      "item": "crate::MapEnvironment::from",
-      "lint": "unreachable_pub",
-      "path": "src/config/environment.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "33fa43cb4354386535d2e0919dc0fb4da38534198a1c6478c6c3a2b9962fc794",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 6,
-      "fingerprint": "c21108284ab1250979be43e378e3df0b9b9d4dd71bbe3d00ae8149ab13e9cfab",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 4,
-      "fingerprint": "d87857726e43a5c7eebab05b41fe7be96e6693c0d0d720587aa6ab163030bb37",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9ab0c62e6ac93de749ac1e2ea455c88039d9091d9e69b8d7ab8a412fb06a8ed0",
-      "item": "crate::cli",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "195a1312d740009a5776694400502b60d842e95e9120410692162632d8e0f330",
-      "item": "crate::environment",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3ae706ac8b892cfd9e5a4c5b3822292a29f919e97670cd08f3f6bfcdbea8f5c5",
-      "item": "crate::load",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6fc66e6be327e53a1702c4f04622848f9bfb6fa44dcd877a5a39d0ce0bf98d21",
-      "item": "crate::model",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1fdda7d55d1ed7f68865cf78d1023d5bb5a0d66d0c3573fa23b8851d677aac23",
-      "item": "crate::notice",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "40c10110706f494984adaa0cb94450a5b6826238332b6acea403a02ea4573778",
-      "item": "crate::profile",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "456e7f3c1f480ef8246137997d5e22f55010f9370d1d0658889420c4be933cd8",
-      "item": "crate::summary",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0f398401197538b4adbeb73acfd315b84cae9cada3eb54aa584cf6a1fb483552",
-      "item": "crate::validation",
-      "lint": "unreachable_pub",
-      "path": "src/config/mod.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "254b8d915537e4b70f3c4df3b70f58ae27715c307d158e1c965d270d23c2b323",
-      "item": "crate::ConfigNotice",
-      "lint": "unreachable_pub",
-      "path": "src/config/notice.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c1126921de68e2267c9f82a804c073e5830444aab167f287ba8efd14d12d207e",
-      "item": "crate::ConfigNotice::is_warning",
-      "lint": "unreachable_pub",
-      "path": "src/config/notice.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ef9047dd35067fa91cf597ddd4cceb9d8bdd7b77199d9405172a2b5cd2f41fc9",
-      "item": "crate::compactor_profile_json",
-      "lint": "unreachable_pub",
-      "path": "src/config/profile.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5ad221465cc8b435ae6e83b1cbd8ab112c82051672356d9e9a615e264f441440",
-      "item": "crate::production_settings_families",
-      "lint": "unreachable_pub",
-      "path": "src/config/profile.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a685b7550e5c1a5024dd4e2fc69d48eb9f973a73c7dc43292c34bb9098f4ef2d",
-      "item": "crate::resolved_compactor_options",
-      "lint": "unreachable_pub",
-      "path": "src/config/profile.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b7859c760e9d05f6ba49f519744dee1ccb7957df5e85b53eae60c0047af56b17",
-      "item": "crate::ConfiguredCapacity",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "346dd97d30b6695d66a3229338c03b651beed5c182ff00a512d3c5dcf6b4a486",
-      "item": "crate::ConfiguredCapacity::configured",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb28788aadf321ae2dc7be7adca10dad07c0f3fd9e27b0216465c7526d73b367",
-      "item": "crate::ConfiguredCapacity::is_release",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d0d8b3b1dd4e10ae3d35c03218f94fb8c4bfc62cb9567658a643d87e5414c8db",
-      "item": "crate::DescriptorLimits",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0f57a04115688ce0fee5e30437853da172ba542ff6abba7dd9bd6b5caac03af3",
-      "item": "crate::EffectiveCapacity",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "02770281be1b8c306f4a438cb368cdddea4b0c176b288b8d43c9074e47f3f187",
-      "item": "crate::InitialShards",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "224fb4343762126593d55a9464f48b677f71b253114a1f862b90a166ca295d83",
-      "item": "crate::InitialShards::get",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2e1b9043a6e08d3bd180e9ddb4ad72eaaf3e811637f43a2128016772a0e5729a",
-      "item": "crate::InitialShards::new",
-      "lint": "unreachable_pub",
-      "path": "src/config/validation.rs"
     },
     {
       "count": 1,
@@ -15473,50 +15193,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "90491cdcf05d77c5f61c7893ff710cb77d7b61e914fdc48f027f402a4ca0d033",
-      "item": "crate::AppState",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f9aa227ac6c7d75025dc13e2016ce4eac21a756f532937c13b85b9e0021182fe",
-      "item": "crate::AppState::engine_for_scaler",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a2d65e91607545c6b38222b02800c9085bfbf8074b2987286eb30a149e8520d8",
-      "item": "crate::ReadParams",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "97ac308518773966f631ce3acebf05bbecc81aba449d9089b55dad072ebd962b",
-      "item": "crate::debug_timing",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d91fa00511a45a2bbe81098aaedd53117257c5fdaf21b07c035c38750757e1a4",
       "item": "crate::router",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "26a3b9d2f4c7e045f5d61332ebbc55a52787e4a9df4687e5c9bbf77148ce8a47",
-      "item": "crate::serve_h1",
-      "lint": "unreachable_pub",
-      "path": "src/http.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "65efd77414c1f10cf4570ab0cce8ae03d263d3fc80240a74a5677833b57d0255",
-      "item": "crate::tail_max_bytes",
       "lint": "unreachable_pub",
       "path": "src/http.rs"
     },
@@ -15529,141 +15207,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "f145e02aca41663fc4f38b6a25ce7c2506fc9b0fb0c24bc75113269c448a855b",
-      "item": "crate::page",
-      "lint": "unreachable_pub",
-      "path": "src/operator.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "968746ca44de6445eb82f6e61c9a92a7c271ae44f0d37c1125ea0b8491157aca",
-      "item": "crate::runbook",
-      "lint": "unreachable_pub",
-      "path": "src/operator.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "63f30f251158aa0f1fc3fcd3bba9c9510bd3811d627ebdc41dd2ee148ff3b8dc",
-      "item": "crate::AlertState",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "958379bd53f8e2600b910446ce485b89e7c2579b31518f8de0e2cc6fa3be7d1e",
-      "item": "crate::OPS_QUEUE_CAP",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f8657377ac58721bed04535ee69f47e138f3ce0da7e258721290e15c806c6afb",
-      "item": "crate::OpsEvent",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bc028df611cce6542a73612c9b55f45f0adcedd65db412c2563bb55960c4d0c3",
-      "item": "crate::OpsEvent::fields",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "92a3e3980ef1bf9e488493b1fd1fc93e2607b7b2f161bdfab13981d0b03eb7e5",
       "item": "crate::OpsEvent::instance",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "761aaa51a455136ac297699cb07c1f71a3525096dc75d6e1e66cf79b5019dc6d",
-      "item": "crate::OpsEvent::new",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "04bb733fbc66ad0f6882b7afaf33c01845cd0446f6bd242eaf65fcbeb61b60be",
-      "item": "crate::OpsEvent::shard",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "32d9264dfe78917d1abc2d5b24bc5f4dd6ea842119b0d6cb0eca1bf17305ed84",
-      "item": "crate::OpsEvent::stream",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b424463a0cc8cd737d361f2626ae9bb490c2d3c0adc460118eb86cdac5bc4d76",
-      "item": "crate::OpsEvent::warn",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2e248e16e6d50156ab2d5dc145664991ba43fcb29ed3ded7c20a4029f871fe5c",
-      "item": "crate::OpsService",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1397bdf92a103c92a2186cf58c920d2b76af29adfd99afe884fc5b557b37828e",
-      "item": "crate::OpsService::dropped",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1e0e99370510bbb9cd68b1c7a1b25bdbd019d601a7973b11d2c27487decaf142",
-      "item": "crate::OpsService::emit",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "093684c96cdcb0e910529b9571bea970d6c26f3fd6ac5c3c6d54d9441987c8d0",
-      "item": "crate::OpsService::new",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a896ba64914f2ff5cdcc612cb89611d3f53a0f7d80c8b9e7cdb0e4a63b0c580a",
-      "item": "crate::OpsService::open_alerts",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dec9ba505a41c0112d1fbc44e0b593f1d330d99eebfb9ab9bb4f1d2475020366",
-      "item": "crate::OpsService::recent",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8cb615607fa9c951ce6eae4184066a9f12ccc0910049d92af3fef865b74c2906",
-      "item": "crate::OpsSnapshot",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1a507d32f8ba24c8eccc32f83c6c7f115e306874b44ed5fa1fc2ac9d2e18ebbd",
-      "item": "crate::RECENT_CAP",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "21dc4cfbb48eb185c6f0d9d66a6c6a07eebdd4de4b53e74ca3f33f7f77bdb691",
-      "item": "crate::RSS_PEAK_MB",
       "lint": "unreachable_pub",
       "path": "src/ops.rs"
     },
@@ -15676,20 +15221,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "fbe8ba54cf85c58d134b8577f149056b98e183d098df60ab78f7df32cc82b6a0",
-      "item": "crate::drain_ops_once",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "10845757167cc991c6491cc988c40721f85f92eab3683b88acd9683a45f98c44",
-      "item": "crate::emit_metrics_once",
-      "lint": "unreachable_pub",
-      "path": "src/ops.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "1cfed09921038399948d178aeb183f2ffeb6d54ae41572c47e002056b231eb42",
       "item": "crate::evaluate_alerts",
       "lint": "unreachable_pub",
@@ -15697,78 +15228,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "5e4957f270083a23b6e8a4678586f1a796d2d2f387ba0217df4fc4a0548acd5c",
-      "item": "crate::FleetTokenSource",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fe0c5d0ac1ce1c39b5fe80f23b974ffa8a035d7493d7e7a823ebfe53233ade83",
-      "item": "crate::PeerClient",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5538cc38178ca393cccb75e306d2818def1d8f895ef3b238d2dc5ea1a51813a3",
-      "item": "crate::PeerClient::has_peer",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3b20f8c19ba2ff99e7a4df0246c92b8189c869672b82a19af3e42409849427c0",
-      "item": "crate::PeerClient::has_workload_source",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "df34200cc460b62ad02ee708701a1377e62b2fbd4ee92cc29ad1a923218cd11c",
-      "item": "crate::PeerClient::inbound_static_ok",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "d4524d5bd98923480596c025ba968b93880adec11e28cdf607511b652a3343ac",
       "item": "crate::PeerClient::new",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b8569059e28e0f90d896ff037b03a29e24af24ba2437659f505440e5b7f948ac",
-      "item": "crate::PeerClient::outbound_bearer",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4c106c1d7bf22a4cc32ed04c10195cab7b7be2f9b53fe77435ddcf92507b16e9",
-      "item": "crate::PeerClient::send",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fc932ac40e9c117aae91ea2e619bf1d3afdce0c7572e3bd1e08697edeb14263a",
-      "item": "crate::PeerClient::set_peer",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d454a0ec0774b80722d62cad44af20914769f33bbd7033b817fcec656e3b402b",
-      "item": "crate::PeerClient::set_peers",
-      "lint": "unreachable_pub",
-      "path": "src/peer.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9af3bcf4c239639c33323c34e636d49fec96305547a0a884026541c8c515c779",
-      "item": "crate::PeerClient::url_for",
       "lint": "unreachable_pub",
       "path": "src/peer.rs"
     },
@@ -15795,29 +15256,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "057c5da48c93f0af038dd43b669107d2e24fc36ea54570c7fefba3f72ea30671",
-      "item": "crate",
-      "lint": "unreachable_pub",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0bbebcba9a81f7f3c38f39617fb2a7cb803f9cf4cea60aaafc6df6172488cc70",
-      "item": "crate::canonical_name",
-      "lint": "unreachable_pub",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c3264032c89d04b0edbbde03b05aa194016f29cf351983156ace2f1765fcaee5",
       "item": "crate::canonical_stream_name",
-      "lint": "unreachable_pub",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2f158153703003ef5e1ac4234bb1af1c6f680b3629ec765e2a1d1e9fdcdf1f78",
-      "item": "crate::perr",
       "lint": "unreachable_pub",
       "path": "src/product.rs"
     },
@@ -15832,13 +15272,6 @@
       "count": 1,
       "fingerprint": "bbcce5492fc6f18e346ba31578819450ebad4de469a9870b95fbce728152d15a",
       "item": "crate::product_list",
-      "lint": "unreachable_pub",
-      "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "11167ae78d4fb946d5cb24881238162d0e385a116b6d741f4dfc1b75613ab04f",
-      "item": "crate::project_usage",
       "lint": "unreachable_pub",
       "path": "src/product.rs"
     },

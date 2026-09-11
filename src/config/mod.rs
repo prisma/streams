@@ -18,23 +18,24 @@
 //! - [`load`]: environment parsing (defaults + overlay);
 //! - [`summary`]: the explicit redacted diagnostics projection.
 
-pub mod cli;
-pub mod environment;
-pub mod load;
-pub mod model;
-pub mod notice;
-pub mod profile;
-pub mod summary;
-pub mod validation;
+pub(crate) mod cli;
+pub(crate) mod environment;
+pub(crate) mod load;
+pub(crate) mod model;
+pub(crate) mod notice;
+pub(crate) mod profile;
+pub(crate) mod summary;
+pub(crate) mod validation;
 
 #[cfg(test)]
 mod tests;
 
 pub use cli::CliArgs;
 #[cfg(test)]
-pub use environment::MapEnvironment;
+pub(crate) use environment::MapEnvironment;
 pub use environment::{Environment, ProcessEnvironment};
-pub use model::{
+pub use model::ServerConfig;
+pub(crate) use model::{
     AdmissionConfig, BillingConfig, EngineConfig, FleetConfig, HistoryConfig, HttpConfig,
-    ScaleConfig, ServerConfig, ShardRuntimeConfig, SseConfig, StorageConfig,
+    ScaleConfig, ShardRuntimeConfig, SseConfig, StorageConfig,
 };

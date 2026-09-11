@@ -5,7 +5,7 @@
 /// abandoned open completes under that owner, which closes any resulting DB;
 /// cancelling a caller never leaves a late writer running without an owner.
 /// OpenGate additionally owns its pending opener across request cancellation.
-pub async fn on_slatedb_rt<F>(fut: F) -> Result<slatedb::Db, slatedb::Error>
+pub(crate) async fn on_slatedb_rt<F>(fut: F) -> Result<slatedb::Db, slatedb::Error>
 where
     F: std::future::Future<Output = Result<slatedb::Db, slatedb::Error>> + Send + 'static,
 {

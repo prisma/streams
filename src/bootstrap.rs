@@ -85,10 +85,10 @@ impl crate::config::ServerConfig {
 }
 
 mod process_executor;
-pub use process_executor::{init_slatedb_runtime_threads, slatedb_runtime};
+pub(crate) use process_executor::{init_slatedb_runtime_threads, slatedb_runtime};
 
 mod runtime_handoff;
-pub use runtime_handoff::on_slatedb_rt;
+pub(crate) use runtime_handoff::on_slatedb_rt;
 
 /// The server bootstrap: the composition root hands in ONE owned,
 /// PROVEN [`ValidatedServerConfig`] (PR 3.2: validation is complete

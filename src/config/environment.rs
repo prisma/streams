@@ -29,18 +29,18 @@ impl Environment for ProcessEnvironment {
 /// A map-backed environment for tests and deterministic rigs.
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
-pub struct MapEnvironment {
+pub(crate) struct MapEnvironment {
     // mt-lint: allow(name-keyed-map): keyed by environment-variable name
     values: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
 impl MapEnvironment {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self::default()
     }
 
-    pub fn from<K: Into<String>, V: Into<String>>(
+    pub(crate) fn from<K: Into<String>, V: Into<String>>(
         entries: impl IntoIterator<Item = (K, V)>,
     ) -> Self {
         Self {
