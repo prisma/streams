@@ -27,12 +27,11 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
-use hdrhistogram::Histogram;
 use object_store::ObjectStoreExt;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[expect(
     clippy::disallowed_methods,
