@@ -471,6 +471,22 @@
       "path": "src/bin/pilot/client.rs",
       "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::blackhole_peer",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "reason": "Test-only blackholed peer; one task owns its listener and every accepted socket; the scenario aborts and joins it after recovery and feed teardown.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "reason": "Test-only orphaned transition; shared failpoint serialization and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

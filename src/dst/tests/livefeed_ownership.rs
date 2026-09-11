@@ -1,14 +1,14 @@
 //! Livefeed ownership.
 
-use super::fixture_failpoints::gap_lock;
+use super::fixture_failpoints::{FailpointGuard, gap_lock};
 use super::fixture_http::{http_rig, http_rig_owner, http_rig_owner_at};
 use super::fixture_livefeed::{
     hub_append_lf, hub_sse_collect, lf_connect, lf_record_and_status, seal_ok, split_and_await,
+    wait_parked,
 };
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
-use std::sync::Arc;
 
 /// Round-11.2 (red): the typed remote-span protocol across THREE
 /// instances. Phase 1: a sealed predecessor whose owner MOVED follows
@@ -18,13 +18,17 @@ use std::sync::Arc;
 /// 3: a predecessor that moves TO the reading instance is adopted
 /// locally. Phase 4: a MOVED LIVE TAIL is never served from stale
 /// state — typed WrongOwner cutoff at the read.
+#[expect(
+    clippy::too_many_lines,
+    reason = "livefeed movement regression; four sequential ownership phases must share the same stream lineage and subscribers; separate tests would discard the transition history"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
     let (state_b, addr_b) =
         http_rig_owner_at(store.clone(), "inst-b", RigRuntime::incarnation(1)).await;
-    let (_state_c, addr_c) = http_rig_owner_at(store, "inst-c", RigRuntime::incarnation(2)).await;
+    let (state_c, addr_c) = http_rig_owner_at(store, "inst-c", RigRuntime::incarnation(2)).await;
     let (st, _, _) = preq(
         addr_a,
         "PUT",
@@ -37,18 +41,7 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     hub_append_lf(addr_a, "xmv", r#"{"h":0}"#).await;
     hub_append_lf(addr_a, "xmv", r#"{"h":1}"#).await;
     let sref = state_a.deployment.raw_adapter_sref("xmv");
-    let _ = crate::scaler3::execute_split(&state_a, &sref, 0, 0x8000_0000_0000_0000).await;
-    for _ in 0..200 {
-        state_a.registry.invalidate(&sref);
-        let d = state_a.registry.get(&sref).await.unwrap().unwrap();
-        if d.segments
-            .as_ref()
-            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    split_and_await(&state_a, "xmv", 0).await;
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
@@ -61,33 +54,20 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     assert_ne!(p_parent, p_child);
     let all = ["inst-a", "inst-b", "inst-c"].map(str::to_string).to_vec();
     state_b.ownership.set_ring_active(all.clone());
-    {
-        for p in state_b.shards.prefixes().to_vec() {
-            let owner = if p == p_parent { "inst-a" } else { "inst-b" };
-            state_b.ownership.set_override(&p, owner);
-        }
+    for p in state_b.shards.prefixes().to_vec() {
+        let owner = if p == p_parent { "inst-a" } else { "inst-b" };
+        state_b.ownership.set_override(&p, owner);
     }
     {
         state_b.peer.set_peer("inst-a", &format!("http://{addr_a}"));
         state_b.peer.set_peer("inst-c", &format!("http://{addr_c}"));
     }
     hub_append_lf(addr_b, "xmv", r#"{"h":2}"#).await;
-    let teardown = |state_b: Arc<crate::http::AppState>| async move {
-        for _ in 0..300 {
-            if state_b.livefeed.registry().len() == 0 {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("feed teardown stalled");
-    };
 
     // PHASE 1 — one verified redirect: A no longer owns the parent
     // and names inst-c; C serves the pages.
     state_a.ownership.set_ring_active(all.clone());
-    state_a
-        .ownership
-        .set_override(&p_parent.clone(), &"inst-c".to_string());
+    state_a.ownership.set_override(&p_parent, "inst-c");
     {
         let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, eof) =
@@ -103,13 +83,11 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         }
         drop(sck);
     }
-    teardown(state_b.clone()).await;
+    wait_for_feed_teardown(&state_b, 300).await;
 
     // PHASE 2 — redirect LOOP refused: C points the parent back at A.
-    _state_c.ownership.set_ring_active(all.clone());
-    _state_c
-        .ownership
-        .set_override(&p_parent.clone(), &"inst-a".to_string());
+    state_c.ownership.set_ring_active(all.clone());
+    state_c.ownership.set_override(&p_parent, "inst-a");
     let loops_before = crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP
         .load(std::sync::atomic::Ordering::Relaxed);
     {
@@ -130,13 +108,11 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
             > loops_before,
         "the loop must be counted under its typed reason"
     );
-    teardown(state_b.clone()).await;
+    wait_for_feed_teardown(&state_b, 300).await;
 
     // PHASE 3 — the predecessor moves TO the reader: B now owns it
     // and adopts it locally.
-    state_b
-        .ownership
-        .set_override(&p_parent.clone(), &"inst-b".to_string());
+    state_b.ownership.set_override(&p_parent, "inst-b");
     {
         let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, eof) =
@@ -148,7 +124,7 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         assert_eq!(acc.matches("\"h\":0").count(), 1, "local adoption:\n{acc}");
         drop(sck);
     }
-    teardown(state_b.clone()).await;
+    wait_for_feed_teardown(&state_b, 300).await;
 
     // PHASE 4 — the LIVE TAIL moves away UNDER an established feed:
     // the next read takes the typed WrongOwner cutoff (nonterminal
@@ -160,9 +136,7 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let mut sub1 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
     let (a1, _) = hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
     assert!(a1.contains("\"h\":2"), "sub1 established:\n{a1}");
-    state_b
-        .ownership
-        .set_override(&p_child.clone(), &"inst-a".to_string());
+    state_b.ownership.set_override(&p_child, "inst-a");
     {
         let mut sub2 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("HTTP/1.1 409")).await;
@@ -263,6 +237,8 @@ async fn certification_seal_publish_delay_widens_the_gap() {
 /// resume) so retrying clients converge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_pending_transition_connect_drives_resume() {
+    let _serial = gap_lock().lock().await;
+    let _release = FailpointGuard("xpend".to_string());
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
     let (st, _, _) = preq(
@@ -284,6 +260,10 @@ async fn livefeed_pending_transition_connect_drives_resume() {
     let split = {
         let state = state.clone();
         let sref = sref.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "orphaned transition regression; the split is deliberately aborted and joined at the publication failpoint; concurrent execution is needed to orphan a durable intent"
+        )]
         tokio::spawn(async move {
             crate::scaler3::execute_split(&state, &sref, 0, 0x8000_0000_0000_0000).await
         })
@@ -299,8 +279,9 @@ async fn livefeed_pending_transition_connect_drives_resume() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     assert!(pending_seen, "the split must reach the durable-intent gap");
+    wait_parked(crate::failpoints::Fp::ScalerBeforePublish, "xpend", 1).await;
     split.abort();
-    let _ = split.await;
+    assert!(split.await.unwrap_err().is_cancelled());
     crate::failpoints::release_scaler_before_publish("xpend");
     // A retrying client must converge: the typed 503 is retryable
     // BECAUSE the refusal drives the resume. Without that, nothing
@@ -366,7 +347,7 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     {
         let ov = &state_b.ownership;
         for p in state_b.shards.prefixes().to_vec() {
-            ov.set_override(&p, &"inst-a".to_string());
+            ov.set_override(&p, "inst-a");
         }
     }
     let engines: Vec<_> = state_b.shards.engines();
@@ -387,13 +368,7 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
         "the cutoff must be classified WrongOwner"
     );
     drop(sub);
-    for _ in 0..300 {
-        if state_b.livefeed.registry().len() == 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(state_b.livefeed.registry().len(), 0, "feed teardown");
+    wait_for_feed_teardown(&state_b, 300).await;
 }
 
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
@@ -419,18 +394,7 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     assert_eq!(st, 201);
     hub_append_lf(addr_a, "xbh", r#"{"h":0}"#).await;
     let sref = state_a.deployment.raw_adapter_sref("xbh");
-    let _ = crate::scaler3::execute_split(&state_a, &sref, 0, 0x8000_0000_0000_0000).await;
-    for _ in 0..200 {
-        state_a.registry.invalidate(&sref);
-        let d = state_a.registry.get(&sref).await.unwrap().unwrap();
-        if d.segments
-            .as_ref()
-            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    split_and_await(&state_a, "xbh", 0).await;
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
@@ -444,33 +408,14 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     state_b
         .ownership
         .set_ring_active(vec!["inst-a".to_string(), "inst-b".to_string()]);
-    {
-        for p in state_b.shards.prefixes().to_vec() {
-            let owner = if p == p_parent { "inst-a" } else { "inst-b" };
-            state_b.ownership.set_override(&p, owner);
-        }
+    for p in state_b.shards.prefixes().to_vec() {
+        let owner = if p == p_parent { "inst-a" } else { "inst-b" };
+        state_b.ownership.set_override(&p, owner);
     }
     hub_append_lf(addr_b, "xbh", r#"{"h":1}"#).await;
 
     // The BLACKHOLE: accepts, reads the request, never answers.
-    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let hole_addr = hole.local_addr().unwrap();
-    let held: Arc<std::sync::Mutex<Vec<tokio::net::TcpStream>>> = Arc::new(Default::default());
-    let held2 = held.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut sck, _)) = hole.accept().await else {
-                return;
-            };
-            let held = held2.clone();
-            tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0u8; 4096];
-                let _ = sck.read(&mut buf).await; // consume the request
-                held.lock().unwrap().push(sck); // hold forever
-            });
-        }
-    });
+    let (hole_addr, hole) = blackhole_peer().await;
     state_b
         .peer
         .set_peer("inst-a", &format!("http://{hole_addr}"));
@@ -509,17 +454,9 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     }
     // Final drop tears the feed down and CANCELS in-flight work.
     drop(s1);
-    for _ in 0..200 {
-        if state_b.livefeed.registry().len() == 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        state_b.livefeed.registry().len(),
-        0,
-        "teardown reaches zero feeds"
-    );
+    wait_for_feed_teardown(&state_b, 200).await;
+    hole.abort();
+    assert!(hole.await.unwrap_err().is_cancelled());
 }
 
 /// Round-11.1 (red): a delayed seal publication over a parked FAN-OUT
@@ -673,4 +610,36 @@ async fn record_ceiling_refuses_one_oversized_record_not_the_batch() {
         "typed refusal on create-with-content:\n{}",
         String::from_utf8_lossy(&body)
     );
+}
+
+/// The same bounded teardown assertion serves movement, retirement and recovery.
+async fn wait_for_feed_teardown(state: &crate::http::AppState, attempts: usize) {
+    for _ in 0..attempts {
+        if state.livefeed.registry().len() == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(state.livefeed.registry().len(), 0, "feed teardown stalled");
+}
+
+/// One task owns the listener and every accepted socket; the caller aborts and joins it.
+async fn blackhole_peer() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "blackhole test peer; the caller aborts and joins the single socket owner; serving must continue while the test observes subscriber heartbeats and recovery"
+    )]
+    let task = tokio::spawn(async move {
+        let mut held = Vec::new();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0, "peer request");
+            held.push(socket);
+        }
+    });
+    (address, task)
 }
