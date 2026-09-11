@@ -15,15 +15,19 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
     tooling = any(p.startswith(('tools/quality-invariants/', 'fuzz/', 'scripts/quality/'))
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
-    codec_prefixes = ('src/crypto', 'src/postings', 'src/application/read_', 'src/shard/record')
-    lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse')
+    codec_prefixes = ('src/crypto', 'src/postings', 'src/product_cursor', 'src/queue',
+                      'src/application/read_', 'src/shard/record', 'src/rollup/allocation', 'src/rollup/storage')
+    quota_prefixes = ('src/quota',)
+    lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse', 'src/touch.rs',
+                          'src/billing/read_accumulator', 'src/billing/read_spool')
     buffer_prefixes = ('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')
     codec = any(p.startswith(codec_prefixes) for p in implementation)
+    quota = any(p.startswith(quota_prefixes) for p in implementation)
     lifecycle = any(p.startswith(lifecycle_prefixes) for p in implementation)
     buffers = any(p.startswith(buffer_prefixes) for p in implementation)
     mutation_source = [p for p in implementation if p not in formatted_visibility]
-    mutants = any(p.startswith(codec_prefixes + lifecycle_prefixes + buffer_prefixes) for p in mutation_source)
-    return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or tooling,
+    mutants = any(p.startswith(codec_prefixes + quota_prefixes + lifecycle_prefixes + buffer_prefixes) for p in mutation_source)
+    return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or quota or tooling,
             'loom': lifecycle or tooling, 'miri': buffers or tooling,
             'mutants': mutants, 'changed_rust_files': source,
             'visibility_only_files': sorted(visibility_only),

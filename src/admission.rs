@@ -26,7 +26,7 @@ const SURVIVAL_MULTIPLIER: i64 = 4;
 /// (resolved against the descriptor ceiling at boot) and the CONFIGURED
 /// cap it came from — exported side by side so a clamp is visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubscriptionCapacity {
+pub(crate) struct SubscriptionCapacity {
     pub effective: u64,
     pub configured: u64,
 }
@@ -34,8 +34,8 @@ pub struct SubscriptionCapacity {
 /// What a controller is built from. Bootstrap takes these from the
 /// proven configuration and the capacity preflight; a rig passes its
 /// own — never a configuration graph, never another owner.
-#[derive(Debug, Clone)]
-pub struct AdmissionKnobs {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdmissionKnobs {
     /// Ordinary in-flight cap for writes (0 = off).
     pub max_inflight: i64,
     /// Per-stream concurrency cap (0 = off).
@@ -55,7 +55,7 @@ pub struct AdmissionKnobs {
 /// A write refused by the global gates. The transport decides the wire
 /// shape (and the tarpit); the controller only decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteRefusal {
+pub(crate) enum WriteRefusal {
     /// Over the ordinary in-flight cap.
     Overloaded,
     /// Sampled RSS plus reserved absorber bytes is over the shed line.
@@ -64,14 +64,14 @@ pub enum WriteRefusal {
 
 /// The stream is at its concurrency cap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamRefusal;
+pub(crate) struct StreamRefusal;
 
 /// The instance is at its live-subscription cap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubscriptionRefusal;
+pub(crate) struct SubscriptionRefusal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ShedSnapshot {
+pub(crate) struct ShedSnapshot {
     /// Sum of the two global mechanisms (inflight + rss) plus survival.
     pub total: u64,
     pub inflight: u64,
@@ -83,7 +83,7 @@ pub struct ShedSnapshot {
 
 /// An immutable reading of the controller for operator surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdmissionSnapshot {
+pub(crate) struct AdmissionSnapshot {
     pub inflight: i64,
     pub inflight_peak: i64,
     pub max_inflight: i64,
@@ -100,7 +100,7 @@ pub struct AdmissionSnapshot {
 }
 
 #[derive(Clone)]
-pub struct AdmissionController {
+pub(crate) struct AdmissionController {
     inner: Arc<Inner>,
 }
 
@@ -133,14 +133,14 @@ struct Inner {
 
 /// RAII in-flight ticket: the count drops on response AND on
 /// cancel/panic (the guard rides the handler's future).
-pub struct InflightTicket {
+pub(crate) struct InflightTicket {
     ctl: AdmissionController,
     current: i64,
 }
 
 impl InflightTicket {
     /// The in-flight count as of this admission (including this one).
-    pub fn current(&self) -> i64 {
+    pub(crate) fn current(&self) -> i64 {
         self.current
     }
 }
@@ -152,12 +152,16 @@ impl Drop for InflightTicket {
 }
 
 /// RAII per-stream slot; entries leave the map at zero.
-pub struct StreamSlot {
+pub(crate) struct StreamSlot {
     ctl: AdmissionController,
     hash: [u8; 16],
 }
 
 impl Drop for StreamSlot {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "StreamSlot::drop; a poisoned per-stream count map may have been partially updated; recovering and decrementing that state could grant capacity that remains occupied"
+    )]
     fn drop(&mut self) {
         let mut m = self.ctl.inner.streams.lock().unwrap();
         if let Some(v) = m.get_mut(&self.hash) {
@@ -171,7 +175,7 @@ impl Drop for StreamSlot {
 
 /// RAII live-subscription slot (#267): held by the response stream's
 /// body — dropping the body releases it.
-pub struct SubscriptionTicket {
+pub(crate) struct SubscriptionTicket {
     ctl: AdmissionController,
 }
 
@@ -185,7 +189,7 @@ impl Drop for SubscriptionTicket {
 }
 
 impl AdmissionController {
-    pub fn new(knobs: AdmissionKnobs) -> Self {
+    pub(crate) fn new(knobs: AdmissionKnobs) -> Self {
         Self {
             inner: Arc::new(Inner {
                 inflight: AtomicI64::new(0),
@@ -216,7 +220,7 @@ impl AdmissionController {
 
     /// Count a request in (and record the peak). Held for the whole
     /// request; dropped on every exit path.
-    pub fn enter(&self) -> InflightTicket {
+    pub(crate) fn enter(&self) -> InflightTicket {
         let current = self.inner.inflight.fetch_add(1, Ordering::Relaxed) + 1;
         self.inner
             .inflight_peak
@@ -231,7 +235,7 @@ impl AdmissionController {
     /// ordinary cap, only on stream paths, no capacity answer — a
     /// process this far over its cap is defending its sockets. Counts
     /// the shed when it refuses.
-    pub fn survival_refused(&self, current: i64, stream_path: bool) -> bool {
+    pub(crate) fn survival_refused(&self, current: i64, stream_path: bool) -> bool {
         let cap = self.max_inflight();
         let refuse = cap > 0 && stream_path && current > cap.saturating_mul(SURVIVAL_MULTIPLIER);
         if refuse {
@@ -244,7 +248,7 @@ impl AdmissionController {
     /// The ordinary in-flight gate for WRITES, after authentication
     /// (Round-13). Reads are never shed here (R24-B: shedding reads
     /// hides the instance from its own operators).
-    pub fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
+    pub(crate) fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
         let cap = self.max_inflight();
         if cap > 0 && self.inner.inflight.load(Ordering::Relaxed) > cap {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
@@ -257,7 +261,7 @@ impl AdmissionController {
     /// The RSS write-shed (R25-E): sampled RSS PLUS `reserved_bytes` (the
     /// absorber's reservation) against the shed line, so the line moves
     /// BEFORE the memory does.
-    pub fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
+    pub(crate) fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
         let line = self.inner.rss_shed_mb;
         if line > 0 && crate::history::memory_pressure_mb(self.rss_mb(), reserved_bytes) > line {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
@@ -267,20 +271,20 @@ impl AdmissionController {
         Ok(())
     }
 
-    pub fn max_inflight(&self) -> i64 {
+    pub(crate) fn max_inflight(&self) -> i64 {
         self.inner.max_inflight.load(Ordering::Relaxed)
     }
 
     /// Rigs tune the ordinary cap live (an operator surface can adopt
     /// this the day one exists; until then it is a test hook).
     #[cfg(test)]
-    pub fn set_max_inflight(&self, cap: i64) {
+    pub(crate) fn set_max_inflight(&self, cap: i64) {
         self.inner.max_inflight.store(cap, Ordering::Relaxed);
     }
 
     /// The current in-flight count and the peak since the last swap
     /// (the fleet heartbeat and the load page reset the peak).
-    pub fn swap_peak(&self) -> (i64, i64) {
+    pub(crate) fn swap_peak(&self) -> (i64, i64) {
         let now = self.inner.inflight.load(Ordering::Relaxed);
         let peak = self.inner.inflight_peak.swap(now, Ordering::Relaxed);
         (now, peak)
@@ -291,7 +295,11 @@ impl AdmissionController {
     /// Acquire a per-stream slot: `None` when the limiter is off or the
     /// map is at its bound (admit untracked, never leak); `Err` at the
     /// stream's cap (counted).
-    pub fn stream_slot(&self, hash: [u8; 16]) -> Result<Option<StreamSlot>, StreamRefusal> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "AdmissionController::stream_slot; a poisoned per-stream count map cannot prove current occupancy; treating its partial counts as available capacity would violate admission limits"
+    )]
+    pub(crate) fn stream_slot(&self, hash: [u8; 16]) -> Result<Option<StreamSlot>, StreamRefusal> {
         let cap = self.inner.per_stream_cap;
         if cap <= 0 {
             return Ok(None);
@@ -325,7 +333,7 @@ impl AdmissionController {
     /// Acquire a live-subscription slot against the instance budget, so
     /// subscriber memory exhausts SUBSCRIPTION capacity, not the shared
     /// RSS line that sheds unrelated appends. 0 = unlimited.
-    pub fn subscribe(&self) -> Result<SubscriptionTicket, SubscriptionRefusal> {
+    pub(crate) fn subscribe(&self) -> Result<SubscriptionTicket, SubscriptionRefusal> {
         let cap = self.inner.subscriptions.effective;
         let cur = self.inner.sse_connections.fetch_add(1, Ordering::Relaxed) + 1;
         if cap > 0 && cur > cap {
@@ -337,19 +345,19 @@ impl AdmissionController {
 
     // ---- memory, maintenance, load vector -------------------------------
 
-    pub fn record_rss_mb(&self, mb: u64) {
+    pub(crate) fn record_rss_mb(&self, mb: u64) {
         self.inner.rss_mb.store(mb, Ordering::Relaxed);
     }
 
-    pub fn rss_mb(&self) -> u64 {
+    pub(crate) fn rss_mb(&self) -> u64 {
         self.inner.rss_mb.load(Ordering::Relaxed)
     }
 
-    pub fn rss_shed_mb(&self) -> u64 {
+    pub(crate) fn rss_shed_mb(&self) -> u64 {
         self.inner.rss_shed_mb
     }
 
-    pub fn project_memory_pressure_bytes(&self) -> u64 {
+    pub(crate) fn project_memory_pressure_bytes(&self) -> u64 {
         self.inner
             .project_memory_pressure_bytes
             .load(Ordering::Relaxed)
@@ -358,13 +366,13 @@ impl AdmissionController {
     /// Rigs move the per-project pressure threshold live (same status
     /// as `set_max_inflight`).
     #[cfg(test)]
-    pub fn set_project_memory_pressure_bytes(&self, bytes: u64) {
+    pub(crate) fn set_project_memory_pressure_bytes(&self, bytes: u64) {
         self.inner
             .project_memory_pressure_bytes
             .store(bytes, Ordering::Relaxed);
     }
 
-    pub fn project_memory_release_pct(&self) -> u64 {
+    pub(crate) fn project_memory_release_pct(&self) -> u64 {
         self.inner.project_memory_release_pct
     }
 
@@ -373,7 +381,7 @@ impl AdmissionController {
     /// Apply a fresh backpressure snapshot to the instance-wide
     /// maintenance latch; returns whether it is engaged (PR 6.1-C: the
     /// latch is the controller's implementation, not its API).
-    pub fn apply_maintenance(
+    pub(crate) fn apply_maintenance(
         &self,
         snapshot: &crate::backpressure::Snapshot,
         limits: &crate::backpressure::Limits,
@@ -383,7 +391,7 @@ impl AdmissionController {
 
     /// Admit a write against the instance-wide latch and the shard's own
     /// maintenance debt; `Some(cause)` is a refusal.
-    pub fn admit_maintenance(
+    pub(crate) fn admit_maintenance(
         &self,
         engine: &crate::shard::ShardEngine,
         limits: &crate::backpressure::Limits,
@@ -392,18 +400,18 @@ impl AdmissionController {
     }
 
     /// Record that a request was shed by maintenance backpressure.
-    pub fn note_maintenance_shed(&self) {
+    pub(crate) fn note_maintenance_shed(&self) {
         self.maintenance().note_shed();
     }
 
     /// What engaged the latch, if anything.
     #[cfg(test)]
-    pub fn maintenance_engaged(&self) -> Option<crate::backpressure::Cause> {
+    pub(crate) fn maintenance_engaged(&self) -> Option<crate::backpressure::Cause> {
         self.maintenance().engaged()
     }
 
     /// The operator/debug view of the maintenance latch.
-    pub fn maintenance_stats_json(&self) -> serde_json::Value {
+    pub(crate) fn maintenance_stats_json(&self) -> serde_json::Value {
         self.maintenance().stats_json()
     }
 
@@ -412,30 +420,34 @@ impl AdmissionController {
     }
 
     /// A wedge refusal (stalled durability pipeline) was answered.
-    pub fn note_wedge_shed(&self) {
+    pub(crate) fn note_wedge_shed(&self) {
         self.inner.shed_wedge.fetch_add(1, Ordering::Relaxed);
     }
 
     /// One successful /v1/stream/* request toward the fleet load vector.
-    pub fn note_fleet_op(&self) {
+    pub(crate) fn note_fleet_op(&self) {
         self.inner.fleet_ops.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn fleet_ops(&self) -> u64 {
+    pub(crate) fn fleet_ops(&self) -> u64 {
         self.inner.fleet_ops.load(Ordering::Relaxed)
     }
 
     /// The per-record payload ceiling (0 = unlimited).
-    pub fn record_ceiling(&self) -> usize {
+    pub(crate) fn record_ceiling(&self) -> usize {
         self.inner.record_ceiling.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    pub fn set_record_ceiling(&self, bytes: usize) {
+    pub(crate) fn set_record_ceiling(&self, bytes: usize) {
         self.inner.record_ceiling.store(bytes, Ordering::Relaxed);
     }
 
-    pub fn snapshot(&self) -> AdmissionSnapshot {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "AdmissionController::snapshot; poisoned count state does not define a trustworthy occupancy snapshot; reporting recovered partial counters would conceal a broken admission invariant"
+    )]
+    pub(crate) fn snapshot(&self) -> AdmissionSnapshot {
         let i = &self.inner;
         let ord = Ordering::Relaxed;
         AdmissionSnapshot {
@@ -465,7 +477,7 @@ impl AdmissionController {
     /// Rigs simulate load without holding tickets (the inflight
     /// admission tests push the count past the cap directly).
     #[cfg(test)]
-    pub fn add_inflight_for_test(&self, n: i64) {
+    pub(crate) fn add_inflight_for_test(&self, n: i64) {
         self.inner.inflight.fetch_add(n, Ordering::Relaxed);
     }
 }
@@ -617,5 +629,31 @@ mod tests {
         c.set_record_ceiling(0);
         assert_eq!(c.record_ceiling(), 0);
         assert_eq!(c.maintenance_engaged(), None);
+    }
+    #[test]
+    fn poisoned_stream_counts_cannot_admit_release_or_report_capacity() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let controller = ctl(0, 2, 0, 0);
+        let hash = [7; 16];
+        let slot = controller.stream_slot(hash).unwrap().unwrap();
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let mut counts = controller.inner.streams.lock().unwrap();
+                counts.clear();
+                panic!("interrupted occupancy update");
+            }))
+            .is_err()
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| controller.stream_slot(hash))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| controller.snapshot())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(slot))).is_err());
+
+        let healthy = ctl(0, 1, 0, 0);
+        let slot = healthy.stream_slot(hash).unwrap().unwrap();
+        assert!(healthy.stream_slot(hash).is_err());
+        drop(slot);
+        assert_eq!(healthy.snapshot().streams_tracked, 0);
+        assert!(healthy.stream_slot(hash).unwrap().is_some());
     }
 }

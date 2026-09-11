@@ -51,7 +51,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 /// the same open-engine sum as the instance bound under a name that
 /// implied ownership-wide replay projection.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Limits {
+pub(crate) struct Limits {
     pub unabsorbed_bytes_instance: u64,
     pub unabsorbed_bytes_shard: u64,
     pub absorb_lag_secs: u64,
@@ -63,7 +63,7 @@ pub struct Limits {
 impl Limits {
     /// Reads the owned [`crate::config::AdmissionConfig`] handed down
     /// from the composition root (WP-01 PR 3.1), not the process env.
-    pub fn from_config(cfg: &crate::config::AdmissionConfig) -> Self {
+    pub(crate) fn from_config(cfg: &crate::config::AdmissionConfig) -> Self {
         Self {
             // Defaults are deliberately generous: this is a safety net
             // against unbounded growth, not a throughput throttle. An
@@ -89,7 +89,7 @@ impl Limits {
 /// per-engine shard machine are separate; a shard quantity in this
 /// struct is how the masking bug happened (see `next_state`).
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Snapshot {
+pub(crate) struct Snapshot {
     pub unabsorbed_bytes_instance: u64,
     pub absorb_lag_secs: u64,
 }
@@ -98,14 +98,14 @@ pub struct Snapshot {
 /// `ShardBytes` is produced ONLY by the per-engine latch in `admit()`;
 /// the global machine can never store it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cause {
+pub(crate) enum Cause {
     InstanceBytes,
     ShardBytes,
     LagSecs,
 }
 
 impl Cause {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Cause::InstanceBytes => "unabsorbed bytes on this instance",
             Cause::ShardBytes => "unabsorbed bytes on one shard",
@@ -145,7 +145,7 @@ impl Cause {
 /// global cause at ShardBytes while the public state read "released".
 /// Two conditions, two machines: this one, and the per-engine latch in
 /// `admit()`.
-pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Cause>) {
+pub(crate) fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Cause>) {
     if !l.any_enabled() {
         return (false, None);
     }
@@ -184,7 +184,7 @@ pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Caus
 /// exactly the global machine's state — the per-shard machine lives on
 /// each engine (`maintenance_shard_shed`).
 #[derive(Default)]
-pub struct GlobalLatch {
+pub(crate) struct GlobalLatch {
     /// One word: 0 = released, otherwise the engaged Cause's code
     /// (1 = instance bytes, 3 = lag). R28 review: two independent
     /// relaxed atomics let a reader observe engaged=true with a stale
@@ -201,7 +201,7 @@ pub struct GlobalLatch {
 }
 
 impl GlobalLatch {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -210,16 +210,16 @@ impl GlobalLatch {
     /// global machine no longer evaluates shard quantities, so the old
     /// read-side ShardBytes filter (which masked a simultaneous global
     /// violation) is structurally unnecessary.
-    pub fn engaged(&self) -> Option<Cause> {
+    pub(crate) fn engaged(&self) -> Option<Cause> {
         Cause::from_code(self.state.load(Ordering::Relaxed))
     }
 
-    pub fn note_shed(&self) {
+    pub(crate) fn note_shed(&self) {
         self.shed_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Apply an evaluated snapshot. Returns the new engaged state.
-    pub fn apply(&self, s: &Snapshot, l: &Limits) -> bool {
+    pub(crate) fn apply(&self, s: &Snapshot, l: &Limits) -> bool {
         let was = self.state.load(Ordering::Relaxed) != 0;
         let (now, cause) = next_state(was, s, l);
         self.last_unabsorbed
@@ -253,7 +253,7 @@ impl GlobalLatch {
         now
     }
 
-    pub fn stats_json(&self) -> serde_json::Value {
+    pub(crate) fn stats_json(&self) -> serde_json::Value {
         let cause = self.engaged();
         serde_json::json!({
             // Instance-machine state. `engaged`/`cause` keep their names
@@ -291,7 +291,7 @@ impl GlobalLatch {
 /// A shard over its byte line can therefore never mask a simultaneous
 /// global violation, and a shard holding above its release line cannot
 /// pin the global state.
-pub fn admit(
+pub(crate) fn admit(
     engine: &crate::shard::ShardEngine,
     global: &GlobalLatch,
     l: &Limits,
@@ -333,7 +333,7 @@ pub fn admit(
 /// gate covers it on first access. Each engine's state leaves this
 /// aggregate the moment the engine leaves the serving map — no
 /// process-global map to go stale.
-pub fn snapshot(shards: &crate::shard_directory::ShardDirectory) -> Snapshot {
+pub(crate) fn snapshot(shards: &crate::shard_directory::ShardDirectory) -> Snapshot {
     let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = shards.engines();
     let now = crate::shard::now_ms();
     let mut total = 0u64;

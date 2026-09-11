@@ -39,7 +39,10 @@ fn run_helper_test(test_filter: &str, envs: &[(&str, &str)]) -> std::process::Ou
 /// fixture against a parse that can see arbitrary developer/CI env).
 #[test]
 fn cli_fixture_drift_helper() {
-    if std::env::var("STREAMS_CLI_FIXTURE_DRIFT_CHECK").is_err() {
+    if ProcessEnvironment
+        .get("STREAMS_CLI_FIXTURE_DRIFT_CHECK")
+        .is_none()
+    {
         return;
     }
     let parsed =
@@ -249,133 +252,135 @@ fn redacted_summary_never_leaks_secret_channels() {
     }
 }
 
+/// Explicit expected flags, environment names and defaults for the CLI oracle.
+const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
+    ("listen", "", "127.0.0.1:8090"),
+    ("s3-endpoint", "SLATE_S3_ENDPOINT", ""),
+    ("bucket", "SLATE_S3_BUCKET", "streams"),
+    ("ops-bucket", "", ""),
+    ("shard-bucket", "", ""),
+    ("data-bucket", "", ""),
+    ("region", "SLATE_S3_REGION", "us-east-1"),
+    ("access-key-id", "SLATE_S3_ACCESS_KEY_ID", "test"),
+    ("secret-access-key", "SLATE_S3_SECRET_ACCESS_KEY", "test"),
+    ("initial-shards", "INITIAL_SHARDS", ""),
+    ("flush-interval-ms", "FLUSH_INTERVAL_MS", "25"),
+    ("wal-group-commit", "WAL_GROUP_COMMIT", "0"),
+    ("wal-flush-gap-ms", "WAL_FLUSH_GAP_MS", "0"),
+    ("wal-post-ack-gather-ms", "WAL_POST_ACK_GATHER_MS", "0"),
+    ("wal-gather-skip-reqs", "WAL_GATHER_SKIP_REQS", "32"),
+    ("wal-gather-skip-bytes", "WAL_GATHER_SKIP_BYTES", "1048576"),
+    ("tail-ring-bytes", "TAIL_RING_BYTES", "0"),
+    ("l0-sst-size-bytes", "L0_SST_SIZE_BYTES", "8388608"),
+    ("max-unflushed-bytes", "MAX_UNFLUSHED_BYTES", "16777216"),
+    (
+        "max-request-body-bytes",
+        "MAX_REQUEST_BODY_BYTES",
+        "33554432",
+    ),
+    ("l0-max-ssts", "L0_MAX_SSTS", "8"),
+    ("l0-max-ssts-per-key", "L0_MAX_SSTS_PER_KEY", "0"),
+    ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
+    ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "4"),
+    ("wal-gc-interval-secs", "WAL_GC_INTERVAL_SECS", "30"),
+    ("gc-quiet-interval-secs", "GC_QUIET_INTERVAL_SECS", "600"),
+    ("wal-gc-min-age-secs", "WAL_GC_MIN_AGE_SECS", "60"),
+    (
+        "compactions-gc-interval-secs",
+        "COMPACTIONS_GC_INTERVAL_SECS",
+        "30",
+    ),
+    (
+        "compactions-gc-min-age-secs",
+        "COMPACTIONS_GC_MIN_AGE_SECS",
+        "120",
+    ),
+    ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
+    ("trim-per-op", "TRIM_PER_OP", "8192"),
+    ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
+    ("absorb-pass-bytes", "ABSORB_PASS_BYTES", "268435456"),
+    ("absorb-bytes", "ABSORB_BYTES", "4194304"),
+    ("absorb-age-secs", "ABSORB_AGE_SECS", "300"),
+    ("absorb-concurrency", "ABSORB_CONCURRENCY", "6"),
+    ("absorb-small-bytes", "ABSORB_SMALL_BYTES", "1048576"),
+    ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
+    ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
+    (
+        "absorb-gather-max-bytes",
+        "ABSORB_GATHER_MAX_BYTES",
+        "33554432",
+    ),
+    ("absorb-pace-window-ms", "ABSORB_PACE_WINDOW_MS", "50"),
+    ("absorb-pace-ms", "ABSORB_PACE_MS", "0"),
+    ("absorb-read-par", "ABSORB_READ_PAR", "8"),
+    ("conformance-default-key", "", ""),
+    ("auth-token", "AUTH_TOKEN", ""),
+    ("streams-auth-mode", "STREAMS_AUTH_MODE", "off"),
+    (
+        "streams-auth-issuer",
+        "STREAMS_AUTH_ISSUER",
+        "https://auth.prisma.io",
+    ),
+    ("streams-auth-keys-file", "STREAMS_AUTH_KEYS_FILE", ""),
+    ("streams-auth-policy-file", "STREAMS_AUTH_POLICY_FILE", ""),
+    ("streams-auth-grants-file", "STREAMS_AUTH_GRANTS_FILE", ""),
+    (
+        "streams-auth-refresh-secs",
+        "STREAMS_AUTH_REFRESH_SECS",
+        "30",
+    ),
+    ("streams-cursor-key", "STREAMS_CURSOR_KEY", ""),
+    ("fleet-internal-token", "FLEET_INTERNAL_TOKEN", ""),
+    ("fleet-auth-mode", "FLEET_AUTH_MODE", "static"),
+    ("workload-token-file", "WORKLOAD_TOKEN_FILE", ""),
+    ("release-posture", "STREAMS_RELEASE_POSTURE", "false"),
+    ("max-record-payload-bytes", "MAX_RECORD_PAYLOAD_BYTES", ""),
+    ("account-id", "ACCOUNT_ID", "acct_local"),
+    ("project-id", "PROJECT_ID", "proj_local"),
+    ("cell-id", "CELL_ID", "local"),
+    ("telemetry-region", "REGION", ""),
+    ("usage-stream-key", "USAGE_STREAM_KEY", ""),
+    ("billing-mode", "BILLING_MODE", "off"),
+    ("rollup", "ROLLUP", "0"),
+    ("instance-name", "INSTANCE_NAME", "streams"),
+    ("path-prefix", "PATH_PREFIX", ""),
+    ("fleet-prefix", "FLEET_PREFIX", ""),
+    ("scale-rps-capacity", "SCALE_RPS_CAPACITY", "0"),
+    ("scale-out-cpu-pct", "SCALE_OUT_CPU_PCT", "75"),
+    ("scale-in-cpu-pct", "SCALE_IN_CPU_PCT", "50"),
+    ("scale-cpu-sustain-secs", "SCALE_CPU_SUSTAIN_SECS", "20"),
+    ("scale-edge-latency-ms", "SCALE_EDGE_LATENCY_MS", "1000"),
+    (
+        "project-memory-pressure-bytes",
+        "PROJECT_MEMORY_PRESSURE_BYTES",
+        "0",
+    ),
+    (
+        "project-memory-release-pct",
+        "PROJECT_MEMORY_RELEASE_PCT",
+        "75",
+    ),
+    ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "600"),
+    ("sse-max-connections", "SSE_MAX_CONNECTIONS", "10000"),
+    (
+        "admit-max-inflight-per-stream",
+        "ADMIT_MAX_INFLIGHT_PER_STREAM",
+        "64",
+    ),
+    ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "0"),
+    ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
+    ("shared-cache-bytes", "SHARED_CACHE_BYTES", "201326592"),
+    ("scale-in-secs", "SCALE_IN_SECS", "60"),
+    ("scale-latency-ms", "SCALE_LATENCY_MS", "250"),
+    ("scale-lat-sustain-secs", "SCALE_LAT_SUSTAIN_SECS", "20"),
+    ("fleet-max", "FLEET_MAX", "4"),
+];
+
 /// The complete CLI surface, pinned: every long flag, its env name and
 /// its default. A PR that renames/rewires an option fails here first.
 /// Table generated from clap's own argument registry.
 #[test]
 fn cli_surface_is_pinned() {
-    let expected: &[(&str, &str, &str)] = &[
-        ("listen", "", "127.0.0.1:8090"),
-        ("s3-endpoint", "SLATE_S3_ENDPOINT", ""),
-        ("bucket", "SLATE_S3_BUCKET", "streams"),
-        ("ops-bucket", "", ""),
-        ("shard-bucket", "", ""),
-        ("data-bucket", "", ""),
-        ("region", "SLATE_S3_REGION", "us-east-1"),
-        ("access-key-id", "SLATE_S3_ACCESS_KEY_ID", "test"),
-        ("secret-access-key", "SLATE_S3_SECRET_ACCESS_KEY", "test"),
-        ("initial-shards", "INITIAL_SHARDS", ""),
-        ("flush-interval-ms", "FLUSH_INTERVAL_MS", "25"),
-        ("wal-group-commit", "WAL_GROUP_COMMIT", "0"),
-        ("wal-flush-gap-ms", "WAL_FLUSH_GAP_MS", "0"),
-        ("wal-post-ack-gather-ms", "WAL_POST_ACK_GATHER_MS", "0"),
-        ("wal-gather-skip-reqs", "WAL_GATHER_SKIP_REQS", "32"),
-        ("wal-gather-skip-bytes", "WAL_GATHER_SKIP_BYTES", "1048576"),
-        ("tail-ring-bytes", "TAIL_RING_BYTES", "0"),
-        ("l0-sst-size-bytes", "L0_SST_SIZE_BYTES", "8388608"),
-        ("max-unflushed-bytes", "MAX_UNFLUSHED_BYTES", "16777216"),
-        (
-            "max-request-body-bytes",
-            "MAX_REQUEST_BODY_BYTES",
-            "33554432",
-        ),
-        ("l0-max-ssts", "L0_MAX_SSTS", "8"),
-        ("l0-max-ssts-per-key", "L0_MAX_SSTS_PER_KEY", "0"),
-        ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
-        ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "4"),
-        ("wal-gc-interval-secs", "WAL_GC_INTERVAL_SECS", "30"),
-        ("gc-quiet-interval-secs", "GC_QUIET_INTERVAL_SECS", "600"),
-        ("wal-gc-min-age-secs", "WAL_GC_MIN_AGE_SECS", "60"),
-        (
-            "compactions-gc-interval-secs",
-            "COMPACTIONS_GC_INTERVAL_SECS",
-            "30",
-        ),
-        (
-            "compactions-gc-min-age-secs",
-            "COMPACTIONS_GC_MIN_AGE_SECS",
-            "120",
-        ),
-        ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
-        ("trim-per-op", "TRIM_PER_OP", "8192"),
-        ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
-        ("absorb-pass-bytes", "ABSORB_PASS_BYTES", "268435456"),
-        ("absorb-bytes", "ABSORB_BYTES", "4194304"),
-        ("absorb-age-secs", "ABSORB_AGE_SECS", "300"),
-        ("absorb-concurrency", "ABSORB_CONCURRENCY", "6"),
-        ("absorb-small-bytes", "ABSORB_SMALL_BYTES", "1048576"),
-        ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
-        ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
-        (
-            "absorb-gather-max-bytes",
-            "ABSORB_GATHER_MAX_BYTES",
-            "33554432",
-        ),
-        ("absorb-pace-window-ms", "ABSORB_PACE_WINDOW_MS", "50"),
-        ("absorb-pace-ms", "ABSORB_PACE_MS", "0"),
-        ("absorb-read-par", "ABSORB_READ_PAR", "8"),
-        ("conformance-default-key", "", ""),
-        ("auth-token", "AUTH_TOKEN", ""),
-        ("streams-auth-mode", "STREAMS_AUTH_MODE", "off"),
-        (
-            "streams-auth-issuer",
-            "STREAMS_AUTH_ISSUER",
-            "https://auth.prisma.io",
-        ),
-        ("streams-auth-keys-file", "STREAMS_AUTH_KEYS_FILE", ""),
-        ("streams-auth-policy-file", "STREAMS_AUTH_POLICY_FILE", ""),
-        ("streams-auth-grants-file", "STREAMS_AUTH_GRANTS_FILE", ""),
-        (
-            "streams-auth-refresh-secs",
-            "STREAMS_AUTH_REFRESH_SECS",
-            "30",
-        ),
-        ("streams-cursor-key", "STREAMS_CURSOR_KEY", ""),
-        ("fleet-internal-token", "FLEET_INTERNAL_TOKEN", ""),
-        ("fleet-auth-mode", "FLEET_AUTH_MODE", "static"),
-        ("workload-token-file", "WORKLOAD_TOKEN_FILE", ""),
-        ("release-posture", "STREAMS_RELEASE_POSTURE", "false"),
-        ("max-record-payload-bytes", "MAX_RECORD_PAYLOAD_BYTES", ""),
-        ("account-id", "ACCOUNT_ID", "acct_local"),
-        ("project-id", "PROJECT_ID", "proj_local"),
-        ("cell-id", "CELL_ID", "local"),
-        ("telemetry-region", "REGION", ""),
-        ("usage-stream-key", "USAGE_STREAM_KEY", ""),
-        ("billing-mode", "BILLING_MODE", "off"),
-        ("rollup", "ROLLUP", "0"),
-        ("instance-name", "INSTANCE_NAME", "streams"),
-        ("path-prefix", "PATH_PREFIX", ""),
-        ("fleet-prefix", "FLEET_PREFIX", ""),
-        ("scale-rps-capacity", "SCALE_RPS_CAPACITY", "0"),
-        ("scale-out-cpu-pct", "SCALE_OUT_CPU_PCT", "75"),
-        ("scale-in-cpu-pct", "SCALE_IN_CPU_PCT", "50"),
-        ("scale-cpu-sustain-secs", "SCALE_CPU_SUSTAIN_SECS", "20"),
-        ("scale-edge-latency-ms", "SCALE_EDGE_LATENCY_MS", "1000"),
-        (
-            "project-memory-pressure-bytes",
-            "PROJECT_MEMORY_PRESSURE_BYTES",
-            "0",
-        ),
-        (
-            "project-memory-release-pct",
-            "PROJECT_MEMORY_RELEASE_PCT",
-            "75",
-        ),
-        ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "600"),
-        ("sse-max-connections", "SSE_MAX_CONNECTIONS", "10000"),
-        (
-            "admit-max-inflight-per-stream",
-            "ADMIT_MAX_INFLIGHT_PER_STREAM",
-            "64",
-        ),
-        ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "0"),
-        ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
-        ("shared-cache-bytes", "SHARED_CACHE_BYTES", "201326592"),
-        ("scale-in-secs", "SCALE_IN_SECS", "60"),
-        ("scale-latency-ms", "SCALE_LATENCY_MS", "250"),
-        ("scale-lat-sustain-secs", "SCALE_LAT_SUSTAIN_SECS", "20"),
-        ("fleet-max", "FLEET_MAX", "4"),
-    ];
     let cmd = CliArgs::command();
     let mut actual: Vec<(String, String, String)> = cmd
         .get_arguments()
@@ -394,7 +399,7 @@ fn cli_surface_is_pinned() {
         })
         .collect();
     actual.sort();
-    let mut want: Vec<(String, String, String)> = expected
+    let mut want: Vec<(String, String, String)> = EXPECTED_CLI_SURFACE
         .iter()
         .map(|(f, e, d)| (f.to_string(), e.to_string(), d.to_string()))
         .collect();
@@ -421,7 +426,10 @@ fn two_configurations_coexist_in_one_process() {
 /// parent set the marker AND the value under test.
 #[test]
 fn process_environment_smoke_helper() {
-    if std::env::var("STREAMS_PROCESS_ENV_SMOKE").is_err() {
+    if ProcessEnvironment
+        .get("STREAMS_PROCESS_ENV_SMOKE")
+        .is_none()
+    {
         return;
     }
     let cfg = ServerConfig::load(test_cli(), &ProcessEnvironment);

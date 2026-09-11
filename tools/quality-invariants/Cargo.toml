@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 # These imports live in the actual production modules included via #[path].
 [package.metadata.cargo-machete]
-ignored = ["aes-gcm", "aes-gcm-siv", "base64", "hkdf", "hmac", "serde", "sha2", "zstd", "bytes", "tokio", "futures-util", "proptest"]
+ignored = ["aes-gcm", "aes-gcm-siv", "base64", "hkdf", "hmac", "serde", "serde_json", "sha2", "zstd", "bytes", "tokio", "futures-util", "proptest"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -15,7 +15,8 @@ aes-gcm-siv = "0.11"
 base64 = "0.22.1"
 hkdf = "0.12"
 hmac = "0.12"
-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 zstd = "0.13"
 bytes = "1"

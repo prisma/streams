@@ -24,10 +24,10 @@ use crate::registry::{StreamDesc, WatchDefinition};
 
 /// Reserved protocol control namespace (appendix §2.6): never a
 /// customer stream name, on either surface.
-pub use crate::tenant::RESERVED_ROOT;
+pub(crate) use crate::tenant::RESERVED_ROOT;
 
 /// Stable product error shape (spec Stage 8 §11).
-pub fn perr(
+pub(crate) fn perr(
     status: StatusCode,
     code: &str,
     message: &str,
@@ -58,7 +58,7 @@ pub fn perr(
 /// checks here and pinned agreement with a debug assertion; now the
 /// identity layer is THE validator and this type adds only what is
 /// product-specific.
-pub use crate::application::names::ProductStreamName;
+pub(crate) use crate::application::names::ProductStreamName;
 
 /// Canonical stream-name validation (spec Stage 8 §4.1). The wildcard
 /// path arrives percent-decoded exactly once by the router; this
@@ -69,7 +69,7 @@ pub use crate::application::names::ProductStreamName;
     clippy::result_large_err,
     reason = "transport boundary returns Axum wire response directly; application errors stay compact"
 )]
-pub fn canonical_name(raw: &str) -> Result<String, Response> {
+pub(crate) fn canonical_name(raw: &str) -> Result<String, Response> {
     match ProductStreamName::try_from(raw) {
         Ok(p) => Ok(p.as_str().to_string()),
         Err(e) => Err(perr(
@@ -3895,7 +3895,7 @@ async fn product_consumer_settle(
 
 #[cfg(test)]
 #[cfg(test)]
-pub(crate) use crate::application::watch::{watch_key_hex, watch_pinned};
+pub(crate) use crate::application::watch::watch_key_hex;
 
 fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
     json!({"name": w.name, "fields": w.fields})
@@ -4369,7 +4369,7 @@ async fn product_usage(
 /// every product control-plane read. Under the one-project-per-cell
 /// deployment contract the {project} segment must match this cell's
 /// configured project.
-pub async fn project_usage(
+pub(crate) async fn project_usage(
     state: Arc<AppState>,
     authority: &crate::tenant::ProjectId,
     project: String,

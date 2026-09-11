@@ -18,13 +18,13 @@ use aes_gcm_siv::aead::{OsRng, rand_core::RngCore};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 
-pub const FRAME_VER: u8 = 4;
+pub(crate) const FRAME_VER: u8 = 4;
 const LEGACY_FRAME_VER: u8 = 2;
 pub(crate) const LEGACY_FRAME_VER_Z: u8 = 3;
 /// Frame whose plaintext is zstd-compressed (compress-then-encrypt).
-pub const FRAME_VER_Z: u8 = 5;
-pub const KEY_LEN: usize = 32;
-pub const EPOCH_LEN: usize = 16;
+pub(crate) const FRAME_VER_Z: u8 = 5;
+pub(crate) const KEY_LEN: usize = 32;
+pub(crate) const EPOCH_LEN: usize = 16;
 
 /// Payloads below this size skip the compression attempt (zstd overhead
 /// dominates, and the attempt itself costs CPU in the serial committer).
@@ -37,7 +37,7 @@ const COMPRESS_MIN_BYTES: usize = 256;
 /// the process configuration (FRAME_COMPRESS); tools/benches pass their
 /// own choice. No ambient lookup: the flag travels with the cipher.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum FrameCompression {
+pub(crate) enum FrameCompression {
     #[default]
     Disabled,
     /// zstd at a fixed level (deterministic within a deployment),
@@ -57,10 +57,10 @@ impl FrameCompression {
 }
 
 #[derive(Clone)]
-pub struct StreamKey(pub [u8; KEY_LEN]);
+pub(crate) struct StreamKey(pub [u8; KEY_LEN]);
 
 impl StreamKey {
-    pub fn from_b64(s: &str) -> Result<StreamKey, String> {
+    pub(crate) fn from_b64(s: &str) -> Result<StreamKey, String> {
         use base64::Engine;
         let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(s.trim())
@@ -119,9 +119,9 @@ pub fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32
 /// (issuance is offline by stream-key holders, so the server bounds
 /// what it accepts, not what clients mint).
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
-pub const WATCH_CAP_MAX_LIFETIME_SECS: i64 = 300;
+pub(crate) const WATCH_CAP_MAX_LIFETIME_SECS: i64 = 300;
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
-pub const WATCH_CAP_SKEW_SECS: i64 = 30;
+pub(crate) const WATCH_CAP_SKEW_SECS: i64 = 30;
 
 /// The layout-4 watch-observation capability signature: HMAC-SHA256
 /// under the descriptor's wait_sig_key over the DOMAIN-SEPARATED,
@@ -136,7 +136,7 @@ pub const WATCH_CAP_SKEW_SECS: i64 = 30;
 // params struct would rename the count without changing it.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
-pub fn watch_capability_sig(
+pub(crate) fn watch_capability_sig(
     sig_key: &[u8; 32],
     sref: &crate::tenant::TenantStreamRef,
     stream_epoch_hex: &str,
@@ -174,14 +174,14 @@ pub fn watch_capability_sig(
 /// sref the caller resolved (and the signature input has always bound
 /// the project, so a swapped prefix cannot verify).
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
-pub fn watch_capability_project(cap: &str) -> Option<crate::tenant::ProjectId> {
+pub(crate) fn watch_capability_project(cap: &str) -> Option<crate::tenant::ProjectId> {
     let (project_s, _) = cap.trim().split_once('.')?;
     crate::tenant::ProjectId::new(project_s).ok()
 }
 
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
-pub fn verify_watch_capability(
+pub(crate) fn verify_watch_capability(
     cap: &str,
     sig_key: &[u8; 32],
     sref: &crate::tenant::TenantStreamRef,
@@ -229,7 +229,7 @@ pub fn verify_watch_capability(
             == 0
 }
 
-pub fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -251,7 +251,7 @@ pub fn stream_hash(name: &str) -> [u8; 16] {
 /// `stream_hash` (v3, bare strings) and the layout-4 constructors
 /// below (length-prefixed, domain-separated inputs from
 /// `tenant::encode_hash_input`).
-pub fn hash16(bytes: &[u8]) -> [u8; 16] {
+pub(crate) fn hash16(bytes: &[u8]) -> [u8; 16] {
     let digest = Sha256::digest(bytes);
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest[..16]);
@@ -268,20 +268,20 @@ pub fn hash16(bytes: &[u8]) -> [u8; 16] {
 /// adjacently where a silent swap would corrupt every key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(transparent)]
-pub struct RouteHash(pub [u8; 16]);
+pub(crate) struct RouteHash(pub [u8; 16]);
 
 impl RouteHash {
     /// Layout-4 route hash (MULTITENANCY §2.1):
     /// route-v1 + project_id + stream_name.
     #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
-    pub fn for_stream(sref: &crate::tenant::TenantStreamRef) -> Self {
+    pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef) -> Self {
         RouteHash(hash16(&crate::tenant::route_hash_input(sref)))
     }
 
     /// Layout-4 split-child route (contract r1):
     /// route-child-v1 + project_id + stream_name + child_segment_id + salt.
     #[allow(dead_code)] // consumed at MT Stage 3 (scaler3 conversion)
-    pub fn for_child(
+    pub(crate) fn for_child(
         sref: &crate::tenant::TenantStreamRef,
         child_segment_id: u32,
         salt: &[u8],
@@ -301,7 +301,7 @@ impl RouteHash {
 /// two are distinct types.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(transparent)]
-pub struct SegmentHash(pub [u8; 16]);
+pub(crate) struct SegmentHash(pub [u8; 16]);
 
 impl SegmentHash {
     /// Layout-4 storage hash (MULTITENANCY §2.1) — the engine identity
@@ -310,7 +310,7 @@ impl SegmentHash {
     /// Replaces `StreamDesc::storage_hash`'s bare-name derivation at
     /// MT Stage 3.
     #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
-    pub fn for_stream(sref: &crate::tenant::TenantStreamRef, stream_epoch: &str) -> Self {
+    pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef, stream_epoch: &str) -> Self {
         SegmentHash(hash16(&crate::tenant::storage_hash_input(
             sref,
             stream_epoch,
@@ -321,7 +321,7 @@ impl SegmentHash {
     /// segment-v1 + project_id + stream_name + stream_epoch + segment_id.
     /// Replaces `StreamDesc::dynamic_segment_identity` at MT Stage 3.
     #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
-    pub fn for_segment(
+    pub(crate) fn for_segment(
         sref: &crate::tenant::TenantStreamRef,
         stream_epoch: &str,
         segment_id: u32,
@@ -348,7 +348,7 @@ impl RoutingKeyHash {
     }
 }
 
-pub fn derive_subkey(
+pub(crate) fn derive_subkey(
     key: &StreamKey,
     stream_epoch: &[u8; EPOCH_LEN],
     routing_key: &str,
@@ -371,7 +371,7 @@ fn nonce_for_offset(offset: u64) -> [u8; 12] {
 }
 
 #[derive(Clone, Copy)]
-pub struct FrameHeader<R = String> {
+pub(crate) struct FrameHeader<R = String> {
     pub offset: u64,
     pub ts_ms: i64,
     pub key_version: u32,
@@ -397,7 +397,7 @@ fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
 
 /// Encrypt a new invocation into its wire/storage frame. Fresh randomness
 /// is persisted in the authenticated header; copy encoded bytes for retries.
-pub fn encrypt_frame(
+pub(crate) fn encrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
     h: &FrameHeader,
@@ -418,13 +418,13 @@ pub fn encrypt_frame(
 /// for every record of a request/batch. Rebuilding the cipher per frame
 /// (the old encrypt_frame path) costs ~2-3 us/record - measurable at 50k
 /// events/s and pure waste inside the serial committer loop.
-pub struct FrameCipher {
+pub(crate) struct FrameCipher {
     cipher: Aes256GcmSiv,
     compression: FrameCompression,
 }
 
 impl FrameCipher {
-    pub fn new(
+    pub(crate) fn new(
         subkey: &[u8; KEY_LEN],
         segment: &[u8; 16],
         compression: FrameCompression,
@@ -513,9 +513,9 @@ impl FrameCipher {
     }
 }
 
-pub type ReadFrameHeader<'a> = FrameHeader<&'a str>;
+pub(crate) type ReadFrameHeader<'a> = FrameHeader<&'a str>;
 
-pub struct DecodedFrame<'a> {
+pub(crate) struct DecodedFrame<'a> {
     pub header: ReadFrameHeader<'a>,
     pub header_len: usize,
     pub ciphertext: &'a [u8],
@@ -525,7 +525,7 @@ pub struct DecodedFrame<'a> {
 }
 
 /// Parse a frame without decrypting (routing key and offsets are metadata).
-pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
+pub(crate) fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     if buf.len() < 27
         || !matches!(
             buf[0],
@@ -557,12 +557,12 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
 }
 
 /// Stored frames and their decoded payloads have separate admission bounds.
-pub const MAX_RECORD_PLAINTEXT: usize = 32 << 20;
-pub const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as usize + 55;
+pub(crate) const MAX_RECORD_PLAINTEXT: usize = 32 << 20;
+pub(crate) const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as usize + 55;
 
 // Shared by the standalone keys/cryptobench tools; server pages use bounded reads.
 #[allow(dead_code)]
-pub fn decrypt_frame(
+pub(crate) fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
     frame: &DecodedFrame<'_>,
@@ -574,7 +574,7 @@ pub fn decrypt_frame(
 
 /// None means the authenticated payload crosses this page's remaining limit.
 /// Read at most limit+1 decompressed bytes; never materialize an entire bomb.
-pub fn decrypt_frame_limited(
+pub(crate) fn decrypt_frame_limited(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
     frame: &DecodedFrame<'_>,

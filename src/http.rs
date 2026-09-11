@@ -140,11 +140,11 @@ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 /// woken long-poll responses carry `Streams-Debug-Wait: waited=<0|1>
 /// arm_us=<arm->wake> read_us=<wake->records-built>`, splitting the
 /// remaining roundtrip-minus-append interval into its server-side stages.
-pub fn debug_timing(cfg: &crate::config::HttpConfig) -> bool {
+pub(crate) fn debug_timing(cfg: &crate::config::HttpConfig) -> bool {
     cfg.debug_timing
 }
 
-pub fn tail_max_bytes(cfg: &crate::config::HttpConfig) -> usize {
+pub(crate) fn tail_max_bytes(cfg: &crate::config::HttpConfig) -> usize {
     cfg.tail_max_bytes
 }
 // The platform front door kills any request at ~30 s with a 502 (measured
@@ -152,7 +152,7 @@ pub fn tail_max_bytes(cfg: &crate::config::HttpConfig) -> usize {
 // so clients see clean empty responses instead of gateway errors.
 const MAX_LONG_POLL: Duration = Duration::from_secs(25);
 
-pub struct AppState {
+pub(crate) struct AppState {
     /// The one parsed, immutable process configuration (WP-01 PR 3.1).
     /// Owners read their knobs from here; nothing reads the process
     /// environment at runtime.
@@ -1268,7 +1268,7 @@ async fn internal_telemetry_append(
 /// per parked conn; a bounded max_buf_size holds the same fleet at
 /// ~44 KB, floor now dominated by task/future/slab overhead).
 /// max_buf bounds per-READ chunk size, not request body size.
-pub async fn serve_h1(
+pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
     max_buf: usize,
@@ -1718,7 +1718,7 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
 }
 
 #[derive(Deserialize, Default)]
-pub struct ReadParams {
+pub(crate) struct ReadParams {
     pub(crate) offset: Option<String>,
     pub(crate) format: Option<String>,
     pub(crate) live: Option<String>,
@@ -3375,7 +3375,7 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
 }
 #[cfg(test)]
 impl AppState {
-    pub async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
+    pub(crate) async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
         self.shards
             .resolve(hash, crate::shard_directory::Adoption::Internal)
             .await

@@ -7,6 +7,10 @@ use crate::application::lifecycle::{
     FinalDisposition, FinalRecordFailure, FinalSealRequest, SealFinalError, seal_final,
 };
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal cancellation fixture; the test aborts and joins the entered final operation before retrying its retained claim; a detached request would make the retry race with unknown work"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it() {
     let (state, addr) = http_rig(mem()).await;
@@ -30,25 +34,27 @@ async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it()
         .clone();
     let service = state.lifecycle_service();
     let (entered, observed) = tokio::sync::oneshot::channel();
-    let task = {
-        let (service, stream, epoch) = (service.clone(), stream.clone(), epoch.clone());
-        tokio::spawn(async move {
-            seal_final(
-                &service,
-                FinalSealRequest {
-                    stream: &stream,
-                    epoch: &epoch,
-                    operation: "cancelled-op",
-                    routing_key: "",
-                },
-                |_authority| async move {
-                    let _ = entered.send(());
-                    std::future::pending::<Result<_, FinalRecordFailure<()>>>().await
-                },
-            )
-            .await
-        })
-    };
+    let task_service = service.clone();
+    let task_stream = stream.clone();
+    let task_epoch = epoch.clone();
+    let task = tokio::spawn(async move {
+        seal_final(
+            &task_service,
+            FinalSealRequest {
+                stream: &task_stream,
+                epoch: &task_epoch,
+                operation: "cancelled-op",
+                routing_key: "",
+            },
+            |_authority| async move {
+                entered
+                    .send(())
+                    .expect("claim observer must still be waiting");
+                std::future::pending::<Result<_, FinalRecordFailure<()>>>().await
+            },
+        )
+        .await
+    });
     observed.await.unwrap(); // The claim CAS is durable before append is called.
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());

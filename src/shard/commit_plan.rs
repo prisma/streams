@@ -3,26 +3,26 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AppendFinish {
+pub(crate) enum AppendFinish {
     Open,
     /// Append the final records and close in the same storage transaction.
     Close,
 }
 
-pub struct CloseReq {
+pub(crate) struct CloseReq {
     pub hash: [u8; 16],
     pub generation: Option<u64>,
     pub resp: oneshot::Sender<Result<AppendAck, AppendErr>>,
 }
 
-pub struct SealFenceReq {
+pub(crate) struct SealFenceReq {
     pub hash: [u8; 16],
     pub generation: u64,
     pub resp: oneshot::Sender<Result<AppendAck, AppendErr>>,
 }
 
 #[derive(Debug)]
-pub enum EnqueueError {
+pub(crate) enum EnqueueError {
     Full,
     Closed,
 }
@@ -44,7 +44,7 @@ pub(super) struct DurableEffects {
 }
 
 impl DurableEffects {
-    pub fn reply(self) {
+    pub(super) fn reply(self) {
         for (reply, result) in self.acks {
             let _ = reply.send(result);
         }
@@ -203,7 +203,7 @@ pub(super) fn decide_consumer_generation(current: u64, requested: u64) -> Consum
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UsageAckScope {
+pub(crate) enum UsageAckScope {
     ThroughVersion(u64),
     FinalRowsOnly,
 }
