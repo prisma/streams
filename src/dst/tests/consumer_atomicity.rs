@@ -221,6 +221,10 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
 /// shared handle, so a lost write publishes nothing. And a
 /// Receive→ConfigDelete in one group must leave the consumer DELETED
 /// on success (the state copy-back must not resurrect it).
+#[expect(
+    clippy::too_many_lines,
+    reason = "group-local delete scenario; arranging two consumers, deleting one and checking the survivor's leases and rows is one atomicity argument; helpers would separate the rows from the group that wrote them"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queue_config_delete_is_group_local() {
     let store = mem();
@@ -376,6 +380,14 @@ async fn queue_config_delete_is_group_local() {
 /// recreated consumer inherits it after handle eviction. Composed by
 /// DIRECT committer submits — the HTTP handlers interleave their own
 /// preliminary ops, which is a different scenario.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "single-group receive/delete fixture; both queue operations are joined after the held commit is released; they must be staged concurrently to land in the same write group"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "same-group receive/delete scenario; staging both operations under one held commit and counting durable rows afterwards is one atomicity argument; splitting it would hide which group buried the lease"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     let store = mem();
@@ -497,6 +509,14 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
 /// settle stages ack/cursor mutations into the WriteBatch; the delete
 /// must bury those too. A recreated consumer starts from scratch —
 /// no inherited cursor, no inherited acks.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "single-group settle/delete fixture; both queue operations are joined after the held commit is released; they must be staged concurrently to land in the same write group"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "same-group settle/delete scenario; leasing, settling and deleting under one held commit before counting rows is one atomicity argument; splitting it would hide which group buried the acknowledgement"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     let store = mem();
@@ -637,6 +657,14 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
 /// exists for later ops in the group. Without the overlay check it
 /// silently re-staged lease rows for the dead consumer (this exact
 /// composition found the hole).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "single-group delete/receive fixture; both queue operations are joined after the held commit is released; the refusal only exists when the receive is staged behind the delete in one group"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "same-group delete/receive scenario; the ordering, the refusal and the absence of re-staged rows are one argument; splitting it would hide the overlay check being proved"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receive_after_delete_in_the_same_group_is_refused() {
     let store = mem();

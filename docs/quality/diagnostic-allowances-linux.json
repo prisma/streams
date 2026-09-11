@@ -1627,48 +1627,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1aae6e7ae2638be3b798fe07779b339496b9d3b67b3dbcff330d58419263521f",
-      "item": "crate::a_receive_after_delete_in_the_same_group_is_refused",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "de6f4a15bed6b2414d7e0bd64f2b4bf15db5227936ab4a11560cbdc63f323817",
-      "item": "crate::a_receive_after_delete_in_the_same_group_is_refused",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "101b6571f2d229c97df193d33e5ef6486e4dab61de77b4436eda51010f4cc42e",
-      "item": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a9a8dd6de0e2bfe616a0b5f2469bbfed2b454cd498a22d2be074f48c0dbb9661",
-      "item": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "892dd8b94427ee01aa520848450afab3f385a32c197efed15867a85dfeb993d8",
-      "item": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "99a82e5a27f3480047d93ca4648b23a0f3e2f0f095bc349854618d4fc329cced",
-      "item": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "ad0a81997902d1527014c7da9592f7bf89add3539223eba635eecedb742f555e",
       "item": "crate::a_parked_pull_cannot_lease_after_its_generation_was_deleted",
       "lint": "clippy::disallowed_methods",
@@ -1708,62 +1666,6 @@
       "item": "crate::a_saga_vanished_collection_is_idempotent_success",
       "lint": "clippy::disallowed_methods",
       "path": "src/dst/tests/consumer_saga.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b10fab090ee0b0315a76f67b867d46895b15f9e920442373bd8ebaebfe989991",
-      "item": "crate::a_fence_waits_for_durability_before_reporting_closed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b1cb1b8270a8cab1afd7bd62bc4169ee6a4ce02b9d4f2cb7458e4a757c0ff5b7",
-      "item": "crate::a_fence_waits_for_durability_before_reporting_closed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "356e780443d66fd0bdbea40b7bba3f9fe805014ccc65352cc461bb521526ec18",
-      "item": "crate::idempotent_successes_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7d63f0eca3feb48a04dd19af61d3f840221b333b362e76c4c573f0b0f129bb94",
-      "item": "crate::idempotent_successes_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8a768dcd173a9b3dd46602e025f2a47485b64ca64748d4b6c2f29ad8e0973a26",
-      "item": "crate::idempotent_successes_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f3f6bc500fec48920d5dba8dc1b3e841a638d75a44527e18757e43b626088c6a",
-      "item": "crate::idempotent_successes_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "992f1ffa8cae9b0b703af20af620c040c38a2c8c410ee49aa01ab2861eabdd8e",
-      "item": "crate::state_dependent_conflicts_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c5dfb380dc2d60a95d0a18c7b68506d94aeaf394f8096332cf0364931b3cf9dd",
-      "item": "crate::state_dependent_conflicts_wait_for_durability",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_fences.rs"
     },
     {
       "count": 1,
@@ -6366,31 +6268,10 @@
     },
     {
       "count": 1,
-      "fingerprint": "a85153f706b5c317bf18397c421f7397b9754a9df24b166926d1122f7225fb66",
-      "item": "crate::tests::engages_on_any_bound_and_releases_only_when_all_are_clear",
-      "lint": "clippy::needless_update",
-      "path": "src/backpressure.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "0c5becf96c0a303128491a837da0d7ebe8c11429e7aeb7be3907abca567e1f47",
       "item": "crate::product_seal::SealDoc::r#final",
       "lint": "clippy::option_option",
       "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b2a463e6a33e025fad42c33c6f5103d0e0dbc0c26abb517d3c25e63c0e05e388",
-      "item": "crate::tests::message_and_lease_tokens_roundtrip_and_fence",
-      "lint": "clippy::redundant_clone",
-      "path": "src/product_cursor.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2bfdd3220a1d2319c8563ea8ad1f975f6162e2916b844573f2bf27a4f8b35cad",
-      "item": "crate::tests::two_runtimes_share_no_identity_or_timing_state",
-      "lint": "clippy::redundant_clone",
-      "path": "src/runtime.rs"
     },
     {
       "count": 1,
@@ -7196,38 +7077,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "47aaae18157c047c2fd8e4c4be89f8bbacbec6b82c07d4e5763d826e1ee06da8",
-      "item": "crate::a_receive_after_delete_in_the_same_group_is_refused",
-      "lint": "clippy::too_many_lines",
-      "metric": 145,
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c4df433c4f431dfbba3ea9ae5b498a87e4e39c3d1680e9316a3f0950cb12f5f5",
-      "item": "crate::queue_config_delete_is_group_local",
-      "lint": "clippy::too_many_lines",
-      "metric": 132,
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9cf6af3e4169c9dc86dc518cc5efb090258597d95ecf636205482aaa4eeeeab3",
-      "item": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
-      "lint": "clippy::too_many_lines",
-      "metric": 106,
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6ca1be3f5ed27718090030733fa737d6ac1af7263f62ae74aaed18aabcb142f4",
-      "item": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
-      "lint": "clippy::too_many_lines",
-      "metric": 119,
-      "path": "src/dst/tests/consumer_atomicity.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "a31e510104e3fbade1ee15c6261bc616362de426d05abc450df1067fd76293cf",
       "item": "crate::a_parked_pull_cannot_lease_after_its_generation_was_deleted",
       "lint": "clippy::too_many_lines",
@@ -7297,30 +7146,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 110,
       "path": "src/dst/tests/consumer_saga.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "08f54b3117cbc4958297857d140a2fe8098b88b59a3231e6ff192c1c362ee639",
-      "item": "crate::a_fence_waits_for_durability_before_reporting_closed",
-      "lint": "clippy::too_many_lines",
-      "metric": 133,
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4641290b9627fe347637bd7c7f05502047176dc9d5eab27a3227a751e8162f56",
-      "item": "crate::a_lower_takeover_reservation_cannot_install",
-      "lint": "clippy::too_many_lines",
-      "metric": 138,
-      "path": "src/dst/tests/durability_fences.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5cd93a213ea96de21a599bcdbf35b91a2e20a1f8b2600e6ebb0d46fb31d8f817",
-      "item": "crate::idempotent_successes_wait_for_durability",
-      "lint": "clippy::too_many_lines",
-      "metric": 104,
-      "path": "src/dst/tests/durability_fences.rs"
     },
     {
       "count": 1,
