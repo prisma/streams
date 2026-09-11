@@ -1676,27 +1676,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "13d08c4749fe9caf64eaa3b91760d53dcc2dff01e52f6cb71acb5bb54f3ad061",
-      "item": "crate::a_handoff_with_an_append_in_flight_resolves_safely",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "49125ff528dc10a92512560d504f03307333b9fed5871baf18587dce569bcb4d",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "aa92c5c0bec9fad058eae416a319a1cc7c38c25d8cac67f43ef09ceddf4fb7b9",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c46db81a65e472f1ad0a83d083ee36e6da774020a22b97c7e1c5fccc1587c979",
       "item": "crate::max_streams_is_enforced_at_create",
       "lint": "clippy::disallowed_methods",
@@ -2643,13 +2622,6 @@
     {
       "count": 1,
       "fingerprint": "2c37182cb22d080ea24dbcab995f749bdc692d610818cb41241001b317702308",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3df20f98d78d0b5d34d0de9a62faecfa29cf70bef7c44123a5bdbd2be6d7c1dc",
       "item": "crate::cut_resume_never_skips_a_durable_record",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/persistence_faults.rs"
@@ -5197,27 +5169,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "a932c8338ad4e7970aeb7c02cdc0b96cb8cf168bdaf68ed2584c39c5eceb4c96",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cec1c8e2df6e75ce0d99ee48604bf5431d30a2d4a1da96fbf2ccb638528755fa",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cf01f43edbf934aeecba1e9e8e9087c4909b4d3445eb1aadf3f3f6f44ad77726",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/persistence_faults.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "1315068f273a06efe4703faf6a527bd960801c350dee43e9eec4f44db035f562",
       "item": "crate::fork_cascade_hard_delete_releases_the_stream_slot",
       "lint": "clippy::let_underscore_must_use",
@@ -5789,13 +5740,6 @@
       "item": "crate::Workload::attempt_with_deadline",
       "lint": "clippy::match_same_arms",
       "path": "src/dst/runtime.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7958689e0e0d6907f527f64fc20a66b2e18ff0d613b3a0c93ddf124254d9f496",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::match_same_arms",
-      "path": "src/dst/tests/persistence_faults.rs"
     },
     {
       "count": 1,
@@ -6760,14 +6704,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 117,
       "path": "src/dst/tests/livefeed_history.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9ab058a63fb36348cea04345590bee7c33ad11651a05fd43a2dee0169c89d12b",
-      "item": "crate::cut_resume_never_skips_a_durable_record",
-      "lint": "clippy::too_many_lines",
-      "metric": 199,
-      "path": "src/dst/tests/persistence_faults.rs"
     },
     {
       "count": 1,

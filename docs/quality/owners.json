@@ -977,14 +977,6 @@
       "syntax": "tokio::spawn"
     },
     {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
-      "path": "src/dst/tests/runtime_retirement.rs",
-      "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
-      "syntax": "std::thread::spawn"
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::workload_generator",
@@ -1150,6 +1142,30 @@
       "owner": "crate::blast_keys",
       "path": "src/dst/tests/topology_scaling.rs",
       "reason": "Capacity load fixture owns every client task; all are stopped through the shared flag and joined before the acknowledged count is returned. Concurrent clients are required to saturate the committer.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::cut_resume_never_skips_a_durable_record",
+      "path": "src/dst/tests/persistence_faults.rs",
+      "reason": "Cut-resume fixture owns both cursor subscriber tasks and the absorb-boundary swinger; all are stopped through the shared flag and joined with their dispositions checked. Concurrent execution is required to read across the swinging boundary during the appends.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_handoff_with_an_append_in_flight_resolves_safely",
+      "path": "src/dst/tests/persistence_faults.rs",
+      "reason": "Handoff fixture owns the in-flight append task; it is joined before its outcome is reconciled with the successor's log. Concurrent execution is required to keep the append in flight across the handoff.",
       "syntax": "tokio::spawn"
     }
   ]

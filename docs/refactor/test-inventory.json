@@ -1575,7 +1575,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 8)]"
     ],
-    "function_sha256": "b64516660ab97aaf7bb24e41e16beea0f5001281e9d2871b39014f1ded5fa3b4",
+    "function_sha256": "6708f111b7104fefb8f112938090e6747df775ad57c99eddb4efabbd4d620342",
     "mechanisms": [],
     "configuration": [
       "let _l = gap_lock().lock().await; // shared failpoint schedule",
