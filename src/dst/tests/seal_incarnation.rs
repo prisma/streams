@@ -9,6 +9,10 @@ use super::fixture_storage::mem;
 /// against: a delete+recreate under the SAME key inside the
 /// validation-to-claim gap must not let the request seal the
 /// replacement.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal claim fixture; the request held before claim is released and joined before checking the recreated collection; running it inline cannot expose the validation-to-claim gap"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -165,6 +169,14 @@ async fn a_non_closing_duplicate_releases_its_own_intent() {
 /// A whose final append raced a delete+recreate (same name, same key)
 /// used to write its record into B and physically close B's segment,
 /// leaving the replacement unwritable; only the mark failed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal final-record fixture; the request held after claim is released and joined before checking the replacement contents and writeability; running it inline cannot expose the claim-to-append gap"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal final-record scenario; the held request recreation and replacement read/write assertions form one incarnation proof; hiding phases behind one-use helpers would obscure the causal sequence"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     let _serial = gap_lock().lock().await;
@@ -292,6 +304,10 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
 /// it held the collection Sealing behind a promise that could never
 /// be delivered, renewable indefinitely by the very request that can
 /// never deliver it. Both surfaces, one policy.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seal producer-epoch scenario; raw and product requests must both prove immediate release of permanently refused finals; adapter-specific assertions stay adjacent to their protocol inputs"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
     let store = mem();
