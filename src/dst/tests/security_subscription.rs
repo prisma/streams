@@ -5,7 +5,7 @@ use super::fixture_auth::{
     rig_publish_policy, rig_sse,
 };
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::http_rig_with_auth_service;
+use super::fixture_http::{http_rig_with_auth_service, install_rollup};
 use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
@@ -55,7 +55,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.install(std::sync::Arc::new(rollup));
+    install_rollup(&state, rollup);
     let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
@@ -163,6 +163,10 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
 /// bump + old credential revoked) must TERMINATE established live
 /// subscriptions — an old owner must not keep receiving records
 /// through a connection opened before the transfer.
+#[expect(
+    clippy::too_many_lines,
+    reason = "subscription transfer scenario; establishing delivery, transferring the workspace and checking termination on both sides form one causal sequence; helper phases would hide which side kept delivering"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transfer_terminates_established_subscriptions() {
     let _xr = crate::billing::billing_clock_lock().read().await;
@@ -339,6 +343,10 @@ async fn transfer_terminates_established_subscriptions() {
 /// Review V4 (t3): a live subscription terminates NO LATER than its
 /// access token's expiry — even with no appends, no feed changes, and
 /// no client activity (the nap deadline, not the generation check).
+#[expect(
+    clippy::too_many_lines,
+    reason = "subscription expiry scenario; establishing the subscription, advancing past token expiry and checking termination and billing form one causal sequence; helper phases would hide which boundary ended delivery"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscription_terminates_at_token_expiry() {
     let _xr = crate::billing::billing_clock_lock().read().await;
@@ -485,6 +493,10 @@ async fn subscription_terminates_at_token_expiry() {
 /// live subscriptions — same lease machinery, distinct cause (the
 /// review's contract names all four: transfer, suspension,
 /// revocation, expiry).
+#[expect(
+    clippy::too_many_lines,
+    reason = "subscription suspension scenario; establishing delivery, suspending the project and checking termination and billing form one causal sequence; helper phases would hide which policy change ended delivery"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn suspension_terminates_established_subscriptions() {
     let _xr = crate::billing::billing_clock_lock().read().await;

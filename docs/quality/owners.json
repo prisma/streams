@@ -265,150 +265,6 @@
       "syntax": "tokio::spawn"
     },
     {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::routing",
-      "path": "src/bin/pilot.rs",
-      "reason": "Pilot routing and HTTP forwarding are one canonical owner; the explicit binary module path keeps transport handling separate from workload orchestration.",
-      "syntax": "path = \"pilot/proxy.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/bin/pilot/proxy.rs",
-      "reason": "Pilot proxy tests use real loopback upstreams and explicit routing snapshots; compiler checks the binary test-module path.",
-      "syntax": "path = \"proxy/tests.rs\""
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::with_upstream",
-      "path": "src/bin/pilot/proxy/tests.rs",
-      "reason": "The HTTP fixture jointly drives its upstream server and client case; unwind capture signals graceful shutdown before the joined fixture returns.",
-      "syntax": "tokio::join"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::unavailable",
-      "path": "src/bin/pilot/proxy.rs",
-      "reason": "Pilot proxy has one canonical retryable-unavailable JSON body for both transport and unmarked platform responses; compiler checks serialization expansion.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::workload_generator",
-      "path": "src/bin/pilot.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "path = \"pilot/generator.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::membership",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "path = \"generator/membership.rs\""
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::GeneratorState::snapshot",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::GeneratorState::backoff",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Workload::execute",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Generator::serve",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Generator::serve",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::drain",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "path = \"generator/tests.rs\""
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::closing_interrupts_retry_backoff_and_covers_already_closed_waits",
-      "path": "src/bin/pilot/generator/tests.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::with_upstream",
-      "path": "src/bin/pilot/generator/tests.rs",
-      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
-      "syntax": "tokio::join"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::membership",
-      "path": "tests/pilot_membership.rs",
-      "reason": "The Loom test compiles the actual production membership source with instrumented synchronization primitives; the model checks terminal accounting and prohibited late admission.",
-      "syntax": "path = \"../src/bin/pilot/generator/membership.rs\""
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::Generator::launch",
-      "path": "src/bin/pilot/generator.rs",
-      "reason": "Generator is the sole worker task owner; it reserves membership before spawning and aborts then joins every remaining worker on terminal server or worker failure.",
-      "syntax": "tokio::task::JoinSet::spawn"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::stats_and_drain_routes_keep_serving_the_same_final_ledger",
-      "path": "src/bin/pilot/generator/tests.rs",
-      "reason": "The generator HTTP contract fixture jointly drives its server and client case; unwind capture signals graceful shutdown and both futures finish before the case returns.",
-      "syntax": "tokio::join"
-    },
-    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::Stats::snapshot",
@@ -937,6 +793,38 @@
       "syntax": "tokio::task::JoinSet::spawn"
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::routing",
+      "path": "src/bin/pilot.rs",
+      "reason": "Pilot routing and HTTP forwarding are one canonical owner; the explicit binary module path keeps transport handling separate from workload orchestration.",
+      "syntax": "path = \"pilot/proxy.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy tests use real loopback upstreams and explicit routing snapshots; compiler checks the binary test-module path.",
+      "syntax": "path = \"proxy/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/proxy/tests.rs",
+      "reason": "The HTTP fixture jointly drives its upstream server and client case; unwind capture signals graceful shutdown before the joined fixture returns.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::unavailable",
+      "path": "src/bin/pilot/proxy.rs",
+      "reason": "Pilot proxy has one canonical retryable-unavailable JSON body for both transport and unmarked platform responses; compiler checks serialization expansion.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
@@ -1087,6 +975,126 @@
       "path": "src/dst/tests/watch_observation.rs",
       "reason": "Admission ceiling fixture owns the long waiter handle; it is joined after the refused second waiter is observed. Concurrent execution is required to hold the project's admission slot.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "reason": "Gate lock-order fixture owns one opening and one retiring thread, each with its own runtime so it can block on the other's lock; both are joined after their completion channels report. A shared runtime could not hold the forced interleaving.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::workload_generator",
+      "path": "src/bin/pilot.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"pilot/generator.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/membership.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::GeneratorState::snapshot",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::GeneratorState::backoff",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Workload::execute",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Generator::serve",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drain",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "path = \"generator/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::closing_interrupts_retry_backoff_and_covers_already_closed_waits",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with_upstream",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator owns configuration, attempt accounting and the complete worker set; this source is compiled and exercised by admission, cancellation, HTTP and Loom tests.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::membership",
+      "path": "tests/pilot_membership.rs",
+      "reason": "The Loom test compiles the actual production membership source with instrumented synchronization primitives; the model checks terminal accounting and prohibited late admission.",
+      "syntax": "path = \"../src/bin/pilot/generator/membership.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Generator::launch",
+      "path": "src/bin/pilot/generator.rs",
+      "reason": "Generator is the sole worker task owner; it reserves membership before spawning and aborts then joins every remaining worker on terminal server or worker failure.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats_and_drain_routes_keep_serving_the_same_final_ledger",
+      "path": "src/bin/pilot/generator/tests.rs",
+      "reason": "The generator HTTP contract fixture jointly drives its server and client case; unwind capture signals graceful shutdown and both futures finish before the case returns.",
+      "syntax": "tokio::join"
     },
     {
       "category": "effect",
