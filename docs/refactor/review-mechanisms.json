@@ -23,7 +23,7 @@
         {
           "file": "src/shard/durability_frontier_tests.rs",
           "name": "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier",
-          "sha256": "0604272c1397a8acb88fed6edca90b4406ed4f2867d49589e5726f9a8c4bf6d1"
+          "sha256": "32c335eea39cdc5f69fb26848ef148cc15ff8d24332a83b8edb95652f35a54ad"
         }
       ]
     },

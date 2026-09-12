@@ -7,6 +7,10 @@ pub(super) struct ContentPlan {
     pub(super) deferred: Option<crate::shard::DeferredErr>,
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "parse_content; the parser nests the deferred-versus-immediate verdict inside each content-type and body check so a producer's duplicate decision can still be recorded; flattening it would separate the verdict from the check that produced it"
+)]
 pub(super) fn parse_content(
     usage: &crate::usage::UsageService,
     desc: &StreamDesc,

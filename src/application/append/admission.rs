@@ -2,6 +2,11 @@ use super::{AppendCode, AppendFailure, FailureClass, fail};
 use crate::registry::StreamDesc;
 use std::sync::Arc;
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_arguments,
+    reason = "admit_usage; admission takes the request's parts and its two independent flags as the handler resolved them; a request struct or an enum would restate the request"
+)]
 pub(super) fn admit_usage(
     usage: &crate::usage::UsageService,
     desc: &StreamDesc,

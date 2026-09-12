@@ -2119,6 +2119,22 @@
       "path": "src/product/usage.rs",
       "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
       "syntax": "json"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Absorber::start",
+      "path": "src/history/test_support.rs",
+      "reason": "Test-only absorber start; the DST fixtures drive the absorber through a bare task they abort themselves, so no supervisor is involved.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/test_support.rs",
+      "reason": "History test support imports its enclosing owner; the compiler resolves the parent exports and the helper only starts an absorber for fixtures.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

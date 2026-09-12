@@ -384,6 +384,11 @@ fn parse_uint(value: &str) -> Option<u64> {
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::unwrap_used,
+    reason = "product_request_hash; the hash covers the batch and close flags as the two independent facts the wire names, and the first 16 bytes of a 32-byte digest always form a 16-byte array; an enum or a fallible conversion would restate the flags and add a branch no digest reaches"
+)]
 pub(crate) fn product_request_hash(
     batch: bool,
     routing_key: &str,

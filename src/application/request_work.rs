@@ -49,6 +49,10 @@ impl Ticket {
     pub(crate) fn complete() -> Self {
         Self(None)
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Ticket::wait; the wait nests the settled verdict inside the watch loop; flattening it would separate the verdict from the change that produced it"
+    )]
     pub(crate) async fn wait(self) -> Result<(), WorkError> {
         let Some((mut result, deadline)) = self.0 else {
             return Ok(());
@@ -193,6 +197,10 @@ impl RequestWork {
     #[expect(
         clippy::unwrap_used,
         reason = "RequestWork::run; a poisoned work state may hold a half-admitted ticket; recovering it could run a request twice or never"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "RequestWork::run; the runner nests the admission of pending jobs inside the state lock of each drain; flattening it would separate the admission from the state it reads"
     )]
     async fn run(&self, cancel: crate::tasks::Cancellation) {
         let mut active = FuturesUnordered::new();

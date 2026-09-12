@@ -12,6 +12,10 @@ pub(super) struct ClosePlan {
 }
 
 /// Authenticate a final's execution token and renew only its own persisted claim.
+#[expect(
+    clippy::too_many_lines,
+    reason = "prepare_close; closing authenticates the token, renews the claim and prepares the final in one sequence whose refusal depends on which step failed; splitting it would separate the steps from the refusal they order"
+)]
 pub(super) async fn prepare_close(
     state: &AppendService,
     desc: &StreamDesc,
@@ -130,6 +134,10 @@ pub(super) async fn prepare_close(
     })
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "closed_tail_failure; a poisoned stream state may hold a half-advanced durable frontier; recovering it could report a closed length never made durable"
+)]
 async fn closed_tail_failure(state: &AppendService, desc: &StreamDesc) -> AppendFailure {
     let seg = desc.resolve_segment("");
     let engine = match state
@@ -212,6 +220,10 @@ pub(super) async fn install_intent(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete; completion takes the state, descriptor, key, claim, outcome and reply parts as the close resolved them; a request struct would exist only for this signature"
+)]
 pub(super) async fn complete(
     state: &AppendService,
     desc: &StreamDesc,
