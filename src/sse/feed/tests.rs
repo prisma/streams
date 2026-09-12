@@ -910,3 +910,60 @@ impl Drop for PermitReleaseGuard {
         crate::failpoints::release(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
     }
 }
+
+/// The retention entry mirrors its exact reservation into the ONE bound
+/// admission entry: nothing before a bind, every add and sub after it,
+/// and a second bind never redirects the mirror.
+#[test]
+fn a_retention_entry_mirrors_its_reservation_into_its_bound_admission() {
+    let registry = crate::quota::QuotaRegistry::default();
+    let admission = |name: &str| {
+        let project = crate::tenant::ProjectId::new(name).unwrap();
+        let _ = registry
+            .admit(
+                &project,
+                &crate::project_policy::ProjectQuotas::default(),
+                1_000,
+            )
+            .unwrap();
+        registry.pressure_handle(&project).unwrap()
+    };
+    let first = admission("proj-mirror-first");
+    let second = admission("proj-mirror-second");
+    let entry = ProjectRetention {
+        reserved: AtomicU64::new(0),
+        cap_hits: AtomicU64::new(0),
+        admission: std::sync::OnceLock::new(),
+    };
+    entry.mirror_add(10);
+    assert_eq!(
+        first.estimated_pressure_bytes(),
+        0,
+        "nothing mirrors before a bind"
+    );
+    entry.bind_admission(first.clone());
+    entry.mirror_add(100);
+    assert_eq!(
+        first.estimated_pressure_bytes(),
+        100,
+        "an add mirrors exactly"
+    );
+    entry.mirror_sub(40);
+    assert_eq!(
+        first.estimated_pressure_bytes(),
+        60,
+        "a sub mirrors exactly"
+    );
+    entry.bind_admission(second.clone());
+    entry.mirror_add(1);
+    assert_eq!(
+        first.estimated_pressure_bytes(),
+        61,
+        "the first bind stays canonical"
+    );
+    assert_eq!(
+        second.estimated_pressure_bytes(),
+        0,
+        "a second bind is ignored"
+    );
+}
