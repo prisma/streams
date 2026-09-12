@@ -11,23 +11,17 @@
 //! out of the live set within 10 s — exactly the semantics the ring wants,
 //! since a sleeping instance serves nothing. The router waking instance N+1
 //! re-adds it to the live set on its next heartbeat.
-
+use crate::{http::AppState, shard::now_ms};
 use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
+use std::time::{Duration, Instant};
 mod outbox;
 mod planning;
-/// PR 6.1.1-C: the coordination store lives in its own module — this
-/// file is already the fleet loop's home and must not also be the
-/// storage layer.
+/// PR 6.1.1-C: the coordination store lives in its own module; this file is
+/// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
 pub(crate) use repository::{FleetDocument, FleetRepository};
-use std::time::{Duration, Instant};
-
-use crate::http::AppState;
-use crate::shard::now_ms;
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct Heartbeat {
     pub instance: String,
@@ -94,7 +88,6 @@ pub(crate) struct Heartbeat {
     #[serde(default)]
     pub url: String,
 }
-
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
@@ -112,7 +105,6 @@ pub(crate) struct OverrideEntry {
     pub to: String,
     pub ms: i64,
 }
-
 /// Rebalance target: the coolest peer that is itself HEALTHY. Under
 /// fleet-wide backlog every instance breaches the lag threshold, and
 /// unguarded moves just hand the backlog around (ladder pass 3: 7 moves
