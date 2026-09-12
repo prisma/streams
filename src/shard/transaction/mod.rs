@@ -43,6 +43,10 @@ pub(super) struct CommitTransaction<'a> {
     group_has_absorbed: bool,
 }
 impl<'a> CommitTransaction<'a> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained; checked conversions would only restate those bounds"
+    )]
     pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>, cfg: &'a ShardConfig) {
         let ops = Self::expand(engine, ops);
         if engine.is_closed() {
@@ -99,7 +103,11 @@ impl<'a> CommitTransaction<'a> {
         }
         transaction.finish().await;
     }
-    fn reject_op(op: CommitOp, error: AppendErr) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::reject_op; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
+    pub(super) fn reject_op(op: CommitOp, error: AppendErr) {
         match op {
             CommitOp::Append(req) => {
                 let _ = req.resp.send(Err(error));
@@ -119,6 +127,10 @@ impl<'a> CommitTransaction<'a> {
             _ => {}
         }
     }
+    #[expect(
+        clippy::match_same_arms,
+        reason = "CommitTransaction::stage; the hash arms stay separate so the mutation harness never selects the whole stage as one mutant, whose blank form hangs every waiting reply instead of failing a test; folding the arms would put the dispatch under a mutant the harness cannot bound"
+    )]
     async fn stage(&mut self, op: CommitOp) {
         let hash = match &op {
             CommitOp::Append(r) => r.hash,

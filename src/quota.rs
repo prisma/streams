@@ -518,6 +518,10 @@ impl QuotaRegistry {
         clippy::unwrap_used,
         reason = "QuotaRegistry::admit; a poisoned entry or project map may be partially updated; recovery could mint fresh request credit or orphan charged state"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "QuotaRegistry::admit; admission nests the idle eviction inside the untracked-project branch of the tracker lookup; flattening it would separate the eviction from the refusal it forestalls"
+    )]
     pub(crate) fn admit(
         &self,
         project: &ProjectId,
@@ -623,7 +627,11 @@ impl QuotaRegistry {
         clippy::unwrap_used,
         reason = "QuotaRegistry::admit_append; either poisoned bucket or its project map may contain an incomplete charge; recovery could admit beyond a limit or charge only half a batch"
     )]
-    pub fn admit_append(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "QuotaRegistry::admit_append; append admission takes the project, its quotas, the payload size and the clock parts separately as the request resolved them; a request struct would exist only for this signature"
+    )]
+    pub(crate) fn admit_append(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,

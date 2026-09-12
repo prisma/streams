@@ -384,6 +384,10 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
 /// Round-4 blocker 2 (red): TWO shared subscribers, one swap — both
 /// receive the successor record exactly once, and both head cursors
 /// decode to the successor's segment-local position.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "livefeed_split_shared_subscribers_swap_once_deliver_twice; the fixture nests the frame rendering inside the read of each split child inside the subscriber check; flattening it would separate the rendering from the child it renders"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
     let store = mem();

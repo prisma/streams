@@ -116,6 +116,10 @@ impl AuditJournal {
 /// Observe a product-surface response on its way out. Enforce-mode
 /// denials (a `DenialTag` extension) journal; everything else is a
 /// no-op. Never blocks and never alters the response.
+#[expect(
+    clippy::unwrap_used,
+    reason = "observe_denial; a poisoned audit queue may hold a half-pushed or half-drained event; recovering it could publish or drop an event twice"
+)]
 pub(crate) fn observe_denial(
     state: &crate::http::AppState,
     route: &str,
@@ -171,6 +175,14 @@ struct PendingAudit<'a> {
     body: Vec<u8>,
 }
 impl<'a> PendingAudit<'a> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PendingAudit::take; a poisoned audit queue may hold a half-pushed or half-drained event; recovering it could publish or drop an event twice"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "PendingAudit::take; an oversized selection is only produced from a first queued event that overflowed the budget, so the queue holds it; a fallible pop would add a branch no oversized selection reaches"
+    )]
     fn take(
         queue: &'a Mutex<VecDeque<AuditEvent>>,
         dropped: &'a AtomicU64,
@@ -210,6 +222,10 @@ impl<'a> PendingAudit<'a> {
     }
 }
 impl Drop for PendingAudit<'_> {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PendingAudit::drop; a poisoned audit queue may hold a half-pushed or half-drained event; recovering it could publish or drop an event twice"
+    )]
     fn drop(&mut self) {
         if self.events.is_empty() {
             return;

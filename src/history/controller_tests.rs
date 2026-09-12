@@ -4,6 +4,14 @@ use crate::shard::{AppendFinish, AppendReq, ShardConfig};
 use bytes::Bytes;
 use std::sync::atomic::Ordering;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "active_absorber_cancel; the fixture stages the engine, the held store, the absorber and its cancellation in the order the scenario requires; splitting it would separate the stages from the cancellation they set up"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "active_absorber_cancel; the fixture closes the database and partition on the way out; a failed close leaves nothing the assertions depend on"
+)]
 async fn active_absorber_cancel(hold_store: bool) {
     let shard_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let data_store = FaultStore::uniform(

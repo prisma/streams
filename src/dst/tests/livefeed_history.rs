@@ -78,6 +78,10 @@ async fn fork_materialized_partial_respects_the_record_ceiling() {
     clippy::too_many_lines,
     reason = "remote lineage scenario; two instances, the child's owner and the whole-lineage stream form one causal sequence; helper phases would hide which owner served the sealed predecessor"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "livefeed_remote_sealed_predecessor_streams_through_owner; the fixture nests the per-prefix owner choice inside the override loop of its two-instance layout; flattening it would separate the choice from the prefix it assigns"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     let store = mem();
@@ -204,9 +208,7 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
         0,
         "the feed tears down at zero"
     );
-    state_b
-        .peer
-        .set_peer("inst-a", &"http://127.0.0.1:9".to_string());
+    state_b.peer.set_peer("inst-a", "http://127.0.0.1:9");
     let mut down = lf_connect(addr_b, "xown", "?cursor=beginning").await;
     let (held, eof3) = hub_sse_collect(&mut down, 2, |_| false).await;
     assert!(!eof3, "a peer outage is a stall, not a disconnect:\n{held}");

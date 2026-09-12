@@ -37,6 +37,10 @@ async fn sse_send_disconnects_a_stalled_subscriber() {
     clippy::too_many_lines,
     reason = "lineage delivery scenario; subscribing from offset zero, splitting and receiving every pre-split and post-split record form one causal sequence; helper phases would hide which record the subscriber skipped"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "sse_follows_lineage_across_split; the fixture nests the line scan inside the chunk scan of each read; flattening it would separate the control frames from the chunk that carries them"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sse_follows_lineage_across_split() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -167,6 +171,10 @@ async fn sse_follows_lineage_across_split() {
 #[expect(
     clippy::too_many_lines,
     reason = "signed control scenario; the product control frames, their signed key cursors and the resumed subscription form one causal sequence; helper phases would hide which frame carried a raw cursor"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "product_sse_controls_carry_signed_cursors; the fixture nests the line scan inside the chunk scan of each read; flattening it would separate the control frames from the chunk that carries them"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_sse_controls_carry_signed_cursors() {

@@ -1,5 +1,17 @@
 use super::*;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "CommitTransaction::receive; the receive walks the cursor once, deciding acked, in-flight, poisoned and blocked offsets in one pass; splitting it would separate the verdicts from the cursor they advance"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "CommitTransaction::receive; the queue state was loaded before dispatch; a second fallible read would add a branch no dispatched op reaches"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::receive; the walk nests each offset's ack, lease and block verdicts inside the cursor loop; flattening them would separate the verdicts from the offset they skip"
+    )]
     pub(super) fn receive(
         &mut self,
         local: &mut StreamOverlay,

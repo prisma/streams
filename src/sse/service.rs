@@ -54,7 +54,7 @@ impl LiveFeedService {
     pub(crate) fn subscribe(
         &self,
         key: super::feed::FeedKey,
-        src: Arc<dyn super::feed::FeedSourceRead>,
+        src: &Arc<dyn super::feed::FeedSourceRead>,
         project: crate::tenant::ProjectId,
         bind: impl FnOnce(&Arc<super::feed::LiveFeed>),
     ) -> Result<super::registry::FeedSubscription, super::registry::CapacityRejected> {
@@ -69,7 +69,7 @@ impl LiveFeedService {
                 bind(&feed);
                 feed
             },
-            Some(&src),
+            Some(src),
         )
     }
 

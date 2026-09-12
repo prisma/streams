@@ -47,13 +47,13 @@ pub(crate) fn encode_prefix<'a, T: Serialize + 'a>(
             overflow: false,
         };
         if let Err(error) = serde_json::to_writer(&mut row, event) {
-            if row.overflow {
-                if count == 0 {
-                    return Ok(Selection::Oversized);
-                }
-                break;
+            if !row.overflow {
+                return Err(error.to_string());
             }
-            return Err(error.to_string());
+            if count == 0 {
+                return Ok(Selection::Oversized);
+            }
+            break;
         }
         let with_array_end = body
             .len()

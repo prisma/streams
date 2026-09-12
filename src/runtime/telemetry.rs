@@ -74,6 +74,10 @@ mod tests {
         config
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "r10_telemetry_cache_progress_and_database_lifetimes_are_runtime_owned; the fixture nests the release wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_telemetry_cache_progress_and_database_lifetimes_are_runtime_owned() {
         let clock = Arc::new(ManualClock::at(1000));

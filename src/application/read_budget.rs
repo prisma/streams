@@ -44,28 +44,86 @@ impl PageBudget {
     pub(crate) fn metadata_fits(&self, key: &str) -> bool {
         key.len() <= u16::MAX as usize
             && self.records < MAX_PAGE_RECORDS
-            && self.metadata + metadata_charge(key) <= MAX_PAGE_METADATA
+            && self.metadata.saturating_add(metadata_charge(key)) <= MAX_PAGE_METADATA
     }
     pub(crate) fn admit(&mut self, plaintext: usize, key: &str) -> bool {
         if self.full() || plaintext > self.decode_limit() || !self.metadata_fits(key) {
             return false;
         }
-        self.plaintext += plaintext;
-        self.metadata += metadata_charge(key);
-        self.records += 1;
+        self.plaintext = self.plaintext.saturating_add(plaintext);
+        self.metadata = self.metadata.saturating_add(metadata_charge(key));
+        self.records = self.records.saturating_add(1);
         true
     }
     pub(crate) fn full(&self) -> bool {
         self.remaining() == 0
             || self.records == MAX_PAGE_RECORDS
-            || self.metadata + 128 > MAX_PAGE_METADATA
+            || self.metadata.saturating_add(128) > MAX_PAGE_METADATA
     }
 }
 fn metadata_charge(key: &str) -> usize {
     // JSON can escape each key byte as six bytes. 128 covers the offset,
     // object fields/punctuation and base64 padding for each record.
-    key.len() * 6 + 128
+    key.len().saturating_mul(6).saturating_add(128)
 }
 pub(crate) fn max_wire_bytes() -> usize {
-    MAX_RECORD_PLAINTEXT.div_ceil(3) * 4 + MAX_PAGE_METADATA + 2048
+    MAX_RECORD_PLAINTEXT
+        .div_ceil(3)
+        .saturating_mul(4)
+        .saturating_add(MAX_PAGE_METADATA)
+        .saturating_add(2048)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PAGE_METADATA, MAX_PAGE_RECORDS, PageBudget};
+
+    #[test]
+    fn a_budget_is_full_once_its_bytes_are_spent() {
+        let mut budget = PageBudget::new(100);
+        assert!(!budget.full(), "a fresh budget has room");
+        assert!(
+            budget.admit(100, "k"),
+            "the first record may spend the whole page"
+        );
+        assert!(budget.full(), "no bytes remain");
+        assert!(!budget.admit(1, "k"), "a full budget admits nothing more");
+        assert_eq!(budget.remaining(), 0);
+    }
+
+    #[test]
+    fn a_budget_is_full_once_the_record_cap_is_reached() {
+        let mut budget = PageBudget::new(super::MAX_PAGE_PLAINTEXT);
+        for _ in 0..MAX_PAGE_RECORDS {
+            assert!(!budget.full(), "the cap is reached only by the last admit");
+            assert!(budget.admit(1, ""));
+        }
+        assert!(budget.full(), "the record cap closes the page");
+        assert!(!budget.metadata_fits(""), "no further record fits");
+    }
+
+    #[test]
+    fn a_budget_is_full_once_its_metadata_allowance_is_spent() {
+        // Four keys of this length charge the allowance minus one bare
+        // record's 128-byte overhead (six escaped bytes per key byte plus
+        // 128 per record), so the page then sits exactly on the boundary.
+        let key = "k".repeat(((MAX_PAGE_METADATA - 128) / 4 - 128) / 6);
+        let mut budget = PageBudget::new(super::MAX_PAGE_PLAINTEXT);
+        for _ in 0..4 {
+            assert!(!budget.full(), "keyed records leave the page open");
+            assert!(budget.metadata_fits(&key));
+            assert!(budget.admit(1, &key));
+        }
+        assert!(
+            !budget.full(),
+            "a page with room for exactly one bare record is not full"
+        );
+        assert!(budget.metadata_fits(""), "that bare record still fits");
+        assert!(budget.admit(1, ""));
+        assert!(budget.full(), "the metadata allowance closes the page");
+        assert!(
+            !budget.metadata_fits(""),
+            "even a bare record no longer fits"
+        );
+    }
 }

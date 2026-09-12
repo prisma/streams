@@ -14,6 +14,10 @@ pub(super) struct EngineTasks {
     failure: Mutex<Option<&'static str>>,
 }
 impl EngineTasks {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "EngineTasks::required; the supervisor rejects a spawn only while it is stopping, when no required role is owed; a rejected role has nothing left to run"
+    )]
     pub(super) fn required(
         &self,
         engine: &Arc<ShardEngine>,
@@ -32,9 +36,17 @@ impl EngineTasks {
                 TaskResult::Done
             });
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "EngineTasks::failure; a poisoned failure slot may hold a half-recorded role; recovering it could report a role that never failed or hide one that did"
+    )]
     pub(super) fn failure(&self) -> Option<&'static str> {
         *self.failure.lock().unwrap()
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "EngineTasks::failed; a poisoned failure slot may hold a half-recorded role; recovering it could report a role that never failed or hide one that did"
+    )]
     pub(super) fn failed(&self, role: &'static str) {
         self.failure.lock().unwrap().get_or_insert(role);
     }

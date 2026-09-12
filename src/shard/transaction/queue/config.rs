@@ -20,6 +20,10 @@ impl CommitTransaction<'_> {
             })
             .transpose()
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CommitTransaction::config_put; a config put takes the overlay, stream, consumer, config and reply as the queue dispatch resolved them; a request struct would exist only for this signature"
+    )]
     pub(super) async fn config_put(
         &mut self,
         local: &mut StreamOverlay,
@@ -101,6 +105,10 @@ impl CommitTransaction<'_> {
             }),
         ));
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CommitTransaction::config_lifecycle; a lifecycle step takes the overlay, stream, consumer, expected generation, deletion flag and reply as the queue dispatch resolved them; a request struct would exist only for this signature"
+    )]
     pub(super) async fn config_lifecycle(
         &mut self,
         local: &mut StreamOverlay,

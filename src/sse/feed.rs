@@ -287,22 +287,6 @@ pub(crate) struct ProjectRetention {
     admission: std::sync::OnceLock<Arc<crate::quota::ProjectAdmission>>,
 }
 
-impl ProjectRetention {
-    pub(crate) fn bind_admission(&self, adm: Arc<crate::quota::ProjectAdmission>) {
-        let _ = self.admission.set(adm);
-    }
-    fn mirror_add(&self, bytes: u64) {
-        if let Some(a) = self.admission.get() {
-            a.retained_sse_add(bytes);
-        }
-    }
-    fn mirror_sub(&self, bytes: u64) {
-        if let Some(a) = self.admission.get() {
-            a.retained_sse_sub(bytes);
-        }
-    }
-}
-
 /// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
 /// QUARTER of the cell ceiling. Strict form for release validation
 /// (an unparseable value must fail boot, round-10e).
@@ -332,6 +316,10 @@ pub(crate) enum ReserveOutcome {
     GlobalOver,
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "FeedMemoryBudget; a poisoned project table may hold a half-charged retention entry; recovering it could exceed or leak the feed memory budget"
+)]
 impl FeedMemoryBudget {
     pub(crate) fn from_config(cfg: &crate::config::SseConfig) -> Self {
         let max = crate::sse::budget::feed_total_cap(cfg);
@@ -354,27 +342,6 @@ impl FeedMemoryBudget {
             project_cap: AtomicU64::new(project_cap),
             by_project: Mutex::new(std::collections::HashMap::new()),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_for_test(max: u64) -> Self {
-        Self {
-            reserved: AtomicU64::new(0),
-            max: AtomicU64::new(max),
-            // Unit rigs are single-project: the project backstop
-            // equals the ceiling unless a test narrows it.
-            project_cap: AtomicU64::new(max),
-            by_project: Mutex::new(std::collections::HashMap::new()),
-        }
-    }
-
-    /// Test-only: shrink the cell ceiling so exhaustion scenarios stay
-    /// cheap (per-rig — every AppState builds its own budget). The
-    /// project backstop follows at the default quarter.
-    #[cfg(test)]
-    pub(crate) fn set_max_for_test(&self, max: u64) {
-        self.max.store(max, Ordering::SeqCst);
-        self.project_cap.store(max / 4, Ordering::SeqCst);
     }
 
     /// The per-project retention entry, shared by every feed of the
@@ -436,34 +403,6 @@ impl FeedMemoryBudget {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn project_entries_for_test(&self) -> usize {
-        self.by_project.lock().unwrap().len()
-    }
-
-    /// Test-only exhaustion: reserve everything that remains, so the
-    /// next publication takes the uncached path. Returns the amount to
-    /// hand back via `release_for_test`.
-    #[cfg(test)]
-    pub(crate) fn exhaust_for_test(&self) -> u64 {
-        loop {
-            let cur = self.reserved.load(Ordering::SeqCst);
-            let take = self.max.load(Ordering::SeqCst).saturating_sub(cur);
-            if self
-                .reserved
-                .compare_exchange(cur, cur + take, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                return take;
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn release_for_test(&self, n: u64) {
-        self.reserved.fetch_sub(n, Ordering::SeqCst);
-    }
-
     /// Zero budget = singleton-only posture (docs/LIVE-FEED.md): no
     /// feed may admit a second subscriber.
     pub(crate) fn admits_shared(&self) -> bool {
@@ -478,6 +417,10 @@ impl FeedMemoryBudget {
     /// ALREADY reflects both sides: the caller must NOT release the
     /// replaced batches again. Checked arithmetic: any accounting
     /// drift fails CLOSED rather than wrapping.
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "FeedMemoryBudget::try_replace; the replacement nests the cell and project ceilings inside the compare-and-swap loop of the reservation; flattening it would separate the ceilings from the reservation they bound"
+    )]
     fn try_replace(&self, proj: &ProjectRetention, released: usize, add: usize) -> ReserveOutcome {
         let (rel, add) = (released as u64, add as u64);
         // PROJECT leg first (round-10 isolation): the offending
@@ -538,6 +481,10 @@ impl FeedMemoryBudget {
         }
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "FeedMemoryBudget::release; the release nests the underflow guard inside the compare-and-swap loop; flattening it would separate the guard from the release it protects"
+    )]
     fn release(&self, proj: &ProjectRetention, charge: usize) {
         let charge = charge as u64;
         proj.mirror_sub(charge);
@@ -654,12 +601,20 @@ impl Drop for DriverPermit<'_> {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "LiveFeed; a poisoned feed state or source cell may hold a partially published frontier, subscriber accounting or swapped source; recovering it could deliver records twice, skip them or serve a retired source"
+)]
 impl LiveFeed {
     /// Round-13: bind this feed to the project's admission entry —
     /// charges the static feed weight exactly once (guard held by the
     /// feed; released at feed drop) and wires the retention mirror.
     /// Called inside the registry's CREATION closure only, so joiners
     /// never double-charge.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "LiveFeed::bind_pressure; the pressure entry is bound once per feed and a second bind names the same entry; a handled result would only restate the first bind"
+    )]
     pub(crate) fn bind_pressure(&self, adm: Arc<crate::quota::ProjectAdmission>) {
         self.project_reserved.bind_admission(adm.clone());
         let _ = self
@@ -746,6 +701,10 @@ impl LiveFeed {
     /// subscribe-time reconciliation may race to install the same
     /// extension, and the loser must be an idempotent no-op — never a
     /// second generation bump.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "LiveFeed::install_source; the source watch fails to send only when every session is gone; a handled result would only restate that nobody waits"
+    )]
     fn install_source(&self, next: Arc<dyn FeedSourceRead>) -> InstallOutcome {
         let mut w = self.src.write().unwrap();
         let old_sig = w.source.span_sig();
@@ -860,6 +819,11 @@ impl LiveFeed {
 
     /// Consume retained records at/after `cursor`. Lagged = below floor
     /// → disconnect-and-resume per the lag contract.
+    #[expect(
+        clippy::excessive_nesting,
+        clippy::expect_used,
+        reason = "LiveFeed::take_visible; the take nests the batch cut inside the visibility walk of the retained ring, whose front was checked before it is popped; flattening it or a fallible pop would separate the cut from the batch it serves"
+    )]
     pub(crate) fn take_visible(&self, cursor: u64) -> Take {
         let mut st = self.st.lock().unwrap();
         if cursor < st.floor {
@@ -917,6 +881,11 @@ impl LiveFeed {
     /// task re-drives at 250 ms until the transition resolves, the
     /// subscribers leave, or the feed tears down. Resolution bumps
     /// the version, waking every parked session.
+    #[expect(
+        clippy::disallowed_methods,
+        clippy::excessive_nesting,
+        reason = "LiveFeed::schedule_transition_retry; the retry is a bare task the feed owns and cancels through its own flag, nesting the abandoned and superseded verdicts inside the wake it awaits; a supervised task would tie a feed-scoped retry to the runtime supervisor and flattening the verdicts would separate them from the wake"
+    )]
     pub(crate) fn schedule_transition_retry(self: &Arc<Self>) {
         if self
             .retry_scheduled
@@ -988,6 +957,11 @@ impl LiveFeed {
         Some(DriverPermit(&self.driving))
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        clippy::let_underscore_must_use,
+        reason = "LiveFeed::drive_under_permit; the drive nests the install and incompatibility verdicts inside the transition arm of the permit-held loop and re-publishes through a watch whose send fails only when every session is gone; flattening it or a handled send would separate the verdicts from the permit that serialises them"
+    )]
     async fn drive_under_permit(&self) -> DriveOutcome {
         let mut swap_attempts = 0u8;
         // Lifecycle outcomes are REPEATABLE (every parked session must
@@ -1088,6 +1062,15 @@ impl LiveFeed {
         outcome
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::let_underscore_must_use,
+        clippy::cast_possible_truncation,
+        clippy::excessive_nesting,
+        clippy::wildcard_enum_match_arm,
+        clippy::expect_used,
+        reason = "LiveFeed::read_and_publish; one read publishes its batch, charges retention, evicts within the ring budget from a pre-counted eviction set and answers every other reserve outcome alike, with payload lengths that fit u32 by the record ceiling; splitting it, handling the watch send, checking the length, flattening the eviction, naming every outcome or a fallible pop would separate the publication from the budget it must honour"
+    )]
     async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
         let read = tokio::select! {
             r = src.read_batch(head, self.read_cap) => r,
@@ -1269,6 +1252,10 @@ fn clear_ring(
 }
 
 impl Drop for LiveFeed {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "LiveFeed::drop; a poisoned feed state at drop may hold a half-charged retention; recovering it could release bytes the budget never charged"
+    )]
     fn drop(&mut self) {
         // Release the ACTUAL retained bytes back to the process budget
         // (model B); the feed itself is being discarded.
@@ -1361,5 +1348,8 @@ pub(crate) enum DriveOutcome {
 // no-progress shapes that the HTTP-level suite cannot reach
 // deterministically.
 // ==================================================================
+mod retention;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 pub(crate) mod tests;

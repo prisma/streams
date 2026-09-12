@@ -77,6 +77,10 @@ impl FeedRegistry {
 
     /// Atomic create-or-join + captured head/version, all under one
     /// lock hold.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "FeedRegistry::subscribe; a poisoned feed map may hold a half-inserted or half-removed feed; recovering it could serve a feed a subscriber already released"
+    )]
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         key: FeedKey,
@@ -141,6 +145,10 @@ impl FeedRegistry {
     /// subscriber's departure (follow-up review finding 4). Solo drives
     /// stop retaining new batches; the ring and its budget allowance
     /// are released when the feed is dropped at zero subscribers.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "FeedRegistry::unsubscribe; a poisoned feed map may hold a half-inserted or half-removed feed; recovering it could serve a feed a subscriber already released"
+    )]
     fn unsubscribe(&self, key: &FeedKey, expected: &Arc<LiveFeed>) {
         let mut map = self.map.lock().unwrap();
         if !map.get(key).is_some_and(|f| Arc::ptr_eq(f, expected)) {
@@ -166,6 +174,10 @@ impl FeedRegistry {
     /// evicted the engine from the serving map, and the woken-early
     /// session re-parked on the stale map with nothing left to wake
     /// it (the certification fleet's B2 leg, CI-timing variant).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "FeedRegistry::wake_all_sessions; a poisoned feed map may hold a half-inserted or half-removed feed; recovering it could serve a feed a subscriber already released"
+    )]
     pub(crate) fn wake_all_sessions(&self) {
         let feeds: Vec<Arc<LiveFeed>> = self.map.lock().unwrap().values().cloned().collect();
         for f in feeds {
@@ -174,6 +186,10 @@ impl FeedRegistry {
     }
 
     /// Live feed count (observability: /v1/debug/load).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "FeedRegistry::len; a poisoned feed map may hold a half-inserted or half-removed feed; recovering it could serve a feed a subscriber already released"
+    )]
     pub(crate) fn len(&self) -> usize {
         self.map.lock().unwrap().len()
     }

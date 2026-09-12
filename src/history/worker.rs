@@ -303,6 +303,10 @@ impl Absorber {
         }
         v2_lane
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Absorber::gather_due; the outcome handling nests the per-stream bookkeeping inside the advanced, partial, no-work and failed arms of one gather; flattening it would separate the bookkeeping from the outcome that decides it"
+    )]
     async fn gather_due(
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,

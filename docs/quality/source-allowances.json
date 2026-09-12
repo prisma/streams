@@ -1557,62 +1557,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::dlq_and_settle",
-      "path": "src/application/consumer/delivery.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::ReadPlan < 'a >::segment",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::TEST_ASSERT_KEYED_DENSE",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_merged",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read_stitched",
-      "path": "src/application/read.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
-      "path": "src/dst/tests/runtime_sweep.rs",
-      "syntax": "allow (non_snake_case)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::TraceState::event",
-      "path": "src/dst/trace_store.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::read",
-      "path": "src/history/canonical_span.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::AppState::engine_for",
       "path": "src/http.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
@@ -1623,27 +1567,6 @@
       "owner": "crate::AppState::engine_for_quiet",
       "path": "src/http.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::ReadParams::sig",
-      "path": "src/http.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::raise_nofile",
-      "path": "src/http.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::sse_response",
-      "path": "src/http.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
       "category": "exception",
@@ -1728,34 +1651,6 @@
       "owner": "crate::verify_internal_target",
       "path": "src/product.rs",
       "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/project_policy.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::serve",
-      "path": "src/sse/session.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::LineageSource::sealed_span_page",
-      "path": "src/sse/source.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::LineageSpan::identity",
-      "path": "src/sse/source.rs",
-      "syntax": "allow (dead_code)"
     },
     {
       "category": "global",
@@ -1893,13 +1788,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::BILLING_CLOCK_OVERRIDE",
-      "path": "src/billing.rs",
-      "syntax": "std :: sync :: atomic :: AtomicI64"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::SEGMENT_IDENTITY_DRIFT",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"
@@ -1924,13 +1812,6 @@
       "owner": "crate::WALK_DEFERRED",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::billing_clock_lock::L",
-      "path": "src/billing.rs",
-      "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
     },
     {
       "category": "global",
@@ -1987,13 +1868,6 @@
       "owner": "crate::gate::N",
       "path": "src/failpoints.rs",
       "syntax": "std :: sync :: OnceLock < tokio :: sync :: Notify >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::reg::M",
-      "path": "src/failpoints.rs",
-      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < (Fp , String) , FpState > > >"
     },
     {
       "category": "global",
@@ -2246,13 +2120,6 @@
       "owner": "crate::billing_read_faults::FAULTS",
       "path": "src/shard.rs",
       "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , () > > >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::dirty_scan_faults::M",
-      "path": "src/shard.rs",
-      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
     },
     {
       "category": "global",
@@ -3264,13 +3131,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::product_usage",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::product_watch_wait",
       "path": "src/product.rs",
@@ -3280,13 +3140,6 @@
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::product_watches_list",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::project_usage",
       "path": "src/product.rs",
       "syntax": "serde_json::json"
     },
@@ -3777,13 +3630,6 @@
       "category": "unresolved-glob",
       "count": 1,
       "owner": "crate::tests",
-      "path": "src/fleet.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
       "path": "src/fleet/outbox.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
@@ -3862,13 +3708,6 @@
       "count": 1,
       "owner": "crate",
       "path": "src/history/postings_validation_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/http.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -4154,13 +3993,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/sse/session.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate",
       "path": "src/sse/source/tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -4184,13 +4016,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/telemetry_batch.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/tenant.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

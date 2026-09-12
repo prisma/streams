@@ -285,6 +285,10 @@ impl LeaseWatch {
 
     /// Nap until the next mandatory re-check, capped so a far-future
     /// deadline does not hold a giant timer.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "LeaseWatch::nap; the seconds until the deadline are clamped to 1..=3600 before the cast; a checked conversion would only restate the clamp"
+    )]
     pub(crate) fn nap(&self) -> std::time::Duration {
         if matches!(self.lease, SseLease::None) {
             return std::time::Duration::from_secs(3600);
@@ -342,6 +346,10 @@ impl GatedSseBody {
     /// subscribed BEFORE that check runs, so a publication landing in
     /// between is still observed by THIS body on its first poll — no
     /// missed wakeup between "proved" and "parked".
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "GatedSseBody::new; the body is assembled from the state, the frame receiver, the descriptor, the slot, the pre-validated watch and the generation receiver as the handler proved them; a builder would restate the proof order"
+    )]
     pub(crate) fn new(
         state: Arc<AppState>,
         rx: tokio::sync::mpsc::Receiver<SseChunk>,
@@ -371,6 +379,25 @@ impl GatedSseBody {
 
 impl futures_util::Stream for GatedSseBody {
     type Item = Result<Bytes, std::io::Error>;
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "GatedSseBody::poll_next; the poll nests the generation re-arm inside its loop and the revocation check inside each timer arm; flattening them would separate each wake from the arm that produced it"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "GatedSseBody::poll_next; the changed and poll results are only re-registrations of futures the body already owns; handled results would only restate the registration"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "GatedSseBody::poll_next; the changed future was armed just above when absent; a fallible read would add a branch no poll reaches"
+    )]
+    #[cfg_attr(
+        test,
+        expect(
+            clippy::disallowed_methods,
+            reason = "GatedSseBody::poll_next; the parked poll is released by a DST failpoint through a bare task the test owns; a supervised task would tie the body to a supervisor the test never builds"
+        )
+    )]
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

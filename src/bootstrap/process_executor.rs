@@ -8,6 +8,10 @@ struct StorageExecutor {
 }
 
 impl StorageExecutor {
+    #[expect(
+        clippy::expect_used,
+        reason = "StorageExecutor::new; building a multi-thread runtime fails only when the OS refuses threads at boot, before anything can run; a fallible constructor would add a branch boot cannot take"
+    )]
     fn new(threads: usize) -> Self {
         Self {
             threads,

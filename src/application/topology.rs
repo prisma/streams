@@ -410,6 +410,14 @@ pub(crate) async fn resume_fenced(
     resume_incarnation(st, sref, Some(epoch)).await
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "resume_incarnation; the segment map was checked present before the split resumes; a second fallible read would add a branch no checked topology reaches"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "resume_incarnation; the route salt loop nests the prefix comparison inside the resumed split's mutation closure; flattening it would separate the candidate route from the topology it must differ from"
+)]
 async fn resume_incarnation(
     st: &TopologyService,
     sref: &crate::tenant::TenantStreamRef,
@@ -552,6 +560,10 @@ async fn resume_incarnation(
 /// merged child on the low parent's route. Crash-resumable from the
 /// persisted pending intent; the seal-gap read semantics apply to both
 /// parents automatically (pending.segs names them).
+#[expect(
+    clippy::expect_used,
+    reason = "resume_merge; the segment map was checked present before the merge resumes; a second fallible read would add a branch no checked topology reaches"
+)]
 async fn resume_merge(
     st: &TopologyService,
     desc: &StreamDesc,

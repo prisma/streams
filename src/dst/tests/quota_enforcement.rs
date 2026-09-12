@@ -810,6 +810,10 @@ async fn catalog_failure_fails_the_stream_seed_closed() {
 /// Observed through the quota registry on the deployment tenant: the
 /// probe reservation at a cap of 1 succeeds only if BOTH the fork's
 /// own delete and the cascaded source tombstone released.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "fork_cascade_hard_delete_releases_the_stream_slot; the fixture admits once only to seed the project's tracked slot; the guard it returns is dropped on purpose so the seed occupies nothing"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fork_cascade_hard_delete_releases_the_stream_slot() {
     let (state, addr) = http_rig(mem()).await;

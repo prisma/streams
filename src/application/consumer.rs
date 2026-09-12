@@ -154,6 +154,10 @@ pub(crate) struct AuthorizedConsumerContext {
     record: crate::queue::ConsumerRecord,
 }
 impl ConsumerService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ConsumerService::authorize; authorization takes the tenant, stream, consumer and credential parts separately as the handler parsed them; a request struct would exist only for this signature"
+    )]
     pub(crate) async fn authorize(
         self: &Arc<Self>,
         sref: &crate::tenant::TenantStreamRef,
@@ -439,6 +443,10 @@ async fn load_consumer_record(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "put; the consumer put validates the configuration, decides create-versus-update and publishes the record in one conditional-write sequence; splitting it would separate the validation from the write it guards"
+)]
 pub(crate) async fn put(
     context: AuthorizedStreamContext,
     doc: ConfigInput,
@@ -647,6 +655,10 @@ pub(crate) struct QueuePosition {
 }
 /// Internal callers provide the incarnation-bound target only after fleet authorization.
 impl ConsumerService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ConsumerService::sweep_local; the local sweep takes the descriptor, segment, consumer and generation parts separately as the sweep resolved them; a sweep struct would exist only for this signature"
+    )]
     pub(crate) async fn sweep_local(
         &self,
         target: InternalTarget,
@@ -698,6 +710,10 @@ impl ConsumerService {
             }
         }
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ConsumerService::queue_position; a poisoned stream state may hold a half-advanced durable frontier; recovering it could report a queue position past a length never made durable"
+    )]
     pub(crate) async fn queue_position(
         &self,
         target: InternalTarget,

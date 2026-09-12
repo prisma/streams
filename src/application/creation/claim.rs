@@ -2,6 +2,10 @@
 use super::raw::CreatePlan;
 use super::*;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolve; claim resolution is one decision over the existing descriptor's lifecycle, retained name and pending initialization; splitting it would separate the verdicts from the descriptor they judge"
+)]
 pub(super) async fn resolve(
     state: &Arc<CreationService>,
     plan: &CreatePlan,

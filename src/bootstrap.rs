@@ -116,7 +116,11 @@ pub(crate) use runtime_handoff::on_slatedb_rt;
     clippy::unwrap_used,
     reason = "run; a poisoned cache lock at boot would mean a half-built shared cache, and the auth file paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
-pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
+#[expect(
+    clippy::excessive_nesting,
+    reason = "run; boot nests each shard opener's flush stagger, database open and close callback inside the opener closure it hands the directory; flattening them would separate the opener from the shard it builds"
+)]
+pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // The executable has one process bootstrap: OS-resource setup, the
     // shared physical SlateDB executor, and process instrumentation start
     // once. Runtime policy, caches, journals, and admission state are owned

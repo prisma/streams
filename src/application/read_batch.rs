@@ -147,6 +147,10 @@ impl PlainBatch {
         clippy::expect_used,
         reason = "PlainBatch::append_selected; a lineage offset shift was validated against the fork's parent range before selection, so the remapped offset fits; a fallible remap would add an error path no validated lineage reaches"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "PlainBatch::append_selected; the selection nests each record's eligibility and budget verdicts inside the per-block walk; flattening them would separate the verdicts from the block they cut"
+    )]
     pub(crate) fn append_selected(
         &mut self,
         mut source: Self,

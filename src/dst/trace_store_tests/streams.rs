@@ -10,6 +10,10 @@ use object_store::{ObjectStore, PutOptions, PutPayload};
 /// alternative is silent misattribution of the late completion.
 #[tokio::test]
 #[should_panic(expected = "while operations are active")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reset_refuses_while_in_flight; the fixture leaks the abandoned stream on purpose so its guard never runs and the operation stays in flight; dropping it would finish the very operation the refusal is about"
+)]
 async fn reset_refuses_while_in_flight() {
     use futures_util::StreamExt;
     let s = TraceStore::new(mem());

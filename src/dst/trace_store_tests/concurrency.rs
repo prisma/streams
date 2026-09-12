@@ -14,6 +14,10 @@ use std::sync::Arc;
 /// lock) this interleaving could push events out of id order,
 /// completions then found the wrong slot, both events stayed
 /// Pending, and `reset()` panicked forever.
+#[expect(
+    clippy::excessive_nesting,
+    reason = "concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once; the fixture nests each contender's begin inside the scoped thread it spawns inside the barrier scope; flattening it would separate the contention from the threads that stage it"
+)]
 #[test]
 fn concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once() {
     let s = TraceStore::verbatim(Arc::new(object_store::memory::InMemory::new()));
@@ -66,6 +70,10 @@ fn concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once() {
 /// observes the active lifetime and refuses. After joining, nothing
 /// is active and nothing is Pending — deterministically, in every
 /// round.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "reset_racing_with_begin_cannot_orphan_an_operation; a refused reset is a legal outcome of the race the fixture stages; the assertions that follow check the invariants a refusal must still keep"
+)]
 #[test]
 fn reset_racing_with_begin_cannot_orphan_an_operation() {
     let s = TraceStore::verbatim(Arc::new(object_store::memory::InMemory::new()));

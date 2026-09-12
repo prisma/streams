@@ -11,6 +11,18 @@ struct CleanupBudget {
 }
 type QueueReply = oneshot::Sender<Result<QueueOut, String>>;
 impl CommitTransaction<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "CommitTransaction::queue; queue dispatch resolves the consumer fence once and routes every queue op through the same fence verdict; splitting it would separate the ops from the fence that admits them"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::queue; the dispatch nests the durable fence read inside the uncached branch of the fence lookup; flattening it would separate the read from the cache it fills"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::queue; a poisoned consumer-fence cache may hold a half-raised generation; recovering it could admit an op the fence already superseded"
+    )]
     pub(super) async fn queue(
         &mut self,
         local: &mut StreamOverlay,

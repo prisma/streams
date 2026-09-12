@@ -194,7 +194,15 @@ impl PostingsCache {
         clippy::unwrap_used,
         reason = "PostingsCache::install_chunk; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
     )]
-    pub fn install_chunk(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "PostingsCache::install_chunk; installing a chunk decides replacement, bridging, fresh admission and eviction against one index snapshot; splitting it would separate the decisions from the snapshot they share"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "PostingsCache::install_chunk; the install nests the bridge and eviction verdicts inside the resident-slice branches under the index lock; flattening them would separate the verdicts from the slice they judge"
+    )]
+    pub(crate) fn install_chunk(
         &self,
         inc: SegmentHash,
         chunk_from: u64,
@@ -416,7 +424,15 @@ impl PostingsCache {
         clippy::unwrap_used,
         reason = "PostingsCache::runs_for; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
     )]
-    pub async fn runs_for(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "PostingsCache::runs_for; serving runs decides the resident, loading and corrupt paths against one index snapshot; splitting it would separate the paths from the snapshot they share"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "PostingsCache::runs_for; the lookup nests the coverage and corruption verdicts inside the resident and in-flight branches under the index lock; flattening them would separate the verdicts from the entry they judge"
+    )]
+    pub(crate) async fn runs_for(
         self: &Arc<Self>,
         part: &Arc<Db>,
         route: RouteHash,
@@ -622,6 +638,10 @@ impl PostingsCache {
     #[expect(
         clippy::unwrap_used,
         reason = "PostingsCache::spawn_load; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "PostingsCache::spawn_load; the loader nests the admission of the loaded runs inside the completion branch of the spawned load; flattening it would separate the admission from the load it admits"
     )]
     fn spawn_load(
         self: &Arc<Self>,

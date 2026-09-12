@@ -5,6 +5,18 @@
 /// abandoned open completes under that owner, which closes any resulting DB;
 /// cancelling a caller never leaves a late writer running without an owner.
 /// OpenGate additionally owns its pending opener across request cancellation.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "on_slatedb_rt; the database open must run on the SlateDB runtime, which no supervisor owns; a supervised task would run it on the service runtime it must stay off"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "on_slatedb_rt; the handoff send fails only when the caller stopped waiting, and the queued value's own drop closes the database; a handled result would only restate that"
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "on_slatedb_rt; the opener task is never cancelled by the runtime it runs on, so its channel is answered; a fallible await would add a branch no open reaches"
+)]
 pub(crate) async fn on_slatedb_rt<F>(fut: F) -> Result<slatedb::Db, slatedb::Error>
 where
     F: std::future::Future<Output = Result<slatedb::Db, slatedb::Error>> + Send + 'static,
@@ -27,12 +39,24 @@ impl DbHandoff {
     fn new(db: slatedb::Db) -> Self {
         Self(Some(db))
     }
+    #[expect(
+        clippy::expect_used,
+        reason = "DbHandoff::claim; a handoff is claimed once by construction; a fallible claim would add a branch no handoff reaches"
+    )]
     fn claim(mut self) -> slatedb::Db {
         self.0.take().expect("database handoff is claimed once")
     }
 }
 
 impl Drop for DbHandoff {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "DbHandoff::drop; an abandoned open is closed on the SlateDB runtime it was opened on, which no supervisor owns; a supervised close would run on the service runtime it must stay off"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "DbHandoff::drop; the drop nests the close failure log inside the abandoned-open branch inside the spawned close; flattening it would separate the log from the close it reports"
+    )]
     fn drop(&mut self) {
         if let Some(db) = self.0.take() {
             super::slatedb_runtime().spawn(async move {
@@ -59,6 +83,10 @@ mod tests {
         .expect("the abandoned handoff closes its completed database");
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "abandoned_open_closes_its_late_database_and_live_handoff_stays_open; the fixture spawns the caller it then abandons mid-handoff; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+    )]
     #[tokio::test]
     async fn abandoned_open_closes_its_late_database_and_live_handoff_stays_open() {
         let db = on_slatedb_rt(async {

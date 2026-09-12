@@ -1815,6 +1815,310 @@
       "path": "src/postings.rs",
       "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
       "syntax": "path = \"postings/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TouchJournal::start",
+      "path": "src/touch.rs",
+      "reason": "Per-stream touch flusher started under the journal map lock and ended by the journal's own close; no supervisor is reachable at creation and the task owns nothing beyond its journal.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::launch_shutdown",
+      "path": "src/tasks/shutdown.rs",
+      "reason": "The one shutdown driver: it joins the supervised set and publishes the report every observer waits on, so it cannot itself be supervised.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "src/main.rs",
+      "reason": "Process entry reads the Tokio worker floor once before the runtime exists; no service configuration or credentials are inferred.",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::reg::M",
+      "path": "src/failpoints.rs",
+      "reason": "The DST failpoint registry: one process-wide lazily initialised map keyed by point and stream name, armed and read only by the DST program; a per-runtime copy would let a parked point outlive the runtime that armed it.",
+      "syntax": "std :: sync :: OnceLock < Registry >"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_refuses_while_in_flight",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "reason": "Trace-store regression leaks one abandoned list stream on purpose so its lifetime guard never runs and reset must refuse; nothing else escapes the test.",
+      "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::HistoryPartition::open",
+      "path": "src/shard/history_partition.rs",
+      "reason": "The one history opener per partition: it outlives the request that started it, is joined through the partition's own state and publishes its result on a watch; no request-scoped supervisor may own it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::CommitTransaction < '_ >::absorbed",
+      "path": "src/shard/transaction/maintenance.rs",
+      "reason": "Test-only drain trace switched on by the DST harness through the process environment; nothing is read outside cfg(test).",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
+      "path": "src/shard/record_scan_tests.rs",
+      "reason": "Record-scan regression spawns the two readers it joins immediately so their panics surface as join errors; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r17a_cancelled_history_opener_stays_owned_until_late_store_close",
+      "path": "src/shard/task_lifecycle_tests.rs",
+      "reason": "Lifecycle regression spawns the history request it then cancels while the opener is held; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
+      "path": "src/sse/auth.rs",
+      "reason": "Test-only DST failpoint release for the parked SSE poll; the bare task only wakes the parked waker and exists under cfg(test).",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::on_slatedb_rt",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "Database opens run on the shared SlateDB runtime, which no supervisor owns; the result travels back through a oneshot whose queued value closes itself if abandoned.",
+      "syntax": "tokio::runtime::Runtime::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<DbHandoff as Drop>::drop",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "An abandoned database open is closed on the SlateDB runtime it was opened on; the close owns nothing beyond the database it retires.",
+      "syntax": "tokio::runtime::Runtime::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "reason": "Handoff regression spawns the caller it abandons mid-handoff; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
+      "path": "src/application/read_wire_tests.rs",
+      "reason": "Wire regression spawns the one-shot TCP server it releases and joins itself; nothing escapes the test.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/fleet/tests.rs",
+      "reason": "Fleet test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin peer choice, the return-home budget and victim selection.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/session/tests.rs",
+      "reason": "SSE session test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin cursor and segment naming.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/tenant/tests.rs",
+      "reason": "Tenant test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the identity grammar.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/tenant.rs",
+      "reason": "Tenant grammar tests; declared by path because the fuzz and invariant harness crates compile the tenant module by path; no copied grammar or public test API.",
+      "syntax": "path = \"tenant/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "reason": "The SSE driver task is owned by the subscription it drives and ends with the session; a supervised driver would tie a request-scoped task to the runtime supervisor.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/http/test_support.rs",
+      "reason": "HTTP fixture adapters import their enclosing production owner; the compiler resolves the parent exports and the adapters only forward scenario calls.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/test_support.rs",
+      "reason": "Shard test helpers import their enclosing production owner; the compiler resolves the parent exports and the helpers only encode fixtures and arm scan faults.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::dirty_scan_faults::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only fault injection for the durable dirty-index scan, keyed by shard prefix so concurrent tests cannot poison each other; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BILLING_CLOCK_OVERRIDE",
+      "path": "src/billing/test_clock.rs",
+      "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: atomic :: AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::billing_clock_lock::L",
+      "path": "src/billing/test_clock.rs",
+      "reason": "Test-only lock serialising the month-sensitive tests around the injected clock; nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve_h1",
+      "path": "src/http.rs",
+      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::router",
+      "path": "src/http.rs",
+      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::test_support",
+      "path": "src/http.rs",
+      "reason": "HTTP fixture adapters; declared by path like the surface's read adapter so the file name says what it holds; no copied surface or public test API.",
+      "syntax": "path = \"http/test_support.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/http.rs",
+      "reason": "HTTP surface unit tests; declared by path like the surface's read adapter; no copied surface or public test API.",
+      "syntax": "path = \"http/tests.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/http/tests.rs",
+      "reason": "HTTP surface test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the interval cursor.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/source/spans.rs",
+      "reason": "Lineage span rule imports its enclosing source owner; the compiler resolves the parent exports and the rule only maps linearized offsets.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/retention.rs",
+      "reason": "Retention entry imports its enclosing feed owner; the compiler resolves the parent exports and the entry only mirrors admission.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/test_support.rs",
+      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::LiveFeed::schedule_transition_retry",
+      "path": "src/sse/feed.rs",
+      "reason": "The feed's transition retry is a bare task the feed owns and cancels through its own flag; it ends with the feed.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::spans",
+      "path": "src/sse/source.rs",
+      "reason": "Lineage span rule; declared by path like the source's tests so the file name says what it holds; no copied source or public test API.",
+      "syntax": "path = \"source/spans.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/product/usage.rs",
+      "reason": "Product usage handlers import their enclosing product surface; the compiler resolves the parent exports and the handlers only render rollup reads.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/catalog.rs",
+      "reason": "Registry catalog page imports its enclosing registry owner; the compiler resolves the parent exports and the page only lists and decodes descriptors.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::product_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::project_usage",
+      "path": "src/product/usage.rs",
+      "reason": "Usage answers are rendered as JSON documents through serde_json's literal macro; the shape is the customer usage contract and no other DSL is embedded.",
+      "syntax": "json"
     }
   ]
 }

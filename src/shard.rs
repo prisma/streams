@@ -70,6 +70,10 @@ pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 /// caveat: a pre-bitmask binary reads flags with `== 1`, so it would
 /// see a closed+v2 stream (flags=3) as open — acceptable for
 /// forward-only deployments, noted here because it is not zero.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "encode_tail; the producer sequence is bounded by the u16 width the tail row stores; a checked conversion would only restate the row format"
+)]
 fn encode_tail(t: &TailFields) -> Vec<u8> {
     let seq = t.seq.as_deref().unwrap_or("").as_bytes();
     let mut v = Vec::with_capacity(76 + seq.len());
@@ -169,28 +173,6 @@ pub(crate) fn decode_cursor(raw: &[u8]) -> Result<u64, slatedb::Error> {
         .try_into()
         .map_err(|_| slatedb::Error::data("invalid persisted cursor length".into()))?;
     Ok(u64::from_le_bytes(bytes))
-}
-
-/// Test-only: encode a tail then STRIP the trailing exact-gauge field,
-/// producing the pre-gauge layout older builds wrote. DST uses this to
-/// prove the R26-4 open-time repair; production code never writes it.
-#[cfg(test)]
-pub(crate) fn encode_tail_without_gauge_for_tests(t: &TailFields) -> Vec<u8> {
-    let mut v = encode_tail(t);
-    v.truncate(v.len() - 8);
-    v
-}
-
-#[cfg(test)]
-pub(crate) fn decode_tail_for_tests(v: &[u8]) -> Option<TailFields> {
-    decode_tail(v)
-}
-
-/// Test-only: the production tail encoder, exposed so golden tests can
-/// pin the exact v3 byte layout without going through a shard engine.
-#[cfg(test)]
-pub(crate) fn encode_tail_for_tests(t: &TailFields) -> Vec<u8> {
-    encode_tail(t)
 }
 
 /// Per-routing-key Stream-Seq row (ROUTING-V3 §3.6): seq is scoped to
@@ -294,13 +276,6 @@ fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
     v
 }
 
-/// Test-only: the production dirty-row encoder, exposed so golden tests
-/// can pin the exact 32-byte LE layout.
-#[cfg(test)]
-pub(crate) fn dirty_value_for_tests(m: &StreamMaintenance) -> [u8; 32] {
-    dirty_value(m)
-}
-
 /// The one durable maintenance row per physical shard.
 ///
 /// Sits beside the dirty-stream index under the same sentinel, with tag
@@ -390,6 +365,10 @@ impl ShardMaintenance {
 
     /// Seconds since maintenance last made durable progress, while a
     /// backlog is outstanding. Zero when there is nothing to do.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "ShardMaintenance::no_progress_secs; the elapsed milliseconds are clamped at zero before the division; a checked conversion would only restate the clamp"
+    )]
     pub(crate) fn no_progress_secs(self, now_ms: i64) -> u64 {
         if self.unabsorbed_frame_bytes == 0 || self.last_progress_ms <= 0 {
             0
@@ -653,7 +632,7 @@ pub(crate) struct StreamState {
     /// the ack offset for read-your-write. The hash backs the product
     /// surface's 409 producer_sequence_reused (same tuple, different
     /// request).
-    pub producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
+    pub producers: ProducerRows,
     /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
     /// lazily from the durable `s` rows and applied by the committer.
     pub seqs: HashMap<[u8; 16], String>,
@@ -889,7 +868,16 @@ pub(crate) enum AppendErr {
     Moved,
 }
 
-pub enum CommitOp {
+/// Producer rows keyed by (key hash, producer id): epoch, sequence, offset and request hash.
+pub(crate) type ProducerRows = HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>;
+/// The lowest live consumer generation per (stream, consumer).
+type ConsumerFences = Mutex<HashMap<([u8; 16], String), u64>>;
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op; boxing it would add a heap hop to the hottest path"
+)]
+pub(crate) enum CommitOp {
     Append(AppendReq),
     /// Close without payload, encryption key, producer lane, or billing placeholders.
     Close(CloseReq),
@@ -1220,7 +1208,7 @@ pub(crate) struct ShardEngine {
     /// like the seal fences: it only has to outlive the queue that
     /// could contain stale ops; durably, dead generations are already
     /// harmless because generations live in the row keys.
-    consumer_fences: Mutex<HashMap<([u8; 16], String), u64>>,
+    consumer_fences: ConsumerFences,
     #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -1333,31 +1321,15 @@ pub(crate) struct ShardEngine {
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "now_ms; the Unix millisecond count stays below i64::MAX for hundreds of millions of years; a checked conversion would only restate that horizon"
+)]
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// Test-only fault injection for the durable dirty-index scan, keyed by
-/// shard prefix so concurrent tests cannot poison each other. The
-/// object-store fault substrate cannot reach this path deterministically
-/// (SlateDB retries store faults internally), and the absorber's
-/// scan-retry loop is exactly the code under test.
-#[cfg(test)]
-fn dirty_scan_faults() -> &'static Mutex<HashMap<String, u32>> {
-    static M: std::sync::OnceLock<Mutex<HashMap<String, u32>>> = std::sync::OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Arrange for the next `n` dirty-index scans on `prefix` to fail.
-#[cfg(test)]
-pub(crate) fn inject_dirty_scan_faults(prefix: &str, n: u32) {
-    dirty_scan_faults()
-        .lock()
-        .unwrap()
-        .insert(prefix.to_string(), n);
 }
 
 impl ShardEngine {
@@ -1376,6 +1348,11 @@ impl ShardEngine {
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::excessive_nesting,
+        reason = "ShardEngine::start; the pump and ticker loops nest each flush, eviction and trim verdict inside the tick that produced it and stamp their gaps in whole milliseconds and microseconds that fit u64; flattening them or checking the stamps would separate the verdicts from the tick and restate the clock"
     )]
     pub(crate) fn start(
         prefix: String,
@@ -1853,6 +1830,10 @@ impl ShardEngine {
         self.try_command(CommitOp::SealFence(req))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ShardEngine::try_command; the microseconds since the engine epoch fit u64 for hundreds of thousands of years; a checked conversion would only restate the clock"
+    )]
     fn try_command(&self, command: CommitOp) -> Result<(), EnqueueError> {
         if self.is_closed() {
             return Err(EnqueueError::Closed);
@@ -1979,6 +1960,10 @@ impl ShardEngine {
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::oldest_inflight_ms; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ShardEngine::oldest_inflight_ms; the elapsed milliseconds are clamped to i64::MAX before the cast; a checked conversion would only restate the clamp"
     )]
     pub(crate) fn oldest_inflight_ms(&self) -> i64 {
         self.in_flight
@@ -2316,7 +2301,10 @@ impl ShardEngine {
     /// reader that adopts a remote boundary while keeping a stale
     /// in-memory layout flag would refuse a v2 history range as v1
     /// (observed in the first-absorption flush-to-dispatch window).
-    pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<(u64, bool), slatedb::Error> {
+    pub(crate) async fn durable_absorbed(
+        &self,
+        hash: &[u8; 16],
+    ) -> Result<(u64, bool), slatedb::Error> {
         #[cfg(test)]
         if let Ok((entered, release)) = record::TEST_MARKER_HOLD.try_with(Clone::clone) {
             entered.notify_one();
@@ -2412,6 +2400,10 @@ impl ShardEngine {
         clippy::unwrap_used,
         reason = "ShardEngine::stream_handle; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
     )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "ShardEngine::stream_handle; now_ms is a non-negative Unix millisecond stamp; a checked conversion would only restate the clock"
+    )]
     pub(crate) async fn stream_handle(
         &self,
         hash: [u8; 16],
@@ -2469,6 +2461,11 @@ impl ShardEngine {
         clippy::unwrap_used,
         reason = "ShardEngine::evict_idle_handles; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
     )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "ShardEngine::evict_idle_handles; the cutoff is a non-negative Unix millisecond stamp less an idle window that fits u64; checked conversions would only restate the clock"
+    )]
     pub(crate) fn evict_idle_handles(
         &self,
         idle: std::time::Duration,
@@ -2524,12 +2521,12 @@ impl ShardEngine {
     }
 
     #[expect(
-        clippy::too_many_lines,
-        reason = "ShardEngine::committer_loop; the commit loop's batching, fencing and dispatch are one ordered state machine; splitting it would hide which state each group is left in"
-    )]
-    #[expect(
         clippy::let_underscore_must_use,
         reason = "ShardEngine::committer_loop; a caller that gave up before its reply has no receiver; a handled send would only restate that the request was abandoned"
+    )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "ShardEngine::committer_loop; the committer nests the batch gather and the pacing wait inside the group loop; flattening them would separate the gather from the group it fills"
     )]
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
         // The close signal is the ONLY way out: this task holds the engine
@@ -2569,45 +2566,9 @@ impl ShardEngine {
             if self.is_closed() {
                 // Set-before-subscribe race: honor the flag, fail the op we
                 // just took plus the rest of the queue, and exit.
-                match first {
-                    CommitOp::Append(r) => {
-                        let _ = r.resp.send(Err(AppendErr::Moved));
-                    }
-                    CommitOp::Close(CloseReq { resp, .. })
-                    | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
-                        let _ = resp.send(Err(AppendErr::Moved));
-                    }
-                    CommitOp::Queue { resp, .. } => {
-                        let _ = resp.send(Err("shard fenced/moved; retry".into()));
-                    }
-                    CommitOp::Absorbed { .. }
-                    | CommitOp::AbsorbedBatch { .. }
-                    | CommitOp::TrimTick
-                    | CommitOp::UsageAck { .. }
-                    | CommitOp::BillingClose { .. }
-                    | CommitOp::BillingRetained { .. }
-                    | CommitOp::TrimStep { .. } => {}
-                }
+                transaction::CommitTransaction::reject_op(first, AppendErr::Moved);
                 while let Ok(op) = rx.try_recv() {
-                    match op {
-                        CommitOp::Append(r) => {
-                            let _ = r.resp.send(Err(AppendErr::Moved));
-                        }
-                        CommitOp::Close(CloseReq { resp, .. })
-                        | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
-                            let _ = resp.send(Err(AppendErr::Moved));
-                        }
-                        CommitOp::Queue { resp, .. } => {
-                            let _ = resp.send(Err("shard fenced/moved; retry".into()));
-                        }
-                        CommitOp::Absorbed { .. }
-                        | CommitOp::AbsorbedBatch { .. }
-                        | CommitOp::TrimTick
-                        | CommitOp::UsageAck { .. }
-                        | CommitOp::BillingClose { .. }
-                        | CommitOp::BillingRetained { .. }
-                        | CommitOp::TrimStep { .. } => {}
-                    }
+                    transaction::CommitTransaction::reject_op(op, AppendErr::Moved);
                 }
                 return;
             }
@@ -2735,7 +2696,7 @@ impl ShardEngine {
             reason = "ShardEngine::count_consumer_state_rows; the row count is the consumer fixtures' witness of what the committer retired and the service never scans for it; deleting it would strip the count those fixtures pin"
         )
     )]
-    pub async fn count_consumer_state_rows(
+    pub(crate) async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],
         consumer: &str,
@@ -3007,7 +2968,11 @@ impl ShardEngine {
     /// the closure entered the committer queue — a full queue is
     /// backpressure, never a silent drop; the registry-persisted debt
     /// plus the sweep reconciler retry anything that still fails.
-    pub async fn submit_billing_close(&self, hash: [u8; 16], close_ms: i64) -> Result<(), String> {
+    pub(crate) async fn submit_billing_close(
+        &self,
+        hash: [u8; 16],
+        close_ms: i64,
+    ) -> Result<(), String> {
         self.tx
             .send(CommitOp::BillingClose { hash, close_ms })
             .await
@@ -3053,7 +3018,11 @@ impl ShardEngine {
 
     /// Test view of the DURABLE fence row (None = no row).
     #[cfg(test)]
-    pub async fn durable_consumer_fence(&self, hash: [u8; 16], consumer: &str) -> Option<u64> {
+    pub(crate) async fn durable_consumer_fence(
+        &self,
+        hash: [u8; 16],
+        consumer: &str,
+    ) -> Option<u64> {
         let k = crate::queue::fence_key(&hash, consumer);
         self.db
             .get(&k[..])
@@ -3092,6 +3061,11 @@ impl ShardEngine {
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::dispatch_durable; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::excessive_nesting,
+        reason = "ShardEngine::dispatch_durable; the durable wait is clamped to u32::MAX and the timing ring is trimmed inside the publication it records; checking the clamp or flattening the trim would restate the bound and separate the trim from the record"
     )]
     async fn dispatch_durable(&self, durable_seq: u64) -> u32 {
         let _order = self.dispatch_gate.lock().await;
@@ -3160,6 +3134,10 @@ impl ShardEngine {
         dispatched
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "ShardEngine::acker_loop; the acker nests the close-reason verdict inside the status read of each wake; flattening it would separate the verdict from the status it reads"
+    )]
     async fn acker_loop(self: Arc<Self>) {
         let mut status_rx = self.db.subscribe();
         loop {
@@ -3239,7 +3217,16 @@ impl ShardEngine {
 }
 
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
+use test_support::dirty_scan_faults;
+#[cfg(test)]
 mod transaction_tests;
+#[cfg(test)]
+pub(crate) use test_support::{
+    decode_tail_for_tests, dirty_value_for_tests, encode_tail_for_tests,
+    encode_tail_without_gauge_for_tests, inject_dirty_scan_faults,
+};
 
 #[cfg(test)]
 mod retirement_tests;

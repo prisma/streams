@@ -53,7 +53,11 @@ fn retryable_cas_error(error: &anyhow::Error) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedDescriptor {
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "PersistedDescriptor; the flags are the independent lifecycle facts the descriptor row stores on the wire; an enum would change the persisted shape"
+)]
+pub(crate) struct PersistedDescriptor {
     pub name: String,
     /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
     /// captured from the deployment's authenticated context at creation
@@ -293,7 +297,11 @@ pub(crate) const INIT_CLAIM_MS: i64 = 15_000;
 pub(crate) const SEAL_CLAIM_MS: i64 = 15_000;
 
 /// A pure mutation decision for [`Registry::mutate_incarnation`].
-pub enum Mutation<T> {
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Mutation; the write variant carries the whole persisted descriptor it decided, so one decision moves one row; boxing it would add a heap hop to every conditional write"
+)]
+pub(crate) enum Mutation<T> {
     /// Leave the descriptor unchanged; carry a typed reason out.
     Decline(T),
     /// Replace the descriptor with this one; carry a typed result out.
@@ -430,7 +438,11 @@ impl StreamDesc {
     pub(crate) fn key_point(routing_key: &str) -> u64 {
         PersistedDescriptor::key_point(routing_key)
     }
-    pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "StreamDesc::epoch_bytes; the option is the shape the raw and product readers already match against, and epoch() gives the bare value; unwrapping it here would move every caller's match"
+    )]
+    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
         Some(self.epoch)
     }
     pub(crate) fn epoch(&self) -> [u8; 16] {
@@ -981,7 +993,11 @@ impl Registry {
     /// had read it moments ago — the cross-instance stale-descriptor
     /// shape (another instance CAS'd a transition we have not seen).
     #[cfg(test)]
-    pub fn test_poison_cache(&self, sref: &crate::tenant::TenantStreamRef, desc: StreamDesc) {
+    pub(crate) fn test_poison_cache(
+        &self,
+        sref: &crate::tenant::TenantStreamRef,
+        desc: StreamDesc,
+    ) {
         self.cache_insert(
             sref.clone(),
             CachedDesc {
@@ -1275,6 +1291,10 @@ impl Registry {
         clippy::expect_used,
         reason = "Registry::mutate_incarnation; five exhausted attempts each recorded their precondition conflict, so the last one is always present; a fallible read would turn a bounded retry loop into an error no attempt produced"
     )]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Registry::mutate_incarnation; the mutation nests the armed failpoint and the backoff sleep inside the attempt loop; flattening them would separate the verdicts from the attempt they follow"
+    )]
     pub(crate) async fn mutate_incarnation<T>(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1359,6 +1379,10 @@ impl Registry {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "Registry::cas_update_retry; the retry nests the backoff sleep inside the failed-attempt branch of the CAS loop; flattening it would separate the backoff from the attempt it follows"
+    )]
     pub(crate) async fn cas_update_retry(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1519,108 +1543,6 @@ impl Registry {
     ) -> Result<CatalogPage, object_store::Error> {
         self.catalog_page(project, after, limit, true).await
     }
-
-    async fn catalog_page(
-        &self,
-        project: &crate::tenant::ProjectId,
-        after: Option<&str>,
-        limit: usize,
-        include_inactive: bool,
-    ) -> Result<CatalogPage, object_store::Error> {
-        use futures_util::{StreamExt, TryStreamExt};
-        if limit == 0 {
-            return Err(catalog_error("catalog limit must be positive"));
-        }
-        let limit = limit.min(1000);
-        let max_scan = limit.saturating_mul(8) + 64;
-        const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
-        const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
-        let root = project_streams_prefix(project);
-        let prefix = ObjPath::from(root.trim_end_matches('/'));
-        let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
-        let listing = match &offset {
-            Some(o) => self.store.list_with_offset(Some(&prefix), o),
-            None => self.store.list(Some(&prefix)),
-        };
-        let pass = async {
-            let mut reads = listing
-                .take(max_scan)
-                .map(|meta| async move {
-                    let meta = meta?;
-                    let name = name_from_desc_path(&meta.location)
-                        .ok_or_else(|| catalog_error("non-canonical catalog key"))?;
-                    if meta.size > MAX_DESCRIPTOR_BYTES as u64 {
-                        return Err(catalog_error("descriptor exceeds catalog byte budget"));
-                    }
-                    let raw = match self.store.get(&meta.location).await {
-                        Ok(result) => {
-                            let mut chunks = result.into_stream();
-                            let mut raw = Vec::new();
-                            while let Some(chunk) = chunks.try_next().await? {
-                                if raw.len().saturating_add(chunk.len()) > MAX_DESCRIPTOR_BYTES {
-                                    return Err(catalog_error(
-                                        "descriptor exceeds catalog byte budget",
-                                    ));
-                                }
-                                raw.extend_from_slice(&chunk);
-                            }
-                            raw
-                        }
-                        Err(object_store::Error::NotFound { .. }) => return Ok((name, None, 0)),
-                        Err(error) => return Err(error),
-                    };
-                    if raw.len() > MAX_DESCRIPTOR_BYTES {
-                        return Err(catalog_error("descriptor exceeds catalog byte budget"));
-                    }
-                    let canonical = crate::tenant::CanonicalStreamName::new(&name)
-                        .map_err(|_| catalog_error("non-canonical catalog name"))?;
-                    let expect = crate::tenant::TenantStreamRef::new(project.clone(), canonical);
-                    let desc = decode_desc(&raw, Some(&expect)).map_err(|error| {
-                        catalog_error(&format!(
-                            "catalog: undecodable descriptor at {}: {error}",
-                            meta.location
-                        ))
-                    })?;
-                    Ok((name, Some(desc), raw.len()))
-                })
-                .buffered(8);
-            let (mut out, mut last_name, mut scanned, mut bytes) =
-                (Vec::new(), None, 0usize, 0usize);
-            let now = crate::shard::now_ms();
-            let mut exhausted = false;
-            while out.len() < limit {
-                let Some((name, desc, size)) = reads.try_next().await? else {
-                    exhausted = scanned < max_scan;
-                    break;
-                };
-                if bytes.saturating_add(size) > MAX_PAGE_BYTES {
-                    break;
-                }
-                bytes += size;
-                scanned += 1;
-                // Advance only through consumed provider results. Prefetched
-                // results beyond the output/byte limit are retried next page.
-                last_name = Some(name);
-                if let Some(desc) = desc {
-                    let active = !desc.deleted
-                        && !desc.soft_deleted
-                        && desc.init.is_none()
-                        && !desc.expires_at_ms.is_some_and(|expires| now >= expires);
-                    if include_inactive || active {
-                        out.push(desc);
-                    }
-                }
-            }
-            Ok(CatalogPage {
-                streams: out,
-                next_after: last_name,
-                exhausted,
-            })
-        };
-        tokio::time::timeout(Duration::from_secs(10), pass)
-            .await
-            .map_err(|_| catalog_error("catalog page deadline exceeded"))?
-    }
 }
 
 fn catalog_error(message: &str) -> object_store::Error {
@@ -1658,6 +1580,14 @@ const TOPOLOGY_PATH: &str = "topology.json";
 #[expect(
     clippy::expect_used,
     reason = "load_or_init_topology; the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "load_or_init_topology; the initial shard count is a small power of two whose log2 is exact and non-negative; a checked conversion would only restate the power of two"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "load_or_init_topology; the initial shard count is a small power of two whose log2 is non-negative; a checked conversion would only restate the power of two"
 )]
 pub(crate) async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
@@ -1742,6 +1672,7 @@ pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
     hash_bits(hash).starts_with(prefix)
 }
 
+mod catalog;
 #[cfg(test)]
 mod resolution_tests;
 #[cfg(test)]

@@ -35,6 +35,10 @@ pub(super) struct StreamOverlay {
     pub frames: FrameEffects,
 }
 impl StreamOverlay {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "StreamOverlay::new; a poisoned stream state may hold half-applied fields, producers or queue rows; recovering it could publish or overlay state the write never covered"
+    )]
     pub(super) fn new(
         handle: Arc<StreamHandle>,
         billing: Option<crate::billing::SegmentBillingMetaV1>,

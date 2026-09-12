@@ -89,6 +89,10 @@ impl ReadService {
             continuation: (!complete).then_some(cursor),
         })
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "ReadService::snapshot_scan; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a length never made durable"
+    )]
     async fn snapshot_scan(
         &self,
         desc: &StreamDesc,
@@ -148,6 +152,10 @@ impl ReadService {
     }
     /// A scan names one physical segment. It does not inherit replay's hop or
     /// live-wait semantics; its frozen cursor owns the next segment decision.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadService::read_scan_span; a scan names the descriptor, key, segment, range and budget the frozen cursor resolved; a request struct would restate the cursor"
+    )]
     async fn read_scan_span(
         &self,
         desc: &StreamDesc,
@@ -188,6 +196,10 @@ impl ReadService {
         .await
         .map_err(ReadFailure::Storage)
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ReadService::remote_scan_span; a remote scan names the descriptor, key, segment, range, budget and owner the frozen cursor resolved; a request struct would restate the cursor"
+    )]
     async fn remote_scan_span(
         &self,
         desc: &StreamDesc,

@@ -70,6 +70,10 @@ async fn held_wal() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     (engine, store)
 }
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task; the fixture closes the database on the way out; a failed close leaves nothing the assertions depend on"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task() {
     let (engine, store) = held_wal().await;
@@ -90,6 +94,10 @@ async fn r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task() {
     );
 }
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks; the fixture closes the database on the way out; a failed close leaves nothing the assertions depend on"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks() {
     let (engine, store) = held_wal().await;
@@ -111,6 +119,14 @@ async fn r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks() {
     assert!(finished.is_ok());
 }
 
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "r17a_unexpected_required_engine_role_exit_fences_serving; the fixture waits out termination and closes the database on the way out; a failed wait or close leaves nothing the assertion depends on"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r17a_unexpected_required_engine_role_exit_fences_serving; the fixture nests the exit wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
     for role in ["committer", "acker", "pump", "flush-ticker", "absorber"] {
@@ -131,6 +147,10 @@ async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
     }
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement; the fixture nests the scripted opener inside the factory closure inside the rig it builds; flattening it would separate the opener from the rig that installs it"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement() {
     let (engine, store) = held_wal().await;
@@ -176,6 +196,10 @@ async fn r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement() {
     assert!(engine.termination_complete());
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "r17a_cancelled_history_opener_stays_owned_until_late_store_close; the fixture spawns the request it then cancels while the opener is held; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_cancelled_history_opener_stays_owned_until_late_store_close() {
     let (engine, store) = fixture().await;

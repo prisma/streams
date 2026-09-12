@@ -1,4 +1,8 @@
 use super::*;
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "e03_one_decryptor_preserves_mixed_legacy_new_frames_and_decoded_bounds; the fixture's ciphertexts are a few kilobytes; a checked conversion would only restate the fixture"
+)]
 #[test]
 fn e03_one_decryptor_preserves_mixed_legacy_new_frames_and_decoded_bounds() {
     let subkey = [7; 32];
@@ -60,6 +64,10 @@ fn e03_one_decryptor_preserves_mixed_legacy_new_frames_and_decoded_bounds() {
     assert!(decoder.legacy.get().is_some());
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "o2_in_place_append_reuses_storage_and_rolls_back_failed_authentication; the fixture's offsets are counters below 256 that seed and check each payload byte; checked conversions would only restate the fixture's size"
+)]
 #[test]
 fn o2_in_place_append_reuses_storage_and_rolls_back_failed_authentication() {
     let subkey = [7; 32];

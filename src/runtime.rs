@@ -47,6 +47,10 @@ impl TrustedNow {
 pub(crate) struct MonotonicNow(Duration);
 
 impl MonotonicNow {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MonotonicNow::millis; the millisecond count is clamped to i64::MAX before the cast; a checked conversion would only restate the clamp"
+    )]
     pub(crate) fn millis(self) -> i64 {
         self.0.as_millis().min(i64::MAX as u128) as i64
     }
@@ -88,6 +92,10 @@ impl Default for SystemClock {
 }
 
 impl Clock for SystemClock {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "SystemClock::now; the Unix millisecond count stays below i64::MAX for hundreds of millions of years; a checked conversion would only restate that horizon"
+    )]
     fn now(&self) -> TrustedNow {
         TrustedNow(
             std::time::SystemTime::now()
@@ -199,8 +207,9 @@ impl RuntimeCaps {
     /// Assemble from explicit implementations with ONE entropy source
     /// for both the boot id and later epochs (production goes through
     /// [`RuntimeCaps::production`]).
-    pub fn with(clock: Arc<dyn Clock>, entropy: Arc<dyn Entropy>, instance: &str) -> Self {
-        Self::with_sources(clock, &*entropy, entropy.clone(), instance)
+    pub(crate) fn with(clock: Arc<dyn Clock>, entropy: Arc<dyn Entropy>, instance: &str) -> Self {
+        let boot = entropy.clone();
+        Self::with_sources(clock, &*boot, entropy, instance)
     }
 
     /// Assemble with DOMAIN-SEPARATED sources (PR 4.1): the boot id is
@@ -296,6 +305,10 @@ impl ManualClock {
     }
 
     /// Ordinary passage of time: both domains move together.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ManualClock::advance; test clock advances are small fixture durations; a checked conversion would only restate the fixture's scale"
+    )]
     pub(crate) fn advance(&self, by: Duration) {
         *self.inner.wall_ms.lock().unwrap() += by.as_millis() as i64;
         self.advance_monotonic(by);
@@ -324,6 +337,10 @@ impl Clock for ManualClock {
         MonotonicNow(*self.inner.mono.lock().unwrap())
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "ManualClock::sleep; the wake loop nests the deadline check between registering for the next advance and awaiting it; flattening it would separate the check from the registration that makes it race-free"
+    )]
     fn sleep(&self, d: Duration) -> futures_util::future::BoxFuture<'static, ()> {
         let inner = self.inner.clone();
         let deadline = *inner.mono.lock().unwrap() + d;

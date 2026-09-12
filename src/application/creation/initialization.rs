@@ -3,6 +3,18 @@ use super::deletion::release_fork_ref;
 use super::raw::CreatePlan;
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seed; seeding takes the plan, descriptor, key and fork parts separately as creation resolved them; a seed struct would exist only for this signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "seed; the tail seed, the fork reference and the readiness publish are one initialization whose compensation depends on which step failed; splitting them would separate the steps from the compensation they order"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "seed; a poisoned stream state may hold a half-advanced durable frontier; recovering it could seed a child from a length never made durable"
+)]
 pub(super) async fn seed(
     state: &Arc<CreationService>,
     plan: &CreatePlan,
@@ -162,6 +174,10 @@ pub(super) async fn seed(
     Ok((next, closed_now))
 }
 
+#[expect(
+    clippy::excessive_nesting,
+    reason = "publish; the readiness verdict nests the fork-claim compensation inside the declined-CAS branch; flattening it would separate the compensation from the verdict that requires it"
+)]
 pub(super) async fn publish(
     state: &Arc<CreationService>,
     plan: &CreatePlan,

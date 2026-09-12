@@ -411,6 +411,10 @@ async fn product_consumer_dlq_flow() {
     clippy::too_many_lines,
     reason = "lineage consumption scenario; consuming the sealed predecessor's backlog, splitting and continuing on the children form one causal sequence; helper phases would hide which lineage step delivered or settled out of order"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "product_consumer_drains_lineage_across_split; the fixture nests the drained verdict inside the empty-page branch of its pull loop; flattening it would separate the verdict from the page that proves it"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_consumer_drains_lineage_across_split() {
     let _l = gap_lock().lock().await;

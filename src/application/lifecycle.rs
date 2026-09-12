@@ -429,9 +429,8 @@ pub(crate) async fn begin_sealing_for_close(
         EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
             Ok(Some(generation))
         }
-        EnterSeal::AlreadyCompleted => Ok(None),
-        EnterSeal::AlreadySealed => Ok(None), // already terminal; the close is a no-op
-        EnterSeal::Missing => Ok(None),
+        // Already terminal or absent: the close is a no-op.
+        EnterSeal::AlreadyCompleted | EnterSeal::AlreadySealed | EnterSeal::Missing => Ok(None),
         EnterSeal::Conflicting(m) => Err(SealError::Conflict(m)),
         EnterSeal::PendingTopology => Err(SealError::Resumable(
             "a split or merge is in flight; retry the close".into(),
@@ -681,10 +680,9 @@ async fn prepare_execution(
             EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
                 our_gen = Some(generation);
             }
-            EnterSeal::AlreadyCompleted => return Ok(None),
+            EnterSeal::AlreadyCompleted | EnterSeal::Missing => return Ok(None),
             EnterSeal::AlreadySealed if op_id.is_empty() => return Ok(None),
             EnterSeal::AlreadySealed => return Err(SealError::OtherOperation),
-            EnterSeal::Missing => return Ok(None),
             EnterSeal::Conflicting(m) => return Err(SealError::Conflict(m)),
             EnterSeal::PendingTopology => {
                 return Err(SealError::Resumable(

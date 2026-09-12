@@ -348,6 +348,10 @@ pub(crate) fn meter_read_outcome(state: &AppState, out: &ReadOutcome) {
     clippy::unwrap_used,
     reason = "render_raw_read; the response builder holds a fixed status and header values validated when the descriptor and cursor were produced, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "render_raw_read; the read outcome is handed to the render once and never reused by its caller, so passing it by value keeps the read path free of a borrow; borrowing it would edit the render body and its caller, whose branch mutants no read scenario bounds"
+)]
 fn render_raw_read(
     state: &AppState,
     params: &ReadParams,

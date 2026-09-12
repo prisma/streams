@@ -10,6 +10,10 @@ use std::{sync::atomic::Ordering, time::Duration};
     clippy::too_many_lines,
     reason = "topology debt scenario; cancelling the job, measuring the exact debt and opening a fresh read owner form one causal sequence; helper phases would hide which owner inherited the debt"
 )]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner; the fixture nests the settled-topology verdict inside the descriptor poll loop; flattening it would separate the verdict from the descriptor it reads"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner() {
     let store = FaultStore::new(mem(), 911, FaultProfile::clean());

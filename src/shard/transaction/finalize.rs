@@ -38,6 +38,10 @@ impl CommitTransaction<'_> {
             || !self.effects.touches.is_empty()
             || self.extra_writes
     }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::join_prior_barrier; a poisoned in-flight handoff may hold a half-attached publication; recovering it could publish effects a prior barrier never covered"
+    )]
     async fn join_prior_barrier(mut self) {
         // Complete any prior durable publications before treating an OPEN
         // empty queue as completed truth. Retirement never needs this gate.
@@ -54,6 +58,10 @@ impl CommitTransaction<'_> {
             Attachment::Retired => self.effects.reject(AppendErr::Moved),
         }
     }
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::stage_stream_rows; the row staging nests the dirty mark and the billing rows inside each changed stream's write; flattening it would separate the marks from the tail they qualify"
+    )]
     fn stage_stream_rows(&mut self) {
         for (hash, local) in &mut self.streams {
             if !local.frames.ring.is_empty() {
@@ -155,6 +163,10 @@ impl CommitTransaction<'_> {
             .put(shard_maint_key(), encode_shard_maint(&maintenance));
         Ok(Some(maintenance))
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CommitTransaction::write; the elapsed microseconds are clamped to u32::MAX before the cast; a checked conversion would only restate the clamp"
+    )]
     async fn write(mut self, maintenance: Option<ShardMaintenance>) {
         let encode_us = self.started.elapsed().as_micros().min(u32::MAX as u128) as u32;
         let started = std::time::Instant::now();
@@ -185,6 +197,10 @@ impl CommitTransaction<'_> {
         }
     }
     #[cfg(test)]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "CommitTransaction::failpoint_tripped; the tripped check nests the hit removal inside the armed set's branch; flattening it would separate the removal from the hits it consumes"
+    )]
     fn failpoint_tripped(&self) -> bool {
         let tripped = {
             let mut armed = self.engine.fail_group_for.lock().unwrap();

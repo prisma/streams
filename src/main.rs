@@ -8,6 +8,10 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "main; the Tokio worker floor is process configuration read once before any runtime, supervisor or configuration owner exists; routing it through an owner would need the runtime it sizes"
+)]
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(

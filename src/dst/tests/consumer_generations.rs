@@ -511,6 +511,10 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
     clippy::too_many_lines,
     reason = "bounded cleanup scenario; seeding dead-generation residue at scale, draining it in bounded steps and checking the live generation form one causal sequence; helper phases would hide which step touched the live rows"
 )]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a_bounded_cleanup_drains_residue_without_touching_the_live_generation; the fixture's row counts and budgets are small whole numbers it chose; checked conversions would only restate the fixture"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation() {
     let store = mem();
