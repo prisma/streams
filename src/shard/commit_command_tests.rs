@@ -74,7 +74,16 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
     })
     .await
     .unwrap();
-    assert!(handle.state.lock().unwrap().applied.closed);
+    // SlateDB's flush tick can PUT the group's WAL between its append and
+    // its publication, so the crossing is awaited rather than asserted at
+    // the instant the PUT engages.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !handle.state.lock().unwrap().applied.closed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("group has crossed local write acceptance");
     let remote = slatedb::config::ReadOptions {
         durability_filter: DurabilityLevel::Remote,
         ..Default::default()

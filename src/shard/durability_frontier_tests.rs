@@ -59,8 +59,9 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
     })
     .await
     .unwrap();
-    // Publication lands a moment after local acceptance, so the crossing is
-    // awaited rather than asserted at the instant the PUT engages.
+    // SlateDB's flush tick can PUT the group's WAL between its append and
+    // its publication, so the crossing is awaited rather than asserted at
+    // the instant the PUT engages.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !handle.state.lock().unwrap().applied.closed {
             tokio::task::yield_now().await;
@@ -82,6 +83,10 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
 
     // These operations cannot share the first group: its applied close and
     // blocked object-store write were observed before they were submitted.
+    // They must share the second: a retry alone changes nothing, and a
+    // no-write group joins the prior barrier behind the held dispatch gate,
+    // so the commit gate parks the committer until both are queued.
+    let commit = engine.test_hold_commit().await;
     let (retry_tx, mut retry) = oneshot::channel();
     let (fence_tx, mut fence) = oneshot::channel();
     engine
@@ -99,6 +104,7 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
         })
         .unwrap();
     assert_eq!(engine.appends_enqueued(), 3);
+    drop(commit);
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while engine.seal_fences.lock().unwrap().get(&identity).copied() != Some(2) {
             tokio::task::yield_now().await;
