@@ -104,18 +104,22 @@ mod tests {
 
     #[test]
     fn a_budget_is_full_once_its_metadata_allowance_is_spent() {
-        // One key of this length charges exactly an eighth of the allowance
-        // (six escaped bytes per key byte plus the 128-byte record overhead).
-        let key = "k".repeat((MAX_PAGE_METADATA / 8 - 128) / 6);
+        // Four keys of this length charge the allowance minus one bare
+        // record's 128-byte overhead (six escaped bytes per key byte plus
+        // 128 per record), so the page then sits exactly on the boundary.
+        let key = "k".repeat(((MAX_PAGE_METADATA - 128) / 4 - 128) / 6);
         let mut budget = PageBudget::new(super::MAX_PAGE_PLAINTEXT);
-        for _ in 0..8 {
-            assert!(
-                !budget.full(),
-                "the allowance is spent only by the last admit"
-            );
+        for _ in 0..4 {
+            assert!(!budget.full(), "keyed records leave the page open");
             assert!(budget.metadata_fits(&key));
             assert!(budget.admit(1, &key));
         }
+        assert!(
+            !budget.full(),
+            "a page with room for exactly one bare record is not full"
+        );
+        assert!(budget.metadata_fits(""), "that bare record still fits");
+        assert!(budget.admit(1, ""));
         assert!(budget.full(), "the metadata allowance closes the page");
         assert!(
             !budget.metadata_fits(""),
