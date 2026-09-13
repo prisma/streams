@@ -51,6 +51,18 @@ TYPED = [
  ('forget_alias', 'clippy::disallowed_methods', 'fn forget_alias(value: String) { use std::mem::forget as discard; discard(value); }'),
  ('unfulfilled_expectation', 'unfulfilled_lint_expectations', '#[expect(clippy::unwrap_used, reason="fixture; stale exception; removal must fail")] fn unfulfilled_expectation() {}'),
 ]
+ASSOCIATED_PANIC_CALLS = [
+    ('associated_option_unwrap', 'clippy::unwrap_used',
+     'fn associated_option_unwrap(value: Option<u8>) { let _value = Option::unwrap(value); }'),
+    ('associated_option_expect', 'clippy::expect_used',
+     'fn associated_option_expect(value: Option<u8>) { let _value = Option::expect(value, "present"); }'),
+    ('associated_result_expect', 'clippy::expect_used',
+     'fn associated_result_expect(value: Result<u8, u16>) { let _value = Result::expect(value, "present"); }'),
+    ('associated_result_unwrap_err', 'clippy::unwrap_used',
+     'fn associated_result_unwrap_err(value: Result<u8, u16>) { let _value = Result::unwrap_err(value); }'),
+    ('associated_result_expect_err', 'clippy::expect_used',
+     'fn associated_result_expect_err(value: Result<u8, u16>) { let _value = Result::expect_err(value, "error"); }'),
+]
 
 
 def copy_source(destination):
@@ -118,6 +130,10 @@ def main():
         results.append(run(copy, out, phase, PREFIX + IMPORTS + '\n'.join(c[2] for c in cases), 'check', cases))
     typed = PREFIX + '#![deny(clippy::disallowed_methods)]\n' + IMPORTS
     results.append(run(copy, out, 'typed-effects', typed + '\n'.join(c[2] for c in TYPED), 'clippy', TYPED))
+    panic_calls = PREFIX + '#![deny(clippy::unwrap_used, clippy::expect_used)]\n'
+    results.append(run(copy, out, 'associated-panic-calls',
+                       panic_calls + '\n'.join(c[2] for c in ASSOCIATED_PANIC_CALLS),
+                       'clippy', ASSOCIATED_PANIC_CALLS))
     test_cases = [('test_spawn_alias', 'clippy::disallowed_methods',
                    '#[cfg(test)] fn test_spawn_alias() { use tokio::spawn as launch; let _task = launch(async {}); }')]
     results.append(run(copy, out, 'test-cfg-effect', typed + test_cases[0][2], 'clippy', test_cases, tests=True))
@@ -125,7 +141,9 @@ def main():
     # Positive control after negatives: catches a stale/cached failing artifact.
     results.append(run(copy, out, 'positive-after', PREFIX + IMPORTS + POSITIVE, 'clippy'))
     write_json(out / 'summary.json', results)
-    print(f'compiler fixtures: OK ({len(CASES)} privacy + {len(TYPED) + 1} typed violations; three legitimate controls)')
+    print(f'compiler fixtures: OK ({len(CASES)} privacy + '
+          f'{len(TYPED) + len(ASSOCIATED_PANIC_CALLS) + 1} typed violations; '
+          'three legitimate controls)')
 
 
 if __name__ == '__main__':

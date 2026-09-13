@@ -1,6 +1,7 @@
 """Exercise the real gate with parsed Rust and isolated allowance documents."""
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -75,6 +76,63 @@ class OwnerCeilings(unittest.TestCase):
 
     def test_unregistered_source_is_rejected(self):
         self.assert_one_extra_site(self.check_counts(0, 0, 1))
+
+
+class ExceptionSiteCeilings(unittest.TestCase):
+    BEFORE = '''#[expect(clippy::unwrap_used, reason = "owner; poison invariant; no recovery")]
+pub fn check(lock: &std::sync::Mutex<()>, value: Option<u8>) {
+    let _guard = lock.lock().unwrap();
+    let _ = std::hint::black_box(value);
+}
+'''
+    AFTER = BEFORE.replace('std::hint::black_box(value)', 'Option::unwrap(value)')
+
+    def test_real_source_gate_rejects_an_associated_call_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = {
+                'docs/quality/policy.json': {
+                    'immutable_sha256': {},
+                    'adoption_line_additions': {},
+                },
+                'docs/quality/legacy-source.json': {
+                    'occurrences': [],
+                    'lines': {'src/owner.rs': 100},
+                },
+                'docs/quality/source-allowances.json': {'occurrences': []},
+                'docs/quality/owners.json': {'occurrences': []},
+                'docs/refactor/architecture-policy.json': {'sse_core_files': []},
+            }
+            for name, document in documents.items():
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(document))
+            source = root / 'src/owner.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text(self.BEFORE)
+            subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+            subprocess.run(['git', 'config', 'user.email', 'quality@example.test'],
+                           cwd=root, check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Quality Fixture'],
+                           cwd=root, check=True)
+            subprocess.run(['git', 'add', '.'], cwd=root, check=True)
+            subprocess.run(['git', 'commit', '-qm', 'baseline'], cwd=root, check=True)
+            base = subprocess.check_output(
+                ['git', 'rev-parse', 'HEAD'], cwd=root, text=True
+            ).strip()
+            with patch.object(source_gate, 'ROOT', root), \
+                 patch.object(source_gate, 'merge_base', return_value=base):
+                self.assertEqual(
+                    source_gate.check({'src/owner.rs': self.BEFORE},
+                                      syntax({'src/owner.rs': self.BEFORE})),
+                    [],
+                )
+                source.write_text(self.AFTER)
+                errors = source_gate.check(
+                    {'src/owner.rs': self.AFTER},
+                    syntax({'src/owner.rs': self.AFTER}),
+                )
+            self.assertTrue(any('unwrap_site:' in error for error in errors), errors)
 
 
 if __name__ == '__main__':

@@ -36,14 +36,17 @@ Exceptions MUST be statement/item-scoped `#[expect(clippy::lint_name, reason = "
 
 Every reasoned source exception also has a merge-base structural contract: its
 parsed scope size, nested-item count and syntax-fact multiplicity may not grow
-under the unchanged exception decision. `unwrap_used`, `expect_used` and
-`dead_code` additionally retain normalized site fingerprints as well as
-multiplicity, so replacing an old covered expression or field with a different
-one is also a new decision. These are source ceilings, not reimplementations of
-Clippy; the compiler remains the typed authority. A legitimate expansion must
-narrow the exception or update its reason as the explicit reviewed decision.
-This preserves deliberate poisoned-lock failure while preventing an impl-wide
-expectation from silently covering an unrelated unwrap or compatibility field.
+under the unchanged exception decision. `unwrap_used` and `expect_used` retain
+normalized direct-method and associated-call fingerprints. Lexical import
+aliases are resolved; ordinary callee and path sites under the exceptional
+scope are also retained conservatively so a local alias cannot hide a same-size
+replacement. `dead_code` retains exact field fingerprints. These are source
+ceilings, not reimplementations of Clippy; the pinned compiler fixtures remain
+the typed authority for method and associated-function lint truth. A legitimate
+expansion must narrow the exception or update its reason as the explicit
+reviewed decision. This preserves deliberate poisoned-lock failure while
+preventing an impl-wide expectation from silently covering an unrelated panic
+site or compatibility field.
 
 Never replace a deliberate poisoned-lock failure with silent recovery, swallow an error, or introduce a wrapper solely to satisfy a lint. A flags/options bag does not discharge argument complexity; a pass-through module does not discharge canonical ownership.
 
@@ -75,12 +78,15 @@ registered owners and runs their whole mutation scope. The rotation slot and
 source files are recorded in the same receipt.
 
 `scripts/quality/mutation_owners.py` is the single exact owner table for source
-paths, packages/targets and test filters. The planner's broader critical-prefix
-policy deliberately remains separate so a moved or new critical file is
-selected and then fails as unregistered. Registration is validated before any
-mutant discovery, independently of how many mutants another owner selects.
-Deleted critical source is recorded separately and never presented to
-`cargo-mutants`; a rename must register its live destination.
+paths, packages/targets and test filters. Registered paths participate directly
+even when they are outside the planner's broader critical prefixes. Change
+selection consumes NUL-delimited, rename-aware Git records and carries prior
+registered/prefix criticality to a live destination; a missing destination row
+therefore fails before discovery. A dissimilar move represented as delete/add
+conservatively carries new Rust paths as possible replacements. True deletions
+remain explicit receipt entries and are never presented to `cargo-mutants`.
+The resolved owner/source handoff is recorded once and validated unchanged by
+the driver before discovery.
 
 The planner records `visibility_only_files` when the only changes narrow parsed
 `pub` visibility to `pub(crate)`, `pub(super)` or `pub(self)` and every other
@@ -130,6 +136,12 @@ The `visibility_only_files` and `production_unchanged_files` classifications do
 not select runtime mutation/Miri/property/Loom checks by themselves. Tooling changes still exercise the verification harness. This is
 a selection decision, not a passing zero-mutation experiment; other critical
 changes still require a registered executable mutation scope.
+
+A scheduled bucket bypasses diff-oriented prefix selection entirely. Its full
+owners, complete discovery source set and rotation slot must agree in the plan,
+driver receipt and actual cargo-mutants file arguments. The union of seven
+buckets covers every active registered owner exactly once; zero discovery is
+reported only after that owner's discovery command actually ran.
 
 | Trigger | Required verification and acceptance |
 | --- | --- |
