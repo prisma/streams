@@ -129,7 +129,7 @@ if [ "$STEP" = servers ]; then
       --env WAL_POST_ACK_GATHER_MS=6 --env FRAME_COMPRESS=1 \
       --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
       --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
-      --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
+      --env TRIM_PER_OP=65536 \
       --env POOL_IDLE_SECS=4 \
       ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
       ${KA[@]+"${KA[@]}"} \

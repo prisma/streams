@@ -48,6 +48,11 @@ pub(crate) enum ConfigNotice {
     DescriptorCeilingUnknown {
         configured: u64,
     },
+    /// One bounded boot warning for any explicitly supplied v1 absorber
+    /// options. Values are intentionally omitted: they have no runtime effect.
+    IgnoredAbsorberOptions {
+        options: Vec<&'static str>,
+    },
 }
 
 impl ConfigNotice {
@@ -122,6 +127,14 @@ impl std::fmt::Display for ConfigNotice {
                 "the platform reported no descriptor ceiling; the release posture's \
                  SSE_MAX_CONNECTIONS={configured} stands unresolved against RLIMIT_NOFILE"
             ),
+            Self::IgnoredAbsorberOptions { options } => write!(
+                f,
+                "{} are deprecated compatibility options and are ignored by the v2 \
+                 gather planner; use ABSORB_GATHER_MAX_BYTES for batch packing, \
+                 ABSORB_GLOBAL_BUDGET_BYTES/ABSORB_GLOBAL_GATHERS for process memory \
+                 and gather concurrency, and ABSORB_READ_PAR for reads within a gather",
+                options.join(", ")
+            ),
         }
     }
 }
@@ -150,5 +163,14 @@ mod tests {
             }
             .is_warning()
         );
+
+        let ignored = ConfigNotice::IgnoredAbsorberOptions {
+            options: vec!["ABSORB_PASS_BYTES", "ABSORB_CONCURRENCY"],
+        };
+        let rendered = ignored.to_string();
+        assert!(ignored.is_warning());
+        assert!(rendered.contains("are ignored by the v2 gather planner"));
+        assert!(rendered.contains("ABSORB_GLOBAL_GATHERS"));
+        assert!(!rendered.contains("256"));
     }
 }

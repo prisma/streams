@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from dataclasses import dataclass
 
 ROOT = Path(__file__).resolve().parents[2]
 ANCHOR = '5bdaf9684197ff84bd544fd0fcd69520001ea196'
@@ -17,9 +18,90 @@ def git(*args):
 
 
 def merge_base():
-    # CI supplies the actual target ref, never HEAD's parent or a guessed diff.
-    target = os.environ.get('QUALITY_BASE_REF', 'origin/slate')
+    # Source/debt ratchets retain merge-base semantics. Verification selection
+    # uses verification_comparison() below because push and schedule events have
+    # different meanings from a pull request.
+    target = os.environ.get('QUALITY_BASE_REF') or 'origin/slate'
+    before = os.environ.get('QUALITY_BEFORE_SHA', '')
+    event = os.environ.get('QUALITY_EVENT_NAME') or os.environ.get('GITHUB_EVENT_NAME', '')
+    if event == 'push' and before and set(before) != {'0'}:
+        target = before
     return git('merge-base', 'HEAD', target)
+
+
+@dataclass(frozen=True)
+class VerificationComparison:
+    event: str
+    checkout_revision: str
+    comparison_revision: str
+    kind: str
+
+
+def _exists(revision, kind='commit'):
+    return subprocess.run(
+        ['git', 'cat-file', '-e', f'{revision}^{{{kind}}}'], cwd=ROOT,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def _empty_tree():
+    return subprocess.check_output(['git', 'mktree'], cwd=ROOT, input=b'').decode().strip()
+
+
+def verification_comparison():
+    """Resolve the event-correct tree comparison, failing closed.
+
+    Pull requests use the target merge base. Pushes compare the exact previous
+    pushed revision with the checkout, including non-ancestor force pushes.
+    A branch-creation push deliberately compares with Git's empty tree. A
+    missing previous push object is an error, never an empty HEAD-vs-HEAD plan.
+    Schedules have no synthetic source diff; their owner rotation is selected
+    by verification_plan instead.
+    """
+    event = os.environ.get('QUALITY_EVENT_NAME') or os.environ.get('GITHUB_EVENT_NAME') or 'local'
+    checkout = git('rev-parse', 'HEAD')
+    expected_checkout = os.environ.get('QUALITY_HEAD_SHA', '').strip()
+    if expected_checkout:
+        expected_checkout = git('rev-parse', expected_checkout)
+        if checkout != expected_checkout:
+            raise ValueError(
+                f'quality checkout mismatch: HEAD={checkout}, event revision={expected_checkout}'
+            )
+
+    if event.startswith('pull_request'):
+        target = os.environ.get('QUALITY_BASE_REF', '').strip()
+        if not target:
+            raise ValueError('pull_request verification requires QUALITY_BASE_REF')
+        if not _exists(target):
+            raise ValueError(f'pull_request base is unavailable: {target}')
+        return VerificationComparison(event, checkout, git('merge-base', checkout, target),
+                                      'pull-request-merge-base')
+
+    if event == 'push':
+        before = os.environ.get('QUALITY_BEFORE_SHA', '').strip()
+        if not before:
+            raise ValueError('push verification requires QUALITY_BEFORE_SHA')
+        if set(before) == {'0'}:
+            return VerificationComparison(event, checkout, _empty_tree(), 'push-branch-creation')
+        if not _exists(before):
+            raise ValueError(
+                f'previous push revision is unavailable: {before}; fetch it or fail the run'
+            )
+        ancestor = subprocess.run(
+            ['git', 'merge-base', '--is-ancestor', before, checkout], cwd=ROOT,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        kind = 'push-previous-revision' if ancestor else 'push-force-update'
+        return VerificationComparison(event, checkout, git('rev-parse', before), kind)
+
+    if event == 'schedule':
+        return VerificationComparison(event, checkout, '', 'scheduled-owner-rotation')
+
+    target = os.environ.get('QUALITY_BASE_REF') or 'origin/slate'
+    if not _exists(target):
+        raise ValueError(f'local verification base is unavailable: {target}')
+    return VerificationComparison(event, checkout, git('merge-base', checkout, target),
+                                  'local-merge-base')
 
 
 def tracked_sources(root=ROOT):

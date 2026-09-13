@@ -8,7 +8,7 @@ The objective is the structural approval bar in the [pinned Cursor review skill]
 
 Root `rust-toolchain.toml` MUST pin an exact release plus Clippy and rustfmt. Local checks and every CI Rust job MUST use that pin, never floating stable. Additional tools are version-pinned in `quality-tools.toml`; nightly tools have a separate dated pin. Toolchain or baseline migrations require an explicit review and new provenance, rather than an automatic update.
 
-`scripts/quality.sh` is the common local/CI entry point for workflow linting, formatting, Clippy, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Pinned actionlint MUST run without a file glob so both `.yml` and `.yaml` workflows are checked. Every subprocess failure MUST propagate, including commands in pipelines. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
+`scripts/quality.sh` is the common local/CI entry point for workflow linting, formatting, Clippy, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Pinned actionlint MUST run without a file glob so both `.yml` and `.yaml` workflows are checked. Every subprocess failure MUST propagate, including commands in pipelines. The ordinary Clippy command ends with `-- -D warnings`; the empty active diagnostic ledgers are not a reason to leave warnings merely advisory. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
 
 ## Lint profile
 
@@ -34,6 +34,17 @@ The adoption inventory is frozen against commit `5bdaf9684197ff84bd544fd0fcd6952
 
 Exceptions MUST be statement/item-scoped `#[expect(clippy::lint_name, reason = "owner; invariant/issue; why the simpler alternative is wrong")]`. Narrow `allow(..., reason = "...")` is permitted when conditional compilation makes expectations unreliable. Test-only modules may exempt size/argument rules. Blanket lint-group suppression is forbidden. Unfulfilled expectations expose stale exceptions. Existing legacy exceptions are inventoried during adoption and cannot authorize new sites.
 
+Every reasoned source exception also has a merge-base structural contract: its
+parsed scope size, nested-item count and syntax-fact multiplicity may not grow
+under the unchanged exception decision. `unwrap_used`, `expect_used` and
+`dead_code` additionally retain normalized site fingerprints as well as
+multiplicity, so replacing an old covered expression or field with a different
+one is also a new decision. These are source ceilings, not reimplementations of
+Clippy; the compiler remains the typed authority. A legitimate expansion must
+narrow the exception or update its reason as the explicit reviewed decision.
+This preserves deliberate poisoned-lock failure while preventing an impl-wide
+expectation from silently covering an unrelated unwrap or compatibility field.
+
 Never replace a deliberate poisoned-lock failure with silent recovery, swallow an error, or introduce a wrapper solely to satisfy a lint. A flags/options bag does not discharge argument complexity; a pass-through module does not discharge canonical ownership.
 
 ## Architecture requirements
@@ -52,6 +63,24 @@ Source rules use parsed Rust syntax. Type-dependent rules use actual compiler di
 Splitting a transaction into context-heavy helpers, hiding flags in options bags or adding pass-through modules is not acceptance. Review the whole affected owner under the pinned skill, including opportunities to delete unnecessary state or layers.
 
 ## Verification selected by the changed invariant
+
+The comparison range is event-specific and is written into `plan.json` with
+the event, checked-out revision, comparison revision/kind and selected mutation
+owners. Pull requests use the actual target-branch merge base. Pushes use the
+exact `before` revision from the event—even for a non-ancestor force update;
+CI fetches that object if necessary and fails closed if it remains unavailable.
+A branch-creation push compares against Git's empty tree. Scheduled runs do not
+pretend to have a PR diff: a stable seven-night hash rotation selects complete
+registered owners and runs their whole mutation scope. The rotation slot and
+source files are recorded in the same receipt.
+
+`scripts/quality/mutation_owners.py` is the single exact owner table for source
+paths, packages/targets and test filters. The planner's broader critical-prefix
+policy deliberately remains separate so a moved or new critical file is
+selected and then fails as unregistered. Registration is validated before any
+mutant discovery, independently of how many mutants another owner selects.
+Deleted critical source is recorded separately and never presented to
+`cargo-mutants`; a rename must register its live destination.
 
 The planner records `visibility_only_files` when the only changes narrow parsed
 `pub` visibility to `pub(crate)`, `pub(super)` or `pub(self)` and every other

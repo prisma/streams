@@ -224,6 +224,21 @@ impl<'ast> Visit<'ast> for Scan {
         visit::visit_path(self, node);
     }
 
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        // Method names are syntactic facts, not type resolution. They let the
+        // source ratchet count new `.unwrap()` / `.expect()` sites hidden by a
+        // broader lint expectation. The normalized expression distinguishes a
+        // replaced site even when total call count is unchanged; Clippy remains
+        // the typed authority.
+        self.fact("method-call", node.method.to_string(), node.method.span());
+        self.fact(
+            "method-call-site",
+            format!("{}\t{}", node.method, tokens(node)),
+            node.span(),
+        );
+        visit::visit_expr_method_call(self, node);
+    }
+
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         self.fact("import", tokens(&node.tree), node.span());
         for target in self.imports.targets(&node.tree) {

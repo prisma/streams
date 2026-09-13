@@ -173,7 +173,7 @@ if [ "$ROLE" = server ]; then
     --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
     --env LIMIT_RECS_PER_SEC="${SOAK_LIMIT_RECS_PER_SEC:-100000}" \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
-    --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
+    --env TRIM_PER_OP=65536 \
     --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 \
     ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
     ${SCALEARG[@]+"${SCALEARG[@]}"} \

@@ -65,6 +65,19 @@ class Triggers(unittest.TestCase):
         self.assertEqual(quiet['mutation_source_files'], [])
         self.assertFalse(quiet['mutants'])
 
+    def test_deleted_critical_source_is_disposed_not_mutated(self):
+        path = 'src/shard/old_owner.rs'
+        checks = plan([path], deleted=[path])
+        self.assertFalse(checks['mutants'])
+        self.assertEqual(checks['mutation_source_files'], [])
+        self.assertEqual(checks['deleted_critical_files'], [path])
+
+    def test_unregistered_live_critical_source_remains_selected_to_fail_closed(self):
+        path = 'src/shard/new_unregistered_owner.rs'
+        checks = plan([path])
+        self.assertTrue(checks['mutants'])
+        self.assertEqual(checks['unregistered_mutation_source_files'], [path])
+
     def test_pilot_benchmark_changes_select_lifecycle_and_mutations(self):
         for path in ('src/bin/pilot/benchmark.rs', 'src/bin/pilot/benchmark/window.rs', 'src/bin/pilot/benchmark/config.rs'):
             checks = plan([path])

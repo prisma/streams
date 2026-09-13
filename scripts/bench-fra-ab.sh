@@ -83,7 +83,7 @@ server)
     --env PATH_PREFIX=bench --env INSTANCE_NAME=bench-server \
     --env FLUSH_INTERVAL_MS=50 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
     --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 \
-    --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env ABSORB_PASS_BYTES=33554432 --env TRIM_PER_OP=8192 \
+    --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env TRIM_PER_OP=8192 \
     --env KEEP_AWAKE=1 \
     ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
     2>&1 | grep -E 'New version|error'

@@ -137,8 +137,6 @@ pub(super) async fn open_engine_with_absorber_layout(
         threshold_bytes: 1,
         threshold_age: std::time::Duration::from_millis(1),
         tick: std::time::Duration::from_millis(20),
-        batch_puts: 256,
-        pass_bytes: 8 * 1024 * 1024,
         ..Default::default()
     };
     let handle = crate::history::Absorber::start(store, engine.clone(), keys, cfg, absorb_rx);

@@ -652,6 +652,13 @@ impl crate::config::ServerConfig {
     pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
         let mut f = Findings::default();
 
+        let ignored_absorber_options = self.cli.ignored_absorber_options();
+        if !ignored_absorber_options.is_empty() {
+            f.notices.push(ConfigNotice::IgnoredAbsorberOptions {
+                options: ignored_absorber_options,
+            });
+        }
+
         self.validate_engine_and_profile(&mut f);
         let (tenant, cell_id) = self.validate_identity(&mut f);
         let initial_shards = self.validate_topology_and_ceilings(&mut f);

@@ -90,6 +90,23 @@ pub(crate) use process_executor::{init_slatedb_runtime_threads, slatedb_runtime}
 mod runtime_handoff;
 pub(crate) use runtime_handoff::on_slatedb_rt;
 
+static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The CLI-to-active-absorber boundary. Legacy compatibility options are not
+/// inputs, so they cannot accidentally regain runtime meaning through a later
+/// bootstrap edit.
+fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> AbsorberConfig {
+    AbsorberConfig {
+        threshold_bytes: args.absorb_bytes,
+        threshold_age: Duration::from_secs(args.absorb_age_secs),
+        gather_max_bytes,
+        gather_pace_window: Duration::from_millis(args.absorb_pace_window_ms),
+        gather_pace: Duration::from_millis(args.absorb_pace_ms),
+        gather_read_par: args.absorb_read_par,
+        ..Default::default()
+    }
+}
+
 /// The server bootstrap: the composition root hands in ONE owned,
 /// PROVEN [`ValidatedServerConfig`] (PR 3.2: validation is complete
 /// before this function runs — the type is the evidence); this function
@@ -126,8 +143,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // once. Runtime policy, caches, journals, and admission state are owned
     // independently by RuntimeCaps; their tests do not call this entry point.
     // A failed bootstrap still cannot start a second set of process sentinels.
-    static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
     if RUN_WAS_INVOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         anyhow::bail!(
             "run() starts process infrastructure once; construct independent \
@@ -377,14 +392,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                     ..Default::default()
                 },
             ));
-        let absorb_bytes = config.cli.absorb_bytes;
-        let absorb_age = config.cli.absorb_age_secs;
-        let absorb_pass_bytes = config.cli.absorb_pass_bytes;
-        let absorb_concurrency = config.cli.absorb_concurrency;
-        let absorb_pace_window_ms = config.cli.absorb_pace_window_ms;
-        let absorb_pace_ms = config.cli.absorb_pace_ms;
-        let absorb_read_par = config.cli.absorb_read_par;
-        let absorb_small_bytes = config.cli.absorb_small_bytes;
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
         // or the envelope claim quietly breaks via reservation
@@ -407,6 +414,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 config.cli.absorb_gather_max_bytes
             }
         };
+        let absorber_config = absorber_config(&config.cli, absorb_gather_max_bytes);
         let handle_idle_evict_secs = config.cli.handle_idle_evict_secs;
         let handle_max_resident = config.cli.handle_max_resident;
         let trim_per_op = config.cli.trim_per_op;
@@ -450,6 +458,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 let data_store = data_store.clone();
                 let keys = keys.clone();
                 let touch = touch.clone();
+                let absorber_config = absorber_config.clone();
                 let mut settings = settings.clone();
                 // O14a: desynchronize WAL flush ticks across shards. 16
                 // shards flushing on the same phase PUT in synchronized
@@ -536,18 +545,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                         data_store,
                         engine.clone(),
                         keys,
-                        AbsorberConfig {
-                            threshold_bytes: absorb_bytes,
-                            threshold_age: Duration::from_secs(absorb_age),
-                            pass_bytes: absorb_pass_bytes,
-                            concurrency: absorb_concurrency,
-                            small_pass_bytes: absorb_small_bytes,
-                            gather_max_bytes: absorb_gather_max_bytes,
-                            gather_pace_window: Duration::from_millis(absorb_pace_window_ms),
-                            gather_pace: Duration::from_millis(absorb_pace_ms),
-                            gather_read_par: absorb_read_par,
-                            ..Default::default()
-                        },
+                        absorber_config,
                         absorb_rx,
                     );
                     Ok(engine)
@@ -921,3 +919,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     served?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

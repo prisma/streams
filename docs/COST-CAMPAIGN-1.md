@@ -1,5 +1,10 @@
 # Campaign report — boundary race, request-cost rounds 1–2, wide cardinality, absorber follow-ups
 
+> **Historical configuration note (2026-09).** The
+> `ABSORB_CONCURRENCY` values in this campaign are measurements of the old
+> lane. That spelling is now compatibility-only and ignored; use the active
+> v2 gather controls in [RUNBOOK.md](../RUNBOOK.md#32-engine-shard-log).
+
 **2026-07-27 → 2026-07-29, `slate` 7eb06a6 → f082779.** One document
 covering what changed, what was measured, and what it taught us. Detail
 lives in [COST-METHODOLOGY.md](./COST-METHODOLOGY.md) (how the tests

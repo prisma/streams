@@ -91,12 +91,14 @@ The two CPU hogs are kept off the request path:
   poll-length write stall (60 s poll → 14 s stalls → backpressure 408s).
   Idle shards may poll lazily; the setting follows load, not a global.
 - **Absorber throughput (amends §1.2)**: absorption must track ingest in
-  steady state or the hot tier grows without bound. The absorber reads
-  the hot log as disjoint offset windows with bounded concurrency
-  (4-way; serial 8 MB chunks measured ~10k rec/s vs 150k rec/s ingest),
-  caps per-pass buffering (`ABSORB_PASS_BYTES`, default 256 MB — a pass
-  is held in RAM), and trims up to `TRIM_PER_OP` (default 8k, throughput
-  shards ≥ 256k) hot records per Absorbed op so trim also tracks ingest.
+  steady state or the hot tier grows without bound. The v2 gather planner
+  bounds packing with `ABSORB_GATHER_MAX_BYTES`, process memory and gather
+  concurrency with `ABSORB_GLOBAL_BUDGET_BYTES` / `ABSORB_GLOBAL_GATHERS`,
+  and read overlap within a gather with `ABSORB_READ_PAR`. It trims up to
+  `TRIM_PER_OP` (default 8k, throughput shards ≥ 256k) hot records per
+  Absorbed op so trim also tracks ingest. The old `ABSORB_PASS_BYTES`,
+  `ABSORB_CONCURRENCY`, and `ABSORB_SMALL_BYTES` spellings are accepted only
+  for command-line compatibility and are ignored with one startup notice.
   The ≤ 15 % core budget still binds; on 1-core instances the budget, not
   the pipeline, is the sustained ceiling.
 

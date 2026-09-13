@@ -7,6 +7,11 @@ on:
     - cron: "43 3 * * *"
 permissions:
   contents: read
+env:
+  QUALITY_EVENT_NAME: ${{ github.event_name }}
+  QUALITY_HEAD_SHA: ${{ github.sha }}
+  QUALITY_BEFORE_SHA: ${{ github.event.before }}
+  QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -14,6 +19,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
       - name: Install pinned dependency tools
@@ -26,8 +34,6 @@ jobs:
           python3 scripts/install-actionlint.py
           echo "$PWD/target/quality-tools/bin" >> "$GITHUB_PATH"
       - name: Common quality entry point
-        env:
-          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: scripts/quality.sh
       - name: Real compiler boundary fixtures
         run: python3 scripts/quality/compiler_fixtures.py --out /tmp/quality-compiler
@@ -39,6 +45,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
       - name: Install dated nightly and pinned verification tools
@@ -50,9 +59,10 @@ jobs:
             version=$(python3 -c 'import sys,tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"][sys.argv[1]])' "$tool")
             cargo install "$tool" --locked --version "=$version"
           done
+      - name: Select the UTC-day mutation rotation
+        if: github.event_name == 'schedule'
+        run: echo "QUALITY_SCHEDULE_SLOT=$(($(date -u +%s) / 86400))" >> "$GITHUB_ENV"
       - name: Preserve actual PR diff and select checks
-        env:
-          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: |
           cargo build --locked -p streams-quality-syntax
           python3 scripts/quality/verification_plan.py --out target/quality-plan
@@ -74,6 +84,4 @@ jobs:
         run: scripts/quality/nightly.sh miri
       - name: Diff-scoped read-owner mutants
         if: env.CHECK_MUTANTS == 'true'
-        env:
-          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: scripts/quality/mutations.sh

@@ -603,35 +603,11 @@ impl KeyCache {
 
 // ---- absorber ----
 
-#[derive(Clone)]
-#[expect(
-    dead_code,
-    reason = "AbsorberConfig; batch_puts, pass_bytes, small_pass_bytes and concurrency are accepted by the CLI so existing deployments keep booting while the gather planner sizes passes itself; removing them would remove the flags with them"
-)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AbsorberConfig {
     pub threshold_bytes: u64,
     pub threshold_age: Duration,
     pub tick: Duration,
-    pub batch_puts: usize,
-    /// Upper bound on plaintext bytes buffered per absorb pass. absorb_one
-    /// holds the whole pass in memory; without a cap, a pass that starts
-    /// behind a high-throughput stream buffers the entire lag (GBs on a
-    /// 1 GB instance). The boundary advances per pass, so a capped pass
-    /// just means more passes.
-    pub pass_bytes: u64,
-    /// Streams whose pending bytes are at or under this run in the
-    /// CONCURRENT small lane; bigger streams keep the serial full-budget
-    /// lane. The split exists so wide sparse backlogs (thousands of
-    /// near-empty streams, each pass dominated by ~10 serial store
-    /// round-trips) can overlap latency without letting several
-    /// full-size passes multiply peak memory (docs/COST-WIDE1.md §1:
-    /// the serial grind measured ~4.5 streams/s, pinning both the bill
-    /// and backlog completion).
-    pub small_pass_bytes: u64,
-    /// Concurrent small-lane passes (1 = fully serial, the old behavior).
-    /// Peak extra memory is bounded by concurrency × small_pass_bytes of
-    /// plaintext.
-    pub concurrency: usize,
     /// Every N ticks, re-discover unabsorbed streams from the engine's
     /// resident handles. Signals are the fast path; the sweep closes
     /// their gaps (bounded-channel drops under wide backlogs, restarts).
@@ -686,10 +662,6 @@ impl Default for AbsorberConfig {
             threshold_bytes: 4 * 1024 * 1024,
             threshold_age: Duration::from_secs(300),
             tick: Duration::from_secs(5),
-            batch_puts: 4_096,
-            pass_bytes: 256 * 1024 * 1024,
-            small_pass_bytes: 1024 * 1024,
-            concurrency: 6,
             sweep_every: 12,
             gather_max_bytes: 32 * 1024 * 1024,
             gather_pace_window: Duration::from_millis(50),

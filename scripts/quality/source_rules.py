@@ -1,5 +1,6 @@
 """Syntax facts drive source rules; typed calls remain the compiler's job."""
 from collections import Counter
+import hashlib
 import re
 from common import digest
 from lint_contract import from_compiler
@@ -86,6 +87,110 @@ def from_entries(rows):
             raise ValueError('invalid source allowance')
         result[identity] = row['count']
     return result
+
+
+def _inside(inner, outer):
+    start = (inner['line'], inner['column'])
+    end = (inner['end_line'], inner['end_column'])
+    outer_start = (outer['line'], outer['column'])
+    outer_end = (outer['end_line'], outer['end_column'])
+    return outer_start <= start and end <= outer_end
+
+
+def _exception_lints(value):
+    head = value.split('reason', 1)[0]
+    return {
+        f'clippy::{name}' if clippy else name
+        for clippy, name in re.findall(r'(?:(clippy)\s*::\s*)?([a-z][a-z0-9_]*)', head)
+        if name not in {'allow', 'expect'}
+    }
+
+
+def exception_contracts(sources, facts):
+    """Measure the syntax living under each accepted exception.
+
+    This is deliberately a source ratchet, not a substitute lint engine. The
+    compiler still decides whether an unwrap is the Clippy lint or whether a
+    field is dead. These counters ensure an existing item/impl expectation
+    cannot silently cover one more candidate site or a larger structure.
+    """
+    contracts = {}
+    for path, parsed in facts.items():
+        file_end = max(1, len(sources[path].splitlines()))
+        for attribute in parsed['facts']:
+            value = attribute['value']
+            if (attribute['kind'] not in ('attribute', 'macro-attribute')
+                    or not re.match(r'(allow|expect)\s*\(', value)
+                    or 'reason =' not in value):
+                continue
+            candidates = [item for item in parsed['items']
+                          if _inside(attribute['location'], item['location'])]
+            if candidates:
+                scope = min(candidates, key=lambda item: (
+                    item['location']['end_line'] - item['location']['line'],
+                    item['location']['end_column'] - item['location']['column'],
+                ))
+                location = scope['location']
+                kind = scope['kind']
+            else:
+                location = {'line': 1, 'column': 0, 'end_line': file_end,
+                            'end_column': 1 << 30}
+                kind = 'crate'
+            lints = _exception_lints(value)
+            scoped_facts = [fact for fact in parsed['facts']
+                            if _inside(fact['location'], location)]
+            scoped_items = [item for item in parsed['items']
+                            if _inside(item['location'], location)]
+            metrics = Counter({
+                'scope_lines': location['end_line'] - location['line'] + 1,
+                'nested_items': len(scoped_items),
+                # A compiler-independent multiplicity ceiling for other lint
+                # candidates (paths, calls, macros, attributes). Typed Clippy
+                # still decides which of them actually trigger a lint.
+                'syntax_facts': len(scoped_facts),
+            })
+            for lint, methods, total, prefix in (
+                ('clippy::unwrap_used', {'unwrap', 'unwrap_err'}, 'unwrap_sites', 'unwrap_site'),
+                ('clippy::expect_used', {'expect', 'expect_err'}, 'expect_sites', 'expect_site'),
+            ):
+                if lint not in lints:
+                    continue
+                sites = [fact for fact in scoped_facts
+                         if fact['kind'] == 'method-call-site'
+                         and fact['value'].partition('\t')[0] in methods]
+                metrics[total] = len(sites)
+                for fact in sites:
+                    site = f'{fact["qualified"]}\0{fact["value"]}'
+                    digest = hashlib.sha256(site.encode()).hexdigest()[:16]
+                    metrics[f'{prefix}:{fact["qualified"]}:{digest}'] += 1
+            if 'dead_code' in lints:
+                fields = [item for item in scoped_items if item['kind'] == 'field']
+                metrics['fields'] = len(fields)
+                for field in fields:
+                    site = f'{field["qualified"]}\0{field["signature"]}'
+                    digest = hashlib.sha256(site.encode()).hexdigest()[:16]
+                    metrics[f'field_site:{field["qualified"]}:{digest}'] += 1
+            identity = (path, attribute['qualified'], kind, value)
+            if identity in contracts:
+                contracts[identity].update(metrics)
+            else:
+                contracts[identity] = metrics
+    return contracts
+
+
+def exception_growth(current, previous):
+    failures = []
+    for identity, metrics in current.items():
+        if identity not in previous:
+            continue  # A new/changed reason is the explicit review decision.
+        before = previous[identity]
+        for metric, count in metrics.items():
+            if count > before.get(metric, 0):
+                failures.append(
+                    f'accepted exception grew without a new decision: {identity}: '
+                    f'{metric} {before.get(metric, 0)} -> {count}'
+                )
+    return failures
 
 
 def violations(sources, facts, before_lines, prior_lines, allowed, architecture):

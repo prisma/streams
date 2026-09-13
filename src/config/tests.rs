@@ -298,11 +298,11 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
     ("trim-per-op", "TRIM_PER_OP", "8192"),
     ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
-    ("absorb-pass-bytes", "ABSORB_PASS_BYTES", "268435456"),
+    ("absorb-pass-bytes", "ABSORB_PASS_BYTES", ""),
     ("absorb-bytes", "ABSORB_BYTES", "4194304"),
     ("absorb-age-secs", "ABSORB_AGE_SECS", "300"),
-    ("absorb-concurrency", "ABSORB_CONCURRENCY", "6"),
-    ("absorb-small-bytes", "ABSORB_SMALL_BYTES", "1048576"),
+    ("absorb-concurrency", "ABSORB_CONCURRENCY", ""),
+    ("absorb-small-bytes", "ABSORB_SMALL_BYTES", ""),
     ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
     ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
     (
@@ -408,6 +408,138 @@ fn cli_surface_is_pinned() {
         actual, want,
         "CLI surface drifted; a rename/default change is a product decision, not a refactor"
     );
+}
+
+#[test]
+fn legacy_absorber_flags_still_parse_but_have_no_fabricated_defaults() {
+    let parsed = CliArgs::try_parse_from([
+        "streams-slate",
+        "--s3-endpoint",
+        "http://127.0.0.1:1",
+        "--absorb-pass-bytes",
+        "11",
+        "--absorb-concurrency",
+        "12",
+        "--absorb-small-bytes",
+        "13",
+    ])
+    .unwrap();
+    assert_eq!(parsed.absorb_pass_bytes, Some(11));
+    assert_eq!(parsed.absorb_concurrency, Some(12));
+    assert_eq!(parsed.absorb_small_bytes, Some(13));
+    assert_eq!(parsed.absorb_gather_max_bytes, 32 * 1024 * 1024);
+
+    let defaults = test_cli();
+    assert!(defaults.ignored_absorber_options().is_empty());
+}
+
+#[test]
+fn legacy_absorber_environment_helper() {
+    if ProcessEnvironment
+        .get("STREAMS_LEGACY_ABSORBER_ENV_CHECK")
+        .is_none()
+    {
+        return;
+    }
+    let parsed =
+        CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap();
+    assert_eq!(parsed.absorb_pass_bytes, Some(21));
+    assert_eq!(parsed.absorb_concurrency, Some(22));
+    assert_eq!(parsed.absorb_small_bytes, Some(23));
+}
+
+#[test]
+fn legacy_absorber_environment_spellings_still_parse() {
+    let out = run_helper_test(
+        "config::tests::legacy_absorber_environment_helper",
+        &[
+            ("STREAMS_LEGACY_ABSORBER_ENV_CHECK", "1"),
+            ("ABSORB_PASS_BYTES", "21"),
+            ("ABSORB_CONCURRENCY", "22"),
+            ("ABSORB_SMALL_BYTES", "23"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "legacy absorber environment parse failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "legacy absorber environment helper did not run"
+    );
+}
+
+#[test]
+fn explicit_ignored_absorber_values_produce_one_bounded_notice() {
+    let mut cli = test_cli();
+    cli.absorb_pass_bytes = Some(11);
+    cli.absorb_concurrency = Some(12);
+    cli.absorb_small_bytes = Some(13);
+    cli.absorb_gather_max_bytes = 7 * 1024 * 1024;
+    let validated = ServerConfig::load(cli, &MapEnvironment::empty())
+        .validate()
+        .unwrap();
+    assert_eq!(
+        validated.config().cli.absorb_gather_max_bytes,
+        7 * 1024 * 1024
+    );
+    let ignored: Vec<_> = validated
+        .into_bootstrap_parts()
+        .notices
+        .into_iter()
+        .filter_map(|notice| match notice {
+            super::notice::ConfigNotice::IgnoredAbsorberOptions { options } => Some(options),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ignored,
+        vec![vec![
+            "ABSORB_PASS_BYTES",
+            "ABSORB_CONCURRENCY",
+            "ABSORB_SMALL_BYTES",
+        ]]
+    );
+}
+
+#[test]
+fn default_absorber_configuration_emits_no_ignored_option_notice() {
+    let validated = load_with(&[]).validate().unwrap();
+    assert!(
+        !validated
+            .into_bootstrap_parts()
+            .notices
+            .iter()
+            .any(|notice| matches!(
+                notice,
+                super::notice::ConfigNotice::IgnoredAbsorberOptions { .. }
+            ))
+    );
+}
+
+#[test]
+fn legacy_absorber_help_is_honest_about_the_active_controls() {
+    let help = CliArgs::command().render_long_help().to_string();
+    for flag in [
+        "--absorb-pass-bytes",
+        "--absorb-concurrency",
+        "--absorb-small-bytes",
+    ] {
+        let start = help.find(flag).unwrap_or_else(|| panic!("missing {flag}"));
+        let rest = &help[start..];
+        let end = rest[1..]
+            .find("\n      --")
+            .map_or(rest.len(), |offset| offset + 1);
+        let section = &rest[..end];
+        assert!(
+            section.contains("accepted but ignored"),
+            "{flag}: {section}"
+        );
+    }
+    assert!(help.contains("ABSORB_GLOBAL_GATHERS"));
+    assert!(help.contains("ABSORB_GATHER_MAX_BYTES"));
 }
 
 #[test]

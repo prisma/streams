@@ -433,6 +433,14 @@
       "syntax": "OnceLock < DriftRings >"
     },
     {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::RUN_WAS_INVOKED",
+      "path": "src/bootstrap.rs",
+      "reason": "Process bootstrap invocation guard; this is the existing once-per-process state at module scope so the negative bootstrap test can prove that replacing run with an empty success is observable; it owns no tenant or runtime state.",
+      "syntax": "std :: sync :: atomic :: AtomicBool"
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::spawn_sentinels",

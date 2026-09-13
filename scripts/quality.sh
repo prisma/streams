@@ -14,7 +14,7 @@ cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
-cargo clippy --locked --workspace --all-targets --message-format=json > "$QUALITY_OUT/clippy.jsonl"
+cargo clippy --locked --workspace --all-targets --message-format=json -- -D warnings > "$QUALITY_OUT/clippy.jsonl"
 python3 scripts/quality/gate.py --clippy "$QUALITY_OUT/clippy.jsonl"
 cargo machete
 cargo deny --locked --workspace check

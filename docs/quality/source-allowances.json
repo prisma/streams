@@ -1816,13 +1816,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::run::RUN_WAS_INVOKED",
-      "path": "src/bootstrap.rs",
-      "syntax": "std :: sync :: atomic :: AtomicBool"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::EXECUTOR",
       "path": "src/bootstrap/process_executor.rs",
       "syntax": "OnceLock < StorageExecutor >"
