@@ -63,7 +63,7 @@ provision)
   echo "bucket $(python3 -c "import json;print(json.load(open('$BUCKET_JSON'))['data']['bucketName'])") -> $BUCKET_JSON"
   ;;
 server)
-  j() { python3 -c "import json;print(json.load(open('$BUCKET_JSON'))['data']['$1'])" }
+  j() { python3 -c "import json;print(json.load(open('$BUCKET_JSON'))['data']['$1'])"; }
   # SURVIVAL POSTURE (OOM review): 4 shards (the 16-shard topology
   # multiplied absorber exposure 16x and killed preview.7); ALL memory
   # knobs come from deploy/profiles/compute-1g.env ($MEMFLAGS below):
