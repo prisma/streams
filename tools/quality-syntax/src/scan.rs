@@ -239,6 +239,21 @@ impl<'ast> Visit<'ast> for Scan {
         visit::visit_expr_method_call(self, node);
     }
 
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        // Inherent methods can also use associated-function syntax
+        // (`Option::unwrap(value)`). Resolve lexical import aliases, retain the
+        // whole normalized expression, and leave type/lint truth to Clippy.
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            let target = self.imports.path(&path.path);
+            self.fact(
+                "call-site",
+                format!("{target}\t{}", tokens(node)),
+                node.span(),
+            );
+        }
+        visit::visit_expr_call(self, node);
+    }
+
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         self.fact("import", tokens(&node.tree), node.span());
         for target in self.imports.targets(&node.tree) {

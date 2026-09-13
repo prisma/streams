@@ -62,6 +62,56 @@ class Rules(unittest.TestCase):
         errors = self.growth(before, replacement)
         self.assertTrue(any('unwrap_site:' in error for error in errors), errors)
 
+    def test_associated_panic_call_cannot_replace_an_unrelated_call(self):
+        before = '''#[expect(clippy::unwrap_used, reason = "owner; poison invariant; no recovery")]
+pub fn check(lock: &std::sync::Mutex<()>, value: Option<u8>) {
+    let _guard = lock.lock().unwrap();
+    let _ = std::hint::black_box(value);
+}
+'''
+        after = before.replace(
+            'std::hint::black_box(value)',
+            'Option::unwrap(value)',
+        )
+        errors = self.growth(before, after)
+        self.assertTrue(any('unwrap_site:' in error for error in errors), errors)
+
+    def test_associated_panic_aliases_and_error_variants_are_fingerprinted(self):
+        candidates = (
+            ('expect_used', 'Result::expect(value, "present")'),
+            ('expect_used', 'Result::expect_err(value, "error")'),
+            ('unwrap_used', 'Result::unwrap_err(value)'),
+        )
+        for lint, candidate in candidates:
+            with self.subTest(lint=lint, candidate=candidate):
+                before = f'''#[expect(clippy::{lint}, reason = "owner; protocol invariant; no fallback")]
+fn check(value: Result<u8, u16>) {{ let _ = std::hint::black_box(value); }}
+'''
+                after = before.replace('std::hint::black_box(value)', candidate)
+                self.assertTrue(self.growth(before, after))
+
+        before = '''use std::result::Result::expect as require;
+#[expect(clippy::expect_used, reason = "owner; protocol invariant; no fallback")]
+fn check(value: Result<u8, u16>) { let _ = std::hint::black_box(value); }
+'''
+        after = before.replace(
+            'std::hint::black_box(value)',
+            'require(value, "present")',
+        )
+        self.assertTrue(self.growth(before, after))
+
+        local_before = '''#[expect(clippy::unwrap_used, reason = "owner; poison invariant; no recovery")]
+fn check(value: Option<u8>) {
+    let take = std::hint::black_box::<Option<u8>>;
+    let _ = take(value);
+}
+'''
+        local_after = local_before.replace(
+            'std::hint::black_box::<Option<u8>>',
+            'Option::unwrap',
+        )
+        self.assertTrue(self.growth(local_before, local_after))
+
     def test_struct_dead_code_expectation_cannot_hide_a_new_field(self):
         before = '#[expect(dead_code, reason = "wire DTO; compatibility field; no wire split")]\nstruct A { old: u8 }\n'
         after = before.replace('old: u8', 'old: u8, added: u8')

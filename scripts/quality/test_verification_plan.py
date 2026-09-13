@@ -1,6 +1,18 @@
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
+import verification_plan
 from common import syntax
-from verification_plan import is_visibility_only, plan
+from mutation_owners import MutationOwner, OWNERS, validate_plan
+from verification_plan import (
+    discover_changes,
+    is_visibility_only,
+    plan,
+    plan_changes,
+    plan_schedule,
+)
 
 
 class Triggers(unittest.TestCase):
@@ -65,6 +77,34 @@ class Triggers(unittest.TestCase):
         self.assertEqual(quiet['mutation_source_files'], [])
         self.assertFalse(quiet['mutants'])
 
+    def test_registered_non_prefix_source_is_selected_without_policy_duplication(self):
+        checks = plan(['src/scaler3.rs'])
+        self.assertEqual(checks['mutation_source_files'], ['src/scaler3.rs'])
+        self.assertEqual(checks['selected_mutation_owners'], ['scaler'])
+        self.assertEqual(validate_plan(checks), (next(
+            owner for owner in OWNERS if owner.name == 'scaler'
+        ),))
+
+    def test_every_scheduled_receipt_reaches_the_driver_unchanged(self):
+        declared = []
+        discovered = []
+        for slot in range(7):
+            checks = plan_schedule(slot)
+            selected = validate_plan(checks)
+            self.assertEqual(
+                checks['selected_mutation_owners'],
+                [owner.name for owner in selected],
+            )
+            self.assertEqual(
+                checks['scheduled_source_files'],
+                sorted(path for owner in selected for path in owner.sources),
+            )
+            declared.extend(checks['selected_mutation_owners'])
+            discovered.extend(owner.name for owner in selected)
+        self.assertCountEqual(declared, [owner.name for owner in OWNERS])
+        self.assertCountEqual(discovered, [owner.name for owner in OWNERS])
+        self.assertEqual(declared.count('scaler'), 1)
+
     def test_deleted_critical_source_is_disposed_not_mutated(self):
         path = 'src/shard/old_owner.rs'
         checks = plan([path], deleted=[path])
@@ -118,6 +158,182 @@ class Triggers(unittest.TestCase):
             self.assertTrue(plan([path])['mutants'])
             self.assertTrue(plan([path])['properties_fuzz'])
             self.assertFalse(plan([path], [path])['mutants'])
+
+
+class RenameSelection(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'quality@example.test')
+        self.git('config', 'user.name', 'Quality Fixture')
+        source = self.root / 'src/shard/commit_handoff.rs'
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            'pub struct Handoff { terminal: bool }\n'
+            'impl Handoff {\n'
+            '    pub fn open(&self) -> bool { !self.terminal }\n'
+            '    pub fn terminal(&self) -> bool { self.terminal }\n'
+            '    pub fn close(&mut self) { self.terminal = true; }\n'
+            '}\n'
+        )
+        (self.root / 'src/scaler3.rs').write_text(
+            'pub fn desired_instances(load: u64) -> u64 { load.max(1) }\n'
+        )
+        self.git('add', '.')
+        self.git('commit', '-qm', 'base')
+        self.base = self.git('rev-parse', 'HEAD')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], cwd=self.root, text=True).strip()
+
+    def moved(self, modify=False, register=True):
+        destination = self.root / 'src/commit_handoff.rs'
+        self.git('mv', 'src/shard/commit_handoff.rs', 'src/commit_handoff.rs')
+        if modify:
+            destination.write_text(destination.read_text().replace(
+                'self.terminal = true', 'self.terminal = false'
+            ))
+        changes = discover_changes(self.base, self.root)
+        owners = (MutationOwner('commit_handoff', ('src/commit_handoff.rs',), ('shard::',)),) \
+            if register else ()
+        checks = plan_changes(
+            changes,
+            previous_registered={'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners=owners,
+        )
+        return changes, checks, owners
+
+    def test_pure_critical_rename_outside_prefix_retains_the_owner(self):
+        changes, checks, owners = self.moved()
+        self.assertEqual(changes[0].status, 'R100')
+        self.assertEqual(checks['mutation_source_files'], ['src/commit_handoff.rs'])
+        self.assertEqual(checks['selected_mutation_owners'], ['commit_handoff'])
+        self.assertEqual(validate_plan(checks, owners), owners)
+        self.assertEqual(checks['renamed_source_files'], [{
+            'status': 'R100',
+            'before': 'src/shard/commit_handoff.rs',
+            'after': 'src/commit_handoff.rs',
+            'previous_owner': 'commit_handoff',
+            'current_owner': 'commit_handoff',
+            'disposition': 'mutation-selected',
+        }])
+
+    def test_critical_rename_plus_executable_edit_cannot_disappear(self):
+        changes, checks, owners = self.moved(modify=True)
+        self.assertTrue(changes[0].status.startswith('R'))
+        self.assertEqual(checks['mutation_source_files'], ['src/commit_handoff.rs'])
+        self.assertEqual(validate_plan(checks, owners), owners)
+
+        with patch.object(verification_plan, 'ROOT', self.root):
+            visibility, production, formatted = verification_plan.source_changes(
+                self.base, changes
+            )
+        checks = plan_changes(
+            changes,
+            visibility,
+            production,
+            formatted,
+            {'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners,
+        )
+        self.assertEqual(checks['production_unchanged_files'], [])
+        self.assertEqual(checks['mutation_source_files'], ['src/commit_handoff.rs'])
+        self.assertEqual(validate_plan(checks, owners), owners)
+
+    def test_pure_relocation_has_an_explicit_non_execution_disposition(self):
+        changes, _, owners = self.moved()
+        with patch.object(verification_plan, 'ROOT', self.root):
+            visibility, production, formatted = verification_plan.source_changes(
+                self.base, changes
+            )
+        checks = plan_changes(
+            changes,
+            visibility,
+            production,
+            formatted,
+            {'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners,
+        )
+        self.assertEqual(checks['mutation_source_files'], [])
+        self.assertEqual(checks['production_unchanged_files'], ['src/commit_handoff.rs'])
+        self.assertEqual(
+            checks['renamed_source_files'][0]['disposition'],
+            'production-unchanged',
+        )
+
+    def test_unregistered_rename_destination_fails_before_discovery(self):
+        _, checks, owners = self.moved(register=False)
+        self.assertEqual(checks['unregistered_mutation_source_files'], [
+            'src/commit_handoff.rs'
+        ])
+        with self.assertRaisesRegex(ValueError, 'src/commit_handoff.rs'):
+            validate_plan(checks, owners)
+
+    def test_previous_registered_non_prefix_owner_carries_rename_lineage(self):
+        self.git('mv', 'src/scaler3.rs', 'src/scaler.rs')
+        changes = discover_changes(self.base, self.root)
+        owner = MutationOwner('scaler', ('src/scaler.rs',), ('scaler3::',))
+        checks = plan_changes(
+            changes,
+            previous_registered={'src/scaler3.rs': 'scaler'},
+            owners=(owner,),
+        )
+        self.assertEqual(checks['mutation_source_files'], ['src/scaler.rs'])
+        self.assertEqual(checks['selected_mutation_owners'], ['scaler'])
+        self.assertEqual(validate_plan(checks, (owner,)), (owner,))
+
+    def test_delete_add_replacement_is_conservatively_carried(self):
+        self.git('rm', 'src/shard/commit_handoff.rs')
+        replacement = self.root / 'src/completely_new_owner.rs'
+        replacement.parent.mkdir(exist_ok=True)
+        replacement.write_text('pub fn replacement() -> bool { false }\n')
+        self.git('add', '.')
+        changes = discover_changes(self.base, self.root)
+        owner = MutationOwner(
+            'commit_handoff', ('src/completely_new_owner.rs',), ('shard::',)
+        )
+        checks = plan_changes(
+            changes,
+            previous_registered={'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners=(owner,),
+        )
+        self.assertEqual(checks['deleted_critical_files'], [
+            'src/shard/commit_handoff.rs'
+        ])
+        self.assertEqual(checks['possible_replacement_files'], [
+            'src/completely_new_owner.rs'
+        ])
+        self.assertEqual(checks['deleted_source_dispositions'], [{
+            'path': 'src/shard/commit_handoff.rs',
+            'previous_owner': 'commit_handoff',
+            'replacement_files': ['src/completely_new_owner.rs'],
+            'disposition': 'owner-relocated',
+        }])
+        self.assertEqual(validate_plan(checks, (owner,)), (owner,))
+
+    def test_true_deletion_is_recorded_without_mutating_absent_source(self):
+        self.git('rm', 'src/shard/commit_handoff.rs')
+        changes = discover_changes(self.base, self.root)
+        checks = plan_changes(
+            changes,
+            previous_registered={'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners=(),
+        )
+        self.assertFalse(checks['mutants'])
+        self.assertEqual(checks['mutation_source_files'], [])
+        self.assertEqual(checks['deleted_critical_files'], [
+            'src/shard/commit_handoff.rs'
+        ])
+        self.assertEqual(checks['deleted_source_dispositions'], [{
+            'path': 'src/shard/commit_handoff.rs',
+            'previous_owner': 'commit_handoff',
+            'replacement_files': [],
+            'disposition': 'owner-retired',
+        }])
 
 
 if __name__ == '__main__':

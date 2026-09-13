@@ -1,10 +1,10 @@
-"""Canonical ownership table for diff-scoped and scheduled mutation checks.
+"""Canonical ownership and resolved selection for mutation checks.
 
-The broad critical-prefix policy lives in :mod:`verification_plan`: it catches
-new and moved critical source.  This exact table answers the separate question
-of which package and tests own each selected source.  A critical path missing
-from this table is an error; it never inherits a nearby owner's tests.
+The table owns source, package, target, and test-filter identity.  The planner
+adds unknown paths selected by its broad critical policy or rename lineage,
+then hands one resolved selection to the driver.  No later layer narrows it.
 """
+import ast
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -20,6 +20,27 @@ class MutationOwner:
     @property
     def package(self) -> str:
         return 'streams-quality-invariants' if self.target == 'harness-lib' else 'streams-slate'
+
+
+@dataclass(frozen=True)
+class MutationSelection:
+    """The complete planner-to-driver mutation handoff."""
+
+    changed_sources: tuple[str, ...]
+    owners: tuple[MutationOwner, ...]
+    unregistered_sources: tuple[str, ...]
+
+    @property
+    def discovery_sources(self) -> tuple[str, ...]:
+        return tuple(sorted(path for entry in self.owners for path in entry.sources))
+
+    def receipt(self) -> dict:
+        return {
+            'mutation_source_files': list(self.changed_sources),
+            'selected_mutation_owners': [entry.name for entry in self.owners],
+            'mutation_discovery_source_files': list(self.discovery_sources),
+            'unregistered_mutation_source_files': list(self.unregistered_sources),
+        }
 
 
 def owner(name: str, source: str, filters: str, target: str = 'service-lib') -> MutationOwner:
@@ -154,22 +175,101 @@ def source_map(owners=OWNERS):
     return result
 
 
-def validate_plan(plan, owners=OWNERS):
-    """Return selected owners or fail for every unregistered live source.
+def declared_source_map(source):
+    """Read the literal owner paths from a prior trusted table without running it."""
+    tree = ast.parse(source)
+    assignments = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == 'OWNERS' for target in node.targets)
+    ]
+    if len(assignments) != 1 or not isinstance(assignments[0], (ast.Tuple, ast.List)):
+        raise ValueError('prior mutation owner table has no single literal OWNERS sequence')
+    result = {}
+    for row in assignments[0].elts:
+        if not isinstance(row, ast.Call) or not isinstance(row.func, ast.Name):
+            raise ValueError('prior mutation owner table contains an unsupported row')
+        if row.func.id == 'owner' and len(row.args) >= 2:
+            name = ast.literal_eval(row.args[0])
+            sources = (ast.literal_eval(row.args[1]),)
+        elif row.func.id == 'MutationOwner' and len(row.args) >= 2:
+            name = ast.literal_eval(row.args[0])
+            sources = tuple(ast.literal_eval(row.args[1]))
+        else:
+            raise ValueError('prior mutation owner table contains an unsupported constructor')
+        if not isinstance(name, str) or not sources or not all(isinstance(path, str) for path in sources):
+            raise ValueError('prior mutation owner table contains a non-literal identity')
+        for path in sources:
+            if path in result:
+                raise ValueError(f'duplicate prior mutation source: {path}')
+            result[path] = name
+    return result
 
-    This runs before mutant discovery.  Consequently a registered source that
-    happens to select mutants can never mask an unregistered sibling.
-    """
+
+def resolve_sources(paths, owners=OWNERS):
+    """Resolve every already-selected source exactly once."""
     by_source = source_map(owners)
-    planned = set(plan.get('mutation_source_files', ()))
-    missing = sorted(planned - set(by_source))
-    if missing:
+    changed = tuple(sorted(set(paths)))
+    unregistered = tuple(path for path in changed if path not in by_source)
+    selected = {by_source[path] for path in changed if path in by_source}
+    return MutationSelection(
+        changed,
+        tuple(entry for entry in owners if entry in selected),
+        unregistered,
+    )
+
+
+def selection_for_owners(selected, owners=OWNERS):
+    requested = set(selected)
+    unknown = requested - set(owners)
+    if unknown:
+        raise ValueError(f'unknown mutation owner selection: {unknown}')
+    ordered = tuple(entry for entry in owners if entry in requested)
+    sources = tuple(sorted(path for entry in ordered for path in entry.sources))
+    return MutationSelection(sources, ordered, ())
+
+
+def validate_plan(plan, owners=OWNERS):
+    """Validate the complete receipt and return its canonical owner objects.
+
+    This runs before mutant discovery.  It both rejects unregistered sources
+    and prevents schedule metadata or a stale consumer from narrowing the
+    planner's resolved owner/source handoff.
+    """
+    resolved = resolve_sources(plan.get('mutation_source_files', ()), owners)
+    expected = resolved.receipt()
+    mismatches = []
+    for field, value in expected.items():
+        if plan.get(field) != value:
+            mismatches.append(f'{field}: recorded={plan.get(field)!r}, resolved={value!r}')
+
+    if plan.get('selection_kind') == 'scheduled-owner-rotation':
+        slot = plan.get('schedule_slot')
+        if type(slot) is not int:
+            mismatches.append(f'schedule_slot: invalid {slot!r}')
+        else:
+            scheduled = selection_for_owners(scheduled_owners(slot, owners=owners), owners)
+            for field, value in scheduled.receipt().items():
+                if plan.get(field) != value:
+                    mismatches.append(
+                        f'scheduled {field}: recorded={plan.get(field)!r}, expected={value!r}'
+                    )
+            if plan.get('scheduled_source_files') != list(scheduled.discovery_sources):
+                mismatches.append(
+                    'scheduled_source_files: recorded='
+                    f'{plan.get("scheduled_source_files")!r}, '
+                    f'expected={list(scheduled.discovery_sources)!r}'
+                )
+    if mismatches:
+        raise ValueError('mutation selection receipt disagrees with canonical selection:\n'
+                         + '\n'.join(mismatches))
+    if resolved.unregistered_sources:
         raise ValueError(
             'register every changed critical mutation owner before verification:\n'
-            + '\n'.join(missing)
+            + '\n'.join(resolved.unregistered_sources)
         )
-    selected = {by_source[path] for path in planned}
-    return tuple(entry for entry in owners if entry in selected)
+    return resolved.owners
 
 
 def scheduled_owners(slot, buckets=7, owners=OWNERS):
@@ -187,6 +287,10 @@ def scheduled_owners(slot, buckets=7, owners=OWNERS):
 
 
 def validate_sources(root, owners=OWNERS):
+    actual = {path: entry.name for path, entry in source_map(owners).items()}
+    table = Path(root) / 'scripts/quality/mutation_owners.py'
+    if owners is OWNERS and declared_source_map(table.read_text()) != actual:
+        raise ValueError('literal mutation owner table disagrees with its runtime mapping')
     missing = [path for entry in owners for path in entry.sources if not (Path(root) / path).is_file()]
     if missing:
         raise ValueError('registered mutation source is missing; remove or rename its row explicitly:\n'

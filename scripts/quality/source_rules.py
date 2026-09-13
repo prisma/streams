@@ -106,6 +106,13 @@ def _exception_lints(value):
     }
 
 
+def _fingerprint_sites(metrics, prefix, facts):
+    for fact in facts:
+        site = f'{fact["qualified"]}\0{fact["value"]}'
+        digest = hashlib.sha256(site.encode()).hexdigest()[:16]
+        metrics[f'{prefix}:{fact["qualified"]}:{digest}'] += 1
+
+
 def exception_contracts(sources, facts):
     """Measure the syntax living under each accepted exception.
 
@@ -155,14 +162,30 @@ def exception_contracts(sources, facts):
             ):
                 if lint not in lints:
                     continue
-                sites = [fact for fact in scoped_facts
-                         if fact['kind'] == 'method-call-site'
-                         and fact['value'].partition('\t')[0] in methods]
+                sites = [
+                    fact for fact in scoped_facts
+                    if fact['kind'] in {'method-call-site', 'call-site'}
+                    and fact['value'].partition('\t')[0].rsplit('::', 1)[-1] in methods
+                ]
                 metrics[total] = len(sites)
-                for fact in sites:
-                    site = f'{fact["qualified"]}\0{fact["value"]}'
-                    digest = hashlib.sha256(site.encode()).hexdigest()[:16]
-                    metrics[f'{prefix}:{fact["qualified"]}:{digest}'] += 1
+                _fingerprint_sites(metrics, prefix, sites)
+                # Import aliases resolve above, but local function-pointer aliases
+                # require type resolution. Preserve every ordinary call spelling
+                # under this exceptional scope so such an alias cannot replace a
+                # benign call without an explicit new exception decision.
+                _fingerprint_sites(
+                    metrics,
+                    f'{prefix}:ordinary-call',
+                    (fact for fact in scoped_facts if fact['kind'] == 'call-site'),
+                )
+                # A local binding can hide an associated function behind an
+                # arbitrary callee name. Exact path sites make changing that
+                # binding an explicit decision without guessing Rust types.
+                _fingerprint_sites(
+                    metrics,
+                    f'{prefix}:path',
+                    (fact for fact in scoped_facts if fact['kind'] == 'path'),
+                )
             if 'dead_code' in lints:
                 fields = [item for item in scoped_items if item['kind'] == 'field']
                 metrics['fields'] = len(fields)

@@ -109,12 +109,15 @@ def execute(out):
     validate_sources(ROOT)
     selected = validate_plan(plan)
     write_json(out / 'selected-owners.json', {
-        'schema': 1,
+        'schema': 2,
         'event': plan.get('event', 'local'),
         'owners': [entry.name for entry in selected],
-        'sources': sorted(path for entry in selected for path in entry.sources
-                          if path in plan.get('mutation_source_files', ())),
+        'changed_sources': plan.get('mutation_source_files', []),
+        'discovery_sources': plan.get('mutation_discovery_source_files', []),
         'deleted_critical_files': plan.get('deleted_critical_files', []),
+        'renamed_source_files': plan.get('renamed_source_files', []),
+        'possible_replacement_files': plan.get('possible_replacement_files', []),
+        'deleted_source_dispositions': plan.get('deleted_source_dispositions', []),
     })
     check_tool_version()
 

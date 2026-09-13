@@ -270,3 +270,38 @@ fn method_calls_are_owned_by_the_containing_item() {
         "expect\tself . value . expect (\"present\")"
     )));
 }
+
+#[test]
+fn associated_panic_calls_include_resolved_aliases_and_qualified_sites() {
+    let parsed = super::source(
+        "a.rs",
+        r#"
+        use std::option::Option::unwrap as take;
+        fn calls(value: Option<u8>, result: Result<u8, u16>) {
+            let _ = Option::unwrap(value);
+            let _ = Result::<u8, u16>::expect(result, "present");
+        }
+        fn alias(value: Option<u8>) { let _ = take(value); }
+        "#,
+    )
+    .unwrap();
+    let sites: Vec<_> = parsed
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == "call-site")
+        .map(|fact| (fact.qualified.as_str(), fact.value.as_str()))
+        .collect();
+    assert!(
+        sites.iter().any(|(owner, site)| {
+            *owner == "crate::calls" && site.starts_with("Option::unwrap\t")
+        })
+    );
+    assert!(
+        sites.iter().any(|(owner, site)| {
+            *owner == "crate::calls" && site.starts_with("Result::expect\t")
+        })
+    );
+    assert!(sites.iter().any(|(owner, site)| {
+        *owner == "crate::alias" && site.starts_with("std::option::Option::unwrap\t")
+    }));
+}
