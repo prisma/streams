@@ -1,6 +1,7 @@
 from collections import Counter
 import unittest
-from source_rules import absolute, violations
+from common import syntax
+from source_rules import absolute, exception_contracts, exception_growth, violations
 
 
 def source(facts):
@@ -44,6 +45,43 @@ class Rules(unittest.TestCase):
         for lint in ('unused', 'clippy :: correctness', 'unused_must_use', 'clippy :: eq_op'):
             for level in ('allow', 'expect', 'warn'):
                 self.assertTrue(self.check(facts=[fact('attribute', f'{level} ({lint}, reason = "owner; invariant; alternative")')]))
+
+    def growth(self, before, after):
+        old = {'src/a.rs': before}
+        new = {'src/a.rs': after}
+        return exception_growth(exception_contracts(new, syntax(new)),
+                                exception_contracts(old, syntax(old)))
+
+    def test_impl_expectation_cannot_hide_an_unrelated_optional_unwrap(self):
+        before = '#[expect(clippy::unwrap_used, reason = "feed; poison invariant; no recovery")]\nimpl A { fn lock(&self) { self.lock.lock().unwrap(); } }\n'
+        after = before.replace(' } }', ' } fn optional(&self) { self.value.unwrap(); } }')
+        self.assertTrue(self.growth(before, after))
+        self.assertFalse(self.growth(before, before))
+
+        replacement = before.replace('self.lock.lock().unwrap()', 'self.value.unwrap()')
+        errors = self.growth(before, replacement)
+        self.assertTrue(any('unwrap_site:' in error for error in errors), errors)
+
+    def test_struct_dead_code_expectation_cannot_hide_a_new_field(self):
+        before = '#[expect(dead_code, reason = "wire DTO; compatibility field; no wire split")]\nstruct A { old: u8 }\n'
+        after = before.replace('old: u8', 'old: u8, added: u8')
+        errors = self.growth(before, after)
+        self.assertTrue(any('fields 1 -> 2' in error for error in errors), errors)
+
+        replacement = before.replace('old: u8', 'added: u8')
+        errors = self.growth(before, replacement)
+        self.assertTrue(any('field_site:' in error for error in errors), errors)
+
+    def test_length_exception_has_an_independent_non_growing_size(self):
+        before = '#[expect(clippy::too_many_lines, reason = "transaction; one sequence; no split")]\nfn long() {\n' + ' let _x = 1;\n' * 101 + '}\n'
+        after = before.replace('\n}', '\n let _y = 2;\n}')
+        errors = self.growth(before, after)
+        self.assertTrue(any('scope_lines' in error for error in errors), errors)
+
+    def test_changed_reason_is_the_explicit_new_exception_decision(self):
+        before = '#[expect(clippy::too_many_lines, reason = "transaction; one sequence; no split")]\nfn long() {\n' + ' let _x = 1;\n' * 101 + '}\n'
+        after = before.replace('no split', 'reviewed 120-line ceiling').replace('\n}', '\n let _y = 2;\n}')
+        self.assertFalse(self.growth(before, after))
 
 
 if __name__ == '__main__':

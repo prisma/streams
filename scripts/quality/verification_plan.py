@@ -1,38 +1,53 @@
 #!/usr/bin/env python3
-"""Select required invariant checks from the actual PR merge-base diff."""
+"""Select invariant checks from an event-correct comparison or schedule."""
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
-from common import ROOT, merge_base, syntax, write_json
+from common import ROOT, syntax, verification_comparison, write_json
+from mutation_owners import scheduled_owners, source_map, validate_sources
 from production_changes import unchanged_production
 
 
-def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibility=()):
+CODEC_PREFIXES = ('src/crypto', 'src/postings', 'src/product_cursor', 'src/queue',
+                  'src/application/read_', 'src/shard/record', 'src/rollup/allocation',
+                  'src/rollup/storage')
+QUOTA_PREFIXES = ('src/quota',)
+LIFECYCLE_PREFIXES = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse',
+                      'src/touch.rs', 'src/billing/read_accumulator', 'src/billing/read_spool',
+                      'src/bin/pilot/benchmark', 'src/bin/pilot/generator')
+BUFFER_PREFIXES = ('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap',
+                   'src/fleet', 'src/http', 'src/ops')
+CRITICAL_PREFIXES = CODEC_PREFIXES + QUOTA_PREFIXES + LIFECYCLE_PREFIXES + BUFFER_PREFIXES
+
+
+def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibility=(), deleted=()):
     source = [p for p in paths if p.endswith('.rs')]
-    implementation = [p for p in source if p not in set(visibility_only) | set(production_unchanged)]
+    omitted = set(visibility_only) | set(production_unchanged) | set(deleted)
+    implementation = [p for p in source if p not in omitted]
     tooling = any(p.startswith(('tools/quality-invariants/', 'fuzz/', 'scripts/quality/'))
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
-    codec_prefixes = ('src/crypto', 'src/postings', 'src/product_cursor', 'src/queue',
-                      'src/application/read_', 'src/shard/record', 'src/rollup/allocation', 'src/rollup/storage')
-    quota_prefixes = ('src/quota',)
-    lifecycle_prefixes = ('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse', 'src/touch.rs',
-                          'src/billing/read_accumulator', 'src/billing/read_spool', 'src/bin/pilot/benchmark', 'src/bin/pilot/generator')
-    buffer_prefixes = ('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')
-    codec = any(p.startswith(codec_prefixes) for p in implementation)
-    quota = any(p.startswith(quota_prefixes) for p in implementation)
-    lifecycle = any(p.startswith(lifecycle_prefixes) for p in implementation)
-    buffers = any(p.startswith(buffer_prefixes) for p in implementation)
+    codec = any(p.startswith(CODEC_PREFIXES) for p in implementation)
+    quota = any(p.startswith(QUOTA_PREFIXES) for p in implementation)
+    lifecycle = any(p.startswith(LIFECYCLE_PREFIXES) for p in implementation)
+    buffers = any(p.startswith(BUFFER_PREFIXES) for p in implementation)
     mutation_source = [p for p in implementation if p not in formatted_visibility]
-    critical = codec_prefixes + quota_prefixes + lifecycle_prefixes + buffer_prefixes
-    mutation_source_files = sorted(p for p in mutation_source if p.startswith(critical))
+    mutation_source_files = sorted(p for p in mutation_source if p.startswith(CRITICAL_PREFIXES))
+    deleted_critical = sorted(p for p in deleted if p.endswith('.rs') and p.startswith(CRITICAL_PREFIXES))
+    by_source = source_map()
+    selected_owners = sorted({by_source[p].name for p in mutation_source_files if p in by_source})
+    unregistered = sorted(set(mutation_source_files) - set(by_source))
     mutants = bool(mutation_source_files)
     return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or quota or tooling,
             'loom': lifecycle or tooling, 'miri': buffers or tooling,
             'mutants': mutants, 'changed_rust_files': source,
             'mutation_source_files': mutation_source_files,
+            'selected_mutation_owners': selected_owners,
+            'unregistered_mutation_source_files': unregistered,
+            'deleted_critical_files': deleted_critical,
             'visibility_only_files': sorted(visibility_only),
             'production_unchanged_files': sorted(production_unchanged),
             'formatted_visibility_files': sorted(formatted_visibility)}
@@ -166,13 +181,49 @@ def main():
     parser.add_argument('--out', required=True)
     args = parser.parse_args()
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-    base = merge_base()
-    # Includes working changes during local development; CI has a clean checkout.
-    diff = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--binary', base, '--'], cwd=ROOT)
-    (out / 'pr.diff').write_bytes(diff)
-    paths = subprocess.check_output(['git', 'diff', '--name-only', base, '--'], cwd=ROOT, text=True).splitlines()
-    visibility, production, formatted = source_changes(base, paths)
-    result = dict(plan(paths, visibility, production, formatted), merge_base=base)
+    comparison = verification_comparison()
+    validate_sources(ROOT)
+    if comparison.event == 'schedule':
+        slot = int(os.environ.get('QUALITY_SCHEDULE_SLOT', '0'))
+        selected = scheduled_owners(slot)
+        paths = sorted(path for entry in selected for path in entry.sources)
+        result = plan(paths)
+        result.update({
+            'compiler': True,
+            'properties_fuzz': True,
+            'loom': True,
+            'miri': True,
+            'mutants': True,
+            'changed_rust_files': [],
+            'scheduled_source_files': paths,
+            'selected_mutation_owners': [entry.name for entry in selected],
+            'schedule_slot': slot % 7,
+            'selection_kind': 'scheduled-owner-rotation',
+        })
+        (out / 'pr.diff').write_bytes(b'')
+    else:
+        base = comparison.comparison_revision
+        # Includes working changes during local development; CI has a clean checkout.
+        diff = subprocess.check_output(
+            ['git', 'diff', '--no-ext-diff', '--binary', base, '--'], cwd=ROOT
+        )
+        (out / 'pr.diff').write_bytes(diff)
+        paths = subprocess.check_output(
+            ['git', 'diff', '--name-only', base, '--'], cwd=ROOT, text=True
+        ).splitlines()
+        deleted = [path for path in paths if path.endswith('.rs') and not (ROOT / path).is_file()]
+        visibility, production, formatted = source_changes(base, paths)
+        result = plan(paths, visibility, production, formatted, deleted)
+        result['selection_kind'] = 'changed-tree'
+    result.update({
+        'event': comparison.event,
+        'checkout_revision': comparison.checkout_revision,
+        'comparison_revision': comparison.comparison_revision,
+        'comparison_kind': comparison.kind,
+        # Compatibility for existing receipt consumers; this is the exact
+        # comparison revision on pushes, not necessarily a merge base.
+        'merge_base': comparison.comparison_revision,
+    })
     write_json(out / 'plan.json', result)
     print(json.dumps(result, indent=2))
 

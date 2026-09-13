@@ -241,10 +241,11 @@ pub struct CliArgs {
     #[arg(long, env = "TRIM_GLOBAL_BUDGET", default_value_t = 65_536)]
     pub(crate) trim_global_budget: u64,
 
-    /// Plaintext bytes buffered per absorber pass (absorb_one holds a pass
-    /// in memory; cap it well below the instance's RAM).
-    #[arg(long, env = "ABSORB_PASS_BYTES", default_value_t = 256 * 1024 * 1024)]
-    pub(crate) absorb_pass_bytes: u64,
+    /// Deprecated compatibility option: accepted but ignored. The v2 gather
+    /// planner is bounded by ABSORB_GATHER_MAX_BYTES and the process-wide
+    /// ABSORB_GLOBAL_BUDGET_BYTES instead of a per-pass plaintext limit.
+    #[arg(long, env = "ABSORB_PASS_BYTES")]
+    pub(crate) absorb_pass_bytes: Option<u64>,
 
     /// Absorber thresholds (§3.6 / D23).
     #[arg(long, env = "ABSORB_BYTES", default_value_t = 4 * 1024 * 1024)]
@@ -252,16 +253,15 @@ pub struct CliArgs {
     #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
     pub(crate) absorb_age_secs: u64,
 
-    /// Concurrent small-lane absorb passes (1 = fully serial). Streams
-    /// with ≤ absorb_small_bytes pending overlap their latency-bound
-    /// per-stream passes; bigger streams keep the serial full-budget
-    /// lane. The serial grind measured ~4.5 streams/s against wide
-    /// backlogs (docs/COST-WIDE1.md §1); peak added memory is bounded by
-    /// concurrency × absorb_small_bytes of plaintext.
-    #[arg(long, env = "ABSORB_CONCURRENCY", default_value_t = 6)]
-    pub(crate) absorb_concurrency: usize,
-    #[arg(long, env = "ABSORB_SMALL_BYTES", default_value_t = 1024 * 1024)]
-    pub(crate) absorb_small_bytes: u64,
+    /// Deprecated compatibility option: accepted but ignored. Gather
+    /// concurrency is controlled by ABSORB_GLOBAL_GATHERS subject to the
+    /// process-wide byte budget.
+    #[arg(long, env = "ABSORB_CONCURRENCY")]
+    pub(crate) absorb_concurrency: Option<usize>,
+    /// Deprecated compatibility option: accepted but ignored. The v2 planner
+    /// uses ABSORB_GATHER_MAX_BYTES and its per-stream chunk cap.
+    #[arg(long, env = "ABSORB_SMALL_BYTES")]
+    pub(crate) absorb_small_bytes: Option<u64>,
 
     /// Evict resident per-stream handles idle at least this long
     /// (seconds; 0 = never). Handles reload from the shard DB on next
@@ -576,11 +576,11 @@ impl CliArgs {
             manifest_poll_ms: crate::DEFAULT_MANIFEST_POLL_MS,
             trim_per_op: 8_192,
             trim_global_budget: 65_536,
-            absorb_pass_bytes: 256 * 1024 * 1024,
+            absorb_pass_bytes: None,
             absorb_bytes: 4 * 1024 * 1024,
             absorb_age_secs: 300,
-            absorb_concurrency: 6,
-            absorb_small_bytes: 1024 * 1024,
+            absorb_concurrency: None,
+            absorb_small_bytes: None,
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
             absorb_gather_max_bytes: 32 * 1024 * 1024,
@@ -629,6 +629,22 @@ impl CliArgs {
             scale_lat_sustain_secs: 20,
             fleet_max: 4,
         }
+    }
+}
+
+impl CliArgs {
+    /// Names explicitly supplied at the legacy CLI/environment boundary. One
+    /// aggregated startup notice is emitted after validation; defaults stay
+    /// silent because these fields have no fabricated default value.
+    pub(crate) fn ignored_absorber_options(&self) -> Vec<&'static str> {
+        [
+            self.absorb_pass_bytes.map(|_| "ABSORB_PASS_BYTES"),
+            self.absorb_concurrency.map(|_| "ABSORB_CONCURRENCY"),
+            self.absorb_small_bytes.map(|_| "ABSORB_SMALL_BYTES"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 

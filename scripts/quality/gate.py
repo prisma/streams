@@ -45,6 +45,13 @@ def main():
             problems.append(f'normal PR cannot regenerate adoption inventory: {path}')
     sources = tracked_sources()
     facts = syntax(sources)
+    exception_contracts = source_rules.exception_contracts(sources, facts)
+    exception_metrics = {}
+    for contract in exception_contracts.values():
+        for name, value in contract.items():
+            if name.startswith(('unwrap_site:', 'expect_site:', 'field_site:')):
+                continue
+            exception_metrics[name] = exception_metrics.get(name, 0) + value
     metrics = {}
     now, errors = diagnostics.parse(args.clippy, sources, facts, metrics=metrics)
     problems.extend(diagnostics.metric_growth(metrics, diagnostics.metric_limits(json.loads(allowances_path.read_text())['warnings'])))
@@ -58,6 +65,8 @@ def main():
         write_json(allowances_path, {'schema': 1, 'warnings': diagnostics.records(now, metrics)})
     report = {'anchor': ANCHOR, 'merge_base': base, 'warnings': sum(now.values()),
               'identities': len(now), 'obsolete': sum(stale.values()),
+              'accepted_exceptions': {'scopes': len(exception_contracts),
+                                      'source_metrics': exception_metrics},
               'syntax_templates': list(json.loads((ROOT / 'docs/quality/syntax-fragments.json').read_text())),
               'source_occurrences': source_rules.entries(source_rules.inventory(facts)),
               'failures': problems}
@@ -66,7 +75,8 @@ def main():
     for problem in problems:
         print(problem)
     print(f'quality ratchets: {"FAIL" if problems else "OK"}; {len(sources)} Rust files; '
-          f'{sum(now.values())} legacy warning occurrences; base {base[:12]}')
+          f'{sum(now.values())} emitted warning occurrences; '
+          f'{len(exception_contracts)} accepted exception scopes; base {base[:12]}')
     return bool(problems)
 
 

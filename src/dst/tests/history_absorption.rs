@@ -130,8 +130,6 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            batch_puts: 256,
-            pass_bytes: 8 * 1024 * 1024,
             sweep_every: 2,
             ..Default::default()
         },
@@ -329,8 +327,6 @@ async fn v2_absorbs_without_customer_keys() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            batch_puts: 256,
-            pass_bytes: 8 * 1024 * 1024,
             ..Default::default()
         },
         absorb_rx,
@@ -478,8 +474,6 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
             threshold_bytes: 64 * 1024 * 1024,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            batch_puts: 256,
-            pass_bytes: 8 * 1024 * 1024,
             ..Default::default()
         },
         absorb_rx,

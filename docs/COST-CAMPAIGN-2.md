@@ -1,5 +1,10 @@
 # Cost campaign 2 — shared history, LIST-free steady state, and the recovery gate
 
+> **Historical configuration note (2026-09).** References to
+> `ABSORB_CONCURRENCY` record the old campaign setup, not a current operator
+> control. The v2 planner ignores that compatibility spelling; see
+> [RUNBOOK.md](../RUNBOOK.md#32-engine-shard-log) for active controls.
+
 Second consolidated report (continues docs/COST-CAMPAIGN-1.md, which
 covered the request-cost round 1, the wide-cardinality characterization,
 and the active-axis study). This campaign's scope: the round-2 reviewer

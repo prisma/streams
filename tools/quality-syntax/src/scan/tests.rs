@@ -239,3 +239,34 @@ fn signature_commas_are_distinct_from_tuple_and_expression_commas() {
         assert_eq!(&text[comma.location.column..comma.location.end_column], ",");
     }
 }
+
+#[test]
+fn method_calls_are_owned_by_the_containing_item() {
+    let parsed = super::source(
+        "a.rs",
+        "impl A { fn lock(&self) { self.state.lock().unwrap(); } fn option(&self) { self.value.expect(\"present\"); } }",
+    )
+    .unwrap();
+    let calls: Vec<_> = parsed
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == "method-call")
+        .map(|fact| (fact.qualified.as_str(), fact.value.as_str()))
+        .collect();
+    assert!(calls.contains(&("crate::A::lock", "unwrap")));
+    assert!(calls.contains(&("crate::A::option", "expect")));
+    let sites: Vec<_> = parsed
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == "method-call-site")
+        .map(|fact| (fact.qualified.as_str(), fact.value.as_str()))
+        .collect();
+    assert!(sites.contains(&(
+        "crate::A::lock",
+        "unwrap\tself . state . lock () . unwrap ()"
+    )));
+    assert!(sites.contains(&(
+        "crate::A::option",
+        "expect\tself . value . expect (\"present\")"
+    )));
+}

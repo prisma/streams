@@ -49,6 +49,7 @@ TYPED = [
  ('builder', 'clippy::disallowed_methods', 'fn builder() { let _thread=std::thread::Builder::new().spawn(|| ()); }'),
  ('environment_alias', 'clippy::disallowed_methods', 'fn environment_alias() { use std::env::var as read; let _value=read("QUALITY_FIXTURE"); }'),
  ('forget_alias', 'clippy::disallowed_methods', 'fn forget_alias(value: String) { use std::mem::forget as discard; discard(value); }'),
+ ('unfulfilled_expectation', 'unfulfilled_lint_expectations', '#[expect(clippy::unwrap_used, reason="fixture; stale exception; removal must fail")] fn unfulfilled_expectation() {}'),
 ]
 
 

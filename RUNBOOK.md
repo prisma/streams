@@ -106,7 +106,8 @@ with an empty pool rather than dead sockets.
 | `COMPACTIONS_GC_INTERVAL_SECS` / `COMPACTIONS_GC_MIN_AGE_SECS` | 30 / 120 | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
-| `ABSORB_PASS_BYTES` | 256 MiB | plaintext held in memory per pass — keep well under instance RAM; pilot used 32 MiB on 1-GB boxes |
+| `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 32 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather. The process budget may clamp the packing limit |
+| `ABSORB_PASS_BYTES` / `ABSORB_CONCURRENCY` / `ABSORB_SMALL_BYTES` | unset | deprecated compatibility spellings: accepted, ignored, and announced once at startup when explicitly supplied. Use `ABSORB_GATHER_MAX_BYTES`, `ABSORB_GLOBAL_BUDGET_BYTES`, `ABSORB_GLOBAL_GATHERS`, and `ABSORB_READ_PAR` |
 
 ### 3.2b Service limits, usage telemetry, billing
 
@@ -125,8 +126,8 @@ with an empty pool rather than dead sockets.
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
-| `ABSORB_GLOBAL_BUDGET_BYTES` | 67108864 | PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames |
-| `ABSORB_GLOBAL_GATHERS` | 2 | concurrent gathers, process-wide |
+| `ABSORB_GLOBAL_BUDGET_BYTES` | 67108864 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames |
+| `ABSORB_GLOBAL_GATHERS` | 2 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget |
 | `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
 | `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
 

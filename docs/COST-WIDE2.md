@@ -1,5 +1,10 @@
 # Wide test 2 — the active axis (10 / 100 / 1000 active per cardinality)
 
+> **Historical configuration note (2026-09).** `ABSORB_CONCURRENCY`
+> values below describe this 2026-07 campaign; the v2 gather planner now
+> ignores that compatibility spelling. Current controls are documented in
+> [RUNBOOK.md](../RUNBOOK.md#32-engine-shard-log).
+
 **2026-07-28, local rig, slate @ 31b6cf4.** Same method as
 [COST-WIDE1.md](./COST-WIDE1.md) ([methodology](./COST-METHODOLOGY.md)
 Test 2), now sweeping the ACTIVE-set size at every cardinality with

@@ -1,5 +1,10 @@
 # History v2 — shared, partitioned history (design anchor)
 
+> **Configuration update (2026-09).** `ABSORB_CONCURRENCY` in the original
+> scorecards is historical. The server accepts but ignores that legacy
+> spelling; `ABSORB_GLOBAL_GATHERS` and the process byte budget bound current
+> gather concurrency (see [RUNBOOK.md](../RUNBOOK.md#32-engine-shard-log)).
+
 **Status: first implementation landed 2026-07-29** (same-day as the
 design acceptance; see the scorecard below). New streams absorb into
 the shared per-shard partition by default; legacy v1 streams

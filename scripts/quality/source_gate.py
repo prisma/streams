@@ -35,12 +35,13 @@ def check(sources=None, facts=None, prune=False):
             problems.append(f'incomplete bounded line exception: {path}')
         before[path] += entry['extra_lines']
     prior_lines = {}
-    if prior is not None:
-        for path in sources:
-            result = subprocess.run(['git', 'show', f'{base}:{path}'], cwd=ROOT,
-                                    text=True, capture_output=True)
-            if result.returncode == 0:
-                prior_lines[path] = len(result.stdout.splitlines())
+    prior_sources = {}
+    for path in sources:
+        result = subprocess.run(['git', 'show', f'{base}:{path}'], cwd=ROOT,
+                                text=True, capture_output=True)
+        if result.returncode == 0:
+            prior_lines[path] = len(result.stdout.splitlines())
+            prior_sources[path] = result.stdout
     entries = json.loads((ROOT / 'docs/quality/owners.json').read_text())['occurrences']
     for entry in entries:
         if not entry.get('reason'):
@@ -49,6 +50,12 @@ def check(sources=None, facts=None, prune=False):
     registered = active | rules.from_entries(entries)
     architecture = json.loads((ROOT / 'docs/refactor/architecture-policy.json').read_text())
     problems.extend(rules.violations(sources, facts, before, prior_lines, registered, architecture))
+    if prior_sources:
+        prior_facts = syntax(prior_sources)
+        problems.extend(rules.exception_growth(
+            rules.exception_contracts(sources, facts),
+            rules.exception_contracts(prior_sources, prior_facts),
+        ))
     current = rules.inventory(facts)
     stale = active - current
     if stale and not prune:
