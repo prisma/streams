@@ -185,7 +185,8 @@ def _decode_b64(value):
         raise CheckError("invalid base64 payload") from exc
 
 
-def _read_entries(path):
+def read_entries(path):
+    """Validate the shared journal container before interpreting its event grammar."""
     path = Path(path)
     previous, entries = "0" * 64, []
     with path.open("rb") as source:
@@ -216,7 +217,7 @@ def _read_entries(path):
 
 def load_journal(path):
     """Replay client facts only. Unknown or malformed events fail closed."""
-    entries, digest = _read_entries(path)
+    entries, digest = read_entries(path)
     streams, operations, attempts = {}, {}, {}
     producer_slots = {}
     try:
@@ -305,8 +306,11 @@ class HttpClient:
         self.timeout = timeout
 
     def request(self, method, path, body=None, headers=None):
+        request_headers = {**self.headers, **(headers or {})}
+        if path.startswith("/v1/stream/"):
+            request_headers["Stream-Encryption-Key"] = request_headers.pop("Prisma-Encryption-Key")
         request = urllib.request.Request(self.base_url + path, data=body, method=method,
-                                         headers={**self.headers, **(headers or {})})
+                                         headers=request_headers)
         try:
             opener = urllib.request.build_opener(_NoRedirect())
             try:
@@ -400,12 +404,14 @@ def _pages(client, stream, scan, routing_key, page_bytes, max_pages):
     raise CheckError(f"pagination exceeded {max_pages} pages without completion")
 
 
-def _identify(frame, stream, routing_key, operations):
+def _identify(frame, stream, routing_key, operations, inherited=False):
     envelope = parse_json(frame)
     if not isinstance(envelope, dict) or envelope.get("operation_id") not in operations:
         raise CheckError("unexpected logical operation")
     operation = operations[envelope["operation_id"]]
-    if operation.stream != stream or operation.routing_key != routing_key:
+    if (operation.stream.namespace != stream.namespace
+            or (operation.stream != stream and not inherited)
+            or operation.routing_key != routing_key):
         raise CheckError("cross-tenant/incarnation/routing-key record")
     if operation.frame != frame:
         raise CheckError("payload or identity bytes differ from invocation")
@@ -432,9 +438,77 @@ def _order(ids, operations):
         if op.acknowledged_at is not None and op.acknowledged_at < latest_prior_invocation:
             raise CheckError("per-key real-time order violated")
         latest_prior_invocation = max(latest_prior_invocation, op.first_invocation)
-        if op.sequence <= producer_sequences.get(op.producer, -1):
+        producer = (op.stream, op.producer)
+        if op.sequence <= producer_sequences.get(producer, -1):
             raise CheckError("per-producer sequence order violated")
-        producer_sequences[op.producer] = op.sequence
+        producer_sequences[producer] = op.sequence
+
+
+def raw_records(client, stream, max_pages=10000):
+    """Drain the raw default-key view without decoding its opaque offsets."""
+    cursor, seen, frames = None, set(), []
+    for _ in range(max_pages):
+        path = "/v1/stream/" + urllib.parse.quote(stream.name, safe="/")
+        if cursor is not None:
+            path += "?" + urllib.parse.urlencode({"offset": cursor})
+        response = client.request("GET", path)
+        if response.status != 200:
+            raise CheckError(f"raw read failed ({response.status})")
+        frames.append(response.body)
+        next_cursor = response.headers.get("stream-next-offset")
+        if response.headers.get("stream-up-to-date") == "true":
+            if not next_cursor:
+                raise CheckError("raw completion has no boundary")
+            return b"".join(frames).splitlines(keepends=True), next_cursor
+        if not next_cursor or next_cursor in seen:
+            raise CheckError("raw pagination missing/repeated offset without completion")
+        cursor = next_cursor
+        seen.add(cursor)
+    raise CheckError("raw pagination exceeded bound without completion")
+
+
+def check_records(client, stream, expected, page_bytes=4096, max_pages=10000, fork=False,
+                  known_operations=None):
+    """Check one independently selected view; fork origins stay in their envelopes.
+
+    The lifecycle owner supplies an explicit, journal-derived inherited prefix.
+    Raw forks in this campaign contain only the default key and are checked
+    through both raw and product keyed reads. Ordinary streams retain scans.
+    """
+    if page_bytes < 1 or max_pages < 1:
+        raise CheckError("positive page bounds required")
+    selected = {op.operation_id: op for op in expected}
+    if len(selected) != len(expected):
+        raise CheckError("duplicate expected operation identity")
+    operations = selected if known_operations is None else known_operations
+    if fork and any(op.routing_key for op in expected):
+        raise CheckError("raw fork campaign requires default-key records")
+    scan_ids = []
+    if fork:
+        frames, _ = raw_records(client, stream, max_pages)
+        scan_ids = [_identify(frame, stream, "", operations, True) for frame in frames]
+        _order(scan_ids, operations)
+    else:
+        for body in _pages(client, stream, True, None, page_bytes, max_pages):
+            items = parse_json(body)
+            if not isinstance(items, list):
+                raise CheckError("scan body is not an array")
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {"routingKey", "valueB64"}:
+                    raise CheckError("malformed bytes scan record")
+                frame = _decode_b64(item["valueB64"])
+                scan_ids.append(_identify(frame, stream, item["routingKey"], operations))
+    scan_set = _exact(scan_ids, expected)
+    keyed_set = set()
+    for key in sorted({op.routing_key for op in expected} | {""}):
+        data = b"".join(_pages(client, stream, False, key, page_bytes, max_pages))
+        ids = [_identify(frame, stream, key, operations, fork)
+               for frame in data.splitlines(keepends=True)]
+        keyed_set.update(_exact(ids, [op for op in expected if op.routing_key == key]))
+        _order(ids, operations)
+    if keyed_set != scan_set:
+        raise CheckError("scan/raw and keyed reads disagree (or campaign is not quiescent)")
+    return scan_set
 
 
 def check(history, clients, page_bytes=4096, max_pages=10000):
@@ -452,30 +526,11 @@ def check(history, clients, page_bytes=4096, max_pages=10000):
             raise CheckError(f"missing credentials for namespace {stream.namespace}")
         client = clients[stream.namespace]
         expected = [op for op in history.operations.values() if op.stream == stream]
-        scan_ids = []
-        for body in _pages(client, stream, True, None, page_bytes, max_pages):
-            items = parse_json(body)
-            if not isinstance(items, list):
-                raise CheckError("scan body is not an array")
-            for item in items:
-                if not isinstance(item, dict) or set(item) != {"routingKey", "valueB64"}:
-                    raise CheckError("malformed bytes scan record")
-                frame = _decode_b64(item["valueB64"])
-                scan_ids.append(_identify(frame, stream, item["routingKey"], history.operations))
-        scan_set = _exact(scan_ids, expected)
-        keyed_set = set()
-        for key in sorted({op.routing_key for op in expected}):
-            data = b"".join(_pages(client, stream, False, key, page_bytes, max_pages))
-            frames = data.splitlines(keepends=True)
-            ids = [_identify(frame, stream, key, history.operations) for frame in frames]
-            key_expected = [op for op in expected if op.routing_key == key]
-            keyed_set.update(_exact(ids, key_expected))
-            _order(ids, history.operations)
-        if keyed_set != scan_set:
-            raise CheckError("scan and keyed reads disagree (or campaign is not quiescent)")
-        total += len(scan_ids)
+        scan_set = check_records(client, stream, expected, page_bytes, max_pages,
+                                 known_operations=history.operations)
+        total += len(scan_set)
         required += sum(op.required for op in expected)
-        ambiguous_present += sum(not history.operations[oid].required for oid in scan_ids)
+        ambiguous_present += sum(not history.operations[oid].required for oid in scan_set)
     return {"result": "pass", "journal_digest": history.digest,
             "streams": len(history.streams), "acknowledged": required, "observed": total,
             "ambiguous_observed": ambiguous_present,

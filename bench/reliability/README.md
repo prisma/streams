@@ -112,6 +112,23 @@ durability steps is incomplete evidence and fails closed. The single writer
 holds a process lock; concurrent threads serialize journal writes, and checks
 refuse to read an active writer's journal.
 
+## Complementary lifecycle, provider and version campaigns
+
+The append-only oracle below retains its narrow contract. The separate
+[lifecycle campaign](LIFECYCLE.md) journals authorized deletion/recreation,
+authenticated project isolation, internal workload forks and workspace transfer.
+Deletion requires a preceding exact-data checkpoint; it cannot erase an earlier
+missing acknowledgement from the expected history.
+
+[Provider contracts](../../docs/reliability-provider-contracts.md) run the
+canonical Rust verifier against a real local emulator and deliberately broken
+wire behavior. [Version transitions](../../docs/reliability-version-transitions.md)
+build three immutable source revisions and cold-read prior data before issuing
+retries or new writes. [Checkpoint reclamation](../../docs/reliability-checkpoint-reclamation.md)
+uses real compaction, physical SST deletion and a fixed online checkpoint copy.
+Each mechanism has its own scope and evidence; none implicitly certifies the
+unimplemented whole-service online backup path.
+
 ## Boundaries and retained evidence
 
 This first workload uses fresh, non-expiring streams and producer epoch 1. The
@@ -147,10 +164,13 @@ From the repository root, with the pinned Rust toolchain:
 bash scripts/reliability-campaign.sh
 ```
 
-The script builds both release executables and takes their actual paths from
+The script requires Node 22 or newer for the existing platform emulator. It
+builds all three release executables and takes their actual paths from
 Cargo's artifact messages, including when Cargo uses a custom target directory.
 It creates a fresh evidence directory under `target/reliability/run.*/campaign`.
-The full local `scripts/gate.sh` runs it, and CI has a named recovery job. The
+It also runs the provider contract/fault campaign and the authenticated
+lifecycle campaign with seed 17 in sibling `provider` and `lifecycle` evidence
+directories. The full local `scripts/gate.sh` runs it, and CI has a named recovery job. The
 lightweight oracle/restore controls and bounded protocol models run in
 `scripts/quality.sh`.
 
@@ -188,6 +208,7 @@ This is a **quiescent complete-copy restore drill**, with the application key
 held by the independent client. It establishes neither online checkpoint/PITR
 correctness nor an asynchronous backup recovery-point objective. It does not
 implement the operational backup path described as unwired in `RUNBOOK.md`.
-The copied registry and data must be retained together. Provider consistency,
-total provider loss, customer-key recovery, forked backups, old SST compaction
-GC and mixed-version recovery remain separate acceptance work.
+The copied registry and data must be retained together. The separate campaigns
+above add local provider, fork, SST GC and version-transition evidence. Live
+provider consistency, total provider loss, customer-key recovery and coordinated
+whole-service online backup remain separate acceptance work.

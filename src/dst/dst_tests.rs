@@ -11,6 +11,12 @@
 #[path = "tests/crash_recovery.rs"]
 mod crash_recovery;
 
+#[path = "tests/fixture_process.rs"]
+mod fixture_process;
+
+#[path = "tests/checkpoint_reclamation.rs"]
+mod checkpoint_reclamation;
+
 #[path = "tests/watch_admission.rs"]
 mod watch_admission;
 

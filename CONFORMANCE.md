@@ -16,6 +16,13 @@ route grammar, watch derivation):
 
 **332 passed · 0 failed · 6 skipped (338).**
 
+The same pinned suite was rerun during the September reliability work; see the
+[recorded validation](docs/reliability-confidence.md). Protocol conformance is
+complemented by an [independent exact-record oracle](bench/reliability/README.md)
+and [actual release-version transitions](docs/reliability-version-transitions.md).
+Those checks cover cold durability and frame compatibility beyond this suite's
+HTTP contract. Their local results do not certify rolling deployments.
+
 ## How to run
 
 ```bash

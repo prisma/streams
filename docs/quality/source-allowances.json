@@ -2670,13 +2670,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::cas",
-      "path": "src/bin/verify.rs",
-      "syntax": "tokio::join"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::run",
       "path": "src/bootstrap.rs",
       "syntax": "serde_json::json"

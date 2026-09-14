@@ -11,6 +11,21 @@ a temporary rustls 0.23 graph, and rejected separate temporary openssl 0.10
 and native-tls 0.2 graphs with the `banned` diagnostic naming each package.
 The workspace lock contained neither banned package nor `openssl-sys`.
 
+On 14 September 2026, the reliability follow-up's fresh `cargo-deny` run rejected
+locked `rustls` 0.23.41 under newly published `RUSTSEC-2026-0285`. The lock now
+selects 0.23.45, the patched release identified by the
+[upstream advisory](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+The issue concerns TLS 1.3 handshake messages crossing encryption-level
+boundaries; the advisory says the transcript remains authenticated. This is a
+targeted transitive patch within existing requirements. Rustls 0.23.45 requires
+AWS-LC Rust bindings at least 1.18 and webpki at least 0.103.14; the resolved
+graph uses `aws-lc-rs` 1.18.1, `aws-lc-sys` 0.45.0 and `rustls-webpki` 0.103.15.
+Cargo also selects the already-locked `getrandom` 0.3.4 for test-only `tempfile`
+within its existing `>=0.3, <0.5` requirement. The Rust and SlateDB
+pins, storage format and advisory exception list are unchanged. The failed
+audit is retained alongside the refreshed reliability gate; prior binary
+receipts continue to identify the old dependency graph explicitly.
+
 - Removed the unused direct `tokio-stream` dependency. `rg` found no source use;
   `cargo-machete` independently identified it. Transitive dependencies may still
   use this package.

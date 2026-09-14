@@ -1354,6 +1354,28 @@
     "scenarios": []
   },
   {
+    "name": "checkpoint_pins_old_ssts_until_release_and_restores_exact_cut",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "caaefe723cf78a5567071e289cc23f56c303add9099899d25a05319758199b11",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/checkpoint_reclamation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "checkpoint_reclamation_child",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "22ff58adb317e6ea2e057005a0f4d5028a6c55cc627371b59f4d18bcedb3283d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/checkpoint_reclamation.rs",
+    "scenarios": []
+  },
+  {
     "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1489,7 +1511,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "df559f0c70d0c92d2ce3bd6a5c44f510bf44a27308882f8fa0f3b83b33f6dd98",
+    "function_sha256": "7fd14b5a28645aae821693a32eea9d0601d1af959efe1447912ecf9bcf15c95d",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(local.clone(), 0xc7, FaultPlan::CLEAN);"
@@ -3629,7 +3651,7 @@
     "attributes": [
       "#[tokio::test]"
     ],
-    "function_sha256": "753f6d4ccaa48425599c16bc6b912d29b40d3ce00487041c1f6088540dd9b451",
+    "function_sha256": "158208b4e0724745172f5015c78f2ced58d71d5c43db7126dd09f34a1c36a318",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/crash_recovery.rs",

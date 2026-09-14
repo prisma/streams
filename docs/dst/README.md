@@ -1,5 +1,12 @@
 # Prisma Streams DST expansion package
 
+Implemented complementary reliability mechanisms are indexed in the
+[reliability report](../reliability-confidence.md) and
+[external campaign guide](../../bench/reliability/README.md). In particular,
+[checkpoint reclamation](../reliability-checkpoint-reclamation.md) requires
+actual SST deletion and cold reads. Those bounded campaigns do not change the
+implementation status of the whole-system simulator described here.
+
 This package contains a complete handoff specification for extending Prisma Streams Deterministic Simulation Testing based on the failure modes uncovered across the SlateDB implementation, cost campaigns, Routing v3, product-surface work, protocol conformance, and repeated lifecycle audits.
 
 ## Files

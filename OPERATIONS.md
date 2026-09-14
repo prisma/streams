@@ -52,6 +52,15 @@ ownership is a manifest property, not an instance property).
 
 ## 2. Backup, PITR, and corruption recovery
 
+**Implementation status:** the following cell-wide backup/PITR design remains
+an operational target. The current executable evidence comprises a
+[quiescent whole-store restore drill](bench/reliability/README.md) and a
+[single-DB online checkpoint/copy/reclamation fixture](docs/reliability-checkpoint-reclamation.md).
+The latter keeps a real checkpoint pin while writes continue and restores an
+exact cut, but does not coordinate shard watermarks, history, registry and
+application-fork references across a cell. Neither mechanism establishes the
+RPO/RTO targets below or replaces customer-key custody and restore procedures.
+
 Everything at rest is ciphertext (§3.7 of SPEC.md), so **backup requires no
 tenant keys** — backups are exact object copies, useless without the
 customer-held keys.
@@ -97,6 +106,8 @@ at 64 concurrent opens ≈ 15–30 min, dominated by manifest reads.
   backup provider, verify conditional-write/CAS semantics there (all
   fencing rests on them), restore, serve. The published
   provider-failover RTO comes from THIS drill, not the restore drill.
+  Use the [executable provider contract checks](docs/reliability-provider-contracts.md)
+  on the exact target bucket and access path before serving restored data.
 - Continuous **scrubber** (compactor-service sibling): walks manifests,
   verifies every referenced object exists and its checksum matches
   (SlateDB block checksums run always and need no tenant key; AES-GCM tag
@@ -104,6 +115,12 @@ at 64 concurrent opens ≈ 15–30 min, dominated by manifest reads.
   operator-triggered, customer-supplied-key integrity audits).
   Unreachable/corrupt object ⇒ page + auto-restore that object from
   backup (it is immutable — restore is a copy).
+
+The [reliability report](docs/reliability-confidence.md) distinguishes measured
+local results from pending live-provider and power-loss evidence. The
+[version-transition campaign](docs/reliability-version-transitions.md) records
+exact source/frame/layout identities; do not assume that a readable upgrade
+also permits rollback after new-format writes.
 
 ### 2.4 Deletion protection & GDPR
 

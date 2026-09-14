@@ -2175,6 +2175,30 @@
       "path": "src/postings_cache/durability_tests.rs",
       "reason": "The generated storage-backed clipping and extension property uses Proptest assertions to preserve shrinking and counterexample diagnostics; expected offsets come from the independent integer range.",
       "syntax": "proptest::prop_assert_eq"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::contracts",
+      "path": "src/bin/verify.rs",
+      "reason": "Canonical provider contract owner compiled by the existing verify binary; actual client wire faults and a positive store control verify its fail-closed assertions.",
+      "syntax": "path = \"verify/contracts.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_process",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Shared test-only child process owner with bounded kill/reap and retained logs; both crash/recovery and checkpoint-reclamation campaigns execute it.",
+      "syntax": "path = \"tests/fixture_process.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::checkpoint_reclamation",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Test-only four-process checkpoint/compaction/GC and isolated copy recovery fixture; actual typed object graph and exact-byte reader assertions cover the owner.",
+      "syntax": "path = \"tests/checkpoint_reclamation.rs\""
     }
   ]
 }

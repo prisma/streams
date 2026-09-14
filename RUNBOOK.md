@@ -302,7 +302,7 @@ OOM-killed container under load otherwise stays down.
 | `GET /v1/streams` | bearer | list streams |
 | `PUT /v1/stream/{name}` | bearer + `Stream-Encryption-Key` | create (400 `missing_key` without the key header) |
 | `POST /v1/stream/{name}` | bearer + key | append (`{"events":[…]}`); 204 on durable commit |
-| `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
+| `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; [current surface contract](docs/RELEASE-PRODUCT-SURFACE.md)) |
 | `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
 | `GET /v1/debug/load` | none | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
@@ -610,6 +610,11 @@ anything listed in `$SOAK_HOME/preserve.txt`.
 - **Backups / PITR / restore drills**: checkpoint-pin + async copy design in
   [OPERATIONS.md §2](./OPERATIONS.md) (RPO ≤ 5 min target). Not yet wired in
   the pilot — treat the pilot keyspace as re-creatable.
+  Executable local procedures are in the
+  [independent restore drill](bench/reliability/README.md) and
+  [checkpoint/reclamation fixture](docs/reliability-checkpoint-reclamation.md).
+  The latter proves a single live history DB's pinned snapshot copy, not a
+  coordinated cell-wide backup or PITR service.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
@@ -635,10 +640,16 @@ rollout and exit criteria live in [docs/STAGING.md](./docs/STAGING.md).
 
 Every substantive change runs, in order:
 
-1. `scripts/release-gate.sh` — fmt, clippy no-new-warnings (baseline in
-   `scripts/clippy-warning-baseline.txt`), the unit suite, `cargo deny check`
-   (advisories, licenses, bans, sources; exceptions live in `deny.toml` and
-   `SECURITY.md`).
+1. `scripts/gate.sh` with the exact root toolchain — the current mandatory
+   local gate: common quality checks, the release library suite, isolated
+   capacity check, and independent release-binary crash/restore campaign.
+   [RUST-QUALITY.md](docs/RUST-QUALITY.md) owns the warning and dependency
+   policy; legacy fingerprint inventories are not permission for new warnings.
+   See the [reliability report](docs/reliability-confidence.md) for individual
+   entry points, receipts and bounds, and run the
+   [version-transition matrix](docs/reliability-version-transitions.md) for
+   the actual release pair. Remote protocol/SDK and external acceptance gates
+   remain independent requirements.
 2. The **single-instance saturation benchmark** on Prisma Compute
    (`scripts/bench-fra-ab.sh`; procedure and pass thresholds in
    [AWS-readyness.md §5](./AWS-readyness.md)). One server, the pilot
@@ -647,6 +658,13 @@ Every substantive change runs, in order:
    ≤ 620 MB, throughput/latency within the recorded baseline band
    (`bench/fra-ab-baseline.md`). This exact harness is what exposed the
    slate-codex OOM crash loop — treat a red run as a hard stop.
+
+Before switching storage providers or access topology, run the
+[provider contract probe](docs/reliability-provider-contracts.md) in a disposable
+namespace with the actual endpoint/region/configuration. Keep its receipts
+separate from emulator results. Host power-loss tests require a disposable
+host and a client journal outside that host's failure domain; `SIGKILL` alone
+does not test power-loss persistence.
 
 ## 14. Tigris latency observatory
 

@@ -3,22 +3,20 @@
 //! reclamation. Each reopen has new runtimes, handles, and caches. Successful
 //! local object operations survive process death; this is not a power-loss test.
 
+use super::fixture_process::{CRASH_EXIT, child_plan, crash, run_child, witness};
 use super::fixture_storage::{append_sized, skey};
-use crate::config::{Environment, ProcessEnvironment};
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::history::{Absorber, AbsorberConfig, KeyCache};
 use crate::shard::{ShardConfig, ShardEngine, TailFields};
 use futures_util::TryStreamExt;
 use object_store::{ObjectStore, ObjectStoreExt};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HASH: [u8; 16] = [0xc7; 16];
-const CRASH_EXIT: i32 = 73;
-const CHILD_ENV: &str = "STREAMS_CRASH_RECOVERY_CHILD";
 const CHILD_TEST: &str = "dst::dst_tests::crash_recovery::crash_recovery_child";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -80,73 +78,33 @@ async fn process_crashes_preserve_history_through_reclamation() {
     ] {
         let case = root.join(format!("{cut:?}"));
         std::fs::create_dir_all(case.join("objects")).unwrap();
-        for role in [
-            Role::Seed,
-            Role::RecoveryManifestCrash,
-            Role::RecoverAndReclaim,
-            Role::VerifyCold,
+        for (role, expected_exit) in [
+            (Role::Seed, CRASH_EXIT),
+            (Role::RecoveryManifestCrash, CRASH_EXIT),
+            (Role::RecoverAndReclaim, CRASH_EXIT),
+            (Role::VerifyCold, 0),
         ] {
-            run_child(&case, cut, role).await;
+            run_child(
+                &case.join(format!("{role:?}")),
+                CHILD_TEST,
+                &ChildPlan {
+                    root: case.clone(),
+                    cut,
+                    role,
+                },
+                expected_exit,
+            )
+            .await;
         }
     }
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// Every child is reaped, including deadline failures. Diagnostics stay on
-/// disk on failure, outside the object-store namespace, and cannot fill a pipe.
-async fn run_child(root: &Path, cut: Cut, role: Role) {
-    let plan = ChildPlan {
-        root: root.to_owned(),
-        cut,
-        role,
-    };
-    let log_path = root.join(format!("{role:?}.log"));
-    let log = std::fs::File::create(&log_path).unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([CHILD_TEST, "--exact", "--nocapture", "--test-threads=1"])
-        .env_clear()
-        .env(CHILD_ENV, serde_json::to_string(&plan).unwrap())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("{cut:?}/{role:?} timed out; log: {}", log_path.display());
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    let log = std::fs::read_to_string(log_path).unwrap();
-    let expected = if matches!(role, Role::VerifyCold) {
-        0
-    } else {
-        CRASH_EXIT
-    };
-    assert_eq!(
-        status.code(),
-        Some(expected),
-        "{cut:?}/{role:?}, evidence at {}:\n{log}",
-        root.display()
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join(format!("{role:?}.witness"))).unwrap(),
-        serde_json::to_string(&plan).unwrap(),
-        "the selected child must reach its asserted cut; an empty test filter is not success"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crash_recovery_child() {
-    let Some(raw) = ProcessEnvironment.get(CHILD_ENV) else {
+    let Some(plan) = child_plan::<ChildPlan>() else {
         return; // The parent alone authorizes this subprocess-only fixture.
     };
-    let plan: ChildPlan = serde_json::from_str(&raw).unwrap();
     let local: Arc<dyn ObjectStore> = Arc::new(
         object_store::local::LocalFileSystem::new_with_prefix(plan.root.join("objects")).unwrap(),
     );
@@ -207,21 +165,6 @@ async fn open_engine(
         None,
         maintenance,
     )
-}
-
-fn witness(plan: &ChildPlan) {
-    std::fs::write(
-        plan.root.join(format!("{:?}.witness", plan.role)),
-        serde_json::to_vec(plan).unwrap(),
-    )
-    .unwrap();
-}
-
-/// exit does not run Rust destructors or runtime shutdown. No engine close,
-/// final flush, or cache can bridge either side of this boundary.
-fn crash(plan: &ChildPlan) -> ! {
-    witness(plan);
-    std::process::exit(CRASH_EXIT);
 }
 
 async fn wait_engaged(entered: &AtomicU64) {

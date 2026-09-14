@@ -164,10 +164,11 @@ copy restored all 35 captured objects, totaling 112,803 bytes. Binary, checker
 and retained source-patch hashes were verified. The consolidated evidence index
 and retained gate logs are in `target/reliability/final-validation/receipt.json`.
 
-Remaining work includes production-provider contract tests, mixed-version
-upgrade/rollback fixtures, online backup/checkpoint integration and destructive
-customer-key restore drills, systematic old-SST/fork-pinned GC campaigns, and
-broader randomized create/delete/recreate lifecycle testing. Local filesystem
-and emulator results do not establish power-loss durability or total-provider
-loss guarantees. Existing performance, cryptographic, deployment and upload
-holds remain independent of these results.
+The [follow-up report](reliability-follow-up.md) records subsequent provider
+contract controls, actual-binary version fixtures, authenticated lifecycle/fork
+replay, physical checkpoint-pinned SST reclamation, and online single-DB copying.
+The results above describe the first implementation at `db2157e`; later receipts
+identify their own sources and binaries. Live-provider and power-loss evidence,
+coordinated whole-service backup/PITR and independent cryptographic acceptance
+remain separate. Existing performance, cryptographic, deployment and upload
+holds remain independent of local results.

@@ -62,7 +62,7 @@ The service exposes **two HTTP surfaces**:
 | 2 h soak | flat p50 at saturation, zero deaths |
 | chaos (kill N−2 under load) | survivors absorb, zero data loss |
 
-Full history: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md),
+Full history: [BENCHMARKS.md](./BENCHMARKS.md),
 [EXPERIMENT-PILOT.md](./EXPERIMENT-PILOT.md), [REPORT.md](./REPORT.md).
 
 ## Quick start — the SDK (recommended)
@@ -141,6 +141,24 @@ object-store requirements, backup/PITR, tenant identity and key custody, SLOs.
 (server commit, SlateDB pin, SDK tarball SHA, layout version, conformance
 pin, DST scenario count).
 
+## Reliability verification
+
+Run `scripts/gate.sh` with the exact root toolchain before committing. Alongside
+the Rust quality and library gates, it runs independent client-oracle controls,
+bounded protocol models, process-crash recovery, isolated restore, provider
+contract controls and authenticated lifecycle checks. The [first reliability report](docs/reliability-confidence.md) and
+[follow-up report](docs/reliability-follow-up.md) describe
+the defects these checks exposed, their evidence and their limits.
+
+The [external oracle](bench/reliability/README.md) owns the expected records in
+a separate durable journal. Further campaigns cover
+[storage-provider contracts](docs/reliability-provider-contracts.md),
+[checkpoint-protected SST reclamation and online snapshot copying](docs/reliability-checkpoint-reclamation.md),
+[authenticated stream lifecycle checks](bench/reliability/LIFECYCLE.md),
+and [actual-binary version transitions](docs/reliability-version-transitions.md).
+Local or emulator results do not certify production-provider durability,
+host power-loss behavior, or whole-service backup/PITR.
+
 ## Documentation map
 
 - [Rust quality policy](docs/RUST-QUALITY.md) — adopted coding standard, pinned tools, local/CI gates and invariant verification.
@@ -154,6 +172,10 @@ pin, DST scenario count).
 | [CONFORMANCE.md](./CONFORMANCE.md) | the pinned Durable Streams suite; how to run it |
 | [docs/ROUTING-V3.md](./docs/ROUTING-V3.md) | routing keys, physical scaling, postings, cost |
 | [OPERATIONS.md](./OPERATIONS.md) | provider requirements, backup/PITR, identity, SLOs |
+| [docs/reliability-confidence.md](./docs/reliability-confidence.md) | independent correctness evidence, crash/restore tests, known limits |
+| [docs/reliability-follow-up.md](./docs/reliability-follow-up.md) | authenticated lifecycle, physical GC, provider/version campaigns and validation |
+| [bench/reliability/README.md](./bench/reliability/README.md) | external client journal and release-binary campaign commands |
+| [scripts/reliability/models/README.md](./scripts/reliability/models/README.md) | finite protocol invariants, bounds and semantic counterexamples |
 | [docs/OBSERVABILITY-BILLING.md](./docs/OBSERVABILITY-BILLING.md) | billing/usage/telemetry design (normative) |
 | [docs/OBSERVABILITY-BILLING-STATUS.md](./docs/OBSERVABILITY-BILLING-STATUS.md) | billing implementation matrix + open gates |
 | [SECURITY.md](./SECURITY.md) | key custody, watch capabilities, tenant isolation |
@@ -176,6 +198,7 @@ src/            server crate (streams-slate) + bins
   dst/          deterministic simulation tests
 sdk/            @prisma/streams TypeScript client SDK (canonical entry point)
 conformance/    the pinned Durable Streams suite runner
+bench/reliability/ independent client, provider and version-transition campaigns
 scripts/        field gate, release provenance, analysis
 docs/           routing/cost/soak campaigns, RELEASE-PRODUCT-SURFACE, dst/, history/
 repro-edge-404/ the Compute edge-publication reproduction package

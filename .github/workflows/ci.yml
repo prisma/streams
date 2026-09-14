@@ -25,10 +25,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Independent checker negative controls
         run: python3 -m unittest discover -s bench/reliability -v
-      - name: Release binary crashes and isolated restore
+      - name: Release recovery, provider contracts and authenticated lifecycle
         run: bash scripts/reliability-campaign.sh
+  reliability-versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/reliability/version-build
+      - name: Build reviewed immutable release revisions
+        run: >-
+          python3 bench/reliability/version_build.py
+          --out target/reliability/version-binaries
+          --target-dir target/reliability/version-build
+      - name: Exact cold reads across supported frame transitions
+        run: >-
+          python3 bench/reliability/version_transition.py
+          --build-receipt target/reliability/version-binaries/build-receipt.json
+          --out target/reliability/version-matrix
   # R24: fixed review-commit ratchets and explicit extracted-owner boundaries.
   # The historical WP-00 report remains diagnostic, never an acceptance signal.
   architecture-report:

@@ -1,5 +1,14 @@
 # Deterministic Simulation Testing
 
+For the implemented complementary checks, see the
+[reliability report](reliability-confidence.md),
+[external client oracle](../bench/reliability/README.md),
+[finite protocol models](../scripts/reliability/models/README.md), and
+[fresh-process checkpoint/physical-GC campaign](reliability-checkpoint-reclamation.md).
+These execute real code or explicitly bounded models; they do not make the
+Tokio scheduler deterministic. The expansion design below remains a separate
+architecture target.
+
 ## The model we are working towards
 
 Deterministic Simulation Testing runs a system inside a simulator where

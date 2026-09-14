@@ -10,16 +10,17 @@ use bytes::Bytes;
 use clap::Parser;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::path::Path as ObjPath;
-use object_store::{
-    CopyOptions, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
-};
+use object_store::{CopyOptions, ObjectStore, ObjectStoreExt, PutOptions, PutPayload};
 use slatedb::admin::AdminBuilder;
 use slatedb::config::{Settings, WriteOptions};
 use slatedb::{CloneSourceSpec, Db};
 
+#[path = "verify/contracts.rs"]
+mod contracts;
+
 #[derive(Parser, Debug)]
 struct Args {
-    /// cas | fence | waloff | clone | idle | latency
+    /// contract | cas | fence | waloff | clone | idle | latency
     test: String,
     #[arg(
         long,
@@ -51,6 +52,7 @@ fn store(args: &Args) -> anyhow::Result<Arc<dyn ObjectStore>> {
         .with_bucket_name(&args.bucket)
         .with_region(&args.region)
         .with_conditional_put(S3ConditionalPut::ETagMatch)
+        .with_allow_http(args.s3_endpoint.starts_with("http://127.0.0.1:"))
         .build()?;
     Ok(Arc::new(s3))
 }
@@ -134,6 +136,17 @@ async fn main() -> anyhow::Result<()> {
     match args.test.as_str() {
         "latency" => latency(&args).await,
         "cas" => cas(&args).await,
+        "contract" => {
+            anyhow::ensure!(
+                args.prefix != "verify",
+                "contract requires an explicit disposable --prefix"
+            );
+            anyhow::ensure!(
+                (2..=64).contains(&args.n),
+                "contract concurrency --n must be 2..=64"
+            );
+            contracts::run(store(&args)?, &args.prefix, args.n).await
+        }
         "fence" => fence(&args).await,
         "waloff" => waloff(&args).await,
         "clone" => clone_split(&args).await,
@@ -174,96 +187,8 @@ async fn latency(args: &Args) -> anyhow::Result<()> {
 }
 
 async fn cas(args: &Args) -> anyhow::Result<()> {
-    let s = store(args)?;
-    let key = ObjPath::from(format!("{}/cas/obj-{}", args.prefix, std::process::id()));
-
-    // 1) PutMode::Create on fresh key -> must succeed.
-    let r1 = s
-        .put_opts(
-            &key,
-            PutPayload::from_static(b"v1"),
-            PutOptions::from(PutMode::Create),
-        )
-        .await?;
-    println!(
-        "create fresh: OK etag={:?} version={:?}",
-        r1.e_tag, r1.version
-    );
-
-    // 2) PutMode::Create again -> must fail AlreadyExists.
-    let r2 = s
-        .put_opts(
-            &key,
-            PutPayload::from_static(b"v2"),
-            PutOptions::from(PutMode::Create),
-        )
-        .await;
-    match r2 {
-        Err(object_store::Error::AlreadyExists { .. }) => {
-            println!("create existing: correctly rejected (AlreadyExists)")
-        }
-        other => println!("create existing: UNEXPECTED {:?}", other.map(|p| p.e_tag)),
-    }
-    // Confirm content untouched.
-    let body = s.get(&key).await?.bytes().await?;
-    println!("content after failed create: {:?} (want b\"v1\")", body);
-
-    // 3) PutMode::Update with correct etag -> succeed.
-    let etag = r1.e_tag.clone();
-    let r3 = s
-        .put_opts(
-            &key,
-            PutPayload::from_static(b"v3"),
-            PutOptions::from(PutMode::Update(UpdateVersion {
-                e_tag: etag.clone(),
-                version: None,
-            })),
-        )
-        .await;
-    match &r3 {
-        Ok(p) => println!("update correct etag: OK new etag={:?}", p.e_tag),
-        Err(e) => println!("update correct etag: UNEXPECTED ERR {e}"),
-    }
-
-    // 4) PutMode::Update with STALE etag -> must fail Precondition.
-    let r4 = s
-        .put_opts(
-            &key,
-            PutPayload::from_static(b"v4"),
-            PutOptions::from(PutMode::Update(UpdateVersion {
-                e_tag: etag,
-                version: None,
-            })),
-        )
-        .await;
-    match r4 {
-        Err(object_store::Error::Precondition { .. }) => {
-            println!("update stale etag: correctly rejected (Precondition)")
-        }
-        other => println!("update stale etag: UNEXPECTED {:?}", other.map(|p| p.e_tag)),
-    }
-
-    // 5) CAS race: two concurrent Creates on one fresh key -> exactly one wins.
-    let key2 = ObjPath::from(format!("{}/cas/race-{}", args.prefix, std::process::id()));
-    let (a, b) = tokio::join!(
-        s.put_opts(
-            &key2,
-            PutPayload::from_static(b"A"),
-            PutOptions::from(PutMode::Create)
-        ),
-        s.put_opts(
-            &key2,
-            PutPayload::from_static(b"B"),
-            PutOptions::from(PutMode::Create)
-        ),
-    );
-    let winners = [a.is_ok(), b.is_ok()].iter().filter(|x| **x).count();
-    println!("concurrent create race: {winners} winner(s) (want exactly 1)");
-    let body = s.get(&key2).await?.bytes().await?;
-    println!("race content: {:?}", body);
-
-    s.delete(&key).await.ok();
-    s.delete(&key2).await.ok();
+    let prefix = contracts::conditional_writes(store(args)?, &args.prefix, args.n).await?;
+    println!("CAS_OK {prefix}");
     Ok(())
 }
 
@@ -278,7 +203,7 @@ async fn fence(args: &Args) -> anyhow::Result<()> {
         })
         .build()
         .await?;
-    db_a.put(b"k1", b"from-a").await?;
+    db_a.put(b"k1", b"from-a").await?.await_durable().await?;
     println!("writer A: wrote k1 (durable)");
 
     let db_b = Db::builder(path.as_str(), s.clone())
@@ -289,25 +214,50 @@ async fn fence(args: &Args) -> anyhow::Result<()> {
         .build()
         .await?;
     let v = db_b.get(b"k1").await?;
+    anyhow::ensure!(
+        v.as_deref() == Some(b"from-a".as_slice()),
+        "new owner lost acknowledged bytes"
+    );
     println!("writer B: opened same path, reads k1 = {:?}", v);
-    db_b.put(b"k2", b"from-b").await?;
+    db_b.put(b"k2", b"from-b").await?.await_durable().await?;
     println!("writer B: wrote k2 (durable)");
 
     // A must now be fenced: its next durable write must fail.
     let t = Instant::now();
-    let res = db_a.put(b"k3", b"zombie").await;
+    let res = match db_a.put(b"k3", b"zombie").await {
+        Ok(handle) => handle.await_durable().await,
+        Err(error) => Err(error),
+    };
     println!(
         "writer A (fenced) put -> {:?} after {:.0}ms",
         res.as_ref().map(|_| "OK(!!)").map_err(|e| e.to_string()),
         t.elapsed().as_secs_f64() * 1000.0
     );
     match res {
-        Err(_) => println!("fencing: PASS (old writer rejected)"),
-        Ok(_) => println!("fencing: FAIL — zombie write accepted"),
+        Err(error) if error.kind() == slatedb::ErrorKind::Closed(slatedb::CloseReason::Fenced) => {
+            println!("fencing: PASS (old writer rejected as fenced)");
+        }
+        Err(error) => anyhow::bail!("old writer failed without the fencing witness: {error}"),
+        Ok(_) => anyhow::bail!("fencing: zombie write accepted"),
     }
     let v2 = db_b.get(b"k3").await?;
+    anyhow::ensure!(v2.is_none(), "fenced writer changed durable state");
     println!("writer B: k3 = {:?} (want None)", v2);
-    db_b.close().await.ok();
+    db_b.close().await?;
+    let recovered = Db::builder(path.as_str(), s).build().await?;
+    anyhow::ensure!(
+        recovered.get(b"k1").await?.as_deref() == Some(b"from-a".as_slice()),
+        "first owner bytes missing after cold reopen"
+    );
+    anyhow::ensure!(
+        recovered.get(b"k2").await?.as_deref() == Some(b"from-b".as_slice()),
+        "second owner bytes missing after cold reopen"
+    );
+    anyhow::ensure!(
+        recovered.get(b"k3").await?.is_none(),
+        "zombie bytes found after cold reopen"
+    );
+    recovered.close().await?;
     Ok(())
 }
 
@@ -350,6 +300,7 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         r.as_ref().map(|_| "OK").map_err(|e| e.to_string()),
         t.elapsed().as_secs_f64() * 1000.0
     );
+    r?;
     db.close().await?;
 
     // Reopen: durable data must survive.
@@ -365,7 +316,16 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         db2.get(b"fast").await?,
         db2.get(b"durable").await?
     );
+    anyhow::ensure!(
+        db2.get(b"fast").await?.as_deref() == Some(b"v".as_slice()),
+        "flushed first value missing after reopen"
+    );
+    anyhow::ensure!(
+        db2.get(b"durable").await?.as_deref() == Some(b"v".as_slice()),
+        "flushed second value missing after reopen"
+    );
     db2.close().await?;
+    println!("WALOFF_OK");
     Ok(())
 }
 
@@ -373,9 +333,18 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
     let s = store(args)?;
     let run = std::process::id();
     let parent = format!("{}/clone-parent-{run}", args.prefix);
+    // Projection/union requires WAL-free sources in the pinned SlateDB API,
+    // matching the service's history DBs. Explicit flushes publish their SSTs.
+    let settings = Settings {
+        wal_enabled: false,
+        ..Default::default()
+    };
 
     // Parent with keys in two hash halves: a* (low) and q* (high).
-    let db = Db::builder(parent.as_str(), s.clone()).build().await?;
+    let db = Db::builder(parent.as_str(), s.clone())
+        .with_settings(settings.clone())
+        .build()
+        .await?;
     for i in 0..500u32 {
         db.put(format!("a{:04}", i).as_bytes(), vec![b'x'; 256])
             .await?;
@@ -384,12 +353,8 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
     }
     db.flush().await?;
     db.close().await?;
-    println!("parent written (1000 keys)");
-    let parent_objs = count_objects(&s, &parent).await?;
-    println!("parent object count: {parent_objs}");
 
     // Split: two children with disjoint projection ranges.
-    let t = Instant::now();
     let child_low = format!("{}/clone-low-{run}", args.prefix);
     let child_high = format!("{}/clone-high-{run}", args.prefix);
     let mut src_low = CloneSourceSpec::new(parent.as_str());
@@ -412,41 +377,25 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
         .create_clone_builder_from_source(src_high)
         .build()
         .await?;
-    println!(
-        "split (2 clones) took {:.0}ms",
-        t.elapsed().as_secs_f64() * 1000.0
-    );
-
-    let low_objs = count_objects(&s, &child_low).await?;
-    let high_objs = count_objects(&s, &child_high).await?;
-    println!("child object counts: low={low_objs} high={high_objs} (small => zero-copy)");
 
     // Verify contents + independence.
-    let dbl = Db::builder(child_low.as_str(), s.clone()).build().await?;
-    let a = dbl.get(b"a0001").await?;
-    let q = dbl.get(b"q0001").await?;
-    println!(
-        "low child: a0001={} q0001={} (want present/absent)",
-        a.is_some(),
-        q.is_some()
-    );
+    let dbl = Db::builder(child_low.as_str(), s.clone())
+        .with_settings(settings.clone())
+        .build()
+        .await?;
+    check_clone(&dbl, &[(b'a', b'x')], false).await?;
     dbl.put(b"a-new", b"child-write").await?;
+    dbl.flush().await?;
     dbl.close().await?;
 
-    let dbh = Db::builder(child_high.as_str(), s.clone()).build().await?;
-    let a = dbh.get(b"a0001").await?;
-    let q = dbh.get(b"q0001").await?;
-    let an = dbh.get(b"a-new").await?;
-    println!(
-        "high child: a0001={} q0001={} a-new={} (want absent/present/absent)",
-        a.is_some(),
-        q.is_some(),
-        an.is_some()
-    );
+    let dbh = Db::builder(child_high.as_str(), s.clone())
+        .with_settings(settings.clone())
+        .build()
+        .await?;
+    check_clone(&dbh, &[(b'q', b'y')], false).await?;
     dbh.close().await?;
 
     // Union the two children back into one.
-    let t = Instant::now();
     let merged = format!("{}/clone-merged-{run}", args.prefix);
     let mut m_low = CloneSourceSpec::new(child_low.as_str());
     m_low.projection_range = Some((
@@ -464,23 +413,47 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
         .with_source(m_high)
         .build()
         .await?;
-    println!("union took {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
-    let dbm = Db::builder(merged.as_str(), s.clone()).build().await?;
-    println!(
-        "merged: a0001={} q0001={} a-new={} (want all present)",
-        dbm.get(b"a0001").await?.is_some(),
-        dbm.get(b"q0001").await?.is_some(),
-        dbm.get(b"a-new").await?.is_some()
-    );
+    let dbm = Db::builder(merged.as_str(), s.clone())
+        .with_settings(settings)
+        .build()
+        .await?;
+    check_clone(&dbm, &[(b'a', b'x'), (b'q', b'y')], true).await?;
     dbm.close().await?;
+    println!("CLONE_OK");
     Ok(())
 }
 
-async fn count_objects(s: &Arc<dyn ObjectStore>, prefix: &str) -> anyhow::Result<usize> {
-    use futures_util::TryStreamExt;
-    let p = ObjPath::from(prefix);
-    let list: Vec<_> = s.list(Some(&p)).try_collect().await?;
-    Ok(list.len())
+/// Drain the full projection against client-generated bytes, including absence
+/// of extra keys. A few successful point reads cannot prove clone completeness.
+async fn check_clone(db: &Db, prefixes: &[(u8, u8)], child_write: bool) -> anyhow::Result<()> {
+    let mut expected = std::collections::BTreeMap::new();
+    for &(prefix, value) in prefixes {
+        for index in 0..500 {
+            expected.insert(
+                format!("{}{:04}", char::from(prefix), index),
+                vec![value; 256],
+            );
+        }
+    }
+    if child_write {
+        expected.insert("a-new".into(), b"child-write".to_vec());
+    }
+    let mut scan = db.scan(..).await?;
+    for (key, value) in expected {
+        let row = scan
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("clone omitted {key}"))?;
+        anyhow::ensure!(
+            row.key == key.as_bytes() && row.value == value,
+            "clone projection differs at {key}"
+        );
+    }
+    anyhow::ensure!(
+        scan.next().await?.is_none(),
+        "clone contains unexpected records"
+    );
+    Ok(())
 }
 
 async fn idle(args: &Args) -> anyhow::Result<()> {
