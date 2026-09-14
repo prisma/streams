@@ -902,20 +902,19 @@ async fn telemetry_crash_points_and_cost_gates() {
     engine_shutdown(&state).await;
 }
 
-/// Round-21 blocker 3: sealed read batches are DURABLE. They enter a
-/// per-instance spool before the ledger sees them, survive a process
-/// "crash" (a second spool handle on the same store), and leave only
-/// after `_usage` acknowledged. During a ledger outage the spool
-/// absorbs on disk while the accumulator keeps rotating.
+/// Sealed read batches survive reopening their per-instance spool before
+/// reaching the ledger. The recovered writer drains them only after `_usage`
+/// acknowledged. This exercises durable reopening, not process termination.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn read_batches_survive_crash_in_the_spool() {
+async fn read_batches_survive_reopening_the_spool() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let spool =
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
-    install_read_spool(&state, spool);
+    assert!(!crate::billing::billing_required(&state.config.billing));
+    assert!(!state.billing.read_spool_open());
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,
@@ -940,18 +939,26 @@ async fn read_batches_survive_crash_in_the_spool() {
     // pre-append half of a drain by spooling directly.
     let sealed = state.billing.reads().drain_sealed(16);
     assert_eq!(sealed.len(), 1);
-    let sp = state.billing.read_spool().unwrap();
-    sp.persist(&sealed[0]).await.unwrap();
+    spool.persist(&sealed[0]).await.unwrap();
+    assert_eq!(spool.depth().await, 1);
 
-    // "Crash": a fresh spool handle over the same store still has it.
+    // Reopening acquires a newer SlateDB writer epoch and fences the old
+    // handle. Only the recovered owner may participate in the following drain.
     let recovered =
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
     let pending = recovered.pending(16).await.unwrap();
-    assert_eq!(pending.len(), 1, "the sealed batch survived the crash");
+    assert_eq!(pending.len(), 1, "the sealed batch survived reopening");
+    assert_eq!(recovered.depth().await, 1);
     assert_eq!(pending[0].1.rows.len(), 1);
     assert_eq!(pending[0].1.rows[0].identity.stream_name, "spool1");
+    assert_eq!(
+        serde_json::to_value(&pending[0].1).unwrap(),
+        serde_json::to_value(&sealed[0]).unwrap(),
+        "reopening preserves the complete metered batch"
+    );
+    install_read_spool(&state, recovered);
 
     // A full drain now emits from the spool and clears it after ack.
     let n = crate::billing::drain_once(&state).await.unwrap();

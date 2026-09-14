@@ -956,13 +956,6 @@ async fn read_history2_scan(
 /// no matches, so cursors move over provably match-free ranges. The
 /// per-offset GET pattern is structurally impossible here: reads are
 /// range scans only.
-///
-/// Ranges with ZERO postings pages fall back to the pre-postings
-/// covering index (`k!`-era `hist2_index_key` rows / filtered canonical
-/// scan for the empty key) — the migration arm for partitions absorbed
-/// before postings existed. Partitions that STRADDLE the cutover in one
-/// requested range are a dev-rig-only shape and are not served exactly
-/// (docs/ROUTING-V3.md §3); production deployments are greenfield.
 #[expect(
     clippy::too_many_arguments,
     reason = "read_history2_keyed; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
@@ -1020,11 +1013,11 @@ async fn read_history2_keyed(
 /// Keyed read through the DECODED SLICE CACHE (spec §7): the engine's
 /// cache resolves the runs (hit, single-flight cold load, or forward
 /// extension), then the shared planner/executor below serves them.
-/// `provable_to < upto` (a load window that could not reach the whole
-/// range) yields an honest partial at the proven boundary.
+/// A short index window yields an honest partial. If it cannot advance from
+/// the requested cursor, a bounded canonical scan supplies progress.
 #[expect(
     clippy::too_many_arguments,
-    reason = "read_history2_keyed_cached; a keyed history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
+    reason = "read_history2_keyed_cached; physical coordinates, durable and requested bounds, and page budget remain explicit through the bounded canonical fallback; a query wrapper would hide those distinct read contracts"
 )]
 pub(crate) async fn read_history2_keyed_cached(
     cache: &Arc<crate::postings_cache::PostingsCache>,
@@ -1048,6 +1041,10 @@ pub(crate) async fn read_history2_keyed_cached(
     {
         crate::postings_cache::CacheRuns::Corrupt => {
             POSTINGS_CORRUPT.fetch_add(1, Relaxed);
+            read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
+        }
+        crate::postings_cache::CacheRuns::Runs { runs, provable_to } if provable_to <= from => {
+            drop(runs);
             read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
         }
         crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
@@ -1742,3 +1739,6 @@ mod worker;
 
 #[cfg(test)]
 mod postings_validation_tests;
+
+#[cfg(test)]
+mod postings_progress_tests;

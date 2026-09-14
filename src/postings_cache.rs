@@ -51,24 +51,18 @@ pub(crate) const POSTINGS_CACHE_IDLE: Duration = Duration::from_secs(600);
 pub(crate) const LOAD_MAX_BUCKETS: u64 = 64;
 pub(crate) const LOAD_MAX_ENCODED_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone)]
-pub(crate) struct PostingsSlice {
-    pub first_bucket: u64,
-    #[expect(
-        dead_code,
-        reason = "PostingsSlice::last_bucket_exclusive; every install records the bucket ceiling it proved even though no reader consults it yet; removing it would hide the extent a slice claims from anyone inspecting the cache"
-    )]
-    pub last_bucket_exclusive: u64,
+struct PostingsSlice {
+    first_bucket: u64,
     /// The slice's runs are COMPLETE over [covered_from, indexed_to_offset):
     /// a read below covered_from cannot be served from this slice (store
-    /// loads prove coverage at bucket granularity; write-through installs
+    /// loads are capped at their durable target; write-through installs
     /// at chunk granularity).
-    pub covered_from: u64,
+    covered_from: u64,
     /// The index provably covers [covered_from, indexed_to_offset):
-    /// runs at or past this offset may exist but were not loaded.
-    pub indexed_to_offset: u64,
-    pub runs: ValidatedRuns,
-    pub decoded_bytes: usize,
+    /// runs at or past this offset may exist but are not retained.
+    indexed_to_offset: u64,
+    runs: ValidatedRuns,
+    decoded_bytes: usize,
 }
 
 struct Entry {
@@ -94,8 +88,8 @@ struct SegWarm {
     /// installed. Write-admission may skip cold keys once the cache
     /// passes its admission line — after the first skip, a FRESH
     /// install can no longer claim from-0 coverage (its key might have
-    /// had skipped matches). Extends and the demand bridge stay valid:
-    /// existing entries are always extended.
+    /// had skipped matches). Gap bridges also need this proof: a cold
+    /// load may install an entry after its earlier matches were skipped.
     admitted_all: bool,
     touched: Instant,
 }
@@ -192,7 +186,7 @@ impl PostingsCache {
     /// ever evicted — otherwise it claims only the chunk itself.
     #[expect(
         clippy::unwrap_used,
-        reason = "PostingsCache::install_chunk; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+        reason = "PostingsCache::install_chunk; a poisoned index may contain partially installed runs or incomplete write-admission history; recovering it could strengthen an unproven gap or miscount resident bytes"
     )]
     #[expect(
         clippy::too_many_lines,
@@ -311,13 +305,13 @@ impl PostingsCache {
                     // Adjacent chunks extend directly. A HOLE between the
                     // slice's coverage and this chunk is bridgeable iff
                     // the warm window contiguously installed every chunk
-                    // across it with no evictions: this key's absence
+                    // across it without skipped admissions or evictions: absence
                     // from those installs IS the proof the hole is
                     // match-free (a key active only intermittently would
                     // otherwise stop being warm forever — the campaign's
                     // warm_extends=0 finding).
                     let bridgeable = s.indexed_to_offset >= chunk_from
-                        || (w_clean && s.indexed_to_offset >= w_from);
+                        || (w_clean && w_admitted && s.indexed_to_offset >= w_from);
                     if !bridgeable {
                         continue;
                     }
@@ -332,7 +326,6 @@ impl PostingsCache {
                         merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let slice = Arc::new(PostingsSlice {
                         first_bucket: s.first_bucket,
-                        last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
                         covered_from: s.covered_from,
                         indexed_to_offset: chunk_to,
                         runs: merged,
@@ -355,7 +348,6 @@ impl PostingsCache {
                     let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let slice = Arc::new(PostingsSlice {
                         first_bucket: fresh_from / BUCKET_OFFSETS,
-                        last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
                         covered_from: fresh_from,
                         indexed_to_offset: chunk_to,
                         runs,
@@ -414,23 +406,23 @@ impl PostingsCache {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "PostingsCache::runs_for; a keyed read names its partition, segment, key and offset window separately, as the planner produced them; a query struct would repeat the same fields at every call"
+        reason = "PostingsCache::runs_for; physical coordinates, request offsets and the durable horizon stay explicit while full-admission warm proofs are checked; a query wrapper would repeat those fields"
     )]
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "PostingsCache::runs_for; the loader may drop its sender before this waiter polls, and a closed channel means the load already published or gave up; the map is re-read below either way"
+        reason = "PostingsCache::runs_for; a superseded or completed loader may drop its sender before a waiter polls; every wake rechecks the resident slice and full-admission gap proof"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "PostingsCache::runs_for; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+        reason = "PostingsCache::runs_for; a poisoned index may contain half-published slices or incomplete admission history; recovering it could claim absent matches across skipped installs"
     )]
     #[expect(
         clippy::too_many_lines,
-        reason = "PostingsCache::runs_for; serving runs decides the resident, loading and corrupt paths against one index snapshot; splitting it would separate the paths from the snapshot they share"
+        reason = "PostingsCache::runs_for; lookup evaluates complete-admission gap proofs, single-flight loads and corruption against one index snapshot; splitting those paths would detach the coverage proof from its result"
     )]
     #[expect(
         clippy::excessive_nesting,
-        reason = "PostingsCache::runs_for; the lookup nests the coverage and corruption verdicts inside the resident and in-flight branches under the index lock; flattening them would separate the verdicts from the entry they judge"
+        reason = "PostingsCache::runs_for; resident and post-wake decisions each combine full-admission warm coverage with slice or corruption state; flattening those checks would detach the verdict from its protected entry"
     )]
     pub(crate) async fn runs_for(
         self: &Arc<Self>,
@@ -470,7 +462,7 @@ impl PostingsCache {
                 let warm_to = g
                     .warm
                     .get(&key.0)
-                    .filter(|w| w.clean)
+                    .filter(|w| w.clean && w.admitted_all)
                     .map(|w| (w.from, w.to));
                 let covered = g.slices.get_mut(&key).and_then(|e| {
                     let mut effective_to = e.slice.indexed_to_offset;
@@ -569,7 +561,7 @@ impl PostingsCache {
                         let warm_to = g
                             .warm
                             .get(&key.0)
-                            .filter(|w| w.clean)
+                            .filter(|w| w.clean && w.admitted_all)
                             .map(|w| (w.from, w.to));
                         g.slices
                             .get(&key)
@@ -625,23 +617,23 @@ impl PostingsCache {
     /// waiters' direct load rediscovers it and serves the envelope).
     #[expect(
         clippy::too_many_arguments,
-        reason = "PostingsCache::spawn_load; the loader takes the lookup's typed parts exactly as the read path resolved them; a request struct would exist for this single call site"
+        reason = "PostingsCache::spawn_load; lookup coordinates and the captured slice proof remain explicit through freshness-checked publication; a request wrapper would hide those contracts"
     )]
     #[expect(
         clippy::disallowed_methods,
-        reason = "PostingsCache::spawn_load; the single-flight loader publishes into the cache and notifies waiters, and every waiter bounds its own wait on the watch channel; a supervised handle would hold a task nothing joins"
+        reason = "PostingsCache::spawn_load; the owned loader checks captured slice identity before publishing and always wakes waiters; a supervised handle would retain a task no caller joins"
     )]
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "PostingsCache::spawn_load; every waiter may have left before the load lands; a send with no receivers has nothing to notify"
+        reason = "PostingsCache::spawn_load; both admitted and superseded loads notify after releasing the index; a failed send only means every waiter already left"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "PostingsCache::spawn_load; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+        reason = "PostingsCache::spawn_load; a poisoned index may contain a half-published slice or stale proof; recovering it could bypass freshness checks or miscount retained bytes"
     )]
     #[expect(
         clippy::excessive_nesting,
-        reason = "PostingsCache::spawn_load; the loader nests the admission of the loaded runs inside the completion branch of the spawned load; flattening it would separate the admission from the load it admits"
+        reason = "PostingsCache::spawn_load; freshness, admission, frontier preservation and eviction form one publication transaction under the index lock; splitting them would separate the proof from its slice"
     )]
     fn spawn_load(
         self: &Arc<Self>,
@@ -665,21 +657,37 @@ impl PostingsCache {
             let res = load_runs(&cache, &part, route, inc, kh, start_bucket, target_offset).await;
             let mut g = cache.inner.lock().unwrap();
             g.inflight.remove(&key);
+            // A write-through install can replace the slice while this load
+            // awaits storage. Its new runs and warm proof must stay together.
+            let unchanged = match (existing.as_ref(), g.slices.get(&key)) {
+                (None, None) => true,
+                (Some(old), Some(current)) => Arc::ptr_eq(old, &current.slice),
+                _ => false,
+            };
             if let Ok((new_runs, _enc, provable_to, corrupt)) = res
                 && !corrupt
+                && unchanged
             {
                 let admitted = match &existing {
                     Some(s) if s.first_bucket <= want_bucket => s
                         .runs
                         .extend_after(&new_runs, s.indexed_to_offset)
-                        .map(|runs| (runs, s.first_bucket, s.covered_from)),
+                        .map(|runs| {
+                            (
+                                runs,
+                                s.first_bucket,
+                                s.covered_from,
+                                provable_to.max(s.indexed_to_offset),
+                            )
+                        }),
                     _ => Some((
                         new_runs,
                         start_bucket,
                         start_bucket.saturating_mul(BUCKET_OFFSETS),
+                        provable_to,
                     )),
                 };
-                if let Some((runs, first_bucket, covered_from)) = admitted {
+                if let Some((runs, first_bucket, covered_from, indexed_to_offset)) = admitted {
                     let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let old_bytes = g
                         .slices
@@ -688,9 +696,8 @@ impl PostingsCache {
                         .unwrap_or(0);
                     let slice = Arc::new(PostingsSlice {
                         first_bucket,
-                        last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
                         covered_from,
-                        indexed_to_offset: provable_to,
+                        indexed_to_offset,
                         runs,
                         decoded_bytes: decoded,
                     });
@@ -848,7 +855,7 @@ impl PostingsCache {
 /// Returns (runs, encoded bytes read, provable-to offset, corrupt).
 #[expect(
     clippy::too_many_arguments,
-    reason = "load_runs; the cold load takes the read's resolved parts and its bucket window separately; a request struct would exist for this single call site"
+    reason = "load_runs; physical coordinates, bucket extent and durable target stay explicit through complete-source validation and prefix clipping; a request wrapper would obscure the coverage proof"
 )]
 async fn load_runs(
     cache: &Arc<PostingsCache>,
@@ -889,17 +896,22 @@ async fn load_runs(
         }
     }
     cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
-    // Coverage proof: every bucket scanned to completion is covered to
-    // its end (absent pages there = provably no matches); a byte-capped
-    // load is covered through its last decoded run's end.
+    // Within the caller's durable target, complete buckets prove absence;
+    // a byte-capped load proves only through its last decoded run's end.
+    // Neither case proves absence beyond that durable target.
     let provable_to = if encoded >= LOAD_MAX_ENCODED_BYTES {
         runs.last()
             .map(|r| r.start + r.count as u64)
             .unwrap_or((last_full_bucket + 1).saturating_mul(BUCKET_OFFSETS))
     } else {
         end_bucket.saturating_mul(BUCKET_OFFSETS)
-    };
-    match ValidatedRuns::new(runs) {
+    }
+    .min(target_offset);
+    // A complete bucket may still receive later absorption pages. Validate
+    // every decoded run, then retain only the caller's proven durable prefix.
+    let admitted = ValidatedRuns::new(runs)
+        .and_then(|runs| ValidatedRuns::new(RunWindow::new(runs, 0, provable_to).iter().collect()));
+    match admitted {
         Some(runs) => Ok((runs, encoded, provable_to, false)),
         None => Ok((ValidatedRuns::empty(), encoded, 0, true)),
     }
@@ -907,6 +919,8 @@ async fn load_runs(
 
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+mod durability_tests;
 #[cfg(test)]
 mod straddle_tests;
 #[cfg(test)]

@@ -2143,6 +2143,38 @@
       "path": "src/history/test_support.rs",
       "reason": "History test support imports its enclosing owner; the compiler resolves the parent exports and the helper only starts an absorber for fixtures.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crash_recovery",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The DST test owner registers its isolated process-crash scenarios here; explicit path preserves the existing scenario organization. The child selector and mechanism witnesses execute the real test module.",
+      "syntax": "path = \"tests/crash_recovery.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::crash_during_manifest_recovery",
+      "path": "src/dst/tests/crash_recovery.rs",
+      "reason": "Test-only select polls cold SlateDB open against an actually engaged manifest-GET hold; the child must exit at that witnessed recovery-metadata cut and the parent reaps it.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seed_until_cut",
+      "path": "src/dst/tests/crash_recovery.rs",
+      "reason": "Test-only select polls absorption against the history-only SST hold; the separate shard store cannot satisfy this witness, and the child exits without destructor flushes.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::quality_cold_load_clipping_and_extension_match_offset_oracle",
+      "path": "src/postings_cache/durability_tests.rs",
+      "reason": "The generated storage-backed clipping and extension property uses Proptest assertions to preserve shrinking and counterexample diagnostics; expected offsets come from the independent integer range.",
+      "syntax": "proptest::prop_assert_eq"
     }
   ]
 }

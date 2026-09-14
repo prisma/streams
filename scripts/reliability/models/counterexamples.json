@@ -1,0 +1,108 @@
+{
+  "history": {
+    "gc_ignores_checkpoint": {
+      "trace": [
+        "take durable checkpoint root",
+        "delete source descriptor",
+        "physically delete object 1"
+      ],
+      "violation": "every_retained_root_references_present_objects"
+    },
+    "gc_ignores_fork": {
+      "trace": [
+        "take durable fork reference",
+        "delete source descriptor",
+        "physically delete object 1"
+      ],
+      "violation": "every_retained_root_references_present_objects"
+    },
+    "manifest_before_data": {
+      "trace": [
+        "stage history row 0",
+        "persist history manifest reference 0"
+      ],
+      "violation": "every_retained_root_references_present_objects"
+    },
+    "publish_before_history": {
+      "trace": [
+        "stage shard absorbed boundary 1",
+        "persist shard boundary and lagged trim batch (reply may be lost)"
+      ],
+      "violation": "absorbed_boundary_requires_durable_history_and_reference"
+    }
+  },
+  "ownership": {
+    "ack_applied": {
+      "trace": [
+        "write 0: admit",
+        "write 0: storage accepts applied batch",
+        "write 0: publish applied/register barrier",
+        "write 0: claim completion",
+        "write 0: publish durable effects",
+        "write 0: deliver original receipt"
+      ],
+      "violation": "receipt_requires_remote_durability"
+    },
+    "attached_retry_skips_effects": {
+      "trace": [
+        "write 0: admit",
+        "write 0: storage accepts applied batch",
+        "write 0: remote durability (response may be lost)",
+        "write 0: publish applied/register barrier",
+        "write 0: retry attaches pending",
+        "write 0: claim completion",
+        "write 0: deliver retry receipt"
+      ],
+      "violation": "attached_retry_requires_published_effects"
+    },
+    "claim_after_retirement": {
+      "trace": [
+        "write 0: admit",
+        "write 0: storage accepts applied batch",
+        "write 0: remote durability (response may be lost)",
+        "write 0: publish applied/register barrier",
+        "retire owner 0",
+        "write 0: claim completion"
+      ],
+      "violation": "completion_claim_requires_live_authority"
+    },
+    "name_only_identity": {
+      "trace": [
+        "write 0: admit",
+        "delete/recreate same name as incarnation 1",
+        "write 0: storage accepts applied batch"
+      ],
+      "violation": "storage_identity_includes_incarnation"
+    },
+    "publish_after_retirement": {
+      "trace": [
+        "write 0: admit",
+        "retire owner 0",
+        "write 0: storage accepts applied batch",
+        "write 0: publish applied/register barrier"
+      ],
+      "violation": "applied_publication_requires_live_authority"
+    },
+    "retry_duplicates_record": {
+      "trace": [
+        "write 0: admit",
+        "retire owner 0",
+        "recover/acquire owner 1",
+        "write 0: storage accepts applied batch",
+        "write 0: remote durability (response may be lost)",
+        "write 0: retry canonical durable result"
+      ],
+      "violation": "retry_preserves_exactly_one_record"
+    },
+    "retry_skips_barrier": {
+      "trace": [
+        "write 0: admit",
+        "write 0: storage accepts applied batch",
+        "write 0: publish applied/register barrier",
+        "write 0: retry attaches pending",
+        "write 0: deliver retry receipt"
+      ],
+      "violation": "receipt_requires_remote_durability"
+    }
+  }
+}

@@ -67,6 +67,7 @@ OWNERS = (
     owner('read_spool', 'src/billing/read_spool.rs', 'billing'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
+    owner('history_read', 'src/history.rs', 'history::'),
     owner('ops', 'src/ops.rs', 'ops::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3::'),
     owner('postings_cache', 'src/postings_cache.rs', 'postings_cache::'),

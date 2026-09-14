@@ -26,6 +26,7 @@ fn controls(frame: &Frame, batch: &Batch, payload: &Payload) {
     let window = Window::new(owner, 0, 0); assert_eq!(window.iter().count(), 0);
 }
 fn released_before_await(window: Window) -> impl std::future::Future<Output=()> { drop(window); async { tokio::task::yield_now().await; } }
+fn cache_control() { let cache = crate::postings_cache::PostingsCache::new(1 << 20); let _stats = cache.stats(); }
 '''
 CASES = [
  ('frame_construct', 'E0451', 'fn frame_construct() { let _x = Frame { raw:bytes::Bytes::new(), offset:0, timestamp:0, key_version:0, routing_end:0, header_len:0, version:0 }; }'),
@@ -38,6 +39,8 @@ CASES = [
  ('batch_mutate', 'E0616', 'fn batch_mutate(x: &mut Batch) { x.records.clear(); }'),
  ('payload_construct', 'E0451', 'fn payload_construct() { let _x = Payload { owner:bytes::Bytes::new(), range:0..0 }; }'),
  ('payload_mutate', 'E0616', 'fn payload_mutate(x: &mut Payload) { x.range = 0..0; }'),
+ ('postings_slice_construct', 'E0603', 'fn postings_slice_construct() { let _x = crate::postings_cache::PostingsSlice { first_bucket:0, covered_from:0, indexed_to_offset:0, runs:Runs::empty(), decoded_bytes:0 }; }'),
+ ('postings_slice_mutate', ('E0603', 'E0616'), 'fn postings_slice_mutate(x: &mut crate::postings_cache::PostingsSlice) { x.indexed_to_offset = u64::MAX; }'),
 ]
 TYPED = [
  ('hold_window', 'clippy::await_holding_invalid_type', 'async fn hold_window(window: Window) { tokio::task::yield_now().await; drop(window); }'),
@@ -100,7 +103,7 @@ def run(copy, out, name, content, mode, cases=(), tests=False):
     expected_lines = {}
     for case, code, source in cases:
         line = content.splitlines().index(source) + 1
-        expected_lines[line] = (case, code)
+        expected_lines[line] = (case, {code} if isinstance(code, str) else set(code))
     observed = set()
     for error in errors:
         code = (error.get('code') or {}).get('code')
@@ -108,14 +111,16 @@ def run(copy, out, name, content, mode, cases=(), tests=False):
                    and s['file_name'].endswith('quality_boundary_fixture.rs')]
         found = False
         for line, actual in matches:
-            if line in expected_lines and expected_lines[line][1] == actual:
-                observed.add(expected_lines[line][0]); found = True
+            if line in expected_lines and actual in expected_lines[line][1]:
+                observed.add((expected_lines[line][0], actual)); found = True
         if not found:
             raise RuntimeError(f'{name}: unrelated compiler error: {code}: {error["message"]}')
-    missing = {case for case, _, _ in cases} - observed
+    required = {(case, code) for case, codes in expected_lines.values() for code in codes}
+    missing = required - observed
     if missing:
         raise RuntimeError(f'{name}: missing required diagnostics: {sorted(missing)}')
-    return {'name': name, 'exit_code': result.returncode, 'verified_cases': sorted(observed)}
+    return {'name': name, 'exit_code': result.returncode,
+            'verified_cases': sorted({case for case, _ in observed})}
 
 
 def main():

@@ -1,11 +1,15 @@
+#![cfg(test)]
 //! Cross-owner integration scenarios, organized by their tested contract.
 //!
 //! Fixture capabilities are private to this test subtree. Each scenario
 //! imports only the helpers it uses. Stable names, body hashes, attributes,
 //! scenario IDs and mechanism settings live in docs/refactor/test-inventory.json.
 //!
-//! Scope remains seeded object-store fault injection; Tokio task scheduling
-//! is not claimed to be globally deterministic (see docs/DST.md).
+//! Scope includes seeded object-store faults and isolated process crashes;
+//! Tokio task scheduling is not globally deterministic (see docs/DST.md).
+
+#[path = "tests/crash_recovery.rs"]
+mod crash_recovery;
 
 #[path = "tests/watch_admission.rs"]
 mod watch_admission;

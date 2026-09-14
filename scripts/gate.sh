@@ -30,4 +30,9 @@ if ! cargo test --locked --release --lib post_split_throughput_scales -- \
   exit 1
 fi
 grep -E '^test result: ok' "$OUT.capacity.log" >> "$OUT"
+if ! bash scripts/reliability-campaign.sh > "$OUT.reliability.log" 2>&1; then
+  echo GATEFAIL-reliability >> "$OUT"
+  exit 1
+fi
+grep -E '^RELIABILITY_OK:' "$OUT.reliability.log" >> "$OUT"
 echo GATEDONE >> "$OUT"

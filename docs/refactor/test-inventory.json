@@ -1485,6 +1485,19 @@
     ]
   },
   {
+    "name": "crash_recovery_child",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "df559f0c70d0c92d2ce3bd6a5c44f510bf44a27308882f8fa0f3b83b33f6dd98",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(local.clone(), 0xc7, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/crash_recovery.rs",
+    "scenarios": []
+  },
+  {
     "name": "create_replay_never_loses_the_initial_body",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3612,6 +3625,17 @@
     ]
   },
   {
+    "name": "process_crashes_preserve_history_through_reclamation",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "753f6d4ccaa48425599c16bc6b912d29b40d3ce00487041c1f6088540dd9b451",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/crash_recovery.rs",
+    "scenarios": []
+  },
+  {
     "name": "producer_lanes_scoped_per_routing_key",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -4566,11 +4590,11 @@
     "scenarios": []
   },
   {
-    "name": "read_batches_survive_crash_in_the_spool",
+    "name": "read_batches_survive_reopening_the_spool",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c1b6c4c7999cec908788f72ef3b4a0c73760b31648c1f940d5923e27939da91e",
+    "function_sha256": "9da98d96e9f6a936e7b5f40c6ba0645b9c85b387ea0f14954e1f62294ad5f6df",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",

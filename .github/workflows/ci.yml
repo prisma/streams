@@ -18,6 +18,17 @@ on:
 # its own job against a fresh namespace.
 
 jobs:
+  reliability-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Independent checker negative controls
+        run: python3 -m unittest discover -s bench/reliability -v
+      - name: Release binary crashes and isolated restore
+        run: bash scripts/reliability-campaign.sh
   # R24: fixed review-commit ratchets and explicit extracted-owner boundaries.
   # The historical WP-00 report remains diagnostic, never an acceptance signal.
   architecture-report:
@@ -216,6 +227,8 @@ jobs:
           npm init -y >/dev/null
           npm install /tmp/pkg/prisma-streams-*.tgz
           node -e "require('node:assert').ok(require('node:fs').existsSync('node_modules/@prisma/streams/dist/index.js'))"
+          # Imports resolve from the script, so keep it outside the SDK's package self-reference.
+          cp "$GITHUB_WORKSPACE/sdk/smoke.mjs" ./smoke.mjs
       - name: Build server
         run: cargo build --release --bin s3lite --bin streams-slate
       - name: Smoke through the package (current Node)
@@ -227,7 +240,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8090
+          STREAMS_SDK=@prisma/streams node ./smoke.mjs http://127.0.0.1:8090
       - uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -240,7 +253,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8091
+          STREAMS_SDK=@prisma/streams node ./smoke.mjs http://127.0.0.1:8091
       # The SDK claims Bun and Deno too, so gate them rather than assert
       # them. Both run the same package through the same smoke.
       - uses: oven-sh/setup-bun@v2
@@ -253,7 +266,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams bun "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8092
+          STREAMS_SDK=@prisma/streams bun ./smoke.mjs http://127.0.0.1:8092
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -266,8 +279,8 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams deno run -A --node-modules-dir \
-            "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8093
+          STREAMS_SDK=@prisma/streams deno run -A --node-modules-dir=manual \
+            ./smoke.mjs http://127.0.0.1:8093
 
   # Job: the pinned upstream Durable Streams server conformance suite,
   # UNMODIFIED, against a fresh namespace (spec appendix §7). The
