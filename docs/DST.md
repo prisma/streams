@@ -48,11 +48,13 @@ real time.
 
 ## 1. Current status — and what it is not
 
-`src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
-over the real single-node data plane**. Thirty-four scenarios, ~40 seconds:
+`src/dst/mod.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
+over the real single-node data plane**. The generated
+[test inventory](refactor/test-inventory.json) records current coverage.
+Run the suite with the capacity measurement excluded:
 
 ```bash
-cargo test --release dst
+cargo test --locked --release --lib dst -- --skip post_split_throughput_scales
 ```
 
 It is **not** whole-system deterministic simulation, and an earlier
@@ -666,8 +668,20 @@ whole-binary harness.
 
 ## Running
 
+Use the complete local gate to include the quality policy, release tests,
+isolated capacity measurement and external reliability campaigns:
+
 ```bash
-cargo test --release dst
+scripts/gate.sh
+```
+
+For a focused DST run, execute these commands sequentially. The second command
+requires an otherwise idle host; do not overlap it with builds or other tests.
+
+```bash
+cargo test --locked --release --lib dst -- --skip post_split_throughput_scales
+cargo test --locked --release --lib post_split_throughput_scales -- \
+  --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
 ```
 
 To widen a sweep, add seeds to the arrays in the scenario tests; each seed

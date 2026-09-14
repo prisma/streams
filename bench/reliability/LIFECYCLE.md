@@ -177,7 +177,8 @@ host power loss, multi-cell ownership movement, TTL/compaction reclamation or
 all historical upgrade formats. Retained-fork logical reference release is
 observed through name reuse; no physical SST/object reclamation is inferred.
 
-The retained local validation for this change ran seeds 17 and 91 with two cycles.
+The earlier local validation, before the TLS dependency patch, ran seeds 17 and
+91 with two cycles.
 Both passed the required 36 acknowledgements/10 incarnations/17 checkpoints/two
 SIGKILLs and retained 401 GET responses for independent replay. Their project
 cycle orders differ. The receipts are
@@ -191,3 +192,12 @@ failed because no `CheckError` was raised; that baseline is retained at
 `target/reliability/lifecycle-raw-order-baseline.log`. Adding the raw default-key
 order check made the control pass. These local artifact paths are evidence from
 this session, not files expected to be committed or uploaded.
+
+After the TLS patch, both seeds passed again with the same counts and
+witnesses. `target/reliability/lifecycle-rustls-final-validation.json` binds
+those new executions to their binary and source provenance. The complete
+Python suite then passed 89 tests, including two added historical-build reuse
+controls; the lifecycle-specific count remains 30. See the
+[final follow-up report](../../docs/reliability-follow-up.md) for the patched
+results and the distinction between the precommit release build and the
+immutable-commit version matrix.

@@ -10,14 +10,15 @@ unmodified.
 | recorded in | `src/protocol_pin.rs`, `conformance/package.json` (locked) |
 | expected outcome | `conformance/expected.json` |
 
-Latest run — 2026-07-31, after the audit response (auth, create
+Historical baseline — 2026-07-31, after the audit response (auth, create
 initialization, seal state machine, fork lifecycle, catalog paging,
 route grammar, watch derivation):
 
 **332 passed · 0 failed · 6 skipped (338).**
 
-The same pinned suite was rerun during the September reliability work; see the
-[recorded validation](docs/reliability-confidence.md). Protocol conformance is
+The same pinned suite passed again on 14 September 2026 against the patched
+reliability candidate, with 332 passes and the same six reserved-API skips; see
+the [latest recorded validation](docs/reliability-follow-up.md). Protocol conformance is
 complemented by an [independent exact-record oracle](bench/reliability/README.md)
 and [actual release-version transitions](docs/reliability-version-transitions.md).
 Those checks cover cold durability and frame compatibility beyond this suite's

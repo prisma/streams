@@ -173,3 +173,31 @@ The actual server binary hashes were:
 
 No deployed release or real object-store account was exercised, and the rc.4
 downgrade prohibition and prior revision's known warm-cache defect remain.
+
+## Retest of the patched candidate
+
+The full matrix also passed for candidate
+`2863bab3e38a5ba81140f3d447a23156c138a616`, after the lockfile update to rustls
+0.23.45, rustls-webpki 0.103.15, aws-lc-rs 1.18.1 and aws-lc-sys 0.45.0. The
+builder verified and reused the two historical binaries with their original
+hashes above, preserved the previous build receipt, and rebuilt the current
+server and s3lite from the new immutable source. This preserves the initial
+matrix as historical evidence while testing the updated candidate separately.
+
+The candidate server SHA-256 is
+`600cb57ddc5ac02be077750910cc6691e37927f59403acf4eaf23547152154f5`.
+Its build receipt is
+`target/reliability/version-binaries-tls-final/build-receipt.json`, and its
+matrix receipt is `target/reliability/version-matrix-tls-final/receipt.json`.
+All four campaigns passed: 18 fresh server processes, 42 independent cold-read
+checks, 112 final unique acknowledged operations, 40 retained producer retries,
+and 22 verified process kills including the four object stores. All seven
+paired writing phases demonstrated compression savings; both current-writer
+phases fell from 6,180 to 2,384 encoded bytes.
+
+The new run archives the exact five executed fixture source files alongside
+their hashes. The initial matrix's matching source bytes remain preserved in
+its own `fixture-source` directory. All temporary source worktrees and serving
+processes were removed after successful completion. The compatibility scope
+and deployment holds above remain unchanged; TLS handshakes are outside this
+loopback-HTTP persistence fixture.

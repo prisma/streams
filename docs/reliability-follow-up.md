@@ -9,6 +9,34 @@ checks at lifecycle, physical reclamation, provider and release-version
 boundaries. Source changes and local test results do not lift the existing
 performance, cryptographic, deployment or raw-evidence upload holds.
 
+The follow-up implementation and TLS dependency patch are committed and pushed
+as `2863bab3e38a5ba81140f3d447a23156c138a616`. Later report-only changes preserve
+that candidate's executable source and lockfile.
+
+## First implementation
+
+The first commit added an external fsynced operation journal, exact public-read
+oracle and isolated whole-store restore drill; six systematic crash cuts with
+24 fresh child processes, including a second crash during recovery and physical
+reclamation; and bounded ownership/reclamation models with executable semantic
+mutations. The independent evidence exposed two real read defects:
+
+- A cold postings-cache load claimed coverage past its durable target, allowing
+  a later absorbed record in the same offset bucket to be omitted. Coverage now
+  follows proven durable runs, and superseded loads cannot publish stale state.
+- A capped dense index could move a read cursor backward. The reader now falls
+  back to the bounded canonical scan when the index cannot prove progress; a
+  sparse-index control ensures valid indexed reads remain effective.
+
+Regression controls, compiler boundaries and mutation checks cover those
+repairs. The work also corrected a spool recovery test that reused a fenced
+writer and SDK packaging checks that could resolve the repository's package
+instead of the installed tarball. The
+[first report](reliability-confidence.md) records all 38 selected production
+mutations: 22 detected by tests and 16 compilation exclusions, with no survivor
+or runner timeout after the final iteration. Compilation exclusions are not
+counted as semantic detections.
+
 ## What was added
 
 | Mechanism | Concrete obligation | Owner and commands |
@@ -106,16 +134,55 @@ gate log is `target/reliability/wave2-patched-gate.log`.
 | Finite protocol models | 29,280 states, 84,686 transitions, all 13 witnesses and 11 semantic fault detections |
 | Cold crash, retry and isolated restore | Nine exact checks passed; 66 final acknowledgements restored from 36 objects / 112,837 bytes; physical loss of two registry descriptors was detected |
 | Provider campaign | Five positive commands and nine engaged negative controls passed |
-| Authenticated lifecycle seed 17 | 36 acknowledgements, 10 incarnations, 17 exact checkpoints and two SIGKILLs passed |
+| Authenticated lifecycle seeds 17 and 91 | Each passed with 36 acknowledgements, 10 incarnations, 17 exact checkpoints and two SIGKILLs |
+| Protocol and SDK | 332 conformance cases passed with six reserved-API skips; 33 SDK unit tests, typecheck and auth/watch vectors passed |
+| Installed SDK consumer | 23 checks passed on each of Node 22, Node 18, Bun and Deno using the actual installed tarball |
+| Product field gate | 20 checks passed, including an actual automatic split |
+| Compiler boundaries | Three positive builds passed; all 12 privacy violations and 16 typed-effect violations were rejected with their expected diagnostics |
+| Actual Rust invariants | 20 selected property/concurrency tests passed, including the production handoff implementation's Loom checks |
+| Miri and saved decoder corpus | Four Miri tests passed; all six saved corpus files loaded in seven libFuzzer runs |
+| Provider verifier unit control | In-memory conditional object contracts passed |
+| Immutable candidate version matrix | Four campaigns, 18 fresh servers, 42 cold checks, 112 unique acknowledgements and 40 retained producer retries passed; all seven compression comparisons passed |
 | Dependency policy | Advisory/license/source/ban gates passed; no new warning or advisory allowance |
 
-The earlier actual-version matrix and lifecycle seeds 17/91 passed before the
-TLS patch. Those receipts retain their original binary identities. The patched
-candidate is additionally being checked with the SDK/protocol gates, compiler,
-Miri, saved decoder corpus and an immutable-commit version matrix; final receipts
-will distinguish those executions from the earlier graph. The first-wave
-38-candidate mutation results remain tied to that original dependency graph;
-the selected algorithm and test files are byte-identical.
+The patched gate, SDK and lifecycle campaigns used a release build made before
+the follow-up source commit. Its retained source patch reconstructs all 377
+source/build inputs exactly as committed in `2863bab`; its embedded Git revision
+still names the first commit. The build-input audit preserves that distinction.
+The separate version matrix builds the candidate from its clean immutable
+commit. Earlier version and lifecycle receipts remain explicitly historical.
+
+The first-wave 38-candidate mutation results remain tied to the original
+dependency graph; the selected algorithm and test files are byte-identical.
+Those mutation outcomes are not represented as a rerun against the patched TLS
+dependencies.
+
+The final invariant refresh retained failed preflight attempts for the corpus
+and allowance-pruning commands: their process PATH omitted the installed pinned
+tools. Correcting the PATH allowed the unchanged commands to run. The failed
+preflights exercised no corpus input and added no warning or dependency
+exception; their logs are retained separately from the successful reruns.
+
+### Local evidence index
+
+These paths are relative to the repository root. The generated receipts bind
+commands, logs, source inputs and executable hashes; they are not promises of a
+deployed artifact's identity.
+
+| Evidence | Retained path |
+| --- | --- |
+| Full patched gate | `target/reliability/wave2-patched-gate.log` and adjacent suite/capacity/reliability logs |
+| Exact release-build input reconstruction | `target/reliability/follow-up-validation/release-build-input-audit.json` |
+| Frozen Python controls | `target/reliability/follow-up-validation/python-final.log` |
+| Crash/retry/isolated restore | `target/reliability/run.AZefBG/campaign/receipt.json` |
+| Local provider positives and semantic negatives | `target/reliability/run.AZefBG/provider/receipt.json` |
+| Authenticated lifecycle seeds and source audit | `target/reliability/lifecycle-rustls-final-validation.json` |
+| Protocol, installed SDK and actual-split field checks | `target/reliability/protocol-sdk-rustls-final/validation-receipt.json` |
+| Compiler, property/concurrency, Miri, corpus and verifier refresh | `target/reliability/follow-up-invariants/final-receipt.json` |
+| Clean candidate and historical binary provenance | `target/reliability/version-binaries-tls-final/build-receipt.json` |
+| Four actual-binary transition campaigns | `target/reliability/version-matrix-tls-final/receipt.json` |
+| Consolidated final acceptance and artifact hashes | `target/reliability/follow-up-validation/receipt.json` |
+| First-wave mutation outcomes and diagnostic audit | `target/reliability/mutations/combined-outcomes.json` and `diagnostic-audit.json` in the same directory |
 
 Raw journals, emulator credential feeds, copied objects and logs remain
 under ignored `target/reliability/` directories and are not uploaded.
