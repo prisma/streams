@@ -589,3 +589,157 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
     }
     engine_shutdown(&state).await;
 }
+
+// ---- a topology transition never looks like closure to a WRITER ------
+// The append-side twin of the reads' genuine_closure rule (6e0af451): a
+// descriptor that predates a completed transition routes an append to a
+// segment whose stream the transition closed. That is a stale route, not
+// a sealed collection.
+
+/// The descriptor as the store holds it now.
+async fn fresh_desc(state: &Arc<crate::http::AppState>, name: &str) -> crate::registry::StreamDesc {
+    let sref = state.deployment.raw_adapter_sref(name);
+    state.registry.invalidate(&sref);
+    state.registry.get(&sref).await.unwrap().unwrap()
+}
+
+fn live_ids(desc: &crate::registry::StreamDesc) -> Vec<u32> {
+    let Some(map) = &desc.segments else {
+        return vec![0];
+    };
+    let mut live: Vec<u32> = map
+        .segments
+        .iter()
+        .filter(|s| s.is_live())
+        .map(|s| s.seg_id)
+        .collect();
+    live.sort_unstable();
+    live
+}
+
+/// Plant `stale` as this instance's cached descriptor and prove the next
+/// request will read it: a lost plant would let every test below pass
+/// without touching the path it names.
+async fn plant_stale(
+    state: &Arc<crate::http::AppState>,
+    name: &str,
+    stale: crate::registry::StreamDesc,
+) {
+    let sref = state.deployment.raw_adapter_sref(name);
+    let want = (live_ids(&stale), stale.sealed);
+    state.registry.test_poison_cache(&sref, stale);
+    let cached = state.registry.get(&sref).await.unwrap().unwrap();
+    assert_eq!(
+        (live_ids(&cached), cached.sealed),
+        want,
+        "the plant is cached"
+    );
+}
+
+/// One keyed product append; returns the status and the response body.
+/// For the 0x8000.. split, `ga` and the empty key hash to the HIGH child
+/// and `gb` to the LOW one.
+async fn keyed_append(addr: std::net::SocketAddr, name: &str, key: &str, n: i64) -> (u16, String) {
+    let (st, _, body) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", key),
+        ],
+        format!("{{\"k\":\"{key}\",\"n\":{n}}}").as_bytes(),
+    )
+    .await;
+    (st, String::from_utf8_lossy(&body).to_string())
+}
+
+/// A collection named `name` holding one record under each test key.
+async fn keyed_collection(name: &str) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    let (state, addr) = http_rig_opts(
+        mem(),
+        vec!["00".into(), "01".into()],
+        crate::shard::ShardConfig::default(),
+    )
+    .await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for key in ["ga", "gb"] {
+        assert_eq!(keyed_append(addr, name, key, 0).await.0 / 100, 2);
+    }
+    (state, addr)
+}
+
+async fn split_at_half(state: &Arc<crate::http::AppState>, name: &str) {
+    let sref = state.deployment.raw_adapter_sref(name);
+    assert!(crate::scaler3::execute_split(state, &sref, 0, 0x8000_0000_0000_0000).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_routed_by_a_pre_split_descriptor_lands_on_the_child() {
+    let (state, addr) = keyed_collection("stalesplit").await;
+    let pre_split = fresh_desc(&state, "stalesplit").await;
+    split_at_half(&state, "stalesplit").await;
+    for key in ["ga", "gb"] {
+        plant_stale(&state, "stalesplit", pre_split.clone()).await;
+        let (st, body) = keyed_append(addr, "stalesplit", key, 1).await;
+        assert_eq!(
+            st / 100,
+            2,
+            "a split-away parent answered for a live collection ({key}): {st} {body}"
+        );
+        let (recs, _) = drain_no_closure(addr, "stalesplit", Some(key)).await;
+        assert_eq!(recs.len(), 2, "both {key} records, once each: {recs:?}");
+    }
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_routed_by_a_pre_merge_descriptor_lands_on_the_merged_segment() {
+    let (state, addr) = keyed_collection("stalemerge").await;
+    let sref = state.deployment.raw_adapter_sref("stalemerge");
+    split_at_half(&state, "stalemerge").await;
+    let pre_merge = fresh_desc(&state, "stalemerge").await;
+    let live = live_ids(&pre_merge);
+    assert_eq!(live.len(), 2);
+    assert!(crate::scaler3::execute_merge(&state, &sref, live[0], live[1]).await);
+    for key in ["ga", "gb"] {
+        plant_stale(&state, "stalemerge", pre_merge.clone()).await;
+        let (st, body) = keyed_append(addr, "stalemerge", key, 1).await;
+        assert_eq!(
+            st / 100,
+            2,
+            "a merged-away child answered for a live collection ({key}): {st} {body}"
+        );
+        let (recs, _) = drain_no_closure(addr, "stalemerge", Some(key)).await;
+        assert_eq!(recs.len(), 2, "both {key} records, once each: {recs:?}");
+    }
+    engine_shutdown(&state).await;
+}
+
+/// The control: the refresh must not turn a GENUINE closure into a retry
+/// that never converges. The planted descriptor predates the split AND
+/// the seal, so the first attempt meets the split-away parent's engine
+/// and the retry meets a sealed descriptor, whose closure names the
+/// empty key's segment: for `gb` that is not the segment it routes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_routed_by_a_pre_seal_descriptor_is_still_refused_as_sealed() {
+    let (state, addr) = keyed_collection("staleseal").await;
+    let pre_split = fresh_desc(&state, "staleseal").await;
+    split_at_half(&state, "staleseal").await;
+    super::fixture_livefeed::seal_ok(addr, "staleseal").await;
+    for key in ["ga", "gb"] {
+        plant_stale(&state, "staleseal", pre_split.clone()).await;
+        let (st, body) = keyed_append(addr, "staleseal", key, 1).await;
+        assert_eq!(st, 409, "{key}: {body}");
+        assert!(body.contains("\"code\":\"sealed\""), "{key}: {body}");
+    }
+    engine_shutdown(&state).await;
+}

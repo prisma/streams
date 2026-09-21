@@ -1213,6 +1213,39 @@
     "scenarios": []
   },
   {
+    "name": "an_append_routed_by_a_pre_merge_descriptor_lands_on_the_merged_segment",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8ffb7ac59350a4a7b106cf1c34926c17c5c1fc9720abe6c68412c90e3f4cff4f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_routed_by_a_pre_seal_descriptor_is_still_refused_as_sealed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7ca62edce53a2003283ff0d33b026761fe78890c809a1694b8d56de91fc3b7bf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_routed_by_a_pre_split_descriptor_lands_on_the_child",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ae12e6e409706a4d51e7729783757807032f60f077288d9ec38b15f6511a3f7a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_exact_retry_renews_its_lease",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4179,6 +4212,39 @@
       "crate::failpoints::release(crate::failpoints::Fp::SseBodyBeforeYield, \"rvq\");"
     ],
     "file": "src/dst/tests/security_revocation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "14de72904927c17fca0c9bcd8e353c2fad3c06a43731906666c6e480c29fc833",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "acd7a6f6942b852c1865905254ffa81c22f8379e00ec1ab77db507efc864599b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r02_a_sealed_descriptors_closure_costs_no_refresh",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "ca73e6b1bcd25e3c648ab88c3cc4b55f1d363bbec02cdcc172b39783dba38ebe",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
     "scenarios": []
   },
   {

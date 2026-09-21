@@ -147,10 +147,6 @@ impl AppendService {
         self.check_memory().await?;
         self.execute_prepared(prepared, command).await
     }
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "AppendService::execute_prepared; the resume nests the topology ticket and its wait inside the pending-transition branch; flattening it would separate the wait from the transition it follows"
-    )]
     pub(crate) async fn execute_prepared(
         &self,
         prepared: AuthorizedAppend,
@@ -166,53 +162,84 @@ impl AppendService {
         if command.expected_epoch.is_none() {
             command.expected_epoch = Some(prepared.descriptor.epoch());
         }
-        let wrapped = prepared
-            .descriptor
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
-        let mut prepared = prepared;
-        for attempt in 0..if wrapped { 4 } else { 1 } {
+        let mut first = Some(prepared);
+        for attempt in 0..4 {
+            let prepared = match first.take() {
+                Some(prepared) => prepared,
+                None => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10 * attempt)).await;
+                    self.prepare(&command.sref, AppendKey::Provided(command.key.clone()))
+                        .await?
+                }
+            };
+            // `sealed` never resets within an incarnation and freezes the
+            // map: a sealed descriptor's route cannot be stale.
+            let final_route = prepared.descriptor.sealed;
             let result = execute_once(self, prepared, &mut command).await;
-            if !wrapped || !matches!(&result,Err(error)if error.code==AppendCode::StreamClosed) {
-                return result;
-            }
-            self.registry.invalidate(&command.sref);
-            let Ok(Some(desc)) = self.registry.get(&command.sref).await else {
+            let closed = result.as_ref().err();
+            let Some(attempted) = closed.and_then(|e| e.engine_closed_segment()) else {
                 return result;
             };
-            let seg = desc.resolve_segment(&command.routing_key);
-            if desc.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                use crate::application::read::TopologyResume;
-                let ticket = self.lifecycle.topology.schedule(&desc).map_err(|error| {
-                    AppendFailure::new(
-                        FailureClass::Unavailable,
-                        AppendCode::SegmentTransition,
-                        error.to_string(),
-                    )
-                    .retry(1)
-                })?;
-                ticket.wait().await.map_err(|error| {
-                    AppendFailure::new(
-                        FailureClass::Unavailable,
-                        AppendCode::SegmentTransition,
-                        error.to_string(),
-                    )
-                    .retry(1)
-                })?;
-            } else if !seg.sealed {
+            if final_route || self.closure_is_current(&command, attempted).await? {
                 return result;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt + 1))).await;
-            prepared = self
-                .prepare(&command.sref, AppendKey::Provided(command.key.clone()))
-                .await?;
         }
         fail(
             FailureClass::Unavailable,
             AppendCode::SegmentTransition,
             "segment map transition did not converge; retry",
         )
+        .map_err(|e| e.retry(1))
+    }
+
+    /// An engine's closed segment stream is the collection's closure only
+    /// while the CURRENT map still routes this key to that segment, live.
+    /// A descriptor that predates a transition meets the transition's own
+    /// seal instead (the write-side twin of the reads' genuine_closure): a
+    /// transition may delay a writer, it never looks like finality. So a
+    /// refresh that cannot be read proves nothing and answers retryable,
+    /// and a pending transition is waited out before the retry.
+    async fn closure_is_current(
+        &self,
+        command: &AppendCommand,
+        attempted: u32,
+    ) -> Result<bool, AppendFailure> {
+        use crate::application::read::TopologyResume;
+        let unproven = |error: String| {
+            AppendFailure::new(
+                FailureClass::Unavailable,
+                AppendCode::SegmentTransition,
+                error,
+            )
+            .retry(1)
+        };
+        self.registry.invalidate(&command.sref);
+        let fresh = self.registry.get(&command.sref).await;
+        let Some(desc) = fresh.map_err(|error| unproven(error.to_string()))? else {
+            // Gone: the retry's prepare answers for a missing collection.
+            return Ok(false);
+        };
+        if command
+            .expected_epoch
+            .is_some_and(|epoch| epoch != desc.epoch())
+        {
+            // The closure belongs to a replaced incarnation (reads fence
+            // the same refresh): it says nothing about this stream.
+            return fail(
+                FailureClass::Conflict,
+                AppendCode::TargetIncarnationChanged,
+                "append target incarnation changed",
+            );
+        }
+        if desc.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+            let ticket = self.lifecycle.topology.schedule(&desc);
+            let ticket = ticket.map_err(|error| unproven(error.to_string()))?;
+            let waited = ticket.wait().await;
+            waited.map_err(|error| unproven(error.to_string()))?;
+            return Ok(false);
+        }
+        let seg = desc.resolve_segment(&command.routing_key);
+        Ok(seg.seg_id == attempted && !seg.sealed)
     }
 }
 

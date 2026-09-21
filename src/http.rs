@@ -2699,15 +2699,15 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
         .map(|t| t.timestamp_millis())
 }
 
-/// ROUTING-V3 sealed-segment retry wrapper: post-split streams (a
-/// materialized map with successors or an in-flight transition) buffer
-/// the body and retry a stream-closed response after refreshing the
-/// descriptor and resuming any pending transition — a seal is a few ms
-/// of routing indirection, never a client-visible 409. A 409 whose
-/// freshly-refreshed map shows the resolved segment LIVE with no
-/// pending transition is a genuine user-closed stream and passes
-/// through. Pre-split streams (segments: None — the common case) take
-/// the core path directly with zero overhead.
+/// ROUTING-V3 sealed-segment retry wrapper: an ENGINE's stream-closed
+/// answer is retried after refreshing the descriptor and resuming any
+/// pending transition, whatever the cached map looked like (it may
+/// predate the first split) — a seal is a few ms of routing
+/// indirection, never a client-visible 409. It passes through as a
+/// genuine user-closed stream only when the refreshed map still routes
+/// the key to that same segment, LIVE, with no pending transition. A
+/// closure the descriptor itself declares (sealed/sealing) is final and
+/// costs no refresh (AppendService::closure_is_current).
 #[expect(
     clippy::too_many_arguments,
     reason = "append; the append entry takes the state, descriptor, key, headers, body and producer parts as the handler resolved them; a request struct would exist only for this signature"

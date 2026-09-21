@@ -110,6 +110,8 @@ enum AppendConflict {
         segment: u32,
         next: u64,
         materialized: bool,
+        /// The descriptor said sealed or sealing; no engine was asked.
+        declared: bool,
     },
     ProducerGap {
         expected: u64,
@@ -144,9 +146,32 @@ impl AppendFailure {
                 segment,
                 next,
                 materialized,
+                ..
             }) => Some((*segment, *next, *materialized)),
             _ => None,
         }
+    }
+    /// The segment whose ENGINE refused the append as closed. Only that
+    /// closure can be a stale route; one the descriptor declared is the
+    /// collection's own, whichever segment reports its tail.
+    pub(crate) fn engine_closed_segment(&self) -> Option<u32> {
+        match self.conflict.as_deref() {
+            Some(AppendConflict::Closed {
+                segment,
+                declared: false,
+                ..
+            }) => Some(*segment),
+            _ => None,
+        }
+    }
+    /// The closure a sealed or sealing DESCRIPTOR declares, reported at
+    /// the tail `next_offset` of the segment that was read for it.
+    pub(crate) fn declared_closed(segment: u32, materialized: bool, next_offset: u64) -> Self {
+        let mut e = Self::from_commit(segment, materialized, AppendErr::Closed { next_offset });
+        if let Some(AppendConflict::Closed { declared, .. }) = e.conflict.as_deref_mut() {
+            *declared = true;
+        }
+        e
     }
     pub(crate) fn expected(&self) -> Option<u64> {
         match self.conflict.as_deref() {
@@ -218,6 +243,7 @@ impl AppendFailure {
                     segment,
                     next: next_offset,
                     materialized,
+                    declared: false,
                 }));
                 e
             }

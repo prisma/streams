@@ -136,7 +136,7 @@ pub(super) async fn prepare_close(
 
 #[expect(
     clippy::unwrap_used,
-    reason = "closed_tail_failure; a poisoned stream state may hold a half-advanced durable frontier; recovering it could report a closed length never made durable"
+    reason = "closed_tail_failure; the stream-state lock read for a declared closure's tail may be poisoned while it holds a half-advanced durable frontier; recovering it could report a closed length never made durable"
 )]
 async fn closed_tail_failure(state: &AppendService, desc: &StreamDesc) -> AppendFailure {
     let seg = desc.resolve_segment("");
@@ -159,11 +159,7 @@ async fn closed_tail_failure(state: &AppendService, desc: &StreamDesc) -> Append
         }
     };
     let next = handle.state.lock().unwrap().durable.next;
-    AppendFailure::from_commit(
-        seg.seg_id,
-        desc.segments.is_some(),
-        AppendErr::Closed { next_offset: next },
-    )
+    AppendFailure::declared_closed(seg.seg_id, desc.segments.is_some(), next)
 }
 
 /// Publish intent only after deterministic validation; malformed closes leave no debt.
