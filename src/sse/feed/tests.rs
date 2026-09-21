@@ -538,9 +538,7 @@ async fn aborted_drive_releases_the_permit() {
     feed.subscribe_locked();
     src.block_reads.store(true, Ordering::Relaxed);
     // Register the started-signal BEFORE spawning (no lost wake).
-    let started = src.read_started.notified();
-    tokio::pin!(started);
-    started.as_mut().enable();
+    let started = fixture::armed(&src.read_started, "the source read");
     let driving = feed.clone();
     let task = tokio::spawn(async move { driving.drive_once().await });
     started.await; // the drive is INSIDE the source read now
@@ -603,9 +601,7 @@ async fn driver_permit_releases_exactly_once() {
     // B: acquires the freed permit and blocks INSIDE the read.
     src.frontier.store(2, Ordering::Relaxed);
     src.block_reads.store(true, Ordering::Relaxed);
-    let started = src.read_started.notified();
-    tokio::pin!(started);
-    started.as_mut().enable();
+    let started = fixture::armed(&src.read_started, "B's source read");
     let feed_b = feed.clone();
     let b = tokio::spawn(async move { feed_b.drive_once().await });
     started.await; // B holds the permit inside the source read
@@ -701,9 +697,7 @@ async fn reconcile_and_driver_install_bump_generation_once() {
     src.closed.store(true, Ordering::Relaxed);
     src.next_source_block.store(true, Ordering::Relaxed);
     *src.next_result.lock().unwrap() = Some(ext.clone() as Arc<dyn FeedSourceRead>);
-    let started = src.next_started.notified();
-    tokio::pin!(started);
-    started.as_mut().enable();
+    let started = fixture::armed(&src.next_started, "next_source()");
     let feed_a = feed.clone();
     let a = tokio::spawn(async move { feed_a.drive_once().await });
     started.await; // the driver is INSIDE next_source()

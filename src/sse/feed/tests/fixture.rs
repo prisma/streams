@@ -13,6 +13,22 @@ pub(super) async fn hold_until_release(
     released.await;
 }
 
+/// Arm `signal` BEFORE the work is spawned (no lost wake) and bound
+/// the wait. A rendezvous the drive never reaches FAILS the test; it
+/// must not hang it: a hung test reads as a mutation timeout, which
+/// is not detection (docs/RUST-QUALITY.md).
+pub(super) fn armed<'a>(
+    signal: &'a tokio::sync::Notify,
+    place: &'a str,
+) -> impl std::future::Future<Output = ()> + 'a {
+    let mut started = Box::pin(signal.notified());
+    started.as_mut().enable();
+    async move {
+        let arrived = tokio::time::timeout(std::time::Duration::from_secs(10), started).await;
+        assert!(arrived.is_ok(), "the drive never reached {place}");
+    }
+}
+
 #[test]
 fn fake_source_release_cannot_race_started_signal() {
     use std::future::Future;
