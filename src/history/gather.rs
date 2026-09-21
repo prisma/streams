@@ -54,6 +54,11 @@ type WarmChunk = (SegmentHash, u64, u64, KeyRuns);
 struct Staged {
     wb: WriteBatch,
     bytes: usize,
+    /// Batch bytes the pool REFUSED to cover (0 = never refused): the
+    /// batch as it would have stood with the chunk try_grow() turned
+    /// away. Non-zero closes the batch — every later chunk defers — and
+    /// sizes the next tick's reserve(), which waits holding no bytes.
+    refused: usize,
     warm_installs: Vec<WarmChunk>,
     out: GatherOutcome,
 }
@@ -295,7 +300,8 @@ impl Absorber {
     /// One gather pass over `streams`. Classifies every requested stream:
     /// `advanced` covered by this flush (with new upto and the frame bytes
     /// copied), `no_work` had nothing durable to absorb, and
-    /// `deferred_budget` did not fit the aggregate byte budget — the
+    /// `deferred_budget` did not fit the aggregate byte budget, or the
+    /// process-wide pool refused to grow over it (try_grow) — the
     /// CALLER must keep those pending (with lag and age intact) so they
     /// gather on the next tick; dropping them used to strand their
     /// backlog until the ~60 s resident-handle sweep re-found it. A
@@ -312,6 +318,7 @@ impl Absorber {
         let mut staged = Staged {
             wb: WriteBatch::new(),
             bytes: 0,
+            refused: 0,
             warm_installs: Vec::new(),
             out: GatherOutcome::default(),
         };
@@ -328,8 +335,9 @@ impl Absorber {
             // flush below, so its size — not the lane's stream count — is
             // what a 1 GiB instance actually feels. Anything deferred here
             // stays in the pending set and gathers on a later tick; the
-            // whole-remainder deferral also skips their reads.
-            if staged.bytes >= self.cfg.gather_max_bytes {
+            // whole-remainder deferral also skips their reads. A batch the
+            // process-wide pool refused to grow is closed the same way.
+            if staged.bytes >= self.cfg.gather_max_bytes || staged.refused > 0 {
                 staged
                     .out
                     .deferred_budget
@@ -342,12 +350,11 @@ impl Absorber {
             let got = self.read_wave(wave, per_stream).await;
             self.pace_between_waves(&mut pacing).await;
             for (plan, read) in wave.iter().zip(got) {
-                self.stage_chunk(&mut staged, reservation, plan, &read?)
-                    .await?;
+                self.stage_chunk(&mut staged, reservation, plan, &read?)?;
             }
         }
         GATHER_LAST_PACE_MS.store(millis(pacing.paced), Ordering::Relaxed);
-        self.observe_gather_transient(staged.bytes);
+        self.observe_gather_transient(staged.bytes.max(staged.refused));
         if staged.out.advanced.is_empty() {
             return Ok(staged.out);
         }
@@ -410,9 +417,9 @@ impl Absorber {
     }
 
     /// Read one wave's frames concurrently. Transient memory: at most
-    /// read_par chunks in flight, each capped at per_stream — bounded by
-    /// the same reservation the caller already holds (gather_max_bytes x
-    /// build multiplier). The wave is already sized to read_par, so
+    /// read_par chunks in flight, each capped at per_stream — read
+    /// BEFORE stage_chunk funds them, so the adaptive reservation covers
+    /// a chunk only once it is staged. The wave is already sized to read_par, so
     /// join_all IS the concurrency bound — no stream adapter needed — and
     /// it yields the chunks in lane order.
     async fn read_wave(
@@ -442,7 +449,8 @@ impl Absorber {
     /// the budget waits for a batch of its own — unless the batch is
     /// empty, in which case it proceeds alone (one oversized frame must
     /// still make progress; frame bodies can reach the 32 MiB API cap).
-    async fn stage_chunk(
+    /// Deliberately not async: staging never waits on the pool.
+    fn stage_chunk(
         &self,
         staged: &mut Staged,
         reservation: &mut AbsorbReservation<'_>,
@@ -454,22 +462,33 @@ impl Absorber {
             return Ok(());
         }
         let (chunk_bytes, chunk_raw) = chunk_cost(chunk);
-        if staged.bytes > 0 && staged.bytes + chunk_bytes > self.cfg.gather_max_bytes {
+        let batch_bytes = staged.bytes + chunk_bytes;
+        let over_packing = staged.bytes > 0 && batch_bytes > self.cfg.gather_max_bytes;
+        if over_packing || staged.refused > 0 {
             staged.out.deferred_budget.push(plan.hash);
             return Ok(());
         }
         // #266 adaptive reservation: cover this chunk's modeled
         // transient BEFORE building it. On the steady path the
-        // adaptive estimate already covers the batch and this
-        // is a no-op; when a gather turns out fatter than
-        // recent history, grow() waits on the pool — the same
-        // cross-shard backpressure reserve() gives, applied to
-        // exactly the bytes that turned real.
-        let needed = (staged.bytes + chunk_bytes).saturating_mul(ABSORB_BUILD_MULTIPLIER);
-        if needed > reservation.granted() {
-            reservation.grow(needed - reservation.granted()).await;
+        // adaptive estimate already covers the batch and this is a
+        // no-op. When a gather turns out fatter than recent history
+        // it NEVER waits here — it holds bytes, and two such waiters
+        // hold the pool between them forever. A refusal closes the
+        // batch: what is staged flushes, the rest defers, and the
+        // recorded need makes the next tick's reserve() — the one
+        // wait on the pool, made holding nothing — ask for it up front.
+        let needed = batch_bytes.saturating_mul(ABSORB_BUILD_MULTIPLIER);
+        let short = needed.saturating_sub(reservation.granted());
+        if !reservation.try_grow(short) {
+            tracing::info!(
+                "v2 gather {}: pool refused +{short} B at a {batch_bytes} B batch; deferring",
+                self.shard.prefix,
+            );
+            staged.refused = batch_bytes;
+            staged.out.deferred_budget.push(plan.hash);
+            return Ok(());
         }
-        staged.bytes += chunk_bytes;
+        staged.bytes = batch_bytes;
         #[cfg(test)]
         trace_gather(plan, chunk);
         let mut pages = PageBuilder::default();

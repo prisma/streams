@@ -145,6 +145,9 @@ pub(crate) fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
 /// single frame; the reservation covers those transients via the build
 /// multiplier, and an estimate above the whole budget clamps to it, so
 /// an oversized gather serializes process-wide instead of deadlocking.
+/// reserve() is the ONLY wait on the byte pool and it waits holding
+/// no bytes; growth mid-gather is try_grow(), which refuses instead
+/// of waiting — two holders can never wait on each other.
 /// Budgets are process-wide BY CONSTRUCTION: the semaphores live in one
 /// process-level static, not per absorber.
 pub(crate) struct AbsorbBudget {
@@ -382,36 +385,34 @@ impl AbsorbReservation<'_> {
         self.bytes
     }
 
-    /// Grow this reservation by `additional` transient bytes, waiting
-    /// on the pool like reserve() does — the wait IS the cross-shard
-    /// backpressure when a gather turns out fatter than its adaptive
-    /// estimate (#266). Clamped so the TOTAL never exceeds the pool's
-    /// capacity: a single oversized frame always fits (capacity floors
-    /// at the worst-frame transient) and a batch can't exceed it
-    /// (resolved_gather_packing_bytes caps gather_max at capacity ÷
-    /// multiplier), so a shortfall after clamping only occurs in
-    /// shapes the pre-adaptive reservation could not cover either.
-    #[expect(
-        clippy::expect_used,
-        reason = "AbsorbReservation::grow; the permit count is clamped to the u32 range at construction and the budget semaphore is never closed; a fallible reservation would let a gather proceed without the bytes it was promised"
-    )]
-    pub(crate) async fn grow(&mut self, additional: usize) {
+    /// Grow this reservation by `additional` transient bytes WITHOUT
+    /// waiting. A reservation never waits for pool bytes while it holds
+    /// some: two gathers that each kept a grant and awaited the rest
+    /// parked each other — and both gather slots — until an engine
+    /// closed. `false` is the pool's refusal; the caller defers that
+    /// work to a gather whose reserve() asks for the full need up front,
+    /// where the wait holds no bytes. Clamped so the TOTAL never exceeds
+    /// capacity: a reservation already holding the whole pool is covered
+    /// (capacity floors at the worst-frame transient). A closed pool
+    /// refuses too — never a build without the bytes it was promised.
+    #[must_use]
+    pub(crate) fn try_grow(&mut self, additional: usize) -> bool {
         let add = additional.min(self.budget.capacity.saturating_sub(self.bytes));
         if add == 0 {
-            return;
+            return true;
         }
-        let add_permits = u32::try_from(add).expect("capacity clamped to u32 range");
-        let extra = self
-            .budget
-            .bytes
-            .acquire_many(add_permits)
-            .await
-            .expect("absorb budget semaphore closed");
+        let Ok(permits) = u32::try_from(add) else {
+            return false;
+        };
+        let Ok(extra) = self.budget.bytes.try_acquire_many(permits) else {
+            return false;
+        };
         self._bytes.merge(extra);
         self.bytes += add;
         self.budget
             .reserved
             .fetch_add(add as u64, std::sync::atomic::Ordering::Relaxed);
+        true
     }
 }
 
@@ -762,7 +763,7 @@ pub(crate) struct Absorber {
     /// certification ladder showed that pressure SHEDDING APPENDS for
     /// the reservations' full hold duration (#266). The adaptive
     /// estimate keeps the pressure line honest at sparse shapes while
-    /// grow() + the pool keep the OOM bound exact.
+    /// try_grow() + the pool keep the OOM bound exact.
     recent_transient: AtomicU64,
     data_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
@@ -826,7 +827,7 @@ impl Absorber {
 
     /// The reservation estimate for the next gather: the decaying max
     /// of observed transients, floored at one per-stream chunk's
-    /// modeled cost (so steady sparse shapes don't thrash grow()) and
+    /// modeled cost (so steady sparse shapes don't thrash try_grow()) and
     /// capped at the worst-case est the pre-adaptive code always used.
     pub(crate) fn adaptive_gather_est(&self) -> usize {
         let cap = self
@@ -842,8 +843,9 @@ impl Absorber {
         .map_or(cap, |observed| observed.clamp(floor, cap))
     }
 
-    /// Record a gather's observed transient: decaying max — jumps to a
-    /// fat observation immediately, decays an eighth per gather so a
+    /// Record a gather's transient DEMAND — the batch it staged, or the
+    /// larger batch the pool refused to cover: decaying max — jumps to
+    /// a fat observation immediately, decays an eighth per gather so a
     /// one-off burst stops inflating the estimate within ~a dozen
     /// ticks.
     fn observe_gather_transient(&self, batch_bytes: usize) {
@@ -1246,65 +1248,32 @@ mod tests {
     /// heal, catch-up, survival) is the acceptance campaign's
     /// slow-compactor leg, driven via /v1/debug/history-stall — this
     /// test does NOT claim it.
-    /// #266: grow() must account exactly like reserve() — permits
+    /// #266: try_grow() must account exactly like reserve() — permits
     /// held while granted, clamped at pool capacity, everything
-    /// returned on drop — and a grow that cannot fit must WAIT on the
-    /// pool (that wait is the cross-shard backpressure when a gather
-    /// outruns its adaptive estimate).
+    /// returned on drop — and must REFUSE, never wait: two gathers
+    /// that both outgrew their grants used to park in grow() holding
+    /// the pool between them. reserve() is the only wait on the pool,
+    /// and it waits holding no bytes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reservation_grow_accounts_clamps_and_waits() {
-        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
-        let mut r = budget.reserve(30).await;
-        assert_eq!(r.granted(), 30);
-        r.grow(20).await;
-        assert_eq!(r.granted(), 50);
-        assert_eq!(budget.reserved_bytes(), 50);
-        // Clamp: asking past capacity grants only up to it.
-        r.grow(1000).await;
-        assert_eq!(r.granted(), 100);
-        // A second reservation must WAIT while the first holds all
-        // capacity, and complete once it drops.
-        let second = budget.reserve(40);
-        tokio::pin!(second);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut second)
-                .await
-                .is_err(),
-            "second reservation must block while grow holds capacity"
-        );
-        drop(r);
-        let s2 = tokio::time::timeout(Duration::from_millis(200), &mut second)
-            .await
-            .expect("released capacity must admit the waiter");
-        assert_eq!(s2.granted(), 40);
-        drop(s2);
-        assert_eq!(budget.reserved_bytes(), 0);
-    }
-
-    /// #266: a grow() blocked on the pool must also be cancellation
-    /// safe — dropping the blocked future releases nothing it didn't
-    /// hold and the original grant stays intact.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reservation_grow_cancel_leaves_grant_intact() {
-        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
-        let mut r = budget.reserve(40).await;
-        let holder = budget.reserve(60).await; // pool now full
-        {
-            let g = r.grow(30);
-            tokio::pin!(g);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), &mut g)
-                    .await
-                    .is_err(),
-                "grow must block while the pool is full"
-            );
-            // dropping the pinned future cancels the acquire
-        }
-        assert_eq!(r.granted(), 40, "cancelled grow must not change the grant");
-        drop(holder);
-        r.grow(30).await;
-        assert_eq!(r.granted(), 70);
-        drop(r);
+    async fn reservation_try_grow_accounts_clamps_and_never_waits() {
+        let budget = AbsorbBudget::new(100, 2);
+        let mut a = budget.reserve(40).await;
+        let mut b = budget.reserve(40).await;
+        // 20 free, both want 30: BOTH are refused with grants intact.
+        assert!(!a.try_grow(30), "only 20 bytes are free");
+        assert!(!b.try_grow(30), "only 20 bytes are free");
+        assert_eq!((a.granted(), b.granted()), (40, 40));
+        assert_eq!(budget.reserved_bytes(), 80);
+        assert!(a.try_grow(20), "a grow the pool can cover is granted");
+        assert_eq!((a.granted(), budget.reserved_bytes()), (60, 100));
+        drop(b);
+        // Clamp: asking past capacity grants only up to it, and a
+        // reservation holding the whole pool grows by nothing.
+        assert!(a.try_grow(1000));
+        assert_eq!(a.granted(), 100);
+        assert!(a.try_grow(1));
+        assert_eq!((a.granted(), budget.reserved_bytes()), (100, 100));
+        drop(a);
         assert_eq!(budget.reserved_bytes(), 0);
     }
 

@@ -678,6 +678,17 @@
     ]
   },
   {
+    "name": "a_refused_oversized_chunk_defers_and_sizes_the_next_reservation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f3ebae8d68241310dc4458b2014dc630d42682b20859c00612829566dc0d12bb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_gather.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_refused_raw_close_does_not_strand_the_collection",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5724,6 +5735,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_lineage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "two_gathers_outgrowing_a_shared_pool_defer_instead_of_deadlocking",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ebf7755c0090a8b41c8d8162e739edab4ec57aef513da72e72f50d635a83f69e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_gather.rs",
     "scenarios": []
   },
   {

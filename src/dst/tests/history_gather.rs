@@ -720,3 +720,169 @@ async fn untouched_streams_absorb_after_restart() {
     );
     engine_b.begin_close();
 }
+
+fn shared_pool(budget_bytes: usize, body_limit: usize) -> Arc<crate::history::HistoryResources> {
+    Arc::new(crate::history::HistoryResources::with_body_limit(
+        &crate::config::HistoryConfig {
+            absorb_global_budget_bytes: budget_bytes,
+            absorb_global_gathers: 2,
+            ..Default::default()
+        },
+        usize::MAX,
+        body_limit,
+    ))
+}
+
+/// An unstarted absorber over its own engine whose gathers draw on the
+/// SHARED `pool` — two of these are two shards of one process.
+async fn absorber_on_pool(
+    path: &str,
+    pool: &Arc<crate::history::HistoryResources>,
+    gather_max_bytes: usize,
+) -> (Arc<crate::shard::ShardEngine>, crate::history::Absorber) {
+    let store = mem();
+    let engine = open_engine_with_settings(
+        store.clone(),
+        path,
+        crate::shard::ShardConfig {
+            shared_history: Some(pool.clone()),
+            ..Default::default()
+        },
+        slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+    )
+    .await;
+    let absorber = crate::history::Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes,
+            ..Default::default()
+        },
+    );
+    (engine, absorber)
+}
+
+/// Two shards' gathers that BOTH outgrow their grants on one pool must
+/// both return. grow() used to wait on the pool while holding its
+/// grant: each gather held part of the pool and waited for the rest,
+/// so both gather slots and every byte stayed held until a shard
+/// closed and no shard in the process absorbed again. A refused grow
+/// now defers the rest of the batch (deferred_budget) and flushes what
+/// it staged; the next tick's reserve() waits holding nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_gathers_outgrowing_a_shared_pool_defer_instead_of_deadlocking() {
+    let key = skey();
+    let pool = shared_pool(384 * 1024, 64 * 1024);
+    assert_eq!(pool.budget.capacity(), 384 * 1024);
+    let (engine_a, absorber_a) = absorber_on_pool("dst-pool-a", &pool, 1024 * 1024).await;
+    let (engine_b, absorber_b) = absorber_on_pool("dst-pool-b", &pool, 1024 * 1024).await;
+    let hashes_a: Vec<[u8; 16]> = (0u8..4).map(|i| [0xB0 + i; 16]).collect();
+    let hashes_b: Vec<[u8; 16]> = (0u8..4).map(|i| [0xC0 + i; 16]).collect();
+    for (engine, hashes) in [(&engine_a, &hashes_a), (&engine_b, &hashes_b)] {
+        for h in hashes {
+            append_sized(engine, *h, &key, "", 32 * 1024).await;
+        }
+    }
+    // Decayed estimates: each gather starts with a grant that covers
+    // its first ~33 KiB chunk (x3) and nothing more, while its whole
+    // backlog (4 chunks x3) wants the entire pool. Neither can ever be
+    // satisfied while the other holds its 128 KiB.
+    let mut grant_a = pool.budget.reserve(128 * 1024).await;
+    let mut grant_b = pool.budget.reserve(128 * 1024).await;
+    let both = futures_util::future::join(
+        absorber_a.absorb_gather_v2_with(&hashes_a, &mut grant_a),
+        absorber_b.absorb_gather_v2_with(&hashes_b, &mut grant_b),
+    );
+    let (out_a, out_b) = tokio::time::timeout(std::time::Duration::from_secs(20), both)
+        .await
+        .expect("two gathers growing on one pool must both return, not hold-and-wait");
+    for (name, out) in [
+        ("a", out_a.expect("gather a")),
+        ("b", out_b.expect("gather b")),
+    ] {
+        assert!(
+            !out.advanced.is_empty(),
+            "gather {name}: the chunk its grant covers must still land"
+        );
+        assert!(
+            !out.deferred_budget.is_empty(),
+            "gather {name}: what the pool refused must be budget-deferred"
+        );
+        assert_eq!(
+            out.advanced.len() + out.deferred_budget.len(),
+            4,
+            "gather {name}: every stream is settled or deferred, none dropped"
+        );
+    }
+    drop(grant_a);
+    drop(grant_b);
+    assert_eq!(pool.budget.reserved_bytes(), 0);
+    // The pump's next ticks: deferred streams gather again and drain.
+    drain_deferred(&absorber_a, &hashes_a).await;
+    drain_deferred(&absorber_b, &hashes_b).await;
+    wait_all_absorbed(&engine_a, &hashes_a).await;
+    wait_all_absorbed(&engine_b, &hashes_b).await;
+    assert_eq!(pool.budget.reserved_bytes(), 0);
+    engine_a.begin_close();
+    engine_b.begin_close();
+}
+
+/// The pump's following ticks: gather until nothing more advances.
+async fn drain_deferred(absorber: &crate::history::Absorber, hashes: &[[u8; 16]]) {
+    for _ in 0..4 {
+        let outcome = absorber.absorb_gather_v2(hashes).await.expect("drain");
+        if outcome.advanced.is_empty() {
+            break;
+        }
+    }
+}
+
+/// The empty-batch case: ONE frame fatter than the decayed estimate,
+/// met by a pool another shard's gather has drained. The gather must
+/// not wait holding its grant; it defers, RECORDS what it needed, and
+/// the next gather reserves that size up front — reserve() holds no
+/// bytes while it waits, so that wait cannot deadlock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_oversized_chunk_defers_and_sizes_the_next_reservation() {
+    let key = skey();
+    let pool = shared_pool(40 * 1024 * 1024, 8 * 1024 * 1024);
+    let (engine, absorber) = absorber_on_pool("dst-pool-fat", &pool, 13 * 1024 * 1024).await;
+    let fat = [0xD0u8; 16];
+    append_sized(&engine, fat, &key, "", 5 * 1024 * 1024).await;
+    for _ in 0..64 {
+        absorber.observe_gather_transient_for_tests(2 * 1024 * 1024);
+    }
+    let floor = crate::history::worst_frame_transient_for(4 * 1024 * 1024);
+    assert_eq!(absorber.adaptive_gather_est(), floor);
+    // The other shard's gather: everything but this gather's floor grant.
+    let other = pool.budget.reserve(pool.budget.capacity() - floor).await;
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        absorber.absorb_gather_v2(&[fat]),
+    )
+    .await
+    .expect("a gather the pool cannot grow must return, not wait holding its grant")
+    .expect("gather");
+    assert!(refused.advanced.is_empty());
+    assert_eq!(refused.deferred_budget, vec![fat]);
+    assert_eq!(pool.budget.reserved_bytes(), other.granted() as u64);
+    assert!(
+        absorber.adaptive_gather_est() >= 3 * 5 * 1024 * 1024,
+        "the refused need must size the next reservation"
+    );
+    drop(other);
+    let landed = absorber.absorb_gather_v2(&[fat]).await.expect("gather 2");
+    assert_eq!(
+        landed.advanced.len(),
+        1,
+        "reserved up front, the frame lands"
+    );
+    wait_all_absorbed(&engine, &[fat]).await;
+    assert_eq!(pool.budget.reserved_bytes(), 0);
+    engine.begin_close();
+}

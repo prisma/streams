@@ -328,9 +328,9 @@ impl Absorber {
             // crossed the RSS shed line and SHED
             // APPENDS for the hold duration (L1
             // ladder, bench/WORKLOAD-CERT-PLAN.md).
-            // grow() inside the build keeps the OOM
-            // bound exact when reality outruns the
-            // estimate.
+            // try_grow() inside the build keeps the
+            // OOM bound exact; a refused grow defers
+            // to the next tick's larger reserve().
             let est = self.adaptive_gather_est();
             let mut _reservation = self.shard.history_resources.budget.reserve(est).await;
             GATHER_LAST_RESERVED.store(

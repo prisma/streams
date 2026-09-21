@@ -2887,20 +2887,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::tests::reservation_grow_accounts_clamps_and_waits",
-      "path": "src/history.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::reservation_grow_cancel_leaves_grant_intact",
-      "path": "src/history.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::Absorber::run",
       "path": "src/history/worker.rs",
       "syntax": "tokio::select"
