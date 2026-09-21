@@ -16,6 +16,11 @@ cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
 cargo clippy --locked --workspace --all-targets --message-format=json -- -D warnings > "$QUALITY_OUT/clippy.jsonl"
 python3 scripts/quality/gate.py --clippy "$QUALITY_OUT/clippy.jsonl"
+# rustdoc is a compiler too, and nothing else here runs it: an unclosed
+# tag or a link to a renamed item is a warning only it reports. Private
+# items are documented because most of this crate is pub(crate) — the
+# public-only build would check almost none of its prose.
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --document-private-items
 cargo machete
 cargo deny --locked --workspace check
 for gate in architecture-report architecture-gate scenario-map-report test-inventory review-evidence; do
