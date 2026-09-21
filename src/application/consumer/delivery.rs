@@ -162,16 +162,13 @@ pub(crate) async fn pull(
                     return Err(failure(FailureClass::Internal, "internal", &m, None, true));
                 }
             };
-            if !poisoned.is_empty() {
-                let _ = dlq_and_settle(
-                    &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, route, seg_id,
-                    &poisoned, &by_off,
-                )
-                .await;
-                // Settling poison may have drained this segment or
-                // unblocked keys — restart the walk.
-                continue 'outer;
-            }
+            // Poison blocks only its own key: the leases this Receive granted
+            // are delivered whether or not the handoff settled anything.
+            let handoff = dlq_and_settle(
+                &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, &engine, seg_id,
+                &poisoned, &by_off,
+            )
+            .await;
             if !leased.is_empty() {
                 let now = crate::shard::now_ms();
                 let messages = delivery_messages(
@@ -197,6 +194,9 @@ pub(crate) async fn pull(
                     payload_bytes: delivered_payload,
                     descriptor: desc,
                 });
+            }
+            if handoff.settled > 0 {
+                continue 'outer; // settled poison may have unblocked keys
             }
             total_backlog += backlog;
             if sealed_end.is_some() && backlog > 0 {
@@ -569,13 +569,13 @@ pub(crate) async fn settle(
             {
                 by_off = DeliveryRecords::new(out.recs);
             }
-            let (d, b) = dlq_and_settle(
-                &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, route, seg_id,
+            let handoff = dlq_and_settle(
+                &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, &engine, seg_id,
                 &poisoned, &by_off,
             )
             .await;
-            dlq += d;
-            dlq_blocked += b;
+            dlq += handoff.settled;
+            dlq_blocked += handoff.blocked;
         }
     }
     Ok(SettleOutcome {
@@ -589,18 +589,25 @@ pub(crate) async fn settle(
     })
 }
 
+/// What one dead-letter pass did with the poisoned leases it was handed. A
+/// lease it did not settle is still held by the source, so its key stays
+/// blocked and a later pass retries it.
+#[must_use]
+#[derive(Default)]
+struct DeadLetterPass {
+    settled: usize,
+    /// Leases retained because the target refused them or could not be confirmed.
+    blocked: usize,
+}
+
 // Preserve the explicit source incarnation and one bounded poisoned segment.
 #[expect(
     clippy::too_many_arguments,
-    reason = "dlq_and_settle; the dead-letter path takes the stream, consumer, key, epoch, identity, route and segment separately as settlement resolved them; a context struct would exist only for this signature"
+    reason = "dlq_and_settle; the dead-letter path takes the stream, consumer, key, epoch, identity, engine and segment separately as settlement resolved them; a context struct would exist only for this signature"
 )]
 #[expect(
     clippy::too_many_lines,
     reason = "dlq_and_settle; the dead-letter appends and the settlement of the poisoned leases are one bounded sequence over the same leases; splitting it would separate the appends from the leases they release"
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "dlq_and_settle; the dead-letter target's incarnation was checked before any message is appended; a second fallible read would add a branch no configured target reaches"
 )]
 async fn dlq_and_settle(
     state: &Arc<ConsumerService>,
@@ -611,35 +618,39 @@ async fn dlq_and_settle(
     skey: &crate::crypto::StreamKey,
     epoch: &[u8; 16],
     identity: [u8; 16],
-    route: [u8; 16],
+    engine: &Arc<crate::shard::ShardEngine>,
     seg_id: u32,
     poisoned: &[(u64, u32, u32, [u8; 16])],
     by_off: &DeliveryRecords,
-) -> (usize, usize) {
-    let mut settled = 0usize;
-    // Deliveries the target refused for a reason retrying cannot fix.
-    let mut blocked = 0usize;
-    // The target must still be the incarnation that was configured.
-    let dlq_target = match (&cfg.dead_letter_stream, &cfg.dead_letter_epoch) {
-        (Some(dlq), Some(want)) => match state.registry.get(&desc.ref_in_project(dlq)).await {
-            Ok(Some(t)) if &t.stream_epoch == want => Some(t),
-            _ => None,
-        },
-        _ => None,
-    };
-    for (off, lgen, attempts, kh) in poisoned {
-        if let Some(dlq) = &cfg.dead_letter_stream {
-            if dlq_target.is_none() {
-                blocked += 1;
+) -> DeadLetterPass {
+    let mut pass = DeadLetterPass::default();
+    if poisoned.is_empty() {
+        return pass;
+    }
+    // The target must still be the incarnation that was configured. One that
+    // is not blocks every lease of this pass alike, so it is decided once.
+    let target = match &cfg.dead_letter_stream {
+        Some(dlq) => match state.registry.get(&desc.ref_in_project(dlq)).await {
+            Ok(Some(t)) if Some(&t.stream_epoch) == cfg.dead_letter_epoch.as_ref() => {
+                Some((dlq, t))
+            }
+            lookup => {
                 tracing::warn!(
                     stream = %desc.name,
                     consumer = %cname,
                     dead_letter_stream = %dlq,
-                    "dead-letter target is a different incarnation than the one \
-                     configured; refusing to deliver"
+                    lookup_error = ?lookup.as_ref().err(),
+                    "dead-letter target is unreadable or a different incarnation \
+                     than the one configured; source leases retained"
                 );
-                continue;
+                pass.blocked = poisoned.len();
+                return pass;
             }
+        },
+        None => None,
+    };
+    for (off, lgen, attempts, kh) in poisoned {
+        if let Some((dlq, target)) = &target {
             let Some((rkey, payload)) = by_off.get(off) else {
                 // Outside this pass's read window; a later pull retries.
                 continue;
@@ -666,9 +677,6 @@ async fn dlq_and_settle(
                 "value": value,
             })
             .to_string();
-            let target = dlq_target
-                .as_ref()
-                .expect("configured incarnation checked above");
             let request_hash = crate::application::append::product_request_hash(
                 false,
                 "",
@@ -704,20 +712,12 @@ async fn dlq_and_settle(
                 ts_hint_ms: None,
                 key_version: 0,
             };
-            match state.append.execute(command).await {
-                Ok(_) => {}
-                Err(error) if error.definitively_rejected() => {
-                    blocked += 1;
-                    tracing::warn!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,error=%error,"dead-letter delivery refused; source lease retained");
-                    continue;
-                }
-                Err(_) => continue,
+            if let Err(error) = state.append.execute(command).await {
+                pass.blocked += usize::from(error.definitively_rejected());
+                tracing::warn!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,error=%error,"dead-letter delivery failed; source lease retained");
+                continue;
             }
         }
-        let engine = match state.engine_for(&route).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
         if let Ok(crate::queue::QueueOut::Settled { acked, .. }) = engine
             .submit_queue(
                 identity,
@@ -732,8 +732,8 @@ async fn dlq_and_settle(
             )
             .await
         {
-            settled += acked;
+            pass.settled += acked;
         }
     }
-    (settled, blocked)
+    pass
 }

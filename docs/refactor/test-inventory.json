@@ -22,6 +22,17 @@
     "scenarios": []
   },
   {
+    "name": "a_blocked_dead_letter_handoff_neither_wedges_the_pull_nor_drops_other_keys_leases",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0474eddeb5ae377db277e3497120c35b996bc5e9edeb8a09367b1230351aaa8e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -830,6 +841,17 @@
     "scenarios": [
       "HIS-012"
     ]
+  },
+  {
+    "name": "a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ebe928a0a179846b21d1a7a56078070e7518ae1f2953b62160f27d4fd524f13f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
   },
   {
     "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
