@@ -2293,6 +2293,17 @@
     "scenarios": []
   },
   {
+    "name": "keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9940313e72d53170cec6e75d159c9392a3874efa1e75ba2f1fb2e289c722d176",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "keyed_frames_no_longer_count_twice_against_the_budget",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -163,3 +163,79 @@ fn extend_after_refuses_a_prefix_past_the_cut_and_accepts_one_before_it() {
     assert_eq!(extended.len(), 2);
     assert_eq!(extended.last().map(|r| r.start), Some(20));
 }
+
+/// `clipped_to` keeps exactly the offsets below the cut, returns the same
+/// allocation when nothing crosses it, keeps a straddler's whole-run weight,
+/// and leaves a prefix `extend_after` accepts at that same cut.
+#[test]
+fn clipped_to_cuts_at_the_boundary_and_keeps_whole_run_weight() {
+    let r = |start, count, bytes| AbsRun {
+        start,
+        count,
+        matching_bytes: bytes,
+        gap_bytes_before: 0,
+    };
+    let owner = ValidatedRuns::new(vec![r(0, 10, 1000), r(20, 10, 2000), r(40, 10, 3000)])
+        .expect("runs validate");
+    let shape = |runs: &ValidatedRuns| {
+        runs.iter()
+            .map(|x| (x.start, x.count, x.matching_bytes))
+            .collect::<Vec<_>>()
+    };
+    for cut in [50, 51, u64::MAX] {
+        assert!(Arc::ptr_eq(&owner.clone().clipped_to(cut).0, &owner.0));
+    }
+    assert_eq!(
+        shape(&owner.clone().clipped_to(49)),
+        vec![(0, 10, 1000), (20, 10, 2000), (40, 9, 3000)]
+    );
+    assert_eq!(
+        shape(&owner.clone().clipped_to(40)),
+        vec![(0, 10, 1000), (20, 10, 2000)]
+    );
+    assert_eq!(
+        shape(&owner.clone().clipped_to(25)),
+        vec![(0, 10, 1000), (20, 5, 2000)]
+    );
+    assert!(owner.clone().clipped_to(0).is_empty());
+    assert!(ValidatedRuns::empty().clipped_to(7).is_empty());
+    let rejoined = owner
+        .clone()
+        .clipped_to(25)
+        .extend_after(&owner, 25)
+        .expect("a clipped prefix seams at its cut");
+    assert_eq!(
+        rejoined
+            .iter()
+            .map(|x| (x.start, x.count))
+            .collect::<Vec<_>>(),
+        vec![(0, 10), (20, 5), (25, 5), (40, 10)]
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(1024))]
+
+    #[test]
+    #[expect(clippy::arithmetic_side_effects, reason = "clip property oracle; 48 generated gaps and counts below 64 stay far below u64::MAX; reusing checked production arithmetic would weaken the independent oracle")]
+    fn quality_clipped_runs_are_exactly_the_offsets_below_the_cut(
+        specs in proptest::collection::vec((0u64..64, 1u32..64, 1u64..4096), 0..48),
+        cut in 0u64..6200,
+    ) {
+        let mut next = 0u64;
+        let runs: Vec<AbsRun> = specs.iter().map(|&(gap, count, matching_bytes)| {
+            let start = next + gap;
+            next = start + u64::from(count);
+            AbsRun { start, count, matching_bytes, gap_bytes_before: 0 }
+        }).collect();
+        let offsets = |rs: &[AbsRun]| rs.iter().flat_map(|r| r.start..r.start + u64::from(r.count)).collect::<Vec<u64>>();
+        let owner = ValidatedRuns::new(runs.clone()).unwrap();
+        let clipped = owner.clone().clipped_to(cut);
+        proptest::prop_assert!(ValidatedRuns::new(clipped.to_vec()).is_some(), "a clip must stay admissible");
+        let below: Vec<u64> = offsets(&runs).into_iter().filter(|o| *o < cut).collect();
+        proptest::prop_assert_eq!(offsets(&clipped), below);
+        proptest::prop_assert!(clipped.iter().all(|c| runs.iter().any(|r| r.start == c.start && r.matching_bytes == c.matching_bytes)), "whole-run weight");
+        let rejoined = clipped.extend_after(&owner, cut).unwrap();
+        proptest::prop_assert_eq!(offsets(&rejoined), offsets(&runs));
+    }
+}

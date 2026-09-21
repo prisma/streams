@@ -1,7 +1,7 @@
 //! Reads history.
 
 use super::fixture_storage::{
-    append_n, append_sized, drain_filtered, mem, skey, wait_all_absorbed,
+    append_n, append_sized, drain_filtered, mem, open_engine_with_absorber, skey, wait_all_absorbed,
 };
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
@@ -498,6 +498,85 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
     assert!(
         cache.hits.load(Ordering::Relaxed) >= hits_after_cold + 5,
         "warm reads must be cache hits"
+    );
+    engine.begin_close();
+}
+
+/// Keyed drain from `from` for routing key "cold": (offsets, next cursor).
+async fn keyed_offsets(
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    mut from: u64,
+) -> (Vec<u64>, u64) {
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mut offs = Vec::new();
+    for _ in 0..64 {
+        let res = crate::http::read_merged(
+            key,
+            &hash,
+            &handle,
+            engine,
+            from,
+            Some("cold"),
+            8 * 1024 * 1024,
+            crate::shard::Deliver::Durable,
+        )
+        .await
+        .expect("keyed read");
+        for rec in &res.recs {
+            offs.push(rec.off);
+        }
+        from = res.scanned_through(from);
+        if res.completed {
+            break;
+        }
+    }
+    (offs, from)
+}
+
+/// A cold postings load (restart, idle sweep, eviction) proves coverage
+/// only to the absorbed boundary it was loaded at. Records of the same key
+/// absorbed afterwards in the same bucket must reach a catch-up reader
+/// resuming from its old cursor: the slice used to claim the whole bucket,
+/// drop the write-through installs and serve the range as match-free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
+    let key = skey();
+    let hash = [0xC7u8; 16];
+    let (engine, _absorber) = open_engine_with_absorber(mem(), "dst-coldclaim", hash, &key).await;
+    let mut first = Vec::new();
+    for _ in 0..4 {
+        first.push(append_sized(&engine, hash, &key, "cold", 64).await);
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+
+    // The instance that did not absorb this data: cold index load.
+    let cache = &engine.postings_cache;
+    cache.sweep_idle(std::time::Duration::ZERO);
+    let loads = cache.index_loads.load(Ordering::Relaxed);
+    let (got, cursor) = keyed_offsets(&engine, hash, &key, 0).await;
+    assert_eq!(got, first);
+    assert!(
+        cache.index_loads.load(Ordering::Relaxed) > loads,
+        "the swept cache must load the index"
+    );
+
+    // Same key, same 65,536-offset bucket, absorbed AFTER the cold load.
+    let mut later = Vec::new();
+    for _ in 0..4 {
+        later.push(append_sized(&engine, hash, &key, "cold", 64).await);
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+    let (caught_up, _) = keyed_offsets(&engine, hash, &key, cursor).await;
+    assert_eq!(
+        caught_up,
+        later,
+        "catch-up from the old cursor skipped durable records: slice {:?}",
+        cache.debug_slice(
+            &crate::crypto::SegmentHash(hash),
+            &crate::postings::rk_hash("cold")
+        ),
     );
     engine.begin_close();
 }

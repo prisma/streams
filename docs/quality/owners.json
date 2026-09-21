@@ -1587,6 +1587,22 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/postings_cache/tests.rs",
+      "reason": "Postings cache coverage property; generated absorbed boundaries, chunk ends and run positions drive the production cold load and write-through install against a real store, so a slice can never claim past its load target or hide a later install.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/postings/validated/tests.rs",
+      "reason": "Validated-runs clip property; generated run arrays and cuts execute the production proof owner's clipped_to against an independent offset oracle and re-extend through extend_after.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::layout_gate_refuses_foreign_namespaces",
       "path": "src/registry/tests.rs",
       "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",

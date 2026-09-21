@@ -42,6 +42,18 @@ impl ValidatedRuns {
         super::append_page_runs(&mut merged, tail)?;
         Self::new(merged)
     }
+
+    /// A store scan proves nothing past the boundary it was asked for: keep
+    /// only the offsets below `cut`, preserving a straddler's full weight.
+    pub(crate) fn clipped_to(self, cut: u64) -> Self {
+        if self
+            .last()
+            .is_none_or(|r| r.start.saturating_add(u64::from(r.count)) <= cut)
+        {
+            return self;
+        }
+        Self(RunWindow::new(self, 0, cut).iter().collect())
+    }
 }
 impl Deref for ValidatedRuns {
     type Target = [AbsRun];

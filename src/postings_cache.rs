@@ -61,8 +61,8 @@ pub(crate) struct PostingsSlice {
     pub last_bucket_exclusive: u64,
     /// The slice's runs are COMPLETE over [covered_from, indexed_to_offset):
     /// a read below covered_from cannot be served from this slice (store
-    /// loads prove coverage at bucket granularity; write-through installs
-    /// at chunk granularity).
+    /// loads prove coverage from a bucket start up to the absorbed boundary
+    /// they were asked for; write-through installs at chunk granularity).
     pub covered_from: u64,
     /// The index provably covers [covered_from, indexed_to_offset):
     /// runs at or past this offset may exist but were not loaded.
@@ -105,6 +105,70 @@ struct Inner {
     total_bytes: usize,
     inflight: HashMap<Key, tokio::sync::watch::Receiver<bool>>,
     warm: HashMap<[u8; 16], SegWarm>,
+}
+
+impl Inner {
+    /// Publish one finished store load: `loaded` is complete over
+    /// [start_bucket * BUCKET_OFFSETS, load_to). It merges into the entry
+    /// resident NOW, never the loader's Lead-time snapshot (write-through
+    /// installs interleave with loads), so a publish never lowers
+    /// `indexed_to_offset` and never drops resident runs. A load that adds
+    /// nothing, or that an unproven hole separates from the resident entry,
+    /// publishes nothing and returns false: its waiters load directly.
+    fn publish_load(
+        &mut self,
+        key: Key,
+        start_bucket: u64,
+        loaded: ValidatedRuns,
+        load_to: u64,
+    ) -> bool {
+        let load_from = start_bucket.saturating_mul(BUCKET_OFFSETS);
+        let merged = match self.slices.get(&key).map(|e| &e.slice) {
+            None => Some((loaded, start_bucket, load_from, load_to)),
+            Some(s)
+                if s.covered_from <= load_from
+                    && load_from <= s.indexed_to_offset
+                    && s.indexed_to_offset < load_to =>
+            {
+                s.runs
+                    .extend_after(&loaded, s.indexed_to_offset)
+                    .map(|runs| (runs, s.first_bucket, s.covered_from, load_to))
+            }
+            Some(s) if load_from < s.covered_from && s.covered_from <= load_to => {
+                loaded.extend_after(&s.runs, load_to).map(|runs| {
+                    (
+                        runs,
+                        start_bucket,
+                        load_from,
+                        load_to.max(s.indexed_to_offset),
+                    )
+                })
+            }
+            Some(_) => None,
+        };
+        let Some((runs, first_bucket, covered_from, indexed_to_offset)) = merged else {
+            return false;
+        };
+        let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
+        let slice = Arc::new(PostingsSlice {
+            first_bucket,
+            last_bucket_exclusive: indexed_to_offset.div_ceil(BUCKET_OFFSETS),
+            covered_from,
+            indexed_to_offset,
+            runs,
+            decoded_bytes: decoded,
+        });
+        let entry = Entry {
+            slice,
+            last_used: Instant::now(),
+        };
+        let replaced = self
+            .slices
+            .insert(key, entry)
+            .map_or(0, |old| old.slice.decoded_bytes);
+        self.total_bytes = self.total_bytes + decoded - replaced;
+        true
+    }
 }
 
 pub(crate) struct PostingsCache {
@@ -516,12 +580,11 @@ impl PostingsCache {
                 }
                 Decision::Bypass => {
                     self.misses.fetch_add(1, Ordering::Relaxed);
-                    let (runs, _enc, provable_to, corrupt) =
+                    let (runs, _enc, pt, corrupt) =
                         load_runs(self, part, route, inc, kh, want_bucket, upto).await?;
                     if corrupt {
                         return Ok(CacheRuns::Corrupt);
                     }
-                    let pt = provable_to.min(upto);
                     return Ok(CacheRuns::Runs {
                         runs: RunWindow::new(runs, from, pt),
                         provable_to: pt,
@@ -593,12 +656,11 @@ impl PostingsCache {
             }
             if !still_inflight {
                 self.misses.fetch_add(1, Ordering::Relaxed);
-                let (runs, _enc, provable_to, corrupt) =
+                let (runs, _enc, pt, corrupt) =
                     load_runs(self, part, route, inc, kh, want_bucket, upto).await?;
                 if corrupt {
                     return Ok(CacheRuns::Corrupt);
                 }
-                let pt = provable_to.min(upto);
                 return Ok(CacheRuns::Runs {
                     runs: RunWindow::new(runs, from, pt),
                     provable_to: pt,
@@ -607,22 +669,23 @@ impl PostingsCache {
         }
         // Persistent contention: honest uncached read.
         self.misses.fetch_add(1, Ordering::Relaxed);
-        let (runs, _enc, provable_to, corrupt) =
+        let (runs, _enc, pt, corrupt) =
             load_runs(self, part, route, inc, kh, want_bucket, upto).await?;
         if corrupt {
             return Ok(CacheRuns::Corrupt);
         }
-        let pt = provable_to.min(upto);
         Ok(CacheRuns::Runs {
             runs: RunWindow::new(runs, from, pt),
             provable_to: pt,
         })
     }
 
-    /// Owned, cancellation-proof load: extends `existing` forward or
-    /// cold-loads from `want_bucket`, publishes into the map, evicts to
-    /// budget, then notifies waiters. Corruption publishes NOTHING (the
-    /// waiters' direct load rediscovers it and serves the envelope).
+    /// Owned, cancellation-proof load: scans forward from `existing`'s
+    /// frontier (or cold from `want_bucket`), hands the result to
+    /// `finish_load`, then notifies waiters. `existing` only picks where the
+    /// scan starts; what is published is decided against the entry resident
+    /// when the scan returns. A failed or corrupt load publishes NOTHING (the
+    /// waiters' direct load meets the same error or serves the envelope).
     #[expect(
         clippy::too_many_arguments,
         reason = "PostingsCache::spawn_load; the loader takes the lookup's typed parts exactly as the read path resolved them; a request struct would exist for this single call site"
@@ -634,14 +697,6 @@ impl PostingsCache {
     #[expect(
         clippy::let_underscore_must_use,
         reason = "PostingsCache::spawn_load; every waiter may have left before the load lands; a send with no receivers has nothing to notify"
-    )]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "PostingsCache::spawn_load; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
-    )]
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "PostingsCache::spawn_load; the loader nests the admission of the loaded runs inside the completion branch of the spawned load; flattening it would separate the admission from the load it admits"
     )]
     fn spawn_load(
         self: &Arc<Self>,
@@ -657,83 +712,58 @@ impl PostingsCache {
     ) {
         let cache = self.clone();
         tokio::spawn(async move {
-            let key: Key = (inc.0, kh.0);
             let start_bucket = match &existing {
                 Some(s) if s.first_bucket <= want_bucket => s.indexed_to_offset / BUCKET_OFFSETS,
                 _ => want_bucket,
             };
             let res = load_runs(&cache, &part, route, inc, kh, start_bucket, target_offset).await;
-            let mut g = cache.inner.lock().unwrap();
-            g.inflight.remove(&key);
-            if let Ok((new_runs, _enc, provable_to, corrupt)) = res
-                && !corrupt
-            {
-                let admitted = match &existing {
-                    Some(s) if s.first_bucket <= want_bucket => s
-                        .runs
-                        .extend_after(&new_runs, s.indexed_to_offset)
-                        .map(|runs| (runs, s.first_bucket, s.covered_from)),
-                    _ => Some((
-                        new_runs,
-                        start_bucket,
-                        start_bucket.saturating_mul(BUCKET_OFFSETS),
-                    )),
-                };
-                if let Some((runs, first_bucket, covered_from)) = admitted {
-                    let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
-                    let old_bytes = g
-                        .slices
-                        .get(&key)
-                        .map(|e| e.slice.decoded_bytes)
-                        .unwrap_or(0);
-                    let slice = Arc::new(PostingsSlice {
-                        first_bucket,
-                        last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
-                        covered_from,
-                        indexed_to_offset: provable_to,
-                        runs,
-                        decoded_bytes: decoded,
-                    });
-                    g.total_bytes = g.total_bytes + decoded - old_bytes;
-                    g.slices.insert(
-                        key,
-                        Entry {
-                            slice,
-                            last_used: Instant::now(),
-                        },
-                    );
-                    // Weight eviction: drop least-recent entries (never
-                    // the one just inserted) until the budget holds.
-                    // Every victim poisons its segment's warm absence
-                    // proof (see install_chunk).
-                    while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
-                        let victim = g
-                            .slices
-                            .iter()
-                            .filter(|(k, _)| **k != key)
-                            .min_by_key(|(_, e)| e.last_used)
-                            .map(|(k, _)| *k);
-                        match victim {
-                            Some(v) => {
-                                if let Some(e) = g.slices.remove(&v) {
-                                    g.total_bytes -= e.slice.decoded_bytes;
-                                    cache.evictions.fetch_add(1, Ordering::Relaxed);
-                                }
-                                if let Some(w) = g.warm.get_mut(&v.0) {
-                                    w.clean = false;
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }
-            drop(g);
+            let loaded = match res {
+                Ok((runs, _enc, load_to, false)) => Some((runs, load_to)),
+                Ok(_) | Err(_) => None,
+            };
+            cache.finish_load((inc.0, kh.0), start_bucket, loaded);
             if is_prefetch {
                 cache.prefetch_completed.fetch_add(1, Ordering::Relaxed);
             }
             let _ = tx.send(true);
         });
+    }
+
+    /// A finished load's only way into the map: clears the single-flight
+    /// marker, publishes through `Inner::publish_load` against the entry
+    /// resident now, then evicts to budget - least-recent first, never the
+    /// entry just published. Every victim poisons its segment's warm absence
+    /// proof (see install_chunk).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PostingsCache::finish_load; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+    )]
+    fn finish_load(&self, key: Key, start_bucket: u64, loaded: Option<(ValidatedRuns, u64)>) {
+        let mut g = self.inner.lock().unwrap();
+        g.inflight.remove(&key);
+        let published =
+            loaded.is_some_and(|(runs, load_to)| g.publish_load(key, start_bucket, runs, load_to));
+        if !published {
+            return;
+        }
+        while g.total_bytes > self.max_bytes {
+            let victim = g
+                .slices
+                .iter()
+                .filter(|(k, _)| **k != key)
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| *k);
+            let Some(victim) = victim else {
+                break;
+            };
+            if let Some(e) = g.slices.remove(&victim) {
+                g.total_bytes -= e.slice.decoded_bytes;
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(w) = g.warm.get_mut(&victim.0) {
+                w.clean = false;
+            }
+        }
     }
 
     /// Best-effort forward prefetch once 75% of the slice is consumed
@@ -867,7 +897,6 @@ async fn load_runs(
     let hi = crate::postings::postings_key(route, inc, &kh, end_bucket, 0);
     let mut runs: Vec<AbsRun> = Vec::new();
     let mut encoded = 0u64;
-    let mut last_full_bucket = start_bucket;
     let mut iter = part
         .scan_with_options(lo..hi, &crate::history::postings_scan_opts_pub())
         .await?;
@@ -878,29 +907,28 @@ async fn load_runs(
             cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
             return Ok((ValidatedRuns::empty(), encoded, 0, true));
         };
-        let bucket = crate::postings::bucket_of(page[0].start);
         if crate::postings::append_page_runs(&mut runs, page).is_none() {
             cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
             return Ok((ValidatedRuns::empty(), encoded, 0, true));
         }
-        last_full_bucket = bucket;
         if encoded >= LOAD_MAX_ENCODED_BYTES {
             break;
         }
     }
     cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
-    // Coverage proof: every bucket scanned to completion is covered to
-    // its end (absent pages there = provably no matches); a byte-capped
-    // load is covered through its last decoded run's end.
+    // Coverage proof: a bucket scanned to completion is covered to its end,
+    // a byte-capped load through its last decoded run - and neither past
+    // `target_offset`: postings above the absorbed boundary can still grow.
     let provable_to = if encoded >= LOAD_MAX_ENCODED_BYTES {
         runs.last()
             .map(|r| r.start + r.count as u64)
-            .unwrap_or((last_full_bucket + 1).saturating_mul(BUCKET_OFFSETS))
+            .unwrap_or_default()
     } else {
         end_bucket.saturating_mul(BUCKET_OFFSETS)
-    };
+    }
+    .min(target_offset);
     match ValidatedRuns::new(runs) {
-        Some(runs) => Ok((runs, encoded, provable_to, false)),
+        Some(runs) => Ok((runs.clipped_to(provable_to), encoded, provable_to, false)),
         None => Ok((ValidatedRuns::empty(), encoded, 0, true)),
     }
 }

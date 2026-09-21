@@ -258,3 +258,381 @@ async fn eviction_poisons_fresh_claims() {
         "poisoned segment must not serve absence from the warm claim"
     );
 }
+
+/// One stored postings page holding a single run (the shape the absorber
+/// writes). Reads at the default memory durability level see it at once.
+async fn put_run(part: &Arc<Db>, n: u8, start: u64, count: u32) {
+    let (route, inc, kh) = ids(n);
+    let page = crate::postings::encode_page(
+        start,
+        &[crate::postings::PostingRun {
+            gap_offsets: 0,
+            record_count: count,
+            matching_frame_bytes: u64::from(count) * 100,
+            gap_frame_bytes_before: 0,
+        }],
+    );
+    let bucket = crate::postings::bucket_of(start);
+    part.put(
+        crate::postings::postings_key(route, inc, &kh, bucket, start),
+        page,
+    )
+    .await
+    .unwrap();
+}
+
+fn spans(runs: &[AbsRun]) -> Vec<(u64, u32)> {
+    runs.iter().map(|r| (r.start, r.count)).collect()
+}
+
+/// A cold load proves nothing past the absorbed boundary it was asked for:
+/// postings above it did not exist at scan time. The slice must end at the
+/// target so the next write-through chunk in the same bucket extends it.
+#[tokio::test]
+async fn cold_load_claims_only_to_its_absorbed_target() {
+    let part = mem_db("wt/f").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(6);
+    assert!(runs_of(&cache, &part, 6, 0, 100).await.is_empty());
+    assert_eq!(
+        cache.debug_slice(&inc, &kh),
+        Some((0, 100, 0)),
+        "a cold load at absorbed=100 must not claim the rest of its bucket"
+    );
+    cache.install_chunk(inc, 100, 200, vec![(kh.0, vec![run(150, 2)])]);
+    assert_eq!(
+        spans(&runs_of(&cache, &part, 6, 100, 200).await),
+        vec![(150, 2)],
+        "a catch-up read over the later chunk must see its run"
+    );
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 200, 1)));
+    assert_eq!(cache.warm_extends.load(Ordering::Relaxed), 1);
+}
+
+/// The absorber flushes a chunk's pages BEFORE it installs the chunk and
+/// advances the boundary, so a cold scan can see runs past the reader's
+/// absorbed snapshot. They must be clipped to the claim, or the slice can
+/// never be extended again (extend_after refuses a prefix past its cut).
+#[tokio::test]
+async fn cold_load_clips_runs_the_store_holds_past_its_target() {
+    let part = mem_db("wt/g").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(7);
+    put_run(&part, 7, 90, 30).await; // [90, 120): straddles absorbed = 100
+    assert_eq!(
+        spans(&runs_of(&cache, &part, 7, 0, 100).await),
+        vec![(90, 10)]
+    );
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 100, 1)));
+    assert_eq!(spans(&cache.runs_for_test(inc, kh)), vec![(90, 10)]);
+    // The absorber now installs the chunk it had already written.
+    cache.install_chunk(inc, 100, 200, vec![(kh.0, vec![run(90, 30)])]);
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 200, 2)));
+    assert_eq!(
+        spans(&runs_of(&cache, &part, 7, 0, 200).await),
+        vec![(90, 10), (100, 20)]
+    );
+}
+
+/// Parks a keyed read of [0, upto) on its own single-flight load (on this
+/// current-thread runtime the spawned loader cannot run until the test task
+/// yields), runs `mid_load`, then lets the load publish and the read finish.
+async fn read_with_install_mid_load(
+    cache: &Arc<PostingsCache>,
+    part: &Arc<Db>,
+    n: u8,
+    upto: u64,
+    mid_load: impl FnOnce(),
+) {
+    let (route, inc, kh) = ids(n);
+    let mut read = Box::pin(cache.runs_for(part, route, inc, kh, 0, upto, upto));
+    let parked =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(read.as_mut().poll(cx).is_pending()))
+            .await;
+    assert!(parked, "the leader must park on its own load");
+    mid_load();
+    assert!(matches!(read.await.unwrap(), CacheRuns::Runs { .. }));
+}
+
+/// The write-through install is not gated by `inflight`: it can land
+/// between a load's scan and its publish. The publish must merge into the
+/// entry present NOW, never replace it from the Lead-time snapshot.
+#[tokio::test]
+async fn load_publish_joins_an_install_that_landed_mid_load() {
+    let part = mem_db("wt/h").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(8);
+    put_run(&part, 8, 10, 5).await;
+    // Key cold at Lead (absorbed = 100); the absorber installs the next
+    // chunk (chunk-only: the warm window starts at 100) before the publish.
+    read_with_install_mid_load(&cache, &part, 8, 100, || {
+        cache.install_chunk(inc, 100, 200, vec![(kh.0, vec![run(150, 4)])]);
+    })
+    .await;
+    assert_eq!(
+        spans(&runs_of(&cache, &part, 8, 0, 200).await),
+        vec![(10, 5), (150, 4)],
+        "the stale publish dropped the install's run"
+    );
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 200, 2)));
+}
+
+/// Same race with an entry already resident at Lead time: the install
+/// extends the live entry to 200 while the load still holds the {0,100}
+/// snapshot. The publish must not lower indexed_to or drop the new run.
+#[tokio::test]
+async fn load_publish_never_regresses_an_entry_extended_mid_load() {
+    let part = mem_db("wt/i").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(10);
+    cache.install_chunk(inc, 0, 100, vec![(kh.0, vec![run(10, 5)])]);
+    read_with_install_mid_load(&cache, &part, 10, 150, || {
+        cache.install_chunk(inc, 100, 200, vec![(kh.0, vec![run(150, 4)])]);
+    })
+    .await;
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 200, 2)));
+    assert_eq!(
+        spans(&cache.runs_for_test(inc, kh)),
+        vec![(10, 5), (150, 4)]
+    );
+    assert_eq!(
+        cache.inner.lock().unwrap().total_bytes,
+        2 * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES,
+        "a refused publish must not touch the resident weight"
+    );
+}
+
+fn within(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
+    runs.iter()
+        .filter_map(|r| {
+            let start = r.start.max(from);
+            let end = (r.start + u64::from(r.count)).min(upto);
+            (start < end).then(|| run(start, u32::try_from(end - start).unwrap()))
+        })
+        .collect()
+}
+
+fn offsets(runs: &[AbsRun]) -> Vec<u64> {
+    runs.iter()
+        .flat_map(|r| r.start..r.start + u64::from(r.count))
+        .collect()
+}
+
+/// The pages the absorber writes for one chunk: per-chunk runs, split at
+/// the bucket boundary (a stored page never crosses its bucket).
+async fn put_chunk(part: &Arc<Db>, n: u8, runs: &[AbsRun], from: u64, upto: u64) {
+    for (lo, hi) in [
+        (from, upto.min(BUCKET_OFFSETS)),
+        (from.max(BUCKET_OFFSETS), upto),
+    ] {
+        for r in within(runs, lo, hi) {
+            put_run(part, n, r.start, r.count).await;
+        }
+    }
+}
+
+/// Cold-load at `bounds[0]`, then absorb the remaining chunks write-through.
+/// `visible`: the first later chunk's pages are already stored when the cold
+/// scan runs (its install and boundary advance still pending).
+async fn cold_load_then_installs(runs: &[AbsRun], bounds: &[u64], visible: bool) {
+    let part = mem_db("wt/prop").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(11);
+    let (absorbed, end) = (bounds[0], bounds[bounds.len() - 1]);
+    put_chunk(&part, 11, runs, 0, absorbed).await;
+    if visible {
+        put_chunk(&part, 11, runs, absorbed, bounds[1]).await;
+    }
+    let cold = runs_of(&cache, &part, 11, 0, absorbed).await;
+    assert_eq!(offsets(&cold), offsets(&within(runs, 0, absorbed)));
+    assert_eq!(
+        cache.debug_slice(&inc, &kh).map(|s| (s.0, s.1)),
+        Some((0, absorbed)),
+        "indexed_to must equal the load target"
+    );
+    for (i, w) in bounds.windows(2).enumerate() {
+        if !(visible && i == 0) {
+            put_chunk(&part, 11, runs, w[0], w[1]).await;
+        }
+        let chunk = within(runs, w[0], w[1]);
+        let per_key = if chunk.is_empty() {
+            vec![]
+        } else {
+            vec![(kh.0, chunk)]
+        };
+        cache.install_chunk(inc, w[0], w[1], per_key);
+    }
+    let tail = runs_of(&cache, &part, 11, absorbed, end).await;
+    assert_eq!(offsets(&tail), offsets(&within(runs, absorbed, end)));
+    let all = runs_of(&cache, &part, 11, 0, end).await;
+    assert_eq!(offsets(&all), offsets(runs));
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(1024))]
+
+    /// (absorbed-at-load, later chunk ends, run positions): the cold slice
+    /// never claims past its target and every run installed afterwards is
+    /// returned to a catch-up reader, inside one bucket and across its end.
+    #[test]
+    fn quality_a_cold_load_never_hides_a_later_install(
+        at_bucket_end in proptest::bool::ANY,
+        specs in proptest::collection::vec((0u64..60, 1u32..30), 1..40),
+        cuts in proptest::collection::vec(1u64..1400, 1..6),
+        visible in proptest::bool::ANY,
+    ) {
+        let base = if at_bucket_end { BUCKET_OFFSETS - 700 } else { 0 };
+        let mut next = base;
+        let runs: Vec<AbsRun> = specs
+            .iter()
+            .map(|&(gap, count)| {
+                let r = run(next + gap, count);
+                next = r.start + u64::from(count);
+                r
+            })
+            .collect();
+        let mut bounds: Vec<u64> = cuts.iter().map(|c| base + c).collect();
+        bounds.push(next.max(base + 1400) + 1);
+        bounds.sort_unstable();
+        bounds.dedup();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(cold_load_then_installs(&runs, &bounds, visible));
+    }
+}
+
+fn publish(
+    cache: &PostingsCache,
+    key: Key,
+    start_bucket: u64,
+    runs: Vec<AbsRun>,
+    load_to: u64,
+) -> bool {
+    let loaded = ValidatedRuns::new(runs).unwrap();
+    cache
+        .inner
+        .lock()
+        .unwrap()
+        .publish_load(key, start_bucket, loaded, load_to)
+}
+
+#[test]
+fn publish_load_merges_into_the_resident_entry_or_publishes_nothing() {
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(12);
+    let key: Key = (inc.0, kh.0);
+    // No resident entry: the load is the entry.
+    assert!(publish(&cache, key, 0, vec![run(10, 5)], 100));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 100, 1)));
+    // Resident already covers the load: nothing to add, never lowered.
+    assert!(!publish(&cache, key, 0, vec![run(10, 5)], 100));
+    assert!(!publish(&cache, key, 0, vec![run(10, 5)], 60));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 100, 1)));
+    // Resident behind the load and seaming with it: extended.
+    assert!(publish(&cache, key, 0, vec![run(10, 5), run(120, 3)], 150));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 150, 2)));
+    assert_eq!(
+        spans(&cache.runs_for_test(inc, kh)),
+        vec![(10, 5), (120, 3)]
+    );
+    // A load starting past the resident frontier would leave a hole.
+    let far = BUCKET_OFFSETS + 5;
+    assert!(!publish(
+        &cache,
+        key,
+        1,
+        vec![run(far, 1)],
+        BUCKET_OFFSETS + 50
+    ));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 150, 2)));
+    assert_eq!(
+        cache.inner.lock().unwrap().total_bytes,
+        2 * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES,
+        "a merge replaces the entry's weight, it does not add to it"
+    );
+    // A load starting EXACTLY at the resident frontier seams.
+    let (_, inc, kh) = ids(16);
+    let key: Key = (inc.0, kh.0);
+    assert!(publish(&cache, key, 0, vec![], BUCKET_OFFSETS));
+    let next = BUCKET_OFFSETS + 4;
+    assert!(publish(
+        &cache,
+        key,
+        1,
+        vec![run(next, 1)],
+        BUCKET_OFFSETS + 50
+    ));
+    assert_eq!(
+        cache.debug_slice(&inc, &kh),
+        Some((0, BUCKET_OFFSETS + 50, 1))
+    );
+}
+
+#[test]
+fn publish_load_joins_a_chunk_only_entry_only_across_a_proven_seam() {
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(13);
+    let key: Key = (inc.0, kh.0);
+    cache.install_chunk(inc, 0, 100, vec![]);
+    cache.install_chunk(inc, 300, 400, vec![(kh.0, vec![run(350, 2)])]);
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((300, 400, 1)));
+    // A hole between the load and the chunk-only entry: publish nothing.
+    assert!(!publish(&cache, key, 0, vec![run(10, 5)], 299));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((300, 400, 1)));
+    // Touching: one slice from the load's base, keeping the install's run.
+    assert!(publish(&cache, key, 0, vec![run(10, 5)], 300));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 400, 2)));
+    assert_eq!(
+        spans(&cache.runs_for_test(inc, kh)),
+        vec![(10, 5), (350, 2)]
+    );
+    // A load reaching past the chunk-only entry keeps the LOAD's base.
+    let (_, inc, kh) = ids(15);
+    let key: Key = (inc.0, kh.0);
+    cache.install_chunk(inc, 0, 100, vec![]);
+    cache.install_chunk(inc, 300, 400, vec![(kh.0, vec![run(350, 2)])]);
+    let scanned = vec![run(10, 5), run(350, 2), run(450, 1)];
+    assert!(publish(&cache, key, 0, scanned, 500));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 500, 3)));
+}
+
+/// A load publish evicts to budget like an install does: only when OVER the
+/// budget, least-recent first, never the entry it just published.
+#[tokio::test]
+async fn load_publish_evicts_least_recent_others_only_over_budget() {
+    let part = mem_db("wt/k").await;
+    let cache = PostingsCache::new(1); // clamps to the 1 MiB floor
+    let (_, fat_inc, fat_kh) = ids(20);
+    // Sized so ONE more empty entry lands exactly ON the budget.
+    let n = (1024 * 1024 - 2 * ENTRY_OVERHEAD_BYTES) / std::mem::size_of::<AbsRun>();
+    let fat: Vec<AbsRun> = (0..u64::try_from(n).unwrap())
+        .map(|i| run(i * 2, 1))
+        .collect();
+    cache.install_chunk(fat_inc, 0, 70_000, vec![(fat_kh.0, fat)]);
+    assert!(runs_of(&cache, &part, 30, 0, 100).await.is_empty());
+    assert_eq!(cache.inner.lock().unwrap().total_bytes, 1024 * 1024);
+    assert_eq!(
+        cache.evictions.load(Ordering::Relaxed),
+        0,
+        "on budget, not over"
+    );
+    assert!(runs_of(&cache, &part, 40, 0, 100).await.is_empty());
+    assert_eq!(cache.evictions.load(Ordering::Relaxed), 1);
+    assert!(
+        cache.runs_for_test(fat_inc, fat_kh).is_empty(),
+        "victim gone"
+    );
+    let (_, inc30, kh30) = ids(30);
+    let (_, inc40, kh40) = ids(40);
+    assert!(cache.debug_slice(&inc30, &kh30).is_some());
+    assert!(
+        cache.debug_slice(&inc40, &kh40).is_some(),
+        "never evicts itself"
+    );
+    assert_eq!(
+        cache.inner.lock().unwrap().total_bytes,
+        2 * ENTRY_OVERHEAD_BYTES
+    );
+}
