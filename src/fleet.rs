@@ -334,67 +334,67 @@ pub(crate) struct Desired {
     pub pending_events: Vec<crate::ops::OpsEvent>,
 }
 
-pub(crate) struct FleetCfg {
-    pub instance: String,
+struct FleetCfg {
+    instance: String,
     /// Legacy assumed-capacity dimension (req/s per instance). 0 disables
     /// it — measured CPU replaced it as the primary signal.
-    pub capacity_rps: u64,
+    capacity_rps: u64,
     /// Per-instance admitted-concurrency capacity (edge slots). Measured
     /// on Prisma Compute via a calibrated-latency ladder: the edge admits
     /// ~48-50 concurrent requests per instance and queues the rest
     /// (EXPERIMENT edge probe, 2026-07-15). Utilization = Σ in-flight /
     /// (slots × live); scale-out at target_util of it — i.e. BEFORE the
     /// edge queue forms. 0 disables.
-    pub edge_slots: u64,
+    edge_slots: u64,
     /// Utilization target for scale-out capacity planning: desired ≥
     /// ceil(fleet core-equivalents in use / target_util). 0.75 = "scale
     /// when the fleet is at 75 % of maximum".
-    pub target_util: f64,
+    target_util: f64,
     /// Projected post-shrink utilization ceiling for scale-in: shrinking
     /// to N-1 is allowed only if used/(N-1) stays under this. Must be
     /// meaningfully below target_util or the fleet flaps at the boundary.
-    pub scale_in_util: f64,
+    scale_in_util: f64,
     /// Hot-instance scale-out: one instance sustaining ≥ this CPU% asks
     /// for one more instance even while fleet-average utilization is low
     /// (skewed shards). Matches target_util by default (75).
-    pub hot_cpu_pct: f64,
+    hot_cpu_pct: f64,
     /// How long the hot-instance breach must persist (transition churn
     /// briefly spikes CPU during shard handoffs).
-    pub cpu_sustain: Duration,
-    pub scale_in: Duration,
+    cpu_sustain: Duration,
+    scale_in: Duration,
     /// Ack-p50 threshold (ms) above which a loaded instance demands
     /// scale-out regardless of the other dimensions.
-    pub latency_ms: u64,
+    latency_ms: u64,
     /// Router-observed client-latency threshold (ms). The router
     /// publishes what clients actually experience (routers/*.json);
     /// server-side ack latency cannot see edge queueing. Breach ⇒ +1 and
     /// scale-in is blocked while hot.
-    pub edge_latency_ms: u64,
+    edge_latency_ms: u64,
     /// How long the latency breach must persist before it scales the fleet
     /// (transition churn spikes ack latency briefly; undamped, every scale
     /// event triggers the next one).
-    pub latency_sustain: Duration,
-    pub max: u64,
+    latency_sustain: Duration,
+    max: u64,
 }
 
 /// The PRODUCTION assembly: derive this runtime's fleet-loop posture
-/// from its validated configuration and start the loop on its own
-/// repository. Bootstrap and the two-runtime isolation proof both go
-/// through here, so the proof cannot keep passing while the wiring
-/// production actually uses diverges from it (PR 6.1.2-B).
+/// from `state.config` — and from nowhere else — and start the loop on
+/// its own repository. Bootstrap and the two-runtime isolation proof
+/// both go through here, so the proof cannot keep passing while the
+/// wiring production actually uses diverges from it (PR 6.1.2-B).
+///
+/// There used to be a `ServerConfig` parameter beside the runtime.
+/// Nothing required it to be the runtime's own, so a loop could run one
+/// runtime's repository and identity under another's instance name,
+/// fleet maximum and scaling thresholds — and a test rig once did.
 ///
 /// A runtime without fleet coordination starts nothing.
-pub(crate) fn start_configured(
-    state: Arc<AppState>,
-    config: &crate::config::ServerConfig,
-    tasks: &crate::tasks::TaskSupervisor,
-) -> bool {
+pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskSupervisor) -> bool {
     if !state.fleet.enabled() {
         return false;
     }
-    let cli = &config.cli;
-    start(
-        state,
+    let cfg = {
+        let cli = &state.config.cli;
         FleetCfg {
             instance: cli.instance_name.clone(),
             capacity_rps: cli.scale_rps_capacity,
@@ -408,9 +408,9 @@ pub(crate) fn start_configured(
             edge_latency_ms: cli.scale_edge_latency_ms,
             latency_sustain: Duration::from_secs(cli.scale_lat_sustain_secs),
             max: cli.fleet_max,
-        },
-        tasks,
-    );
+        }
+    };
+    start(state, cfg, tasks);
     true
 }
 
@@ -445,7 +445,7 @@ pub(crate) fn start_configured(
     clippy::let_underscore_must_use,
     reason = "start; the supervisor rejects a spawn only while it is stopping, when no fleet tick is owed; a rejected loop has nothing left to decide"
 )]
-pub(crate) fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervisor) {
+fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervisor) {
     let _ = tasks.spawn("fleet", crate::tasks::Policy::Critical, move |cancel| async move {
         // The ONE authority: the same repository the drainer and the
         // operator view read through.

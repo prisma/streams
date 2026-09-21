@@ -343,13 +343,14 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
 }
 
 /// PR 6.1.2-A: `engine_shutdown` — the shared test oracle for a restart,
-/// snapshot or quiescence boundary — must actually shut engines down.
+/// snapshot or quiescence boundary — must actually retire engines.
 ///
 /// 6.1.1-B reduced it to cloning the resident handles and dropping the
 /// clones, which does nothing at all: the directory still owns its own
-/// `Arc`, so no resident is removed, no close is initiated and no
-/// engine-owned loop stops. ~170 tests took their restart boundary from
-/// that. This characterizes what the helper now guarantees.
+/// `Arc`, so no resident is removed and no close is initiated. ~170
+/// tests took their restart boundary from that. This characterizes what
+/// the helper guarantees: residents removed and close INITIATED — it
+/// signals the engine-owned loops to stop, it does not join them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn engine_shutdown_really_retires_and_closes_every_resident() {
     let store = mem();

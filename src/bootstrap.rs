@@ -127,11 +127,11 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 )]
 #[expect(
     clippy::expect_used,
-    reason = "run; the runtime's task supervisor is fresh at boot, so it accepts the maintenance worker; a fallible spawn would leave the process serving without maintenance"
+    reason = "run; covers exactly the maintenance-worker spawn: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "run; a poisoned cache lock at boot would mean a half-built shared cache, and the auth file paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+    reason = "run; covers exactly the shared-cache lock and the three auth file paths: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
 #[expect(
     clippy::excessive_nesting,
@@ -807,7 +807,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // same value the drainer and the operator surface read through — and
     // derives its posture through the ONE assembly the isolation proof
     // also exercises.
-    if crate::fleet::start_configured(state.clone(), &config, &tasks) {
+    if crate::fleet::start_configured(state.clone(), &tasks) {
         tracing::info!(
             "fleet coordination on (prefix={}, cap={} rps)",
             config.cli.fleet_prefix.as_deref().unwrap_or(""),

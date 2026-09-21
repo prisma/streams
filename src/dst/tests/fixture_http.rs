@@ -693,21 +693,6 @@ pub(super) async fn await_published(state: &Arc<crate::http::AppState>, stream: 
     }
 }
 
-/// Close every engine this runtime is serving, through the REAL
-/// retirement protocol — the only thing that removes a resident,
-/// initiates close and stops the engine-owned loops.
-///
-/// PR 6.1.2-A: this used to take cloned `Arc`s and drop them, with a
-/// comment claiming retirement had already closed them. That was untrue
-/// at nearly every one of its ~170 call sites: dropping one clone of a
-/// handle the directory still owns removes no resident, calls no
-/// `begin_close` and terminates no loop, so every restart, snapshot and
-/// quiescence boundary a test believed it had was imaginary.
-///
-/// The anti-flap holdoff the protocol arms is cleared afterwards, on
-/// purpose: a test shutdown is a QUIESCENCE boundary for one instance,
-/// not the possession yield the holdoff exists to damp. Production waits
-/// it out; a restart test reopens the same storage deliberately.
 /// Installs the rig's rollup consumer; a rig installs it exactly once.
 pub(super) fn install_rollup(state: &crate::http::AppState, rollup: crate::rollup::UsageRollup) {
     assert!(
@@ -724,6 +709,29 @@ pub(super) fn install_read_spool(state: &crate::http::AppState, spool: crate::bi
     );
 }
 
+/// Retire every engine this runtime is serving, through the REAL
+/// retirement protocol — the only thing that removes a resident and
+/// initiates its close.
+///
+/// What this guarantees at return: every resident prefix was retired,
+/// close was INITIATED on each returned engine, and the serving map is
+/// empty. What it does not: `begin_close` signals the engine-owned loops
+/// to stop and spawns the database close; it does not join them. A test
+/// that needs a literal storage-quiescence barrier must wait on an
+/// explicit close-completion capability, not infer one from `is_closed`.
+///
+/// This used to take cloned `Arc`s and drop them, with a comment
+/// claiming retirement had already closed them. That was untrue at
+/// nearly every one of its ~170 call sites: dropping one clone of a
+/// handle the directory still owns removes no resident and calls no
+/// `begin_close`, so every restart, snapshot and quiescence boundary a
+/// test believed it had was imaginary.
+///
+/// TEST-ONLY: the anti-flap holdoff the protocol arms is cleared
+/// afterwards, on purpose. The holdoff is process-local state damping a
+/// possession yield; a test shutdown models one instance ending and a
+/// replacement reopening the same storage, and a fresh process would
+/// not carry it. Production waits it out.
 pub(super) async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
     for prefix in state.shards.held_prefixes() {
         match state.shards.retire(
