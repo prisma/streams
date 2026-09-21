@@ -1,8 +1,38 @@
-//! The permit-held drive and the feed's transition-retry task, moved
-//! out of `feed.rs` verbatim.
-use super::{DriveOutcome, InstallOutcome, Lifecycle, LiveFeed, SourceCutoff, SourceTransition};
+//! The permit-held drive: settling the tail and reading it are two
+//! steps with two owners.
+//!
+//! `tail()` decides what lies at the head WITHOUT reading: it resolves
+//! a closed tail (genuine close, successor install, incarnation
+//! cutoff) and has no record-bearing outcome. Reading is a
+//! SUBSCRIBER's act - a solo read hands its records to the caller and
+//! moves the head past them - so only `drive_under_permit`, entered
+//! through a session's `drive_once`, turns `Tail::Readable` into a
+//! read. The feed's own retry task enters through
+//! `transition_pending` and can reach `tail()` alone.
+use super::{
+    DriveOutcome, FeedSourceRead, InstallOutcome, Lifecycle, LiveFeed, SourceCutoff,
+    SourceTransition,
+};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+/// What the permit holder finds at the head BEFORE any read.
+enum Tail {
+    /// Durable records lie beyond the head; only a subscriber's drive
+    /// may read them.
+    Readable {
+        src: Arc<dyn FeedSourceRead>,
+        head: u64,
+    },
+    /// Open source, nothing beyond the head.
+    Open,
+    /// Closed source whose transition did not settle on this attempt:
+    /// still in flight, the refresh failed, or one hold's swap budget
+    /// ran out.
+    Unresolved,
+    Closed,
+    Gone(SourceCutoff),
+}
 
 #[expect(
     clippy::unwrap_used,
@@ -12,13 +42,13 @@ impl LiveFeed {
     /// Round-11.1: ONE transient-transition retry scheduler per feed.
     /// A parked fan-out never creates a timer herd: the first session
     /// that observes an unresolved closed source arms one task; the
-    /// task re-drives at 250 ms until the transition resolves, the
-    /// subscribers leave, or the feed tears down. Resolution bumps
-    /// the version, waking every parked session.
+    /// task re-SETTLES at 250 ms - it never reads - until the
+    /// transition settles, the subscribers leave, or the feed tears
+    /// down.
     #[expect(
         clippy::disallowed_methods,
         clippy::excessive_nesting,
-        reason = "LiveFeed::schedule_transition_retry; the retry is a bare task the feed owns and cancels through its own flag, nesting the abandoned and superseded verdicts inside the wake it awaits; a supervised task would tie a feed-scoped retry to the runtime supervisor and flattening the verdicts would separate them from the wake"
+        reason = "LiveFeed::schedule_transition_retry; the retry is a bare task the feed owns and cancels through its own flag, nesting the abandoned and settled verdicts inside the wake it awaits; a supervised task would tie a feed-scoped retry to the runtime supervisor and flattening the verdicts would separate them from the wake"
     )]
     pub(crate) fn schedule_transition_retry(self: &Arc<Self>) {
         if self
@@ -42,126 +72,143 @@ impl LiveFeed {
                 if feed.subscriber_count() == 0 || feed.cancel.is_fired() {
                     break;
                 }
-                match feed.drive_once().await {
-                    Some(DriveOutcome::Idle)
-                    | Some(DriveOutcome::NoProgress)
-                    | Some(DriveOutcome::SourceFailed)
-                    | None => {
-                        let unresolved = feed.current_source().closed()
-                            && matches!(feed.st.lock().unwrap().lifecycle, Lifecycle::Active);
-                        if !unresolved {
-                            break;
-                        }
-                    }
-                    _ => break,
+                if !feed.transition_pending().await {
+                    break;
                 }
             }
             feed.retry_scheduled.store(false, Ordering::SeqCst);
         });
     }
 
-    #[expect(
-        clippy::excessive_nesting,
-        clippy::let_underscore_must_use,
-        reason = "LiveFeed::drive_under_permit; the drive nests the install and incompatibility verdicts inside the transition arm of the permit-held loop and re-publishes through a watch whose send fails only when every session is gone; flattening it or a handled send would separate the verdicts from the permit that serialises them"
-    )]
-    pub(super) async fn drive_under_permit(&self) -> DriveOutcome {
-        let mut swap_attempts = 0u8;
-        // Lifecycle outcomes are REPEATABLE (every parked session must
-        // observe them on its own drive), but the version bump happens
-        // only on the drive that performs the transition itself.
-        let mut transitioned = false;
-        let outcome = loop {
-            let snap = self.source_snapshot();
-            let src = snap.source.clone();
-            let head = self.st.lock().unwrap().head;
-            if head < src.frontier() {
-                self.source_reads.fetch_add(1, Ordering::Relaxed);
-                break self.read_and_publish(&src, head).await;
+    /// The retry task's ONLY entry: one permit-held attempt to settle
+    /// the tail, never a read. `true` = tick again: the transition is
+    /// still in flight, a subscriber holds the permit, or a closed
+    /// tail still has records its subscribers have not read. A
+    /// readable tail is announced on the version watch AFTER the
+    /// permit is free: a session whose own drive lost the permit to
+    /// this attempt parked expecting a publication, and no other wake
+    /// is owed to it.
+    ///
+    /// The announcement REPEATS every tick while a closed tail stays
+    /// unread, and that is deliberate, not an oversight to deduplicate.
+    /// A closed source never fires its advance notification again, so
+    /// a session whose read of that tail failed has parked with nothing
+    /// else to wake it: this tick is the only retry of that read. It is
+    /// bounded (250 ms, the loop's 4800 ticks, and each session's own
+    /// retry cap), and it stops the moment a subscriber reads the tail.
+    async fn transition_pending(&self) -> bool {
+        let Some(permit) = self.acquire_permit() else {
+            return true;
+        };
+        let tail = self.tail().await;
+        drop(permit);
+        match tail {
+            Tail::Readable { src, .. } => {
+                self.bump_version();
+                src.closed()
             }
-            // Nothing durable beyond the head. A closed tail is either
-            // a genuine collection close or a topology transition —
-            // only the descriptor refresh (under THIS permit) decides
-            // and installs the successor source (Stage 6.3).
-            let lifecycle = self.st.lock().unwrap().lifecycle;
+            Tail::Unresolved => true,
+            Tail::Open | Tail::Closed | Tail::Gone(_) => false,
+        }
+    }
+
+    /// The subscriber's drive: the only place a settled tail becomes
+    /// a read.
+    pub(super) async fn drive_under_permit(&self) -> DriveOutcome {
+        let outcome = match self.tail().await {
+            Tail::Readable { src, head } => {
+                self.source_reads.fetch_add(1, Ordering::Relaxed);
+                self.read_and_publish(&src, head).await
+            }
+            Tail::Open | Tail::Unresolved => DriveOutcome::Idle,
+            Tail::Closed => DriveOutcome::Closed,
+            Tail::Gone(reason) => DriveOutcome::IncarnationClosed(reason),
+        };
+        // A delivery or a publication changed feed state (findings
+        // 5+6). A lifecycle transition bumped at the transition itself
+        // (`retire`); its repeated observation, Idle, no-progress and
+        // source failures changed nothing - bumping would wake every
+        // parked session into another immediate drive.
+        if matches!(outcome, DriveOutcome::Solo { .. } | DriveOutcome::Published) {
+            self.bump_version();
+        }
+        outcome
+    }
+
+    /// Settle the tail under the permit. Nothing durable beyond the
+    /// head means a closed tail is either a genuine collection close
+    /// or a topology transition - only the descriptor refresh (under
+    /// THIS permit) decides and installs the successor (Stage 6.3). A
+    /// validated install - ours, or a racing reconciliation's
+    /// (AlreadyCurrent is a LOST RACE, never an incarnation change) -
+    /// re-evaluates against the current source, whose live tail may
+    /// already have records for this head; four swaps in one hold is
+    /// a storm the next attempt continues.
+    async fn tail(&self) -> Tail {
+        for _ in 0..4u8 {
+            let src = self.source_snapshot().source;
+            let (head, lifecycle) = {
+                let st = self.st.lock().unwrap();
+                (st.head, st.lifecycle)
+            };
+            if head < src.frontier() {
+                return Tail::Readable { src, head };
+            }
             match lifecycle {
-                Lifecycle::Closed => break DriveOutcome::Closed,
-                Lifecycle::Gone(reason) => break DriveOutcome::IncarnationClosed(reason),
+                Lifecycle::Closed => return Tail::Closed,
+                Lifecycle::Gone(reason) => return Tail::Gone(reason),
                 Lifecycle::Active => {}
             }
             if !src.closed() {
-                break DriveOutcome::Idle;
+                return Tail::Open;
             }
-            match src.next_source().await {
-                Ok(SourceTransition::NewSource(next)) => {
-                    match self.install_source(next) {
-                        // Validated continuation — installed by us, or
-                        // already installed by a racing reconciliation
-                        // (AlreadyCurrent is a LOST RACE, never an
-                        // incarnation change): re-evaluate with the
-                        // current source (its live tail may already
-                        // have records for this head).
-                        InstallOutcome::Installed | InstallOutcome::AlreadyCurrent => {
-                            swap_attempts += 1;
-                            if swap_attempts >= 4 {
-                                break DriveOutcome::Idle;
-                            }
-                            continue;
-                        }
-                        // Incompatible topology: NOT a swap — sessions
-                        // disconnect without a terminal control.
-                        InstallOutcome::Incompatible => {
-                            let mut st = self.st.lock().unwrap();
-                            st.lifecycle = Lifecycle::Gone(SourceCutoff::IncompatibleTopology);
-                            transitioned = true;
-                            break DriveOutcome::IncarnationClosed(
-                                SourceCutoff::IncompatibleTopology,
-                            );
-                        }
-                    }
-                }
+            let next = match src.next_source().await {
+                Ok(SourceTransition::NewSource(next)) => next,
                 Ok(SourceTransition::GenuineClose) => {
-                    let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Closed;
-                    transitioned = true;
-                    break DriveOutcome::Closed;
+                    self.retire(Lifecycle::Closed);
+                    return Tail::Closed;
                 }
                 Ok(SourceTransition::IncarnationChanged(reason)) => {
-                    let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone(reason);
-                    transitioned = true;
-                    break DriveOutcome::IncarnationClosed(reason);
+                    self.retire(Lifecycle::Gone(reason));
+                    return Tail::Gone(reason);
                 }
-                Ok(SourceTransition::RetryLater) => break DriveOutcome::Idle,
+                Ok(SourceTransition::RetryLater) => return Tail::Unresolved,
                 Err(_) => {
                     crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
-                    break DriveOutcome::Idle;
+                    return Tail::Unresolved;
+                }
+            };
+            match self.install_source(next) {
+                InstallOutcome::Installed | InstallOutcome::AlreadyCurrent => {}
+                // Incompatible topology: NOT a swap - sessions
+                // disconnect without a terminal control.
+                InstallOutcome::Incompatible => {
+                    self.retire(Lifecycle::Gone(SourceCutoff::IncompatibleTopology));
+                    return Tail::Gone(SourceCutoff::IncompatibleTopology);
                 }
             }
-        };
-        // Bump the version EXACTLY when feed state actually changed
-        // (findings 5+6): a delivery, a publication, a swap, or the
-        // lifecycle transition ITSELF (its repeated observation is not
-        // a change). Idle, no-progress and source failures changed
-        // nothing — bumping would wake every parked session into
-        // another immediate drive (the busy retry loop).
-        let bump = match outcome {
-            DriveOutcome::Solo { .. } | DriveOutcome::Published => true,
-            DriveOutcome::Closed | DriveOutcome::IncarnationClosed(_) => transitioned,
-            DriveOutcome::Idle
-            | DriveOutcome::NoProgress
-            | DriveOutcome::SourceFailed
-            | DriveOutcome::Cancelled => false,
-        };
-        if bump {
-            let ver = {
-                let mut st = self.st.lock().unwrap();
-                st.version += 1;
-                st.version
-            };
-            crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
-            let _ = self.changed.send(ver);
         }
-        outcome
+        Tail::Unresolved
+    }
+
+    /// The lifecycle transition ITSELF is the state change: it bumps
+    /// the version exactly once, here; its later observations do not.
+    fn retire(&self, to: Lifecycle) {
+        self.st.lock().unwrap().lifecycle = to;
+        self.bump_version();
+    }
+
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "LiveFeed::bump_version; the version watch fails to send only when every session is gone; a handled result would only restate that nobody waits"
+    )]
+    fn bump_version(&self) {
+        let ver = {
+            let mut st = self.st.lock().unwrap();
+            st.version += 1;
+            st.version
+        };
+        crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
+        let _ = self.changed.send(ver);
     }
 }

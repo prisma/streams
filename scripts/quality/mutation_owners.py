@@ -142,6 +142,7 @@ OWNERS = (
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),
     owner('sse_feed', 'src/sse/feed.rs', 'sse::'),
     owner('sse_feed_drive', 'src/sse/feed/drive.rs', 'sse::'),
+    owner('sse_feed_retry_tests', 'src/sse/feed/tests/retry.rs', 'sse::'),
     owner('sse_feed_retention', 'src/sse/feed/retention.rs', 'sse::'),
     owner('sse_feed_test_support', 'src/sse/feed/test_support.rs', 'sse::'),
     owner('postings_validated_tests', 'src/postings/validated/tests.rs', 'postings::'),

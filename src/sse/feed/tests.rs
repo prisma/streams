@@ -2,6 +2,7 @@
 #![cfg(test)]
 
 mod fixture;
+mod retry;
 use super::*;
 use std::sync::atomic::AtomicBool;
 
@@ -61,6 +62,8 @@ pub(crate) struct FakeSource {
     pub(crate) next_started: tokio::sync::Notify,
     pub(crate) next_release: tokio::sync::Notify,
     pub(crate) next_result: Mutex<Option<Arc<dyn FeedSourceRead>>>,
+    /// `next_source()` answers `RetryLater` while set (transition in flight).
+    pub(crate) retry_later: AtomicBool,
     /// Overrides `span_sig()` (default: one open span).
     pub(crate) sig_override: SigOverride,
 }
@@ -85,6 +88,7 @@ impl FakeSource {
             next_started: tokio::sync::Notify::new(),
             next_release: tokio::sync::Notify::new(),
             next_result: Mutex::new(None),
+            retry_later: AtomicBool::new(false),
             sig_override: Mutex::new(None),
         }
     }
@@ -169,6 +173,9 @@ impl FeedSourceRead for FakeSource {
     async fn next_source(&self) -> anyhow::Result<SourceTransition> {
         if self.next_source_block.load(Ordering::Relaxed) {
             fixture::hold_until_release(&self.next_started, &self.next_release).await;
+        }
+        if self.retry_later.load(Ordering::Relaxed) {
+            return Ok(SourceTransition::RetryLater);
         }
         if let Some(next) = self.next_result.lock().unwrap().take() {
             return Ok(SourceTransition::NewSource(next));

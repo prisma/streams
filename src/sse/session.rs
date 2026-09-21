@@ -865,9 +865,9 @@ pub(crate) async fn serve(
                     return;
                 }
                 // Park. Seal-publication convergence is the feed's ONE
-                // retry task (round-11.1) — its resolving drive bumps
-                // the version and wakes every parked session; no
-                // per-session timer exists.
+                // retry task (round-11.1) — it settles the transition,
+                // never reads, and its install, close or readable-tail
+                // bump wakes this park; no per-session timer exists.
                 tokio::select! {
                     _ = &mut ver_wait => {}
                     _ = &mut gen_wait => {}

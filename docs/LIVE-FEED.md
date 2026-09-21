@@ -72,6 +72,15 @@ to itself when retention is zero), releases the permit BEFORE any
 socket write, and wakes the other sessions via the feed version watch.
 If the driving session disappears, another session takes over.
 
+The feed's ONE transition-retry task (armed only while a closed source
+tail is unresolved) is not a driver. It holds the same permit but can
+only settle the tail - install the successor, close, or cut off. It has
+no path to a read, because a solo read's records belong to the reading
+subscriber. Records beyond the head always wait for a session's own
+drive; when the retry finds such records it bumps the feed version
+AFTER releasing the permit, so a session that lost the permit to it is
+always woken.
+
 The process budget reserves the ACTUAL retained bytes — one exact
 reservation per retained batch, released on eviction and at feed drop
 — so mostly-idle shared feeds cost nothing and hundreds of shared
