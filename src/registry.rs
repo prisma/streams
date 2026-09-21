@@ -205,7 +205,7 @@ pub(crate) struct SealState {
     pub intent: SealIntent,
     pub claimed_ms: i64,
     /// The claim's EXECUTION TOKEN, allocated from the descriptor's
-    /// monotonic [`StreamDesc::seal_gen_counter`]. `claimed_ms` alone is
+    /// monotonic [`PersistedDescriptor::seal_gen_counter`]. `claimed_ms` alone is
     /// a race timer, not a lease: the old operation's final append can
     /// still be queued inside a committer when its wall-clock window
     /// lapses, and nothing about a timestamp stops that append from

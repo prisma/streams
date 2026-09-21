@@ -4,8 +4,8 @@
 //! the authenticated metadata includes the assigned offset.
 //!
 //! Keyspace (hash-first so a hash range is one contiguous split range):
-//!   <hash16> 't'                 tail state
-//!   <hash16> 'r' <offset u64 BE> record frame
+//!   `<hash16> 't'`                 tail state
+//!   `<hash16> 'r' <offset u64 BE>` record frame
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,7 +52,7 @@ pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 }
 
 /// Tail value v3:
-/// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?][trim_safe_to u64?][unabsorbed_bytes u64?]
+/// `[ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?][trim_safe_to u64?][unabsorbed_bytes u64?]`
 ///
 /// `flags` is a bitmask: bit0 = closed, bit1 = history v2 (the stream's
 /// absorbed range lives in the shared per-shard partition, not a

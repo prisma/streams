@@ -318,9 +318,8 @@ async fn two_runtimes_never_share_fleet_state() {
     // each loop takes its own runtime's `state.fleet`, and this proof
     // would stop exercising production wiring if that ever diverged.
     for rig in [&rig_a, &rig_b] {
-        let config = rig.state.config.clone();
         assert!(
-            crate::fleet::start_configured(rig.state.clone(), &config, &rig.tasks),
+            crate::fleet::start_configured(rig.state.clone(), &rig.tasks),
             "a rig with a fleet store must start its loop"
         );
     }

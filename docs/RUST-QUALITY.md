@@ -8,7 +8,7 @@ The objective is the structural approval bar in the [pinned Cursor review skill]
 
 Root `rust-toolchain.toml` MUST pin an exact release plus Clippy and rustfmt. Local checks and every CI Rust job MUST use that pin, never floating stable. Additional tools are version-pinned in `quality-tools.toml`; nightly tools have a separate dated pin. Toolchain or baseline migrations require an explicit review and new provenance, rather than an automatic update.
 
-`scripts/quality.sh` is the common local/CI entry point for workflow linting, formatting, Clippy, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Pinned actionlint MUST run without a file glob so both `.yml` and `.yaml` workflows are checked. Every subprocess failure MUST propagate, including commands in pipelines. The ordinary Clippy command ends with `-- -D warnings`; the empty active diagnostic ledgers are not a reason to leave warnings merely advisory. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
+`scripts/quality.sh` is the common local/CI entry point for workflow linting, formatting, Clippy, rustdoc, dependency checks and architecture, multitenancy, scenario, inventory and evidence gates. Pinned actionlint MUST run without a file glob so both `.yml` and `.yaml` workflows are checked. Every subprocess failure MUST propagate, including commands in pipelines. The ordinary Clippy command ends with `-- -D warnings`; the empty active diagnostic ledgers are not a reason to leave warnings merely advisory. The existing Rust, protocol, SDK and capacity jobs remain required. All workspace members, targets and supported feature configurations MUST be checked. New feature declarations require an explicit compatible matrix; mutually exclusive features MUST NOT be combined indiscriminately.
 
 ## Lint profile
 
@@ -27,6 +27,8 @@ Primitive spawning belongs only to registered task owners. The denylist covers T
 ## Diagnostics and exceptions
 
 Run `cargo fmt --all -- --check` and `cargo clippy --locked --workspace --all-targets --message-format=json` for the default configuration, and each declared additional configuration. Fail every warning except a specifically approved legacy occurrence. Errors and denied lints ALWAYS fail, regardless of the legacy baseline. Once no legacy allowance remains, add `-- -D warnings`.
+
+Rustdoc is held to the same bar: `cargo doc --locked --workspace --no-deps --document-private-items` MUST pass under `RUSTDOCFLAGS='-D warnings'`. Private items are included because most of the crate is `pub(crate)`; a public-only build would leave nearly all of its prose unchecked. Byte layouts and keyspace diagrams belong in fenced `text` blocks, not in prose where `<name>` parses as HTML and `[name]` as a link. A public item names a private one in plain code, never as a link.
 
 Diagnostic identity MUST include lint ID, normalized repository path, qualified item, source-occurrence fingerprint and multiplicity. Repeat compilations of the same source location are collapsed; distinct locations are not. A second identical warning needs a second allowance. Unknown diagnostics fail closed. Human-rendered `(message, file)` sets are not an acceptance mechanism.
 

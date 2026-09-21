@@ -4319,7 +4319,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "15ec4ef637fd43fba460c88dfb3d9c360daa2073f9256b35811a7329bf43ff2b",
+    "function_sha256": "3d48ff56002fa435e755ab32813206fd2c76b840baeb231eb0353892c27c8a2a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -5665,7 +5665,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "628e8d17cdb65094ac5748aacf41b1dba9b40407e3633e274d3448ebf960c8ea",
+    "function_sha256": "1b00077c0238a1c6f0f432bddc429dccb316404d719a1029b745a7f55cb20e90",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_isolation.rs",

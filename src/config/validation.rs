@@ -573,13 +573,13 @@ impl std::error::Error for ConfigError {}
 
 /// A [`crate::config::ServerConfig`] whose invariants have been proven
 /// (PR 3.2): the only way to construct one is
-/// [`crate::config::ServerConfig::validate`], and [`crate::bootstrap::run`]
+/// [`crate::config::ServerConfig::validate`], and `crate::bootstrap::run`
 /// accepts only this type — so validation is complete before any
 /// process-global initialization, store opening, canary write, or task
 /// spawn, by construction rather than by call-site discipline. Every
 /// field is PRIVATE (PR 4.1): no other crate module can forge one;
 /// bootstrap takes the proven parts through
-/// [`ValidatedServerConfig::into_bootstrap_parts`].
+/// `ValidatedServerConfig::into_bootstrap_parts`.
 pub struct ValidatedServerConfig {
     config: crate::config::ServerConfig,
     tenant: crate::tenant::ProjectId,
@@ -647,8 +647,8 @@ impl crate::config::ServerConfig {
     /// stores, no spawns, no process termination, and (PR 4.1) NO
     /// LOGS — advisories are returned as typed notices. Every problem
     /// is collected and returned. OS-resource checks that need a live
-    /// probe (the descriptor clamp) run in [`crate::bootstrap::run`]'s
-    /// preflight through [`resolve_effective_capacity`].
+    /// probe (the descriptor clamp) run in `crate::bootstrap::run`'s
+    /// preflight through `resolve_effective_capacity`.
     pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
         let mut f = Findings::default();
 

@@ -147,7 +147,6 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
         let prior = rig.state.ownership.view();
         assert!(crate::fleet::start_configured(
             rig.state.clone(),
-            &rig.state.config,
             &rig.tasks
         ));
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -187,11 +186,7 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
         }
         store.gate.close();
         let retry = crate::tasks::TaskSupervisor::new();
-        assert!(crate::fleet::start_configured(
-            rig.state.clone(),
-            &rig.state.config,
-            &retry
-        ));
+        assert!(crate::fleet::start_configured(rig.state.clone(), &retry));
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let desired = rig.state.fleet.read_desired_state().await.unwrap().0;

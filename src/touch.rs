@@ -222,7 +222,7 @@ impl TouchJournal {
     }
 
     /// Single-key wait for the collapsible GET path. Cursor semantics:
-    /// "now", or "<epoch>:<generation>"; foreign epoch => stale.
+    /// `"now"`, or `"<epoch>:<generation>"`; foreign epoch => stale.
     #[expect(
         clippy::unwrap_used,
         reason = "Touch journal registration and observation; poisoned history may have a partially published generation; recovering it could claim an invalid touch or cursor"

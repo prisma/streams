@@ -34,7 +34,7 @@ use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow, ValidatedRuns};
 pub(crate) const POSTINGS_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Estimated heap overhead per cache entry beyond the raw runs: the
-/// 32-byte key, HashMap bucket, Entry, Arc<PostingsSlice> header and
+/// 32-byte key, HashMap bucket, Entry, `Arc<PostingsSlice>` header and
 /// allocator slack. The budget must account for what the process
 /// actually holds, not just run payloads (review finding 7).
 pub(crate) const ENTRY_OVERHEAD_BYTES: usize = 176;
