@@ -636,3 +636,85 @@ async fn load_publish_evicts_least_recent_others_only_over_budget() {
         2 * ENTRY_OVERHEAD_BYTES
     );
 }
+
+/// A byte-capped load is covered exactly through its last decoded run: the
+/// pages behind the cap were never read, so nothing about them is proven
+/// and the next load must scan them. This arm's arithmetic had no test at
+/// all — `start + count` survived mutation to `start - count` and to
+/// `start * count`.
+#[tokio::test]
+async fn byte_capped_load_claims_through_its_last_decoded_run() {
+    const RUNS_PER_PAGE: u64 = 8_100; // four bytes a run: a ~32 KiB page
+    const PAGE_SPAN: u64 = RUNS_PER_PAGE * 2; // each run is one offset, then one of gap
+    const PAGES_PER_BUCKET: u64 = 4;
+    const PAGES: u64 = 36;
+    let first_offset =
+        |p: u64| (p / PAGES_PER_BUCKET) * BUCKET_OFFSETS + (p % PAGES_PER_BUCKET) * PAGE_SPAN;
+    let part = mem_db("wt/cap").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (route, inc, kh) = ids(11);
+    let page_runs: Vec<_> = (0..RUNS_PER_PAGE)
+        .map(|i| crate::postings::PostingRun {
+            gap_offsets: u64::from(i > 0),
+            record_count: 1,
+            matching_frame_bytes: 1,
+            gap_frame_bytes_before: 0,
+        })
+        .collect();
+    let mut page_bytes = 0;
+    for p in 0..PAGES {
+        let first = first_offset(p);
+        let page = crate::postings::encode_page(first, &page_runs);
+        page_bytes = page.len() as u64;
+        let bucket = crate::postings::bucket_of(first);
+        part.put(
+            crate::postings::postings_key(route, inc, &kh, bucket, first),
+            page,
+        )
+        .await
+        .unwrap();
+    }
+    // The cap trips inside the scan, with pages still unread behind it.
+    let scanned = LOAD_MAX_ENCODED_BYTES.div_ceil(page_bytes);
+    assert!(scanned < PAGES, "the fixture must outrun the byte cap");
+    let last_run_end = first_offset(scanned - 1) + PAGE_SPAN - 1;
+    let target = (PAGES / PAGES_PER_BUCKET) * BUCKET_OFFSETS;
+
+    let (runs, encoded, provable_to, corrupt) = load_runs(&cache, &part, route, inc, kh, 0, target)
+        .await
+        .unwrap();
+    assert!(!corrupt);
+    assert_eq!(encoded, scanned * page_bytes, "stopped at the byte cap");
+    assert_eq!(runs.len() as u64, scanned * RUNS_PER_PAGE);
+    assert_eq!(
+        provable_to, last_run_end,
+        "a byte-capped load is proven through its last decoded run, no further"
+    );
+    assert!(provable_to < target, "and that is short of what was asked");
+
+    // The cached read reports that short claim honestly, and a reader that
+    // resumes from each claim is served every run behind the cap: nothing
+    // there was ever treated as proven absent.
+    let (mut cursor, mut served) = (0, 0);
+    for _ in 0..8 {
+        let answer = cache
+            .runs_for(&part, route, inc, kh, cursor, target, target)
+            .await
+            .unwrap();
+        let CacheRuns::Runs { runs, provable_to } = answer else {
+            panic!("unexpected corruption");
+        };
+        assert!(provable_to > cursor, "a read must make progress");
+        served += runs.iter().count() as u64;
+        cursor = provable_to;
+        if cursor >= target {
+            break;
+        }
+    }
+    assert_eq!(cursor, target, "the reader reached its target");
+    assert_eq!(
+        served,
+        PAGES * RUNS_PER_PAGE,
+        "runs behind the byte cap were treated as proven absent"
+    );
+}
