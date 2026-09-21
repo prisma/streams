@@ -701,11 +701,11 @@ async fn catalog_provider_progress_survives_empty_filtered_pages_and_prefetch() 
             .map(|n| format!("stream-{n:03}"))
             .collect::<Vec<_>>()
     );
-    assert!(reg.list_page_raw(&tp(), None, 0).await.is_err());
+    assert!(reg.reconciliation_page(None, 0).await.is_err());
     let mut after = None;
     let mut all = Vec::new();
     loop {
-        let page = reg.list_page_raw(&tp(), after.as_deref(), 3).await.unwrap();
+        let page = reg.reconciliation_page(after.as_deref(), 3).await.unwrap();
         all.extend(page.streams.iter().map(|d| d.name.clone()));
         if page.exhausted {
             break;
@@ -760,7 +760,7 @@ async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
     assert_eq!(visible.streams.len(), 1);
     assert_eq!(visible.streams[0].name, "alive");
     // Reconciler view: everything, terminals included.
-    let raw = reg.list_page_raw(&tp(), None, 10).await.unwrap();
+    let raw = reg.reconciliation_page(None, 10).await.unwrap();
     assert_eq!(raw.streams.len(), 3, "raw page hides nothing");
     assert!(raw.streams.iter().any(|d| d.deleted));
     assert!(

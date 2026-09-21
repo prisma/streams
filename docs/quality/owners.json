@@ -1603,6 +1603,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/registry/catalog/tests.rs",
+      "reason": "Descriptor-key binding properties; generated project and stream identities are minted through the production desc_path and must bind back to exactly themselves, while damaged, re-rooted, non-canonical and arbitrary keys bind to nothing and never panic.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::layout_gate_refuses_foreign_namespaces",
       "path": "src/registry/tests.rs",
       "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",

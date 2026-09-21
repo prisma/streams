@@ -889,17 +889,21 @@ fn desc_path(cell: &str, sref: &crate::tenant::TenantStreamRef) -> ObjPath {
         ))
     } else {
         ObjPath::from(format!(
-            "registry/v4/projects/{}/streams/{}.json",
+            "{PROJECTS_ROOT}{}/streams/{}.json",
             hex(sref.project_id().as_bytes()),
             hex(sref.name().as_str().as_bytes())
         ))
     }
 }
 
+/// Root of every customer project's descriptors. Only the cell-wide
+/// reconciliation page lists from here; a project catalog lists its own prefix.
+const PROJECTS_ROOT: &str = "registry/v4/projects/";
+
 /// The catalog scan root for one project (§10.3): a project catalog
 /// never sees another project's keys, by prefix construction.
 fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
-    format!("registry/v4/projects/{}/streams/", hex(project.as_bytes()))
+    format!("{PROJECTS_ROOT}{}/streams/", hex(project.as_bytes()))
 }
 
 /// One page of the stream catalog.
@@ -917,7 +921,7 @@ pub(crate) enum IncarnationCas {
 
 pub(crate) struct CatalogPage {
     pub streams: Vec<StreamDesc>,
-    /// Name to continue after, when more may follow.
+    /// Continuation: a stream name (project page) or an object key (reconciliation).
     pub next_after: Option<String>,
     /// The provider listing ran out. This — NOT the page being
     /// underfull — is what ends a catalog walk: a page can come back
@@ -925,15 +929,6 @@ pub(crate) struct CatalogPage {
     /// half-built streams, and treating that as the end makes every
     /// live stream after the run unreachable.
     pub exhausted: bool,
-}
-
-/// Recover the stream name from a descriptor object key, so a page can
-/// continue past entries it could not read.
-fn name_from_desc_path(p: &ObjPath) -> Option<String> {
-    let last = p.as_ref().rsplit('/').next()?;
-    let hexed = last.strip_suffix(".json")?;
-    let bytes = crate::crypto::unhex(hexed)?;
-    String::from_utf8(bytes).ok()
 }
 
 impl Registry {
@@ -1532,16 +1527,7 @@ impl Registry {
         if self.fail_next_list.lock().unwrap().remove(project.as_str()) {
             return Err(catalog_error("armed list failpoint"));
         }
-        self.catalog_page(project, after, limit, false).await
-    }
-
-    pub(crate) async fn list_page_raw(
-        &self,
-        project: &crate::tenant::ProjectId,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<CatalogPage, object_store::Error> {
-        self.catalog_page(project, after, limit, true).await
+        self.project_page(project, after, limit).await
     }
 }
 

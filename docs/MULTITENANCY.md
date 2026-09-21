@@ -757,6 +757,7 @@ create(StreamDesc)
 update(&TenantStreamRef, ...)
 mutate_incarnation(&TenantStreamRef, ...)
 list_page(&ProjectId, after, limit)
+reconciliation_page(after, limit)   // cell-wide, terminals included; billing closure only
 ```
 
 After decoding, verify:

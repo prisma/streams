@@ -4401,7 +4401,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "1cb06a6d626617b38cbfadb394e553b39dd8ead0858f33b9a4d3e9e70577bacd",
+    "function_sha256": "0a32f4cca5106ab79ce23fca33595079c3690644fd412d92fba03caae8b9b58b",
     "mechanisms": [],
     "configuration": [
       "let seed = state",
@@ -5631,6 +5631,17 @@
       "crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, \"ex1\");"
     ],
     "file": "src/dst/tests/security_revocation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tombstone_walk_closes_clean_terminal_rows_of_every_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "24a5f75f60554d23d29891396a3aaa018186ee719b7e2b81a1fa576cea1ece33",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
     "scenarios": []
   },
   {

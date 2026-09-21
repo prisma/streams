@@ -2065,12 +2065,12 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// only sees rows that are DIRTY; a closure lost while the row sat
 /// clean (crash between the registry tombstone and the committer op,
 /// ownership move mid-delete) leaves a nonzero gauge nothing ever
-/// revisits. Page the registry RAW — tombstones, expirations and
-/// fork-retention included — and for every terminal descriptor whose
-/// segments this instance owns, resubmit the close against the
-/// PERSISTED logical time. Idempotent: a zero gauge no-ops, and the
-/// persisted stamp makes every retry account to the same instant.
-/// Fork-retained sources get their durable flag here too.
+/// revisits. Page the registry RAW and CELL-WIDE — every project's
+/// tombstones, expirations and fork-retention, not one tenant's — and
+/// for every terminal descriptor whose segments this instance owns,
+/// resubmit the close against the PERSISTED logical time. Idempotent:
+/// a zero gauge no-ops, and the persisted stamp makes every retry
+/// account to the same instant. Fork-retained sources are flagged too.
 ///
 /// Residual (accepted): a closure lost to a crash while the row was
 /// clean AND the name recreated under a new epoch before the next
@@ -2087,8 +2087,7 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
     let after: Option<String> = state.billing.sweep_walk_cursor();
     let page = match state
         .registry
-        // mt-lint: allow(state-tenant-read): deployment-tenant catalog sweep — terminal-closure reconciliation walks the raw surface's own rows
-        .list_page_raw(state.deployment.deployment_tenant(), after.as_deref(), 256)
+        .reconciliation_page(after.as_deref(), 256)
         .await
     {
         Ok(p) => p,
@@ -2150,12 +2149,12 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
                 };
                 tracing::info!(
                     "tombstone walk: closing {}#{sid} ({} B) at persisted {}",
-                    d.name,
+                    d.sref(),
                     meta.owned_frame_bytes_current,
                     close_ms
                 );
                 if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
-                    tracing::warn!("tombstone-walk close failed for {}: {e}", d.name);
+                    tracing::warn!("tombstone-walk close failed for {}: {e}", d.sref());
                 } else {
                     WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -2163,7 +2162,7 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
                 && !meta.retained_by_forks
                 && let Err(e) = engine.submit_billing_retained(hash, true).await
             {
-                tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
+                tracing::warn!("tombstone-walk retain failed for {}: {e}", d.sref());
             }
             if ours {
                 // Scheduler-opened for this descriptor: close it or

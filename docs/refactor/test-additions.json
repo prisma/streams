@@ -290,7 +290,7 @@
       "attributes": [
         "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
       ],
-      "function_sha256": "1cb06a6d626617b38cbfadb394e553b39dd8ead0858f33b9a4d3e9e70577bacd",
+      "function_sha256": "0a32f4cca5106ab79ce23fca33595079c3690644fd412d92fba03caae8b9b58b",
       "mechanisms": [],
       "configuration": [
         "let seed = state",

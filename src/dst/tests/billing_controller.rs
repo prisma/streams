@@ -1,5 +1,6 @@
 //! Bounded billing passes and cancellation at entered storage operations.
 
+use super::fixture_auth::{auth_rig, mint_token, rig_append, rig_create};
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq};
 use super::fixture_runtime::RigRuntime;
@@ -140,10 +141,123 @@ async fn r09_tombstone_walk_advances_one_catalog_page_per_pass() {
         row.name = format!("bounded-{index:03}");
         assert!(state.registry.create(row).await.unwrap().0);
     }
-    for expected in [Some("bounded-255"), Some("bounded-511"), None] {
+    // The cursor is the last consumed descriptor KEY: the walk spans every
+    // project in the cell, so a bare name no longer identifies a position.
+    let tenant = crate::crypto::hex(state.deployment.deployment_tenant().as_bytes());
+    let key = |name: &str| {
+        let name = crate::crypto::hex(name.as_bytes());
+        format!("registry/v4/projects/{tenant}/streams/{name}.json")
+    };
+    for expected in [Some(key("bounded-255")), Some(key("bounded-511")), None] {
         crate::billing::tombstone_walk(&state).await;
-        assert_eq!(state.billing.sweep_walk_cursor().as_deref(), expected);
+        assert_eq!(state.billing.sweep_walk_cursor(), expected);
     }
+    engine_shutdown(&state).await;
+}
+
+/// Bug 5 (enforce-mode cells): terminal-closure reconciliation is CELL-wide.
+/// A project that is not the deployment tenant owns three streams whose usage
+/// rows are acked CLEAN; one is then tombstoned with no delete-time close (a
+/// foreign owner, or a crash between the tombstone and the committer op) and
+/// one simply expires (nothing closes at expiry). Nothing dirties those rows
+/// again, so the walk is their only closer: it must zero both gauges and leave
+/// the live stream's alone. The walk used to page only the deployment tenant's
+/// catalog, so both gauges stayed nonzero and the rollup carried them monthly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (_svc, state, addr) = auth_rig("proj-walk", "ws_walk", &["c_walk"], None).await;
+    let bearer = mint_token("c_walk", "proj-walk", "ws_walk", 1, 1, "walk-1", 600);
+    let project = crate::tenant::ProjectId::new("proj-walk").unwrap();
+    assert_ne!(&project, state.deployment.deployment_tenant());
+    let mut rows = Vec::new();
+    for name in ["walk-deleted", "walk-expired", "walk-live"] {
+        rig_create(addr, name, &bearer).await;
+        assert_eq!(rig_append(addr, name, &bearer, r#"{"n":1}"#).await, 200);
+        let sref = project.stream_ref(name);
+        let desc = state.registry.get(&sref).await.unwrap().unwrap();
+        rows.push((sref, desc.resolve_segment("").identity));
+    }
+    let engine = state
+        .shards
+        .open("00")
+        .expect("the rig's one shard is open");
+    // Ack every row CLEAN while its stream is alive: from here on the
+    // dirty-path reconciler never revisits them, only the walk can.
+    let mut clean = false;
+    for _ in 0..200 {
+        crate::billing::drain_once(&state).await.expect("drain");
+        let dirty = engine.usage_dirty_scan().await.unwrap();
+        clean = rows
+            .iter()
+            .all(|(_, identity)| dirty.iter().all(|(hash, _)| hash != identity));
+        if clean {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        clean,
+        "rows must be acked clean before the streams turn terminal"
+    );
+    for (sref, identity) in &rows {
+        let meta = engine.billing_meta(*identity).await.unwrap();
+        assert!(
+            meta.owned_frame_bytes_current > 0,
+            "{sref}: no gauge to leak"
+        );
+    }
+    // Terminal WITHOUT a close: the tombstone as delete_lifecycle writes it
+    // (stamp in the same write) minus submit_billing_closes, and an expiry.
+    let closed_at = crate::billing::billing_now_ms();
+    let tombstoned = state
+        .registry
+        .cas_update(&rows[0].0, |d| {
+            d.deleted = true;
+            d.logical_close_ms = Some(closed_at);
+            true
+        })
+        .await
+        .unwrap();
+    let lapsed = state
+        .registry
+        .cas_update(&rows[1].0, |d| {
+            d.expires_at_ms = Some(closed_at);
+            true
+        })
+        .await
+        .unwrap();
+    assert!(tombstoned && lapsed);
+    let submits = crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed);
+    // The close is a committer op: walk, then poll the durable gauges.
+    let mut closed = false;
+    for _ in 0..50 {
+        crate::billing::tombstone_walk(&state).await;
+        let mut open = 0u64;
+        for (_, identity) in &rows[..2] {
+            let meta = engine.billing_meta(*identity).await;
+            open += meta.map_or(0, |m| m.owned_frame_bytes_current);
+        }
+        if open == 0 {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(
+        closed,
+        "a clean terminal row outside the deployment tenant kept its storage gauge; \
+         the rollup would carry it onto every later month"
+    );
+    assert!(
+        crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed) >= submits + 2,
+        "the WALK is what closed them"
+    );
+    let live = engine.billing_meta(rows[2].1).await.unwrap();
+    assert!(
+        live.owned_frame_bytes_current > 0,
+        "a live stream's gauge is not the walk's to close"
+    );
     engine_shutdown(&state).await;
 }
 
