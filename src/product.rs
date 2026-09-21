@@ -4034,7 +4034,6 @@ async fn product_consumer_settle(
 // ---- Stage 2b: watches ----------------------------------------------
 
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) use crate::application::watch::watch_key_hex;
 
 fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
@@ -4477,6 +4476,7 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
             None,
             true,
         ),
+        WatchFailure::Resolve(error) => crate::http::resolve_error_response(error),
     }
 }
 

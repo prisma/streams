@@ -299,6 +299,7 @@ impl AppState {
                     self.quotas.clone(),
                     self.keys.clone(),
                     self.touch.clone(),
+                    self.shards.clone(),
                     self.protocol_clock.clone(),
                 ))
             })
@@ -3357,8 +3358,6 @@ async fn internal_segment_read(
     )
     .await
 }
-
-// ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
 
 #[path = "http/read.rs"]
 mod read_adapter;

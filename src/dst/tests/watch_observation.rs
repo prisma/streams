@@ -1,7 +1,9 @@
 //! Watch observation.
 
 use super::fixture_auth::sr_rig;
-use super::fixture_http::{engine_shutdown, http_rig, http_rig_at, http_rig_opts};
+use super::fixture_http::{
+    engine_shutdown, http_rig, http_rig_at, http_rig_named, http_rig_named_at, http_rig_opts,
+};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
@@ -745,4 +747,178 @@ async fn stale_policy_fails_watch_capabilities_closed() {
         String::from_utf8_lossy(&b)
     );
     engine_shutdown(&state).await;
+}
+
+/// Two named instances over one store. Stream `wown` (one watch,
+/// `by-customer`) is created through A, and both instances hold the same
+/// ring view placing the stream's route shard on A.
+struct WatchPair {
+    state_a: std::sync::Arc<crate::http::AppState>,
+    addr_a: std::net::SocketAddr,
+    state_b: std::sync::Arc<crate::http::AppState>,
+    addr_b: std::net::SocketAddr,
+    prefix: String,
+    khex: String,
+}
+
+impl WatchPair {
+    async fn start() -> Self {
+        let store = mem();
+        let (state_a, addr_a) = http_rig_named(store.clone(), "inst-a").await;
+        let (state_b, addr_b) =
+            http_rig_named_at(store, "inst-b", RigRuntime::incarnation(1)).await;
+        let (st, _, b) = preq(
+            addr_a,
+            "PUT",
+            "/v1/streams/wown",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+        )
+        .await;
+        assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+        let route =
+            crate::crypto::RouteHash::for_stream(&state_a.deployment.raw_adapter_sref("wown"));
+        let pair = Self {
+            prefix: state_a.shards.prefix_for(&route.0),
+            khex: crate::product::watch_key_hex(
+                "by-customer",
+                &["/customerId".to_string()],
+                &[r#""c1""#.to_string()],
+            ),
+            state_a,
+            addr_a,
+            state_b,
+            addr_b,
+        };
+        pair.place_on("inst-a");
+        pair
+    }
+
+    /// Both instances learn the same ring: the route shard belongs to `owner`.
+    fn place_on(&self, owner: &str) {
+        for state in [&self.state_a, &self.state_b] {
+            state
+                .ownership
+                .set_ring_active(vec!["inst-a".to_string(), "inst-b".to_string()]);
+            state.ownership.set_override(&self.prefix, owner);
+        }
+    }
+
+    /// One key-authorized watch wait against `addr`.
+    async fn wait(
+        &self,
+        addr: std::net::SocketAddr,
+        cursor: &str,
+        timeout_ms: u32,
+    ) -> (
+        u16,
+        std::collections::HashMap<String, String>,
+        serde_json::Value,
+    ) {
+        let khex = &self.khex;
+        let path = format!(
+            "/v1/streams/wown/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs={timeout_ms}"
+        );
+        let (st, headers, body) = preq(
+            addr,
+            "GET",
+            &path,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"",
+        )
+        .await;
+        (st, headers, serde_json::from_slice(&body).unwrap())
+    }
+
+    async fn shutdown(self) {
+        engine_shutdown(&self.state_a).await;
+        engine_shutdown(&self.state_b).await;
+    }
+}
+
+/// A watch wait is answered only where the ring places the stream's
+/// route shard. Touches are published by the instance that commits the
+/// append, so a non-owner that parks the waiter on a journal of its own
+/// reports `invalidated:false` for records it can never see, and gives
+/// the router no 409 to converge on. The misrouted wait must be replayed
+/// to the owner, must not open (and so fence) the owner's shard, and the
+/// owner must keep delivering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_wait_on_a_non_owner_replays_to_the_ring_owner() {
+    let pair = WatchPair::start().await;
+
+    // Control: the owner serves the wait and mints the cursor.
+    let (st, _, owned) = pair.wait(pair.addr_a, "now", 150).await;
+    assert_eq!(st, 200, "{owned}");
+    assert_eq!(owned["invalidated"], false, "{owned}");
+
+    let (st, headers, refused) = pair.wait(pair.addr_b, "now", 150).await;
+    assert_eq!(
+        st, 409,
+        "a non-owner must replay the wait, never answer it from a private journal: {refused}"
+    );
+    assert_eq!(refused["error"]["code"], "not_ring_owner", "{refused}");
+    assert_eq!(
+        headers.get("streams-replay-to").map(String::as_str),
+        Some("inst-a"),
+        "the replay target must name the ring owner"
+    );
+    assert!(
+        !pair.state_b.shards.is_open(&pair.prefix),
+        "a misrouted wait must not open (and so fence) the owner's shard"
+    );
+
+    // The owner is undisturbed: a matching append still invalidates the
+    // cursor it minted, as a proven change and not a resync.
+    let (st, _, b) = preq(
+        pair.addr_a,
+        "POST",
+        "/v1/streams/wown/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "c1"),
+        ],
+        br#"{"customerId":"c1"}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let cursor = owned["cursor"].as_str().unwrap();
+    let (st, _, woken) = pair.wait(pair.addr_a, cursor, 5000).await;
+    assert_eq!(st, 200, "{woken}");
+    assert_eq!(woken["invalidated"], true, "{woken}");
+    assert_eq!(woken["reason"], "changed", "{woken}");
+    pair.shutdown().await;
+}
+
+/// Ownership movement. After the ring moves the route shard, the
+/// ex-owner must not keep answering from (or resurrect) a journal for
+/// it: a re-wait there would be silent forever. It replays to the new
+/// owner, where the old owner's cursor is a foreign epoch and so an
+/// explicit resync: no invalidation can be missed across the handoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_wait_follows_the_ring_when_the_shard_moves() {
+    let pair = WatchPair::start().await;
+    let (st, _, owned) = pair.wait(pair.addr_a, "now", 150).await;
+    assert_eq!(st, 200, "{owned}");
+    let cursor = owned["cursor"].as_str().unwrap().to_string();
+
+    pair.place_on("inst-b");
+
+    let (st, headers, refused) = pair.wait(pair.addr_a, &cursor, 150).await;
+    assert_eq!(
+        st, 409,
+        "the ex-owner must replay, not park the waiter on a journal nobody feeds: {refused}"
+    );
+    assert_eq!(refused["error"]["code"], "not_ring_owner", "{refused}");
+    assert_eq!(
+        headers.get("streams-replay-to").map(String::as_str),
+        Some("inst-b")
+    );
+
+    // The replayed wait carries A's cursor to B: foreign epoch => resync.
+    let (st, _, resumed) = pair.wait(pair.addr_b, &cursor, 150).await;
+    assert_eq!(st, 200, "{resumed}");
+    assert_eq!(resumed["invalidated"], true, "{resumed}");
+    assert_eq!(resumed["reason"], "resync", "{resumed}");
+    pair.shutdown().await;
 }

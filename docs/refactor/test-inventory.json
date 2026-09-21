@@ -5929,6 +5929,28 @@
     ]
   },
   {
+    "name": "watch_wait_follows_the_ring_when_the_shard_moves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "565810c3796a805b888d2e21df2f4c394c48147a07dc50ea305e61aa47549450",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_observation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "watch_wait_on_a_non_owner_replays_to_the_ring_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "97db281af5647f727a32a01aa5256873c4de8ba55fdc49352bffd1ac512058df",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_observation.rs",
+    "scenarios": []
+  },
+  {
     "name": "watch_waits_occupy_the_subscription_pool",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

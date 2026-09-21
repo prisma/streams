@@ -1,5 +1,7 @@
 //! Watch observation: credential proof precedes state diagnostics, and each
-//! request occupies one project request slot for its entire wait.
+//! request occupies one project request slot for its entire wait. A waiter
+//! parks only on the instance the ring assigns the stream's route shard;
+//! every other instance replays it to that owner.
 use crate::auth::RequestPrincipal;
 use crate::registry::{Registry, StreamDesc, WatchDefinition};
 use crate::runtime::Clock;
@@ -39,6 +41,9 @@ pub(crate) enum WatchFailure {
     NotFound,
     UnknownWatch,
     Storage(String),
+    /// The stream's route shard is not served by this instance. Carried
+    /// typed so the transport renders it through its one resolve mapping.
+    Resolve(crate::shard_directory::ResolveError),
 }
 
 pub(crate) enum Observation {
@@ -80,6 +85,7 @@ pub(crate) struct WatchService {
     quotas: crate::quota::QuotaRegistry,
     keys: Arc<crate::history::KeyCache>,
     touch: Arc<crate::touch::TouchRegistry>,
+    shards: crate::shard_directory::ShardDirectory,
     clock: Arc<dyn Clock>,
     lookup: Mutex<LookupBudget>,
 }
@@ -87,7 +93,7 @@ pub(crate) struct WatchService {
 impl WatchService {
     #[expect(
         clippy::too_many_arguments,
-        reason = "WatchService::new; the service takes its registry, clock, key and limit collaborators separately as composition resolved them; a builder would exist for this single call site"
+        reason = "WatchService::new; the service takes its registry, shard directory, clock, key and limit collaborators separately as composition resolved them, the directory because a wait must prove route ownership before it reads a process-local journal; a builder would exist for this single call site"
     )]
     pub(crate) fn new(
         registry: Arc<Registry>,
@@ -95,6 +101,7 @@ impl WatchService {
         quotas: crate::quota::QuotaRegistry,
         keys: Arc<crate::history::KeyCache>,
         touch: Arc<crate::touch::TouchRegistry>,
+        shards: crate::shard_directory::ShardDirectory,
         clock: Arc<dyn Clock>,
     ) -> Self {
         let lookup = Mutex::new(LookupBudget {
@@ -107,6 +114,7 @@ impl WatchService {
             quotas,
             keys,
             touch,
+            shards,
             clock,
             lookup,
         }
@@ -308,14 +316,21 @@ impl WatchService {
         {
             return Err(WatchFailure::UnknownWatch);
         }
+        // Touches are published only by the instance that commits the
+        // append, so a waiter may park only where the ring places the
+        // stream's route shard; anywhere else it is replayed to the owner.
+        // Full resolution keeps the engine resident, so its close retires
+        // this journal and wakes the waiter the moment the ring moves.
+        let stream_route = crate::crypto::RouteHash::for_stream(&descriptor.sref());
+        self.shards
+            .resolve(&stream_route.0, crate::shard_directory::Adoption::External)
+            .await
+            .map_err(WatchFailure::Resolve)?;
         if let Some(key) = verified.key {
             self.keys
                 .put(descriptor.storage_hash(), key, descriptor.epoch());
         }
-        let journal = self.touch.journal(
-            descriptor.storage_hash(),
-            crate::crypto::RouteHash::for_stream(&descriptor.sref()),
-        );
+        let journal = self.touch.journal(descriptor.storage_hash(), stream_route);
         let outcome = journal
             .wait(
                 &cursor,
