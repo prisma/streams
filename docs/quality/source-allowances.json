@@ -1508,13 +1508,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::LiveFeed::schedule_transition_retry",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::serve",
       "path": "src/sse/session.rs",
       "syntax": "tokio::spawn"
@@ -3259,13 +3252,6 @@
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::LiveFeed::read_and_publish",
-      "path": "src/sse/feed.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::LiveFeed::schedule_transition_retry",
       "path": "src/sse/feed.rs",
       "syntax": "tokio::select"
     },

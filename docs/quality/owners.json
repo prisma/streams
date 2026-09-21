@@ -2108,9 +2108,17 @@
       "category": "effect",
       "count": 1,
       "owner": "crate::LiveFeed::schedule_transition_retry",
-      "path": "src/sse/feed.rs",
+      "path": "src/sse/feed/drive.rs",
       "reason": "The feed's transition retry is a bare task the feed owns and cancels through its own flag; it ends with the feed.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::LiveFeed::schedule_transition_retry",
+      "path": "src/sse/feed/drive.rs",
+      "reason": "The retry tick races its 250 ms sleep against the feed's own cancel flag; the pinned Tokio macro is the await-either form and both arms are owned by the feed.",
+      "syntax": "tokio::select"
     },
     {
       "category": "by-path-module",

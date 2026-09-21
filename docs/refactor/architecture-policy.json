@@ -4,6 +4,7 @@
   "sse_core_files": [
     "src/sse/budget.rs",
     "src/sse/feed.rs",
+    "src/sse/feed/drive.rs",
     "src/sse/registry.rs",
     "src/sse/source.rs",
     "src/sse/service.rs"
