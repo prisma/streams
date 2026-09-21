@@ -265,3 +265,52 @@ fn plain_409_still_reads_as_beyond_tail() {
     assert_eq!(out.status(), StatusCode::CONFLICT);
     assert!(out.headers().get("streams-replay-to").is_none());
 }
+
+#[test]
+fn routing_key_edges_are_pinned() {
+    assert_eq!(parse_routing_key(b""), Ok(""));
+    assert_eq!(parse_routing_key(b"customer-42"), Ok("customer-42"));
+    assert_eq!(parse_routing_key(b"a b\tc~"), Ok("a b\tc~"));
+    assert!(parse_routing_key(&[b'k'; MAX_ROUTING_KEY_BYTES]).is_ok());
+    assert_eq!(
+        parse_routing_key(&[b'k'; MAX_ROUTING_KEY_BYTES + 1]),
+        Err("routing key exceeds 1,024 bytes")
+    );
+    // Latin-1 (fetch), UTF-8 (curl, the seal document), control, DEL.
+    for raw in [
+        &b"caf\xe9"[..],
+        "caf\u{e9}".as_bytes(),
+        b"bad\x01key",
+        b"del\x7f",
+    ] {
+        assert!(parse_routing_key(raw).is_err(), "{raw:?} was admitted");
+    }
+}
+
+/// The writers' rule IS "a `Prisma-Routing-Key` header reads it back as
+/// the same text": every byte value, alone and at the start, middle and
+/// end of a key, against the http crate's own predicate. An admitted key
+/// is byte-for-byte the input -- never the default key.
+#[test]
+fn a_routing_key_is_admitted_exactly_when_a_header_reads_it_back() {
+    let mut cases = 0_u32;
+    for byte in 0..=u8::MAX {
+        for raw in [
+            vec![byte],
+            vec![byte, b'z'],
+            vec![b'a', byte, b'z'],
+            vec![b'a', byte],
+        ] {
+            let carried = HeaderValue::from_bytes(&raw).is_ok_and(|v| v.to_str().is_ok());
+            match parse_routing_key(&raw) {
+                Ok(key) => {
+                    assert!(carried, "{raw:?} admitted; no header reads it back");
+                    assert_eq!(key.as_bytes(), raw, "{raw:?} was rewritten");
+                }
+                Err(_) => assert!(!carried, "{raw:?} refused; a header carries it"),
+            }
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 1_024);
+}

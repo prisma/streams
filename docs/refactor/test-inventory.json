@@ -322,6 +322,17 @@
     ]
   },
   {
+    "name": "a_final_key_the_append_header_cannot_carry_is_refused_before_the_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e2bd7d5cd046e00c03e82a6c4c0c481b701bf36b8303aa8c80ab62a5d77303a6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_recovery.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1156,6 +1167,17 @@
     "scenarios": [
       "DUR-011"
     ]
+  },
+  {
+    "name": "an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_default_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ae782fe8898ec55d5ff5a3aca117b18dfb12cc4e8f6e9dda235c8abb278f69ed",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/product_lifecycle.rs",
+    "scenarios": []
   },
   {
     "name": "an_exact_retry_renews_its_lease",

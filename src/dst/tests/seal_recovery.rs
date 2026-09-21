@@ -831,3 +831,66 @@ async fn seal_is_a_resumable_transition() {
     assert_eq!(st, 409, "descriptor seal is authoritative (raw)");
     engine_shutdown(&state).await;
 }
+
+/// A final record's routing key obeys the SAME rule as the append header:
+/// text a `Prisma-Routing-Key` header carries. Admission used
+/// `HeaderValue::from_str` (accepts bytes 0x80-0xFF) while the internal
+/// append read the key back with `to_str` (refuses them) and defaulted the
+/// failure to "": the intent named one key, the record was filed under
+/// the default key, and the collection could never be written again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_final_key_the_append_header_cannot_carry_is_refused_before_the_intent() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealcafe",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    let body = "{\"final\":{\"x\":1},\"routingKey\":\"caf\u{e9}\"}";
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealcafe:seal",
+        &key,
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(
+        st,
+        400,
+        "a final key no append header can carry was accepted: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let err: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(err["error"]["code"], "invalid_routing_key");
+
+    state
+        .registry
+        .invalidate(&state.deployment.raw_adapter_sref("sealcafe"));
+    let d = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("sealcafe"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "the refused seal published a lifecycle intent: {:?}",
+        d.sealing
+    );
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sealcafe/records", &key, b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert!(
+        recs.is_empty(),
+        "the final record was filed under the default key: {recs:?}"
+    );
+    engine_shutdown(&state).await;
+}

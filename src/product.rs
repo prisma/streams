@@ -1580,10 +1580,6 @@ async fn product_metadata(
 /// Collection seal (Stage 8 §7, v1: seal-only; atomic final append
 /// lands with the lifecycle stage). Durable + monotonic + idempotent.
 #[expect(
-    clippy::expect_used,
-    reason = "product_seal; the routing key was checked to be a valid header value when the seal document was admitted; a second fallible conversion would reject what admission already accepted"
-)]
-#[expect(
     clippy::too_many_lines,
     clippy::excessive_nesting,
     reason = "product_seal; the seal validates the intent, claims, finalises and answers in one sequence whose header and disposition checks nest inside the final record path; splitting it or flattening the checks would separate the steps from the claim they share"
@@ -1704,28 +1700,19 @@ async fn product_seal(
             // that names a record the append path will always reject
             // leaves the collection sealing forever, owing something
             // undeliverable.
-            let rk = doc.routing_key.clone().unwrap_or_default();
-            if rk.len() > MAX_ROUTING_KEY_BYTES {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_routing_key",
-                    "routing key exceeds 1,024 bytes",
-                    None,
-                    false,
-                );
-            }
-            if axum::http::HeaderValue::from_str(&rk).is_err() {
-                // It travels as a header on the internal append; a value
-                // that cannot be one would silently land on the DEFAULT
-                // key while the durable intent names another.
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_routing_key",
-                    "routing key contains characters that cannot be transmitted",
-                    None,
-                    false,
-                );
-            }
+            let rk = doc.routing_key.as_deref().unwrap_or_default();
+            let routing_key = match parse_routing_key(rk.as_bytes()) {
+                Ok(key) => key,
+                Err(why) => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_routing_key",
+                        why,
+                        None,
+                        false,
+                    );
+                }
+            };
             for h in ["producer-id", "producer-epoch", "producer-seq"] {
                 if let Some(v) = headers.get(h)
                     && v.to_str().is_err()
@@ -1787,24 +1774,18 @@ async fn product_seal(
             let (pid, pep, pseq) = (hv("producer-id"), hv("producer-epoch"), hv("producer-seq"));
             let op_id = seal_op_id_full(
                 &fin,
-                doc.routing_key.as_deref().unwrap_or_default(),
+                routing_key,
                 (!pid.is_empty()).then_some((pid.as_str(), pep.as_str(), pseq.as_str())),
             );
             let sref = tenant.stream_ref(&name);
             let lifecycle = state.lifecycle_service();
-            let routing_key = doc.routing_key.clone().unwrap_or_default();
-            let mut final_headers = headers.clone();
-            final_headers.insert(
-                "prisma-routing-key",
-                axum::http::HeaderValue::from_str(&routing_key).expect("validated routing key"),
-            );
             let result = crate::application::lifecycle::seal_final(
                 &lifecycle,
                 crate::application::lifecycle::FinalSealRequest {
                     stream: &sref,
                     epoch: &validated_epoch,
                     operation: &op_id,
-                    routing_key: &routing_key,
+                    routing_key,
                 },
                 |auth| async {
                     #[cfg(test)]
@@ -1813,7 +1794,8 @@ async fn product_seal(
                         state.clone(),
                         &sref,
                         &validated,
-                        &final_headers,
+                        routing_key,
+                        &headers,
                         Bytes::from(fin.to_string()),
                         auth,
                     )
@@ -1927,6 +1909,20 @@ pub(crate) fn seal_error_response(
 const MAX_BATCH_RECORDS: usize = 10_000;
 const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 
+/// The ONE routing-key rule both writers share: at most 1,024 bytes of the
+/// text a `Prisma-Routing-Key` header carries (visible ASCII, space, tab).
+/// A key outside it is refused with the returned message, never defaulted:
+/// a success filed under "" reads back empty under the key the caller named.
+fn parse_routing_key(raw: &[u8]) -> Result<&str, &'static str> {
+    if raw.len() > MAX_ROUTING_KEY_BYTES {
+        return Err("routing key exceeds 1,024 bytes");
+    }
+    match std::str::from_utf8(raw) {
+        Ok(key) if raw.iter().all(|&b| matches!(b, b'\t' | b' '..=b'~')) => Ok(key),
+        _ => Err("routing key must be visible ASCII (what the append header carries)"),
+    }
+}
+
 /// Both product append routes compile to the ONE committer command the
 /// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
 /// contract — explicit single/batch semantics, Prisma-* names — then
@@ -1942,6 +1938,7 @@ async fn product_append_sealing(
     state: Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
     desc: &StreamDesc,
+    routing_key: &str,
     headers: &HeaderMap,
     body: Bytes,
     auth: crate::application::lifecycle::SealAuthz,
@@ -1954,10 +1951,6 @@ async fn product_append_sealing(
             "Prisma-Encryption-Key required",
         )
     })?;
-    let routing_key = headers
-        .get("prisma-routing-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
     let wire_body = if desc.is_json() {
         let mut bytes = Vec::with_capacity(body.len() + 2);
         bytes.push(b'[');
@@ -2074,20 +2067,20 @@ async fn product_append_inner(
         None
     };
 
-    let routing_key = headers
-        .get("prisma-routing-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if routing_key.len() > MAX_ROUTING_KEY_BYTES {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_routing_key",
-            "routing key exceeds 1,024 bytes",
-            None,
-            false,
-        );
-    }
+    let raw_key = headers.get("prisma-routing-key");
+    let raw_key = raw_key.map(HeaderValue::as_bytes).unwrap_or_default();
+    let routing_key = match parse_routing_key(raw_key) {
+        Ok(key) => key,
+        Err(why) => {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_routing_key",
+                why,
+                None,
+                false,
+            );
+        }
+    };
     let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
@@ -2238,7 +2231,7 @@ async fn product_append_inner(
         &tenant.stream_ref(&name),
         &desc,
         &key_b64,
-        &routing_key,
+        routing_key,
         &headers,
         &body,
         wire_body,
@@ -2246,7 +2239,7 @@ async fn product_append_inner(
         seal_auth,
     )
     .await;
-    render_product_append(&desc, &key, &routing_key, count, result)
+    render_product_append(&desc, &key, routing_key, count, result)
 }
 
 #[expect(

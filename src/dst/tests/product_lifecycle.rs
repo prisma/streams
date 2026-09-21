@@ -741,3 +741,79 @@ async fn dual_surface_equivalence_corpus() {
     assert_eq!(st, 400, "case 12b: raw offset on the product route");
     engine_shutdown(&state).await;
 }
+
+/// A PRESENT `Prisma-Routing-Key` that is not text is refused. It used to
+/// be read with `to_str().ok().unwrap_or("")`: a 200, a cursor, and the
+/// record under the DEFAULT key, where a reader of the named key never
+/// finds it. fetch sends such text as Latin-1 and curl as UTF-8, so any
+/// decode would be a guess. Both append routes share the handler.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_default_key() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/nontext",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // preq writes the value's UTF-8 bytes (0xC3 0xA9) onto the wire.
+    let keyed = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "caf\u{e9}"),
+    ];
+    let attempts: [(&str, &[u8]); 2] = [
+        ("/v1/streams/nontext/records", br#"{"n":1}"#),
+        ("/v1/streams/nontext/records:batch", br#"[{"n":2}]"#),
+    ];
+    for (route, body) in attempts {
+        let (st, _, b) = preq(addr, "POST", route, &keyed, body).await;
+        assert_eq!(
+            st,
+            400,
+            "{route}: a non-text routing key was accepted: {}",
+            String::from_utf8_lossy(&b)
+        );
+        let err: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(err["error"]["code"], "invalid_routing_key", "{route}");
+    }
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/nontext/records", &key, b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert!(
+        recs.is_empty(),
+        "a refused key was filed under the default key: {recs:?}"
+    );
+
+    // Control: a text key is still written and read back under itself.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/nontext/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "k1"),
+        ],
+        br#"{"n":3}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/nontext/records?routingKey=k1",
+        &key,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "{recs:?}");
+    assert_eq!(recs[0]["n"], 3);
+    engine_shutdown(&state).await;
+}
