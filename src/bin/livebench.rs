@@ -9,7 +9,7 @@
 //!   ({type, key, value, old_value, headers:{operation,txid,timestamp}}) and
 //!   bump the tenant's truth counter after the durable ACK.
 //! - Fine consumers: one live query per tenant
-//!   (`SELECT .. WHERE tenantId = $1`), template (entity, [tenantId]),
+//!   (`SELECT .. WHERE tenantId = $1`), template `(entity, [tenantId])`,
 //!   waiting on the watch key; on touched -> "re-run the query" (read the
 //!   truth counter).
 //! - Coarse consumers wait on the table key.

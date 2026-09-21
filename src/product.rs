@@ -1931,7 +1931,7 @@ const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 /// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
 /// contract — explicit single/batch semantics, Prisma-* names — then
 /// drives the shared append path. A single JSON append wraps the value
-/// as [value], the protocol's own one-level flattening rule, so an
+/// as `[value]`, the protocol's own one-level flattening rule, so an
 /// array-valued record stays ONE message; a batch passes its elements
 /// straight through.
 #[expect(

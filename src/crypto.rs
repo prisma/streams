@@ -4,8 +4,13 @@
 //! Retained v2/v3 AES-GCM frames remain readable using their original
 //! offset nonce and original subkey; writers never emit those versions.
 //!
-//! v4/v5: [ver][offset BE64][ts BE64][key_version BE32][rk_len BE16]
-//!        [routing key][nonce 12 bytes][ct_len BE32][ciphertext+tag]
+//! v4/v5:
+//!
+//! ```text
+//! [ver][offset BE64][ts BE64][key_version BE32][rk_len BE16]
+//! [routing key][nonce 12 bytes][ct_len BE32][ciphertext+tag]
+//! ```
+//!
 //! v4 is uncompressed; v5 compresses before encryption when it wins.
 //! Copies/retries transmit stored bytes; a new encryption invocation has
 //! a fresh nonce, including after rollback or writer replacement.

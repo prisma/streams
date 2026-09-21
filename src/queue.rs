@@ -14,9 +14,12 @@
 //! routing-key view, browsable and replayable with normal keyed reads.
 //!
 //! Keyspace (per stream hash, alongside t/r/q):
-//!   <hash16> 'c' <consumer>              cursor (u64 LE): all below settled
-//!   <hash16> 'l' <consumer> 0x00 <off BE> lease {deadline i64, count u32, gen u32}
-//!   <hash16> 'x' <consumer> 0x00 <off BE> settled-above-cursor marker
+//!
+//! ```text
+//! <hash16> 'c' <consumer>               cursor (u64 LE): all below settled
+//! <hash16> 'l' <consumer> 0x00 <off BE> lease {deadline i64, count u32, gen u32}
+//! <hash16> 'x' <consumer> 0x00 <off BE> settled-above-cursor marker
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -52,9 +55,13 @@ pub(crate) struct QueueState {
 /// Row keys carry the consumer GENERATION (big-endian, after the name
 /// separator) so a recreated consumer's rows can never collide with a
 /// dead generation's residue:
-///   <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
-///   <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
-///   <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
+///
+/// ```text
+/// <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
+/// <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
+/// <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
+/// ```
+///
 /// `state_prefix` (name + separator, NO generation) covers every
 /// generation — cleanup deletes a consumer's rows across all of them.
 pub(crate) fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {

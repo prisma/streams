@@ -2,12 +2,12 @@
 //! prefixes, block-transformer encrypted with the stream key, block-zstd
 //! compressed — plus the absorber that drains shard logs into them.
 //!
-//! History keyspace:
-//!   'r' '!' <offset u64 BE>                       record (plaintext in blocks)
-//!   'k' '!' <rk_len u16 BE> <rk> <offset u64 BE>  routing-key index (copy)
-//!
-//! History record value: [ver u8=1][ts i64 LE][key_version u32 LE]
-//!                       [rk_len u16 LE][rk][payload]
+//! History keyspace and record value:
+//! ```text
+//! 'r' '!' <offset u64 BE>                       record (plaintext in blocks)
+//! 'k' '!' <rk_len u16 BE> <rk> <offset u64 BE>  routing-key index (copy)
+//! value: [ver u8=1][ts i64 LE][key_version u32 LE][rk_len u16 LE][rk][payload]
+//! ```
 
 mod canonical_span;
 mod gather;
