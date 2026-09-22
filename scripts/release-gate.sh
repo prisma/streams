@@ -72,11 +72,16 @@ else
   exit 1
 fi
 
+# Each leg proves it ran what it names (scripts/test-leg.sh): cargo exits
+# 0 with `ok. 0 passed` when a filter or --exact name matches nothing.
 echo "== tests =="
-cargo test --lib -- --skip post_split_throughput_scales
+bash scripts/test-leg.sh target/release-gate/suite.log \
+  --inventory docs/refactor/test-inventory.json --skipped 1 \
+  -- --lib -- --skip post_split_throughput_scales
 
 echo "== capacity mechanism gate (owns the machine) =="
-cargo test --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
+bash scripts/test-leg.sh target/release-gate/capacity.log --exact dst::dst_tests::topology_scaling::post_split_throughput_scales \
+  -- --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
 
 echo "== livefeed engine matrix =="
 echo "== supply chain =="

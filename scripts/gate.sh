@@ -1,8 +1,9 @@
 #!/bin/bash
 # The one commit gate — fail-closed at every stage (review finding 5):
 # formatting must already be clean, a clippy BUILD failure fails the
-# gate (compiler errors are not warning fingerprints), and the suite
-# summary line must literally read ok. Output lands in $OUT.
+# gate (compiler errors are not warning fingerprints), and each test leg
+# must show the tests it names RAN: cargo exits 0 with `ok. 0 passed`
+# when a filter or --exact name matches nothing. Output lands in $OUT.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-/tmp/gate.txt}
@@ -18,6 +19,12 @@ if ! cargo test --locked --release --lib -- --skip post_split_throughput_scales 
   exit 1
 fi
 grep -E '^test result: ok' "$OUT.suite.log" >> "$OUT"
+# The suite holds every inventoried test but the one capacity leg below.
+if ! python3 scripts/quality/tests_ran.py "$OUT.suite.log" \
+  --inventory docs/refactor/test-inventory.json --skipped 1 >> "$OUT" 2>&1; then
+  echo GATEFAIL-suite-ran >> "$OUT"
+  exit 1
+fi
 # The capacity-mechanism measurement OWNS the machine — its own stated
 # precondition. Inside the parallel suite, contention lands one-sidedly
 # on the post-split phase (it needs two committers' worth of CPU) and
@@ -30,4 +37,9 @@ if ! cargo test --locked --release --lib post_split_throughput_scales -- \
   exit 1
 fi
 grep -E '^test result: ok' "$OUT.capacity.log" >> "$OUT"
+if ! python3 scripts/quality/tests_ran.py "$OUT.capacity.log" \
+  --exact dst::dst_tests::topology_scaling::post_split_throughput_scales >> "$OUT" 2>&1; then
+  echo GATEFAIL-capacity-ran >> "$OUT"
+  exit 1
+fi
 echo GATEDONE >> "$OUT"

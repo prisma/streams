@@ -29,5 +29,6 @@ for gate in architecture-report architecture-gate scenario-map-report test-inven
 done
 python3 scripts/verify-rc-evidence.py --self-test --repo .
 bash scripts/multitenancy-audit.sh
-cargo test --locked --release --lib multitenancy_identity_lint
+scripts/test-leg.sh "$QUALITY_OUT/mt-lint.log" --exact mt_lint::multitenancy_identity_lint \
+  -- --locked --release --lib multitenancy_identity_lint
 printf 'QUALITY_OK\n'

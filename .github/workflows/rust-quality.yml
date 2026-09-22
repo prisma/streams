@@ -38,7 +38,7 @@ jobs:
       - name: Real compiler boundary fixtures
         run: python3 scripts/quality/compiler_fixtures.py --out /tmp/quality-compiler
       - name: Generated codec and actual handoff state tests
-        run: cargo test --locked --release --lib quality_
+        run: scripts/test-leg.sh target/legs/quality.log --min 15 -- --locked --release --lib quality_
   invariant-tools:
     runs-on: ubuntu-latest
     steps:
