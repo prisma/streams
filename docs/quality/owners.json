@@ -1721,6 +1721,14 @@
       "syntax": "serde_json::json"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_consumer_pull",
+      "path": "src/product/consumer_pull.rs",
+      "reason": "The pull reply document {messages, backlog} is framed with the serde macro; its wire shape is pinned by the consumer_product DST tests and WIRE-MATRIX §2.15.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::lb",
