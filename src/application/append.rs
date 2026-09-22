@@ -162,16 +162,12 @@ impl AppendService {
         if command.expected_epoch.is_none() {
             command.expected_epoch = Some(prepared.descriptor.epoch());
         }
-        let mut first = Some(prepared);
-        for attempt in 0..4 {
-            let prepared = match first.take() {
-                Some(prepared) => prepared,
-                None => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10 * attempt)).await;
-                    self.prepare(&command.sref, AppendKey::Provided(command.key.clone()))
-                        .await?
-                }
-            };
+        // Four attempts; the waits before the second, third and fourth.
+        let mut waits = [10, 20, 30]
+            .map(std::time::Duration::from_millis)
+            .into_iter();
+        let mut prepared = prepared;
+        loop {
             // `sealed` never resets within an incarnation and freezes the
             // map: a sealed descriptor's route cannot be stale.
             let final_route = prepared.descriptor.sealed;
@@ -183,6 +179,12 @@ impl AppendService {
             if final_route || self.closure_is_current(&command, attempted).await? {
                 return result;
             }
+            let Some(wait) = waits.next() else {
+                break;
+            };
+            tokio::time::sleep(wait).await;
+            let key = AppendKey::Provided(command.key.clone());
+            prepared = self.prepare(&command.sref, key).await?;
         }
         fail(
             FailureClass::Unavailable,
