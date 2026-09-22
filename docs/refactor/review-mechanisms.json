@@ -367,7 +367,8 @@
           4,
           2
         ],
-        "shutdown_ms": 300,
+        "shutdown_ms": 5000,
+        "terminal_round_cadence_secs": 2,
         "catalog_entries": 513,
         "page_limit": 256
       },
@@ -377,7 +378,7 @@
         {
           "file": "src/dst/tests/billing_controller.rs",
           "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
-          "sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9"
+          "sha256": "96a9261edc3ebdf4548d1967b313bed4c6bf3df26a68f1d582e3f4b3fdc8a720"
         },
         {
           "file": "src/dst/tests/billing_controller.rs",

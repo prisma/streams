@@ -98,7 +98,7 @@ Exact synchronous read metering would require waiting for a durable telemetry wr
 The chosen posture is:
 
 - active read deltas flush every 10 seconds by default, earlier by size/cardinality thresholds;
-- graceful shutdown and drain wait for the final usage batch;
+- graceful shutdown seals the active read window and waits one drain cadence (`TELEMETRY_DRAIN_SECS`) for the final batch to reach the spool and the ledger;
 - a hard process loss can undercount only the unflushed active interval;
 - source epochs and batch sequences prevent overbilling after restart;
 - the system exposes estimated unflushed read bytes and maximum possible loss.
@@ -418,7 +418,7 @@ A restart creates a new boot ID; counters restart from zero without re-billing p
 
 ### 7.4 Accuracy contract
 
-- Graceful stops flush all read usage before exit.
+- Graceful stops seal the active read window and drain it in one terminal round bounded by one drain cadence (`TELEMETRY_DRAIN_SECS`, which must stay below the 10 s supervisor grace); what the spool accepted is durable, and a store that does not answer inside the cadence leaves the batch under the same custody as an interrupted round.
 - Hard process loss may undercount at most one active flush interval.
 - No restart path can overcount an already emitted batch.
 - `/operator` exposes current unflushed read bytes and the maximum possible loss window.

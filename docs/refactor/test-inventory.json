@@ -2307,6 +2307,17 @@
     "scenarios": []
   },
   {
+    "name": "graceful_stop_seals_and_drains_the_active_read_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d91610f452efbcd941e80a42ae0ccb7622e3c3bc8a581d7c884885cd61a0263",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "handle_capacity_cap_evicts_oldest_first",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4629,7 +4640,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9",
+    "function_sha256": "96a9261edc3ebdf4548d1967b313bed4c6bf3df26a68f1d582e3f4b3fdc8a720",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN",

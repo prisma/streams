@@ -9,6 +9,10 @@ use crate::dst::{FaultPlan, FaultProfile, FaultStore, ObjClass, StoreOp};
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "r09 active telemetry cancellation; the entered holds, the stop and the release-and-retry must stay one visible sequence so the stop's side is evident for every batch; a helper phase would hide which side of the stop a batch was on"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     // A nonzero latency plan selects the instrumented listing path; the
@@ -79,10 +83,20 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     .await
     .expect("both real storage operations must be entered before cancellation");
     assert_eq!(state.billing.unflushed_reads().2, 0, "drain owns the batch");
-    let report = tasks.shutdown(Duration::from_millis(300)).await;
+    // Item 26: a stop runs one terminal round; it parks on the same held
+    // PUT and is cut after one drain cadence, so the grace sits above the
+    // cadence and the stop still needs no abort (R09).
+    let cadence = Duration::from_secs(state.config.billing.telemetry_drain_secs);
+    let stop = std::time::Instant::now();
+    let report = tasks.shutdown(Duration::from_secs(5)).await;
     assert!(
         report.aborted.is_empty(),
         "active passes must stop cooperatively: {report:?}"
+    );
+    assert!(
+        stop.elapsed() >= cadence,
+        "the terminal round must be attempted and given one cadence, not {:?}",
+        stop.elapsed()
     );
     assert_eq!(report.outcomes.len(), 2);
     assert!(
@@ -111,6 +125,133 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
         assert_eq!(serde_json::to_vec(&batch).unwrap(), expected);
     }
     assert!(state.billing.drain_sealed_reads(1).is_empty());
+    spool.close_for_tests().await;
+    rig.shutdown().await;
+}
+
+/// How many `_ops_metrics` snapshots the rig has emitted: the rig's first
+/// drain round ends with one, so this is the mark that the loop has left
+/// its round and is waiting between ticks.
+async fn ops_metrics_records(state: &Arc<crate::http::AppState>) -> usize {
+    let key = state.billing.usage_key().unwrap();
+    match crate::billing::system_read(state, crate::billing::OPS_METRICS_STREAM, &key, None)
+        .await
+        .unwrap()
+    {
+        None => 0,
+        Some((body, _)) if body.is_empty() => 0,
+        Some((body, _)) => serde_json::from_slice::<Vec<serde_json::Value>>(&body)
+            .unwrap()
+            .len(),
+    }
+}
+
+/// The read rows the `_usage` ledger holds, as (identity, (payload bytes,
+/// records, operations)).
+async fn usage_read_rows(
+    state: &Arc<crate::http::AppState>,
+) -> Vec<(crate::billing::BillingIdentity, (u64, u64, u64))> {
+    let key = state.billing.usage_key().unwrap();
+    let (body, _) = crate::billing::system_read(state, crate::billing::USAGE_STREAM, &key, None)
+        .await
+        .unwrap()
+        .expect("_usage exists after the terminal round");
+    let envelopes: Vec<crate::billing::UsageEnvelope> = serde_json::from_slice(&body).unwrap();
+    envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            crate::billing::UsagePayload::ReadBatch(b) => Some(&b.rows),
+            crate::billing::UsagePayload::SegmentSnapshot(_)
+            | crate::billing::UsagePayload::StreamLifecycle(_)
+            | crate::billing::UsagePayload::UsageCorrection(_) => None,
+        })
+        .flatten()
+        .map(|row| {
+            (
+                row.identity.clone(),
+                (
+                    row.read_payload_bytes,
+                    row.read_records,
+                    row.read_operations,
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Review item 26: a graceful stop owes the ledger the read window the
+/// cadence had not reached yet (OBSERVABILITY-BILLING §2.3, §7.4). The
+/// loop is stopped between ticks, on the rig's own supervisor, so every
+/// other supervised loop is cancelled in the same instant as in
+/// production; the window younger than the flush interval must still be
+/// sealed, spooled and appended before the loop reports itself finished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graceful_stop_seals_and_drains_the_active_read_window() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let state = rig.state.clone();
+    let spool = Arc::new(
+        crate::billing::ReadSpool::open(state.data_store.clone(), "", "stop-drain", &state.config)
+            .await
+            .unwrap(),
+    );
+    assert!(state.billing.install_read_spool(spool.clone()).is_ok());
+    crate::billing::spawn_telemetry(state.clone(), &rig.tasks);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while ops_metrics_records(&state).await != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first round ends with the metrics emission");
+    let identity = crate::billing::BillingIdentity {
+        account_id: "acct".into(),
+        project_id: "proj".into(),
+        stream_id: "ab".repeat(8),
+        stream_name: "orders".into(),
+    };
+    state.billing.meter_read(
+        &identity,
+        crate::billing::RowDelta {
+            read_payload_bytes: 4096,
+            read_records: 3,
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        state.billing.unflushed_reads(),
+        (1, 150, 0),
+        "the window is younger than the flush interval: nothing seals before the stop"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
+    assert!(
+        report.aborted.is_empty(),
+        "the terminal round must finish inside the grace: {report:?}"
+    );
+    for name in ["telemetry-drain", "telemetry-outbox-sweep"] {
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .any(|(n, o)| *n == name && *o == crate::tasks::TaskOutcome::Finished),
+            "{name} must report itself finished: {report:?}"
+        );
+    }
+    assert_eq!(
+        state.billing.unflushed_reads(),
+        (0, 0, 0),
+        "a graceful stop left read usage behind"
+    );
+    assert!(
+        spool.pending(10).await.unwrap().is_empty(),
+        "the ledger acknowledged the batch, so the spool released it"
+    );
+    assert_eq!(
+        usage_read_rows(&state).await,
+        vec![(identity, (4096, 3, 1))],
+        "exactly the one metered row reached the ledger"
+    );
     spool.close_for_tests().await;
     rig.shutdown().await;
 }

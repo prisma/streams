@@ -214,7 +214,9 @@ pub struct BillingConfig {
     pub path_prefix_env: Option<String>,
     /// OUTBOX_SWEEP_SECS, default 300.
     pub outbox_sweep_secs: u64,
-    /// TELEMETRY_DRAIN_SECS, default 2.
+    /// TELEMETRY_DRAIN_SECS, default 2. Also bounds the terminal drain
+    /// round a graceful stop runs; keep it below the 10 s supervisor
+    /// grace, above it the supervisor's abort is the bound.
     pub telemetry_drain_secs: u64,
     /// METRICS_INTERVAL_SECS, default 15.
     pub metrics_interval_secs: u64,
