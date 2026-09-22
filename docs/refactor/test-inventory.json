@@ -2994,6 +2994,17 @@
     "scenarios": []
   },
   {
+    "name": "livefeed_reopened_sealed_span_serves_catch_up",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1c5ac2848c78f04607dfb70940d28785a1ffe23ba558c2d3611425ec9254aeec",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/livefeed_ownership.rs",
+    "scenarios": []
+  },
+  {
     "name": "livefeed_revocation_terminates_the_subscription",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

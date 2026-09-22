@@ -371,6 +371,112 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     wait_for_feed_teardown(&state_b, 300).await;
 }
 
+/// Review rank 16 (red): a sealed predecessor's engine that CLOSES and
+/// REOPENS under the SAME owner (a storage-fault close, an ownership
+/// bounce that comes back, a rig retirement) must not leave the feed's
+/// lineage source reading the closed engine forever. The source used to
+/// cache the (engine, handle) pair of the last locally served page and
+/// cleared it only when ownership moved AWAY; with ownership unchanged
+/// every later catch-up page read the closed db, failed, and the session
+/// retried it every 100 ms without end. A sealed page now resolves the
+/// directory's resident engine on every read, so the reopened engine
+/// serves the next page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_reopened_sealed_span_serves_catch_up() {
+    let store = mem();
+    let (state, addr) = http_rig_owner(store, "inst-b").await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/xreopen",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "xreopen", r#"{"r":0}"#).await;
+    hub_append_lf(addr, "xreopen", r#"{"r":1}"#).await;
+    // Seg 0 seals at cap 2; the "" lane continues in the high child,
+    // whose route is salted onto a DIFFERENT prefix than the parent
+    // (topology.rs split), so the sealed span has an engine of its own.
+    split_and_await(&state, "xreopen", 0).await;
+    let sref = state.deployment.raw_adapter_sref("xreopen");
+    state.registry.invalidate(&sref);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let p_parent = state
+        .shards
+        .prefix_for(&desc.segment_route_by_id(0).unwrap());
+    let p_child = state
+        .shards
+        .prefix_for(&desc.segment_route_by_id(child_seg).unwrap());
+    assert_ne!(
+        p_parent, p_child,
+        "the sealed span must have its own engine"
+    );
+    hub_append_lf(addr, "xreopen", r#"{"r":2}"#).await;
+
+    // sub1 establishes the feed; its catch-up serves the sealed span
+    // LOCALLY (this is where the old code filled its cache).
+    let mut sub1 = lf_connect(addr, "xreopen", "?cursor=beginning").await;
+    let (a1, eof1) = hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"r\":2")).await;
+    assert!(
+        !eof1 && a1.contains("\"r\":0") && a1.contains("\"r\":2"),
+        "sub1 established through the sealed span:\n{a1}"
+    );
+
+    // The sealed span's engine closes under the SAME owner. Its closed
+    // flag alone makes the old code's cached page fail; the termination
+    // barrier only keeps the FIXED run's reopen from tailing through
+    // shard_closing retries.
+    assert!(
+        state.shards.is_open(&p_parent),
+        "the sealed span's engine is resident"
+    );
+    let retired = match state.shards.retire(
+        &p_parent,
+        crate::shard_directory::RetirementReason::Shutdown,
+        |_, _| true,
+    ) {
+        crate::shard_directory::RetireOutcome::Retired(engine) => engine,
+        _ => panic!("the sealed span's engine must have been resident"),
+    };
+    assert!(
+        retired.is_closed(),
+        "retirement closes the sealed span's engine"
+    );
+    for _ in 0..500 {
+        if retired.termination_complete() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        retired.termination_complete(),
+        "the retired engine must close cleanly so the prefix can reopen"
+    );
+    state.shards.clear_holdoff(&p_parent); // a reopen is allowed at once
+    assert!(!state.shards.is_open(&p_parent));
+
+    // sub2 joins the SAME feed (sub1 keeps it alive, so the SAME lineage
+    // source serves) and catches up from the beginning: the sealed page
+    // must come from the REOPENED engine, not spin on the closed one.
+    let mut sub2 = lf_connect(addr, "xreopen", "?cursor=beginning").await;
+    let (a2, eof2) = hub_sse_collect(&mut sub2, 15, |t| lf_record_and_status(t, "\"r\":2")).await;
+    assert!(
+        a2.contains("\"r\":0") && a2.contains("\"r\":1") && a2.contains("\"r\":2"),
+        "a catch-up through a reopened sealed span must serve, not retry a closed engine forever:\n{a2}"
+    );
+    assert!(!eof2, "a same-owner reopen is never a cutoff:\n{a2}");
+    assert!(
+        state.shards.is_open(&p_parent),
+        "the page reopened the sealed span's engine"
+    );
+    drop(sub1);
+    drop(sub2);
+    wait_for_feed_teardown(&state, 300).await;
+}
+
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
 /// no response ever — must not suppress SSE keep-alives (the body
 /// owns them), must not cancel other subscribers, must cancel its

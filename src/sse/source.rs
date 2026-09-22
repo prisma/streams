@@ -177,27 +177,23 @@ struct LineageSpan {
     reader: SpanReader,
 }
 
-/// The cached local reader of a sealed span: the engine and handle the
-/// last locally served page used.
-type LocalReader = tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>;
-
 /// HOW a span's records are read (round-10 two-instance model):
 /// metadata (`seg_id`/`logical_start`/`cap`) answers `locate`/
 /// `logicalize` without opening anything; only reads need a reader.
 enum SpanReader {
     /// A SEALED span, OWNERSHIP-DYNAMIC (round-11.2): every page
     /// resolves the CURRENT effective owner first — local when this
-    /// instance owns the shard (reader cached), remote otherwise via
-    /// the typed one-redirect protocol. `owner_hint` remembers the
-    /// last owner that served a page; a successful redirect updates
-    /// it. This also covers a predecessor that was local at build
-    /// time and later moved away — and one that moved TO this
-    /// instance.
+    /// instance owns the shard (the directory's resident engine and
+    /// its handle, looked up per page, never cached here), remote
+    /// otherwise via the typed one-redirect protocol. `owner_hint`
+    /// remembers the last owner that served a page; a successful
+    /// redirect updates it. This also covers a predecessor that was
+    /// local at build time and later moved away — and one that moved
+    /// TO this instance, or that closed and reopened here.
     Sealed {
         route: [u8; 16],
         target: crate::application::read_remote::InternalTarget,
         owner_hint: std::sync::RwLock<Option<String>>,
-        local: LocalReader,
     },
     /// The LIVE tail: LOCAL ONLY (locked architecture). Every read
     /// confirms this instance is still the effective owner; a moved
@@ -329,7 +325,6 @@ impl LineageSource {
                     route,
                     target,
                     owner_hint: std::sync::RwLock::new(None),
-                    local: tokio::sync::Mutex::new(None),
                 }
             } else {
                 // The LIVE tail must be LOCAL (locked architecture).
@@ -398,16 +393,19 @@ impl LineageSource {
     }
 
     /// One sealed-span page (round-11.2, ownership-dynamic): local
-    /// when this instance owns the shard, otherwise the typed remote
-    /// protocol with at most one verified redirect. Fatal outcomes
-    /// ride `FatalSpanCutoff`; retryables stay anyhow errors (the
-    /// session's bounded-backoff retry).
+    /// when this instance owns the shard, through the directory's
+    /// resident engine and the engine's resident handle, resolved on
+    /// EVERY page so the page reads through the engine's current
+    /// incarnation; otherwise the typed remote protocol with at most
+    /// one verified redirect. Fatal outcomes ride `FatalSpanCutoff`;
+    /// retryables stay anyhow errors (the session's bounded-backoff
+    /// retry).
     #[expect(
         clippy::too_many_arguments,
         clippy::too_many_lines,
         clippy::excessive_nesting,
         clippy::unwrap_used,
-        reason = "LineageSource::sealed_span_page; a sealed span's page resolves the current owner, serves locally or through one redirect and caches the reader and owner hint it used, and a poisoned hint may hold a half-recorded owner that could route the next page to the wrong instance; a request struct, a split, a flattened resolution or a recovered hint would separate the page from the owner resolution it must repeat"
+        reason = "LineageSource::sealed_span_page; a sealed span's page resolves the current owner on every read and serves through the directory's resident engine or through one redirect, and a poisoned hint may hold a half-recorded owner that could route the next page to the wrong instance; a request struct, a split, a flattened resolution, a reader cached across pages or a recovered hint would separate the page from the owner resolution it must repeat"
     )]
     async fn sealed_span_page(
         &self,
@@ -415,60 +413,49 @@ impl LineageSource {
         route: &[u8; 16],
         target: &crate::application::read_remote::InternalTarget,
         owner_hint: &std::sync::RwLock<Option<String>>,
-        local: &LocalReader,
         local_from: u64,
         budget: usize,
     ) -> anyhow::Result<crate::application::read::ReadPage> {
         use super::feed::SourceCutoff;
         if owned_here(&self.state, route) {
-            let mut cached = local.lock().await;
-            if cached.is_none() {
-                match self
-                    .state
-                    .shards
-                    .resolve(route, crate::shard_directory::Adoption::External)
+            match self
+                .state
+                .shards
+                .resolve(route, crate::shard_directory::Adoption::External)
+                .await
+            {
+                Ok(engine) => {
+                    let handle = engine
+                        .stream_handle(span.identity)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("stream handle: {e}"))?;
+                    self.state
+                        .keys
+                        .put(span.identity, self.key.clone(), self.epoch);
+                    return crate::application::read::ReadPlan::segment(
+                        &self.key,
+                        &self.epoch,
+                        &handle,
+                        &engine,
+                        crate::application::read::ReadRange::bounded(
+                            local_from,
+                            span.cap.unwrap_or(u64::MAX),
+                        ),
+                        self.rk_filter.as_deref(),
+                        budget,
+                        crate::shard::Deliver::Durable,
+                    )
+                    .execute()
                     .await
-                {
-                    Ok(engine) => {
-                        let handle = engine
-                            .stream_handle(span.identity)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("stream handle: {e}"))?;
-                        self.state
-                            .keys
-                            .put(span.identity, self.key.clone(), self.epoch);
-                        *cached = Some((engine, handle));
-                    }
-                    // Ownership raced away between the check and the
-                    // open: fall through to the remote path below.
-                    Err(crate::shard_directory::ResolveError::NotOwner { .. }) => {}
-                    Err(error) => {
-                        anyhow::bail!("sealed span engine unavailable: {error:?}")
-                    }
+                    .map_err(|e| anyhow::anyhow!(e));
+                }
+                // Ownership raced away between the check and the
+                // open: fall through to the remote path below.
+                Err(crate::shard_directory::ResolveError::NotOwner { .. }) => {}
+                Err(error) => {
+                    anyhow::bail!("sealed span engine unavailable: {error:?}")
                 }
             }
-            if let Some((engine, handle)) = cached.as_ref() {
-                return crate::application::read::ReadPlan::segment(
-                    &self.key,
-                    &self.epoch,
-                    handle,
-                    engine,
-                    crate::application::read::ReadRange::bounded(
-                        local_from,
-                        span.cap.unwrap_or(u64::MAX),
-                    ),
-                    self.rk_filter.as_deref(),
-                    budget,
-                    crate::shard::Deliver::Durable,
-                )
-                .execute()
-                .await
-                .map_err(|e| anyhow::anyhow!(e));
-            }
-        } else {
-            // Moved away: a stale local cache must not serve (a fenced
-            // engine's reads fail anyway); the remote path owns it.
-            *local.lock().await = None;
         }
         // REMOTE: the owner is the hint, or the ring's current answer.
         let owner = {
@@ -619,14 +606,12 @@ impl FeedSourceRead for LineageSource {
                     route,
                     target,
                     owner_hint,
-                    local,
                 } => {
                     self.sealed_span_page(
                         span,
                         route,
                         target,
                         owner_hint,
-                        local,
                         local_from,
                         budget.remaining(),
                     )
