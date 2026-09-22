@@ -718,3 +718,44 @@ async fn byte_capped_load_claims_through_its_last_decoded_run() {
         "runs behind the byte cap were treated as proven absent"
     );
 }
+
+/// A panicking OWNED load is a failed load: its single-flight marker
+/// clears, so the next read of the key leads a fresh owned load that
+/// publishes, instead of spinning on the dead channel and loading
+/// uncached forever (with prefetch disabled for the key).
+#[tokio::test]
+async fn a_panicking_owned_load_clears_its_single_flight_marker() {
+    let part = mem_db("wt/panic").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (_, inc, kh) = ids(9);
+    cache.panic_next_owned_load();
+
+    // Cold key: this read leads the owned load, which panics once; the
+    // reader wakes on the finished (failed) load and loads directly.
+    let _ = runs_of(&cache, &part, 9, 0, 100).await;
+    assert_eq!(
+        cache.coalesced.load(Ordering::Relaxed),
+        0,
+        "the reader spun on the dead loader's channel: the marker outlived its task"
+    );
+    assert!(
+        cache.debug_slice(&inc, &kh).is_none(),
+        "a panicked load publishes nothing"
+    );
+
+    // The next read leads a FRESH owned load, which publishes.
+    let _ = runs_of(&cache, &part, 9, 0, 100).await;
+    assert!(
+        cache.debug_slice(&inc, &kh).is_some(),
+        "the load after a panicked one must publish"
+    );
+    assert_eq!(
+        cache.index_loads.load(Ordering::Relaxed),
+        2,
+        "one direct load after the panic, one owned load that published"
+    );
+
+    // And the published slice serves every later read.
+    let _ = runs_of(&cache, &part, 9, 0, 100).await;
+    assert_eq!(cache.hits.load(Ordering::Relaxed), 2);
+}

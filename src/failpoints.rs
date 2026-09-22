@@ -4,11 +4,14 @@
 //! writes — the point is to stop BETWEEN them rather than reconstruct
 //! the intended post-crash state by hand.
 //!
-//! Scope note (the audit surface): one injection family lives OUTSIDE
+//! Scope note (the audit surface): two injection families live OUTSIDE
 //! this registry BY DESIGN — the shard group-write failure
 //! (`shard.rs`, #107) is armed through the ENGINE HANDLE because its
 //! state is per-route-hash and per-engine-instance; a process-global
-//! registry would cross-arm both engines of a two-engine fleet rig.
+//! registry would cross-arm both engines of a two-engine fleet rig;
+//! and the postings cache's owned-load panic (`postings_cache/owned_load.rs`)
+//! is armed per cache instance because a postings load has no stream
+//! name to key on.
 //! Everything name-keyed and request-scoped belongs HERE; new
 //! failpoints add a variant + a helper pair and NOTHING else.
 #![cfg(test)]

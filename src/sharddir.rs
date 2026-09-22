@@ -73,6 +73,8 @@ static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
 mod health;
 pub(crate) use health::ShardHealth;
+/// The opener's unwind boundary; `new` wraps every opener with it.
+mod unwind;
 
 /// How long a never-ready instance may stay unready before it exits.
 ///
@@ -436,7 +438,7 @@ impl OpenGate {
                 health: ShardHealth::default(),
                 stopping: AtomicBool::new(false),
                 shards,
-                opener,
+                opener: unwind::unwind_proof(opener),
                 next_incarnation: AtomicU64::new(0),
                 st: Mutex::new(HashMap::new()),
                 open_deadline,

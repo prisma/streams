@@ -28,6 +28,10 @@ use slatedb::Db;
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow, ValidatedRuns};
 
+/// The owned load's unwind boundary and its test-only panic hook.
+mod owned_load;
+use owned_load::load_owned;
+
 /// Default PROCESS-WIDE decoded-byte budget (spec §7.1; review finding
 /// 7: one budget for the whole process — engines share one cache in
 /// production via `process_cache`, sized by env POSTINGS_CACHE_BYTES).
@@ -184,6 +188,9 @@ pub(crate) struct PostingsCache {
     pub prefetch_completed: AtomicU64,
     pub warm_installs: AtomicU64,
     pub warm_extends: AtomicU64,
+    /// Test-only: arms the next OWNED load's scripted panic (see `owned_load`).
+    #[cfg(test)]
+    panic_next_owned_load: std::sync::atomic::AtomicBool,
 }
 
 /// Outcome of a cache consultation for one read.
@@ -218,6 +225,8 @@ impl PostingsCache {
             prefetch_completed: AtomicU64::new(0),
             warm_installs: AtomicU64::new(0),
             warm_extends: AtomicU64::new(0),
+            #[cfg(test)]
+            panic_next_owned_load: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -716,7 +725,7 @@ impl PostingsCache {
                 Some(s) if s.first_bucket <= want_bucket => s.indexed_to_offset / BUCKET_OFFSETS,
                 _ => want_bucket,
             };
-            let res = load_runs(&cache, &part, route, inc, kh, start_bucket, target_offset).await;
+            let res = load_owned(&cache, &part, route, inc, kh, start_bucket, target_offset).await;
             let loaded = match res {
                 Ok((runs, _enc, load_to, false)) => Some((runs, load_to)),
                 Ok(_) | Err(_) => None,
