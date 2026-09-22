@@ -3555,6 +3555,19 @@
     "scenarios": []
   },
   {
+    "name": "o2c_registry_store_error_on_a_receiver_is_retryable_not_gone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "be13b5d7b3f095ae67b374c568e5cd84c0772ec0d78e804b168934503ace659d",
+    "mechanisms": [],
+    "configuration": [
+      "let desc = seed(&rig).await;"
+    ],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
     "name": "o2c_unauthorized_scan_does_not_wait_for_request_body",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"

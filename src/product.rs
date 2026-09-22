@@ -3322,16 +3322,12 @@ pub(crate) fn verify_internal_target(
 // the handlers never relay again). Ownership 409s from the handlers
 // flow back and the caller surfaces its normal retryable error.
 
-// Relay one segment's ConfigDeleteStep loop to its owner. Chunks the
-// caller's remaining step budget so a relayed segment obeys the same
-// per-request bound as a local one (durable progress either way).
-
 /// Fleet-internal sweep target: run bounded ConfigDeleteStep rounds for
 /// ONE locally-owned segment. fence_below arrives from the caller so
 /// the generation-fenced cleanup semantics (round 17) hold unchanged.
 #[expect(
     clippy::expect_used,
-    reason = "internal_sweep_segment; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+    reason = "internal_sweep_segment; the outcome is rendered only after the typed registry prelude and the incarnation check admitted the target, and it derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
 )]
 pub(crate) async fn internal_sweep_segment(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -3370,9 +3366,9 @@ pub(crate) async fn internal_sweep_segment(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let desc = match state.registry.get(&sref).await {
-        Ok(Some(d)) => d,
-        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    let desc = match internal::internal_desc(&state.registry, &sref).await {
+        Ok(d) => d,
+        Err(r) => return r,
     };
     // ABA GUARD (round-19): a stale sweep must never fence or delete a
     // RECREATED stream's consumer state. Verified before the engine is
@@ -3427,7 +3423,7 @@ pub(crate) async fn internal_sweep_segment(
 /// cannot converge on (each owner would bounce on the other's segment).
 #[expect(
     clippy::expect_used,
-    reason = "internal_queue_cursor; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
+    reason = "internal_queue_cursor; the position is rendered only after the typed registry prelude and the incarnation check admitted the target, and it derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
 )]
 pub(crate) async fn internal_queue_cursor(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -3463,9 +3459,9 @@ pub(crate) async fn internal_queue_cursor(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let desc = match state.registry.get(&sref).await {
-        Ok(Some(d)) => d,
-        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    let desc = match internal::internal_desc(&state.registry, &sref).await {
+        Ok(d) => d,
+        Err(r) => return r,
     };
     // ABA GUARD: cursor/tail state of a RECREATED stream must never be
     // reported to a caller holding the previous incarnation.
@@ -3550,9 +3546,9 @@ pub(crate) async fn internal_segment_scan(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let desc = match state.registry.get(&sref).await {
-        Ok(Some(d)) => d,
-        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    let desc = match internal::internal_desc(&state.registry, &sref).await {
+        Ok(d) => d,
+        Err(r) => return r,
     };
     // ABA GUARD: never serve a recreated stream's records to a caller
     // that asked about the previous incarnation.
@@ -4030,6 +4026,7 @@ pub(crate) async fn product_list(
 
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
+mod internal;
 mod scan;
 use scan::product_scan;
 mod usage;

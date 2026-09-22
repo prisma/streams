@@ -1,4 +1,6 @@
-//! The scan RPC accepts old omissions without accepting malformed present bounds.
+//! The scan RPC accepts old omissions without accepting malformed present
+//! bounds, and every internal receiver tells an unreadable registry apart
+//! from an absent stream.
 use super::fixture_http::{
     HttpRig, HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build,
 };
@@ -275,6 +277,111 @@ async fn o2c_unauthorized_scan_does_not_wait_for_request_body() {
         "reject before the withheld body arrives"
     );
     drop(socket);
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// One request per receiver, all three sharing the registry prelude, so a
+/// status that regresses on one route cannot hide behind the others.
+fn internal(
+    rig: &HttpRig,
+    target: &InternalTarget,
+    method: reqwest::Method,
+    path: &str,
+) -> reqwest::RequestBuilder {
+    let mut request = crate::peer::client()
+        .request(method, format!("http://{}/v1/internal/{path}", rig.addr))
+        .bearer_auth("dst-internal-token");
+    for (key, value) in target.headers() {
+        request = request.header(key, value);
+    }
+    request
+}
+
+async fn answer(request: reqwest::RequestBuilder) -> (u16, String, Option<bool>) {
+    let response = tokio::time::timeout(Duration::from_secs(10), request.send())
+        .await
+        .unwrap()
+        .unwrap();
+    let status = response.status().as_u16();
+    let body: serde_json::Value = response.json().await.unwrap();
+    (
+        status,
+        body["error"]["code"].as_str().unwrap_or("").to_string(),
+        body["error"]["retryable"].as_bool(),
+    )
+}
+
+/// Review item 30: a peer relays on behalf of an incarnation it has already
+/// bound, so a receiver that cannot READ its registry must not answer the
+/// 404 that means "no descriptor": the sealed-span SSE sender reads 404 as
+/// the incarnation being gone and disconnects every subscriber of a feed
+/// whose stream still exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o2c_registry_store_error_on_a_receiver_is_retryable_not_gone() {
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            absorber: Some(cold_absorber()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let desc = seed(&rig).await;
+    let target = InternalTarget::of(&desc, 0).unwrap();
+    let mut answers = Vec::new();
+    rig.state.registry.fail_next_get("compat");
+    answers.push(("segment-scan", answer(request(&rig, &target)).await));
+    rig.state.registry.fail_next_get("compat");
+    answers.push((
+        "queue-cursor",
+        answer(
+            internal(&rig, &target, reqwest::Method::GET, "queue-cursor/compat")
+                .header("streams-internal-consumer", "c")
+                .header("streams-internal-gen", "1"),
+        )
+        .await,
+    ));
+    rig.state.registry.fail_next_get("compat");
+    answers.push((
+        "sweep-segment",
+        answer(
+            internal(&rig, &target, reqwest::Method::POST, "sweep-segment/compat")
+                .body(r#"{"consumer":"c","segId":0,"fenceBelow":0,"maxSteps":1}"#),
+        )
+        .await,
+    ));
+    let unavailable = (503, "temporarily_unavailable".to_string(), Some(true));
+    assert_eq!(
+        answers,
+        [
+            ("segment-scan", unavailable.clone()),
+            ("queue-cursor", unavailable.clone()),
+            ("sweep-segment", unavailable),
+        ],
+        "a registry the receiver cannot read is not a stream that is gone"
+    );
+    // The store error was transient: the same scan then serves its page ...
+    let served = tokio::time::timeout(Duration::from_secs(10), request(&rig, &target).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        served.status(),
+        200,
+        "a transient store error is not a state change"
+    );
+    // ... and a name with no descriptor is still not_found.
+    let absent = internal(&rig, &target, reqwest::Method::GET, "segment-scan/absent")
+        .header("streams-internal-from", "1")
+        .header("streams-internal-max-bytes", "1024")
+        .header("stream-encryption-key", PRISMA_KEY);
+    assert_eq!(
+        answer(absent).await,
+        (404, "not_found".to_string(), Some(false)),
+        "no descriptor is the one honest 404"
+    );
     engine_shutdown(&rig.state).await;
     rig.tasks.shutdown(Duration::from_secs(5)).await;
 }
