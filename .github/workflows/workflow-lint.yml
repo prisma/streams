@@ -16,9 +16,17 @@ on:
     branches: [main, slate]
   pull_request:
 
+concurrency:
+  # A newer push to the same PR supersedes the run in progress; a push
+  # to a branch or a scheduled run is its own group and runs to
+  # completion (each commit on slate keeps its own verdict).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   actionlint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - name: Lint every workflow file

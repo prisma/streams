@@ -5,6 +5,12 @@ on:
     branches: [main, slate]
   schedule:
     - cron: "43 3 * * *"
+concurrency:
+  # A newer push to the same PR supersedes the run in progress; a push
+  # to a branch or a scheduled run is its own group and runs to
+  # completion (each commit on slate keeps its own verdict).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 permissions:
   contents: read
 env:
@@ -15,6 +21,7 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +48,7 @@ jobs:
         run: scripts/test-leg.sh target/legs/quality.log --min 15 -- --locked --release --lib quality_
   invariant-tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:

@@ -10,6 +10,13 @@ on:
     # script; a regression fails this workflow.
     - cron: "17 3 * * *"
 
+concurrency:
+  # A newer push to the same PR supersedes the run in progress; a push
+  # to a branch or a scheduled run is its own group and runs to
+  # completion (each commit on slate keeps its own verdict).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 # Product-surface spec appendix §7: the required CI topology. The
 # dual-surface equivalence corpus, DST scenarios, and product
 # conformance run inside `cargo test --release` (dst::dst_tests);
@@ -22,6 +29,7 @@ jobs:
   # The historical WP-00 report remains diagnostic, never an acceptance signal.
   architecture-report:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +65,7 @@ jobs:
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -107,6 +116,7 @@ jobs:
   # suite (livefeed IS the one engine since round 11.8).
   livefeed:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -123,6 +133,7 @@ jobs:
   noisy-campaign:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -140,6 +151,7 @@ jobs:
   # the SDK exchanges through tokenProvider. Phase-A scenarios.
   platform-e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -163,6 +175,7 @@ jobs:
   # target/livefeed-cert-manifest.json.
   livefeed-fleet-cert:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -183,6 +196,7 @@ jobs:
   # denials) on every push so the at-scale posture cannot rot.
   mt-cert-1000:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -196,6 +210,7 @@ jobs:
   # on the oldest supported runtime (engines: >=18) and on current Node.
   sdk-package:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -278,6 +293,7 @@ jobs:
   # version here must match src/protocol_pin.rs.
   durable-streams-server-conformance:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -317,6 +333,7 @@ jobs:
   # a real automatic split, and raw/product default-key isolation.
   product-field-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
