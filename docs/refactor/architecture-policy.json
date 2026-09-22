@@ -16,7 +16,8 @@
     "src/bootstrap.rs",
     "src/sse/auth.rs",
     "src/sse/session.rs",
-    "src/sse/wire.rs"
+    "src/sse/wire.rs",
+    "src/product/scan.rs"
   ],
   "budget_exceptions": {
     "file:src/billing.rs": {
@@ -153,7 +154,8 @@
     "src/bootstrap.rs": "The executable composition root assembles typed owners and shared capabilities.",
     "src/sse/auth.rs": "SSE request lease and gated HTTP body adapter.",
     "src/sse/session.rs": "SSE wire/session HTTP adapter; FeedSourceRead and ReadService own reads.",
-    "src/sse/wire.rs": "SSE event/header formatting only."
+    "src/sse/wire.rs": "SSE event/header formatting only.",
+    "src/product/scan.rs": "Product scan page adapter: parses the scan query, pages the frozen cursor and frames the page; ReadService owns the scan."
   },
   "adapter_http_exports": {
     "src/sse/session.rs": [
