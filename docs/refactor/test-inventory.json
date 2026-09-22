@@ -5326,6 +5326,17 @@
     "scenarios": []
   },
   {
+    "name": "shared_raw_subscriber_gets_up_to_date_after_a_match_free_batch",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "034a9a306a72576cfd0946cb8b32bd352409182fde162c73e470cfcee5648597",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
     "name": "shutdown_releases_the_listener_for_immediate_rebinding",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -118,7 +118,7 @@ only their control vocabulary differs.
 | Slow client | bounded queue + bounded send deadline → disconnect-on-lag |
 | Edge buffering | responses always carry `x-accel-buffering: no` |
 | Billing | one subscribe meter at connect + one payload chunk meter per delivered record — unchanged |
-| Status framing | CANONICAL = bare per-record cursor controls + standalone status controls decided at send time (hub style). The legacy direct path's flag-on-batch-last pairing is retired with it. |
+| Status framing | CANONICAL = bare per-record cursor controls + standalone status controls decided at send time (hub style). The legacy direct path's flag-on-batch-last pairing is retired with it. RAW pairing (round 11.8) folds `upToDate` into the paired control of the LAST record a session itself sends at the frontier; a batch that carries nothing for a session (a match-free lane window, or a cursor past every record it holds) leaves the standalone status owed, on solo and shared feeds alike. |
 
 ## Non-goals
 

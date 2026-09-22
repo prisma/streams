@@ -238,6 +238,7 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 - DELETE: 204 vs 404 vs 410 depending on descriptor state (hard-deletable vs missing vs soft-deleted/expired-with-forks).
 - Product append on a sealed/sealing collection: 409 `sealed` from `refuse_if_sealed` (handler) vs 409 `sealed` translated from raw `stream_closed` (committer) — same code, different origin.
 - `/health` readiness depends on auth mode and `BILLING_MODE`/`ROLLUP` env.
+- SSE (both surfaces): a window at the durable frontier that carries NO record for a session (a match-free default/keyed-lane scan, or a cursor already past every record of a retained batch) still yields ONE standalone `upToDate` control (raw: `streamNextOffset` advanced past the scanned range; product: `nextCursor`), on solo and shared feeds alike; RAW folds `upToDate` into the paired control only for a record the session itself sent (`src/sse/session.rs` Take::Batch/Solo arms).
 
 **Intentional dual-surface differences (same operation, different contract):**
 - Header vocabulary: raw `Stream-*` vs product `Prisma-*` (`Stream-Next-Offset` ↔ `Prisma-Next-Cursor`, `Stream-Closed` ↔ `Prisma-Sealed`, `Stream-Up-To-Date` ↔ `Prisma-Up-To-Date`, `Stream-Durable-Offset` ↔ `Prisma-Durable-Cursor`, `Stream-Pending-From` ↔ `Prisma-Pending-From`). Product responses never carry `Stream-*` (rebuilt from scratch).

@@ -515,15 +515,17 @@ pub(crate) async fn serve(
                         continue 'handoff;
                     }
                     Take::Batch { batch, start_index } => {
-                        // RAW pairing (round 11.8): the LAST record's
-                        // control carries upToDate when the batch ends
-                        // at the durable frontier — the pinned
-                        // conformance protocol pairs each data event
-                        // with ONE flag-carrying control. Product
-                        // framing stays bare + standalone status.
+                        // RAW pairing (round 11.8): the LAST record THIS
+                        // session sends carries upToDate when the batch
+                        // ends at the durable frontier (the pinned
+                        // protocol pairs each data event with ONE
+                        // flag-carrying control). A batch holding nothing
+                        // for it leaves the standalone status owed.
                         let after = cursor.max(batch.scan_to);
                         let head_here = after >= cur_src.frontier() && !cur_src.closed();
                         let last_i = batch.records.len();
+                        // Nothing sent to THIS session = status still owed.
+                        need_status = true;
                         for (i, r) in batch.records[start_index..].iter().enumerate() {
                             let at_head = head_here && start_index + i + 1 == last_i;
                             #[cfg(test)]
@@ -554,18 +556,16 @@ pub(crate) async fn serve(
                             {
                                 return;
                             }
+                            if at_head && ctx.surface == Surface::RawToken {
+                                // The paired control already reported the
+                                // head — the standalone status would be a
+                                // duplicate the pinned protocol forbids.
+                                need_status = false;
+                                last_reported = Some(after);
+                                reached_live = true;
+                            }
                         }
                         cursor = after;
-                        if head_here && ctx.surface == Surface::RawToken {
-                            // The paired control already reported the
-                            // head — the standalone status would be a
-                            // duplicate the pinned protocol forbids.
-                            need_status = false;
-                            last_reported = Some(cursor);
-                            reached_live = true;
-                        } else {
-                            need_status = true;
-                        }
                         // DRAIN (finding 5): more retained batches may
                         // already be visible — loop and consume them
                         // immediately instead of driving or parking
