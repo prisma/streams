@@ -404,6 +404,15 @@ async fn read_bytes(db: &Db, key: &[u8]) -> anyhow::Result<Option<bytes::Bytes>>
     Ok(db.get(key).await?)
 }
 
+/// Checkpoints are opaque offset tokens. One that is not UTF-8 is a
+/// corrupt checkpoint, never "no checkpoint yet".
+async fn read_text(db: &Db, key: &[u8]) -> anyhow::Result<Option<String>> {
+    read_bytes(db, key)
+        .await?
+        .map(|v| String::from_utf8(v.to_vec()).map_err(Into::into))
+        .transpose()
+}
+
 async fn read_json<T: for<'a> Deserialize<'a>>(db: &Db, key: &[u8]) -> anyhow::Result<Option<T>> {
     read_bytes(db, key)
         .await?
@@ -457,7 +466,7 @@ fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
 type ReadFaults = std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>>;
 
 #[cfg(test)]
-fn read_faults() -> &'static ReadFaults {
+pub(crate) fn read_faults() -> &'static ReadFaults {
     static FAULTS: std::sync::OnceLock<ReadFaults> = std::sync::OnceLock::new();
     FAULTS.get_or_init(Default::default)
 }
@@ -508,10 +517,7 @@ impl UsageRollup {
     }
 
     pub(crate) async fn cursor(&self) -> anyhow::Result<Option<String>> {
-        read_bytes(&self.db, K_CURSOR)
-            .await?
-            .map(|v| String::from_utf8(v.to_vec()).map_err(Into::into))
-            .transpose()
+        read_text(&self.db, K_CURSOR).await
     }
 
     /// Apply one ledger page and its cursor in one durable transaction.
@@ -706,7 +712,7 @@ mod tests;
 // sweep. Longer tiers (5 m/1 h) are the same mechanism applied again.
 // ---------------------------------------------------------------------
 
-const K_OPS_CURSOR: &[u8] = b"meta/ops-cursor";
+pub(crate) const K_OPS_CURSOR: &[u8] = b"meta/ops-cursor";
 pub(crate) const OPS_RAW_RETENTION_MS: i64 = 7 * 86_400_000;
 
 fn k_ops_raw(instance: &str, ts_ms: i64) -> Vec<u8> {
@@ -730,13 +736,11 @@ pub(crate) struct OpsM1 {
 }
 
 impl UsageRollup {
-    pub(crate) async fn ops_cursor(&self) -> Option<String> {
-        self.db
-            .get(K_OPS_CURSOR)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| String::from_utf8(v.to_vec()).ok())
+    /// The `_ops_metrics` checkpoint. An unreadable one fails the ops
+    /// step; it never reads as the start of the ledger, which would
+    /// merge every snapshot into the minute tier again.
+    pub(crate) async fn ops_cursor(&self) -> anyhow::Result<Option<String>> {
+        read_text(&self.db, K_OPS_CURSOR).await
     }
 
     /// Ingest one `_ops_metrics` page: raw point + m1 merge + cursor in

@@ -503,3 +503,70 @@ async fn billing_terminal_shutdown_waits_for_a_late_open() {
         }
     ));
 }
+
+async fn rollup_rows(db: &slatedb::Db) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    let mut iter = db.scan(..).await.unwrap();
+    while let Some(kv) = iter.next().await.unwrap() {
+        rows.push((kv.key.to_vec(), kv.value.to_vec()));
+    }
+    rows
+}
+
+/// Review item 49: an unreadable `_ops_metrics` checkpoint fails the ops
+/// step. It never reads as the start of the ledger, which would merge
+/// every snapshot into the minute tier a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_ledger() {
+    let (state, _) = http_rig(mem()).await;
+    let rollup = Arc::new(
+        crate::rollup::UsageRollup::open(mem(), "", &state.config)
+            .await
+            .unwrap(),
+    );
+    assert!(state.rollup.install(rollup.clone()).is_ok());
+    crate::ops::emit_metrics_once(&state).await.expect("emit");
+    let mut absorbed = 0;
+    for _ in 0..20 {
+        let n = crate::billing::ops_rollup_step(&state)
+            .await
+            .expect("ops rollup");
+        absorbed += n;
+        if n == 0 {
+            break;
+        }
+    }
+    assert!(absorbed >= 1, "the rig's snapshot reached the minute tier");
+    let before = rollup_rows(&rollup.db).await;
+    assert!(
+        before
+            .iter()
+            .any(|(key, _)| key.as_slice() == crate::rollup::K_OPS_CURSOR),
+        "the drain committed its checkpoint"
+    );
+    crate::rollup::read_faults().lock().unwrap().insert((
+        Arc::as_ptr(&rollup.db) as usize,
+        crate::rollup::K_OPS_CURSOR.to_vec(),
+    ));
+    let step = crate::billing::ops_rollup_step(&state).await;
+    assert_eq!(
+        step,
+        Err("injected rollup repository read failure".to_string()),
+        "an unreadable checkpoint fails the step; it never restarts the ledger"
+    );
+    assert_eq!(
+        rollup_rows(&rollup.db).await,
+        before,
+        "a failed required read moves no row and no checkpoint"
+    );
+    assert_eq!(
+        crate::billing::ops_rollup_step(&state)
+            .await
+            .expect("ops rollup"),
+        0,
+        "the next step resumes at the committed checkpoint"
+    );
+    assert_eq!(rollup_rows(&rollup.db).await, before);
+    rollup.db.close().await.unwrap();
+    engine_shutdown(&state).await;
+}

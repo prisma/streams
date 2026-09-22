@@ -1426,6 +1426,17 @@
     ]
   },
   {
+    "name": "an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_ledger",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e68117a2c5c346da416bb1f36ed6f49bbf2c955d2449dece2e7db41c17db150a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_unreadable_router_report_defers_only_the_desired_publication",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

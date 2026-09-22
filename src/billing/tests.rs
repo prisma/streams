@@ -214,3 +214,29 @@ async fn spool_quarantines_corrupt_rows() {
     assert_eq!(reopened.quarantined_count(), 1);
     assert_eq!(reopened.pending(10).await.unwrap().len(), 1);
 }
+
+/// A system page is its position: `system_read` commits the page's
+/// `stream-next-offset` as the rollup checkpoint, so a success carrying
+/// none is refused, never checkpointed as "".
+#[test]
+fn a_system_page_without_a_position_is_refused_never_checkpointed_as_empty() {
+    use axum::http::{HeaderMap, HeaderValue};
+    let refused = Err("system read _usage: page without stream-next-offset".to_string());
+    let mut headers = HeaderMap::new();
+    assert_eq!(page_position("_usage", &headers), refused);
+    headers.insert("stream-next-offset", HeaderValue::from_static(""));
+    assert_eq!(page_position("_usage", &headers), refused);
+    headers.insert(
+        "stream-next-offset",
+        HeaderValue::from_bytes(b"\xff").unwrap(),
+    );
+    assert_eq!(page_position("_usage", &headers), refused);
+    headers.insert(
+        "stream-next-offset",
+        HeaderValue::from_static("00000000000000000000000004"),
+    );
+    assert_eq!(
+        page_position("_usage", &headers).as_deref(),
+        Ok("00000000000000000000000004")
+    );
+}

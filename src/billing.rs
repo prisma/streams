@@ -1264,12 +1264,6 @@ pub(crate) async fn rollup_step(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    use axum::http::{HeaderMap, HeaderValue};
-    let mut hdrs = HeaderMap::new();
-    hdrs.insert(
-        "stream-encryption-key",
-        HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
-    );
     let cursor = rollup
         .cursor()
         .await
@@ -1309,13 +1303,11 @@ pub(crate) async fn ops_rollup_step(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    use axum::http::{HeaderMap, HeaderValue};
-    let mut hdrs = HeaderMap::new();
-    hdrs.insert(
-        "stream-encryption-key",
-        HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
-    );
-    let cursor = rollup.ops_cursor().await.filter(|c| !c.is_empty());
+    let cursor = rollup
+        .ops_cursor()
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|c| !c.is_empty());
     let Some((body, next)) = system_read(state, OPS_METRICS_STREAM, &key, cursor).await? else {
         return Ok(0);
     };
@@ -2193,7 +2185,8 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
 /// Read a page of a reserved system stream from ANY fleet member:
 /// local read; on an ownership 409, one relay hop through the
 /// incarnation-bound internal segment read. Returns (json body, next
-/// cursor).
+/// cursor); a 2xx page without `stream-next-offset` is an error, never
+/// a "" cursor.
 // mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants, never customer input
 pub(crate) async fn system_read(
     state: &std::sync::Arc<crate::http::AppState>,
@@ -2226,12 +2219,7 @@ pub(crate) async fn system_read(
         return Ok(None);
     }
     if resp.status().is_success() {
-        let next = resp
-            .headers()
-            .get("Stream-Next-Offset")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+        let next = page_position(stream, resp.headers())?;
         let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
             .await
             .map_err(|e| e.to_string())?;
@@ -2272,18 +2260,25 @@ pub(crate) async fn system_read(
     };
     match state.peer.send(mk).await {
         Ok(resp) if resp.status().is_success() => {
-            let next = resp
-                .headers()
-                .get("stream-next-offset")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_string();
+            let next = page_position(stream, resp.headers())?;
             let body = resp.bytes().await.map_err(|e| e.to_string())?;
             Ok(Some((body, next)))
         }
         Ok(resp) => Err(format!("system read relay: {}", resp.status())),
         Err(e) => Err(format!("system read relay: {e}")),
     }
+}
+
+/// A page IS its position: the offset the rollup commits with the rows.
+/// A success without one would be checkpointed as "" and replayed from
+/// the start of the ledger, so it is refused here, never defaulted.
+fn page_position(ledger: &str, headers: &axum::http::HeaderMap) -> Result<String, String> {
+    headers
+        .get("stream-next-offset")
+        .and_then(|v| v.to_str().ok())
+        .filter(|next| !next.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("system read {ledger}: page without stream-next-offset"))
 }
 
 fn urlencode(s: &str) -> String {

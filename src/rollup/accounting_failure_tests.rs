@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::{
-    K_CURSOR, SegmentState, UsageRollup, k_month, k_name, k_project, k_source, month_start_ms,
-    read_faults,
+    K_CURSOR, K_OPS_CURSOR, SegmentState, UsageRollup, k_month, k_name, k_project, k_source,
+    month_start_ms, read_faults,
 };
 use crate::billing::UsageEnvelope;
 use crate::billing::{ReadBatch, ReadRow, UsagePayload};
@@ -193,4 +193,46 @@ fn provisional_storage_handles_the_full_signed_clock_range() {
     row.segments.get_mut(&0).unwrap().final_seen = false;
     row.segments.get_mut(&0).unwrap().accounted_through_ms = end;
     assert_eq!(row.storage_byte_ms_provisional("2026-07", i64::MAX), 7);
+}
+
+/// Review item 49: the ops checkpoint is read through the same repository
+/// path as the usage checkpoint, so a read failure is an error, never
+/// "no checkpoint yet" (which would re-merge every snapshot).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ops_checkpoint_read_failure_is_an_error_never_the_start_of_the_ledger() {
+    let db = Arc::new(
+        Db::builder(
+            "ops-cursor",
+            Arc::new(object_store::memory::InMemory::new()),
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let r = UsageRollup {
+        db: db.clone(),
+        close_rows_visited: Default::default(),
+    };
+    assert_eq!(r.ops_cursor().await.unwrap(), None, "no checkpoint yet");
+    r.apply_ops_page(&[], "c0").await.unwrap();
+    assert_eq!(r.ops_cursor().await.unwrap().as_deref(), Some("c0"));
+    read_faults()
+        .lock()
+        .unwrap()
+        .insert((Arc::as_ptr(&db) as usize, K_OPS_CURSOR.to_vec()));
+    assert_eq!(
+        r.ops_cursor().await.unwrap_err().to_string(),
+        "injected rollup repository read failure"
+    );
+    assert_eq!(
+        r.ops_cursor().await.unwrap().as_deref(),
+        Some("c0"),
+        "one injected failure; the checkpoint is intact"
+    );
+    db.put(K_OPS_CURSOR, [0xff, 0xfe]).await.unwrap();
+    assert!(
+        r.ops_cursor().await.is_err(),
+        "a checkpoint that is not UTF-8 is corruption, not the start of the ledger"
+    );
+    db.close().await.unwrap();
 }
