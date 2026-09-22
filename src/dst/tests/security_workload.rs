@@ -457,3 +457,307 @@ async fn static_token_is_dead_in_workload_mode() {
     assert_ne!(st, 401, "the workload JWT must still authorize: {st}");
     engine_shutdown(&state).await;
 }
+
+// ---- review rank 21: create-vs-relay follows the typed verdicts ----------
+
+/// The two-instance JWT-only fleet the relay tests share: A owns the
+/// single shard `00`; B's ring says so, B holds NO static fleet token
+/// and presents `src`'s workload JWT outbound.
+async fn jwt_only_fleet(
+    src: crate::peer::FleetTokenSource,
+) -> (
+    std::sync::Arc<crate::http::AppState>,
+    std::sync::Arc<crate::http::AppState>,
+) {
+    const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wl-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let store = mem();
+    let (state_a, addr_a) = http_rig_build(
+        store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-a".to_string()),
+            auth_service: Some(svc.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    let (state_b, _addr_b) = http_rig_build(
+        store,
+        RigRuntime::incarnation(1),
+        HttpRigOptions {
+            instance: Some("rig-b".to_string()),
+            auth_service: Some(svc),
+            fleet_auth: Some((None, Some(src))),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    state_b
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
+    state_b.ownership.set_override("00", "rig-a");
+    state_b.peer.set_peer("rig-a", &format!("http://{addr_a}"));
+    (state_a, state_b)
+}
+
+fn telemetry_append_source() -> crate::peer::FleetTokenSource {
+    std::sync::Arc::new(move |_force: bool| {
+        Some(sr2_workload_jwt(
+            "wl-1",
+            &["telemetry-append"],
+            crate::shard::now_ms() / 1000,
+        ))
+    })
+}
+
+/// RED (review rank 21): a fleet member that does NOT own a reserved
+/// stream nobody has created yet must still land its first batch on
+/// the owner. The sender sniffed statuses: its local create was
+/// refused on OWNERSHIP as 409 not_ring_owner, which it read as
+/// "exists", re-appended locally, got 404 not_found (no
+/// streams-replay-to on a 404) and reported
+/// `system append _audit_events: 404 Not Found`: the relay branch was
+/// unreachable until the owner happened to create the stream itself.
+/// (`_audit_events` routes to shard `00`, the one the rig's override
+/// governs; `_ops_events` lands in the empty prefix by rendezvous.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unprimed_system_append_relays_its_first_batch_to_the_owner() {
+    let (state_a, state_b) = jwt_only_fleet(telemetry_append_source()).await;
+    // NO owner-side prime: `_audit_events` exists nowhere yet.
+    crate::billing::system_append(
+        &state_b,
+        "_audit_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"unprimed-relay-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("a non-owner's FIRST system append must relay to the owner");
+    // The record is readable on the OWNER through the system path.
+    let (page, _) = crate::billing::system_read(&state_a, "_audit_events", PRISMA_KEY, None)
+        .await
+        .expect("owner-side system read")
+        .expect("the owner now holds _audit_events");
+    let events: Vec<serde_json::Value> =
+        serde_json::from_slice(&page).expect("system page is a JSON array");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["eventId"] == "unprimed-relay-1")
+            .count(),
+        1,
+        "the relayed batch must be durable on the owner exactly once: {events:?}"
+    );
+    engine_shutdown(&state_a).await;
+    engine_shutdown(&state_b).await;
+}
+
+/// RED (review rank 21, receiver half): a telemetry-append RECEIVER whose
+/// own ring assigns the shard elsewhere (fleet skew) must answer the
+/// creation's ownership refusal, 409 not_ring_owner + Streams-Replay-To,
+/// not mask it as "exists" and report the append's 404 not_found. The
+/// `__ds` root stays refused before any identity is constructed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn telemetry_append_receiver_reports_ownership_not_absence() {
+    let (state, addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-a".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    state
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-c".to_string()]);
+    state.ownership.set_override("00", "rig-c");
+    let fleet = [
+        ("content-type", "application/json"),
+        ("authorization", "Bearer dst-internal-token"),
+    ];
+    let (st, headers, body) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_audit_events",
+        &fleet,
+        br#"[{"v":1,"eventId":"skew-1","eventTimeMs":1,"eventType":"t"}]"#,
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(st, 409, "ownership refusal must not be masked: {text}");
+    assert!(
+        text.contains("not_ring_owner"),
+        "typed code on the wire: {text}"
+    );
+    assert_eq!(
+        headers.get("streams-replay-to").map(String::as_str),
+        Some("rig-c"),
+        "the relay target must be on the refusal: {headers:?}"
+    );
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/__ds",
+        &fleet,
+        b"[]",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        st == 400 && text.contains("invalid_name"),
+        "the __ds root stays refused, never constructed: {st} {text}"
+    );
+    let bad_key = [
+        ("content-type", "application/json"),
+        ("authorization", "Bearer dst-internal-token"),
+        ("stream-encryption-key", "not-a-key"),
+    ];
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_audit_events",
+        &bad_key,
+        b"[]",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        st == 400 && text.contains("invalid_key"),
+        "an unparsable system key is refused by name: {st} {text}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (review rank 21, diagnostics): a sender with no route to the
+/// owner reports the owner's typed refusal (code and message), never a
+/// flattened `404 Not Found` that hides which step refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn system_append_without_a_peer_reports_the_typed_refusal() {
+    let (state, _addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-b".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    state
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
+    state.ownership.set_override("00", "rig-a");
+    // No `peer.set_peer`: the owner has no published URL.
+    let err = crate::billing::system_append(
+        &state,
+        "_audit_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"no-peer-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect_err("no peer URL: the append cannot land");
+    assert_eq!(
+        err,
+        "system append _audit_events: create not_ring_owner: shard 00 belongs to rig-a"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Only a MISSING stream creates: a system append under a key the
+/// stream was not created with is the append's own `wrong_key`
+/// refusal, never a re-creation attempt under the new key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rotated_system_key_is_the_appends_refusal_never_a_recreate() {
+    const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    let (state, _addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-a".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    crate::billing::system_append(
+        &state,
+        "_audit_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"rotated-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("first use creates the stream under the deployment key");
+    let err = crate::billing::system_append(
+        &state,
+        "_audit_events",
+        OTHER_KEY,
+        br#"[{"v":1,"eventId":"rotated-2","eventTimeMs":2,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect_err("a rotated key cannot append to the existing stream");
+    assert_eq!(
+        err,
+        "system append _audit_events: append wrong_key: key mismatch"
+    );
+    let (page, _) = crate::billing::system_read(&state, "_audit_events", PRISMA_KEY, None)
+        .await
+        .expect("system read")
+        .expect("the stream still exists under the deployment key");
+    let text = String::from_utf8_lossy(&page);
+    assert!(
+        text.contains("rotated-1") && !text.contains("rotated-2"),
+        "nothing lands under the rotated key: {text}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Ring skew: the sender's ring assigns shard `00` to rig-a, rig-a's own
+/// ring assigns it to rig-c. The owner-side receiver refuses the relay
+/// 409 not_ring_owner and the sender REPORTS that refusal: one hop, and a
+/// refused relay is never counted as landed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_the_skewed_owner_refuses_is_reported_not_counted_as_landed() {
+    let (state_a, state_b) = jwt_only_fleet(telemetry_append_source()).await;
+    state_a
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-c".to_string()]);
+    state_a.ownership.set_override("00", "rig-c");
+    let err = crate::billing::system_append(
+        &state_b,
+        "_audit_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"skewed-relay-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect_err("the owner refused the relay; the sender must say so");
+    assert_eq!(err, "telemetry relay _audit_events: 409 Conflict");
+    engine_shutdown(&state_a).await;
+    engine_shutdown(&state_b).await;
+}

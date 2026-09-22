@@ -724,6 +724,17 @@
     ]
   },
   {
+    "name": "a_relay_the_skewed_owner_refuses_is_reported_not_counted_as_landed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "888f227d344ded01ed2146a5eda21e2e6876c4526900764bb83ade4689e00d06",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_release_parked_across_recreation_cannot_touch_the_replacement",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -793,6 +804,17 @@
     "scenarios": [
       "DUR-006"
     ]
+  },
+  {
+    "name": "a_rotated_system_key_is_the_appends_refusal_never_a_recreate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5211e0d75361ae15dc85ebe3aef0f1de11e9df2bd8479061c6882e39c98b9521",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
   },
   {
     "name": "a_saga_never_finalizes_under_a_pending_transition",
@@ -5767,6 +5789,17 @@
     "scenarios": []
   },
   {
+    "name": "system_append_without_a_peer_reports_the_typed_refusal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "26d4ba0c09c19c4efadbe26ada4679c72081a1ed1a3f054c451eb95ac06a9fb4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
+  },
+  {
     "name": "tail_ring_matches_the_db_scan_and_restarts_cold",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5795,6 +5828,17 @@
       "panic!(\"seed {seed}: ring-backed reads broke the canon: {e}\");"
     ],
     "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
+    "name": "telemetry_append_receiver_reports_ownership_not_absence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "343c178b54776d90fd228154d8b36011645cfc4ca6856989ab392da31b193cae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
     "scenarios": []
   },
   {
@@ -6041,6 +6085,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/trace_store_tests/cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "unprimed_system_append_relays_its_first_batch_to_the_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a25732c873aab49c4f5a475e94fe93cbf520027aa14d72e391bbc2df1a4a4505",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
     "scenarios": []
   },
   {

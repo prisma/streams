@@ -1240,36 +1240,35 @@ async fn internal_telemetry_append(
             "telemetry-append accepts only reserved system streams",
         );
     }
-    // Stage 7 review fix: the relay RECEIVER must address the reserved
-    // stream under the SYSTEM project — the same identity the sender
-    // (billing::system_append) appended toward and every reader
-    // (system_read, rollup_step) reads. Writing under the deployment
-    // tenant here put relayed usage/ops/audit batches in a stream
-    // nobody reads (route hashes include the project), silently losing
-    // every batch relayed across instances.
-    let mut hdrs = HeaderMap::new();
-    if let Some(k) = headers.get("stream-encryption-key") {
-        hdrs.insert("stream-encryption-key", k.clone());
+    // Stage 7 review fix: the RECEIVER addresses the reserved stream
+    // under the SYSTEM project — the identity the sender appended toward
+    // and every reader (system_read, rollup_step) reads; the deployment
+    // tenant would put relayed batches in a stream nobody reads.
+    let Some(key) = raw_key(&headers, &state) else {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Stream-Encryption-Key required",
+        );
+    };
+    let Ok(canonical) = crate::tenant::CanonicalStreamName::new(&name) else {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_name",
+            "not a canonical stream name",
+        );
+    };
+    let sref = crate::tenant::TenantStreamRef::new(crate::tenant::system_project(), canonical);
+    // The same typed local path the sender took: a refusal here is the
+    // owner's own decision (ownership included), never a status guess.
+    match crate::billing::append_local(&state, sref, key, body).await {
+        Ok(out) => render_append(Ok(out)),
+        Err(crate::billing::LocalFailure::Key(m)) => {
+            err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m)
+        }
+        Err(crate::billing::LocalFailure::Append(e)) => render_append(Err(e)),
+        Err(crate::billing::LocalFailure::Create(e)) => creation_error_response(e),
     }
-    hdrs.insert(
-        "content-type",
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    let system = crate::tenant::system_project();
-    let c = create_stream(
-        state.clone(),
-        system.clone(),
-        name.clone(),
-        hdrs.clone(),
-        Bytes::new(),
-    )
-    .await;
-    let cst = c.status().as_u16();
-    if !(cst == 200 || cst == 201 || cst == 409) {
-        return c;
-    }
-    let sref = system.stream_ref(&name);
-    append(state, sref, hdrs, Body::from(body), None, None, None).await
 }
 
 /// #269: the one h1 serve loop — production and every test rig serve

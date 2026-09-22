@@ -65,6 +65,7 @@ OWNERS = (
     owner('touch', 'src/touch.rs', 'touch::'),
     owner('read_accumulator', 'src/billing/read_accumulator.rs', 'billing'),
     owner('read_spool', 'src/billing/read_spool.rs', 'billing'),
+    owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops::'),
@@ -141,7 +142,7 @@ OWNERS = (
     # `fleet::` alone ran zero tests against a mutated `start_configured`.
     owner('fleet', 'src/fleet.rs',
           'fleet:: dst_tests::fleet_controller:: dst_tests::runtime_isolation::'),
-    owner('http', 'src/http.rs', 'http:: livefeed_engine_retired'),
+    owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload::'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

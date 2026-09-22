@@ -32,7 +32,7 @@ mod read_spool;
 pub(crate) use read_spool::ReadSpool;
 
 mod system_append;
-pub(crate) use system_append::system_append;
+pub(crate) use system_append::{LocalFailure, append_local, system_append};
 
 // ---------------------------------------------------------------------
 // Reserved system streams
