@@ -2129,6 +2129,14 @@
       "syntax": "tokio::select"
     },
     {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::spawn_telemetry",
+      "path": "src/billing/telemetry_loop.rs",
+      "reason": "Supervised telemetry loops select cancellation at every iteration boundary and around each active pass (R09); the sweep, the cadence and the cooperative-stop contract are exercised by the billing_controller DST rigs.",
+      "syntax": "tokio::select"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::spans",

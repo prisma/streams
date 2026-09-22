@@ -19,7 +19,8 @@
     "src/sse/wire.rs",
     "src/product/scan.rs",
     "src/product/consumer_pull.rs",
-    "src/billing/system_append.rs"
+    "src/billing/system_append.rs",
+    "src/billing/telemetry_loop.rs"
   ],
   "budget_exceptions": {
     "file:src/billing.rs": {
@@ -159,7 +160,8 @@
     "src/sse/wire.rs": "SSE event/header formatting only.",
     "src/product/scan.rs": "Product scan page adapter: parses the scan query, pages the frozen cursor and frames the page; ReadService owns the scan.",
     "src/product/consumer_pull.rs": "Product consumer pull adapter: authorizes and activates the consumer, decodes the pull document and frames the delivered batch; ConsumerService owns delivery.",
-    "src/billing/system_append.rs": "Fleet-internal system-stream client: typed append/creation results decide create-vs-relay; one relay hop through the peer client. Owners (AppendService, CreationService) decide ownership; this file only follows them."
+    "src/billing/system_append.rs": "Fleet-internal system-stream client: typed append/creation results decide create-vs-relay; one relay hop through the peer client. Owners (AppendService, CreationService) decide ownership; this file only follows them.",
+    "src/billing/telemetry_loop.rs": "Telemetry drain loops: spawn the outbox sweep and the ledger cadence under the runtime supervisor and own the terminal round a graceful stop performs; they read the composed AppState and decide nothing about ownership or admission — drain_once and the services own those."
   },
   "adapter_http_exports": {
     "src/sse/session.rs": [

@@ -2627,13 +2627,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 5,
-      "owner": "crate::spawn_telemetry",
-      "path": "src/billing.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::bench_append",
       "path": "src/bin/bench.rs",
