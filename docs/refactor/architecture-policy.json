@@ -17,7 +17,8 @@
     "src/sse/auth.rs",
     "src/sse/session.rs",
     "src/sse/wire.rs",
-    "src/product/scan.rs"
+    "src/product/scan.rs",
+    "src/billing/system_append.rs"
   ],
   "budget_exceptions": {
     "file:src/billing.rs": {
@@ -155,7 +156,8 @@
     "src/sse/auth.rs": "SSE request lease and gated HTTP body adapter.",
     "src/sse/session.rs": "SSE wire/session HTTP adapter; FeedSourceRead and ReadService own reads.",
     "src/sse/wire.rs": "SSE event/header formatting only.",
-    "src/product/scan.rs": "Product scan page adapter: parses the scan query, pages the frozen cursor and frames the page; ReadService owns the scan."
+    "src/product/scan.rs": "Product scan page adapter: parses the scan query, pages the frozen cursor and frames the page; ReadService owns the scan.",
+    "src/billing/system_append.rs": "Fleet-internal system-stream client: typed append/creation results decide create-vs-relay; one relay hop through the peer client. Owners (AppendService, CreationService) decide ownership; this file only follows them."
   },
   "adapter_http_exports": {
     "src/sse/session.rs": [
