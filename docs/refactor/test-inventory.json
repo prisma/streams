@@ -4975,6 +4975,17 @@
     "scenarios": []
   },
   {
+    "name": "relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7259128bc09702563a3755070c2ec7af5d2e0c6e1d5d2a6070ecda34061841a1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "reopen_storm_reproduces_the_eu_central_wedge",
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
@@ -5937,6 +5948,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/lifecycle_creation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelope",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cb13aa899d59a228913c236f00593af9823adde33d458491287864a81e99ac7f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
     "scenarios": []
   },
   {

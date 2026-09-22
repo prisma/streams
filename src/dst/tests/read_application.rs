@@ -1,8 +1,11 @@
 //! R06 application positions and protocol adapters use the same consumed range.
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
 use crate::application::read::{ReadCommand, ReadFailure, ReadMode, ReadPosition, ReadStart};
+use crate::application::read_remote::{InternalTarget, remote_read_page};
+use std::time::Duration;
 
 fn command(desc: &crate::registry::StreamDesc) -> ReadCommand {
     ReadCommand {
@@ -307,4 +310,176 @@ async fn r06_peer_target_is_bound_before_peer_resolution() {
         Err(RemoteSpanError::Transport(_))
     ));
     engine_shutdown(&state).await;
+}
+
+/// A loopback rig that is its own relay target, with `relay-tail` holding
+/// two records: the smallest fixture on which a relayed verdict can be
+/// compared with the local one.
+async fn relay_tail_rig() -> (super::fixture_http::HttpRig, crate::registry::StreamDesc) {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let credentials = [("prisma-encryption-key", PRISMA_KEY)];
+    assert_eq!(
+        preq(
+            rig.addr,
+            "PUT",
+            "/v1/streams/relay-tail",
+            &credentials,
+            br#"{"format":{"kind":"json"}}"#
+        )
+        .await
+        .0,
+        201
+    );
+    for n in 0..2 {
+        let body = format!("{{\"n\":{n}}}");
+        assert_eq!(
+            preq(
+                rig.addr,
+                "POST",
+                "/v1/streams/relay-tail/records",
+                &credentials,
+                body.as_bytes()
+            )
+            .await
+            .0,
+            200
+        );
+    }
+    rig.state
+        .peer
+        .set_peer("relay-owner", &format!("http://{}", rig.addr));
+    let desc = rig
+        .state
+        .registry
+        .get(&rig.state.deployment.raw_adapter_sref("relay-tail"))
+        .await
+        .unwrap()
+        .unwrap();
+    (rig, desc)
+}
+
+/// Review item 22: the owner's read verdict crosses the relay AS ITSELF.
+/// An applied read beyond the tail is `CursorBeyondTail` on the owner (the
+/// SDK rewinds to its durable cursor); the coordinator used to rebuild a
+/// `ChangedIncarnation` from the bare 409, breaking the rewind contract on
+/// every cross-owner applied replay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict() {
+    let (rig, desc) = relay_tail_rig().await;
+    let state = &rig.state;
+    let mut command = command(&desc);
+    command.start = ReadStart::Position(ReadPosition {
+        segment: 0,
+        after: 100,
+    });
+    command.visibility = crate::shard::Deliver::Applied;
+    command.refresh = false;
+    let local = state
+        .read_service()
+        .execute_read(command.clone())
+        .await
+        .err()
+        .expect("an applied read beyond the tail is refused locally");
+    assert!(
+        matches!(local, ReadFailure::CursorBeyondTail),
+        "local verdict: {local:?}"
+    );
+    let relayed = remote_read_page(&state.peer, "relay-owner", &command, 0, 100)
+        .await
+        .err()
+        .expect("an applied read beyond the tail is refused through the relay");
+    assert!(
+        matches!(relayed, ReadFailure::CursorBeyondTail),
+        "the relayed verdict must be the owner's cursor_beyond_tail: {relayed:?}"
+    );
+    engine_shutdown(state).await;
+    rig.tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// The page route (`streams-internal-read-page: 1`) answers a decided
+/// verdict as its typed body; the public route never speaks that
+/// vocabulary, header or not, and keeps the public error envelope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelope() {
+    let (rig, desc) = relay_tail_rig().await;
+    let addr = rig.addr;
+    let target = InternalTarget::of(&desc, 0).unwrap();
+    let target_headers = target.headers();
+    let mut headers = vec![
+        ("authorization", "Bearer dst-internal-token"),
+        ("stream-encryption-key", PRISMA_KEY),
+        ("streams-internal-read-page", "1"),
+        ("streams-internal-deliver", "applied"),
+        ("streams-internal-max-bytes", "4096"),
+    ];
+    headers.extend(target_headers.iter().map(|(k, v)| (*k, v.as_str())));
+    // scan_from() == 100, two records: beyond the tail.
+    let offset = crate::offsets::encode_ep(0, crate::offsets::Offset(Some(99)));
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        &format!("/v1/internal/segment-read/relay-tail?offset={offset}"),
+        &headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        reply["refused"], "cursor_beyond_tail",
+        "the page route answers the owner's typed verdict, got {reply}"
+    );
+    // Without the page header the same fleet request keeps the public
+    // envelope: the typed body belongs to the page route alone.
+    let envelope_headers: Vec<(&str, &str)> = headers
+        .iter()
+        .copied()
+        .filter(|(k, _)| *k != "streams-internal-read-page")
+        .collect();
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        &format!("/v1/internal/segment-read/relay-tail?offset={offset}"),
+        &envelope_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        envelope["error"]["code"], "cursor_beyond_tail",
+        "no page header, no typed body: {envelope}"
+    );
+    // The public route never speaks the fleet vocabulary, header or not.
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        "/v1/stream/relay-tail",
+        &[
+            ("stream-encryption-key", PRISMA_KEY),
+            ("streams-internal-read-page", "1"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(status, 200);
+    let public: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        public.is_array(),
+        "the public route renders records, never the page DTO: {public}"
+    );
+    // ...and a public refusal keeps the public envelope.
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        "/v1/stream/relay-absent",
+        &[("stream-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(status, 404);
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(envelope["error"]["code"], "not_found", "{envelope}");
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(Duration::from_secs(5)).await;
 }

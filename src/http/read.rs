@@ -129,10 +129,6 @@ fn raw_start(
     }
 }
 #[expect(
-    clippy::too_many_lines,
-    reason = "read_inner; the read handler parses, authorises, executes and renders in the order the wire contract promises; splitting it would hide which step each error status comes from"
-)]
-#[expect(
     clippy::too_many_arguments,
     reason = "read_inner; the handler receives the request's typed context parts separately as the router extracted them; a bundle struct would exist for this single call site"
 )]
@@ -234,22 +230,49 @@ pub(crate) async fn read_inner(
     if live == Some("sse") {
         return serve_read_sse(state, command, params, surface).await;
     }
-    let out = match state.read_service().execute_read(command).await {
-        Ok(out) => out,
-        Err(error) => return read_failure_response(error),
-    };
-    if params.internal
+    respond_read(&state, command, &params, &headers, key.as_ref()).await
+}
+
+/// The page route answers in the coordinator's vocabulary — a typed page,
+/// and a typed refusal where the read service decided a verdict — so the
+/// relaying instance carries the owner's decision instead of rebuilding one
+/// from a status. Everything else, and every public read, keeps the raw
+/// rendering and the public error envelope.
+async fn respond_read(
+    state: &Arc<AppState>,
+    command: ReadCommand,
+    params: &ReadParams,
+    headers: &HeaderMap,
+    key: Option<&StreamKey>,
+) -> Response {
+    let page = params.internal
         && headers
             .get("streams-internal-read-page")
             .and_then(|v| v.to_str().ok())
-            == Some("1")
-    {
-        return axum::Json(crate::application::read_remote::WireReadPage::from_outcome(
+            == Some("1");
+    match state.read_service().execute_read(command).await {
+        Ok(out) if page => axum::Json(crate::application::read_remote::WireReadPage::from_outcome(
             &out,
         ))
-        .into_response();
+        .into_response(),
+        Ok(out) => render_raw_read(state, params, headers, key, out),
+        Err(error) if page => typed_refusal(error),
+        Err(error) => read_failure_response(error),
     }
-    render_raw_read(&state, &params, &headers, key.as_ref(), out)
+}
+
+/// A decided verdict swaps the envelope for its typed body; the status the
+/// public renderer chose is kept so an older coordinator is unaffected.
+fn typed_refusal(error: ReadFailure) -> Response {
+    use crate::application::read_remote::{WireReadRefusal, WireRefusedPage};
+    let refused = WireReadRefusal::of(&error);
+    let mut response = read_failure_response(error);
+    if let Some(refused) = refused {
+        *response.body_mut() = axum::Json(WireRefusedPage { refused })
+            .into_response()
+            .into_body();
+    }
+    response
 }
 
 #[expect(

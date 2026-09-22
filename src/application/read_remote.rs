@@ -314,13 +314,65 @@ impl WireReadPage {
     }
 }
 
+/// The read verdicts an owner decided and a coordinator relays as its own.
+/// On the wire they are their own body, never the public error envelope, so
+/// the relaying instance decodes a decision instead of guessing one from a
+/// status (a relayed cursor_beyond_tail surfaced as target_mismatch and
+/// broke the SDK's rewind on cross-owner applied replays).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WireReadRefusal {
+    CursorBeyondTail,
+    ChangedIncarnation,
+    Missing,
+    Gone,
+}
+
+/// The page route's refusal body: `{"refused": <verdict>}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct WireRefusedPage {
+    pub(crate) refused: WireReadRefusal,
+}
+
+impl WireReadRefusal {
+    /// Only verdicts about the stream are relayed; a failure the coordinator
+    /// caused (its key, its cursor) or must retry is not a verdict.
+    pub(crate) fn of(failure: &super::read::ReadFailure) -> Option<Self> {
+        use super::read::ReadFailure as F;
+        match failure {
+            F::CursorBeyondTail => Some(Self::CursorBeyondTail),
+            F::ChangedIncarnation => Some(Self::ChangedIncarnation),
+            F::Missing => Some(Self::Missing),
+            F::Gone => Some(Self::Gone),
+            F::Creating
+            | F::MissingKey
+            | F::WrongKey
+            | F::InvalidCursor
+            | F::KeylessLive
+            | F::AppliedFork
+            | F::Resolve(_)
+            | F::Storage(_)
+            | F::Remote(_) => None,
+        }
+    }
+}
+
+impl From<WireReadRefusal> for super::read::ReadFailure {
+    fn from(refused: WireReadRefusal) -> Self {
+        match refused {
+            WireReadRefusal::CursorBeyondTail => Self::CursorBeyondTail,
+            WireReadRefusal::ChangedIncarnation => Self::ChangedIncarnation,
+            WireReadRefusal::Missing => Self::Missing,
+            WireReadRefusal::Gone => Self::Gone,
+        }
+    }
+}
+
 /// The public read coordinator's peer adapter. Bounded pages only; live waits
 /// stay with the effective owner. Redirect destinations come from the trusted
-/// peer table and at most one ownership redirect is followed.
-#[expect(
-    clippy::expect_used,
-    reason = "remote_read_page; a fleet request carries no streaming body, so it is clonable; a fallible clone would add a branch no fleet request reaches"
-)]
+/// peer table and at most one ownership redirect is followed. The owner's
+/// verdict is decoded from its typed body; the status only classifies an
+/// answer that carries none.
 pub(crate) async fn remote_read_page(
     peer: &crate::peer::PeerClient,
     initial_owner: &str,
@@ -351,25 +403,24 @@ pub(crate) async fn remote_read_page(
         if matches!(command.mode, super::read::ReadMode::Head) {
             query.push(("head", "1".into()));
         }
-        let mut request = crate::peer::client()
-            .get(format!(
-                "{base}/v1/internal/segment-read/{}",
-                crate::peer::encode_stream_name_path(&command.descriptor.name)
-            ))
-            .query(&query)
-            .timeout(std::time::Duration::from_secs(20))
-            .header("streams-internal-read-page", "1")
-            .header("stream-encryption-key", &key)
-            .header("streams-internal-max-bytes", command.max_bytes.to_string());
-        for (name, value) in target.headers() {
-            request = request.header(name, value);
-        }
-        if command.visibility == crate::shard::Deliver::Applied {
-            request = request.header("streams-internal-deliver", "applied");
-        }
         let response = peer
             .send(|bearer| {
-                let mut request = request.try_clone().expect("read request is clonable");
+                let mut request = crate::peer::client()
+                    .get(format!(
+                        "{base}/v1/internal/segment-read/{}",
+                        crate::peer::encode_stream_name_path(&command.descriptor.name)
+                    ))
+                    .query(&query)
+                    .timeout(std::time::Duration::from_secs(20))
+                    .header("streams-internal-read-page", "1")
+                    .header("stream-encryption-key", &key)
+                    .header("streams-internal-max-bytes", command.max_bytes.to_string());
+                for (name, value) in target.headers() {
+                    request = request.header(name, value);
+                }
+                if command.visibility == crate::shard::Deliver::Applied {
+                    request = request.header("streams-internal-deliver", "applied");
+                }
                 if let Some(token) = bearer {
                     request = request.bearer_auth(token);
                 }
@@ -394,27 +445,39 @@ pub(crate) async fn remote_read_page(
                 second: next,
             }));
         }
-        if !status.is_success() {
-            return Err(match status.as_u16() {
-                404 => ReadFailure::Missing,
-                410 => ReadFailure::Gone,
-                401 => ReadFailure::Remote(RemoteSpanError::Unauthorized),
-                409 => ReadFailure::ChangedIncarnation,
-                429 | 503 => ReadFailure::Remote(RemoteSpanError::Retryable {
-                    status: status.as_u16(),
-                    code: None,
-                }),
-                _ => ReadFailure::Remote(RemoteSpanError::InvalidResponse(format!(
-                    "read peer status {status}"
-                ))),
-            });
-        }
         let bytes = read_wire::body(response.content_length(), response.bytes_stream())
             .await
             .map_err(ReadFailure::Remote)?;
+        if !status.is_success() {
+            return Err(peer_refusal(status.as_u16(), &bytes));
+        }
         let page: WireReadPage = serde_json::from_slice(&bytes)
             .map_err(|e| ReadFailure::Remote(RemoteSpanError::InvalidResponse(e.to_string())))?;
         return page.into_outcome(command).map_err(ReadFailure::Remote);
     }
     unreachable!("two bounded attempts always return")
 }
+
+/// The owner's decision for a refused page, or the transport class of an
+/// answer that carries no verdict: an older owner still answers the public
+/// envelope, and its status keeps the meaning it always had.
+fn peer_refusal(status: u16, body: &[u8]) -> super::read::ReadFailure {
+    use super::read::ReadFailure;
+    if let Ok(WireRefusedPage { refused }) = serde_json::from_slice::<WireRefusedPage>(body) {
+        return refused.into();
+    }
+    match status {
+        404 => ReadFailure::Missing,
+        410 => ReadFailure::Gone,
+        401 => ReadFailure::Remote(RemoteSpanError::Unauthorized),
+        409 => ReadFailure::ChangedIncarnation,
+        429 | 503 => ReadFailure::Remote(RemoteSpanError::Retryable { status, code: None }),
+        _ => ReadFailure::Remote(RemoteSpanError::InvalidResponse(format!(
+            "read peer status {status}"
+        ))),
+    }
+}
+
+#[cfg(test)]
+#[path = "read_remote_tests.rs"]
+mod tests;

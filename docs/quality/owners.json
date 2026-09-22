@@ -2185,6 +2185,14 @@
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_remote_tests.rs",
+      "reason": "Sibling unit-test module of the relay adapter imports the private codec and decoder it tests through `use super::*`, the same shape as read_wire_tests.rs; the compiler resolves it and the file is compiled only under cfg(test).",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
       "category": "global",
       "count": 1,
       "owner": "crate::sse_stats::FEED_CUTOFF_ENGINE_RETIRED",
@@ -2207,6 +2215,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Read-byte quota scenarios across the page-serving product routes; real HTTP scan and records pages against one enforce-mode project bucket; compiled and executed with DST.",
       "syntax": "path = \"tests/quota_read_volume.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_remote.rs",
+      "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
+      "syntax": "path = \"read_remote_tests.rs\""
     }
   ]
 }
