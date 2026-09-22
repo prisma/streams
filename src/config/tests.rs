@@ -141,6 +141,10 @@ fn default_values_are_pinned() {
     assert!(!c.http.debug_exit);
     assert_eq!(c.http.binary_sha256, "unknown");
     assert_eq!(c.http.h1_max_buf, 64 * 1024);
+    assert_eq!(
+        c.http.h1_header_timeout,
+        std::time::Duration::from_secs(120)
+    );
     assert_eq!(c.billing.mode_env, None);
     assert!(c.billing.meter_enabled);
     assert_eq!(c.billing.rollup_env, None);
@@ -191,6 +195,7 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         ("COMPACT_MAX_SST_SIZE_BYTES", "123456"),
         ("SSE_FEED_RING_BYTES", "garbage"), // warn + default
         ("SSE_HEARTBEAT_MS", "0"),          // filtered -> default
+        ("SSE_H1_HEADER_TIMEOUT_MS", "0"),  // filtered -> default, never disabled
         ("MAINT_BACKPRESSURE_RELEASE_PCT", "140"), // min(100)
         ("SWEEP_MAINT_RESIDENT", "0"),      // stored raw (boot check)
         ("HISTORY_GC_INTERVAL_SECS", "0"),  // 0 -> None

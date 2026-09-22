@@ -53,6 +53,7 @@ impl ServerConfig {
                 "debug_timing": self.http.debug_timing,
                 "debug_exit": self.http.debug_exit,
                 "h1_max_buf": self.http.h1_max_buf,
+                "h1_header_timeout_ms": u64::try_from(self.http.h1_header_timeout.as_millis()).unwrap_or(u64::MAX),
                 "binary_sha256": &self.http.binary_sha256,
             },
             "billing": {

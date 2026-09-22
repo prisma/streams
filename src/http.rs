@@ -1274,10 +1274,7 @@ async fn internal_telemetry_append(
 
 /// #269: the one h1 serve loop — production and every test rig serve
 /// through THIS function, so the suite exercises the real connection
-/// path (axum::serve's default hyper posture measured ~53 KB resident
-/// per parked conn; a bounded max_buf_size holds the same fleet at
-/// ~44 KB, floor now dominated by task/future/slab overhead).
-/// max_buf bounds per-READ chunk size, not request body size.
+/// path; what each connection is served with is `serve::h1_builder`.
 #[expect(
     clippy::disallowed_methods,
     clippy::let_underscore_must_use,
@@ -1286,10 +1283,11 @@ async fn internal_telemetry_append(
 pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
-    max_buf: usize,
+    http: &crate::config::HttpConfig,
     tasks: crate::tasks::TaskSupervisor,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
+    let h1 = serve::h1_builder(http);
     let limits = raise_nofile();
     let (soft, hard) = (
         limits.soft.map_or(0, |n| n.get()),
@@ -1313,14 +1311,14 @@ pub(crate) async fn serve_h1(
             accepted = listener.accept() => match accepted {
                 Ok((sock, _peer)) => {
                     let svc = svc.clone();
+                    let h1 = h1.clone();
                     conns.spawn(async move {
                         let _ = sock.set_nodelay(true);
                         let io = hyper_util::rt::TokioIo::new(sock);
-                        let mut b = hyper::server::conn::http1::Builder::new();
-                        b.max_buf_size(max_buf);
                         // Errors here are routine client behavior (resets,
-                        // half-closed keep-alives), not server faults.
-                        let _ = b.serve_connection(io, svc).await;
+                        // half-closed keep-alives, head deadlines), not
+                        // server faults.
+                        let _ = h1.serve_connection(io, svc).await;
                     });
                 }
                 Err(e) => {
@@ -3361,6 +3359,7 @@ async fn internal_segment_read(
 
 #[path = "http/read.rs"]
 mod read_adapter;
+mod serve;
 pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
 
 #[cfg(test)]

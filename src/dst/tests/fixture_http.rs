@@ -443,7 +443,6 @@ pub(super) async fn http_rig_build(
     let peer = crate::peer::PeerClient::new(fleet_static_token, fleet_token_source);
     // Per-rig budget: isolated from every other rig in the process.
     let livefeed = crate::sse::service::LiveFeedService::from_config(&rig_config.sse);
-    livefeed.set_heartbeat_ms(15_000);
     let bearer = crate::deployment_bearer::DeploymentBearer::new(auth, None);
     let tasks = crate::tasks::TaskSupervisor::new();
     rig_runtime.request_work.start(&tasks).unwrap();
@@ -541,7 +540,7 @@ pub(super) async fn http_rig_build(
             // suite exercises it (axum::serve here would leave the real
             // connection path tested only by out-of-tree probes). It observes
             // the supervisor's cancellation itself and owns its connections.
-            crate::http::serve_h1(listener, app, 64 * 1024, serve_tasks)
+            crate::http::serve_h1(listener, app, &rig_config.http, serve_tasks)
                 .await
                 .ok();
             crate::tasks::TaskResult::Done

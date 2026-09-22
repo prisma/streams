@@ -79,6 +79,7 @@ OWNERS = (
     owner('bootstrap_rss', 'src/bootstrap/rss.rs', 'bootstrap::'),
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
     owner('read_request', 'src/application/read_request.rs', 'application::read_request::'),
+    owner('http_serve', 'src/http/serve.rs', 'http::serve::'),
     owner('http_read', 'src/http/read.rs', 'http::read:: dst_tests::reads_raw:: dst_tests::reads_history::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),

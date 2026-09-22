@@ -127,11 +127,11 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 )]
 #[expect(
     clippy::expect_used,
-    reason = "run; covers exactly the maintenance-worker spawn: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
+    reason = "run; covers exactly one site, the maintenance-worker spawn: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "run; covers exactly the shared-cache lock and the three auth file paths: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
 #[expect(
     clippy::excessive_nesting,
@@ -898,9 +898,8 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
 
     crate::store_timing::spawn_sentinels();
 
-    // #269: bounded h1 buffers — see http::serve_h1.
-    let max_buf = config.http.h1_max_buf;
-    let served = crate::http::serve_h1(listener, app, max_buf, tasks.clone()).await;
+    // #269 / head deadline: the h1 posture is the HTTP config's.
+    let served = crate::http::serve_h1(listener, app, &config.http, tasks.clone()).await;
     // PR 6-F / 6.1-A: the accept loop returned because shutdown was
     // requested — its connections are already gone; now every supervised
     // loop is cancelled, joined and reported (WP-15 §9 sequences

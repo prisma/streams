@@ -167,6 +167,9 @@ impl ServerConfig {
         if let Some(v) = env_parse(env, "SSE_H1_MAX_BUF") {
             self.http.h1_max_buf = v;
         }
+        if let Some(v) = env_parse::<u64>(env, "SSE_H1_HEADER_TIMEOUT_MS").filter(|v| *v > 0) {
+            self.http.h1_header_timeout = std::time::Duration::from_millis(v);
+        }
     }
 
     fn overlay_billing_telemetry_rollup(&mut self, env: &dyn Environment) {

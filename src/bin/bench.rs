@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
 fn make_client(concurrency: usize) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .pool_max_idle_per_host(concurrency.saturating_add(8))
-        .pool_idle_timeout(Duration::from_secs(120))
+        .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))
         .http1_only()
         .build()

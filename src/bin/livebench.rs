@@ -111,12 +111,12 @@ impl Shared {
 
 #[expect(
     clippy::unwrap_used,
-    reason = "client; the builder holds only static timeouts and pool sizes, so building the bench client cannot fail; a fallible build would only restate the panic at startup"
+    reason = "client; the builder holds only static timeouts and a pool that idles out inside the server keep-alive deadline, so building the bench client cannot fail; a fallible build would only restate the panic at startup"
 )]
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .pool_max_idle_per_host(4096)
-        .pool_idle_timeout(Duration::from_secs(120))
+        .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))
         .http1_only()
         .build()

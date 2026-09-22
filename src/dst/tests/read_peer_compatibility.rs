@@ -193,11 +193,12 @@ async fn o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback() {
         )
         .with_state(owner.state.clone());
     let tasks = owner.tasks.clone();
+    let config = owner.state.config.clone();
     let _server = owner.tasks.spawn(
         "legacy-scan-contract",
         crate::tasks::Policy::Critical,
         move |_cancel| async move {
-            crate::http::serve_h1(listener, app, 64 * 1024, tasks)
+            crate::http::serve_h1(listener, app, &config.http, tasks)
                 .await
                 .unwrap();
             crate::tasks::TaskResult::Done
