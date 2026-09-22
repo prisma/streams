@@ -2,6 +2,7 @@
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::shard::now_ms;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
 use std::sync::{
     Arc,
@@ -221,4 +222,157 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
         );
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// Poll `ready` until it holds or `budget` elapses. Every wait in this
+/// module is bounded so a regression fails by assertion, never by a hang.
+async fn settled(budget: Duration, mut ready: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + budget;
+    while !ready() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A non-draining heartbeat for `instance` with a trusted https origin and
+/// `inflight` admitted requests, stamped 60 s ahead so it stays inside the
+/// 10 s live window for the whole scenario however the ticks are scheduled.
+async fn peer_heartbeat(store: &Arc<dyn ObjectStore>, instance: &str, inflight: i64) {
+    let ts_ms = now_ms() + 60_000;
+    let body = format!(
+        r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"inflight":{inflight},"owned_shards":[],"draining":false,"url":"https://{instance}.invalid"}}"#
+    );
+    store
+        .put(
+            &Path::from(format!("fleet/{instance}.json")),
+            PutPayload::from(body),
+        )
+        .await
+        .unwrap();
+}
+
+async fn desired_doc(state: &Arc<crate::http::AppState>) -> crate::fleet::Desired {
+    state
+        .fleet
+        .read_desired_state()
+        .await
+        .unwrap()
+        .0
+        .expect("the seeded desired document is always present")
+}
+
+/// Router reports are a bucket-writable input that only the scale decision
+/// consumes. One unreadable `routers/*.json` used to abandon the whole tick:
+/// the ring and peer table stayed stale, a shard the ring had moved away was
+/// never yielded, return-home never ran, cell-wide, for as long as the file
+/// persisted. Only the desired CAS may wait on that read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_router_report_defers_only_the_desired_publication() {
+    let inner = mem();
+    // Ring of two, shard 00 overridden to streams-2 long enough ago that
+    // return-home may hand it back, and one router report that is not JSON.
+    let aged = now_ms() - 301_000;
+    for (path, body) in [
+        (
+            "fleet/desired.json",
+            r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#.to_string(),
+        ),
+        (
+            "fleet/overrides.json",
+            format!(r#"{{"entries":{{"00":{{"to":"streams-2","ms":{aged}}}}}}}"#),
+        ),
+        ("routers/edge-1.json", "not json".to_string()),
+    ] {
+        inner
+            .put(&Path::from(path), PutPayload::from(body))
+            .await
+            .unwrap();
+    }
+    peer_heartbeat(&inner, "streams-2", 300).await;
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    // Possession before the ring exists: this instance serves 00.
+    assert!(matches!(
+        rig.state
+            .shards
+            .open_or_wait("00", Duration::from_secs(5))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+
+    // Tick 1 publishes the view, yields 00 and returns the aged override
+    // home (CAS); tick 2 mirrors the emptied override map.
+    let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
+    settled(Duration::from_secs(20), || {
+        rig.state.ownership.ring_active() == ring
+            && rig.state.shards.held_prefixes().is_empty()
+            && rig.state.peer.has_peer("streams-2")
+            && rig.state.ownership.overrides().is_empty()
+    })
+    .await;
+    assert_eq!(
+        rig.state.ownership.ring_active(),
+        ring,
+        "an unreadable router report must not freeze ownership publication"
+    );
+    assert!(
+        rig.state.shards.held_prefixes().is_empty(),
+        "possession must still yield the moved shard at the tick"
+    );
+    assert!(
+        rig.state.peer.has_peer("streams-2"),
+        "the peer table must still be published"
+    );
+    assert!(
+        rig.state.ownership.overrides().is_empty(),
+        "return-home must still run and commit while a router report is unreadable"
+    );
+    // Tick 1 reached its publication site (its override CAS precedes it)
+    // with the report unreadable: the desired document is untouched.
+    let desired = desired_doc(&rig.state).await;
+    assert_eq!(
+        (desired.epoch, desired.count),
+        (1, 2),
+        "only the desired publication is deferred"
+    );
+
+    // Readable again: 300 in flight over 105 admitted slots wants a third
+    // instance, and the next tick publishes it.
+    inner
+        .delete(&Path::from("routers/edge-1.json"))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    let mut desired = desired_doc(&rig.state).await;
+    while desired.epoch < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        desired = desired_doc(&rig.state).await;
+    }
+    assert_eq!(
+        desired.epoch, 2,
+        "the desired publication resumes once the report is readable"
+    );
+    assert!(
+        desired.count >= 3,
+        "edge-slot dimension must scale out: {}",
+        desired.count
+    );
+
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(
+        report.aborted.is_empty(),
+        "fleet loop must cancel cooperatively: {report:?}"
+    );
+    engine_shutdown(&rig.state).await;
 }

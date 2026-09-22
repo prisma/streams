@@ -1404,6 +1404,19 @@
     ]
   },
   {
+    "name": "an_unreadable_router_report_defers_only_the_desired_publication",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "936a407e86728b7672ff8f3861534b9233d3b7a6de7080ddc2199922f09fd4e9",
+    "mechanisms": [],
+    "configuration": [
+      "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
+    ],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
     "attributes": [
       "#[test]"

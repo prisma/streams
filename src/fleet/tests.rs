@@ -143,3 +143,28 @@ fn no_victim_when_nothing_lags() {
     let served = vec!["000".to_string()];
     assert_eq!(pick_victim_shard(&[], &served), None);
 }
+
+fn router_report(ts_ms: Option<i64>, client_p50_ms: f64) -> serde_json::Value {
+    let stamp = ts_ms.map_or(String::new(), |ts| format!(r#""ts_ms":{ts},"#));
+    serde_json::from_str(&format!(r#"{{{stamp}"client_p50_ms":{client_p50_ms}}}"#)).unwrap()
+}
+
+// The edge signal is the worst p50 among reports stamped within the last
+// 10 s of `now`: exactly 10 s old is stale, unstamped is ancient, a stamp
+// from the future is fresh.
+#[test]
+fn edge_p50_is_the_worst_fresh_router_report() {
+    let now = 1_000_000;
+    let reports = [
+        router_report(Some(now - 9_999), 400.0),
+        router_report(Some(now - 10_000), 900.0),
+        router_report(Some(now - 5_000), 250.0),
+        router_report(None, 700.0),
+    ];
+    assert_eq!(fresh_edge_p50(&reports, now), 400.0);
+    assert_eq!(fresh_edge_p50(&[], now), 0.0);
+    assert_eq!(
+        fresh_edge_p50(&[router_report(Some(now + 1), 50.0)], now),
+        50.0
+    );
+}

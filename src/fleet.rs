@@ -210,6 +210,15 @@ pub(crate) fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String])
         .map(|(p, _)| p.clone())
 }
 
+/// Worst client-observed p50 among router reports stamped within 10 s of `now`.
+fn fresh_edge_p50(reports: &[serde_json::Value], now: i64) -> f64 {
+    reports
+        .iter()
+        .filter(|v| now - v["ts_ms"].as_i64().unwrap_or(0) < 10_000)
+        .map(|v| v["client_p50_ms"].as_f64().unwrap_or(0.0))
+        .fold(0.0, f64::max)
+}
+
 /// Current memory pressure in bytes. Linux (musl cloud build):
 /// /proc/self/statm RSS. macOS dev box: task_vm_info.phys_footprint.
 ///
@@ -431,7 +440,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "start; a poisoned timing ring may hold a half-recorded wait, and the fleet documents serialise infallibly as plain data; recovering the former or handling the latter would add branches no tick reaches"
+    reason = "start; a poisoned timing ring may hold a half-recorded wait, the fleet documents serialise infallibly as plain data, and an unreadable router snapshot is a typed deferral of the desired CAS rather than a panic site; recovering the ring, handling the serialisation or aborting the tick on the snapshot would add branches no tick reaches"
 )]
 #[expect(
     clippy::cast_sign_loss,
@@ -635,22 +644,11 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 }
             }
 
-            // 2b. Router reports: worst client-observed p50 across fresh
-            // routers. Edge congestion is invisible to server-side acks.
-            let mut edge_p50 = 0.0f64;
-            {
-                let reports = fleet_io!(repository.read_router_reports());
-                let reports = match reports {
-                    Ok(items) => items,
-                    Err(error) => { tracing::warn!(%error, "router snapshot deferred; scale decision deferred"); continue; }
-                };
-                for v in reports {
-                    let fresh = now_ms() - v["ts_ms"].as_i64().unwrap_or(0) < 10_000;
-                    if fresh {
-                        edge_p50 = edge_p50.max(v["client_p50_ms"].as_f64().unwrap_or(0.0));
-                    }
-                }
-            }
+            // 2b. Router reports: worst client-observed p50 (edge congestion
+            // is invisible to acks). Unreadable reports defer ONLY the desired CAS.
+            let reports = fleet_io!(repository.read_router_reports())
+                .inspect_err(|error| tracing::warn!(%error, "router snapshot unreadable; desired publication deferred"));
+            let edge_p50 = fresh_edge_p50(reports.as_deref().unwrap_or(&[]), now_ms());
 
             // 3. Desired count — max over dimensions (§4.1/§4.2):
             //    utilization (primary): ceil(cores-in-use / target_util) —
@@ -1065,7 +1063,9 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             // the conservative `need_shrink` and only after the sustain
             // window — and only when even the conservative target is
             // below the current count (no flapping at the 75 % boundary).
-            let (publish, publish_count) = if cur.is_none() {
+            let (publish, publish_count) = if reports.is_err() {
+                (false, need) // unreadable router snapshot: no scale decision this tick
+            } else if cur.is_none() {
                 (true, need) // bootstrap: make the count observable
             } else if need > cur_count {
                 below_since = None;
