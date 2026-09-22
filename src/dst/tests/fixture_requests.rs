@@ -3,6 +3,32 @@
 pub(super) const RIG_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="; // skey() = [7u8; 32]
 
 /// Minimal HTTP/1.1 client: returns (status, lowercased headers, body).
+/// The whole response, bounded: a handler that never answers fails the
+/// test by name instead of hanging it (a hung DST once held a CI runner
+/// for an hour; the h1 head deadline never runs while a request is in
+/// flight, so nothing server-side ends such a wait). Sixty seconds is
+/// far past the longest legitimate answer (a 25 s long-poll).
+async fn response_bytes(s: &mut tokio::net::TcpStream, method: &str, path: &str) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let read = tokio::time::timeout(std::time::Duration::from_secs(60), s.read_to_end(&mut buf));
+    match read.await {
+        Err(_) => panic!(
+            "{method} {path}: no complete response within 60 s ({} bytes so far)",
+            buf.len()
+        ),
+        // A peer RESET after a complete response is normal on macOS when
+        // the server closes while the client still has unread request
+        // bytes queued; treat it as end-of-response and let the parse
+        // judge completeness (a truncated read fails at the header
+        // terminator).
+        Ok(Err(e)) if e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty() => {
+            panic!("{method} {path}: response read: {e}")
+        }
+        Ok(_) => buf,
+    }
+}
+
 pub(super) async fn hreq(
     addr: std::net::SocketAddr,
     method: &str,
@@ -10,7 +36,7 @@ pub(super) async fn hreq(
     extra: &[(&str, &str)],
     body: &[u8],
 ) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
     // The rig key is supplied by default, but a caller that passes its
     // OWN stream-encryption-key must not end up sending two — the
@@ -30,17 +56,7 @@ pub(super) async fn hreq(
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
-    let mut buf = Vec::new();
-    // A peer RESET after a complete response is normal on macOS when
-    // the server closes while the client still has unread request bytes
-    // queued; treat it as end-of-response and let the parse below judge
-    // completeness (a truly truncated read fails at the header
-    // terminator).
-    if let Err(e) = s.read_to_end(&mut buf).await
-        && (e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty())
-    {
-        panic!("response read: {e}");
-    }
+    let buf = response_bytes(&mut s, method, path).await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -200,7 +216,7 @@ pub(super) async fn preq(
     extra: &[(&str, &str)],
     body: &[u8],
 ) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-length: {}\r\n",
@@ -212,17 +228,7 @@ pub(super) async fn preq(
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
-    let mut buf = Vec::new();
-    // A peer RESET after a complete response is normal on macOS when
-    // the server closes while the client still has unread request bytes
-    // queued; treat it as end-of-response and let the parse below judge
-    // completeness (a truly truncated read fails at the header
-    // terminator).
-    if let Err(e) = s.read_to_end(&mut buf).await
-        && (e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty())
-    {
-        panic!("response read: {e}");
-    }
+    let buf = response_bytes(&mut s, method, path).await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
