@@ -40,10 +40,7 @@ pub(crate) async fn pull(
         .max
         .unwrap_or(cfg.max_batch_records as usize)
         .clamp(1, cfg.max_batch_records as usize);
-    let visibility = doc
-        .visibility_ms
-        .unwrap_or(cfg.visibility_timeout_ms as u64)
-        .clamp(1_000, 12 * 3600 * 1000);
+    let visibility = crate::queue::visibility_window_ms(doc.visibility_ms, &cfg);
     let wait = doc.wait_ms.unwrap_or(0).min(25_000);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait);
 
@@ -432,7 +429,7 @@ pub(crate) async fn settle(
     // (spec §2.5).
     let lineage = consumer_segments(&desc);
     let mut stale_local = 0usize;
-    type SegOps = (Vec<(u64, u32)>, Vec<(u64, u32, u64)>, Vec<(u64, u32, u64)>);
+    type SegOps = (Vec<(u64, u32)>, Vec<(u64, u32, u32)>, Vec<(u64, u32, u32)>);
     let mut per_seg: std::collections::HashMap<u32, SegOps> = Default::default();
     let mut tok = |t: &str| -> Option<(u32, u64, u32)> {
         match crate::product_cursor::LeaseToken::decode(t, &desc.project_id, &skey, &epoch) {
@@ -458,11 +455,11 @@ pub(crate) async fn settle(
     }
     for i in &doc.retries {
         if let Some((sid, o, g)) = tok(&i.lease_token) {
-            per_seg
-                .entry(sid)
-                .or_default()
-                .1
-                .push((o, g, i.delay_ms.unwrap_or(1_000)));
+            per_seg.entry(sid).or_default().1.push((
+                o,
+                g,
+                crate::queue::retry_delay_ms(i.delay_ms),
+            ));
         }
     }
     for i in &doc.extends {
@@ -470,7 +467,7 @@ pub(crate) async fn settle(
             per_seg.entry(sid).or_default().2.push((
                 o,
                 g,
-                i.visibility_ms.unwrap_or(cfg.visibility_timeout_ms as u64),
+                crate::queue::visibility_window_ms(i.visibility_ms, &cfg),
             ));
         }
     }

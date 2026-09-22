@@ -398,7 +398,7 @@
       "owner": "crate::tests::macro(proptest::proptest)",
       "path": "src/queue.rs",
       "syntax": "proptest::proptest",
-      "reason": "Queue key properties; the pinned generator covers validated names and full-width generation/offset values; all cases execute the production codec."
+      "reason": "Queue key and lease-window properties; the pinned generator covers validated names and full-width generation/offset values; all cases execute the production codec."
     },
     {
       "category": "effect",

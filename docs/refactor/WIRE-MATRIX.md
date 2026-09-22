@@ -149,13 +149,13 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 - **Metering**: none.
 
 ### 2.15 `POST /v1/streams/{name}/consumers/{consumer}:pull` — receive messages
-`product_consumer_pull` (`src/product.rs:6455-6725`). Scope: `consumers.pull`. Body (optional) `{max?, waitMs?, visibilityMs?}` (`deny_unknown_fields`; 400 `invalid_body`); clamps: max 1..=`maxBatchRecords`, visibility 1 s–12 h, wait ≤ 25 s (50 ms poll loop).
+`product_consumer_pull` (`src/product.rs:6455-6725`). Scope: `consumers.pull`. Body (optional) `{max?, waitMs?, visibilityMs?}` (`deny_unknown_fields`; 400 `invalid_body`); clamps: max 1..=`maxBatchRecords`, visibility 1 s–12 h (the lease window, `src/queue.rs`), wait ≤ 25 s (50 ms poll loop).
 - **Success**: `200 OK`, body `{"messages": [{"id": <signed MessageId>, "routingKey", "attempts", "leaseToken": <signed LeaseToken>, "value"}], "backlog": n}` (`value` = JSON or base64 string); `application/json`, `Cache-Control: no-store`. Empty poll returns `{"messages": [], "backlog": n}` (still 200).
 - **Errors**: 404 `consumer_not_found`; 409 `consumer_deleted` (generation-fenced); 409 `consumer_deleting` (via `load_consumer_record`, not retryable); 409 `not_stream_owner` via translate; 500 `internal`; shared ctx errors.
 - **Metering**: `meter_pull` = queue_operations+1 + delivered payload bytes (`src/product.rs:6694`, `src/billing.rs:983-998`).
 
 ### 2.16 `POST /v1/streams/{name}/consumers/{consumer}:settle` — ack/retry/extend
-`product_consumer_settle` (`src/product.rs:6727-6939`). Scope: `consumers.settle`. Body `{acks?, retries?, extends?}` of `{leaseToken, delayMs?, visibilityMs?}` (400 `invalid_body`). Invalid/foreign tokens counted as `stale`, never errors (spec §2.5).
+`product_consumer_settle` (`src/product.rs:6727-6939`). Scope: `consumers.settle`. Body `{acks?, retries?, extends?}` of `{leaseToken, delayMs?, visibilityMs?}` (400 `invalid_body`); clamps, never errors: retry `delayMs` 0–12 h (default 1 s), extend `visibilityMs` 1 s–12 h (default: the consumer's `visibilityTimeoutMs`) — the lease window `:pull` keeps, owned by `src/queue.rs` (`MAX_LEASE_WINDOW_MS`, `retry_delay_ms`, `visibility_window_ms`). Invalid/foreign tokens counted as `stale`, never errors (spec §2.5).
 - **Success**: `200 OK`, body `{"acked","retried","extended","dlq","stale","backlog","dlqBlocked"}`; `application/json`, `Cache-Control: no-store`.
 - **Errors**: 404 `consumer_not_found`; 409 `consumer_deleted`; 409 `consumer_deleting`; 500 `internal`; ownership via translate.
 - **Metering**: success → `meter_queue_op` (queue_operations+1, zero bytes) via `meter_op_if_ok` (`src/product.rs:1222-1224`).

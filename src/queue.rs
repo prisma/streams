@@ -214,6 +214,50 @@ impl Default for ConsumerConfig {
     }
 }
 
+/// The lease window. Every span the committer adds to `now_ms()` when it
+/// writes a lease row (a pull's or an extend's visibility, a retry's delay,
+/// the configured timeout they default to) is bounded here to 12 h. The
+/// bound keeps `now + window` total in `shard/transaction/queue` (a `u32` of
+/// milliseconds is under 50 days) and keeps every lease expiring: an
+/// unbounded wire `u64` wrapped into the past or overflowed the committer,
+/// and in between it wrote a lease that never expired, so its record was
+/// never redelivered, never reached `maxAttempts`, never dead-lettered, and
+/// its routing key stayed blocked.
+pub(crate) const MAX_LEASE_WINDOW_MS: u32 = 12 * 3600 * 1000;
+/// The floor a pull has always applied to visibility; an extend shares it.
+const MIN_VISIBILITY_MS: u32 = 1_000;
+/// A retry that names no delay releases its record after one second.
+const DEFAULT_RETRY_DELAY_MS: u32 = 1_000;
+
+/// The visibility a pull or an extend asked for, or the consumer's
+/// configured timeout when it asked for none: 1 s ..= 12 h.
+pub(crate) fn visibility_window_ms(requested: Option<u64>, cfg: &ConsumerConfig) -> u32 {
+    let requested = requested.unwrap_or(u64::from(cfg.visibility_timeout_ms));
+    bounded_window_ms(requested, MIN_VISIBILITY_MS)
+}
+
+/// The delay a retry asked for, or one second when it asked for none:
+/// 0 ..= 12 h. Zero releases the record at once.
+pub(crate) fn retry_delay_ms(requested: Option<u64>) -> u32 {
+    let requested = requested.unwrap_or(u64::from(DEFAULT_RETRY_DELAY_MS));
+    bounded_window_ms(requested, 0)
+}
+
+/// The timeout a consumer put stores: 1 s ..= 12 h, so the value
+/// `visibility_window_ms` defaults to is already inside the window.
+pub(crate) fn configured_visibility_ms(requested: u32) -> u32 {
+    requested.clamp(MIN_VISIBILITY_MS, MAX_LEASE_WINDOW_MS)
+}
+
+/// A wire `u64` into the window: anything past `u32` is past 12 h, so the
+/// failed conversion saturates rather than truncates.
+#[warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+fn bounded_window_ms(requested: u64, floor: u32) -> u32 {
+    u32::try_from(requested)
+        .unwrap_or(u32::MAX)
+        .clamp(floor, MAX_LEASE_WINDOW_MS)
+}
+
 /// Consumer lifecycle (round 16). `Deleted` is a TOMBSTONE, kept so
 /// recreation allocates a strictly higher generation — the property
 /// that makes late old-generation writes and residual rows inert.
@@ -270,7 +314,9 @@ pub(crate) enum QueueOp {
         /// record the HTTP layer loaded). Fenced generations refuse.
         cgen: u64,
         max: usize,
-        visibility_ms: u64,
+        /// From `visibility_window_ms`: 1 s ..= 12 h, so `now + visibility_ms`
+        /// is total and the lease always expires.
+        visibility_ms: u32,
         max_deliveries: u32,
         /// Per-key FIFO (spec Stage 2 §2.3): offset -> routing-key-hash
         /// map, pre-read by the HTTP layer from the merged (history +
@@ -317,8 +363,8 @@ pub(crate) enum QueueOp {
         consumer: String,
         cgen: u64,
         acks: Vec<(u64, u32)>,
-        retries: Vec<(u64, u32, u64)>, // (off, gen, delay_ms)
-        extends: Vec<(u64, u32, u64)>, // (off, gen, visibility_ms)
+        retries: Vec<(u64, u32, u32)>, // (off, gen, delay_ms from `retry_delay_ms`)
+        extends: Vec<(u64, u32, u32)>, // (off, gen, visibility_ms from `visibility_window_ms`)
         max_deliveries: u32,
     },
 }
@@ -368,8 +414,74 @@ pub(crate) enum QueueOut {
 
 #[cfg(test)]
 mod tests {
-    use super::{ack_key, cursor_key, decode_state_key, lease_key, state_prefix};
+    use super::{
+        ConsumerConfig, MAX_LEASE_WINDOW_MS, ack_key, configured_visibility_ms, cursor_key,
+        decode_state_key, lease_key, retry_delay_ms, state_prefix, visibility_window_ms,
+    };
+    use proptest::prelude::ProptestConfig;
     use proptest::prop_assert_eq;
+
+    #[test]
+    fn lease_windows_are_held_between_their_floor_and_twelve_hours() {
+        assert_eq!(MAX_LEASE_WINDOW_MS, 43_200_000);
+        let cfg = ConsumerConfig {
+            visibility_timeout_ms: 45_000,
+            ..ConsumerConfig::default()
+        };
+        for (requested, held) in [
+            (None, 45_000),
+            (Some(0), 1_000),
+            (Some(999), 1_000),
+            (Some(1_000), 1_000),
+            (Some(5_000), 5_000),
+            (Some(43_200_000), 43_200_000),
+            (Some(43_200_001), 43_200_000),
+            // One past u32::MAX: a truncating cast would read this as 0.
+            (Some(4_294_967_296), 43_200_000),
+            (Some(9_000_000_000_000_000_000), 43_200_000),
+            (Some(u64::MAX), 43_200_000),
+        ] {
+            assert_eq!(
+                visibility_window_ms(requested, &cfg),
+                held,
+                "visibility {requested:?}"
+            );
+        }
+        let unbounded = ConsumerConfig {
+            visibility_timeout_ms: 0,
+            ..ConsumerConfig::default()
+        };
+        assert_eq!(
+            visibility_window_ms(None, &unbounded),
+            1_000,
+            "a configured 0 is floored too"
+        );
+        for (requested, held) in [
+            (None, 1_000),
+            (Some(0), 0),
+            (Some(1), 1),
+            (Some(7), 7),
+            (Some(43_200_000), 43_200_000),
+            (Some(43_200_001), 43_200_000),
+            (Some(4_294_967_296), 43_200_000),
+            (Some(u64::MAX), 43_200_000),
+        ] {
+            assert_eq!(retry_delay_ms(requested), held, "retry {requested:?}");
+        }
+        for (requested, held) in [
+            (0, 1_000),
+            (1_000, 1_000),
+            (30_000, 30_000),
+            (43_200_001, 43_200_000),
+            (u32::MAX, 43_200_000),
+        ] {
+            assert_eq!(
+                configured_visibility_ms(requested),
+                held,
+                "configured {requested}"
+            );
+        }
+    }
 
     #[test]
     fn queue_key_identity_and_name_errors_remain_distinct() {
@@ -438,6 +550,23 @@ mod tests {
     }
 
     proptest::proptest! {
+        #![proptest_config(ProptestConfig { cases: 1024, .. ProptestConfig::default() })]
+
+        #[test]
+        fn quality_lease_windows_follow_the_u64_clamp(
+            near in 0_u64..=100_000_000,
+            anywhere in proptest::num::u64::ANY,
+            configured in proptest::num::u32::ANY,
+        ) {
+            let cfg = ConsumerConfig { visibility_timeout_ms: configured, ..ConsumerConfig::default() };
+            for requested in [near, anywhere] {
+                prop_assert_eq!(u64::from(visibility_window_ms(Some(requested), &cfg)), requested.clamp(1_000, 43_200_000));
+                prop_assert_eq!(u64::from(retry_delay_ms(Some(requested))), requested.min(43_200_000));
+            }
+            prop_assert_eq!(u64::from(visibility_window_ms(None, &cfg)), u64::from(configured).clamp(1_000, 43_200_000));
+            prop_assert_eq!(configured_visibility_ms(configured), configured.clamp(1_000, 43_200_000));
+        }
+
         #[test]
         fn quality_queue_state_key_roundtrip(
             name in "[a-z][a-z0-9-]{0,20}",

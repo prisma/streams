@@ -462,7 +462,7 @@ pub(crate) async fn put(
     let name = desc.name.clone();
     let mut cfg = crate::queue::ConsumerConfig::default();
     if let Some(v) = doc.visibility_timeout_ms {
-        cfg.visibility_timeout_ms = v.clamp(1_000, 12 * 3600 * 1000);
+        cfg.visibility_timeout_ms = crate::queue::configured_visibility_ms(v);
     }
     if let Some(v) = doc.max_attempts {
         cfg.max_attempts = v.clamp(1, 1_000);

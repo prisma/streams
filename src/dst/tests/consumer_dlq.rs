@@ -1,4 +1,6 @@
-//! Durable DLQ delivery must precede source settlement, including retry after failure.
+//! Dead-letter handoff ordering and the lease window a settle keeps: a durable DLQ
+//! append precedes source settlement, and a retry's delay or an extend's visibility
+//! never writes a lease that cannot expire.
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
@@ -379,5 +381,264 @@ async fn a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases()
     let dead: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     assert_eq!(dead.len(), 1, "the poison is handed off exactly once");
     assert_eq!(dead[0]["routingKey"], "p");
+    engine_shutdown(&state).await;
+}
+
+// ---- the lease window a settle keeps ---------------------------------
+
+/// The lease window `:pull` has always kept, which a settle must keep too.
+/// A literal on purpose: the oracle is independent of
+/// `queue::MAX_LEASE_WINDOW_MS`, and these scenarios compile on a tree
+/// without it.
+const TWELVE_HOURS_MS: i64 = 12 * 3600 * 1000;
+
+/// A JSON `stream` with one record under routing key `k` and consumer
+/// `work` (three attempts, no dead letter), leased once by a pull. Returns
+/// that lease's token; a retry or an extend keeps its generation, so the
+/// same token settles every later window in a scenario.
+async fn leased_once(addr: std::net::SocketAddr, stream: &str) -> String {
+    let (status, _, body) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{stream}"),
+        &KEY,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    append_keyed(addr, stream, "k", br#"{"n":0}"#).await;
+    let (status, _, body) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{stream}/consumers/work"),
+        &KEY,
+        br#"{"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let first = bounded_pull(addr, stream, b"{}").await;
+    let messages = first["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "attempt one leases the record: {first}");
+    assert_eq!(messages[0]["attempts"], 1);
+    messages[0]["leaseToken"].as_str().unwrap().to_owned()
+}
+
+/// One settle of `token` alone under `verb` (`retries` or `extends`) with
+/// its window `field` (`delayMs` or `visibilityMs`) at `requested`, or left
+/// out. Returns the reply and the wall-clock bracket the committer's `now`
+/// fell in. Bounded like `bounded_pull`: a committer that died on the
+/// request fails the scenario instead of wedging it.
+async fn settle_window(
+    addr: std::net::SocketAddr,
+    stream: &str,
+    token: &str,
+    (verb, field, requested): (&str, &str, Option<u64>),
+) -> (serde_json::Value, (i64, i64)) {
+    let window = requested.map_or_else(String::new, |ms| format!(r#","{field}":{ms}"#));
+    let doc = format!(r#"{{"{verb}":[{{"leaseToken":"{token}"{window}}}]}}"#);
+    let path = format!("/v1/streams/{stream}/consumers/work:settle");
+    let before = crate::shard::now_ms();
+    let (status, _, body) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        preq(addr, "POST", &path, &KEY, doc.as_bytes()),
+    )
+    .await
+    .expect("a settle answers within five seconds");
+    let after = crate::shard::now_ms();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    (serde_json::from_slice(&body).unwrap(), (before, after))
+}
+
+/// The deadline the durable lease row behind `token` holds.
+async fn lease_deadline_ms(state: &crate::http::AppState, stream: &str, token: &str) -> i64 {
+    let desc = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref(stream))
+        .await
+        .unwrap()
+        .unwrap();
+    let stream_key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let lease = crate::product_cursor::LeaseToken::decode(
+        token,
+        &desc.project_id,
+        &stream_key,
+        &desc.epoch(),
+    )
+    .unwrap();
+    let segment = desc.resolve_segment("k");
+    let engine = state.engine_for(&segment.shard_route).await.unwrap();
+    let key = crate::queue::lease_key(
+        &segment.identity,
+        "work",
+        lease.consumer_gen,
+        lease.msg.offset,
+    );
+    let row = engine
+        .db
+        .get(&key)
+        .await
+        .unwrap()
+        .expect("a held lease keeps its row");
+    crate::queue::decode_lease(&row)
+        .expect("a lease row decodes")
+        .deadline_ms
+}
+
+/// The committer stamps `deadline = now + window` at a `now` inside the
+/// bracket, so the bound is exact on both sides.
+fn assert_held(deadline_ms: i64, (before, after): (i64, i64), held_ms: i64, asked: &str) {
+    assert!(
+        (before + held_ms..=after + held_ms).contains(&deadline_ms),
+        "{asked}: the lease row's deadline is {} ms past the settle, not {held_ms}",
+        deadline_ms.saturating_sub(before)
+    );
+}
+
+/// The longest `delayMs` a `u64` carries is held to twelve hours. Unbounded,
+/// the committer's `now + delay as i64` wraps to `now - 1` and the very next
+/// pull redelivers the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_asking_for_the_longest_delay_is_not_redelivered_at_once() {
+    let (state, addr) = http_rig(mem()).await;
+    let token = leased_once(addr, "lw-retry-max").await;
+    let (reply, bracket) = settle_window(
+        addr,
+        "lw-retry-max",
+        &token,
+        ("retries", "delayMs", Some(u64::MAX)),
+    )
+    .await;
+    assert_eq!(reply["retried"], 1, "{reply}");
+    let again = bounded_pull(addr, "lw-retry-max", b"{}").await;
+    assert_eq!(
+        again["messages"].as_array().unwrap().len(),
+        0,
+        "the longest delay a u64 carries redelivered the record at once: {again}"
+    );
+    let deadline = lease_deadline_ms(&state, "lw-retry-max", &token).await;
+    assert_held(deadline, bracket, TWELVE_HOURS_MS, "delayMs u64::MAX");
+    engine_shutdown(&state).await;
+}
+
+/// A retry's `delayMs` lands in the lease row as `now + delay`. Unbounded,
+/// 9e18 ms never expires: the record is never redelivered, never reaches
+/// `maxAttempts`, never dead-letters, and its key stays blocked. A settle
+/// holds the delay to the twelve hours a pull already keeps and passes the
+/// rest through unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_delay_beyond_the_lease_window_is_held_to_twelve_hours() {
+    let (state, addr) = http_rig(mem()).await;
+    let token = leased_once(addr, "lw-retry").await;
+    for (requested, held_ms) in [
+        (Some(9_000_000_000_000_000_000), TWELVE_HOURS_MS),
+        (Some(250), 250),
+        (Some(0), 0),
+        (None, 1_000),
+    ] {
+        let (reply, bracket) =
+            settle_window(addr, "lw-retry", &token, ("retries", "delayMs", requested)).await;
+        assert_eq!(reply["retried"], 1, "{requested:?}: {reply}");
+        let deadline = lease_deadline_ms(&state, "lw-retry", &token).await;
+        assert_held(
+            deadline,
+            bracket,
+            held_ms,
+            &format!("delayMs {requested:?}"),
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
+/// The longest `visibilityMs` a `u64` carries is held to twelve hours on an
+/// extend too; unbounded it wraps and the next pull redelivers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_extend_asking_for_the_longest_visibility_is_not_redelivered_at_once() {
+    let (state, addr) = http_rig(mem()).await;
+    let token = leased_once(addr, "lw-extend-max").await;
+    let (reply, bracket) = settle_window(
+        addr,
+        "lw-extend-max",
+        &token,
+        ("extends", "visibilityMs", Some(u64::MAX)),
+    )
+    .await;
+    assert_eq!(reply["extended"], 1, "{reply}");
+    let again = bounded_pull(addr, "lw-extend-max", b"{}").await;
+    assert_eq!(
+        again["messages"].as_array().unwrap().len(),
+        0,
+        "the longest visibility a u64 carries redelivered the record at once: {again}"
+    );
+    let deadline = lease_deadline_ms(&state, "lw-extend-max", &token).await;
+    assert_held(deadline, bracket, TWELVE_HOURS_MS, "visibilityMs u64::MAX");
+    engine_shutdown(&state).await;
+}
+
+/// An extend's `visibilityMs` is held to the same one second to twelve hours
+/// as a pull's, and defaults to the consumer's configured timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_extended_visibility_is_held_between_one_second_and_twelve_hours() {
+    let (state, addr) = http_rig(mem()).await;
+    let token = leased_once(addr, "lw-extend").await;
+    for (requested, held_ms) in [
+        (Some(9_000_000_000_000_000_000), TWELVE_HOURS_MS),
+        (Some(0), 1_000),
+        (Some(5_000), 5_000),
+        (None, 30_000),
+    ] {
+        let (reply, bracket) = settle_window(
+            addr,
+            "lw-extend",
+            &token,
+            ("extends", "visibilityMs", requested),
+        )
+        .await;
+        assert_eq!(reply["extended"], 1, "{requested:?}: {reply}");
+        let deadline = lease_deadline_ms(&state, "lw-extend", &token).await;
+        assert_held(
+            deadline,
+            bracket,
+            held_ms,
+            &format!("visibilityMs {requested:?}"),
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Control: a pull already keeps the window. Its clamp moves onto the shared
+/// owner in this change and must keep answering the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pulled_visibility_beyond_the_lease_window_is_held_to_twelve_hours() {
+    let (state, addr) = http_rig(mem()).await;
+    let (status, _, body) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lw-pull",
+        &KEY,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    append_keyed(addr, "lw-pull", "k", br#"{"n":0}"#).await;
+    let (status, _, body) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lw-pull/consumers/work",
+        &KEY,
+        b"{}",
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let before = crate::shard::now_ms();
+    let pulled = bounded_pull(addr, "lw-pull", br#"{"visibilityMs":9000000000000000000}"#).await;
+    let after = crate::shard::now_ms();
+    let token = pulled["messages"][0]["leaseToken"].as_str().unwrap();
+    let deadline = lease_deadline_ms(&state, "lw-pull", token).await;
+    assert_held(
+        deadline,
+        (before, after),
+        TWELVE_HOURS_MS,
+        "a pull's visibilityMs 9e18",
+    );
     engine_shutdown(&state).await;
 }
