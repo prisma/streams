@@ -344,6 +344,17 @@
     "scenarios": []
   },
   {
+    "name": "a_fork_inheriting_a_legacy_window_is_born_alive",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7bef89b587df7c8c25768fefd26775cbac9f3cca7ec6bcc0fd739f6fa1bf0bb1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_creation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1257,6 +1268,17 @@
     "scenarios": [
       "SEL-024"
     ]
+  },
+  {
+    "name": "an_idle_window_past_the_ceiling_is_refused_and_creates_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "955e39bd033492f4fe0af91266d344d14a2a2697467b921a1fb228eaa66d7bd0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_creation.rs",
+    "scenarios": []
   },
   {
     "name": "an_impossible_final_never_publishes_an_intent",
@@ -5677,6 +5699,17 @@
     "scenarios": [
       "DUR-001"
     ]
+  },
+  {
+    "name": "the_longest_idle_window_is_admitted_and_reported",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "768ecd632059e2044281c47ce9242408ea437e84e80d55a59522143218d53e07",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_creation.rs",
+    "scenarios": []
   },
   {
     "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",

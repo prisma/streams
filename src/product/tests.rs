@@ -124,6 +124,25 @@ fn idle_durations() {
     assert_eq!(parse_idle_secs("x"), None);
 }
 
+/// Stage 7 section 13: an idle duration is positive and within the
+/// service maximum (2^32 - 1 seconds), whatever unit spells it.
+#[test]
+fn idle_durations_stop_at_the_service_maximum() {
+    assert_eq!(parse_idle_secs("4294967295"), Some(4_294_967_295));
+    assert_eq!(parse_idle_secs("4294967295s"), Some(4_294_967_295));
+    assert_eq!(parse_idle_secs("49710d"), Some(49_710 * 86_400));
+    assert_eq!(parse_idle_secs("4294967296"), None);
+    assert_eq!(parse_idle_secs("49711d"), None);
+    assert_eq!(parse_idle_secs("18446744073709551615"), None);
+    // Fits u64 after the unit multiply, but not an i64 of milliseconds.
+    assert_eq!(parse_idle_secs("106751991167301d"), None);
+    // Past u64 in the unit multiply: always refused, still refused.
+    assert_eq!(parse_idle_secs("18446744073709551615d"), None);
+    // Zero stays refused in every spelling.
+    assert_eq!(parse_idle_secs("0"), None);
+    assert_eq!(parse_idle_secs("0s"), None);
+}
+
 // Round-19 ABA: a peer RPC that names only (stream, segment) binds
 // to whatever descriptor holds that name when it LANDS. These pin
 // the guard that makes a stale relay refuse instead.

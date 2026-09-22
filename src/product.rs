@@ -213,7 +213,7 @@ const MAX_WATCH_FIELDS: usize = 16;
 
 /// Parse a duration like "30d" / "12h" / "45m" / "30s" / plain seconds
 /// into whole seconds (Stage 7 §7: equivalent spellings normalize to
-/// the same integer).
+/// the same integer); zero and windows past `admit_ttl`'s ceiling refuse.
 fn parse_idle_secs(s: &str) -> Option<u64> {
     let s = s.trim();
     let (num, mult) = match s.chars().last()? {
@@ -223,8 +223,8 @@ fn parse_idle_secs(s: &str) -> Option<u64> {
         's' => (&s[..s.len() - 1], 1),
         _ => (s, 1),
     };
-    let v: u64 = num.parse().ok()?;
-    (v > 0).then_some(v.checked_mul(mult)?)
+    let v: u64 = num.parse().ok().filter(|v| *v > 0)?;
+    crate::application::creation::admit_ttl(v.checked_mul(mult)?)
 }
 
 use crate::application::creation::ProductCreateConfig as ParsedCreate;

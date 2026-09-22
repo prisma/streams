@@ -405,3 +405,144 @@ async fn create_replay_never_loses_the_initial_body() {
     );
     engine_shutdown(&state).await;
 }
+
+/// An idle window past the service ceiling is refused by BOTH create
+/// surfaces through their existing 400 arms, and nothing is written. It
+/// used to be admitted: `u64::MAX` seconds became `now - 1000` ms, so the
+/// create answered 201 for a stream that was already expired. `u64::MAX`
+/// goes first: it is a clean 201 in every profile, whereas
+/// `9223372036854776` panics the handler under overflow checks and the
+/// client sees a closed socket, not a status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_window_past_the_ceiling_is_refused_and_creates_nothing() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let over = ["18446744073709551615", "9223372036854776", "4294967296"];
+    for (i, huge) in over.iter().enumerate() {
+        let raw = format!("ttl-over-raw-{i}");
+        let hdrs = [("content-type", "application/json"), ("stream-ttl", *huge)];
+        let (st, _, body) = hreq(addr, "PUT", &format!("/v1/stream/{raw}"), &hdrs, b"").await;
+        assert_eq!(
+            st,
+            400,
+            "raw Stream-TTL {huge}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "invalid_ttl");
+
+        let product = format!("ttl-over-product-{i}");
+        let doc = format!(r#"{{"format":{{"kind":"json"}},"expiry":{{"idle":"{huge}"}}}}"#);
+        let path = format!("/v1/streams/{product}");
+        let (st, _, body) = preq(addr, "PUT", &path, &pk, doc.as_bytes()).await;
+        assert_eq!(
+            st,
+            400,
+            "product expiry.idle {huge}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "invalid_config");
+
+        for name in [&raw, &product] {
+            let sref = state.deployment.raw_adapter_sref(name);
+            assert!(
+                state.registry.get(&sref).await.unwrap().is_none(),
+                "{name} was written"
+            );
+        }
+    }
+    engine_shutdown(&state).await;
+}
+
+/// The ceiling itself is a legal window on both surfaces, and HEAD reports
+/// it back exactly. (A pin, green before and after: it guards the boundary
+/// against an off-by-one in either parser.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_longest_idle_window_is_admitted_and_reported() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let hdrs = [
+        ("content-type", "application/json"),
+        ("stream-ttl", "4294967295"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/ttl-max", &hdrs, b"").await;
+    assert_eq!(st, 201);
+    let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/ttl-max", &[], b"").await;
+    assert_eq!(st, 200);
+    let remaining: u64 = h["stream-ttl"].parse().unwrap();
+    assert!(
+        (4_294_967_290..=4_294_967_295).contains(&remaining),
+        "{remaining}"
+    );
+    let d = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("ttl-max"))
+        .await
+        .unwrap()
+        .unwrap();
+    let window = d.expires_at_ms.unwrap() - d.created_ms;
+    assert!(
+        (4_294_967_295_000..4_294_967_296_000).contains(&window),
+        "{window}"
+    );
+
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let doc = br#"{"format":{"kind":"json"},"expiry":{"idle":"49710d"}}"#;
+    let (st, _, body) = preq(addr, "PUT", "/v1/streams/ttl-max-product", &pk, doc).await;
+    assert_eq!(st, 201);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["expiry"]["idle"], "4294944000s");
+    engine_shutdown(&state).await;
+}
+
+/// A descriptor admitted before the ceiling existed can carry any u64, and
+/// a fork inherits it without passing a parser. Its expiry must saturate
+/// to "never"; it used to wrap into the past, so the child was born dead
+/// and the fork answered "retry" forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_inheriting_a_legacy_window_is_born_alive() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let src = [("content-type", "application/json"), ("stream-ttl", "3600")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/ttl-legacy", &src, br#"[{"n":1}]"#).await;
+    assert_eq!(st, 201);
+    let sref = state.deployment.raw_adapter_sref("ttl-legacy");
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            d.ttl_secs = Some(u64::MAX);
+            d.expires_at_ms = Some(i64::MAX);
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+
+    let fork = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "ttl-legacy"),
+    ];
+    let (st, _, body) = hreq(addr, "PUT", "/v1/stream/ttl-legacy-child", &fork, b"").await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&body));
+    let child = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("ttl-legacy-child"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        child.ttl_secs,
+        Some(u64::MAX),
+        "the window is inherited verbatim"
+    );
+    assert_eq!(
+        child.expires_at_ms,
+        Some(i64::MAX),
+        "and its expiry saturates"
+    );
+    let (st, _, _) = hreq(addr, "HEAD", "/v1/stream/ttl-legacy-child", &[], b"").await;
+    assert_eq!(st, 200);
+    engine_shutdown(&state).await;
+}

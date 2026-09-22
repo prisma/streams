@@ -206,9 +206,7 @@ pub(crate) fn fresh_desc(
         seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),
         created_ms: now_ms(),
-        expires_at_ms: ttl_secs
-            .map(|t| now_ms() + (t as i64) * 1000)
-            .or(expires_at_ms),
+        expires_at_ms: ttl_secs.map(ttl::expiry_from_now).or(expires_at_ms),
         deleted: false,
         soft_deleted: false,
         logical_close_ms: None,
@@ -255,7 +253,7 @@ pub(crate) fn over_record_ceiling(cap: usize, entries: &[Bytes]) -> Option<usize
     entries.iter().map(|e| e.len()).find(|l| *l > cap)
 }
 mod ttl;
-pub(crate) use ttl::TtlMutation;
+pub(crate) use ttl::{TtlMutation, admit_ttl};
 
 #[cfg(test)]
 mod tests {

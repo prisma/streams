@@ -36,4 +36,29 @@ fn stream_names_encode_for_peer_paths() {
     // UTF-8 is encoded byte-wise.
     assert_eq!(encode_stream_name_path("é"), "%C3%A9");
 }
+
+/// Stream-TTL admits the canonical decimal grammar up to the service
+/// ceiling (2^32 - 1 seconds) and nothing past it. Anything larger used
+/// to be admitted and, from ~9.22e15 seconds up, wrapped the stream's
+/// expiry into the past. `0` stays admitted on this surface: the
+/// protocol gives it no meaning and the conformance suite never sends
+/// it (the product surface refuses it as it always did).
+#[test]
+fn stream_ttl_refuses_windows_past_the_ceiling() {
+    // The grammar, unchanged.
+    assert_eq!(parse_ttl_strict("0"), Some(0));
+    assert_eq!(parse_ttl_strict("3600"), Some(3600));
+    assert_eq!(parse_ttl_strict(""), None);
+    assert_eq!(parse_ttl_strict("00060"), None);
+    assert_eq!(parse_ttl_strict("+60"), None);
+    assert_eq!(parse_ttl_strict("60.5"), None);
+    assert_eq!(parse_ttl_strict("1e3"), None);
+    // The ceiling is the last admitted window.
+    assert_eq!(parse_ttl_strict("4294967295"), Some(4_294_967_295));
+    assert_eq!(parse_ttl_strict("4294967296"), None);
+    // The review's two values, and one past u64 (always a parse error).
+    assert_eq!(parse_ttl_strict("9223372036854776"), None);
+    assert_eq!(parse_ttl_strict("18446744073709551615"), None);
+    assert_eq!(parse_ttl_strict("18446744073709551616"), None);
+}
 use super::*;

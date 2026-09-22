@@ -358,6 +358,7 @@ Initial bounds:
 max watch definitions      = 64
 max fields/watch           = 16
 max config body            = 256 KiB
+max idle expiry            = 4294967295 s
 ```
 
 ---

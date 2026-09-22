@@ -2449,13 +2449,13 @@ fn parse_fork_offset(tok: &str) -> Result<u64, String> {
     Offset::parse(tok).map(|o| o.scan_from())
 }
 
-/// Strict TTL grammar: canonical non-negative decimal only.
+/// Strict TTL grammar: canonical non-negative decimal, at most the `admit_ttl` ceiling.
 fn parse_ttl_strict(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.is_empty() || (b[0] == b'0' && b.len() > 1) || !b.iter().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    s.parse().ok()
+    crate::application::creation::admit_ttl(s.parse().ok()?)
 }
 
 fn hdr(headers: &HeaderMap, name: &str) -> Option<String> {
