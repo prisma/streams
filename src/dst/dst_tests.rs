@@ -103,6 +103,8 @@ mod livefeed_basics;
 #[path = "tests/livefeed_history.rs"]
 mod livefeed_history;
 
+#[path = "tests/livefeed_engine_retired.rs"]
+mod livefeed_engine_retired;
 #[path = "tests/livefeed_ownership.rs"]
 mod livefeed_ownership;
 

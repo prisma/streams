@@ -128,26 +128,26 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     }
 }
 
-/// Why a feed's source was cut off (typed for canary telemetry —
-/// the wire behavior is disconnect-and-resume in all cases, but the
-/// reasons must be distinguishable in metrics and logs).
+/// Why a feed's source was cut off: the wire behavior is always
+/// disconnect-and-resume; the reasons must stay distinguishable in metrics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SourceCutoff {
     /// Delete/recreate or descriptor gone: a DIFFERENT incarnation.
     IncarnationChanged,
     /// A lineage span is owned by another instance (409-class).
     WrongOwner,
-    /// The topology no longer contains this feed's cursor space
-    /// (incompatible spans, malformed lineage).
+    /// The topology no longer contains this feed's cursor space.
     IncompatibleTopology,
-    /// Round-11.2: the remote owner refused the incarnation-bound
-    /// target (epoch/identity/project mismatch).
+    /// Round-11.2: the remote owner refused the incarnation-bound target.
     TargetMismatch,
     /// Round-11.2: 401 AFTER the one forced workload-token refresh —
     /// a fleet-auth failure, never a generic source stall.
     FleetAuth,
     /// Round-11.2: a second ownership redirect in one operation.
     RedirectLoop,
+    /// The live tail's pinned engine closed under the SAME owner (fatal
+    /// store, worker exit, sub-tick flap): resume through the route.
+    EngineRetired,
 }
 
 /// What a descriptor refresh decided about the current source.

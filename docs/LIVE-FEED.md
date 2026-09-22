@@ -114,7 +114,7 @@ only their control vocabulary differs.
 | Data encoding | JSON arrays; text as `data:` lines; binary base64 (`Stream-SSE-Data-Encoding`) |
 | Status controls | decided against the durable frontier at SEND time; `upToDate` only when truly caught up |
 | Genuine close | exactly ONE final control carrying `sealed/streamClosed`, then EOF |
-| Topology transition | NOT terminal: product subscriptions survive splits IN PLACE via the feed's atomic source swap (Stage 6); raw scalar subscriptions and owner movement remain disconnect-and-resume (typed) |
+| Topology transition | NOT terminal: product subscriptions survive splits IN PLACE via the feed's atomic source swap (Stage 6); raw scalar subscriptions and owner movement remain disconnect-and-resume (typed); a live tail whose pinned engine retires under the SAME owner (fatal store, worker exit, flap) is disconnect-and-resume too (typed `EngineRetired`; the route reopens after the anti-flap holdoff) |
 | Slow client | bounded queue + bounded send deadline → disconnect-on-lag |
 | Edge buffering | responses always carry `x-accel-buffering: no` |
 | Billing | one subscribe meter at connect + one payload chunk meter per delivered record — unchanged |
@@ -156,7 +156,9 @@ evidence the typed counters corroborate, never on load alone:
 - **Cutoff storms without ownership movement** — sustained nonzero
   `cutoff_wrong_owner` / `cutoff_incarnation` deltas on
   `/v1/debug/load` while `fleet/overrides.json` and the ring are
-  stable.
+  stable; `cutoff_engine_retired` deltas must track `engine_closed`
+  ops events, and a delta without an engine close is the regression
+  signal.
 - **Feed-budget accounting drift** — `reserved_bytes` on an idle cell
   failing to return to zero, or `project_retention` rows growing
   without live subscribers.

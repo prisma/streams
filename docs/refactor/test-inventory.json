@@ -2680,6 +2680,43 @@
     "scenarios": []
   },
   {
+    "name": "livefeed_engine_retired_before_a_drive_is_a_typed_read_cutoff",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8ad47e3fccc1728d9a49f5befda69a46d3f2d3f96626d0fd2c48ccf04b99778c",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"xrread\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, \"xrread\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"xrread\");"
+    ],
+    "file": "src/dst/tests/livefeed_engine_retired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_engine_retired_under_the_same_owner_cuts_a_parked_lineage_session",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "47cf690ca698e72145b8374927bd004626f5e564726ba8c81473267ea8ad5f4a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/livefeed_engine_retired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_engine_retired_under_the_same_owner_cuts_a_parked_session",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7265dbcd77d402771482bd371a79f99c0c79a48c7a6315e80e558a9acec1492a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/livefeed_engine_retired.rs",
+    "scenarios": []
+  },
+  {
     "name": "livefeed_exact_framing_mixed_surfaces_product_first",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

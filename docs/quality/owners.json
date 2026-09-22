@@ -2175,6 +2175,22 @@
       "path": "src/history/test_support.rs",
       "reason": "History test support imports its enclosing owner; the compiler resolves the parent exports and the helper only starts an absorber for fixtures.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_ENGINE_RETIRED",
+      "path": "src/sse/auth.rs",
+      "reason": "Process instrumentation counter: the typed cutoff canary for a live tail whose pinned engine closed under the same owner, one AtomicU64 beside the other cutoff reasons; a per-runtime copy would hide the reason from /v1/debug/load.",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_engine_retired",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Same-owner engine retirement scenarios for live-tail feed sources; real HTTP SSE sessions against a retired and replaced engine; compiled and executed with DST.",
+      "syntax": "path = \"tests/livefeed_engine_retired.rs\""
     }
   ]
 }

@@ -41,17 +41,15 @@ impl SingleSource {
 
 #[expect(
     clippy::unwrap_used,
-    reason = "SingleSource; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a length never made durable"
+    reason = "SingleSource; a poisoned stream state may hold a half-advanced durable frontier and the live tail pins one engine incarnation whose close is a typed cutoff; recovering the state could serve a length never made durable and a stale read could serve a retired engine"
 )]
 #[async_trait::async_trait]
 impl FeedSourceRead for SingleSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
         // Round-11.2: a moved live tail is a typed cutoff, never a
-        // stale local read.
-        if !owned_here(&self.state, &self.route) {
-            return Err(anyhow::Error::new(FatalSpanCutoff(
-                super::feed::SourceCutoff::WrongOwner,
-            )));
+        // stale local read; nor is a tail whose engine retired here.
+        if let Some(cut) = live_tail_cutoff(owned_here(&self.state, &self.route), &self.engine) {
+            return Err(anyhow::Error::new(FatalSpanCutoff(cut)));
         }
         // FORKS: stitched reads traverse the ancestor chain and return
         // records in the CHILD's logical offset space — the same cursor
@@ -124,7 +122,7 @@ impl FeedSourceRead for SingleSource {
     }
 
     fn cut_off(&self) -> Option<super::feed::SourceCutoff> {
-        (!owned_here(&self.state, &self.route)).then_some(super::feed::SourceCutoff::WrongOwner)
+        live_tail_cutoff(owned_here(&self.state, &self.route), &self.engine)
     }
 
     fn locate(&self, logical_after: u64) -> WirePosition {
@@ -210,6 +208,17 @@ enum SpanReader {
 /// (single instance) counts as ours.
 fn owned_here(state: &crate::application::read::ReadService, route: &[u8; 16]) -> bool {
     state.ownership.is_mine(&state.shards.prefix_for(route))
+}
+
+/// The live tail's typed cutoff, ownership FIRST: a moved tail reroutes
+/// (WrongOwner) whatever its engine did; an owned tail whose pinned
+/// engine closed under this owner (fatal store, worker exit, sub-tick
+/// flap) is EngineRetired: the route reopens, so a resume lands live.
+fn live_tail_cutoff(owned: bool, engine: &ShardEngine) -> Option<SourceCutoff> {
+    if !owned {
+        return Some(SourceCutoff::WrongOwner);
+    }
+    engine.is_closed().then_some(SourceCutoff::EngineRetired)
 }
 
 impl LineageSpan {
@@ -554,7 +563,7 @@ impl LineageSource {
 #[expect(
     clippy::too_many_lines,
     clippy::unwrap_used,
-    reason = "LineageSource; one batch walks the span chain until the budget or the frontier stops it, and a poisoned stream state may hold a half-advanced durable frontier; splitting the walk would separate it from its budget and recovering the state could serve a length never made durable"
+    reason = "LineageSource; one batch walks the span chain until the budget or the frontier stops it, the live tail pins one engine incarnation whose close is a typed cutoff, and a poisoned stream state may hold a half-advanced durable frontier; splitting the walk would separate it from its budget, a stale read could serve a retired engine and recovering the state could serve a length never made durable"
 )]
 #[async_trait::async_trait]
 impl FeedSourceRead for LineageSource {
@@ -578,12 +587,11 @@ impl FeedSourceRead for LineageSource {
                     handle,
                 } => {
                     // Round-11.2: a moved live tail is NEVER served
-                    // from stale local state — typed WrongOwner cutoff
-                    // (resumable EOF; the gateway reroutes).
-                    if !owned_here(&self.state, route) {
-                        return Err(anyhow::Error::new(FatalSpanCutoff(
-                            super::feed::SourceCutoff::WrongOwner,
-                        )));
+                    // from stale local state, nor is a retired one:
+                    // typed cutoff (resumable EOF; the gateway reroutes
+                    // or the route reopens).
+                    if let Some(cut) = live_tail_cutoff(owned_here(&self.state, route), engine) {
+                        return Err(anyhow::Error::new(FatalSpanCutoff(cut)));
                     }
                     crate::application::read::ReadPlan::segment(
                         &self.key,
@@ -723,10 +731,10 @@ impl FeedSourceRead for LineageSource {
         // Only the LIVE tail cuts a parked session off — sealed spans
         // are ownership-dynamic and re-resolve per page.
         match &self.tail().reader {
-            SpanReader::LiveLocal { route, .. } if !owned_here(&self.state, route) => {
-                Some(super::feed::SourceCutoff::WrongOwner)
+            SpanReader::LiveLocal { route, engine, .. } => {
+                live_tail_cutoff(owned_here(&self.state, route), engine)
             }
-            _ => None,
+            SpanReader::Sealed { .. } => None,
         }
     }
 

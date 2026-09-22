@@ -48,6 +48,7 @@ pub(crate) mod sse_stats {
     pub(crate) static FEED_CUTOFF_TARGET_MISMATCH: AtomicU64 = AtomicU64::new(0);
     pub(crate) static FEED_CUTOFF_FLEET_AUTH: AtomicU64 = AtomicU64::new(0);
     pub(crate) static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FEED_CUTOFF_ENGINE_RETIRED: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
     /// session that had not reached live yet — NOT a disconnect).
     pub(crate) static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);

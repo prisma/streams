@@ -901,8 +901,7 @@ async fn debug_load(
             "oversize_dropped": crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
             "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
             "project_cap_uncached": crate::sse::auth::sse_stats::FEED_PROJECT_CAP_UNCACHED.load(std::sync::atomic::Ordering::Relaxed),
-            // Bounded cardinality: rows exist only while a project has
-            // live feeds (round-10e per-project observability).
+            // Bounded cardinality: rows exist only while a project has live feeds (round-10e).
             "project_retention": lf.project_retention.into_iter().map(|(p, reserved, cap_hits)| {
                 serde_json::json!({"project": p, "reserved_bytes": reserved, "cap_hits": cap_hits})
             }).collect::<Vec<_>>(),
@@ -914,6 +913,7 @@ async fn debug_load(
             "cutoff_target_mismatch": crate::sse::auth::sse_stats::FEED_CUTOFF_TARGET_MISMATCH.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_fleet_auth": crate::sse::auth::sse_stats::FEED_CUTOFF_FLEET_AUTH.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_redirect_loop": crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_engine_retired": crate::sse::auth::sse_stats::FEED_CUTOFF_ENGINE_RETIRED.load(std::sync::atomic::Ordering::Relaxed),
             "catchup_retries": crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES.load(std::sync::atomic::Ordering::Relaxed),
             "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
         },

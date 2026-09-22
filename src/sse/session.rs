@@ -146,6 +146,7 @@ fn count_cutoff(reason: super::feed::SourceCutoff) {
         SourceCutoff::TargetMismatch => &crate::sse::auth::sse_stats::FEED_CUTOFF_TARGET_MISMATCH,
         SourceCutoff::FleetAuth => &crate::sse::auth::sse_stats::FEED_CUTOFF_FLEET_AUTH,
         SourceCutoff::RedirectLoop => &crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP,
+        SourceCutoff::EngineRetired => &crate::sse::auth::sse_stats::FEED_CUTOFF_ENGINE_RETIRED,
     };
     c.fetch_add(1, Ordering::Relaxed);
 }
@@ -860,7 +861,7 @@ pub(crate) async fn serve(
                     tracing::info!(
                         stream = %sref,
                         ?reason,
-                        "livefeed ownership moved under a parked session; disconnecting"
+                        "livefeed live tail cut under a parked session; disconnecting"
                     );
                     return;
                 }
