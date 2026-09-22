@@ -1048,13 +1048,13 @@ async fn meter_op_if_ok(
 
 #[expect(
     clippy::unwrap_used,
-    reason = "product_entry; the preflight response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+    reason = "product_entry; the preflight response builder holds a fixed status and literal ASCII header values, so building it cannot fail, and every handler the entry dispatches to (the consumer pull now with its identity resolved here) decides its own wire status; mapping a builder error into a substitute response would report a status the handler never decided"
 )]
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::excessive_nesting,
-    reason = "product_entry; the product entry takes every extractor axum resolved and dispatches every method and sub-path from one match whose admission refusal nests inside the tagged audit; a request struct, a split or a flattened refusal would separate the dispatch from the extractors and the refusal from the audit it tags"
+    reason = "product_entry; the product entry takes every extractor axum resolved, resolves the stream identity the typed handlers take and dispatches every method and sub-path from one match whose admission refusal nests inside the tagged audit; a request struct, a split or a flattened refusal would separate the dispatch from the extractors and the refusal from the audit it tags"
 )]
 pub(crate) async fn product_entry(
     state: Arc<AppState>,
@@ -1235,7 +1235,8 @@ pub(crate) async fn product_entry(
                     product_consumer_delete(state, &tenant, name, cname, headers, access).await
                 }
                 (Method::POST, Some("pull")) => {
-                    product_consumer_pull(state, &tenant, name, cname, headers, body, access).await
+                    let sref = tenant.stream_ref(&name);
+                    product_consumer_pull(state, sref, cname, headers, body, access).await
                 }
                 (Method::POST, Some("settle")) => {
                     let r = product_consumer_settle(

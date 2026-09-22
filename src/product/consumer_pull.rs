@@ -1,35 +1,43 @@
 //! `POST {collection}/consumers/{consumer}:pull`, the queue delivery
 //! page: authorizes the consumer, activates it and frames one batch of
-//! leased messages (docs/refactor/WIRE-MATRIX.md §2.15).
+//! leased messages (docs/refactor/WIRE-MATRIX.md §2.15). A batch is
+//! decrypted record payload leaving the cell, so it draws on the
+//! project's read-byte bucket like every page route: admitted at entry
+//! while the bucket is not in debt, debited by the framed body served.
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde_json::json;
 
-use super::{consumer_failure_response, consumer_key, json_ok, perr};
+use super::{check_read_quota, consumer_failure_response, consumer_key, debit_read_bytes, perr};
+use crate::application::consumer::ConsumerAccess;
 use crate::http::AppState;
 
-/// DLQ transition (spec §2.8): append the DLQ record to the configured
-/// dead-letter stream with a producer identity derived from the message
-/// id (crash-idempotent), and only after that is durable, ack the
-/// source lease. No dead-letter stream configured -> the poison is
-/// dropped by acking directly.
+/// The read-quota admission precedes every other decision (key,
+/// authorization, activation): a project in read debt is refused before
+/// a lease is taken, so a refused pull never leases a message it will
+/// not deliver.
 #[expect(
     clippy::too_many_arguments,
-    reason = "product_consumer_pull; the parameters are the request's typed context parts, not tunables; a bundle struct for this single call site would only rename the same positional list"
+    reason = "product_consumer_pull; the parameters are the request's typed context parts (resolved stream identity, consumer, headers, body, access), not tunables; a bundle struct for this single call site would only rename the same positional list"
 )]
-// mt-lint: allow(name-param-shared-core): verbatim move out of product.rs (ceilinged); the fix commit hands the resolved TenantStreamRef in from product_entry
 pub(super) async fn product_consumer_pull(
     state: Arc<AppState>,
-    tenant: &crate::tenant::ProjectId,
-    name: String,
+    sref: crate::tenant::TenantStreamRef,
     cname: String,
     headers: HeaderMap,
     body: Bytes,
-    access: crate::application::consumer::ConsumerAccess<'_>,
+    access: ConsumerAccess<'_>,
 ) -> Response {
+    let principal = match &access {
+        ConsumerAccess::Account(p) => Some(*p),
+        ConsumerAccess::Deployment => None,
+    };
+    if let Some(refusal) = check_read_quota(&state, principal) {
+        return refusal;
+    }
     let key = match consumer_key(&headers) {
         Ok(k) => k,
         Err(r) => return r,
@@ -37,8 +45,7 @@ pub(super) async fn product_consumer_pull(
     let service = state.consumer_service();
     let context = match service
         .authorize(
-            // mt-lint: allow(stream-ref-construction): verbatim move out of product.rs (ceilinged); the fix commit resolves the identity at the entry
-            &tenant.stream_ref(&name),
+            &sref,
             cname.clone(),
             &key,
             &access,
@@ -79,7 +86,17 @@ pub(super) async fn product_consumer_pull(
                     out.messages.len() as u64,
                 );
             }
-            json_ok(&json!({"messages":out.messages,"backlog":out.backlog}))
+            let batch = json!({"messages":out.messages,"backlog":out.backlog}).to_string();
+            debit_read_bytes(&state, principal, batch.len());
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                batch,
+            )
+                .into_response()
         }
         Err(e) => consumer_failure_response(e),
     }

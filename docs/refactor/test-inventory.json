@@ -1681,6 +1681,17 @@
     ]
   },
   {
+    "name": "consumer_pulls_draw_on_the_read_byte_quota",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2d26cf6c7d42067b9d2a722e3a4c7e9ac2d4a0d02303a01900d651cba29ab259",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_read_volume.rs",
+    "scenarios": []
+  },
+  {
     "name": "corrupt_postings_fall_back_to_the_envelope",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -293,6 +293,57 @@ pub(super) async fn auth_rig(
     (svc, state, addr)
 }
 
+/// Widen one `auth_rig` credential to `scopes` as grant version `gv`
+/// (feed version `gv` too; a grant version never changes content) and
+/// mint a token bound to it: the effective scope set is token ∩
+/// credential, so a route outside `RIG_SCOPES` (consumer pull, watch
+/// manage) needs both sides widened.
+pub(super) fn rig_scoped_bearer(
+    svc: &crate::auth::AuthService,
+    project: (&str, &str),
+    cred: &str,
+    scopes: &str,
+    gv: u64,
+) -> String {
+    let (project_id, ws) = project;
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from(cred),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from(cred),
+            project_id: crate::tenant::ProjectId::new(project_id).unwrap(),
+            grant_version: gv,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    let now = crate::shard::now_ms() / 1000;
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: gv,
+    })
+    .unwrap();
+    AccessClaims {
+        iss: "https://auth.prisma.io",
+        aud: "prisma-streams-data",
+        sub: "u",
+        credential_id: cred,
+        project_id,
+        workspace_id: ws,
+        cell_id: "test-cell",
+        ownership_version: 1,
+        grant_version: gv,
+        scope: scopes,
+        jti: "scoped",
+        iat: now - 60,
+        exp: now + 3600,
+    }
+    .bearer("rig-1")
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "authentication fixture; seven independent signed bindings drive mismatch and expiry regressions; bundling them would hide which authority input each negative test changes"

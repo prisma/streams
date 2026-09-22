@@ -1,6 +1,8 @@
 //! Read-byte quota (§17.2) on every page-serving product route.
 
-use super::fixture_auth::{auth_rig, mint_token, rig_policy, rig_publish_policy};
+use super::fixture_auth::{
+    RIG_SCOPES, auth_rig, mint_token, rig_policy, rig_publish_policy, rig_scoped_bearer,
+};
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
 
@@ -85,6 +87,97 @@ async fn scan_pages_draw_on_the_read_byte_quota() {
         st,
         429,
         "a scan page is debited to the shared bucket: {st} {}",
+        text(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (review rank 28, step B): a consumer pull serves decrypted record
+/// payloads, so it draws on the SAME project read-byte bucket as every
+/// page route: admitted at entry only while the bucket is not in debt,
+/// and debited by the framed batch it serves. A project in read debt
+/// could keep draining its queues while every page route refused it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consumer_pulls_draw_on_the_read_byte_quota() {
+    let (svc, state, addr) = auth_rig("proj-rp", "ws-rp", &["c-rp"], None).await;
+    let mut policy = rig_policy("proj-rp", "ws-rp", 1, 2);
+    policy.quotas.read_bytes_per_sec = 8;
+    rig_publish_policy(&svc, policy, 2).unwrap();
+    let scopes = format!("{RIG_SCOPES} streams.consumers.configure streams.consumers.pull");
+    let bearer = rig_scoped_bearer(&svc, ("proj-rp", "ws-rp"), "c-rp", &scopes, 2);
+    let a = ("authorization", bearer.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sp",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Two ~2 KiB records: one batch exceeds the budget for minutes.
+    let record = format!("{{\"pad\":\"{}\"}}", "x".repeat(2048));
+    for _ in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/sp/records",
+            &[ekey, a],
+            record.as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/sp/consumers/w", &[ekey, a], b"{}").await;
+    assert_eq!(st, 201, "{}", text(&b));
+    // No debt yet: the first batch serves, and it exceeds the budget.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sp/consumers/w:pull",
+        &[ekey, a],
+        br#"{"max":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", text(&b));
+    assert!(
+        b.len() > 2048,
+        "the batch must exceed the budget: {}",
+        b.len()
+    );
+    // That batch put the project in debt: the next pull is refused with
+    // the read-quota class before any lease is taken, and so is a
+    // records read (one bucket).
+    let (st, h, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sp/consumers/w:pull",
+        &[ekey, a],
+        br#"{"max":1}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        429,
+        "pull in read debt must refuse typed: {st} {}",
+        text(&b)
+    );
+    assert!(
+        text(&b).contains("project_rate_limit"),
+        "typed code: {}",
+        text(&b)
+    );
+    assert!(
+        h.get("retry-after").and_then(|s| s.parse::<u64>().ok()) >= Some(1),
+        "retry-after: {h:?}"
+    );
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sp/records", &[ekey, a], b"").await;
+    assert_eq!(
+        st,
+        429,
+        "a pull batch is debited to the shared bucket: {st} {}",
         text(&b)
     );
     engine_shutdown(&state).await;
