@@ -10,6 +10,31 @@ use super::fixture_storage::mem;
 // only the newest reservation installs. Validation binds the epoch.
 // ---------------------------------------------------------------
 
+/// Entered-proof: the request under test reached the engine (its op is
+/// enqueued, counted from `entered`) and is STILL pending after a grace
+/// period. A bare sleep before `!is_finished()` proved only that the
+/// runner was slow: a request that had not reached the engine yet passed
+/// it vacuously, exactly where a durability regression would hide.
+async fn held<T>(
+    engine: &crate::shard::ShardEngine,
+    entered: u64,
+    task: &tokio::task::JoinHandle<T>,
+    what: &str,
+) {
+    for _ in 0..500 {
+        if engine.appends_enqueued() >= entered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        engine.appends_enqueued() >= entered,
+        "{what}: the request never reached the engine"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!task.is_finished(), "{what} concluded before durability");
+}
+
 /// The fence's closed-report is a fact about DURABLE state. While the
 /// dispatch gate is held (writes applied, durability not yet
 /// released), a takeover's fence must not answer — the observable is
@@ -18,11 +43,11 @@ use super::fixture_storage::mem;
 /// still fail, and publish Sealed over a record that never existed.
 #[expect(
     clippy::disallowed_methods,
-    reason = "durability fence fixture; the held close and the competing takeover are both joined after dispatch is released; running either inline would deadlock behind the held durability barrier"
+    reason = "durability fence fixture; the held close and the competing takeover are proven to have entered the engine before their pending checks and are both joined after dispatch is released; running either inline would deadlock behind the held durability barrier"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "durability fence scenario; the held close, the pending takeover observation and the durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would hide which state the fence answered from"
+    reason = "durability fence scenario; the held close, the entered-and-pending takeover observation and the durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would hide which state the fence answered from"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fence_waits_for_durability_before_reporting_closed() {
@@ -49,6 +74,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     // intent lands (registry path), its write commits, but nothing is
     // released as durable.
     let guard = engine.test_hold_dispatch().await;
+    let entered = engine.appends_enqueued();
     let a = tokio::spawn(async move {
         hreq(
             addr,
@@ -79,8 +105,8 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     let a_claim = a_claim.expect("A never published its intent");
-    // Give A's append time to be enqueued and applied (not durable).
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // A's append is enqueued and applied, never durable: A stays pending.
+    held(&engine, entered + 1, &a, "A's final").await;
 
     // A's lease lapses; B begins a takeover with its own final.
     state
@@ -115,10 +141,10 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
         .await
     });
 
-    // While durability is held, the takeover MUST NOT have concluded:
-    // the old claim stays exactly as it was — same op, still unmarked.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    assert!(!b.is_finished(), "the takeover concluded before durability");
+    // While durability is held, the takeover MUST NOT have concluded
+    // (its fence is queued behind A's write): the old claim stays
+    // exactly as it was, same op, still unmarked.
+    held(&engine, entered + 2, &b, "the takeover").await;
     state
         .registry
         .invalidate(&state.deployment.raw_adapter_sref("dur9"));
@@ -435,10 +461,6 @@ async fn a_fence_survives_handle_eviction() {
     clippy::disallowed_methods,
     reason = "durability barrier fixture; the original, its exact duplicate and both idempotent closes are joined after each release; the pending checks require the requests to run concurrently with the held dispatch"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "idempotent durability scenario; the write window and the close-only window drive the same barrier contract through the same held engine; splitting them would duplicate the arrangement without sharpening the proof"
-)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idempotent_successes_wait_for_durability() {
     let store = mem();
@@ -462,6 +484,7 @@ async fn idempotent_successes_wait_for_durability() {
     // Hold durability dispatch; the ORIGINAL producer write commits
     // (applied) but is never released as durable.
     let guard = engine.test_hold_dispatch().await;
+    let entered = engine.appends_enqueued();
     let ph = [
         ("content-type", "application/json"),
         ("producer-id", "p"),
@@ -472,11 +495,7 @@ async fn idempotent_successes_wait_for_durability() {
         tokio::spawn(
             async move { hreq(addr, "POST", "/v1/stream/dur10", &ph, br#"[{"n":1}]"#).await },
         );
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(
-        !orig.is_finished(),
-        "the original was released while dispatch held"
-    );
+    held(&engine, entered + 1, &orig, "the original").await;
 
     // The exact duplicate arrives. It must ALSO stay pending: its
     // truth is the original's durability.
@@ -495,11 +514,7 @@ async fn idempotent_successes_wait_for_durability() {
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !dup.is_finished(),
-        "a duplicate answered before the original's durability barrier"
-    );
+    held(&engine, entered + 2, &dup, "the duplicate").await;
 
     // Release: both answer, exactly once.
     drop(guard);
@@ -529,11 +544,7 @@ async fn idempotent_successes_wait_for_durability() {
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(
-        !close1.is_finished(),
-        "the close released while dispatch held"
-    );
+    held(&engine, entered + 3, &close1, "the close").await;
     let close2 = tokio::spawn(async move {
         hreq(
             addr,
@@ -547,11 +558,7 @@ async fn idempotent_successes_wait_for_durability() {
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !close2.is_finished(),
-        "an idempotent close answered from applied, non-durable state"
-    );
+    held(&engine, entered + 4, &close2, "the idempotent close").await;
     drop(guard);
     let (st, _, _) = close1.await.unwrap();
     assert!(st == 200 || st == 204, "close: {st}");
@@ -599,6 +606,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
 
     // Original held pre-durability.
     let guard = engine.test_hold_dispatch().await;
+    let entered = engine.appends_enqueued();
     let ph = [
         ("prisma-encryption-key", PRISMA_KEY),
         ("producer-id", "p"),
@@ -615,8 +623,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(!orig.is_finished());
+    held(&engine, entered + 1, &orig, "the original").await;
 
     // Same tuple, DIFFERENT body: the product surface's reuse check
     // yields a definitive 409 — whose truth is the original's row.
@@ -635,11 +642,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !reuse.is_finished(),
-        "a definitive conflict answered before the state it judges was durable"
-    );
+    held(&engine, entered + 2, &reuse, "the reuse verdict").await;
     drop(guard);
     let (st, _, _) = orig.await.unwrap();
     assert_eq!(st, 200, "original");

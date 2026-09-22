@@ -283,7 +283,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "09e64eed3b64efc5bee07ebc83f971d5c5a881600bb2d1edc3b822110b5d63ff",
+    "function_sha256": "f2245bc197cf91a9ccee33dcd00542453168e13c80db0611fa21fb31e202150b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/durability_fences.rs",
@@ -2300,7 +2300,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8cbd8f24372a86599865abbe47f280ac42edf312fe6c39fc6b7bc3bc9dd36ce4",
+    "function_sha256": "00e5588a1e5b338f95cfddaf3e6d803c44645c763b8e3efeec07cbe59a19f9c7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/durability_fences.rs",
@@ -5560,7 +5560,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7499282b0fddb8022af8d5da1212f1e493e93c0f58be9b638a500b059b2a6474",
+    "function_sha256": "d92d4281c3c35ba04acdf74dc657b10e92dffd400c5620231e2eb6196cb4e7b3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/durability_fences.rs",
