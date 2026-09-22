@@ -1,8 +1,7 @@
 //! `GET {collection}:scan`, the snapshot export page: resolves the
 //! collection, decodes the frozen scan cursor and frames one page of
-//! decrypted records (docs/refactor/WIRE-MATRIX.md §2.6). Moved verbatim
-//! out of product.rs; the read-quota contract lands in the commit that
-//! follows.
+//! decrypted records (docs/refactor/WIRE-MATRIX.md §2.6). The entry
+//! admits the read-byte quota; this render site debits the framed page.
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -10,27 +9,26 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 
 use super::{
-    READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES, SCAN_TTL_MS, perr, product_key, q_num,
-    render_product_read_failure, strict_query,
+    READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES, SCAN_TTL_MS, debit_read_bytes, perr, product_key,
+    q_num, render_product_read_failure, strict_query,
 };
 use crate::http::AppState;
 
-// mt-lint: allow(name-param-shared-core): moved verbatim; the fix takes the resolved reference
 #[expect(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail; mapping either into a substitute response would report a wire status the handler never decided"
+    reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail once the page is debited; mapping either into a substitute response would report a wire status the handler never decided"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "product_scan; the scan resolves, admits and pages the frozen cursor in one sequence; splitting it would separate the page from the cursor it advances"
+    reason = "product_scan; the scan resolves, decodes and pages the frozen cursor and debits the page it frames in one sequence; splitting it would separate the page from the cursor it advances and the bytes it charges"
 )]
 pub(super) async fn product_scan(
     state: Arc<AppState>,
-    tenant: &crate::tenant::ProjectId,
-    name: String,
+    sref: crate::tenant::TenantStreamRef,
     headers: HeaderMap,
     query: &str,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -45,8 +43,7 @@ pub(super) async fn product_scan(
         Ok(q) => q,
         Err(r) => return r,
     };
-    // mt-lint: allow(stream-ref-construction): moved verbatim; the fix takes the resolved reference
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -217,5 +214,7 @@ pub(super) async fn product_scan(
             .sum(),
         outcome.records.len() as u64,
     );
+    // The page is decided: charge the framed bytes the transport will send.
+    debit_read_bytes(&state, principal, body.len());
     response.body(Body::from(body)).unwrap()
 }

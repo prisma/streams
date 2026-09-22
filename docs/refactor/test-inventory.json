@@ -5192,6 +5192,17 @@
     ]
   },
   {
+    "name": "scan_pages_draw_on_the_read_byte_quota",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f8b78672712a7421eedd732a37ef52d7a7ce397d1fc5f1c3480506960cf0d51b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_read_volume.rs",
+    "scenarios": []
+  },
+  {
     "name": "seal_converges_through_transient_commit_group_failures",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

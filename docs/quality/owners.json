@@ -2191,6 +2191,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Same-owner engine retirement scenarios for live-tail feed sources; real HTTP SSE sessions against a retired and replaced engine; compiled and executed with DST.",
       "syntax": "path = \"tests/livefeed_engine_retired.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::quota_read_volume",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Read-byte quota scenarios across the page-serving product routes; real HTTP scan and records pages against one enforce-mode project bucket; compiled and executed with DST.",
+      "syntax": "path = \"tests/quota_read_volume.rs\""
     }
   ]
 }

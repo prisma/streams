@@ -129,6 +129,9 @@ mod product_lifecycle;
 #[path = "tests/quota_enforcement.rs"]
 mod quota_enforcement;
 
+#[path = "tests/quota_read_volume.rs"]
+mod quota_read_volume;
+
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
 

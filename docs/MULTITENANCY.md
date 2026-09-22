@@ -1415,8 +1415,9 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   and latency percentiles remains a field exercise for the release
   push. Bucket/tracker isolation is also pinned at the unit level. Volume dimensions are live:
   append bytes/records metered with exact parsed counts at the append
-  site; read bytes debited POST-HOC from the served body size (sized
-  bodies; refusal while in debt); SSE subscriptions hold a
+  site; read bytes debited POST-HOC at the page render sites (records
+  GET/long-poll and `:scan`) by framed body bytes, refusal at entry
+  while in debt; SSE subscriptions hold a
   `max_live_subscriptions` slot for the STREAM's lifetime via a guard
   riding the response body. `queued_append_bytes` and
   `max_streams` are ENFORCED since SR2-4/SR3-2 (§17.3 r4): charge

@@ -817,27 +817,23 @@ fn check_read_quota(
         .map(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }
 
-/// Debit the SERVED read bytes (sized bodies only — streaming bodies
-/// are governed by the live-subscription slot instead).
-fn debit_read_response(
+/// Debit the SERVED page bytes, the framed body a render site hands to
+/// the transport, against the project's read-byte bucket (§17.2
+/// post-hoc volume metering). Only a render site knows that count, so
+/// only a render site debits; a refused request never reaches one, and
+/// a streaming body is governed by its live-subscription slot instead.
+fn debit_read_bytes(
     state: &AppState,
     principal: Option<&crate::auth::RequestPrincipal>,
-    resp: &Response,
+    bytes: usize,
 ) {
     let Some(p) = principal else { return };
-    if !resp.status().is_success() {
-        return;
-    }
-    // The handler-built Response carries no content-length header (the
-    // server stamps it at serve time); a SIZED body reports its exact
-    // length through the size hint. Streaming bodies (no exact size)
-    // are governed by the subscription slot instead.
-    let Some(bytes) = axum::body::HttpBody::size_hint(resp.body()).exact() else {
-        return;
-    };
-    state
-        .quotas
-        .debit_read(&p.project_id, &p.quotas, bytes, crate::shard::now_ms());
+    state.quotas.debit_read(
+        &p.project_id,
+        &p.quotas,
+        bytes as u64,
+        crate::shard::now_ms(),
+    );
 }
 
 /// Attach a live-subscription slot to a STREAMING response: the guard
@@ -1052,7 +1048,7 @@ async fn meter_op_if_ok(
 
 #[expect(
     clippy::unwrap_used,
-    reason = "product_entry; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+    reason = "product_entry; the preflight response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
 #[expect(
     clippy::too_many_arguments,
@@ -1148,39 +1144,23 @@ pub(crate) async fn product_entry(
                     meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Append).await;
                     r
                 }
-                (Method::GET, None) => {
+                (Method::GET, live @ (None | Some("long-poll"))) => {
+                    // §17.2: a page route is admitted only while the
+                    // project's read-byte bucket is out of debt; the page
+                    // render debits the framed bytes it serves.
                     if let Some(r) = check_read_quota(&state, principal.as_ref()) {
                         return r;
                     }
-                    let resp = product_read(
-                        state.clone(),
+                    product_read(
+                        state,
                         &tenant,
                         name,
                         headers,
                         &query,
-                        None,
-                        principal.as_ref().map(|pr| pr.lease()),
+                        live,
+                        principal.as_ref(),
                     )
-                    .await;
-                    debit_read_response(&state, principal.as_ref(), &resp);
-                    resp
-                }
-                (Method::GET, Some("long-poll")) => {
-                    if let Some(r) = check_read_quota(&state, principal.as_ref()) {
-                        return r;
-                    }
-                    let resp = product_read(
-                        state.clone(),
-                        &tenant,
-                        name,
-                        headers,
-                        &query,
-                        Some("long-poll"),
-                        principal.as_ref().map(|pr| pr.lease()),
-                    )
-                    .await;
-                    debit_read_response(&state, principal.as_ref(), &resp);
-                    resp
+                    .await
                 }
                 (Method::GET, Some("sse")) => {
                     // A live subscription consumes a §17.2 slot for the
@@ -1206,7 +1186,7 @@ pub(crate) async fn product_entry(
                         headers,
                         &query,
                         Some("sse"),
-                        principal.as_ref().map(|pr| pr.lease()),
+                        principal.as_ref(),
                     )
                     .await;
                     match sub {
@@ -1368,7 +1348,19 @@ pub(crate) async fn product_entry(
         (Method::GET, None) => product_metadata(state, &tenant, name).await,
         (Method::DELETE, None) => crate::http::product_delete(state, &tenant, name).await,
         (Method::POST, Some("seal")) => product_seal(state, &tenant, name, headers, body).await,
-        (Method::GET, Some("scan")) => product_scan(state, &tenant, name, headers, &query).await,
+        (Method::GET, Some("scan")) => {
+            if let Some(r) = check_read_quota(&state, principal.as_ref()) {
+                return r;
+            }
+            product_scan(
+                state,
+                tenant.stream_ref(&name),
+                headers,
+                &query,
+                principal.as_ref(),
+            )
+            .await
+        }
         _ => perr(
             StatusCode::NOT_FOUND,
             "unknown_route",
@@ -2573,7 +2565,7 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "product_read; the read takes every extractor and authorization part the entry resolved and dispatches raw, keyed and long-poll reads from one place; a request struct or a split would separate the dispatch from the parts it needs"
+    reason = "product_read; the read takes every extractor and the verified principal the entry resolved, dispatches raw, keyed and long-poll reads from one place and hands the principal to the page render that debits it; a request struct or a split would separate the dispatch from the parts it needs"
 )]
 async fn product_read(
     state: Arc<AppState>,
@@ -2581,8 +2573,8 @@ async fn product_read(
     name: String,
     headers: HeaderMap,
     query: &str,
-    live: Option<&'static str>,
-    lease: Option<crate::auth::AuthLease>,
+    live: Option<&str>,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -2825,7 +2817,7 @@ async fn product_read(
             deliver,
             no_fanout: false,
             internal: false,
-            lease,
+            lease: principal.map(crate::auth::RequestPrincipal::lease),
             internal_lease: None,
         };
         return crate::http::serve_read_sse(
@@ -2837,17 +2829,18 @@ async fn product_read(
         .await;
     }
     match state.read_service().execute_read(command).await {
-        Ok(outcome) => render_product_read(&state, &skey, &rk, &outcome),
+        Ok(outcome) => render_product_read(&state, principal, &skey, &rk, &outcome),
         Err(error) => render_product_read_failure(error),
     }
 }
 
 #[expect(
     clippy::unwrap_used,
-    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
+    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail once the served bytes are debited; mapping a builder error into a substitute response would report a wire status the handler never decided"
 )]
 fn render_product_read(
     state: &AppState,
+    principal: Option<&crate::auth::RequestPrincipal>,
     key: &crate::crypto::StreamKey,
     routing_key: &str,
     out: &crate::application::read::ReadOutcome,
@@ -2889,6 +2882,7 @@ fn render_product_read(
         crate::http::read_payload(out, false, Some(key), Some(routing_key), false)
     };
     crate::http::meter_read_outcome(state, out);
+    debit_read_bytes(state, principal, payload.len());
     response.body(Body::from(payload)).unwrap()
 }
 

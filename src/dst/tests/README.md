@@ -13,7 +13,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Lifecycle and topology | `lifecycle_*`, `fork_*`, `seal_*`, `topology_*`, `product_lifecycle` |
 | Consumer delivery and deletion | `consumer_atomicity`, `consumer_delete`, `consumer_generations`, `consumer_product`, `consumer_saga` |
 | Watches and live delivery | `watch_observation`, `sse_delivery`, `livefeed_*` (incl. `livefeed_engine_retired`) |
-| Multitenancy and authorization | `security_*`, `quota_enforcement` |
+| Multitenancy and authorization | `security_*`, `quota_enforcement`, `quota_read_volume` |
 | Accounting and admission | `billing_*`, `admission_*` |
 | Runtime ownership and recovery | `runtime_isolation`, `runtime_open_gate`, `runtime_retirement`, `runtime_sweep` |
 
