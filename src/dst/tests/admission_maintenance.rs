@@ -677,14 +677,38 @@ async fn reserved_streams_append_through_a_latched_engine() {
     );
 }
 
+/// `n` one-field JSON records: the smallest batch the raw surface parses.
+fn records_body(n: usize) -> Vec<u8> {
+    let items: Vec<String> = (0..n).map(|i| format!("{{\"n\":{i}}}")).collect();
+    format!("[{}]", items.join(",")).into_bytes()
+}
+
 /// R26-7: /v1/debug/load carries what a campaign needs to attribute a
 /// plateau — the exact cumulative frame-byte totals and the ordinary
 /// limiter's refusals BY CODE — and the per-stream limiter's refusal
 /// actually increments its own counter, distinct from maintenance shed.
+/// The limiter is tripped by a DRAINED bucket under a manual clock: a
+/// request that fits a fresh bucket but not the current one is the
+/// transient refusal the limiter exists for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn debug_load_reports_typed_limiter_and_frame_totals() {
-    let store = mem();
-    let (_state, addr) = http_rig(store).await;
+    let usage = Arc::new(crate::usage::UsageService::new(
+        &crate::config::AdmissionConfig::default(),
+        Arc::new(crate::runtime::ManualClock::at(0)),
+    ));
+    let (_state, addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            shard: crate::shard::ShardConfig {
+                shared_usage: Some(usage),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/load-t", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -705,19 +729,20 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
         .as_u64()
         .expect("per-code refusal counters must be exported");
 
-    // One request over the record-bucket CAPACITY (5,000/s x 2 s burst)
-    // trips the ordinary limiter — the refusal must carry its own code
-    // and count under its own counter, never the maintenance one.
-    let over: Vec<serde_json::Value> = (0..10_001).map(|n| serde_json::json!({ "n": n })).collect();
-    let (st, _, body) = hreq(
-        addr,
-        "POST",
-        "/v1/stream/load-t",
-        &ct,
-        serde_json::to_vec(&over).unwrap().as_slice(),
-    )
-    .await;
-    assert_eq!(st, 429, "over-capacity record burst must 429");
+    // Two bursts of 6,000 records against a 10,000-record bucket that
+    // never refills: the first is admitted (9,999 -> 3,999 left after the
+    // one-record probe), the second is refused TRANSIENTLY — it would fit
+    // a fresh bucket — by the ordinary limiter, under its own code and
+    // counter, never the maintenance gate.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/load-t", &ct, &records_body(6_000)).await;
+    assert!(st == 200 || st == 204);
+    let (st, headers, body) =
+        hreq(addr, "POST", "/v1/stream/load-t", &ct, &records_body(6_000)).await;
+    assert_eq!(st, 429, "a drained record bucket must 429");
+    assert!(
+        headers.contains_key("retry-after"),
+        "a transient refusal names its wait: {headers:?}"
+    );
     let refusal = String::from_utf8_lossy(&body).to_string();
     assert!(
         refusal.contains("limit_records_per_sec"),

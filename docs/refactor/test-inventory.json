@@ -1875,7 +1875,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9c5a311a628445f5d07c049d15ea6a3bf38cef22730bcc96efc3a28ff816edb3",
+    "function_sha256": "d9a9725cc0e8aaf60f587f225218e27449415e4bb37c59cc79c0f36870a0af75",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
