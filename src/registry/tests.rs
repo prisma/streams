@@ -183,7 +183,7 @@ fn same_name_two_projects_share_no_identity() {
     assert!(!project_streams_prefix(&pa).starts_with(&project_streams_prefix(&pb)));
 }
 
-fn ts(name: &str) -> crate::tenant::TenantStreamRef {
+pub(super) fn ts(name: &str) -> crate::tenant::TenantStreamRef {
     crate::tenant::TenantStreamRef::new(
         tp(),
         crate::tenant::CanonicalStreamName::new(name).unwrap(),

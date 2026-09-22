@@ -1,7 +1,6 @@
 //! Ops-bucket control plane: stream registry (CAS'd JSON descriptors, D18/D21)
 //! and the dynamic shard topology (D3, §3.2).
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -841,8 +840,7 @@ pub(crate) struct Registry {
     store: Arc<dyn ObjectStore>,
     /// §10.4 system-root scoping; validated cell id from config.
     cell: Arc<str>,
-    cache: Mutex<HashMap<crate::tenant::TenantStreamRef, CachedDesc>>,
-    cache_ttl: Duration,
+    cache: cache::DescriptorCache,
     /// Test-only one-shot: the NEXT `get` for a listed name returns a
     /// store error (round-18 fail-closed refresh probe).
     #[cfg(test)]
@@ -939,8 +937,7 @@ impl Registry {
         Registry {
             store,
             cell: Arc::from(cell.as_str()),
-            cache: Mutex::new(HashMap::new()),
-            cache_ttl: Duration::from_secs(5),
+            cache: cache::DescriptorCache::new(Duration::from_secs(5)),
             #[cfg(test)]
             fail_next_get: Mutex::new(std::collections::HashSet::new()),
             fail_next_list: Mutex::new(std::collections::HashSet::new()),
@@ -1033,14 +1030,7 @@ impl Registry {
             let raw = got.bytes().await?;
             let current: StreamDesc = decode_desc(&raw, Some(sref))?;
             if !still_dead(&current) {
-                self.cache_insert(
-                    sref.clone(),
-                    CachedDesc {
-                        desc: Some(current.clone()),
-                        at: Instant::now(),
-                        etag: etag.clone(),
-                    },
-                );
+                self.invalidate(sref);
                 return Ok((false, current));
             }
             let body = serde_json::to_vec(&fresh).expect("desc json");
