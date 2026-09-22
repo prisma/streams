@@ -1038,6 +1038,17 @@
     ]
   },
   {
+    "name": "a_sweep_eviction_arms_only_the_base_holdoff",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "e81918052c9638ec841e3206f0e14cbea784c648840f6fe8d831f686098431ac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_retirement.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_takeover_completes_an_old_close_that_won",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

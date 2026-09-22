@@ -45,9 +45,10 @@ pub(crate) enum ResolveError {
     },
 }
 
-/// The fate of a `remove_if` decision, settled under ONE write guard.
-/// Why a shard is being retired. Recorded on the retirement so the
-/// reason a prefix went cold is visible where the decision was made.
+/// Why a shard is being retired. Recorded on the retirement so the reason a
+/// prefix went cold is visible where the decision was made, and judged by
+/// the gate's anti-flap ledger: an engine moved or evicted while young is a
+/// strike; a sweep release or a shutdown is not (`sharddir::holdoff`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RetirementReason {
     /// The ring moved the shard to another instance.
@@ -442,7 +443,7 @@ impl ShardDirectory {
         // `crate::sharddir::ServingMap`). Doing it here meant holding the
         // serving map and then reaching for the gate state, which
         // deadlocked against a concurrent open of an UNRELATED prefix.
-        let engine = match self.inner.gate.retire_resident(prefix, decide) {
+        let engine = match self.inner.gate.retire_resident(prefix, reason, decide) {
             crate::sharddir::Retirement::Retired(engine) => engine,
             crate::sharddir::Retirement::Kept => return RetireOutcome::Kept,
             crate::sharddir::Retirement::Absent => return RetireOutcome::Absent,

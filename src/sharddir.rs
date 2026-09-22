@@ -33,7 +33,8 @@
 //!   open is slow; their disconnection changes nothing.
 //! - **Escalating holdoff**: an open that fails, or an engine that dies
 //!   young, pushes the next attempt out exponentially (3 s → 60 s cap).
-//!   A sick store gets a trickle of opens, not a storm.
+//!   A sick store gets a trickle of opens, not a storm. A release the runtime
+//!   chose (the billing sweep, a shutdown) is not evidence: see `holdoff`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -41,13 +42,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::shard::ShardEngine;
+use crate::shard_directory::RetirementReason;
 
-/// Base holdoff after a fence-close or failed open (matches the old 3 s
-/// anti-flap), doubling per strike up to [`HOLDOFF_CAP`].
+/// Base holdoff after any departure (matches the old 3 s anti-flap),
+/// doubling per strike up to [`HOLDOFF_CAP`] when the departure is evidence.
 const HOLDOFF_BASE: Duration = Duration::from_secs(3);
 const HOLDOFF_CAP: Duration = Duration::from_secs(60);
-/// An engine that dies younger than this counts as a strike; surviving
-/// longer resets the escalation.
+/// An engine whose judged departure comes younger than this is a strike;
+/// surviving longer resets the escalation (`holdoff` decides what is judged).
 const SHORT_LIVED: Duration = Duration::from_secs(30);
 
 // Default ceiling on one open attempt: SHARD_OPEN_DEADLINE_MS, default
@@ -73,6 +75,9 @@ static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
 mod health;
 pub(crate) use health::ShardHealth;
+/// The anti-flap ledger's verdict on a departure: evidence, or a release.
+mod holdoff;
+use holdoff::{Departure, ledger_after};
 /// The opener's unwind boundary; `new` wraps every opener with it.
 mod unwind;
 
@@ -260,21 +265,14 @@ struct PrefixGate {
 }
 
 /// Arm the anti-flap holdoff for `prefix` under an ALREADY-HELD gate
-/// state. Escalates when the engine died young, because rapid
-/// open->die cycles are the storm this module exists to prevent.
-///
-/// PR 6.1.2-A: the one arming body. It takes the guard rather than the
-/// lock so that a caller holding the gate state can arm WITHOUT ever
-/// reaching for `st` in the forbidden order (see `ServingMap`).
-fn arm_holdoff_locked(st: &mut HashMap<String, PrefixGate>, prefix: &str) {
+/// state. PR 6.1.2-A: it takes the guard, never `st`, so a caller holding
+/// the gate state cannot reach for it in the forbidden order (`ServingMap`).
+fn arm_holdoff_locked(st: &mut HashMap<String, PrefixGate>, prefix: &str, departure: Departure) {
     let g = st.entry(prefix.to_string()).or_default();
-    let lifetime = g.opened_at.map(|t| t.elapsed());
-    g.opened_at = None;
-    match lifetime {
-        Some(l) if l >= SHORT_LIVED => g.strikes = 0,
-        _ => g.strikes = g.strikes.saturating_add(1),
-    }
-    g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+    let lived = g.opened_at.take().map(|t| t.elapsed());
+    let (strikes, holdoff) = ledger_after(departure, lived, g.strikes);
+    g.strikes = strikes;
+    g.holdoff_until = Some(Instant::now() + holdoff);
 }
 
 fn holdoff_for(strikes: u32) -> Duration {
@@ -713,7 +711,7 @@ impl OpenGate {
     /// storm this module exists to prevent. Returns whether it evicted.
     #[expect(
         clippy::unwrap_used,
-        reason = "OpenGate::notify_closed; a poisoned gate state or serving map may hold a half-recorded retirement, and the resident matched under the same write guard is still present; recovering the former could retire the wrong incarnation and a fallible remove would deny a resident the guard just proved"
+        reason = "OpenGate::notify_closed; a poisoned gate state or serving map may hold a half-recorded retirement, the resident matched under the same write guard is still present and the close it reports is judged as evidence under those same guards; recovering the former could retire the wrong incarnation and a fallible remove would deny a resident the guard just proved"
     )]
     pub(crate) fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
         // PR 6.1.2-A: gate state FIRST, serving map second — the one
@@ -731,7 +729,7 @@ impl OpenGate {
             self.inner.health.engine_failed(prefix, role);
         }
         st.entry(prefix.to_string()).or_default().closing = Some(engine.shutdown_handle());
-        arm_holdoff_locked(&mut st, prefix);
+        arm_holdoff_locked(&mut st, prefix, Departure::Died);
         drop(st);
         // Direct notifications and callbacks use the same owner. Reentrant
         // callbacks find no resident; no gate/map guard is held while closing.
@@ -740,10 +738,10 @@ impl OpenGate {
     }
 
     /// Retire the resident of `prefix`: remove it, arm the anti-flap
-    /// holdoff, and hand the engine back for closing — as ONE decision
-    /// that no request observer can see half-applied. `decide` sees the
-    /// engine AND its incarnation and may decline, which reinstates the
-    /// very same resident under the same guards.
+    /// holdoff as `reason` warrants (see `holdoff`), and hand the engine
+    /// back for closing — as ONE decision that no request observer can see
+    /// half-applied. `decide` sees the engine AND its incarnation and may
+    /// decline, which reinstates the very same resident under the same guards.
     ///
     /// PR 6.1.2-A: retirement lives HERE, in the component that owns
     /// both pieces of state, so it can take them in the one permitted
@@ -754,11 +752,12 @@ impl OpenGate {
     /// here: the caller does it after both guards are released.
     #[expect(
         clippy::unwrap_used,
-        reason = "OpenGate::retire_resident; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
+        reason = "OpenGate::retire_resident; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff and the stated reason is judged under the same guards that removed the resident; recovering either could serve, reopen or reap the wrong incarnation"
     )]
     pub(crate) fn retire_resident(
         &self,
         prefix: &str,
+        reason: RetirementReason,
         decide: impl FnOnce(&Arc<ShardEngine>, EngineIncarnation) -> bool,
     ) -> Retirement {
         let mut st = self.inner.st.lock().unwrap();
@@ -770,9 +769,9 @@ impl OpenGate {
             map.insert(prefix.to_string(), resident);
             return Retirement::Kept;
         }
-        // Armed while the slot is still held: the removal and the
-        // holdoff are one decision, never half-applied.
-        arm_holdoff_locked(&mut st, prefix);
+        // Armed while the slot is still held: the removal and its verdict
+        // are one decision, never half-applied.
+        arm_holdoff_locked(&mut st, prefix, Departure::Retired(reason));
         st.entry(prefix.to_string()).or_default().closing = Some(resident.engine.shutdown_handle());
         Retirement::Retired(resident.engine)
     }

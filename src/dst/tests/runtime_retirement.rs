@@ -386,3 +386,63 @@ async fn engine_shutdown_really_retires_and_closes_every_resident() {
     );
     assert!(state.shards.held_prefixes().is_empty());
 }
+
+/// Review rank 12: a sweep eviction is not a flap. The billing sweep opens a
+/// cold shard, probes it and closes it again within seconds, every cycle.
+/// 6.1.1-B judged that close exactly like an engine that died young: each
+/// cycle earned a strike, strikes never decayed, and a cold shard drifted to
+/// the 60 s ceiling, so a customer's first request after a sweep close met
+/// `shard_moving` with a Retry-After of up to a minute. The reason now
+/// reaches the gate: a sweep close arms the base holdoff and leaves the
+/// strike ledger alone (the ledger itself is pinned in `sharddir::holdoff`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sweep_eviction_arms_only_the_base_holdoff() {
+    let store = mem();
+    let st = store.clone();
+    let dir = crate::shard_directory::ShardDirectory::new(
+        vec!["0".into(), "1".into()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: std::time::Duration::from_secs(60),
+            open_wait: std::time::Duration::from_millis(50),
+        },
+        |notifier| notifying_opener(st, notifier),
+    );
+    let prefix = "0";
+    let crate::sharddir::OpenOutcome::Ready(_) = dir
+        .open_or_wait(prefix, std::time::Duration::from_secs(30))
+        .await
+    else {
+        panic!("the probe open must be ready");
+    };
+    // The sweep returns its probe engine within seconds of opening it.
+    assert!(matches!(
+        dir.retire(
+            prefix,
+            crate::shard_directory::RetirementReason::SweepEviction,
+            |_, _| true
+        ),
+        crate::shard_directory::RetireOutcome::Retired(_)
+    ));
+    match dir
+        .open_or_wait(prefix, std::time::Duration::from_millis(20))
+        .await
+    {
+        crate::sharddir::OpenOutcome::Wait {
+            code,
+            retry_after_secs,
+        } => {
+            assert_eq!(
+                code, "shard_moving",
+                "a sweep close still arms the base holdoff"
+            );
+            // Stall-safe: a slow test thread can only make this smaller.
+            assert!(
+                retry_after_secs <= 3,
+                "a sweep eviction is not a strike: the holdoff must be the 3 s base, \
+                 not an escalated one (Retry-After {retry_after_secs}s)"
+            );
+        }
+        _ => panic!("a just-retired shard must not reopen immediately"),
+    }
+}
