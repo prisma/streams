@@ -787,7 +787,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     }
 
     // The child engine must carry the external adoption stamp from the
-    // LiveFeed build (last_external_seq > 0), and sweeps must neither
+    // LiveFeed build (an external stamp), and sweeps must neither
     // close it nor install custody.
     let child_route = desc
         .segment_route_by_id(desc.resolve_segment("").seg_id)
@@ -798,10 +798,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         .open(&prefix)
         .expect("the child engine is resident after the swap");
     assert!(
-        engine
-            .last_external_seq
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0,
+        engine.sweep_custody.externally_resolved(),
         "the LiveFeed build itself must stamp external adoption — no customer request touched the child"
     );
     for _ in 0..6 {
@@ -812,9 +809,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         "an engine serving a customer LiveFeed must never be sweep-closed"
     );
     assert_eq!(
-        engine
-            .sweep_custody
-            .load(std::sync::atomic::Ordering::Relaxed),
+        engine.sweep_custody.value(),
         0,
         "custody must never be installed over a customer LiveFeed engine"
     );

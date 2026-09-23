@@ -1126,19 +1126,10 @@ struct InFlightGroup {
 pub(crate) struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
-    /// R29 custody model. `last_external_seq`: the global adoption
-    /// sequence value of the most recent EXTERNAL resolution of this
-    /// engine (customer request paths only — never the sweep, walk or
-    /// scaler). `sweep_custody`: 0 = not scheduler-held, otherwise the
-    /// adoption-sequence value at which the sweep installed custody.
-    /// Invariants enforced in billing.rs: custody installs only onto an
-    /// engine with last_external_seq == 0 (any earlier external use —
-    /// including a customer who coalesced into the sweep's own open —
-    /// declines custody), an external resolution atomically revokes
-    /// custody, and a close requires the installer's exact custody
-    /// value with no newer external stamp.
-    pub last_external_seq: std::sync::atomic::AtomicU64,
-    pub sweep_custody: std::sync::atomic::AtomicU64,
+    /// R29: whether the billing sweep may close this engine — the
+    /// scheduler's custody and the external stamp that revokes it, owned
+    /// by `crate::billing::SweepCustody` so no caller can reorder them.
+    pub(crate) sweep_custody: crate::billing::SweepCustody,
     /// Engine-owned maintenance state (R25-A). The durable row in this
     /// shard's DB is authoritative; this is the published mirror,
     /// updated ONLY after the write carrying the row succeeds. Owned by
@@ -1348,7 +1339,7 @@ impl ShardEngine {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
+        reason = "ShardEngine::start; the pump and trim tickers unwrap only the in-flight queue and trim-debt locks, and a poisoned one may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
     )]
     #[expect(
         clippy::cast_possible_truncation,
@@ -1379,8 +1370,7 @@ impl ShardEngine {
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
-            last_external_seq: std::sync::atomic::AtomicU64::new(0),
-            sweep_custody: std::sync::atomic::AtomicU64::new(0),
+            sweep_custody: crate::billing::SweepCustody::default(),
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,

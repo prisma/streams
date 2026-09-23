@@ -33,6 +33,8 @@ pub(crate) use read_spool::ReadSpool;
 
 mod system_append;
 pub(crate) use system_append::{LocalFailure, append_local, system_append};
+mod sweep_custody;
+pub(crate) use sweep_custody::SweepCustody;
 mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
 
@@ -1573,7 +1575,7 @@ pub(crate) fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> u
         .shards
         .engines()
         .iter()
-        .filter(|e| e.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) != 0)
+        .filter(|e| e.sweep_custody.held())
         .count()
 }
 
@@ -1749,21 +1751,10 @@ async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt 
     }
 }
 
-/// R29 custody core. One global adoption sequence orders every
-/// external resolution against every custody install; the invariants:
-///
-///   * custody installs ONLY onto an engine with zero external
-///     history — a customer who resolved the engine before the sweep
-///     probed it (including one who coalesced into the sweep's own
-///     in-flight open) makes the install DECLINE, closing the
-///     pre-mark window the R28 baseline model left open;
-///   * an external resolution atomically revokes custody
-///     (stamp_external, called inside the request path's map guard);
-///   * internal paths (tombstone walk, scaler) never stamp, so
-///     maintenance cannot leak an engine out of the rotation;
-///   * a close succeeds only via compare_exchange on the installer's
-///     exact custody value — custody still present implies no
-///     external stamp since install.
+/// R29: ONE process-wide adoption sequence, so custody values stay unique
+/// across engines and across incarnations of one prefix: a custody record
+/// left by a retired engine never matches its successor's custody. The
+/// handshake itself is `SweepCustody`.
 static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Called from every EXTERNAL engine resolution (http engine_for fast
@@ -1771,12 +1762,7 @@ static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// flags in the serving map, so revocation is just the swap.
 pub(crate) fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>) {
     let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    engine
-        .last_external_seq
-        .store(seq, std::sync::atomic::Ordering::Relaxed);
-    engine
-        .sweep_custody
-        .swap(0, std::sync::atomic::Ordering::Relaxed);
+    engine.sweep_custody.stamp_external(seq);
 }
 
 /// Install scheduler custody. Returns the custody value on success;
@@ -1784,26 +1770,8 @@ pub(crate) fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>)
 /// the install race) and the scheduler must treat it as
 /// customer-resident.
 fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option<u64> {
-    use std::sync::atomic::Ordering;
-    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
-        return None;
-    }
-    let seq = ADOPTION_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    engine.sweep_custody.store(seq, Ordering::Relaxed);
-    // Re-check: a stamp that landed between the first read and the
-    // store has either already revoked (swap saw our value) or carries
-    // a newer last_external_seq; both mean decline.
-    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
-        if engine
-            .sweep_custody
-            .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            // we still held it; release cleanly (no SCHED_HELD yet)
-        }
-        return None;
-    }
-    Some(seq)
+    let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    engine.sweep_custody.install(seq).then_some(seq)
 }
 
 fn residence_quantum(cfg: &crate::config::BillingConfig) -> usize {
@@ -1841,16 +1809,10 @@ fn custody_intact(
     prefix: &str,
     engine: &std::sync::Arc<crate::shard::ShardEngine>,
 ) -> bool {
-    let rec = state.billing.sweep_custody_seq(prefix);
-    match rec {
-        Some(seq) => {
-            engine
-                .sweep_custody
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == seq
-        }
-        None => false,
-    }
+    state
+        .billing
+        .sweep_custody_seq(prefix)
+        .is_some_and(|seq| engine.sweep_custody.holds(seq))
 }
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
@@ -1871,7 +1833,6 @@ pub(crate) fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState
 /// window is the ownership-move window, which clients already survive
 /// by replay contract.
 fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
-    use std::sync::atomic::Ordering;
     let Some(seq) = state.billing.sweep_custody_seq(prefix) else {
         return;
     };
@@ -1893,12 +1854,7 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     match state.shards.retire(
         prefix,
         crate::shard_directory::RetirementReason::SweepEviction,
-        |engine, _incarnation| {
-            engine
-                .sweep_custody
-                .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-        },
+        |engine, _incarnation| engine.sweep_custody.revoke_if(seq),
     ) {
         crate::shard_directory::RetireOutcome::Retired(_) => {
             unmark(state, prefix);

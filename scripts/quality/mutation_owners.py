@@ -66,6 +66,7 @@ OWNERS = (
     owner('touch', 'src/touch.rs', 'touch::'),
     owner('read_accumulator', 'src/billing/read_accumulator.rs', 'billing'),
     owner('read_spool', 'src/billing/read_spool.rs', 'billing'),
+    owner('sweep_custody', 'src/billing/sweep_custody.rs', 'billing::sweep_custody:: dst_tests::runtime_sweep::'),
     owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
     owner('admission_limits', 'src/config/admission_limits.rs', 'config::admission_limits:: usage::runtime_tests:: validation_rejects_a_limit_posture'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
