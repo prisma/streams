@@ -135,15 +135,7 @@ pub(crate) fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> 
 /// §15 watch-observation capability limits: enforced at VERIFICATION
 /// (issuance is offline by stream-key holders, so the server bounds
 /// what it accepts, not what clients mint).
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-)]
 pub(crate) const WATCH_CAP_MAX_LIFETIME_SECS: i64 = 300;
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-)]
 pub(crate) const WATCH_CAP_SKEW_SECS: i64 = 30;
 
 /// The layout-4 watch-observation capability signature: HMAC-SHA256
@@ -160,10 +152,6 @@ pub(crate) const WATCH_CAP_SKEW_SECS: i64 = 30;
 #[expect(
     clippy::too_many_arguments,
     reason = "watch_capability_sig; the signature covers every capability field the SDK mirrors byte-for-byte; bundling them would hide which field enters the cross-language input"
-)]
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
 )]
 #[expect(
     clippy::expect_used,
@@ -206,10 +194,6 @@ pub(crate) fn watch_capability_sig(
 /// BEFORE any registry lookup — the wire's project must match the
 /// sref the caller resolved (and the signature input has always bound
 /// the project, so a swapped prefix cannot verify).
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-)]
 pub(crate) fn watch_capability_project(cap: &str) -> Option<crate::tenant::ProjectId> {
     let (project_s, _) = cap.trim().split_once('.')?;
     crate::tenant::ProjectId::new(project_s).ok()
@@ -218,10 +202,6 @@ pub(crate) fn watch_capability_project(cap: &str) -> Option<crate::tenant::Proje
 #[expect(
     clippy::too_many_arguments,
     reason = "verify_watch_capability; the check takes every signed capability field separately, as the wire presents them; a bundle struct would exist for this single call site"
-)]
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
 )]
 pub(crate) fn verify_watch_capability(
     cap: &str,
@@ -315,20 +295,12 @@ pub(crate) struct RouteHash(pub [u8; 16]);
 impl RouteHash {
     /// Layout-4 route hash (MULTITENANCY §2.1):
     /// route-v1 + project_id + stream_name.
-    #[allow(
-        dead_code,
-        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-    )]
     pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef) -> Self {
         RouteHash(hash16(&crate::tenant::route_hash_input(sref)))
     }
 
     /// Layout-4 split-child route (contract r1):
     /// route-child-v1 + project_id + stream_name + child_segment_id + salt.
-    #[allow(
-        dead_code,
-        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-    )]
     pub(crate) fn for_child(
         sref: &crate::tenant::TenantStreamRef,
         child_segment_id: u32,
@@ -357,10 +329,6 @@ impl SegmentHash {
     /// storage-v1 + project_id + stream_name + stream_epoch.
     /// Replaces `StreamDesc::storage_hash`'s bare-name derivation at
     /// MT Stage 3.
-    #[allow(
-        dead_code,
-        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-    )]
     pub(crate) fn for_stream(sref: &crate::tenant::TenantStreamRef, stream_epoch: &str) -> Self {
         SegmentHash(hash16(&crate::tenant::storage_hash_input(
             sref,
@@ -371,10 +339,6 @@ impl SegmentHash {
     /// Layout-4 dynamic segment identity (MULTITENANCY §2.1):
     /// segment-v1 + project_id + stream_name + stream_epoch + segment_id.
     /// Replaces `StreamDesc::dynamic_segment_identity` at MT Stage 3.
-    #[allow(
-        dead_code,
-        reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-    )]
     pub(crate) fn for_segment(
         sref: &crate::tenant::TenantStreamRef,
         stream_epoch: &str,
@@ -640,7 +604,7 @@ pub(crate) const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as u
 // Shared by the standalone keys/cryptobench tools; server pages use bounded reads.
 #[allow(
     dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
+    reason = "decrypt_frame; the whole-record offline decoder capped at MAX_RECORD_PLAINTEXT serves the keys CLI, cryptobench and tests while every service read decrypts through FrameDecryptor under its page limit, so the service library has no caller; expect(dead_code) would be unfulfilled in the test build and in the by-path bins that call it"
 )]
 pub(crate) fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
@@ -719,10 +683,6 @@ mod compress_tests;
 /// Constant-time comparison for shared-secret tokens: a byte-by-byte
 /// `==` on a secret leaks its prefix length through timing (PR 6-C:
 /// shared by the deployment bearer and the peer client).
-#[allow(
-    dead_code,
-    reason = "crypto owner; the by-path side bins and the fuzz harness include this module and use only the hashing or codec half, so the service's other entry points are unused there; a cfg gate per item would fork the module's surface between builds"
-)]
 pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
