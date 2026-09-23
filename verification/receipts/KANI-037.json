@@ -1,0 +1,83 @@
+{
+  "checks": [
+    {
+      "check": "KANI-037/duplicates",
+      "covers": 5,
+      "covers_satisfied": 5,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 26.9,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-037/nc-closure-before-duplicate",
+      "covers": 5,
+      "covers_satisfied": 4,
+      "expected": "fail:a duplicate is answered, not admitted or refused",
+      "failed_checks": [
+        "\"a known hash conflict at the remembered sequence is refused\"",
+        "\"a duplicate is answered, not admitted or refused\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "a2d182b9cd46f72db7c28e6b6566aeec51a0ced29f101bea2f30e9cb0da2d1b0"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 35.7,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-037/nc-ignore-hash-conflict",
+      "covers": 5,
+      "covers_satisfied": 5,
+      "expected": "fail:a known hash conflict at the remembered sequence is refused",
+      "failed_checks": [
+        "\"a known hash conflict at the remembered sequence is refused\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "85cef6189d54b72caf740debd7a6f76cb38ec37219c4396c366bdec3812a7cdf"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 25.4,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-037/nc-older-duplicate-allocates",
+      "covers": 5,
+      "covers_satisfied": 4,
+      "expected": "fail:a duplicate is answered, not admitted or refused",
+      "failed_checks": [
+        "\"a duplicate is answered, not admitted or refused\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "65926a9b981d777d698e66564ffb59ebf35d85ddfde1dc2783a9761a231d087c"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 22.3,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-037",
+  "inputs_sha256": "174841ca96163a62ba7e1d0475335a89e6424f9f5c671fb47b0d699582aa3e68",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

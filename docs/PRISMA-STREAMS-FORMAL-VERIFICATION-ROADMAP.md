@@ -42,6 +42,7 @@ its own `nightly-2026-08-21` compiler. Production gates keep Rust 1.98.1.
 |---|---|---|---|
 | Packet A — inventory and compatibility | implemented | Pinned tools (`quality-tools.toml` `[formal]`, checksum-verified installer). `verification/manifest.json`, the assumption ledger and receipts. `scripts/quality/formal.py` validates the manifest (harness discovery, one attributable property per control or witness config, known statuses and assumptions), selects obligations from a diff, runs them, reconciles expected against actual verdicts, and records input-digest receipts. `formal.py check` runs in `scripts/quality.sh`. A new `formal` CI job runs the self-test, then the affected obligations (all of them on a schedule). Kani runs the unchanged crate: the whole `streams-slate` graph compiled under Kani in 81 s. | Exit condition met: the real-tool self-test passes, rejecting a wrong config (TLC exit 151), an incomplete search (timeout), a deadlock and a zero-discovery harness, and accepting a complete search and a reachable witness. Two tooling decisions: harnesses need `cfg(kani)`, declared in `build.rs`; that moved the build-identity environment reads into their own function, which narrows the existing exception instead of growing it. The raw-evidence upload hold is respected: logs and receipts stay local, so the CI job uploads nothing. |
 | KANI-001, 002, 003 — offset codec | pass-with-recorded-scope | Round trip, START and the successor index, and injectivity with order, over every `u32` segment ordinal and every `u64` scan index (`src/offsets/proofs.rs`). The harnesses call the digit core that `encode_ep` and `parse_ep` wrap. The `String` wrappers and the `-1` literal stay with the unit and property tests (ASM-OFFSET-DOMAIN). Five negative controls: truncated high epoch bits, a START token that skips entry 0, an exhausted index that wraps to START, swapped sequence halves, and a dropped epoch bit. Covers reach ordinals at or above 2^30 and index `u64::MAX`. The round trip takes 40 to 60 minutes under load, so its checks allow 7200 s. | **Three production defects, fixed** in "Offset tokens carry the whole segment ordinal, and a read position cannot overflow" (`verification/regressions/KANI-001`, `KANI-002`). (1) The §5 seed, confirmed on the real code: a segment ordinal at or above 2^30 wrote the token of the ordinal mod 2^30, and parsing it returned the low ordinal, so a cursor for segment 2^30 resumed in segment 0. (2) `Offset(Some(u64::MAX))` overflowed its successor: a panic in debug, a wrap to START in release. (3) A 26-byte token containing a multi-byte character parsed as START. Every token below ordinal 2^30 is unchanged byte for byte. **Open domain question:** scan index `u64::MAX` is also the read planner's "now" sentinel, so a crafted token with rawSeq 2^64−1 reads the live tail (ASM-READ-NOW-SENTINEL); the owner has to give it a meaning. |
+| KANI-036, 037, 038, 039 — producer admission and the seal fence | pass-with-recorded-scope | `decide_producer` over full-width `u64` epochs, sequences, offsets and tails, symbolic 16-byte hashes (present or absent), both closure flags and all three sealed states. `seal_authorized` over every `Option<u64>` generation, fence and closing flag (`src/shard/commit_plan/proofs.rs`, five harnesses). Nine negative controls: accept a lower epoch, let a new epoch skip sequence 0, check closure before a duplicate, ignore a known hash conflict, let an older duplicate allocate, make the gap test inclusive, name the wrong successor in a gap, refuse the exact fence generation, and admit an untagged close after a fence. | None. Every decision meets its contract over the whole domain. These limits were already documented and are now proven rather than assumed: a legacy all-zero stored hash, or a raw request without a hash, cannot detect a same-sequence conflict; an older duplicate is answered with the tail's last offset, not its own; a lane at sequence `u64::MAX` can only replay. What the committer loads as the remembered producer row is TLA-007's subject (ASM-PRODUCER-ROW). |
 <!-- end of implementation record table -->
 
 ## 1. Purpose, value, and verification boundaries
@@ -1555,6 +1556,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/shard/commit_plan.rs`](src/shard/commit_plan.rs)
 
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
+
 **Validate.** `decide_producer` rejects lower producer epochs and requires the specified initial sequence for a new epoch. No-current-state behavior follows the real protocol. These checks retain their intended precedence over later collection-state checks.
 
 **Why valuable.** A small decision function controls acceptance of every producer-coordinated append.
@@ -1570,6 +1573,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/shard/commit_plan.rs`](src/shard/commit_plan.rs)
+
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
 
 **Validate.** An exact remembered sequence obeys its hash-conflict rule and returns the stored offset where available. Older duplicates and legacy unknown-hash/offset sentinels follow the documented fallback. Duplicate recognition precedes closure rejection where required and never returns `Accept`.
 
@@ -1587,6 +1592,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/shard/commit_plan.rs`](src/shard/commit_plan.rs)
 
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
+
 **Validate.** A request beyond the permitted next sequence is classified as a gap with the correct expected value. `checked_add`/saturating diagnostic behavior remains consistent at MAX. A valid adjacent sequence is not rejected by an off-by-one rule.
 
 **Why valuable.** Boundary errors can either admit missing sequence work or permanently strand a valid producer.
@@ -1602,6 +1609,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/shard/commit_plan.rs`](src/shard/commit_plan.rs)
+
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
 
 **Validate.** `seal_authorized` rejects a supplied generation below the fence; exact/higher generations obey the contract; an untagged closing operation is refused after a nonzero fence, while untagged ordinary writes follow the separate admission contract.
 

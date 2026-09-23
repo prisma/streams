@@ -186,6 +186,268 @@
         "offsets::tests::epoch_round_trip",
         "golden_tests::cursors::golden_layout4_raw_high_epoch_offset_tokens"
       ]
+    },
+    {
+      "id": "KANI-036",
+      "kind": "kani",
+      "title": "Producer stale-epoch and new-epoch admission",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P1",
+        "P2",
+        "P8"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "decide_producer over every u64 request/current epoch and sequence, every remembered offset and 16-byte hash, present or absent current state and request hash, every tail next/closed value, and all three sealed states; producer id fixed empty (not an input)",
+      "checks": [
+        {
+          "id": "KANI-036/admission",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-036/nc-accept-a-lower-epoch",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "patch": "verification/kani/controls/KANI-036-accept-a-lower-epoch.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a lower epoch is stale"
+          }
+        },
+        {
+          "id": "KANI-036/nc-new-epoch-may-skip-zero",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "patch": "verification/kani/controls/KANI-036-new-epoch-may-skip-zero.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a new epoch must start at sequence 0"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
+    },
+    {
+      "id": "KANI-037",
+      "kind": "kani",
+      "title": "Producer duplicate, conflict, and replay-result semantics",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P2",
+        "P3",
+        "D2"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "every same-epoch request at or below the remembered sequence, with every stored offset (including the u64::MAX legacy sentinel), every stored hash (including all-zero), present or absent request hash, every tail and sealed state",
+      "checks": [
+        {
+          "id": "KANI-037/duplicates",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-037/nc-closure-before-duplicate",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-closure-before-duplicate.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a duplicate is answered, not admitted or refused"
+          }
+        },
+        {
+          "id": "KANI-037/nc-ignore-hash-conflict",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-ignore-hash-conflict.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a known hash conflict at the remembered sequence is refused"
+          }
+        },
+        {
+          "id": "KANI-037/nc-older-duplicate-allocates",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-older-duplicate-allocates.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a duplicate is answered, not admitted or refused"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
+    },
+    {
+      "id": "KANI-038",
+      "kind": "kani",
+      "title": "Producer sequence gaps and numeric exhaustion",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P8"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "every same-epoch request above the remembered sequence (so the remembered sequence is below u64::MAX), plus every request against a lane remembered at u64::MAX; all tails, hashes and sealed states",
+      "checks": [
+        {
+          "id": "KANI-038/gaps",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-038/exhausted",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_038_an_exhausted_sequence_only_replays",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-038/nc-inclusive-gap",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "patch": "verification/kani/controls/KANI-038-inclusive-gap.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the adjacent sequence is admitted unless the collection is closed"
+          }
+        },
+        {
+          "id": "KANI-038/nc-gap-names-wrong-successor",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "patch": "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a sequence beyond the successor is a gap naming the successor"
+          }
+        }
+      ],
+      "regressions": []
+    },
+    {
+      "id": "KANI-039",
+      "kind": "kani",
+      "title": "Seal generation authorization truth table",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "L4",
+        "L6",
+        "L8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-003",
+        "TLA-004",
+        "TLA-006"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "seal_authorized over every u64 fence, every Option<u64> generation and both closing flags",
+      "checks": [
+        {
+          "id": "KANI-039/truth-table",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-039/nc-fence-equality-refused",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "patch": "verification/kani/controls/KANI-039-fence-equality-refused.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a tagged operation is authorized exactly at or above the fence"
+          }
+        },
+        {
+          "id": "KANI-039/nc-untagged-close-after-fence",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "patch": "verification/kani/controls/KANI-039-untagged-close-after-fence.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an untagged close is refused once a fence exists"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
     }
   ]
 }

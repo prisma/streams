@@ -73,6 +73,23 @@ defined here.
 - **Standing:** unestablished; owner decision pending. See
   `regressions/KANI-002/README.md`.
 
+### ASM-PRODUCER-ROW
+
+- **Scope:** KANI-036, KANI-037, KANI-038.
+- **Statement:** the remembered producer state is the latest committed row
+  `(epoch, seq, last offset, request hash)` for one (stream, routing key,
+  producer id) lane. `u64::MAX` as the offset and `[0; 16]` as the hash are the
+  legacy "unknown" sentinels. No older per-sequence result is retained.
+- **Origin:** `src/shard.rs` `ProducerRows`, `src/shard/transaction/append.rs`
+  `accept_append`, roadmap §1.5.
+- **Enforcement / evidence:** the harnesses quantify over every row value,
+  including both sentinels. What the committer loads into `current` is the
+  subject of TLA-007 (planned).
+- **Invalidation:** a producer-row codec change or retained per-sequence
+  results.
+- **Standing:** established for the decision function; the loading path is not
+  covered here.
+
 ## Dependency contracts used by the TLA+ models
 
 The TLA+ groups add their entries below this line. Each model README maps its

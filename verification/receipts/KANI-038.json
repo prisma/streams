@@ -1,0 +1,72 @@
+{
+  "checks": [
+    {
+      "check": "KANI-038/gaps",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 22.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-038/exhausted",
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 21.6,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-038/nc-inclusive-gap",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:the adjacent sequence is admitted unless the collection is closed",
+      "failed_checks": [
+        "\"the adjacent sequence is admitted unless the collection is closed\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "e054d440a980d68fe6d6b1c9ad9a1a5e92af7c3bfab2d93d863013ecb26963af"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 24.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-038/nc-gap-names-wrong-successor",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:a sequence beyond the successor is a gap naming the successor",
+      "failed_checks": [
+        "\"a sequence beyond the successor is a gap naming the successor\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "0d77f6b1779fbdd04b7071402fdc1082c0551c8f420cc138f6dd6008a5e584e8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 24.1,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-038",
+  "inputs_sha256": "463a3324e1d8bd5c502adefac5afc638ac0854cb712307b3dddb26ddfee51acb",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

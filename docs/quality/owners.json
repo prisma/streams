@@ -2303,6 +2303,38 @@
       "path": "src/offsets/proofs.rs",
       "reason": "Kani proof harness for KANI-003 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_036_stale_and_new_epoch_admission",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-036 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::kani_037_duplicates_conflicts_and_replay_results",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-037 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_038_sequence_gaps_at_the_numeric_boundary",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-038 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_039_seal_generation_truth_table",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-039 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
     }
   ]
 }

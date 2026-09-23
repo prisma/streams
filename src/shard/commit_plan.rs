@@ -149,6 +149,9 @@ pub(super) fn seal_authorized(generation: Option<u64>, closing: bool, fence: u64
     }
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use super::*;

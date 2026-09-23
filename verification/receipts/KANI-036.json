@@ -1,0 +1,64 @@
+{
+  "checks": [
+    {
+      "check": "KANI-036/admission",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 25.8,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-036/nc-accept-a-lower-epoch",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:a lower epoch is stale",
+      "failed_checks": [
+        "\"a lower epoch is stale, whatever the sequence, hashes or closure\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "9f423c5f10aa92d03dbaff69deb56dd735f4559b928e164cd7bab702331d0550"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 27.3,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-036/nc-new-epoch-may-skip-zero",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:a new epoch must start at sequence 0",
+      "failed_checks": [
+        "\"a new epoch must start at sequence 0\""
+      ],
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+          "control": "fe88168943fa190c85d358b1725845dd6a36f6a9b287d47b6764f5822dd4c5c7"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 22.1,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-036",
+  "inputs_sha256": "3d24b71773d264c07facbeb2e62e1223ba809211b9a23d6433cf304a9cd72f56",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}
