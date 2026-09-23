@@ -420,13 +420,7 @@ pub(crate) fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> 
 /// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
 /// is an error here — callers that can meet one go through
 /// `decode_shard_maint_row` and the rebuild path.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "decode_shard_maint; the maintenance row decoder is the DST billing fixtures' witness of what the committer staged; deleting it would strip the decode those fixtures pin"
-    )
-)]
+#[cfg(test)]
 pub(crate) fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
     match decode_shard_maint_row(v)? {
         ShardMaintRow::Exact(m) => Ok(m),
@@ -1769,13 +1763,7 @@ impl ShardEngine {
 
     /// Observe the engine's one owned shutdown. Timeout/cancellation only
     /// stops this observer; workers and storage closure retain their owner.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::await_terminated; the termination wait is the lifecycle fixtures' join point and the service does not block on it; deleting it would strip the join those fixtures pin"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn await_terminated(
         &self,
         timeout: std::time::Duration,
@@ -2192,13 +2180,7 @@ impl ShardEngine {
         clippy::let_underscore_must_use,
         reason = "ShardEngine::pump_trim_tick; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::pump_trim_tick; the manual trim tick is the DST recovery fixture's way to drive maintenance and the service ticks from its own timer; deleting it would strip the tick that fixture pins"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn pump_trim_tick(&self) {
         let _ = self.tx.try_send(CommitOp::TrimTick);
     }
@@ -2620,13 +2602,7 @@ impl ShardEngine {
             .map_err(|e| e.to_string())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::count_consumer_state_rows; the row count is the consumer fixtures' witness of what the committer retired and the service never scans for it; deleting it would strip the count those fixtures pin"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],
