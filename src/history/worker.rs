@@ -338,16 +338,18 @@ impl Absorber {
                 return; // fenced while waiting for budget
             }
             match self.absorb_gather_v2_with(v2_lane, &mut _reservation).await {
-                Ok(outcome) => self.settle_gather(pending, &outcome),
+                Ok(outcome) => self.settle_gather(pending, &outcome, now),
                 Err(e) => self.settle_gather_error(pending, &e, now, v2_lane),
             }
         }
     }
-    /// Settles one gather's outcome into the pending roster.
+    /// Settles one gather's outcome into the pending roster. A stream the
+    /// gather left out for its own stored bytes backs off alone.
     fn settle_gather(
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,
         outcome: &GatherOutcome,
+        now: Instant,
     ) {
         // Retire ONLY what the gather settled:
         // covered streams advanced; no_work had
@@ -401,6 +403,18 @@ impl Absorber {
                 .usage
                 .clear_absorb_lag(crate::crypto::SegmentHash(*h));
         }
+        // Item 35: its lane-mates above settled with this flush.
+        for (h, failure) in &outcome.failed {
+            let Some(p) = pending.get_mut(h) else {
+                continue;
+            };
+            back_off(p, now, self.cfg.tick);
+            tracing::warn!(
+                "v2 gather left {} out: {failure}; failure {} backs it off alone",
+                crate::crypto::hex(&h[..4]),
+                p.failures,
+            );
+        }
     }
 
     /// A gather that failed as a whole backs off every stream in its lane.
@@ -434,3 +448,6 @@ fn back_off(p: &mut PendingAbsorb, now: Instant, tick: Duration) {
     let shift = p.failures.min(6);
     p.retry_after = Some(now + tick * 2u32.pow(shift));
 }
+
+#[cfg(test)]
+mod lane_isolation_tests;

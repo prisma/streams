@@ -3817,6 +3817,17 @@
     "scenarios": []
   },
   {
+    "name": "one_corrupt_row_fails_only_its_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "795e469325bcf046fcfdd5ce01e2feaa147e8a7e01867df50f68193c2141c8f1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_gather.rs",
+    "scenarios": []
+  },
+  {
     "name": "only_the_exact_signed_watch_route_skips_the_token",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

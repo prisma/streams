@@ -11,6 +11,8 @@
 
 mod canonical_span;
 mod gather;
+#[cfg(test)]
+pub(crate) use gather::StreamGatherFailure;
 mod postings_read;
 use postings_read::execute_postings_plan;
 use std::collections::HashMap;

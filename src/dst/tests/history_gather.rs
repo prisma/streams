@@ -1,7 +1,7 @@
 //! History gather.
 
 use super::fixture_storage::{
-    append_sized, mem, open_engine_with_settings, skey, wait_all_absorbed,
+    append_sized, mem, open_engine, open_engine_with_settings, skey, wait_all_absorbed,
 };
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
@@ -902,5 +902,54 @@ async fn a_refused_oversized_chunk_defers_and_sizes_the_next_reservation() {
     );
     wait_all_absorbed(&engine, &[fat]).await;
     assert_eq!(pool.budget.reserved_bytes(), 0);
+    engine.begin_close();
+}
+
+/// Item 35: a stored row that fails admission fails identically on every
+/// retry, so it may cost only its own stream; the lane-mates read beside
+/// it advance in the same flush and the corrupt stream's boundary holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_corrupt_row_fails_only_its_stream() {
+    let store = mem();
+    let key = skey();
+    let (a, bad, c) = ([0xB1u8; 16], [0xB2u8; 16], [0xB3u8; 16]);
+    // ShardConfig::default(): ring off, per-engine HistoryResources.
+    let engine = open_engine(store.clone(), "dst-corrupt-row").await;
+    for h in [a, bad, c] {
+        append_sized(&engine, h, &key, "", 1024).await;
+    }
+    let mut overwrite = slatedb::WriteBatch::new();
+    overwrite.put(crate::shard::record_key(&bad, 0), b"invalid frame");
+    let written = engine.db.write(overwrite).await.expect("overwrite the row");
+    written.await_durable().await.expect("durable overwrite");
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig::default(),
+    );
+    let outcome = absorber
+        .absorb_gather_v2(&[a, bad, c])
+        .await
+        .expect("a corrupt row in one stream must not fail the lane's gather");
+    let advanced: Vec<[u8; 16]> = outcome.advanced.iter().map(|(h, _, _)| *h).collect();
+    assert_eq!(
+        advanced,
+        vec![a, c],
+        "the corrupt stream's lane-mates advance in the same flush"
+    );
+    let frame =
+        crate::history::StreamGatherFailure::Corrupt(crate::shard::record::RecordCorruption::Frame);
+    assert_eq!(
+        outcome.failed,
+        vec![(bad, frame)],
+        "only the corrupt stream is left out, with the row's own reason"
+    );
+    assert!(outcome.no_work.is_empty() && outcome.deferred_budget.is_empty());
+    assert!(outcome.partial.is_empty());
+    wait_all_absorbed(&engine, &[a, c]).await;
+    let handle = engine.stream_handle(bad).await.expect("handle");
+    let absorbed = handle.state.lock().unwrap().durable.absorbed;
+    assert_eq!(absorbed, 0, "the corrupt stream's boundary holds");
     engine.begin_close();
 }

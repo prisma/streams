@@ -14,7 +14,7 @@ use super::{
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
-use crate::shard::record::RangeReadError;
+use crate::shard::record::{RangeReadError, RecordCorruption};
 use crate::shard::{FrameReadResult, StreamHandle, read_frames_range};
 use bytes::Bytes;
 use slatedb::config::WriteOptions;
@@ -69,6 +69,37 @@ pub(crate) struct GatherOutcome {
     /// never — 8x100 KiB behind a 64 KiB cap absorbed exactly one
     /// record and then stopped forever (chaos campaign, 2026-08-09).
     pub(crate) partial: Vec<([u8; 16], u64)>,
+    /// Streams left out for their own stored bytes, with the typed reason.
+    /// They MUST stay pending with their own backoff: retiring them strands
+    /// their backlog; retrying them every tick re-reads a chunk that fails
+    /// the same way.
+    pub(crate) failed: Vec<([u8; 16], StreamGatherFailure)>,
+}
+
+/// Why a gather left one stream out (item 35). Each verdict is a pure
+/// function of that stream's own durable bytes, so the same read fails the
+/// same way on every retry: it costs that stream its turn and its backoff,
+/// never its lane-mates'. Store, fence, partition and flush errors are not
+/// here: they still abort the whole gather.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StreamGatherFailure {
+    /// A stored row failed canonical admission (key width, namespace,
+    /// frame or offset).
+    Corrupt(RecordCorruption),
+    /// The chunk's postings pages did not decode back to what was encoded.
+    PostingsSelfDecode,
+    /// The chunk's postings pages decoded to overlapping runs.
+    PostingsOverlap,
+}
+
+impl std::fmt::Display for StreamGatherFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Corrupt(corruption) => write!(f, "{corruption}"),
+            Self::PostingsSelfDecode => f.write_str("postings page failed its self-decode"),
+            Self::PostingsOverlap => f.write_str("postings pages overlap"),
+        }
+    }
 }
 
 /// The batch under construction: its rows, their modeled size, and what
@@ -112,24 +143,14 @@ fn chunk_cost(chunk: &FrameReadResult) -> (usize, u64) {
     (chunk_bytes, chunk_raw)
 }
 
-/// Stage the chunk's canonical rows — the frame is stored once under its
-/// canonical offset — noting every frame's routing key for its postings
-/// pages; returns the last staged offset.
-fn stage_rows(
-    wb: &mut WriteBatch,
-    plan: &ReadPlan,
-    chunk: &FrameReadResult,
-    pages: &mut PageBuilder,
-) -> u64 {
-    let inc = SegmentHash(plan.hash);
+/// Note every frame's routing key for the chunk's postings pages, staging
+/// nothing yet: a chunk whose pages fail their self-check must leave no
+/// canonical row in the shared batch. Returns the chunk's last offset.
+fn note_frames(plan: &ReadPlan, chunk: &FrameReadResult, pages: &mut PageBuilder) -> u64 {
     let mut last = plan.from;
     for raw in &chunk.frames {
         let frame = raw.view();
         let off = frame.header.offset;
-        wb.put(
-            hist2_record_key(plan.route, inc, off),
-            Bytes::from(raw.clone()),
-        );
         pages.note_frame(
             crate::postings::rk_hash(frame.header.routing_key),
             off,
@@ -140,45 +161,64 @@ fn stage_rows(
     last
 }
 
-/// Stage the chunk's postings pages (ROUTING-V3 §3): every routing key —
-/// INCLUDING the empty/default key — gets compact offset-run pages in the
-/// SAME WriteBatch, so the index adds no request, manifest, database,
-/// namespace or GC surface of its own. Returns the per-key runs decoded
-/// back from what was just encoded (cheap varints, and a free round-trip
-/// check) — exactly the runs a reader would load, so write-through
-/// warming (spec §7) makes first-read-after-absorb skip the index round
-/// trip.
-fn stage_postings(
+/// A chunk's postings pages after they proved their own round trip. Only
+/// `check_postings` builds one and only `stage_checked` spends it, so the
+/// batch can only ever receive a checked chunk.
+struct ChunkPostings {
+    pages: crate::postings::Pages,
+    runs: KeyRuns,
+    bytes: u64,
+}
+
+/// The chunk's postings pages must decode back to runs that do not
+/// overlap. The runs decoded back from what was encoded (cheap varints)
+/// are exactly the runs a reader would load, so write-through warming
+/// (spec §7) makes first-read-after-absorb skip the index round trip.
+/// Touches no batch and counts nothing.
+fn check_postings(pages: PageBuilder) -> Result<ChunkPostings, StreamGatherFailure> {
+    let (pages, bytes) = pages.finish();
+    let mut runs: HashMap<[u8; 16], Vec<AbsRun>> = HashMap::new();
+    for (kh, _, first, value) in &pages {
+        let abs = crate::postings::decode_page_abs(*first, value)
+            .ok_or(StreamGatherFailure::PostingsSelfDecode)?;
+        crate::postings::append_page_runs(runs.entry(kh.0).or_default(), abs)
+            .ok_or(StreamGatherFailure::PostingsOverlap)?;
+    }
+    let runs = runs.into_iter().collect();
+    Ok(ChunkPostings { pages, runs, bytes })
+}
+
+/// Stage a checked chunk: its canonical rows — the frame is stored once
+/// under its canonical offset — then its postings pages (ROUTING-V3 §3):
+/// every routing key, INCLUDING the empty/default key, gets compact
+/// offset-run pages in the SAME WriteBatch, so the index adds no request,
+/// manifest, database, namespace or GC surface of its own. Returns the
+/// chunk's per-key runs.
+fn stage_checked(
     wb: &mut WriteBatch,
     plan: &ReadPlan,
-    pages: PageBuilder,
-) -> anyhow::Result<KeyRuns> {
+    chunk: &FrameReadResult,
+    checked: ChunkPostings,
+) -> KeyRuns {
     let inc = SegmentHash(plan.hash);
-    let (emitted, postings_bytes) = pages.finish();
-    POSTINGS_PAGES_WRITTEN.fetch_add(emitted.len() as u64, Ordering::Relaxed);
-    let mut chunk_runs: HashMap<[u8; 16], Vec<AbsRun>> = HashMap::new();
-    for (kh, bucket, first, value) in emitted {
-        let abs = crate::postings::decode_page_abs(first, &value)
-            .ok_or_else(|| anyhow::anyhow!("postings page failed self-decode during gather"))?;
-        POSTINGS_RUNS_WRITTEN.fetch_add(abs.len() as u64, Ordering::Relaxed);
-        crate::postings::append_page_runs(chunk_runs.entry(kh.0).or_default(), abs)
-            .ok_or_else(|| anyhow::anyhow!("overlapping postings during gather"))?;
+    for raw in &chunk.frames {
+        wb.put(
+            hist2_record_key(plan.route, inc, raw.view().header.offset),
+            Bytes::from(raw.clone()),
+        );
+    }
+    let ChunkPostings { pages, runs, bytes } = checked;
+    POSTINGS_PAGES_WRITTEN.fetch_add(pages.len() as u64, Ordering::Relaxed);
+    let run_count: usize = runs.iter().map(|(_, key_runs)| key_runs.len()).sum();
+    POSTINGS_RUNS_WRITTEN.fetch_add(run_count as u64, Ordering::Relaxed);
+    for (kh, bucket, first, value) in pages {
         wb.put(
             crate::postings::postings_key(plan.route, inc, &kh, bucket, first),
             value,
         );
     }
-    POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, Ordering::Relaxed);
-    Ok(chunk_runs.into_iter().collect())
-}
-
-/// Every range-read refusal aborts the gather, a row's own corruption as
-/// the same slatedb error it has always been.
-fn abort_gather(error: RangeReadError) -> anyhow::Error {
-    match error {
-        RangeReadError::Corrupt(row) => slatedb::Error::from(row).into(),
-        RangeReadError::Store(error) => error.into(),
-    }
+    POSTINGS_BYTES_WRITTEN.fetch_add(bytes, Ordering::Relaxed);
+    runs
 }
 
 /// Drain trace for the DST harness: which frames this gather staged.
@@ -338,7 +378,9 @@ impl Absorber {
     /// backlog until the ~60 s resident-handle sweep re-found it. A
     /// per-stream byte cap truncates fat streams mid-range — their
     /// boundary still advances over what was written, and the sweep or
-    /// the next signal re-drives the remainder.
+    /// the next signal re-drives the remainder. A stream whose own stored
+    /// bytes fail (a row refused admission, pages failing their self-check)
+    /// is left out as `failed`, alone; every other error aborts the lane.
     pub(crate) async fn absorb_gather_v2_with(
         &self,
         streams: &[[u8; 16]],
@@ -381,8 +423,16 @@ impl Absorber {
             let got = self.read_wave(wave, per_stream).await;
             self.pace_between_waves(&mut pacing).await;
             for (plan, read) in wave.iter().zip(got) {
-                let chunk = read.map_err(abort_gather)?;
-                self.stage_chunk(&mut staged, reservation, plan, &chunk)?;
+                match read {
+                    Ok(chunk) => self.stage_chunk(&mut staged, reservation, plan, &chunk),
+                    // The row's own bytes failed admission: it costs this
+                    // stream its turn, never its lane-mates'.
+                    Err(RangeReadError::Corrupt(corruption)) => staged
+                        .out
+                        .failed
+                        .push((plan.hash, StreamGatherFailure::Corrupt(corruption))),
+                    Err(RangeReadError::Store(error)) => return Err(error.into()),
+                }
             }
         }
         GATHER_LAST_PACE_MS.store(millis(pacing.paced), Ordering::Relaxed);
@@ -488,17 +538,17 @@ impl Absorber {
         reservation: &mut AbsorbReservation<'_>,
         plan: &ReadPlan,
         chunk: &FrameReadResult,
-    ) -> anyhow::Result<()> {
+    ) {
         if chunk.frames.is_empty() {
             staged.out.no_work.push(plan.hash);
-            return Ok(());
+            return;
         }
         let (chunk_bytes, chunk_raw) = chunk_cost(chunk);
         let batch_bytes = staged.bytes + chunk_bytes;
         let over_packing = staged.bytes > 0 && batch_bytes > self.cfg.gather_max_bytes;
         if over_packing || staged.refused > 0 {
             staged.out.deferred_budget.push(plan.hash);
-            return Ok(());
+            return;
         }
         // #266 adaptive reservation: cover this chunk's modeled
         // transient BEFORE building it. On the steady path the
@@ -518,14 +568,23 @@ impl Absorber {
             );
             staged.refused = batch_bytes;
             staged.out.deferred_budget.push(plan.hash);
-            return Ok(());
+            return;
         }
+        let mut pages = PageBuilder::default();
+        let last = note_frames(plan, chunk, &mut pages);
+        // The pages prove their own round trip BEFORE any of the chunk
+        // enters the shared batch: a refused chunk leaves nothing behind.
+        let checked = match check_postings(pages) {
+            Ok(checked) => checked,
+            Err(failure) => {
+                staged.out.failed.push((plan.hash, failure));
+                return;
+            }
+        };
         staged.bytes = batch_bytes;
         #[cfg(test)]
         trace_gather(plan, chunk);
-        let mut pages = PageBuilder::default();
-        let last = stage_rows(&mut staged.wb, plan, chunk, &mut pages);
-        let runs = stage_postings(&mut staged.wb, plan, pages)?;
+        let runs = stage_checked(&mut staged.wb, plan, chunk, checked);
         CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, Ordering::Relaxed);
         staged
             .warm_installs
@@ -536,7 +595,6 @@ impl Absorber {
         if last + 1 < plan.upto {
             staged.out.partial.push((plan.hash, plan.upto - (last + 1)));
         }
-        Ok(())
     }
 
     /// Make the batch durable — one write, one flush — then publish what
@@ -631,3 +689,6 @@ impl Absorber {
         }
     }
 }
+
+#[cfg(test)]
+mod postings_refusal_tests;
