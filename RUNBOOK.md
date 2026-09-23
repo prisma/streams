@@ -113,10 +113,10 @@ with an empty pool rather than dead sockets.
 
 | env | default | notes |
 |---|---|---|
-| `LIMIT_BYTES_PER_SEC` | 5000000 (5 MB/s) | per-stream-shard ingest byte limit (token bucket; 0 disables) |
-| `LIMIT_REQS_PER_SEC` | 1000 | per-shard append-request limit |
-| `LIMIT_RECS_PER_SEC` | 5000 | per-shard record limit |
-| `LIMIT_BURST_SECS` | 2 | bucket capacity = rate x this |
+| `LIMIT_BYTES_PER_SEC` | 5000000 (5 MB/s) | per-stream-shard ingest byte limit (token bucket; finite, >= 0; 0 disables) |
+| `LIMIT_REQS_PER_SEC` | 1000 | per-shard append-request limit (same rule) |
+| `LIMIT_RECS_PER_SEC` | 5000 | per-shard record limit (same rule) |
+| `LIMIT_BURST_SECS` | 2 | bucket capacity = rate x this (finite, > 0). Every ENABLED bucket must hold >= 1 token (rate x burst >= 1) and the product must be finite: a posture that cannot admit one unit, or that would silently disable a limit, is refused at boot by `validate()` |
 | `USAGE_STREAM_KEY` | — | base64url 32-byte key for the `_usage`/`_ops_*` system ledgers; unset = telemetry pipeline off |
 | `BILLING_MODE` | `off` | `required` = refuse to serve without ledger key, real identities, an open read spool (and rollup DB on the rollup owner) |
 | `ACCOUNT_ID` / `PROJECT_ID` / `CELL_ID` | `acct_local`/`proj_local`/`local` | the cell's tenant identity (one project per cell); placeholders are refused in required mode |
@@ -131,9 +131,12 @@ with an empty pool rather than dead sockets.
 | `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
 | `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
 
-Rejections are 429s with error codes `limit_bytes_per_sec` /
+Transient rejections are 429s with error codes `limit_bytes_per_sec` /
 `limit_requests_per_sec` / `limit_records_per_sec`, a human message naming
-the limit, and a `Retry-After` header. `/v1/debug/usage` (bearer) exposes
+the limit, and a `Retry-After` header the bucket will honour. A request
+larger than a FRESH bucket (body bytes or record count above rate x burst)
+can never be admitted and is a permanent 413 `payload_too_large` (product:
+`body_too_large`) with no `Retry-After`, on every content append. `/v1/debug/usage` (bearer) exposes
 per-stream cumulative requests, records, bytes_in, bytes_out,
 plaintext_bytes, frame_bytes, and the derived compression ratio. The
 billing emitter appends a JSON array per interval to the billing stream —

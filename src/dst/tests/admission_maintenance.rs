@@ -766,3 +766,153 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     // parallel suite; `before` pins only the rl_before baseline.)
     let _ = &before;
 }
+
+/// A content append with more records than the record bucket can EVER hold
+/// is a permanent 413 with no Retry-After: a 429 would name a wait no wait
+/// can honour (review item 25). The refusal leaves nothing behind: the
+/// stream stays writable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
+    let (_state, addr) = http_rig(mem()).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cap-recs", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    // 10,001 records: one more than LIMIT_RECS_PER_SEC x LIMIT_BURST_SECS.
+    let (st, headers, body) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/cap-recs",
+        &ct,
+        &records_body(10_001),
+    )
+    .await;
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(
+        st, 413,
+        "10,001 records never fit a 10,000-record bucket: {body}"
+    );
+    assert!(body.contains("payload_too_large"), "{body}");
+    assert_eq!(
+        headers.get("retry-after"),
+        None,
+        "a permanent refusal names no wait"
+    );
+    let (st, _, body) = hreq(addr, "POST", "/v1/stream/cap-recs", &ct, &records_body(1)).await;
+    assert!(
+        st == 200 || st == 204,
+        "{st}: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+/// The product batch surface reaches the same owner: with a record bucket
+/// smaller than MAX_BATCH_RECORDS, a batch larger than a fresh bucket is a
+/// permanent 413 (the product spelling is `body_too_large`), and exactly
+/// the capacity is still admitted afterwards because the refusal consumed
+/// nothing (the rig's usage clock never refills between the two).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn product_batch_over_record_capacity_is_413_without_retry_after() {
+    let usage = Arc::new(crate::usage::UsageService::new(
+        &crate::config::AdmissionConfig {
+            limit_recs_per_sec: 50.0, // x LIMIT_BURST_SECS 2 = 100 records
+            ..Default::default()
+        },
+        Arc::new(crate::runtime::ManualClock::at(0)),
+    ));
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            shard: crate::shard::ShardConfig {
+                shared_usage: Some(usage),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        rig.addr,
+        "PUT",
+        "/v1/streams/cap-batch",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, headers, body) = preq(
+        rig.addr,
+        "POST",
+        "/v1/streams/cap-batch/records:batch",
+        &key,
+        &records_body(101),
+    )
+    .await;
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(st, 413, "101 records never fit a 100-record bucket: {body}");
+    assert!(body.contains("body_too_large"), "{body}");
+    assert_eq!(headers.get("retry-after"), None);
+    let (st, _, body) = preq(
+        rig.addr,
+        "POST",
+        "/v1/streams/cap-batch/records:batch",
+        &key,
+        &records_body(100),
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "exactly the capacity fits a fresh bucket: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+/// A deferred producer verdict outranks the capacity check: the shard
+/// still answers the duplicate/invalid producer request as it always did,
+/// so an over-capacity body with a deferred verdict is that verdict (400
+/// invalid_body for a missing content type), never a 413.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
+    let usage = Arc::new(crate::usage::UsageService::new(
+        &crate::config::AdmissionConfig {
+            limit_bytes_per_sec: 50.0, // x LIMIT_BURST_SECS 2 = 100 bytes
+            ..Default::default()
+        },
+        Arc::new(crate::runtime::ManualClock::at(0)),
+    ));
+    let (_state, addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            shard: crate::shard::ShardConfig {
+                shared_usage: Some(usage),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cap-deferred", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    // Producer headers, NO content type, a 101-byte body over the 100-byte cap.
+    let producer = [
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/cap-deferred",
+        &producer,
+        &[b'x'; 101],
+    )
+    .await;
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(st, 400, "the deferred verdict answers first: {body}");
+    assert!(body.contains("invalid_body"), "{body}");
+}

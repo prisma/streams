@@ -19,23 +19,14 @@ pub(super) fn admit_usage(
     let counters = if !close_only && valid_content {
         match usage.admit_append(&name_hash, body_bytes as u64, record_count as u64) {
             Err(hit) => {
+                // Every refusal here is transient: parse_content has already
+                // answered 413 for anything larger than a fresh bucket, so
+                // the wait this names is one the bucket will honour.
                 crate::usage::note_limit_refusal(&hit);
-                let l = usage.limits();
-                if matches!(hit, crate::usage::LimitHit::Bytes { .. })
-                    && body_bytes as f64 > l.bytes_per_sec * l.burst_secs
-                {
-                    // Larger than the bucket's CAPACITY: no retry can
-                    // ever admit it — that is 413, not 429.
-                    return fail(
-                        FailureClass::Invalid,
-                        AppendCode::PayloadTooLarge,
-                        "request exceeds the per-stream ingest capacity",
-                    );
-                }
                 return fail(
                     FailureClass::Capacity,
                     AppendCode::RateLimited(hit.code()),
-                    &hit.message(l),
+                    &hit.message(usage.limits()),
                 )
                 .map_err(|e| e.retry(hit.retry_ms().div_ceil(1000).max(1)));
             }

@@ -688,4 +688,27 @@ mod validate_boundary_tests {
             assert!(text.contains(marker), "missing {marker:?} in\n{text}");
         }
     }
+
+    /// Review item 25: a limit posture whose buckets cannot admit one unit,
+    /// or whose knobs are not finite numbers, never boots.
+    #[test]
+    fn validation_rejects_a_limit_posture_that_can_never_admit() {
+        rejects(|_| {}, &[("LIMIT_BURST_SECS", "0")], "LIMIT_BURST_SECS");
+        rejects(|_| {}, &[("LIMIT_BURST_SECS", "NaN")], "LIMIT_BURST_SECS");
+        rejects(
+            |_| {},
+            &[("LIMIT_RECS_PER_SEC", "NaN")],
+            "LIMIT_RECS_PER_SEC",
+        );
+        rejects(
+            |_| {},
+            &[("LIMIT_BYTES_PER_SEC", "-1")],
+            "LIMIT_BYTES_PER_SEC",
+        );
+        rejects(
+            |_| {},
+            &[("LIMIT_REQS_PER_SEC", "0.1")],
+            "LIMIT_REQS_PER_SEC",
+        );
+    }
 }

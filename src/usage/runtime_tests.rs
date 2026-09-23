@@ -92,3 +92,81 @@ fn r10_usage_refill_and_eviction_follow_only_owned_monotonic_time() {
     assert!(rt.usage.evict_idle_for_test(Duration::from_secs(600)));
     assert_eq!(rt.usage.tracked_streams(), 0);
 }
+
+/// The request-token floor is a boot decision (`config::admission_limits`),
+/// never a per-append verdict: the runtime owner answers only for the
+/// request's own size, so a sub-token request bucket — which validation
+/// refuses before any service exists — is not its concern.
+#[test]
+fn the_runtime_owner_decides_only_the_requests_own_size() {
+    let sub_token = crate::config::AdmissionConfig {
+        limit_reqs_per_sec: 0.1,
+        limit_burst_secs: 2.0,
+        ..Default::default()
+    };
+    let usage = UsageService::new(&sub_token, Arc::new(ManualClock::at(0)));
+    assert_eq!(
+        usage.permanently_unadmittable(1, 1),
+        None,
+        "the request-token floor is a boot decision, not a per-append verdict"
+    );
+    assert_eq!(usage.permanently_unadmittable(10_000_001, 1), Some("bytes"));
+    assert_eq!(usage.permanently_unadmittable(1, 10_001), Some("records"));
+    assert_eq!(
+        usage.permanently_unadmittable(10_000_000, 10_000),
+        None,
+        "exactly the capacity fits"
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 1024, ..proptest::prelude::ProptestConfig::default() })]
+    /// Permanent refusal is exactly fresh-bucket refusal, kind for kind, for
+    /// every posture validation accepts — including disabled buckets, the
+    /// exact capacity, one over it, zero and u64::MAX. Validation is proven
+    /// sufficient for the request bucket by its own unit tests; every
+    /// generated posture here holds at least one request token.
+    #[test]
+    fn permanent_refusal_is_exactly_fresh_bucket_refusal(
+        bytes_rate in 0u32..=20_000,
+        recs_rate in 0u32..=20_000,
+        reqs_rate in 1u32..=2_000,
+        burst in 1u32..=3,
+        bytes_pick in 0u8..6,
+        recs_pick in 0u8..6,
+        jitter in 0u64..40_000,
+    ) {
+        let cfg = crate::config::AdmissionConfig {
+            limit_bytes_per_sec: f64::from(bytes_rate),
+            limit_reqs_per_sec: f64::from(reqs_rate),
+            limit_recs_per_sec: f64::from(recs_rate),
+            limit_burst_secs: f64::from(burst),
+            ..Default::default()
+        };
+        proptest::prop_assert!(
+            crate::config::admission_limits::validate_admission_limits(&cfg).is_empty()
+        );
+        // Integer rate x integer burst: the capacity is exact, so cap-1 /
+        // cap / cap+1 are exact.
+        let pick = |rate: u32, which: u8| -> u64 {
+            let cap = u64::from(rate) * u64::from(burst);
+            match which {
+                0 => 0,
+                1 => cap.saturating_sub(1),
+                2 => cap,
+                3 => cap + 1,
+                4 => u64::MAX,
+                _ => jitter,
+            }
+        };
+        let (bytes, records) = (pick(bytes_rate, bytes_pick), pick(recs_rate, recs_pick));
+        let usage = UsageService::new(&cfg, Arc::new(ManualClock::at(0)));
+        let fresh = match usage.admit_append(&[7u8; 16], bytes, records) {
+            Ok(_) => None,
+            Err(LimitHit::Bytes { .. }) => Some("bytes"),
+            Err(LimitHit::Records { .. }) => Some("records"),
+            Err(LimitHit::Requests { .. }) => Some("requests"),
+        };
+        proptest::prop_assert_eq!(usage.permanently_unadmittable(bytes, records), fresh);
+    }
+}

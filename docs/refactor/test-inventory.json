@@ -143,6 +143,17 @@
     "scenarios": []
   },
   {
+    "name": "a_deferred_producer_verdict_outranks_the_capacity_refusal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "68b0bb5468078ffe8f9e4e39357778e501ccd53d32142504b9dbbcec4fbd9f60",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3830,6 +3841,17 @@
     "scenarios": []
   },
   {
+    "name": "over_capacity_record_count_is_a_permanent_413_not_a_429",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "f2d949a4d8392b9a11e9e1b57ab5cd0a8c6093d359e40350a882a87efbab89e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
     "name": "over_retirement_fails_the_group_and_preserves_the_boundary",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -4023,6 +4045,17 @@
     "scenarios": [
       "DUR-011"
     ]
+  },
+  {
+    "name": "product_batch_over_record_capacity_is_413_without_retry_after",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "af1b17466be084d921e4f285909d1f3cb2078ce457379623080300b79057802d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
   },
   {
     "name": "product_clean_switch_rejections",

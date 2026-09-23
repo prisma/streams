@@ -3,7 +3,10 @@
 //! Limits (per stream shard, token buckets with LIMIT_BURST_SECS of
 //! capacity): LIMIT_BYTES_PER_SEC (default 5 MB/s), LIMIT_REQS_PER_SEC
 //! (default 1000), LIMIT_RECS_PER_SEC (default 5000). 0 disables a bucket.
-//! Rejections are 429s whose error code names the limit that fired.
+//! Transient rejections are 429s whose error code names the limit that
+//! fired; a request larger than a fresh bucket is a permanent 413, and
+//! `ServerConfig::validate` refuses a posture whose buckets cannot hold
+//! one token.
 //!
 //! Telemetry: cumulative per-stream counters (requests, records, bytes in,
 //! bytes out, plaintext bytes, frame bytes) — the last two make stored
@@ -315,7 +318,12 @@ impl UsageService {
         evict_one_idle_at(&mut self.map.lock().unwrap(), idle, self.clock.monotonic())
     }
 
-    /// Permanent capacity check used before publishing lifecycle intent.
+    /// A request larger than a FRESH bucket can never be admitted, so the
+    /// content owner refuses it 413 before any lifecycle intent instead of
+    /// a 429 whose Retry-After no wait can honour. Only the request's own
+    /// size is decided here: `ServerConfig::validate` has proven every
+    /// enabled bucket holds at least one token (`config::admission_limits`),
+    /// so the request bucket needs no arm.
     pub(crate) fn permanently_unadmittable(
         &self,
         bytes: u64,
@@ -327,13 +335,6 @@ impl UsageService {
         }
         if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
             return Some("records");
-        }
-        // The REQUEST bucket too: rates are floats, so a configuration like
-        // 0.1 req/s over a 2 s burst holds 0.2 tokens and can never admit
-        // the one token every request costs. Publishing an intent against
-        // that leaves the collection sealing behind a permanent 429.
-        if l.reqs_per_sec > 0.0 && l.reqs_per_sec * l.burst_secs < 1.0 {
-            return Some("requests");
         }
         None
     }

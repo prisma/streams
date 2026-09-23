@@ -290,13 +290,14 @@ pub struct AdmissionConfig {
     pub absorb_lag_secs: u64,
     /// MAINT_BACKPRESSURE_RELEASE_PCT, default 75, capped at 100.
     pub maint_release_pct: u64,
-    /// LIMIT_BYTES_PER_SEC, default 5_000_000.
+    /// LIMIT_BYTES_PER_SEC, default 5_000_000 (finite, >= 0; 0 disables;
+    /// an enabled bucket must hold >= 1 token — `validate()`).
     pub limit_bytes_per_sec: f64,
-    /// LIMIT_REQS_PER_SEC, default 1_000.
+    /// LIMIT_REQS_PER_SEC, default 1_000 (same rule).
     pub limit_reqs_per_sec: f64,
-    /// LIMIT_RECS_PER_SEC, default 5_000.
+    /// LIMIT_RECS_PER_SEC, default 5_000 (same rule).
     pub limit_recs_per_sec: f64,
-    /// LIMIT_BURST_SECS, default 2.
+    /// LIMIT_BURST_SECS, default 2 (finite, > 0).
     pub limit_burst_secs: f64,
 }
 

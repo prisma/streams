@@ -98,24 +98,20 @@ pub(super) fn parse_content(
         }
     }
 
-    let close_carries_content = !entries.is_empty();
-    // A body larger than the ingest bucket's CAPACITY can never be
-    // admitted — that is a permanent 413, and it must be decided BEFORE
-    // the lifecycle intent, or the collection is left sealing forever
-    // owing a record the limiter will always refuse.
-    if close && close_carries_content && deferred.is_none() {
-        // Bytes AND records: a batched close with more records than the
-        // record bucket can ever hold is just as permanently refused as
-        // an oversized body, and publishing an intent for it stranded
-        // the collection at 429 forever.
-        if let Some(kind) = usage.permanently_unadmittable(body.len() as u64, entries.len() as u64)
-        {
-            return fail(
-                FailureClass::Invalid,
-                AppendCode::PayloadTooLarge,
-                &format!("request exceeds the per-stream ingest {kind} capacity"),
-            );
-        }
+    // Anything larger than a FRESH bucket can never be admitted, so it is a
+    // permanent 413 for every content append — a 429 would name a wait no
+    // wait can honour — and it is decided BEFORE the lifecycle intent, or a
+    // close would leave the collection sealing forever, owing a record the
+    // limiter will always refuse. A deferred verdict outranks it: the shard
+    // still answers a duplicate producer request 204.
+    if deferred.is_none()
+        && let Some(kind) = usage.permanently_unadmittable(body.len() as u64, entries.len() as u64)
+    {
+        return fail(
+            FailureClass::Invalid,
+            AppendCode::PayloadTooLarge,
+            &format!("request exceeds the per-stream ingest {kind} capacity"),
+        );
     }
     Ok(ContentPlan { entries, deferred })
 }

@@ -662,6 +662,10 @@ impl crate::config::ServerConfig {
         self.validate_engine_and_profile(&mut f);
         let (tenant, cell_id) = self.validate_identity(&mut f);
         let initial_shards = self.validate_topology_and_ceilings(&mut f);
+        f.errors
+            .extend(super::admission_limits::validate_admission_limits(
+                &self.admission,
+            ));
         self.validate_billing_prerequisites(&mut f);
         let (auth_mode, catalog_cursor_key) = self.validate_auth_and_keys(&mut f);
         let configured_capacity = self.validate_posture(&mut f);

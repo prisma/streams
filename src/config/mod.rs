@@ -15,9 +15,11 @@
 //! - [`cli`]: the 84-flag command-line surface (clap DTO);
 //! - [`environment`]: the environment source trait + process/map impls;
 //! - [`model`]: `ServerConfig` and the 13 knob sub-configs;
+//! - [`admission_limits`]: the boot-time proof of the token-bucket posture;
 //! - [`load`]: environment parsing (defaults + overlay);
 //! - [`summary`]: the explicit redacted diagnostics projection.
 
+pub(crate) mod admission_limits;
 pub(crate) mod cli;
 pub(crate) mod environment;
 pub(crate) mod load;

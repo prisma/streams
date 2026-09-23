@@ -66,6 +66,7 @@ OWNERS = (
     owner('read_accumulator', 'src/billing/read_accumulator.rs', 'billing'),
     owner('read_spool', 'src/billing/read_spool.rs', 'billing'),
     owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
+    owner('admission_limits', 'src/config/admission_limits.rs', 'config::admission_limits:: usage::runtime_tests:: validation_rejects_a_limit_posture'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops::'),

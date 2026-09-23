@@ -1611,6 +1611,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/usage/runtime_tests.rs",
+      "reason": "Per-stream capacity property; the pinned macro generates 1,024 validated bucket postures and request sizes and runs each through the production admission entry against the permanent-refusal owner; it produces test cases, not service state.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::layout_gate_refuses_foreign_namespaces",
       "path": "src/registry/tests.rs",
       "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",

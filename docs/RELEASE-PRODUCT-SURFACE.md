@@ -517,7 +517,7 @@ through the public route.
 | Synthetic producer ids lived in the PUBLIC producer namespace, so a caller could pre-create `prisma.seal.<op>` and turn a later final append into a false duplicate — sealing without the record | internal identities use a reserved prefix the wire parser refuses on both routes |
 | A successful final append was accepted without proving it closed the segment | the internal ack now carries whether THIS write closed; a non-closing duplicate is refused and the intent released |
 | Readiness publication ignored `Ok(false)`, which `cas_update` returns for a deleted descriptor — creation answered 201 for a stream that no longer existed and left the fork source pinned | the outcome is classified, success requires a live ready descriptor at the same incarnation, and an unpublishable initialization gives its source reference back |
-| `permanently_unadmittable` ignored the request bucket (0.1 req/s × 2 s < 1 token) | request capacity is checked too |
+| `permanently_unadmittable` ignored the request bucket (0.1 req/s × 2 s < 1 token) | request capacity is checked too — superseded by review item 25 (2026-09-23): the one-token rule is now a BOOT decision (`config::admission_limits`, `ServerConfig::validate` refuses the posture), so the per-append owner decides only the request's own size |
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
