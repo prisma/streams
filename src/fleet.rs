@@ -105,19 +105,20 @@ pub(crate) struct OverrideEntry {
     pub to: String,
     pub ms: i64,
 }
-/// Rebalance target: the coolest peer that is itself HEALTHY. Under
-/// fleet-wide backlog every instance breaches the lag threshold, and
-/// unguarded moves just hand the backlog around (ladder pass 3: 7 moves
-/// in 10 minutes of ping-pong). `peers` maps instance -> (cpu_pct,
-/// effective_lag_secs) and must exclude nobody; self is filtered here.
+/// Rebalance target: the coolest peer that is HEALTHY and a member of `active`. A lagging
+/// peer only hands the backlog around (ladder pass 3: 7 moves in 10 minutes of ping-pong), and
+/// every ring reader ignores an override to a non-member (`effective_owner`, the router mirror),
+/// so such a move is void. `peers` holds every fresh heartbeat, self and non-members included.
 pub(crate) fn pick_move_target(
     peers: &std::collections::HashMap<String, (f64, u64)>,
+    active: &[String],
     me: &str,
     lag_threshold_secs: u64,
 ) -> Option<String> {
     peers
         .iter()
         .filter(|(n, (_, lag))| n.as_str() != me && *lag < lag_threshold_secs / 2)
+        .filter(|(n, _)| active.contains(n))
         .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
         .map(|(n, _)| n.clone())
 }
@@ -440,7 +441,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "start; a poisoned timing ring may hold a half-recorded wait, the fleet documents serialise infallibly as plain data, and an unreadable router snapshot is a typed deferral of the desired CAS rather than a panic site; recovering the ring, handling the serialisation or aborting the tick on the snapshot would add branches no tick reaches"
+    reason = "start; a poisoned timing ring may hold a half-recorded wait, the fleet documents serialise infallibly as plain data, an unreadable router snapshot is a typed deferral of the desired CAS, and the move target and the eager move-in are ring decisions over the view this tick published rather than panic sites; recovering the ring, handling the serialisation or aborting the tick on the snapshot would add branches no tick reaches"
 )]
 #[expect(
     clippy::cast_sign_loss,
@@ -794,7 +795,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         .collect();
                     // Publish only a complete successful authority read. This
                     // synchronous replacement cannot expose a mixed ring/map.
-                    state.ownership.set_view(active, map);
+                    state.ownership.set_view(active.clone(), map);
                     state.peer.set_peers(peer_urls.clone());
                 }
 
@@ -824,8 +825,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 // the typed WrongOwner cutoff, and the zombie db dies
                 // now instead of at the winner's first fence.
                 {
-                    let held: Vec<String> = state.shards.held_prefixes();
-                    for prefix in held {
+                    for prefix in state.shards.held_prefixes() {
                         let owner = state.ownership.effective_owner(&prefix);
                         if owner.as_deref().is_some_and(|o| o != cfg.instance) {
                             tracing::info!(
@@ -842,15 +842,15 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     }
                 }
 
-                // Eager handoff: open any shard newly assigned to ME right
-                // now instead of waiting for the first routed request —
-                // the open fences the loser's db immediately (ladder p3:
-                // lazy opening left a moved shard unowned for 92 minutes
-                // while the loser's zombie compactor/GC kept running).
+                // Eager handoff: open any overridden shard the ring assigns
+                // to ME now, not at the first routed request — the open
+                // fences the loser's db (ladder p3: lazy opening left a moved
+                // shard unowned for 92 minutes). A target the ring ignores
+                // never opens it: that open would fence the ring's owner.
                 {
-                    let mut mine: Vec<String> = ov.entries.iter()
-                        .filter(|(prefix, e)| e.to == cfg.instance && !state.shards.is_open(prefix))
-                        .map(|(p, _)| p.clone()).collect();
+                    let mut mine: Vec<String> = ov.entries.keys()
+                        .filter(|p| state.ownership.effective_owner(p).is_some_and(|o| o == cfg.instance) && !state.shards.is_open(p))
+                        .cloned().collect();
                     mine.sort();
                     if let Some(after) = &eager_after {
                         let pivot = mine.partition_point(|p| p <= after);
@@ -888,7 +888,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 // (ladder p3: streams-2 owned nothing by D3).
                 {
                     let return_secs: i64 = state.config.fleet.rebalance_return_secs as i64;
-                    let active = state.ownership.ring_active();
                     let mut drop_keys: Vec<String> = Vec::new();
                     let mut pending_returns: std::collections::HashMap<String, usize> =
                         std::collections::HashMap::new();
@@ -986,7 +985,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     // the threshold and unguarded moves just hand the
                     // backlog around (ladder p3: 7 moves in 10 min, shard
                     // ping-pong, zero net absorption gained).
-                    let target = pick_move_target(&peer_load, &cfg.instance, rebalance_lag_secs);
+                    let target = pick_move_target(&peer_load, &active, &cfg.instance, rebalance_lag_secs);
                     if target.is_none() {
                         tracing::info!(
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"

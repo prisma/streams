@@ -9,25 +9,35 @@ fn peers(v: &[(&str, f64, u64)]) -> HashMap<String, (f64, u64)> {
         .collect()
 }
 
+fn ring(v: &[&str]) -> Vec<String> {
+    v.iter().map(|n| n.to_string()).collect()
+}
+
 // Regression: ladder pass 3 did 7 moves in 10 minutes because moves
 // were allowed to peers that were themselves behind.
 #[test]
 fn target_is_the_coolest_healthy_peer() {
     let p = peers(&[("a", 90.0, 0), ("b", 10.0, 0), ("c", 50.0, 0)]);
-    assert_eq!(pick_move_target(&p, "a", 60).as_deref(), Some("b"));
+    assert_eq!(
+        pick_move_target(&p, &ring(&["a", "b", "c"]), "a", 60).as_deref(),
+        Some("b")
+    );
 }
 
 #[test]
 fn target_excludes_self() {
     let p = peers(&[("a", 1.0, 0), ("b", 80.0, 0)]);
-    assert_eq!(pick_move_target(&p, "a", 60).as_deref(), Some("b"));
+    assert_eq!(
+        pick_move_target(&p, &ring(&["a", "b"]), "a", 60).as_deref(),
+        Some("b")
+    );
 }
 
 #[test]
 fn no_target_when_every_peer_is_also_lagging() {
     // fleet-wide backlog: hold shards rather than pass them around
     let p = peers(&[("a", 5.0, 90), ("b", 5.0, 80), ("c", 5.0, 70)]);
-    assert_eq!(pick_move_target(&p, "a", 60), None);
+    assert_eq!(pick_move_target(&p, &ring(&["a", "b", "c"]), "a", 60), None);
 }
 
 // Regression: FLEET-CAMPAIGN.md — 4 shards over 4 instances drew
@@ -113,7 +123,22 @@ fn empty_active_set_never_returns() {
 fn target_must_be_well_under_the_threshold_not_merely_under_it() {
     // threshold/2 gate: a peer at 40s with a 60s threshold is not healthy
     let p = peers(&[("a", 5.0, 0), ("b", 5.0, 40)]);
-    assert_eq!(pick_move_target(&p, "a", 60), None);
+    assert_eq!(pick_move_target(&p, &ring(&["a", "b"]), "a", 60), None);
+    // Exactly half the threshold is not under it.
+    let p = peers(&[("a", 5.0, 0), ("b", 5.0, 30)]);
+    assert_eq!(pick_move_target(&p, &ring(&["a", "b"]), "a", 60), None);
+}
+
+// Item 34: the ring ignores an override to a non-member, so the idlest
+// heartbeat outside `active` must never be the target.
+#[test]
+fn target_must_be_a_member_of_the_active_ring() {
+    let p = peers(&[("a", 90.0, 120), ("b", 40.0, 0), ("streams-9", 1.0, 0)]);
+    assert_eq!(
+        pick_move_target(&p, &ring(&["a", "b"]), "a", 60).as_deref(),
+        Some("b")
+    );
+    assert_eq!(pick_move_target(&p, &ring(&["a"]), "a", 60), None);
 }
 
 // Regression: victim was derived via shard_for_hash(lag_map_key), but

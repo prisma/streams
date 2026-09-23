@@ -471,6 +471,17 @@
     ]
   },
   {
+    "name": "a_lagging_owner_moves_its_shard_only_to_an_active_member",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c9846e9b2ac1c494bad7e8c40442b418377c515b22bb65684d0875721803a293",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_large_record_absorbs_after_restart_under_default_policy",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1534,6 +1545,17 @@
     ]
   },
   {
+    "name": "an_override_the_ring_ignores_is_never_opened_by_its_target",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d19ee9a723eb3b46520dcff849a6fc745a0a63f28ab1f9bebd88c166e2894e2e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_oversized_chunk_gathers_alone",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1564,7 +1586,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "936a407e86728b7672ff8f3861534b9233d3b7a6de7080ddc2199922f09fd4e9",
+    "function_sha256": "eff44dc66f27d0e311c7420a9d3a3b4b9e2249a6b51d66ac7146798b3155e72b",
     "mechanisms": [],
     "configuration": [
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
@@ -6148,6 +6170,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_rings_owner_opens_every_overridden_shard_it_is_assigned_at_the_tick",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "98e73f4dab69c985df9a3013f0d402d3501b44486827dbdf7d9c1356fabd7c92",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
     "scenarios": []
   },
   {

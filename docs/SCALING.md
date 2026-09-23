@@ -213,11 +213,14 @@ fresh midpoint is correct regardless of what the dead scaler intended.
 Self-initiated: the laggard instance knows its own per-shard absorb lag,
 so it initiates the move (no leader). When `absorb_lag_max > 
 REBALANCE_LAG_SECS` for 2 fleet ticks and the move cooldown passed, it
-CAS-appends `{shard -> coolest fresh peer}` to `fleet/overrides.json`
-and drops the shard from its serving map. Everyone mirrors
-overrides.json into routing each fleet tick; `effective_owner()` =
-override (if target live) else rendezvous. The gaining instance fences
-the shard log on first routed request — existing R2/R3 machinery.
+CAS-appends `{shard -> coolest fresh, healthy member of the active ring}`
+to `fleet/overrides.json` and drops the shard from its serving map.
+Everyone mirrors overrides.json into routing each fleet tick;
+`effective_owner()` = override (if its target is in the active ring) else
+rendezvous. An override to a non-member is void: it is never written, and
+its target never opens the shard. The instance the ring assigns an
+overridden shard opens it at its next tick (eager handoff), fencing the
+previous holder's shard log — existing R2/R3 machinery.
 
 ## 8. Validation plan
 
