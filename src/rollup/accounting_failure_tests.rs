@@ -236,3 +236,71 @@ async fn an_ops_checkpoint_read_failure_is_an_error_never_the_start_of_the_ledge
     );
     db.close().await.unwrap();
 }
+
+/// Item 27: byte-time has two zeros on the wire. An unwritten field stays
+/// the empty string beside a computed "0", on month rows, aggregates,
+/// snapshots and corrections alike; a typed decimal must keep both.
+#[test]
+fn an_unwritten_byte_time_keeps_its_empty_wire() {
+    let raw = concat!(
+        r#"{"segments":{"0":{"storage_byte_ms":""},"1":{"storage_byte_ms":"0"},"#,
+        r#""2":{"storage_byte_ms":"340282366920938463463374607431768211455"}},"#,
+        r#""frozen":{"storage_byte_ms":""}}"#,
+    );
+    let row: super::MonthRow = serde_json::from_str(raw).unwrap();
+    assert_eq!(row.storage_byte_ms(), u128::MAX);
+    let encoded = serde_json::to_value(&row).unwrap();
+    assert_eq!(encoded["segments"]["0"]["storage_byte_ms"], "");
+    assert_eq!(encoded["segments"]["1"]["storage_byte_ms"], "0");
+    let max = "340282366920938463463374607431768211455";
+    assert_eq!(encoded["segments"]["2"]["storage_byte_ms"], max);
+    assert_eq!(encoded["frozen"]["storage_byte_ms"], "");
+    assert_eq!(encoded["corr"]["storage_byte_ms_delta"], "");
+    let aggregate = serde_json::to_value(super::AggRow::default()).unwrap();
+    assert_eq!(aggregate["storage_byte_ms"], "");
+    let meta = crate::billing::SegmentBillingMetaV1::default();
+    let snapshot = serde_json::to_value(meta.to_snapshot(false)).unwrap();
+    assert_eq!(snapshot["storage_byte_ms_month"], "");
+    let correction: crate::billing::UsageCorrection = serde_json::from_str(concat!(
+        r#"{"account_id":"a","project_id":"p","stream_id":"s","#,
+        r#""stream_name":"orders","month":"2026-07","reason":"r"}"#,
+    ))
+    .unwrap();
+    let correction = serde_json::to_value(&correction).unwrap();
+    assert_eq!(correction["storage_byte_ms_delta"], "");
+}
+
+/// Item 27: a late read into a finalized month is corrected with a WRITTEN
+/// zero byte-time, while an aggregate only reads touched keeps the empty one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_read_correction_carries_a_written_zero_byte_time() {
+    let db = Arc::new(
+        Db::builder("late-read", Arc::new(object_store::memory::InMemory::new()))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let r = UsageRollup {
+        db: db.clone(),
+        close_rows_visited: Default::default(),
+    };
+    let finalized = br#"{"account_id":"a","finalized_at_ms":1}"#;
+    db.put(k_month("2026-07", "a", "p", "s"), finalized)
+        .await
+        .unwrap();
+    r.apply_page(&[batch(0)], "c0").await.unwrap();
+    let raw = |key: Vec<u8>| {
+        let db = db.clone();
+        async move {
+            let value = db.get(key).await.unwrap().unwrap();
+            serde_json::from_slice::<serde_json::Value>(&value).unwrap()
+        }
+    };
+    let month = raw(k_month("2026-07", "a", "p", "s")).await;
+    assert_eq!(month["corrections"][0]["storage_byte_ms_delta"], "0");
+    assert_eq!(month["corr"]["storage_byte_ms_delta"], "0");
+    let project = raw(k_project("2026-07", "a", "p")).await;
+    assert_eq!(project["storage_byte_ms"], "");
+    assert_eq!(project["corr"]["storage_byte_ms_delta"], "0");
+    db.close().await.unwrap();
+}
