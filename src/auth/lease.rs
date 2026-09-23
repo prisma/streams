@@ -107,7 +107,8 @@ impl AuthService {
         if feed_stale(pols.fetched_at_unix, w, now_unix) {
             return Err(R::PolicyStale);
         }
-        let Some(p) = pols.projects.get(&l.project_id) else {
+        // §8.1: absent from this cell's snapshot, or placed on another cell.
+        let Some(p) = self.served_policy(&pols, &l.project_id) else {
             return Err(R::ProjectMissing);
         };
         if p.status != crate::project_policy::ProjectStatus::Active {

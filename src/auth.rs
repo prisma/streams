@@ -597,11 +597,10 @@ impl AuthService {
         // a 401 that would make the client refresh a perfectly valid
         // credential. Then, for a project we DO serve, confirm the
         // token's own cell claim agrees.
-        let policy = policies
-            .projects
-            .get(&project_id)
+        let policy = self
+            .served_policy(&policies, &project_id)
             .ok_or(AuthError::WrongCell)?;
-        if policy.cell_id.as_ref() != self.cell_id.as_ref() || c.cell_id != *self.cell_id {
+        if c.cell_id != *self.cell_id {
             return Err(AuthError::WrongCell);
         }
         // Ownership BEFORE status: a token minted under a previous owner
@@ -735,6 +734,21 @@ impl AuthService {
     /// (`PolicyStale` -> retryable 503), never open on a stale
     /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
     /// (not served here); the caller's uniform refusal applies.
+    /// §8.1: the policy of a project this cell serves, present in the
+    /// snapshot AND placed here. Request verification and the lease ask
+    /// this one question, so a policy republished for another cell cannot
+    /// keep authorizing one path after the other refuses it.
+    fn served_policy<'a>(
+        &self,
+        policies: &'a PolicySnapshot,
+        project: &ProjectId,
+    ) -> Option<&'a crate::project_policy::ProjectPolicy> {
+        policies
+            .projects
+            .get(project)
+            .filter(|p| p.cell_id == self.cell_id)
+    }
+
     pub(crate) fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
@@ -1587,5 +1601,37 @@ mod tests {
             "the operator surface must call a refusing feed stale"
         );
         assert_eq!(surface["grants"]["stale"], true);
+    }
+
+    /// Republishes proj_456's policy as placed on `cell`, with new policy
+    /// and feed versions so publication accepts it.
+    fn place_on(svc: &AuthService, cell: &str) {
+        let mut snap = (**svc.projects.load()).clone();
+        let policy = snap
+            .projects
+            .get_mut(&ProjectId::new("proj_456").unwrap())
+            .unwrap();
+        policy.cell_id = Arc::from(cell);
+        policy.project_policy_version += 1;
+        snap.feed_version += 1;
+        svc.publish_policies(snap).unwrap();
+    }
+
+    /// Item 65: a live lease re-proves its project's placement on this
+    /// cell, as request verification does, so a policy republished for
+    /// another cell ends it.
+    #[test]
+    fn a_lease_ends_when_its_project_is_placed_on_another_cell() {
+        let svc = service();
+        let lease = svc.verify_customer(&sign(&claims()), NOW).unwrap().lease();
+        assert_eq!(svc.lease_check(&lease, NOW), Ok(()));
+        place_on(&svc, "sin-cell-01");
+        let refused = svc.verify_customer(&sign(&claims()), NOW).unwrap_err();
+        assert_eq!(refused, AuthError::WrongCell);
+        assert_eq!(
+            svc.lease_check(&lease, NOW),
+            Err(LeaseInvalidReason::ProjectMissing),
+            "a lease must not outlive its project's placement on this cell"
+        );
     }
 }
