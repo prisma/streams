@@ -431,3 +431,60 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
         .await
         .unwrap();
 }
+
+/// Plant one lane row the way storage corruption would leave it, offer the
+/// fixture's producer append over it, and report the answer and whether any
+/// row changed.
+async fn append_over_planted_row(
+    row: Vec<u8>,
+    value: &[u8],
+) -> (Result<AppendAck, AppendErr>, bool) {
+    let fixture = Fixture::new().await;
+    let mut seed = WriteBatch::new();
+    seed.put(&row, value);
+    fixture.engine.db.write(seed).await.unwrap();
+    let before = fixture.rows().await;
+    let (append, reply) = fixture.append(HASH, 0, AppendFinish::Open);
+    fixture
+        .engine
+        .commit_group(vec![append], &fixture.cfg)
+        .await;
+    let result = tokio::time::timeout(Duration::from_secs(5), reply)
+        .await
+        .unwrap()
+        .unwrap();
+    let unchanged = fixture.rows().await == before;
+    fixture.journal.close();
+    fixture.engine.begin_close();
+    fixture
+        .engine
+        .await_terminated(Duration::from_secs(5))
+        .await
+        .unwrap();
+    (result, unchanged)
+}
+
+/// Review item 55: an undecodable producer row refuses the append as
+/// internal and writes nothing: no offset is consumed, and no ack claims a
+/// lane state the store does not hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r12_an_undecodable_producer_row_refuses_the_append_and_writes_nothing() {
+    let (result, unchanged) =
+        append_over_planted_row(producer_key(&HASH, &KEY, "writer"), &[1u8; 15]).await;
+    assert!(
+        matches!(result, Err(AppendErr::Internal(_))),
+        "a 15-byte producer row must refuse the append, got {result:?}"
+    );
+    assert!(unchanged, "a refused append writes no row");
+}
+
+/// The same for a Stream-Seq row that is not UTF-8.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r12_an_undecodable_stream_seq_row_refuses_the_append_and_writes_nothing() {
+    let (result, unchanged) = append_over_planted_row(seq_key(&HASH, &KEY), &[0xffu8]).await;
+    assert!(
+        matches!(result, Err(AppendErr::Internal(_))),
+        "a non-UTF-8 Stream-Seq row must refuse the append, got {result:?}"
+    );
+    assert!(unchanged, "a refused append writes no row");
+}

@@ -166,18 +166,20 @@ impl CommitTransaction<'_> {
             } else {
                 local.fields.next + req.entries.len() as u64 - 1
             };
-            let rhash = pr.request_hash.unwrap_or([0u8; 16]);
-            local.producer.rows.insert(
-                (req.key_hash, pr.id.clone()),
-                (pr.epoch, pr.seq, commit_last, rhash),
+            let row = (
+                pr.epoch,
+                pr.seq,
+                commit_last,
+                pr.request_hash.unwrap_or([0u8; 16]),
             );
-            let mut v = Vec::with_capacity(40);
-            v.extend_from_slice(&pr.epoch.to_le_bytes());
-            v.extend_from_slice(&pr.seq.to_le_bytes());
-            v.extend_from_slice(&commit_last.to_le_bytes());
-            v.extend_from_slice(&rhash);
-            self.batch
-                .put(producer_key(&hash, &req.key_hash, &pr.id), v);
+            local
+                .producer
+                .rows
+                .insert((req.key_hash, pr.id.clone()), row);
+            self.batch.put(
+                producer_key(&hash, &req.key_hash, &pr.id),
+                encode_producer_row(row),
+            );
         }
         if req.finish == AppendFinish::Close {
             local.fields.closed = true;

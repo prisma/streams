@@ -26,6 +26,7 @@ use commit_handoff::{Attachment, CommitHandoff};
 pub(crate) use tail_ring::RingScan;
 mod commit_plan;
 mod history_partition;
+mod lane_rows;
 mod lifecycle;
 mod tail_ring;
 mod transaction;
@@ -34,6 +35,7 @@ use commit_plan::{
     BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
     decide_consumer_generation, decide_producer, seal_authorized,
 };
+use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;
 
 pub(crate) fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
@@ -2057,22 +2059,12 @@ impl ShardEngine {
             .await
     }
 
-    /// Enumerate the durable dirty-stream index: every stream whose last
-    /// committed batch left `absorbed < next`, with those two boundaries
-    /// as of that batch. This is how a fresh owner rediscovers unabsorbed
-    /// tails after restart/handoff WITHOUT materializing stream handles
-    /// and without customer keys.
-    /// Producer-state lookup through the routing key's predecessor
-    /// chain (ROUTING-V3 §3.6): own identity first, then each sealed
-    /// predecessor. A hit on a predecessor means the producer's last
-    /// commit landed before a split — the caller stages it locally so
-    /// the duplicate check answers with the ORIGINAL offset and no new
-    /// offset is consumed.
     /// Split-safe Stream-Seq (review blocker 4): a sequence lane lives
     /// per (segment, routing key), but a child segment starts empty —
     /// without consulting its sealed predecessors, a sequence the
     /// PARENT already accepted would be accepted again on the child.
-    /// Nearest identity wins, exactly like the producer chain.
+    /// Nearest identity wins, exactly like the producer chain: the nearest
+    /// row that exists decides, and one that does not decode is corruption.
     async fn load_seq_chain(
         &self,
         own: &[u8; 16],
@@ -2081,16 +2073,19 @@ impl ShardEngine {
     ) -> Result<Option<String>, slatedb::Error> {
         for identity in std::iter::once(own).chain(lineage.iter()) {
             if let Some(v) = self.db.get(seq_key(identity, key_hash)).await? {
-                return Ok(String::from_utf8(v.to_vec()).ok());
+                return decode_seq_row(&v).map(Some);
             }
         }
         Ok(None)
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::load_producer_chain; the stored rows are fixed-width, so every eight-byte field slice converts; a fallible decode would add an error path no stored row reaches"
-    )]
+    /// Producer-state lookup through the routing key's predecessor
+    /// chain (ROUTING-V3 §3.6): own identity first, then each sealed
+    /// predecessor. A hit on a predecessor means the producer's last
+    /// commit landed before a split — the caller stages it locally so
+    /// the duplicate check answers with the ORIGINAL offset and no new
+    /// offset is consumed. A row that exists but does not decode is
+    /// corruption: it never defers to an older predecessor's row.
     async fn load_producer_chain(
         &self,
         own: &[u8; 16],
@@ -2099,38 +2094,8 @@ impl ShardEngine {
         pid: &str,
     ) -> Result<Option<(u64, u64, u64, [u8; 16])>, slatedb::Error> {
         for identity in std::iter::once(own).chain(lineage.iter()) {
-            match self.db.get(producer_key(identity, key_hash, pid)).await? {
-                Some(v) if v.len() >= 40 => {
-                    let mut h = [0u8; 16];
-                    h.copy_from_slice(&v[24..40]);
-                    return Ok(Some((
-                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
-                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
-                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
-                        h,
-                    )));
-                }
-                Some(v) if v.len() >= 24 => {
-                    return Ok(Some((
-                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
-                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
-                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
-                        [0u8; 16],
-                    )));
-                }
-                Some(v) if v.len() >= 16 => {
-                    // Legacy 16-byte row: the commit offset is UNKNOWN.
-                    // u64::MAX marks that (offset 0 is a perfectly valid
-                    // commit — the old 0-sentinel answered the wrong
-                    // offset for a first-record duplicate).
-                    return Ok(Some((
-                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
-                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
-                        u64::MAX,
-                        [0u8; 16],
-                    )));
-                }
-                _ => {}
+            if let Some(v) = self.db.get(producer_key(identity, key_hash, pid)).await? {
+                return decode_producer_row(&v).map(Some);
             }
         }
         Ok(None)

@@ -1619,6 +1619,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/shard/storage_decode_tests.rs",
+      "reason": "Lane-row codec properties; the pinned macro generates 1,024 full-width producer states and arbitrary stored bytes per property against the production encoder and both decoders; syntax tokens remain inventoried.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::layout_gate_refuses_foreign_namespaces",
       "path": "src/registry/tests.rs",
       "reason": "Registry layout-gate fixture builds one foreign-namespace descriptor document with the JSON DSL; the compiler checks its expansion and the test pins the refusal.",
