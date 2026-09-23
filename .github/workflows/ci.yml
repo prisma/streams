@@ -95,7 +95,14 @@ jobs:
           # the summary greps below cannot see an absent line (round-9
           # review certification hardening).
           set -o pipefail
+          # F-G: a lib test binary still alive after 15 minutes is hung
+          # (the whole suite takes ~3); dump every thread's stack and
+          # kill it so the step fails with the stuck frames, not at the
+          # job deadline. The hash keeps pgrep off the watcher itself.
+          scripts/quality/hang_dump.sh 'target/release/deps/streams_slate-[0-9a-f]{16}' 900 &
+          watcher=$!
           cargo test --release -- --skip post_split_throughput_scales 2>&1 | tee /tmp/suite.log
+          kill "$watcher" 2>/dev/null || true
           grep -E "^test result" /tmp/suite.log
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
