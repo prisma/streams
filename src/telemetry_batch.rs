@@ -91,4 +91,29 @@ mod tests {
             Selection::Oversized
         ));
     }
+
+    /// The floor is the empty array: below two bytes nothing can be framed.
+    #[test]
+    fn the_smallest_budget_frames_an_empty_array() {
+        assert!(encode_prefix(std::iter::empty::<&u8>(), 1).is_err());
+        let Ok(Selection::Encoded { body, count }) = encode_prefix(std::iter::empty::<&u8>(), 2)
+        else {
+            panic!("two bytes frame an empty array");
+        };
+        assert_eq!((body.as_slice(), count), (&b"[]"[..], 0));
+    }
+
+    /// Every row after the first pays one comma byte against the budget.
+    #[test]
+    fn a_later_row_pays_for_its_comma() {
+        let events = ["a", "b"];
+        let cases = [(9, &br#"["a","b"]"#[..], 2), (8, &br#"["a"]"#[..], 1)];
+        for (max_bytes, expected, rows) in cases {
+            let Ok(Selection::Encoded { body, count }) = encode_prefix(events.iter(), max_bytes)
+            else {
+                panic!("{max_bytes} bytes hold at least one row");
+            };
+            assert_eq!((body.as_slice(), count), (expected, rows), "{max_bytes}");
+        }
+    }
 }

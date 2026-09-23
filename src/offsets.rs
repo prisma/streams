@@ -133,6 +133,36 @@ mod tests {
         assert_eq!(parse("0000000000000000000G000010"), Ok((0, 1)));
     }
 
+    /// Crockford's O and I/L spellings are a wire-visible reading a strict
+    /// decoder must decide on explicitly (review item 88 step 2); until then
+    /// no refactor may move them.
+    #[test]
+    fn crockford_aliases_read_as_their_digits() {
+        for alias in [
+            "000000000000000000I0000000",
+            "000000000000000000i0000000",
+            "000000000000000000L0000000",
+            "000000000000000000l0000000",
+        ] {
+            assert_eq!(parse(alias), Ok((0, 2)), "{alias}");
+        }
+        assert_eq!(parse("OOOOOOOOOOOOOOOOOOOOOOOOOo"), Ok((0, 0)));
+    }
+
+    /// The fork-offset refusal hands these words to clients verbatim.
+    #[test]
+    fn refusal_words_are_wire_text() {
+        assert_eq!(
+            OffsetError::Length(1).to_string(),
+            "invalid offset length: 1"
+        );
+        assert_eq!(OffsetError::Char('U').to_string(), "invalid base32 char: U");
+        assert_eq!(
+            OffsetError::Epoch(3).to_string(),
+            "unsupported offset epoch: 3"
+        );
+    }
+
     /// The characters a token can carry, canonical or not.
     fn token_char() -> impl proptest::strategy::Strategy<Value = char> {
         proptest::sample::select(vec![

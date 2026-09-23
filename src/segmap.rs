@@ -521,6 +521,13 @@ mod tests {
             "successor does not reference parent"
         );
 
+        let mut disjoint = map.clone();
+        disjoint.segments[2].predecessors.push(a);
+        assert_eq!(
+            disjoint.validate().unwrap_err(),
+            "lineage ranges do not overlap"
+        );
+
         let mut reverse = map;
         reverse.segments[1].predecessors.push(b);
         assert_eq!(
@@ -546,6 +553,7 @@ mod tests {
         assert!(m.check_partition());
         assert_eq!(m.route(mid - 1).unwrap().seg_id, a);
         assert_eq!(m.route(mid).unwrap().seg_id, b);
+        assert_eq!(m.route(KEYSPACE_END).unwrap().seg_id, b);
         let parent = m.get(0).unwrap();
         assert_eq!(parent.sealed_next_offset, Some(4242));
         let succ = &parent.successors;
@@ -555,6 +563,40 @@ mod tests {
         assert_eq!(
             m.split(0, mid / 2, 0, [3u8; 16], [4u8; 16], 3).unwrap_err(),
             MapError::AlreadySealed(0)
+        );
+        assert_eq!(
+            m.version, 2,
+            "one split bumps the CAS version once; a refused one never"
+        );
+    }
+
+    /// A split must leave both children a non-empty range.
+    #[test]
+    fn a_split_point_on_the_parents_bounds_is_refused() {
+        let mut m = SegmentMap::initial("root", 1);
+        for bound in [0, KEYSPACE_END] {
+            assert_eq!(
+                m.split(0, bound, 0, [1u8; 16], [2u8; 16], 2),
+                Err(MapError::InvalidSplitPoint)
+            );
+        }
+        assert_eq!(
+            m,
+            SegmentMap::initial("root", 1),
+            "a refused split changes nothing"
+        );
+    }
+
+    /// Both invariants anchor at key 0: a map whose only segment starts
+    /// above it routes nothing below and must be refused.
+    #[test]
+    fn a_keyspace_that_starts_late_is_neither_covered_nor_partitioned() {
+        let mut late = SegmentMap::initial("root", 1);
+        late.segments[0].lo = 1;
+        assert!(!late.check_partition());
+        assert_eq!(
+            late.validate().unwrap_err(),
+            "terminal segments do not exactly cover keyspace"
         );
     }
 
@@ -592,6 +634,10 @@ mod tests {
         assert_eq!(m.live().count(), 2);
         assert_eq!(m.route(KEYSPACE_END / 2).unwrap().seg_id, e);
         assert_eq!(m.get(d).unwrap().successors, vec![e]);
+        assert_eq!(
+            m.version, 4,
+            "two splits and one merge; the refused merge bumps nothing"
+        );
     }
 
     #[test]
