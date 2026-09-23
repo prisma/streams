@@ -21,15 +21,22 @@ struct Scan {
 
 pub(super) fn source(path: &str, source: &str) -> syn::Result<Source> {
     let file = syn::parse_file(source)?;
+    // A Kani harness file is the body of its parent's `#[cfg(kani)] mod
+    // proofs;`, so it carries no cfg of its own. This is the one filename that
+    // counts as a whole-file cfg: the source gate fails every `proofs.rs` its
+    // parent module file does not declare exactly that way.
+    let kani_harness = path.ends_with("/proofs.rs");
     let mut scan = Scan {
         output: Source {
             path: path.to_owned(),
             tokens: tokens(&file),
-            test_only_file: facts::explicit_test_cfg(&file.attrs),
+            test_only_file: kani_harness || facts::explicit_test_cfg(&file.attrs),
+            kani_harness,
             ..Source::default()
         },
         owners: vec!["crate".to_owned()],
-        test_only: path.starts_with("src/dst/")
+        test_only: kani_harness
+            || path.starts_with("src/dst/")
             || path.contains("/tests/")
             || path.ends_with("_tests.rs"),
         explicit_test_cfg: false,

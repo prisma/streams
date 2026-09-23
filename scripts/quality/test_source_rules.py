@@ -1,7 +1,7 @@
 from collections import Counter
 import unittest
 from common import syntax
-from source_rules import absolute, exception_contracts, exception_growth, violations
+from source_rules import absolute, exception_contracts, exception_growth, harness_layout, violations
 
 
 def source(facts):
@@ -132,6 +132,36 @@ fn check(value: Option<u8>) {
         before = '#[expect(clippy::too_many_lines, reason = "transaction; one sequence; no split")]\nfn long() {\n' + ' let _x = 1;\n' * 101 + '}\n'
         after = before.replace('no split', 'reviewed 120-line ceiling').replace('\n}', '\n let _y = 2;\n}')
         self.assertFalse(self.growth(before, after))
+
+
+    def test_kani_harness_file_is_held_to_its_parent_declaration(self):
+        harness = 'src/shard/commit_plan/proofs.rs'
+        body = 'fn check() { let _: u8 = kani::any(); }'
+
+        def layout(parent, parent_path='src/shard/commit_plan.rs', **extra):
+            files = {harness: body, **({parent_path: parent} if parent is not None else {}), **extra}
+            return harness_layout(syntax(files))
+
+        self.assertEqual(layout('fn plan() {}\n#[cfg(kani)]\nmod proofs;\n'), [])
+        self.assertEqual(layout('/// Harnesses.\n#[cfg(kani)] mod proofs;', 'src/shard/commit_plan/mod.rs'), [])
+        for parent in ('mod proofs;', 'pub(crate) mod proofs;', '#[cfg(not(kani))] mod proofs;',
+                       '#[cfg(any(kani, unix))] mod proofs;', '#[cfg(all(kani, unix))] mod proofs;',
+                       '#[cfg(test)] mod proofs;', '#[cfg(feature = "kani")] mod proofs;',
+                       '#[cfg_attr(unix, cfg(kani))] mod proofs;',
+                       '#[cfg(kani)] #[path = "other.rs"] mod proofs;',
+                       '#[cfg(kani)] mod proofs; #[cfg(not(kani))] mod proofs;',
+                       '#[cfg(kani)] mod inner { mod proofs; }', 'fn plan() {}', None):
+            with self.subTest(parent=parent):
+                self.assertEqual(len(layout(parent)), 1)
+        # Two candidate parents are ambiguous, and a crate root is no module parent.
+        declared = '#[cfg(kani)] mod proofs;'
+        self.assertEqual(len(harness_layout(syntax({harness: body, 'src/shard/commit_plan.rs': declared,
+                                                   'src/shard/commit_plan/mod.rs': 'fn other() {}'}))), 1)
+        self.assertEqual(len(harness_layout(syntax({'src/proofs.rs': body, 'src/lib.rs': declared}))), 1)
+        sources = {harness: body, 'src/shard/commit_plan.rs': 'mod proofs;'}
+        failures = violations(sources, syntax(sources), {}, {}, Counter(), {'sse_core_files': []})
+        self.assertIn('Kani harness needs exactly `#[cfg(kani)] mod proofs;` in its parent module file: '
+                      + harness, failures)
 
 
 if __name__ == '__main__':

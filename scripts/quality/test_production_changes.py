@@ -55,6 +55,31 @@ class ProductionChanges(unittest.TestCase):
         for guard in ('any(test, feature="live")', 'not(test)', 'feature="test"'):
             self.assertFalse(self.unchanged('', f'#![cfg({guard})]\nfn f(){{}}'))
 
+    def test_explicit_kani_cfg_erases_an_item_like_cfg_test(self):
+        production = 'fn f()->u8 { 1 }\n'
+        declaration = '#[cfg(kani)]\nmod proofs;\n'
+        self.assertTrue(self.unchanged(production, production + declaration))
+        self.assertTrue(self.unchanged(production + declaration, production))
+        self.assertTrue(self.unchanged(production + 'fn g(){}', production + declaration + 'fn g(){}'))
+        inline = '#[cfg(kani)]\nmod proofs { #[kani::proof] fn check() { assert_eq!(super::f(), 1); } }'
+        self.assertTrue(self.unchanged(production + inline, production + inline.replace('1);', '2);')))
+        for guard in ('any(kani, feature="live")', 'not(kani)', 'feature="kani"'):
+            with self.subTest(guard=guard):
+                self.assertFalse(self.unchanged(production, production + f'#[cfg({guard})]\nmod proofs;'))
+        self.assertFalse(self.unchanged(production, production + '#[cfg_attr(kani, cfg(kani))]\nmod proofs;'))
+        self.assertFalse(self.unchanged(production + declaration, (production + declaration).replace('{ 1 }', '{ 2 }')))
+
+    def test_kani_harness_files_are_whole_file_cfgs_by_their_layout_only(self):
+        harness = 'use super::f;\nfn check() { let x: u8 = kani::any(); kani::cover!(f(x) == 1); }'
+        path = 'src/shard/commit_plan/proofs.rs'
+        self.assertTrue(self.unchanged('', harness, path))
+        self.assertTrue(self.unchanged(harness, harness.replace('== 1', '== 2'), path))
+        self.assertTrue(self.unchanged(harness, '', path))
+        self.assertTrue(self.unchanged('', '#![cfg(kani)]\n' + harness, 'src/shard/harness.rs'))
+        for other in ('src/shard/kani_proofs.rs', 'src/shard/proofs/mod.rs', 'src/shard/proofs_tests.rs', 'proofs.rs'):
+            with self.subTest(path=other):
+                self.assertFalse(self.unchanged('', harness, other))
+
     def test_an_inner_attribute_on_a_nested_scope_cannot_erase_the_file(self):
         for scope in ('mod inner { #![cfg(test)] fn check() {} }',
                       'unsafe extern "C" { #![cfg(test)] fn check(); }'):
