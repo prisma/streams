@@ -26,8 +26,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod lease;
 mod publication;
+mod refusal;
 pub(crate) use lease::{AuthLease, LeaseInvalidReason};
 use publication::HighWater;
+pub(crate) use refusal::{Denial, Refusal};
 
 use arc_swap::ArcSwap;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -686,14 +688,14 @@ impl AuthService {
             self.shadow.missing.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        match self.verify_customer(token, now) {
+        match self.verify_customer(token, now).map_err(|e| e.refusal()) {
             Ok(_) => {
                 self.shadow.ok.fetch_add(1, Ordering::Relaxed);
             }
-            Err(AuthError::WrongCell) => {
+            Err(Refusal::WrongCell) => {
                 self.shadow.wrong_cell.fetch_add(1, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(Refusal::FeedStale | Refusal::Denied(_) | Refusal::Unverified) => {
                 self.shadow.failed.fetch_add(1, Ordering::Relaxed);
             }
         }

@@ -5,7 +5,7 @@
 //! termination accounting established in rounds V4/3/4. Contract
 //! tests transfer unchanged.
 
-use crate::auth::LeaseInvalidReason;
+use crate::auth::{LeaseInvalidReason, Refusal};
 use crate::http::{AppState, InternalLease, SseSlot, err_resp};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -80,15 +80,16 @@ pub(crate) fn lease_terminations_json() -> serde_json::Value {
 
 /// Round-4 finding 1: a subscription whose lease was ALREADY invalid
 /// when its body was constructed is refused, never established. The
-/// status classes mirror `auth_failure_response` (product.rs): 503 for
-/// this cell's own feed staleness, 403 for verified-but-denied project
-/// state, 401 for everything a fresh token fixes.
-pub(crate) fn lease_refusal_response(r: crate::auth::LeaseInvalidReason) -> Response {
-    use crate::auth::LeaseInvalidReason as R;
-    let status = match r {
-        R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
-        R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
-        _ => StatusCode::UNAUTHORIZED,
+/// status is the reason's `Refusal` class, answered as
+/// `auth_failure_response` (product.rs) answers the request path: 503 for
+/// this cell's own feed staleness, 403 for verified-but-denied state, 401
+/// for everything a fresh token fixes.
+pub(crate) fn lease_refusal_response(r: LeaseInvalidReason) -> Response {
+    let status = match r.refusal() {
+        Refusal::WrongCell => StatusCode::MISDIRECTED_REQUEST,
+        Refusal::FeedStale => StatusCode::SERVICE_UNAVAILABLE,
+        Refusal::Denied(_) => StatusCode::FORBIDDEN,
+        Refusal::Unverified => StatusCode::UNAUTHORIZED,
     };
     err_resp(
         status,

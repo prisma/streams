@@ -655,45 +655,45 @@ fn route_stream_name(route: &ProductRoute) -> &str {
     }
 }
 
-/// One response per fail-closed reason class (§7.1/§8.1):
+/// One response per refusal class (§7.1/§8.1, `AuthError::refusal`):
 /// 421 wrong_cell (placement — the credential is FINE, so never 401,
 /// which would make clients refresh it), 503 for the cell's OWN feed
-/// staleness (retryable, not the client's fault), 403 for verified-
-/// but-denied (suspension, revocation, scope, prefix), 401 for
-/// everything a fresh token could fix.
+/// staleness (retryable), 403 for verified-but-denied (suspension,
+/// revocation, scope, prefix), 401 for everything a fresh token fixes.
 pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
-    use crate::auth::AuthError as E;
-    let (status, msg, retryable) = match e {
-        E::WrongCell => (
+    use crate::auth::{Denial as D, Refusal as R};
+    let refusal = e.refusal();
+    let (status, msg, retryable) = match refusal {
+        R::WrongCell => (
             StatusCode::MISDIRECTED_REQUEST,
             "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
             false,
         ),
-        E::PolicyStale | E::GrantsStale | E::KeysStale => (
+        R::FeedStale => (
             StatusCode::SERVICE_UNAVAILABLE,
             "this cell's authorization data is stale; retry",
             true,
         ),
-        E::ProjectNotActive(_) => (StatusCode::FORBIDDEN, "the project is not active", false),
-        E::CredentialNotActive(_) => (StatusCode::FORBIDDEN, "the credential is not active", false),
-        E::MissingScope(_) => (
+        R::Denied(D::Project) => (StatusCode::FORBIDDEN, "the project is not active", false),
+        R::Denied(D::Credential) => (StatusCode::FORBIDDEN, "the credential is not active", false),
+        R::Denied(D::Scope) => (
             StatusCode::FORBIDDEN,
             "the credential does not grant the scope this operation requires",
             false,
         ),
-        E::PrefixDenied => (
+        R::Denied(D::Prefix) => (
             StatusCode::FORBIDDEN,
             "the credential's stream grant does not cover this stream",
             false,
         ),
-        _ => (
+        R::Unverified => (
             StatusCode::UNAUTHORIZED,
             "the bearer token failed verification",
             false,
         ),
     };
     let mut r = perr(status, e.kind(), msg, None, retryable);
-    if matches!(e, E::WrongCell) {
+    if refusal == R::WrongCell {
         // §8.1 fallback form: the header survives body-less handling.
         r.headers_mut().insert(
             "prisma-error-code",
@@ -705,9 +705,9 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
     // feed health — neither is a denial of the caller. Journaling
     // them would let placement churn or a feed outage flood the
     // bounded queue and evict real security events.
-    match e {
-        E::WrongCell | E::PolicyStale | E::GrantsStale | E::KeysStale => r,
-        _ => crate::audit::tag(r, e.kind()),
+    match refusal {
+        R::WrongCell | R::FeedStale => r,
+        R::Denied(_) | R::Unverified => crate::audit::tag(r, e.kind()),
     }
 }
 
