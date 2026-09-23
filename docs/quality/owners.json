@@ -557,7 +557,7 @@
       "count": 1,
       "owner": "crate::livefeed_pending_transition_connect_drives_resume",
       "path": "src/dst/tests/livefeed_ownership.rs",
-      "reason": "Test-only orphaned transition; shared failpoint serialization and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
+      "reason": "Test-only orphaned transition; its own stream name and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
       "syntax": "tokio::spawn"
     },
     {

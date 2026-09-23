@@ -187,7 +187,7 @@ async fn livefeed_split_parked_subscriber_continues_in_place() {
 /// 3600-s no-lease nap, the pre-fix park wedged forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_seal_publication_race_converges_without_heartbeat() {
-    let _serial = gap_lock().lock().await; // global failpoint registry
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let (st, _, _) = preq(

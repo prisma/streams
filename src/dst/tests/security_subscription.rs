@@ -674,8 +674,6 @@ async fn suspension_terminates_established_subscriptions() {
 // under ownership 1 -> PARK -> publish ownership 2 + revoke -> resume.
 // The subscription must be REFUSED (non-200) or terminate with NO
 // initial control and NO data — on every SSE surface.
-//
-// The failpoint registry is global; gap_lock serializes armers.
 // ===================================================================
 
 /// Releases the SSE lease-gate failpoint even if the test panics — a

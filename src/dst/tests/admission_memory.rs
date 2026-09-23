@@ -464,7 +464,7 @@ async fn project_memory_pressure_throttles_new_appends_only() {
 /// it in the field.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn frame_debt_survives_restart_via_tail_seed() {
-    let _l = gap_lock().lock().await; // shared failpoint schedule
+    let _l = gap_lock().lock().await;
     let store = mem();
     let (state, addr, bearer, pid) = pm_enforce_rig(store.clone(), RigRuntime::first()).await;
     state.runtime.history.paused.store(true, Ordering::Relaxed);

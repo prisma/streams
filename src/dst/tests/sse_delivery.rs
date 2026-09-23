@@ -299,7 +299,7 @@ async fn product_sse_controls_carry_signed_cursors() {
 // ------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn termination_reasons_count_exactly_once_per_subscription() {
-    let _serial = gap_lock().lock().await; // process-global counters
+    let _serial = gap_lock().lock().await; // exact LEASE_TERMINATIONS delta below
     let (_svc, _state, addr) = auth_rig("proj-tc1", "ws_tc", &["c1"], None).await;
     // Expires in 5 s: long enough to park two connections, short
     // enough to watch both deadlines fire.

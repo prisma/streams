@@ -109,7 +109,7 @@ async fn wait_seal_terminal(
 /// exactly ONE sealed control, then EOF.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seal_interrupted_before_publication_resumes_on_retry() {
-    let _serial = gap_lock().lock().await; // global failpoint registry
+    let _serial = gap_lock().lock().await;
     let (state, addr, _promoter, mut sck) = hub_rig_stream("sbr").await;
     let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
     assert!(a.contains("upToDate"), "subscriber parks:\n{a}");

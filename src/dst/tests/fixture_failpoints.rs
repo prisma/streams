@@ -1,12 +1,23 @@
 //! Fixture failpoints.
 
-/// ONE serialization lock for every test that arms a GLOBAL failpoint
-/// registry or reads a global parked-counter (fork_failpoints,
-/// crate::failpoints). The registries are keyed per stream name, but
-/// the parked COUNTERS are process-global: two parallel tests waiting
-/// on "count changed" can wake on each other's parks (the reported
-/// solo-pass/parallel-flake family). Serializing the armers makes the
-/// suite parallel-green without weakening any assertion.
+/// Serializes the tests that share process-global state a stream name
+/// cannot key. Two owners remain. `crate::sse::auth::LEASE_TERMINATIONS`
+/// is a process-global per-reason counter array, and
+/// `termination_reasons_count_exactly_once_per_subscription` asserts an
+/// exact `TokenExpired` delta, so every test whose subscription can die
+/// at token expiry holds this lock. `post_split_throughput_scales` holds
+/// it so any unskipped run (a local cargo test, release-provenance.sh)
+/// keeps the other holders off the machine while it measures a capacity
+/// ratio; CI skips that test in the parallel suite and runs it alone.
+///
+/// Failpoints are not a reason: `crate::failpoints` keys arming,
+/// arrivals and release by (point, stream name), pinned by
+/// `failpoints::a_point_armed_for_one_name_never_reaches_another`, so a
+/// failpoint test is isolated by a stream name no concurrently running
+/// test uses, and several arm without this lock. The other holders
+/// inherited it from state that is gone (the scaler failpoint that parked
+/// every resume in the process, then process-wide parked counters); each
+/// keeps it until a loop run shows it needs no timing isolation.
 pub(super) fn gap_lock() -> &'static tokio::sync::Mutex<()> {
     static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     L.get_or_init(|| tokio::sync::Mutex::new(()))

@@ -970,7 +970,6 @@
     "function_sha256": "72f8a355872d176ee458dd8ad21a23e41eb530dc6c44bda9095eaf3f93792d2e",
     "mechanisms": [],
     "configuration": [
-      "let _serial = gap_lock().lock().await; // global failpoint registry",
       "crate::failpoints::stop_before_sealed_publish(\"sbr\");",
       "crate::failpoints::stop_before_sealed_publish_off(\"sbr\");"
     ],
@@ -1956,7 +1955,6 @@
     "function_sha256": "b895148d415a48f2aef9deec90005a0ede1adc47a89d835c68000791e82309a9",
     "mechanisms": [],
     "configuration": [
-      "let _l = gap_lock().lock().await; // shared failpoint schedule",
       "Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));"
     ],
     "file": "src/dst/tests/persistence_faults.rs",
@@ -2429,9 +2427,7 @@
     ],
     "function_sha256": "d00a6ec8fc702354b4d20772732c3a2416dbd50a455aed0b751f86b2a3a50d5c",
     "mechanisms": [],
-    "configuration": [
-      "let _l = gap_lock().lock().await; // shared failpoint schedule"
-    ],
+    "configuration": [],
     "file": "src/dst/tests/admission_memory.rs",
     "scenarios": []
   },
@@ -3332,7 +3328,6 @@
     "function_sha256": "58361448c2a7bb00473119b1b12fd3612ad16c35831fec21b9a180ebced044c2",
     "mechanisms": [],
     "configuration": [
-      "let _serial = gap_lock().lock().await; // global failpoint registry",
       "crate::failpoints::stop_before_sealed_publish(\"lfsr\");",
       "crate::failpoints::stop_before_sealed_publish_off(\"lfsr\");"
     ],
@@ -3347,7 +3342,6 @@
     "function_sha256": "7fc857308840e48637a2a5d1ebc6f34497c31570c3b4d49e255281be6ecc4dd7",
     "mechanisms": [],
     "configuration": [
-      "let _serial = gap_lock().lock().await; // global failpoint registry",
       "crate::failpoints::stop_before_sealed_publish(\"lfherd\");",
       "crate::failpoints::stop_before_sealed_publish_off(\"lfherd\");"
     ],
