@@ -60,7 +60,7 @@ scan() {
   printf '%s\n' "$hits" | awk -v c="$cat" '{
     i = index($0, ":"); file = substr($0, 1, i - 1); rest = substr($0, i + 1)
     j = index(rest, ":"); text = substr(rest, j + 1)
-    gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
+    gsub(/[ \t]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
     print c "\t" file "\t" text
   }'
 }
