@@ -9,9 +9,8 @@ use super::{
     ABSORB_BUILD_MULTIPLIER, ABSORB_BYTES_TOTAL, AbsorbReservation, Absorber,
     CANONICAL_BYTES_WRITTEN, DISCOVERY_PAGE_STREAMS, GATHER_LAST_ACTUAL, GATHER_LAST_FLUSH_MS,
     GATHER_LAST_PACE_MS, GATHER_LAST_READ_MS, GATHER_LAST_WRITE_MS, GATHER_PER_STREAM_CAP,
-    GatherOutcome, HISTORY_FLUSH_STALL_MS, HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS,
-    POSTINGS_BYTES_WRITTEN, POSTINGS_PAGES_WRITTEN, POSTINGS_RUNS_WRITTEN, PendingAbsorb,
-    hist2_record_key,
+    HISTORY_FLUSH_STALL_MS, HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS, POSTINGS_BYTES_WRITTEN,
+    POSTINGS_PAGES_WRITTEN, POSTINGS_RUNS_WRITTEN, PendingAbsorb, hist2_record_key,
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
@@ -48,6 +47,28 @@ type KeyRuns = Vec<([u8; 16], Vec<AbsRun>)>;
 /// (segment, chunk_from, chunk_to, per-key runs) for write-through cache
 /// warming — installed only after the batch flush succeeds.
 type WarmChunk = (SegmentHash, u64, u64, KeyRuns);
+
+/// Per-stream classification of one v2 gather (review round 4, P1): the
+/// pump must retire ONLY what the gather settled. `advanced` carries
+/// (hash, new upto, raw frame bytes copied — the committer's
+/// unabsorbed_bytes decrement); `no_work` had nothing durable to absorb;
+/// `deferred_budget` did not fit this batch's byte budget and MUST stay
+/// pending — with lag and age intact — for the next tick.
+#[derive(Default)]
+pub(crate) struct GatherOutcome {
+    pub(crate) advanced: Vec<([u8; 16], u64, u64)>,
+    pub(crate) no_work: Vec<[u8; 16]>,
+    pub(crate) deferred_budget: Vec<[u8; 16]>,
+    /// Streams whose gather ADVANCED but did not reach the stream's
+    /// durable end — the per-stream byte cap truncated the chunk, so
+    /// data remains. `(hash, remaining offsets)`. These MUST stay
+    /// pending: retiring them (they are also in `advanced`) strands the
+    /// remainder until some unrelated event re-discovers it, and for a
+    /// stream whose next record exceeds the cap that is effectively
+    /// never — 8x100 KiB behind a 64 KiB cap absorbed exactly one
+    /// record and then stopped forever (chaos campaign, 2026-08-09).
+    pub(crate) partial: Vec<([u8; 16], u64)>,
+}
 
 /// The batch under construction: its rows, their modeled size, and what
 /// the flush must prove durable before it is published.
