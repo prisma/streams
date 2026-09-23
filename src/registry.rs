@@ -1,7 +1,9 @@
 //! Ops-bucket control plane: stream registry (CAS'd JSON descriptors, D18/D21)
 //! and the dynamic shard topology (D3, §3.2).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use object_store::path::Path as ObjPath;
@@ -847,6 +849,7 @@ pub(crate) struct Registry {
     // mt-lint: allow(name-keyed-map): test failpoint set, canonical names of the rig's own streams
     fail_next_get: Mutex<std::collections::HashSet<String>>,
     /// SR3-2 test failpoint: the next list_page for this project fails.
+    #[cfg(test)]
     // mt-lint: allow(name-keyed-map): test failpoint set, project ids armed by the rig
     fail_next_list: Mutex<std::collections::HashSet<String>>,
     /// Round-4 review: one-shot descriptor-put failure (the deterministic
@@ -940,6 +943,7 @@ impl Registry {
             cache: cache::DescriptorCache::new(Duration::from_secs(5)),
             #[cfg(test)]
             fail_next_get: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(test)]
             fail_next_list: Mutex::new(std::collections::HashSet::new()),
             #[cfg(test)]
             fail_next_put: Mutex::new(std::collections::HashSet::new()),
@@ -1325,17 +1329,6 @@ impl Registry {
         self.fail_next_get.lock().unwrap().insert(name.to_string());
     }
 
-    /// SR3-2 test failpoint: fail the next catalog page walk for this
-    /// project (drives the fail-closed seed path).
-    #[cfg(test)]
-    // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
-    pub(crate) fn fail_next_list(&self, project: &str) {
-        self.fail_next_list
-            .lock()
-            .unwrap()
-            .insert(project.to_string());
-    }
-
     /// Round-4 review failpoint: fail the next DESCRIPTOR PUT for this
     /// stream name exactly once — the deterministic stand-in for the
     /// etag-precondition conflict a concurrent descriptor writer (a
@@ -1357,17 +1350,14 @@ impl Registry {
 
     /// Visible and reconciliation catalogs share provider progress,
     /// bounded ordered fetches, decoding and continuation semantics.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "Registry::list_page; a poisoned descriptor cache may hold a partially inserted or invalidated descriptor; recovering it could serve a stale incarnation as current"
-    )]
     pub(crate) async fn list_page(
         &self,
         project: &crate::tenant::ProjectId,
         after: Option<&str>,
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
-        if self.fail_next_list.lock().unwrap().remove(project.as_str()) {
+        #[cfg(test)]
+        if self.take_fail_next_list(project) {
             return Err(catalog_error("armed list failpoint"));
         }
         self.project_page(project, after, limit).await
@@ -1503,6 +1493,8 @@ pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
 
 mod cache;
 mod catalog;
+#[cfg(test)]
+mod failpoints;
 #[cfg(test)]
 mod resolution_tests;
 #[cfg(test)]
