@@ -783,10 +783,10 @@ mod cursors {
     #[test]
     fn golden_layout4_raw_offset_tokens() {
         assert_eq!(Offset::START.encode(), "00000000000000000000000000");
-        assert_eq!(Offset(Some(0)).encode(), "0000000000000000000G000000");
-        assert_eq!(Offset(Some(41)).encode(), "000000000000000000N0000000");
+        assert_eq!(Offset::before(1).encode(), "0000000000000000000G000000");
+        assert_eq!(Offset::before(42).encode(), "000000000000000000N0000000");
         assert_eq!(
-            Offset(Some(u64::MAX - 1)).encode(),
+            Offset::before(u64::MAX).encode(),
             "0000007ZZZZZZZZZZZZG000000"
         );
         // "-1" is the wire form of start-of-stream; every token parses
@@ -794,22 +794,54 @@ mod cursors {
         assert_eq!(Offset::parse("-1").unwrap(), Offset::START);
         assert_eq!(
             Offset::parse("0000000000000000000G000000").unwrap(),
-            Offset(Some(0))
+            Offset::before(1)
         );
         assert_eq!(
             Offset::parse("0000007ZZZZZZZZZZZZG000000").unwrap(),
-            Offset(Some(u64::MAX - 1))
+            Offset::before(u64::MAX)
         );
     }
 
     #[test]
     fn golden_layout4_raw_epoch_offset_token() {
         // Per-key streams put the segment ordinal in the epoch lane.
-        assert_eq!(encode_ep(3, Offset(Some(5))), "000000R0000000000030000000");
+        assert_eq!(
+            encode_ep(3, Offset::before(6)),
+            "000000R0000000000030000000"
+        );
         assert_eq!(
             crate::offsets::parse_ep("000000R0000000000030000000").unwrap(),
-            (3, Offset(Some(5)))
+            (3, Offset::before(6))
         );
+    }
+
+    /// Segment ordinals are the whole `u32`: the leading digit holds the two
+    /// top epoch bits. Before KANI-001 the encoder shifted them out, so
+    /// ordinal 1 << 30 and ordinal 0 wrote the same token. Expected strings
+    /// recomputed as base32 of ((epoch << 96 | rawSeq << 32) << 2) over 130
+    /// bits; every ordinal below 1 << 30 keeps its previous token.
+    #[test]
+    fn golden_layout4_raw_high_epoch_offset_tokens() {
+        let cases = [
+            (1u32 << 30, Offset::before(1), "8000000000000000000G000000"),
+            (1 << 31, Offset::START, "G0000000000000000000000000"),
+            (u32::MAX, Offset::before(1), "ZZZZZZR000000000000G000000"),
+            (
+                u32::MAX,
+                Offset::before(u64::MAX),
+                "ZZZZZZZZZZZZZZZZZZZG000000",
+            ),
+        ];
+        for (epoch, offset, token) in cases {
+            assert_eq!(encode_ep(epoch, offset), token);
+            assert_eq!(crate::offsets::parse_ep(token).unwrap(), (epoch, offset));
+        }
+        assert_ne!(
+            encode_ep(1 << 30, Offset::before(1)),
+            encode_ep(0, Offset::before(1))
+        );
+        // The raw codec admits epoch 0 only; a high leading digit is not an alias.
+        assert!(Offset::parse("8000000000000000000G000000").is_err());
     }
 }
 

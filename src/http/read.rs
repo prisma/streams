@@ -341,7 +341,7 @@ pub(crate) fn read_payload(
     body.freeze()
 }
 fn raw_position(position: ReadPosition, segmented: bool) -> String {
-    let offset = Offset(position.after.checked_sub(1));
+    let offset = Offset::before(position.after);
     if segmented {
         crate::offsets::encode_ep(position.segment, offset)
     } else {

@@ -380,12 +380,7 @@ async fn foreign_append(addr: std::net::SocketAddr, name: &str, i: u64) {
 /// The raw `streamNextOffset` token a control names for `next`: the
 /// encoding `sse_control_ep` uses (segment 0; START when next is 0).
 fn raw_next_tok(next: u64) -> String {
-    let off = next
-        .checked_sub(1)
-        .map_or(crate::offsets::Offset::START, |o| {
-            crate::offsets::Offset(Some(o))
-        });
-    crate::offsets::encode_ep(0, off)
+    crate::offsets::encode_ep(0, crate::offsets::Offset::before(next))
 }
 
 /// Payloads of the control frames carrying `upToDate`, in wire order.

@@ -29,7 +29,7 @@ pub(crate) fn append_failure_status(error: &AppendFailure) -> StatusCode {
 }
 fn append_position(seg: u32, next: u64, materialized: bool) -> String {
     if materialized {
-        crate::offsets::encode_ep(seg, Offset(next.checked_sub(1)))
+        crate::offsets::encode_ep(seg, Offset::before(next))
     } else {
         tail_token(next)
     }
@@ -2469,12 +2469,7 @@ fn want_close(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) fn tail_token(next: u64) -> String {
-    if next == 0 {
-        Offset::START
-    } else {
-        Offset(Some(next - 1))
-    }
-    .encode()
+    Offset::before(next).encode()
 }
 
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {

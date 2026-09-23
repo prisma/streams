@@ -2247,6 +2247,14 @@
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
       "syntax": "path = \"read_remote_tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/offsets.rs",
+      "reason": "Offset codec property owner; the pinned macro generates 1,024 actual-source round-trip and malformed-token cases per property; it produces test cases rather than service state.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

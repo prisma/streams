@@ -3650,13 +3650,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/offsets.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::cancellation_tests",
       "path": "src/ops.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

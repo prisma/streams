@@ -414,7 +414,7 @@ async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelop
     ];
     headers.extend(target_headers.iter().map(|(k, v)| (*k, v.as_str())));
     // scan_from() == 100, two records: beyond the tail.
-    let offset = crate::offsets::encode_ep(0, crate::offsets::Offset(Some(99)));
+    let offset = crate::offsets::encode_ep(0, crate::offsets::Offset::before(100));
     let (status, _, body) = preq(
         addr,
         "GET",

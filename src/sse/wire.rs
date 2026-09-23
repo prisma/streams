@@ -67,14 +67,7 @@ pub(crate) fn sse_control_ep(
     up_to_date: bool,
     closed: bool,
 ) -> String {
-    let tok = crate::offsets::encode_ep(
-        seg_id,
-        if next == 0 {
-            crate::offsets::Offset::START
-        } else {
-            crate::offsets::Offset(Some(next - 1))
-        },
-    );
+    let tok = crate::offsets::encode_ep(seg_id, crate::offsets::Offset::before(next));
     let mut fields = vec![format!("\"streamNextOffset\":\"{tok}\"")];
     if !closed {
         fields.push(format!(
