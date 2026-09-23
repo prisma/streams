@@ -6170,6 +6170,28 @@
     ]
   },
   {
+    "name": "tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0f6500ea17eb36a90f1e8f763e541a7140b0393f5edd5175d6439a662af63b1c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_history_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "20d8c8efb5ebcf10fa9a33ac187f5c658d29db44f9fec399e8d08a1c67b1d637",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_history_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "token_expiry_interrupts_slowly_progressing_delivery",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
