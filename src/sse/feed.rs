@@ -548,6 +548,57 @@ pub(crate) struct LiveFeed {
     pub(crate) fp_name: std::sync::OnceLock<String>,
 }
 
+// Construction takes no lock, so it sits outside the poisoned-state exception below.
+impl LiveFeed {
+    pub(crate) fn new_with_budget(
+        _key: FeedKey,
+        src: Arc<dyn FeedSourceRead>,
+        ring_budget: usize,
+        budget: Arc<FeedMemoryBudget>,
+        project: crate::tenant::ProjectId,
+    ) -> Arc<Self> {
+        let project_reserved = budget.project_retention(&project);
+        let head = src.frontier();
+        let (changed, _) = tokio::sync::watch::channel(0u64);
+        let (source_changed, _) = tokio::sync::watch::channel(0u64);
+        Arc::new(Self {
+            src: std::sync::RwLock::new(SourceSnapshot {
+                generation: 0,
+                source: src,
+            }),
+            st: Mutex::new(FeedState {
+                head,
+                floor: head,
+                version: 0,
+                batches: VecDeque::new(),
+                charge: 0,
+                lifecycle: Lifecycle::Active,
+            }),
+            changed,
+            source_changed,
+            driving: AtomicBool::new(false),
+            subscribers: AtomicU64::new(0),
+            retained_charge: AtomicUsize::new(0),
+            source_reads: AtomicU64::new(0),
+            ring_budget,
+            // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
+            // so a read bounded at 2/3 of the ring prepares a batch
+            // that fits the ring in the ordinary case.
+            read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
+            budget,
+            project,
+            project_reserved,
+            pressure_guard: std::sync::OnceLock::new(),
+            cancel: CancelFlag::new(),
+            retry_scheduled: AtomicBool::new(false),
+            #[cfg(test)]
+            retry_spawns: AtomicU64::new(0),
+            #[cfg(test)]
+            fp_name: std::sync::OnceLock::new(),
+        })
+    }
+}
+
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
 
 /// Round-11.1 teardown token: fired by the registry when the LAST
@@ -620,54 +671,6 @@ impl LiveFeed {
         let _ = self
             .pressure_guard
             .set(crate::quota::FeedPressureGuard::acquire(adm));
-    }
-
-    pub(crate) fn new_with_budget(
-        _key: FeedKey,
-        src: Arc<dyn FeedSourceRead>,
-        ring_budget: usize,
-        budget: Arc<FeedMemoryBudget>,
-        project: crate::tenant::ProjectId,
-    ) -> Arc<Self> {
-        let project_reserved = budget.project_retention(&project);
-        let head = src.frontier();
-        let (changed, _) = tokio::sync::watch::channel(0u64);
-        let (source_changed, _) = tokio::sync::watch::channel(0u64);
-        Arc::new(Self {
-            src: std::sync::RwLock::new(SourceSnapshot {
-                generation: 0,
-                source: src,
-            }),
-            st: Mutex::new(FeedState {
-                head,
-                floor: head,
-                version: 0,
-                batches: VecDeque::new(),
-                charge: 0,
-                lifecycle: Lifecycle::Active,
-            }),
-            changed,
-            source_changed,
-            driving: AtomicBool::new(false),
-            subscribers: AtomicU64::new(0),
-            retained_charge: AtomicUsize::new(0),
-            source_reads: AtomicU64::new(0),
-            ring_budget,
-            // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
-            // so a read bounded at 2/3 of the ring prepares a batch
-            // that fits the ring in the ordinary case.
-            read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
-            budget,
-            project,
-            project_reserved,
-            pressure_guard: std::sync::OnceLock::new(),
-            cancel: CancelFlag::new(),
-            retry_scheduled: AtomicBool::new(false),
-            #[cfg(test)]
-            retry_spawns: AtomicU64::new(0),
-            #[cfg(test)]
-            fp_name: std::sync::OnceLock::new(),
-        })
     }
 
     /// May this feed admit a SECOND subscriber? Static configuration

@@ -222,6 +222,25 @@ fn leave_locked_returns_post_decrement_count() {
     assert_eq!(feed.leave_locked(), 0, "1 -> 0 reports zero remaining");
 }
 
+/// The driver's read bound is two thirds of the ring, so an ordinary
+/// prepared batch (base64 plus per-record overhead) still fits the ring;
+/// tiny and huge rings take the floor and ceiling instead.
+#[test]
+fn read_cap_is_two_thirds_of_the_ring_within_its_bounds() {
+    let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+    for (ring, cap) in [
+        (4096, 2730),
+        (1_000, 1024),
+        (1 << 20, MAX_DRIVER_BATCH_BYTES),
+    ] {
+        assert_eq!(
+            feed_with(0, 8, ring, &budget).0.read_cap,
+            cap,
+            "ring {ring}"
+        );
+    }
+}
+
 /// Budget model B (red): retention reserves the ACTUAL retained
 /// bytes; extra subscribers cost nothing; teardown returns the
 /// budget to exactly zero.
