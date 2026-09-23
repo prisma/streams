@@ -95,9 +95,17 @@ jobs:
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-latest
-    # About 40 minutes of checks on an 8-core laptop for the whole first-spike
-    # portfolio (the scheduled run); a hosted runner has fewer cores.
-    timeout-minutes: 240
+    # The first-spike receipts took about 2.4 h of Kani and 5.5 h of TLC on
+    # a heavily loaded 8-core laptop; the longest check (the KANI-001 round
+    # trip) took an hour. The obligations are split over the shards by their
+    # position in the sorted manifest, so a new obligation always lands in
+    # one; each shard measured under 2 h. A push or pull request runs only
+    # what its diff affects.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,12 +119,23 @@ jobs:
         run: python3 scripts/install-formal-tools.py
       - name: The driver rejects incomplete, misconfigured and empty runs
         run: python3 scripts/quality/formal.py self-test
-      - name: Obligations the change can affect (all of them on a schedule)
+      - name: This shard's obligations the change can affect (all of them on a schedule)
+        env:
+          FORMAL_SHARD: ${{ matrix.shard }}
+          FORMAL_SHARDS: 6
         run: |
           set -euo pipefail
+          ids=()
+          while IFS= read -r id; do ids+=("$id"); done < <(python3 -c 'import json, os, sys; ids = sorted(o["id"] for o in json.load(open("verification/manifest.json"))["obligations"]); n, k = int(os.environ["FORMAL_SHARDS"]), int(os.environ["FORMAL_SHARD"]); sys.stdout.write("".join(i + "\n" for j, i in enumerate(ids) if j % n == k))')
+          if (( ${#ids[@]} == 0 )); then
+            echo "FORMAL_OK: shard $FORMAL_SHARD holds no obligation"
+            exit 0
+          fi
+          args=()
+          for id in "${ids[@]}"; do args+=(--id "$id"); done
           if [[ "$QUALITY_EVENT_NAME" == schedule ]]; then
-            python3 scripts/quality/formal.py run
+            python3 scripts/quality/formal.py run "${args[@]}"
           else
             base=$(python3 -c 'import sys; sys.path.insert(0, "scripts/quality"); import common; print(common.verification_comparison().comparison_revision)')
-            python3 scripts/quality/formal.py run --changed-from "$base"
+            python3 scripts/quality/formal.py run --changed-from "$base" "${args[@]}"
           fi
