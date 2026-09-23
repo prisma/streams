@@ -333,3 +333,93 @@ fn a_routing_key_is_admitted_exactly_when_a_header_reads_it_back() {
     }
     assert_eq!(cases, 1_024);
 }
+
+/// Item 65: every request refusal keeps its status, body, retry hint,
+/// placement header and journal tag, whichever owner classifies it.
+#[tokio::test]
+async fn every_auth_refusal_keeps_its_response() {
+    use crate::auth::AuthError as E;
+    use crate::project_policy::{CredentialStatus, ProjectStatus};
+    const UNVERIFIED: (StatusCode, &str) = (
+        StatusCode::UNAUTHORIZED,
+        "the bearer token failed verification",
+    );
+    const STALE: (StatusCode, &str) = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "this cell's authorization data is stale; retry",
+    );
+    const WRONG_CELL: (StatusCode, &str) = (
+        StatusCode::MISDIRECTED_REQUEST,
+        "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
+    );
+    let denied = |message| (StatusCode::FORBIDDEN, message);
+    let rows = [
+        (E::TokenTooLarge, UNVERIFIED),
+        (E::Malformed("x"), UNVERIFIED),
+        (E::KidMissing, UNVERIFIED),
+        (E::KidUnknown, UNVERIFIED),
+        (E::AlgNotAllowed, UNVERIFIED),
+        (E::BadSignature, UNVERIFIED),
+        (E::WrongIssuer, UNVERIFIED),
+        (E::WrongAudience, UNVERIFIED),
+        (E::WrongCell, WRONG_CELL),
+        (E::Expired, UNVERIFIED),
+        (E::NotYetValid, UNVERIFIED),
+        (E::LifetimeTooLong, UNVERIFIED),
+        (E::ClaimInvalid("x"), UNVERIFIED),
+        (E::EmptyPrefixArray, UNVERIFIED),
+        (
+            E::ProjectNotActive(ProjectStatus::Suspended),
+            denied("the project is not active"),
+        ),
+        (E::OwnershipVersionMismatch, UNVERIFIED),
+        (E::WorkspaceMismatch, UNVERIFIED),
+        (E::CredentialUnknown, UNVERIFIED),
+        (
+            E::CredentialNotActive(CredentialStatus::Revoked),
+            denied("the credential is not active"),
+        ),
+        (E::CredentialExpired, UNVERIFIED),
+        (E::CredentialProjectMismatch, UNVERIFIED),
+        (E::GrantVersionMismatch, UNVERIFIED),
+        (E::PolicyStale, STALE),
+        (E::GrantsStale, STALE),
+        (E::KeysStale, STALE),
+        (
+            E::MissingScope(crate::tenant::Scope::RecordsRead),
+            denied("the credential does not grant the scope this operation requires"),
+        ),
+        (
+            E::PrefixDenied,
+            denied("the credential's stream grant does not cover this stream"),
+        ),
+    ];
+    for (error, (status, message)) in rows {
+        let kind = error.kind();
+        let response = auth_failure_response(&error);
+        assert_eq!(response.status(), status, "{kind}");
+        let journaled = response
+            .extensions()
+            .get::<crate::audit::DenialTag>()
+            .is_some();
+        let caller_denied = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
+        assert_eq!(
+            journaled, caller_denied,
+            "{kind}: only caller denials are journaled"
+        );
+        let placement = status == StatusCode::MISDIRECTED_REQUEST;
+        assert_eq!(
+            response.headers().contains_key("prisma-error-code"),
+            placement,
+            "{kind}"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], kind);
+        assert_eq!(body["error"]["message"], message, "{kind}");
+        let retryable = status == StatusCode::SERVICE_UNAVAILABLE;
+        assert_eq!(body["error"]["retryable"], retryable, "{kind}");
+    }
+}

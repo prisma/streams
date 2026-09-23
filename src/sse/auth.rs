@@ -516,3 +516,47 @@ impl futures_util::Stream for GatedSseBody {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{LEASE_TERMINATIONS, lease_refusal_response, lease_terminations_json};
+    use crate::auth::LeaseInvalidReason as R;
+    use axum::http::StatusCode;
+
+    /// A reason's counter slot is its position in `ALL`, and the export
+    /// names every slot exactly once.
+    #[test]
+    fn lease_terminations_have_one_slot_per_reason() {
+        for (slot, reason) in R::ALL.into_iter().enumerate() {
+            assert_eq!(reason.index(), slot, "{}", reason.as_str());
+        }
+        let exported = lease_terminations_json();
+        let names = exported.as_object().map(serde_json::Map::len);
+        assert_eq!(names, Some(LEASE_TERMINATIONS.len()));
+    }
+
+    /// A refused subscription answers its reason's class status and names
+    /// the reason; the oracle lists every reason by name.
+    #[tokio::test]
+    async fn lease_refusals_answer_their_class_status() {
+        for reason in R::ALL {
+            let expected = match reason {
+                R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
+                R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
+                R::TokenExpired
+                | R::OwnershipChanged
+                | R::CredentialMissing
+                | R::CredentialInactive
+                | R::GrantChanged
+                | R::CredentialExpired => StatusCode::UNAUTHORIZED,
+            };
+            let response = lease_refusal_response(reason);
+            assert_eq!(response.status(), expected, "{}", reason.as_str());
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["code"], reason.as_str());
+        }
+    }
+}
