@@ -419,7 +419,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "abba4af26e483c4d206bf1878c1eb287185fef0fb6b6a238632fd99b1ea07bf7",
+    "function_sha256": "81b0965d60d3815b6a3818854d92e4b60e45ebb2415ad001c85c339a637bff14",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
@@ -589,7 +589,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c9bea3e8812a37942a3c4317e2a0574cb4b2cd1e72cd563f5880e1c5e92a7dfe",
+    "function_sha256": "4d309bcc44f1941b64a987d742303dd822c55002bf9662ec10cc7286034df3c7",
     "mechanisms": [],
     "configuration": [
       "let dbefore = crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, \"abadel\");",

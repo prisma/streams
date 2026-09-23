@@ -899,18 +899,6 @@ fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
 }
 
 /// One page of the stream catalog.
-/// Why a generation-fenced mutation did not apply.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(test)]
-pub(crate) enum IncarnationCas {
-    Applied,
-    /// The mutation itself declined (its own precondition failed).
-    Declined,
-    /// The name now holds a DIFFERENT stream: this operation belongs to
-    /// an incarnation that no longer exists, and must not touch it.
-    IncarnationChanged,
-}
-
 pub(crate) struct CatalogPage {
     pub streams: Vec<StreamDesc>,
     /// Continuation: a stream name (project page) or an object key (reconciliation).
@@ -1094,34 +1082,6 @@ impl Registry {
         Err(object_store::Error::Generic {
             store: "registry",
             source: "descriptor CAS retries exhausted".into(),
-        })
-    }
-
-    /// Test compatibility adapter for old incarnation-outcome fixtures.
-    #[cfg(test)]
-    pub(crate) async fn cas_update_incarnation_outcome(
-        &self,
-        sref: &crate::tenant::TenantStreamRef,
-        expected_epoch: &str,
-        mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
-    ) -> anyhow::Result<IncarnationCas> {
-        let mut moved = false;
-        let applied = self
-            .cas_update_retry(sref, |d| {
-                if d.stream_epoch != expected_epoch {
-                    moved = true;
-                    return false;
-                }
-                moved = false;
-                mutate(d)
-            })
-            .await?;
-        Ok(if applied {
-            IncarnationCas::Applied
-        } else if moved {
-            IncarnationCas::IncarnationChanged
-        } else {
-            IncarnationCas::Declined
         })
     }
 

@@ -426,15 +426,14 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
+    let sref = state.deployment.raw_adapter_sref("abadel");
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state
-        .registry
-        .invalidate(&state.deployment.raw_adapter_sref("abadel"));
+    state.registry.invalidate(&sref);
     let first = state
         .registry
-        .get(&state.deployment.raw_adapter_sref("abadel"))
+        .get(&sref)
         .await
         .unwrap()
         .unwrap()
@@ -460,15 +459,8 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     assert!(st == 204 || st == 200, "delete: {st}");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state
-        .registry
-        .invalidate(&state.deployment.raw_adapter_sref("abadel"));
-    let second = state
-        .registry
-        .get(&state.deployment.raw_adapter_sref("abadel"))
-        .await
-        .unwrap()
-        .unwrap();
+    state.registry.invalidate(&sref);
+    let second = state.registry.get(&sref).await.unwrap().unwrap();
     assert_ne!(second.stream_epoch, first, "the incarnation never changed");
     assert!(
         !second.deleted && !second.soft_deleted,
@@ -481,25 +473,21 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     // is the same CAS the parked deleter would have run.
     let outcome = state
         .registry
-        .cas_update_incarnation_outcome(&state.deployment.raw_adapter_sref("abadel"), &first, |x| {
-            x.deleted = true;
-            true
+        .mutate_incarnation(&sref, &first, |current| {
+            let mut next = current.to_persisted();
+            next.deleted = true;
+            crate::registry::Mutation::Write(next, ())
         })
-        .await
-        .unwrap();
+        .await;
     assert!(
-        matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
-        "a stale delete decision was applied: {outcome:?}"
+        matches!(
+            outcome,
+            Ok(crate::registry::MutationResult::IncarnationChanged)
+        ),
+        "a stale delete decision was not fenced: {outcome:?}"
     );
-    state
-        .registry
-        .invalidate(&state.deployment.raw_adapter_sref("abadel"));
-    let d = state
-        .registry
-        .get(&state.deployment.raw_adapter_sref("abadel"))
-        .await
-        .unwrap()
-        .unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
     assert!(
         !d.deleted,
         "the replacement was deleted by a stale decision"
@@ -577,29 +565,27 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
         "the replacement inherited parentage"
     );
 
-    // The in-flight stamp from the deleted fork, replayed. It carries
-    // the epoch it was issued against, so the fence declines it.
+    // A write decided against the deleted fork, replayed: it installs
+    // that fork's own valid parentage, and carries the epoch it was
+    // decided against, so the production fence declines it.
     let outcome = state
         .registry
-        .cas_update_incarnation_outcome(
+        .mutate_incarnation(
             &state.deployment.raw_adapter_sref("abachild"),
             &stale_epoch,
-            |d| {
-                d.forked_from = Some(crate::registry::ForkRef {
-                    source: "abasrc".into(),
-                    source_epoch: String::new(),
-                    fork_offset: 0,
-                    fork_sub: 0,
-                    fork_id: "stale".into(),
-                });
-                true
+            |current| {
+                let mut next = current.to_persisted();
+                next.forked_from = forked.forked_from.clone();
+                crate::registry::Mutation::Write(next, ())
             },
         )
-        .await
-        .unwrap();
+        .await;
     assert!(
-        matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
-        "a stale fork stamp was applied: {outcome:?}"
+        matches!(
+            outcome,
+            Ok(crate::registry::MutationResult::IncarnationChanged)
+        ),
+        "a stale fork stamp was not fenced: {outcome:?}"
     );
     state
         .registry
