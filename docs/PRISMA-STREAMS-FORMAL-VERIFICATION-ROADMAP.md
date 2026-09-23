@@ -41,6 +41,7 @@ its own `nightly-2026-08-21` compiler. Production gates keep Rust 1.98.1.
 | Item | Status | What was checked | Issues and bugs found |
 |---|---|---|---|
 | Packet A — inventory and compatibility | implemented | Pinned tools (`quality-tools.toml` `[formal]`, checksum-verified installer). `verification/manifest.json`, the assumption ledger and receipts. `scripts/quality/formal.py` validates the manifest (harness discovery, one attributable property per control or witness config, known statuses and assumptions), selects obligations from a diff, runs them, reconciles expected against actual verdicts, and records input-digest receipts. `formal.py check` runs in `scripts/quality.sh`. A new `formal` CI job runs the self-test, then the affected obligations (all of them on a schedule). Kani runs the unchanged crate: the whole `streams-slate` graph compiled under Kani in 81 s. | Exit condition met: the real-tool self-test passes, rejecting a wrong config (TLC exit 151), an incomplete search (timeout), a deadlock and a zero-discovery harness, and accepting a complete search and a reachable witness. Two tooling decisions: harnesses need `cfg(kani)`, declared in `build.rs`; that moved the build-identity environment reads into their own function, which narrows the existing exception instead of growing it. The raw-evidence upload hold is respected: logs and receipts stay local, so the CI job uploads nothing. |
+| KANI-001, 002, 003 — offset codec | pass-with-recorded-scope | Round trip, START and the successor index, and injectivity with order, over every `u32` segment ordinal and every `u64` scan index (`src/offsets/proofs.rs`). The harnesses call the digit core that `encode_ep` and `parse_ep` wrap. The `String` wrappers and the `-1` literal stay with the unit and property tests (ASM-OFFSET-DOMAIN). Five negative controls: truncated high epoch bits, a START token that skips entry 0, an exhausted index that wraps to START, swapped sequence halves, and a dropped epoch bit. Covers reach ordinals at or above 2^30 and index `u64::MAX`. The round trip takes 40 to 60 minutes under load, so its checks allow 7200 s. | **Three production defects, fixed** in "Offset tokens carry the whole segment ordinal, and a read position cannot overflow" (`verification/regressions/KANI-001`, `KANI-002`). (1) The §5 seed, confirmed on the real code: a segment ordinal at or above 2^30 wrote the token of the ordinal mod 2^30, and parsing it returned the low ordinal, so a cursor for segment 2^30 resumed in segment 0. (2) `Offset(Some(u64::MAX))` overflowed its successor: a panic in debug, a wrap to START in release. (3) A 26-byte token containing a multi-byte character parsed as START. Every token below ordinal 2^30 is unchanged byte for byte. **Open domain question:** scan index `u64::MAX` is also the read planner's "now" sentinel, so a crafted token with rawSeq 2^64−1 reads the live tail (ASM-READ-NOW-SENTINEL); the owner has to give it a meaning. |
 <!-- end of implementation record table -->
 
 ## 1. Purpose, value, and verification boundaries
@@ -964,11 +965,11 @@ All items below are **planned**. “Validate” states the intended obligation; 
 
 ## 5. Kani proof catalog
 
-All proof families are **planned**. Each must call the actual production owner after any reviewed extraction; each needs explicit semantic assertions, meaningful reachability checks, and at least one relevant negative control. The build-route labels below are feasibility estimates, not completed compiler tests.
+Except the proofs [§0](#0-implementation-record) lists, all proof families are **planned**. Each must call the actual production owner after any reviewed extraction; each needs explicit semantic assertions, meaningful reachability checks, and at least one relevant negative control. The build-route labels below are feasibility estimates, not completed compiler tests.
 
 For **full-width scalar** proofs, the stated Rust types remain symbolic across their complete admitted domain. For **bounded collection** proofs, bound length/depth, not the meaningful integer bits. Invalid-input harnesses must complement valid-input round trips. Avoid solving an enormous cryptographic primitive merely to validate a short envelope: verify preimage/context plumbing and structural acceptance separately, with conditional authentication assumptions labeled, while keeping real cryptographic integration tests.
 
-**First regression seed:** in the inspected `src/offsets.rs`, `encode_ep` constructs a `u128` containing a 32-bit epoch in the top bits and then shifts that `u128` left by two. The top epoch bits are discarded. In particular, the source arithmetic makes epoch `0` and epoch `1 << 30` collide for the same ordinary offset. This is a source-inspection seed for KANI-001/003, not a reported Kani result or a demonstrated production incident. The supported epoch domain and any wire-compatible fix must be reviewed; do not hide the case with a harness-only assumption. `Some(u64::MAX)` in the `seq + 1` representation is a separate domain/exhaustion question for KANI-002.
+**First regression seed:** in the inspected `src/offsets.rs`, `encode_ep` constructs a `u128` containing a 32-bit epoch in the top bits and then shifts that `u128` left by two. The top epoch bits are discarded. In particular, the source arithmetic makes epoch `0` and epoch `1 << 30` collide for the same ordinary offset. This is a source-inspection seed for KANI-001/003, not a reported Kani result or a demonstrated production incident. The supported epoch domain and any wire-compatible fix must be reviewed; do not hide the case with a harness-only assumption. `Some(u64::MAX)` in the `seq + 1` representation is a separate domain/exhaustion question for KANI-002. **Outcome (first spike):** confirmed on the real code and fixed; `Some(u64::MAX)` is no longer representable. See §0 and `verification/regressions/KANI-001`.
 
 | IDs | Main area |
 |---|---|
@@ -988,6 +989,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/offsets.rs`](src/offsets.rs)
 
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
+
 **Validate.** `parse_ep(encode_ep(epoch, position))` returns the admitted epoch and position without losing high bits; epoch-zero encoding remains compatible with the raw codec. Specify START separately.
 
 **Why valuable.** Catches silent identity collisions that never panic and that small test epochs miss.
@@ -1004,6 +1007,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/offsets.rs`](src/offsets.rs); [`src/application/read_range.rs`](src/application/read_range.rs)
 
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
+
 **Validate.** START maps to scan index zero; ordinary positions map to the correct strictly-after index; boundary arithmetic cannot wrap into START or a lower valid position. Constructors and callers enforce the supported upper endpoint.
 
 **Why valuable.** Prevents skipped records, replay from the beginning, and debug/release divergence at exhaustion.
@@ -1019,6 +1024,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/offsets.rs`](src/offsets.rs)
+
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
 
 **Validate.** Distinct admitted epoch/position tuples have distinct canonical encodings. Lexical order agrees with the intended tuple order for supported positions; START ordering follows the explicit external contract, not an assumed string order for `-1`.
 

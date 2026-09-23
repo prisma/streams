@@ -1,0 +1,15 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -85,8 +85,9 @@
+     // bits; each earlier digit takes the next five bits up, so the leading
+     // digit holds the top of the epoch rather than shifting it out.
+     let mut digits = [0u8; DIGITS];
+-    let mut value = (tuple & 0b111) << 2;
+-    let mut rest = tuple >> 3;
++    let padded = tuple << 2;
++    let mut value = padded & 31;
++    let mut rest = padded >> 5;
+     for digit in digits.iter_mut().rev() {
+         *digit = ALPHABET[(value & 31) as usize];
+         value = rest;

@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -80,7 +80,7 @@
+ 
+ /// The token's ASCII digits, most significant first.
+ fn token_digits(epoch: u32, offset: Offset) -> [u8; DIGITS] {
+-    let tuple = (u128::from(epoch) << 96) | (u128::from(offset.next) << 32);
++    let tuple = (u128::from(epoch & !1) << 96) | (u128::from(offset.next) << 32);
+     // The last digit is the tuple's three lowest bits above the two pad
+     // bits; each earlier digit takes the next five bits up, so the leading
+     // digit holds the top of the epoch rather than shifting it out.

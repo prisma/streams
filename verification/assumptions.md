@@ -41,6 +41,38 @@ defined here.
   function adopting a nightly-sensitive feature.
 - **Standing:** established for the current harnesses.
 
+## Numeric domains
+
+### ASM-OFFSET-DOMAIN
+
+- **Scope:** KANI-001, KANI-002, KANI-003.
+- **Statement:** an offset token is `(epoch: u32, rawSeq: u64)`, where the epoch
+  is the segment ordinal and `rawSeq` is the scan index `next`. Every value of
+  both is admitted. The unused `in_block` word and the two pad bits are written
+  as zero. The parser ignores them. Canonical-token (alias) rejection is
+  KANI-004, which is still planned.
+- **Origin:** `src/offsets.rs`, `docs/PER-KEY-ORDERING.md` §3, `src/segmap.rs`
+  (ordinals allocated up to `u32::MAX` with `checked_add` on split).
+- **Enforcement / evidence:** the `Offset` field is private and
+  `Offset::before` is total. The harnesses quantify over the full domain.
+- **Invalidation:** a wider segment ordinal, a nonzero `in_block`, or a change
+  to the token layout.
+- **Standing:** established.
+
+### ASM-READ-NOW-SENTINEL
+
+- **Scope:** KANI-002 (a tracked domain question, not a verified property).
+- **Statement:** the read planner uses scan index `u64::MAX` as its in-band "now"
+  sentinel (`ReadCommand::position_in`, `read_request.rs`, `read_remote.rs`). The
+  KANI-002 harness proves the codec, not this caller convention.
+- **Origin:** source inspection during KANI-002.
+- **Enforcement / evidence:** none beyond the unreachability of a real
+  `2^64 - 1`-record stream.
+- **Invalidation:** a separate `Now` carried through the planner, which removes
+  this entry.
+- **Standing:** unestablished; owner decision pending. See
+  `regressions/KANI-002/README.md`.
+
 ## Dependency contracts used by the TLA+ models
 
 The TLA+ groups add their entries below this line. Each model README maps its

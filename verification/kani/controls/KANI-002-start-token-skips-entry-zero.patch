@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -111,7 +111,7 @@
+     }
+     let epoch = (tuple >> 96) as u32;
+     let raw_seq = ((tuple >> 32) & 0xffff_ffff_ffff_ffff) as u64;
+-    Ok((epoch, Offset::before(raw_seq)))
++    Ok((epoch, Offset::before(raw_seq.max(1))))
+ }
+ 
+ #[cfg(kani)]

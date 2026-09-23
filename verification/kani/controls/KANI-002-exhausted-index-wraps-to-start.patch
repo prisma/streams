@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -26,7 +26,7 @@
+     /// The position a read resumes from to cover record index `next` onward:
+     /// START for 0, otherwise "after entry `next - 1`".
+     pub(crate) const fn before(next: u64) -> Offset {
+-        Offset { next }
++        Offset { next: if next == u64::MAX { 0 } else { next } }
+     }
+ 
+     /// First record index covered by a read at this offset.

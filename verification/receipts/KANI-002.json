@@ -1,0 +1,64 @@
+{
+  "checks": [
+    {
+      "check": "KANI-002/successor-indices",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 213.3,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-002/nc-start-token-skips-entry-zero",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:a token resumes at the index it was issued for",
+      "failed_checks": [
+        "\"a token resumes at the index it was issued for\""
+      ],
+      "mutated": {
+        "src/offsets.rs": {
+          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
+          "control": "ad130d36076768d66039b1638641ac719299f6dca96a38fa028d03dc826d24d8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 236.6,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-002/nc-exhausted-index-wraps-to-start",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:a position resumes at its own index",
+      "failed_checks": [
+        "\"a position resumes at its own index\""
+      ],
+      "mutated": {
+        "src/offsets.rs": {
+          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
+          "control": "c66b25e31dbda5daffb36ce2c29a079a88b3be7d25b20fb401563881cefe2b7e"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 294.1,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-002",
+  "inputs_sha256": "30c41f7c4a9fa4b204723b05740290d61c9b5baa2b8673085faa20f6b8d368d5",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

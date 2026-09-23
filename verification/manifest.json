@@ -1,5 +1,191 @@
 {
   "schema": 1,
   "roadmap": "docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md",
-  "obligations": []
+  "obligations": [
+    {
+      "id": "KANI-001",
+      "kind": "kani",
+      "title": "Epoch-aware offset round trip",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "T10",
+        "S6"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-021",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN"
+      ],
+      "input_scope": "every u32 epoch and every u64 scan index through token_digits/parse_digits (the core encode_ep/parse_ep wrap); fixed 26 digits, loops unwound to 40 with unwinding checks on",
+      "checks": [
+        {
+          "id": "KANI-001/round-trip",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_001_every_epoch_and_position_round_trips",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-001/nc-truncate-high-epoch-bits",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_001_every_epoch_and_position_round_trips",
+          "patch": "verification/kani/controls/KANI-001-truncate-high-epoch-bits.patch",
+          "expect": {
+            "result": "fail",
+            "property": "epoch and position survive the round trip"
+          },
+          "timeout_seconds": 7200
+        }
+      ],
+      "regressions": [
+        "golden_tests::cursors::golden_layout4_raw_high_epoch_offset_tokens",
+        "offsets::tests::quality_every_epoch_and_position_round_trips",
+        "verification/regressions/KANI-001/README.md"
+      ]
+    },
+    {
+      "id": "KANI-002",
+      "kind": "kani",
+      "title": "Offset successor, START sentinel, and exhaustion",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs",
+        "src/application/read_range.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "H2",
+        "T10"
+      ],
+      "models": [
+        "TLA-007",
+        "TLA-018",
+        "TLA-021"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN",
+        "ASM-READ-NOW-SENTINEL"
+      ],
+      "input_scope": "START and every u64 scan index including u64::MAX, with every u32 epoch through the digit codec; the read planner's u64::MAX \"now\" sentinel is recorded as a domain question, not proven",
+      "checks": [
+        {
+          "id": "KANI-002/successor-indices",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-002/nc-start-token-skips-entry-zero",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
+          "patch": "verification/kani/controls/KANI-002-start-token-skips-entry-zero.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a token resumes at the index it was issued for"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-002/nc-exhausted-index-wraps-to-start",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
+          "patch": "verification/kani/controls/KANI-002-exhausted-index-wraps-to-start.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a position resumes at its own index"
+          },
+          "timeout_seconds": 7200
+        }
+      ],
+      "regressions": [
+        "offsets::tests::round_trip",
+        "offsets::tests::a_multibyte_char_is_not_a_digit",
+        "offsets::tests::quality_a_parsed_token_is_its_position",
+        "verification/regressions/KANI-002/README.md"
+      ]
+    },
+    {
+      "id": "KANI-003",
+      "kind": "kani",
+      "title": "Offset encoding injectivity and ordering",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "T10"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-021",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN"
+      ],
+      "input_scope": "two symbolic (u32 epoch, u64 scan index) tuples; byte order of the 26 digits (which is String order) against tuple order",
+      "checks": [
+        {
+          "id": "KANI-003/injective-ordered",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-003/nc-swap-sequence-halves",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
+          "patch": "verification/kani/controls/KANI-003-swap-sequence-halves.patch",
+          "expect": {
+            "result": "fail",
+            "property": "token order is tuple order"
+          }
+        },
+        {
+          "id": "KANI-003/nc-drop-an-epoch-bit",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
+          "patch": "verification/kani/controls/KANI-003-drop-an-epoch-bit.patch",
+          "expect": {
+            "result": "fail",
+            "property": "distinct tuples have distinct tokens"
+          }
+        }
+      ],
+      "regressions": [
+        "offsets::tests::epoch_round_trip",
+        "golden_tests::cursors::golden_layout4_raw_high_epoch_offset_tokens"
+      ]
+    }
+  ]
 }

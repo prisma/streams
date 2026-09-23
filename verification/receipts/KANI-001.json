@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "check": "KANI-001/round-trip",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 3421.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-001/nc-truncate-high-epoch-bits",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:epoch and position survive the round trip",
+      "failed_checks": [
+        "\"epoch and position survive the round trip\""
+      ],
+      "mutated": {
+        "src/offsets.rs": {
+          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
+          "control": "174e572bd43e3246e12b5d0f2666e0570081dc305761103c3398fbe4373957a5"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 928.9,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-001",
+  "inputs_sha256": "4df2215af88ba9918f9f2953fc6c843865acf87f34927c0ddef12964d3e97d70",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

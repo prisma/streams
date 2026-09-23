@@ -114,6 +114,9 @@ fn parse_digits(digits: &[u8; DIGITS]) -> Result<(u32, Offset), u8> {
     Ok((epoch, Offset::before(raw_seq)))
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use super::{Offset, encode_ep, parse_ep};
