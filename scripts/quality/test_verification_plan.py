@@ -1,10 +1,11 @@
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 import verification_plan
-from common import syntax
+from common import ROOT, syntax
 from mutation_owners import MutationOwner, OWNERS, validate_plan
 from verification_plan import (
     discover_changes,
@@ -16,6 +17,16 @@ from verification_plan import (
 
 
 class Triggers(unittest.TestCase):
+    def test_every_selected_check_gates_a_workflow_step(self):
+        workflow = (ROOT / '.github/workflows/rust-quality.yml').read_text()
+        exported = re.search(r"for name in \[([^\]]*)\]:", workflow)
+        self.assertIsNotNone(exported, 'rust-quality no longer exports plan checks')
+        exported = sorted(re.findall(r"'(\w+)'", exported.group(1)))
+        for checks in (plan(['src/shard.rs']), plan_schedule(0)):
+            self.assertEqual(sorted(k for k, v in checks.items() if type(v) is bool), exported)
+        for name in exported:
+            self.assertIn(f"if: env.CHECK_{name.upper()} == 'true'", workflow)
+
     def test_rollup_storage_requires_properties_and_mutations(self):
         checks = plan(['src/rollup/storage.rs'])
         self.assertTrue(checks['properties_fuzz'])
@@ -26,7 +37,7 @@ class Triggers(unittest.TestCase):
         self.assertTrue(checks['properties_fuzz'])
         self.assertTrue(checks['mutants'])
 
-    def test_visibility_selection_uses_real_syntax_and_keeps_compiler_checks(self):
+    def test_visibility_selection_uses_real_syntax(self):
         before = 'pub struct A { pub field: u8 }\nimpl A { pub fn value(&self)->u8 { self.field } }'
         after = before.replace('pub ', 'pub(crate) ')
         path = 'src/crypto.rs'
@@ -34,7 +45,6 @@ class Triggers(unittest.TestCase):
             return is_visibility_only(before, candidate, syntax({path: before})[path], syntax({path: candidate})[path])
         self.assertTrue(classify(after))
         checks = plan([path], [path])
-        self.assertTrue(checks['compiler'])
         self.assertFalse(checks['mutants'])
         self.assertEqual(checks['visibility_only_files'], [path])
         self.assertFalse(classify(after.replace('self.field', '0')))
@@ -64,7 +74,6 @@ class Triggers(unittest.TestCase):
             checks = plan([path])
             self.assertTrue(checks['miri'])
             self.assertTrue(checks['properties_fuzz'])
-            self.assertTrue(checks['compiler'])
             self.assertFalse(checks['mutants'])  # No changed production mutation scope.
 
     def test_mutation_source_files_name_exactly_the_critical_executable_changes(self):
@@ -118,28 +127,22 @@ class Triggers(unittest.TestCase):
         self.assertTrue(checks['mutants'])
         self.assertEqual(checks['unregistered_mutation_source_files'], [path])
 
-    def test_pilot_benchmark_changes_select_lifecycle_and_mutations(self):
+    def test_pilot_benchmark_changes_select_mutations(self):
         for path in ('src/bin/pilot/benchmark.rs', 'src/bin/pilot/benchmark/window.rs', 'src/bin/pilot/benchmark/config.rs'):
-            checks = plan([path])
-            self.assertTrue(checks['loom'])
-            self.assertTrue(checks['mutants'])
+            self.assertTrue(plan([path])['mutants'])
 
-    def test_generator_terminal_owner_selects_loom_and_mutations(self):
+    def test_generator_terminal_owner_selects_mutations(self):
         for path in ('src/bin/pilot/generator.rs', 'src/bin/pilot/generator/membership.rs'):
-            self.assertTrue(plan([path])['loom'])
             self.assertTrue(plan([path])['mutants'])
             self.assertFalse(plan([path], production_unchanged=[path])['mutants'])
         self.assertFalse(plan(['src/bin/pilot/proxy.rs'])['mutants'])
 
-    def test_touch_and_billing_state_owners_require_synchronization_and_mutations(self):
+    def test_touch_and_billing_state_owners_require_mutations(self):
         for path in ('src/touch.rs', 'src/billing/read_accumulator.rs', 'src/billing/read_spool.rs'):
             with self.subTest(path=path):
-                checks = plan([path])
-                self.assertTrue(checks['compiler'])
-                self.assertTrue(checks['loom'])
-                self.assertTrue(checks['mutants'])
+                self.assertTrue(plan([path])['mutants'])
                 self.assertFalse(plan([path], visibility_only=[path])['mutants'])
-                self.assertFalse(plan([path], production_unchanged=[path])['loom'])
+                self.assertFalse(plan([path], production_unchanged=[path])['mutants'])
 
     def test_trigger_controls(self):
         self.assertFalse(plan(['README.md'])['mutants'])
@@ -148,10 +151,10 @@ class Triggers(unittest.TestCase):
         self.assertFalse(plan(['src/product_cursor.rs'], ['src/product_cursor.rs'])['mutants'])
         self.assertTrue(plan(['src/queue.rs'])['mutants'])
         self.assertFalse(plan(['src/queue.rs'], ['src/queue.rs'])['mutants'])
-        self.assertTrue(plan(['src/shard/commit_handoff.rs'])['loom'])
+        self.assertTrue(plan(['src/shard/commit_handoff.rs'])['mutants'])
         self.assertTrue(plan(['src/application/read_batch.rs'])['miri'])
         self.assertTrue(plan(['src/bootstrap/rss.rs'])['mutants'])
-        self.assertTrue(plan(['src/new_owner.rs'])['compiler'])
+        self.assertFalse(plan(['src/new_owner.rs'])['mutants'])
 
     def test_quota_arithmetic_selects_its_registered_mutation_owner(self):
         for path in ['src/quota.rs', 'src/quota/bucket.rs']:

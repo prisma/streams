@@ -130,16 +130,23 @@ The planner separately records `formatted_visibility_files` for narrowed
 visibility plus token-preserving formatting, including parser-identified
 trailing parameter commas on the narrowed functions. This does **not** prove
 unchanged macro expansion: unrelated derive spans may move. All otherwise
-selected compiler, property, Miri and Loom checks remain selected. Only mutation
+selected property-corpus and Miri checks remain selected. Only mutation
 selection omits these non-executable edits; every other critical changed source
 still needs an actual-diff mutation scope. Changed opaque macro inputs, source
 introspection, expressions, types, tuple commas and other functions' parameter
 commas are ineligible. No zero-mutant execution is reported as a passing test.
 
 The `visibility_only_files` and `production_unchanged_files` classifications do
-not select runtime mutation/Miri/property/Loom checks by themselves. Tooling changes still exercise the verification harness. This is
+not select mutation, Miri or property-corpus checks by themselves. Tooling changes still exercise the verification harness. This is
 a selection decision, not a passing zero-mutation experiment; other critical
 changes still require a registered executable mutation scope.
+
+`plan.json` selects exactly three checks, `properties_fuzz`, `miri` and
+`mutants`, and each gates one `rust-quality` step; a planner test refuses a
+check no step reads. Nothing selects the rest, because it runs on every change:
+compiler, Clippy, the `--lib quality_` leg (the lib property and Loom models)
+and ci.yml's full `cargo test --release`, which also carries the two pilot Loom
+models (`src/bin/pilot/benchmark/tests.rs` and `tests/pilot_membership.rs`).
 
 A scheduled bucket bypasses diff-oriented prefix selection entirely. Its full
 owners, complete discovery source set and rotation slot must agree in the plan,
