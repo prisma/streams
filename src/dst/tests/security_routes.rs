@@ -1,5 +1,6 @@
 //! Security routes.
 
+use super::fixture_auth::{rig_policy, rig_publish_policy};
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
@@ -550,6 +551,172 @@ async fn product_requires_the_account_token() {
     let (st, _, _) = preq(addr, "OPTIONS", "/v1/streams", &[], b"").await;
     assert!(st == 200 || st == 204, "catalog preflight status {st}");
     engine_shutdown(&state).await;
+}
+
+/// Item 44: /v1/debug is ONE gated sub-router, not a check each handler
+/// must remember (MF1 once found the documented gate missing). With an
+/// account token configured, every debug path (a routed handler under
+/// its own and the other method, a path nothing routes, the bare
+/// prefix) refuses a caller without the token before a handler, a 404
+/// or a 405 can say what exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debug_surface_refuses_every_path_without_the_token() {
+    let (state, addr) = http_rig_auth(mem(), "s3cret").await;
+    let routed = [
+        ("GET", "/v1/debug/timings"),
+        ("GET", "/v1/debug/load"),
+        ("GET", "/v1/debug/store"),
+        ("GET", "/v1/debug/usage"),
+        ("GET", "/v1/debug/auth"),
+        ("GET", "/v1/debug/ops-events"),
+        ("GET", "/v1/debug/usage-reconcile"),
+        ("POST", "/v1/debug/absorb-pause?on=1"),
+        ("POST", "/v1/debug/abort"),
+        ("GET", "/v1/debug/sleep"),
+        ("POST", "/v1/debug/history-stall"),
+        ("GET", "/v1/debug/absorb"),
+    ];
+    let unrouted = [
+        ("GET", "/v1/debug/nope"),
+        ("POST", "/v1/debug/nope"),
+        ("GET", "/v1/debug"),
+    ];
+    let other_method = routed.map(|(m, p)| (if m == "GET" { "POST" } else { "GET" }, p));
+    for (method, path) in routed.into_iter().chain(unrouted).chain(other_method) {
+        for bearer in [None, Some("Bearer wrong")] {
+            let headers: Vec<(&str, &str)> =
+                bearer.map(|b| ("authorization", b)).into_iter().collect();
+            let (st, h, body) = preq(addr, method, path, &headers, b"").await;
+            let text = String::from_utf8_lossy(&body);
+            assert_eq!(
+                st, 401,
+                "{method} {path} with {bearer:?} must be refused: {text}"
+            );
+            assert!(
+                text.contains(r#""code":"unauthorized""#),
+                "{method} {path}: {text}"
+            );
+            assert_eq!(
+                h.get("prisma-streams-origin").map(String::as_str),
+                Some("dst-instance"),
+                "{method} {path}: the refusal carries the origin marker"
+            );
+        }
+    }
+    assert!(
+        !state
+            .runtime
+            .history
+            .paused
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "an unauthenticated absorb-pause landed"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Item 44 pin: the gate lets the account token through to every
+/// handler unchanged, judged by each handler's own answer (an empty 200
+/// is a failure), and an authorized caller keeps the bare 404 for an
+/// unrouted path and the 405 for a wrong method.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debug_surface_serves_every_handler_with_the_token() {
+    let (state, addr) = http_rig_auth(mem(), "s3cret").await;
+    // A published policy gives /v1/debug/auth a feed age to report.
+    rig_publish_policy(&state.auth, rig_policy("proj_dbg", "ws_dbg", 1, 1), 1).unwrap();
+    for (path, field) in [
+        ("/v1/debug/timings", None),
+        ("/v1/debug/load", Some("inflight_now")),
+        ("/v1/debug/store", None),
+        ("/v1/debug/usage", Some("limits")),
+        ("/v1/debug/ops-events", Some("events")),
+        ("/v1/debug/absorb", Some("budget")),
+    ] {
+        let (st, v) = debug_json(addr, "GET", path).await;
+        assert!(st == 200 && v.is_object(), "{path} -> {st}: {v}");
+        if let Some(f) = field {
+            assert!(!v[f].is_null(), "{path} lacks {f}: {v}");
+        }
+    }
+    let (st, v) = debug_json(addr, "GET", "/v1/debug/auth").await;
+    assert_eq!(
+        (st, &v["shadow"]["mode"]),
+        (200, &serde_json::Value::from("off")),
+        "{v}"
+    );
+    let age = v["feeds"]["policies"]["ageSecs"].as_i64();
+    assert!(
+        age.is_some_and(|a| (0..=60).contains(&a)),
+        "policy age in whole seconds: {v}"
+    );
+    assert_eq!(v["feeds"]["policies"]["stale"], false, "{v}");
+    let (st, v) = debug_json(addr, "GET", "/v1/debug/usage-reconcile").await;
+    assert_eq!(
+        (st, &v["error"]["code"]),
+        (503, &serde_json::Value::from("rollup_unavailable"))
+    );
+    for on in [true, false] {
+        let path = format!("/v1/debug/absorb-pause?on={}", u8::from(on));
+        let (st, v) = debug_json(addr, "POST", &path).await;
+        assert_eq!(
+            (st, &v["absorb_paused"]),
+            (200, &serde_json::Value::from(on))
+        );
+        assert_eq!(
+            state
+                .runtime
+                .history
+                .paused
+                .load(std::sync::atomic::Ordering::Relaxed),
+            on
+        );
+    }
+    // The rig never sets STREAMS_DEBUG_EXIT, so abort must refuse.
+    let (st, v) = debug_json(addr, "POST", "/v1/debug/abort").await;
+    assert_eq!(
+        (st, &v["error"]["code"]),
+        (403, &serde_json::Value::from("disabled"))
+    );
+    // history-stall is not called: it sets a PROCESS-wide flush stall
+    // (history::HISTORY_FLUSH_STALL_MS) that other rigs in the run share.
+    let ok = [("authorization", "Bearer s3cret")];
+    let (st, _, body) = preq(addr, "GET", "/v1/debug/sleep?ms=1", &ok, b"").await;
+    assert_eq!((st, body.as_slice()), (200, &b"ok"[..]));
+    let (st, h, body) = preq(addr, "GET", "/v1/debug/nope", &ok, b"").await;
+    assert_eq!(
+        (st, body.len()),
+        (404, 0),
+        "an unrouted debug path stays the bare 404"
+    );
+    assert_eq!(
+        h.get("prisma-streams-origin").map(String::as_str),
+        Some("dst-instance")
+    );
+    let (st, _, _) = preq(addr, "GET", "/v1/debug/abort", &ok, b"").await;
+    assert_eq!(st, 405, "a wrong method stays 405 for an authorized caller");
+    engine_shutdown(&state).await;
+}
+
+/// One debug request with the rig's token; the answer must be JSON.
+async fn debug_json(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+) -> (u16, serde_json::Value) {
+    let (st, _, body) = preq(
+        addr,
+        method,
+        path,
+        &[("authorization", "Bearer s3cret")],
+        b"",
+    )
+    .await;
+    let v = serde_json::from_slice(&body).unwrap_or_else(|e| {
+        panic!(
+            "{method} {path} -> {st}: not JSON ({e}): {}",
+            String::from_utf8_lossy(&body)
+        )
+    });
+    (st, v)
 }
 
 /// Round-13 review (red): authentication precedes tarpit work and

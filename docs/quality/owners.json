@@ -2083,10 +2083,18 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::router",
+      "owner": "crate::debug_routes",
       "path": "src/http.rs",
       "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::debug_routes",
+      "path": "src/http.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the operator debug table's reviewed answers behind its one bearer gate; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
     },
     {
       "category": "by-path-module",

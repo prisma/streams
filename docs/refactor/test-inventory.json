@@ -2038,6 +2038,28 @@
     "scenarios": []
   },
   {
+    "name": "debug_surface_refuses_every_path_without_the_token",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "698b5c486bb7c1c7d4072713771ed33d85ded9644c465d3d01312f116f421a3c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
+    "name": "debug_surface_serves_every_handler_with_the_token",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "144b07132bdd83a61b7537ad5026915ef03f321621f2a5714876dd06fdf79353",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
     "name": "delete_stays_inside_the_requesting_project",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

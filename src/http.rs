@@ -722,17 +722,8 @@ async fn track_inflight(
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
 /// (rate constant regardless of latency).
 async fn debug_sleep(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let ms: u64 = q
         .get("ms")
         .and_then(|v| v.parse().ok())
@@ -817,19 +808,7 @@ async fn get_segments(
     clippy::cast_possible_truncation,
     reason = "debug_load; the load report gathers every runtime gauge into one JSON document stamped with Unix milliseconds that fit u64 for millions of years; splitting the report or checking the stamp would only restate the document"
 )]
-async fn debug_load(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let _ = &q;
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let (now, peak) = state.admission.swap_peak();
     let adm = state.admission.snapshot();
     let lf = state.livefeed.snapshot();
@@ -1035,16 +1014,8 @@ async fn debug_load(
 /// heartbeats read it non-destructively).
 async fn debug_store(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let window: u64 = q
         .get("window")
         .and_then(|v| v.parse().ok())
@@ -1059,14 +1030,7 @@ async fn debug_store(
 /// Shadow-mode observability (MULTITENANCY §7.2): mode, counter
 /// deltas, and the age/size of every published snapshot — the numbers
 /// the field trial reads to decide the enforce flip.
-async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_auth(State(state): State<Arc<AppState>>) -> Response {
     let now = crate::shard::now_ms() / 1000;
     let (tracked, inflight) = state.quotas.stats();
     axum::Json(serde_json::json!({
@@ -1077,16 +1041,9 @@ async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     .into_response()
 }
 
-/// Per-stream usage counters + the active limits. Auth: same bearer as
-/// the other debug endpoints (enforced by the middleware layer).
-async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+/// Per-stream usage counters + the active limits: per-stream data, which
+/// is why the whole /v1/debug table mounts through `debug::gated`.
+async fn debug_usage(State(state): State<Arc<AppState>>) -> Response {
     let l = state.runtime.usage.limits();
     let streams: Vec<serde_json::Value> = state.runtime.usage.snapshot()
         .into_iter()
@@ -1145,14 +1102,7 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 /// Recent operational events (§12.5): the live ring, newest first.
 /// Bearer-gated like every debug route; the durable history lives in
 /// `_ops_events` and the ops rollup serves timelines.
-async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_ops_events(State(state): State<Arc<AppState>>) -> Response {
     let recent = state.runtime.ops.recent(128);
     axum::Json(serde_json::json!({
         "events": recent,
@@ -1169,15 +1119,7 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
 async fn debug_usage_reconcile(
     State(state): State<Arc<AppState>>,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
-    headers: HeaderMap,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let mut month: Option<String> = None;
     for pair in query
         .as_deref()
@@ -1284,11 +1226,8 @@ pub(crate) async fn serve_h1(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    clippy::disallowed_methods,
-    reason = "router; the route table is one declaration so every path is visible in one place, and the debug abort spawns a bare task that ends the process itself; splitting the table or supervising the abort would separate the routes from the table and the abort from the death it causes"
-)]
+/// Every route the service answers. The operator debug table mounts under
+/// `/v1/debug` only through its one gate, `debug::gated`.
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
@@ -1341,31 +1280,77 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             "/v1/internal/telemetry-append/{*name}",
             post(internal_telemetry_append),
         )
-        .route("/v1/debug/timings", get(debug_timings))
-        .route("/v1/debug/load", get(debug_load))
-        .route("/v1/debug/store", get(debug_store))
-        .route("/v1/debug/usage", get(debug_usage))
-        .route("/v1/debug/auth", get(debug_auth))
-        .route("/v1/debug/ops-events", get(debug_ops_events))
-        .route("/v1/debug/usage-reconcile", get(debug_usage_reconcile))
-        // Every /v1/debug/* route is account-gated (round-19: the
-        // security model claims bearer auth on all of /v1/*, and these
-        // MUTATE production state — pausing absorption, occupying
-        // request slots, resetting peak gauges — or expose per-stream
-        // usage). SR-5: /operator is bearer-gated like the debug surface.
+        .nest("/v1/debug", debug::gated(&state, debug_routes()))
+        // Operator dashboard: UNSECURED by explicit product decision (on-call
+        // must see the cell without credentials). The payload is therefore
+        // restricted to operational metadata — never stream names, tenant
+        // identifiers, tokens, keys, or signed URLs.
+        .route("/operator", get(crate::operator::page))
+        .route("/operator/data.json", get(crate::operator::data))
+        .route("/operator/runbook", get(crate::operator::runbook))
+        .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
         .route(
-            "/v1/debug/absorb-pause",
+            "/v1/streams",
+            axum::routing::get(product_list_axum).options(product_preflight),
+        )
+        .route("/v1/streams/{*name}", any(product_entry_axum))
+        .route(
+            "/v1/projects/{project}/usage",
+            axum::routing::get(project_usage_axum).options(product_preflight),
+        )
+        .route("/v1/stream/{*name}", any(stream_entry))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_inflight,
+        ))
+        // Server-origin marker on EVERY response, including errors
+        // (round-19 must-fix 4). A 404 from a real server means "this
+        // stream does not exist" — a 404 from the PLATFORM edge (dead
+        // or unpublished service) means "this upstream is unavailable",
+        // and the SDK retries 429/503 but never 404. A router that
+        // cannot tell them apart turns an instance loss into permanent
+        // "stream deleted" for applications (the hard-kill campaign:
+        // 8,371 semantic 404s in ~30 s). Marked responses are ours;
+        // unmarked ones never reached a server.
+        .layer(axum::middleware::map_response_with_state(
+            state.clone(),
+            |State(state): State<Arc<AppState>>, mut resp: Response| async move {
+                resp.headers_mut().insert(
+                    "x-content-type-options",
+                    axum::http::HeaderValue::from_static("nosniff"),
+                );
+                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
+                    resp.headers_mut().insert("prisma-streams-origin", v);
+                }
+                resp
+            },
+        ))
+        .with_state(state)
+}
+
+/// The operator debug table. Its routes MUTATE production state (pausing
+/// absorption, stalling flushes, aborting the process, resetting peak
+/// gauges) or expose per-stream usage, so it mounts only through
+/// `debug::gated`: no handler here checks the bearer itself.
+#[expect(
+    clippy::too_many_lines,
+    clippy::disallowed_methods,
+    reason = "debug_routes; the operator debug table is one declaration behind one gate, and the debug abort spawns a bare task that ends the process itself; splitting the table would scatter what the gate covers and supervising the abort would separate it from the death it causes"
+)]
+fn debug_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/timings", get(debug_timings))
+        .route("/load", get(debug_load))
+        .route("/store", get(debug_store))
+        .route("/usage", get(debug_usage))
+        .route("/auth", get(debug_auth))
+        .route("/ops-events", get(debug_ops_events))
+        .route("/usage-reconcile", get(debug_usage_reconcile))
+        .route(
+            "/absorb-pause",
             post(
                 |State(state): State<Arc<AppState>>,
-                 headers: HeaderMap,
                  Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
                     let on = q.get("on").map(|v| v == "1").unwrap_or(false);
                     state.runtime.history.paused
                         .store(on, std::sync::atomic::Ordering::Relaxed);
@@ -1380,16 +1365,9 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // and auth-gated like every debug route. Platform `versions
         // stop` is too graceful to prove crash recovery.
         .route(
-            "/v1/debug/abort",
+            "/abort",
             post(
-                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |State(state): State<Arc<AppState>>| async move {
                     if !state.config.http.debug_exit {
                         return err_resp(
                             StatusCode::FORBIDDEN,
@@ -1407,24 +1385,15 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
                 },
             ),
         )
-        .route("/v1/debug/sleep", get(debug_sleep))
+        .route("/sleep", get(debug_sleep))
         // Injected history-flush slowdown (OOM review acceptance
         // campaign): stalls the REAL gather flush path by ?ms= per
         // flush, with the process-wide reservation held — the
         // mechanism the slow-compactor campaign drives. 0 clears.
         .route(
-            "/v1/debug/history-stall",
+            "/history-stall",
             post(
-                |State(state): State<Arc<AppState>>,
-                 headers: HeaderMap,
-                 Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
                     let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);
                     crate::history::HISTORY_FLUSH_STALL_MS
                         .store(ms, std::sync::atomic::Ordering::Relaxed);
@@ -1438,16 +1407,9 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // (or refute) "history compaction fell behind". Authorized like
         // every other /v1/debug route.
         .route(
-            "/v1/debug/absorb",
+            "/absorb",
             get(
-                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |State(state): State<Arc<AppState>>| async move {
                     let ord = std::sync::atomic::Ordering::Relaxed;
                     let engines: Vec<_> = state.shards.engines_by_prefix();
                     let mut parts = Vec::new();
@@ -1545,51 +1507,6 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
                 },
             ),
         )
-        // Operator dashboard: UNSECURED by explicit product decision (on-call
-        // must see the cell without credentials). The payload is therefore
-        // restricted to operational metadata — never stream names, tenant
-        // identifiers, tokens, keys, or signed URLs.
-        .route("/operator", get(crate::operator::page))
-        .route("/operator/data.json", get(crate::operator::data))
-        .route("/operator/runbook", get(crate::operator::runbook))
-        .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
-        .route(
-            "/v1/streams",
-            axum::routing::get(product_list_axum).options(product_preflight),
-        )
-        .route("/v1/streams/{*name}", any(product_entry_axum))
-        .route(
-            "/v1/projects/{project}/usage",
-            axum::routing::get(project_usage_axum).options(product_preflight),
-        )
-        .route("/v1/stream/{*name}", any(stream_entry))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            track_inflight,
-        ))
-        // Server-origin marker on EVERY response, including errors
-        // (round-19 must-fix 4). A 404 from a real server means "this
-        // stream does not exist" — a 404 from the PLATFORM edge (dead
-        // or unpublished service) means "this upstream is unavailable",
-        // and the SDK retries 429/503 but never 404. A router that
-        // cannot tell them apart turns an instance loss into permanent
-        // "stream deleted" for applications (the hard-kill campaign:
-        // 8,371 semantic 404s in ~30 s). Marked responses are ours;
-        // unmarked ones never reached a server.
-        .layer(axum::middleware::map_response_with_state(
-            state.clone(),
-            |State(state): State<Arc<AppState>>, mut resp: Response| async move {
-                resp.headers_mut().insert(
-                    "x-content-type-options",
-                    axum::http::HeaderValue::from_static("nosniff"),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
-                    resp.headers_mut().insert("prisma-streams-origin", v);
-                }
-                resp
-            },
-        ))
-        .with_state(state)
 }
 
 /// Rendezvous over instance NAMES (FNV-1a, identical in the pilot LB) —
@@ -1610,14 +1527,7 @@ pub(crate) fn err_resp(status: StatusCode, code: &str, message: &str) -> Respons
     clippy::unwrap_used,
     reason = "debug_timings; a poisoned timing ring may hold a half-recorded wait; recovering it could report a group that never completed"
 )]
-async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_timings(State(state): State<Arc<AppState>>) -> Response {
     let mut shards = serde_json::Map::new();
     let engines: Vec<(String, Arc<ShardEngine>)> = state.shards.engines_by_prefix();
     for (prefix, eng) in &engines {
@@ -3297,6 +3207,7 @@ async fn internal_segment_read(
     .await
 }
 
+mod debug;
 #[path = "http/read.rs"]
 mod read_adapter;
 mod serve;

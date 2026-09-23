@@ -148,7 +148,8 @@ OWNERS = (
     # `fleet::` alone ran zero tests against a mutated `start_configured`.
     owner('fleet', 'src/fleet.rs',
           'fleet:: dst_tests::fleet_controller:: dst_tests::runtime_isolation::'),
-    owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload:: debug_store_reports_this_runtimes_shard_opens'),
+    owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload:: debug_store_reports_this_runtimes_shard_opens debug_surface_'),
+    owner('http_debug', 'src/http/debug.rs', 'debug_surface_'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),
