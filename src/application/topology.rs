@@ -481,7 +481,16 @@ async fn resume_incarnation(
             // routes until the prefix differs; a single-shard topology
             // accepts the first candidate (capacity comes when shards
             // do).
-            let child_id = map.next_seg_id + 1;
+            let Some(child_id) = map.next_seg_id.checked_add(1) else {
+                // A spent allocator has no id for the high child; the
+                // intent stays pending for the reason a refused split does.
+                tracing::error!(
+                    seg_id,
+                    stream = %desc.name,
+                    "split stays pending: no segment id is left for its high child"
+                );
+                return Mutation::Decline(false);
+            };
             let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
             let mut high_route = [0u8; 16];
             for salt in 0u32..16 {
@@ -497,7 +506,7 @@ async fn resume_incarnation(
                     break;
                 }
             }
-            match map.split(
+            if let Err(error) = map.split(
                 seg_id,
                 p.split_at,
                 frozen,
@@ -505,13 +514,22 @@ async fn resume_incarnation(
                 high_route,
                 crate::shard::now_ms(),
             ) {
-                Ok(_) => map.pending = None,
-                Err(_) => {
-                    // Already split (idempotent completion): just clear.
-                    map.pending = None;
-                    map.version += 1;
-                }
+                // Never an idempotent completion: a published split cleared
+                // this intent in the same write, and the filter above found
+                // it. The parent is already closed, so clearing the intent
+                // would leave its range routed to a closed engine with
+                // nothing left to resume it. The decide closure re-runs after
+                // a write conflict; logging here stays once per resume only
+                // because Decline ends the mutation at once.
+                tracing::error!(
+                    seg_id,
+                    stream = %desc.name,
+                    ?error,
+                    "split stays pending: the segment map refused it"
+                );
+                return Mutation::Decline(false);
             }
+            map.pending = None;
             Mutation::Write(d, true)
         })
         .await
@@ -574,14 +592,19 @@ async fn resume_merge(
             else {
                 return Mutation::Decline(false); // someone else already completed it
             };
-            match map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
-                Ok(_) => map.pending = None,
-                Err(_) => {
-                    // Already merged (idempotent completion): just clear.
-                    map.pending = None;
-                    map.version += 1;
-                }
+            if let Err(error) = map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
+                // As for a split: never an idempotent completion, and both
+                // parents are already closed.
+                tracing::error!(
+                    a_id,
+                    b_id,
+                    stream = %desc.name,
+                    ?error,
+                    "merge stays pending: the segment map refused it"
+                );
+                return Mutation::Decline(false);
             }
+            map.pending = None;
             Mutation::Write(d, true)
         })
         .await

@@ -520,6 +520,17 @@
     ]
   },
   {
+    "name": "a_merge_the_segment_map_refuses_keeps_its_intent_pending",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e9ab671abcd52e9167d0d03df2b84965cc03a661649d9a19756b42949b1a71df",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_non_closing_duplicate_releases_its_own_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -999,6 +1010,28 @@
     "scenarios": [
       "QUE-011"
     ]
+  },
+  {
+    "name": "a_split_the_allocator_cannot_number_keeps_its_intent_pending",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f0d41996c3e01b8f4589bf794caf5fb1e02147a1f110b80d724e632e1bd46e7a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_with_no_id_for_its_high_child_keeps_its_intent_pending",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "852e62cc1d8356d92d68f1af209ef502b0fd6d8ff11c6f9cb39c4a9bdfad38b3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
   },
   {
     "name": "a_stale_applied_cursor_is_refused_after_crash_restart",

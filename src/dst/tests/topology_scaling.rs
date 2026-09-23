@@ -743,3 +743,99 @@ async fn an_append_routed_by_a_pre_seal_descriptor_is_still_refused_as_sealed() 
     }
     engine_shutdown(&state).await;
 }
+
+// ---- a transition the segment map refuses keeps its intent ------------
+// Phase B used to read every MapError as "already done": it cleared the
+// intent and reported the publication over parents the resume had
+// already closed, leaving their ranges routed to closed engines with
+// nothing left to resume them.
+
+/// Persist `planted`, its pending intent included, as the collection's
+/// map and resume it: the verdict, the map as stored, and the map the
+/// resume left.
+async fn resume_planted(
+    state: &Arc<crate::http::AppState>,
+    name: &str,
+    planted: &crate::segmap::SegmentMap,
+) -> (bool, crate::segmap::SegmentMap, crate::segmap::SegmentMap) {
+    let sref = state.deployment.raw_adapter_sref(name);
+    let seal_gen = planted.pending.as_ref().map_or(0, |p| p.seal_gen);
+    let stored = state
+        .registry
+        .cas_update(&sref, |d| {
+            d.seal_gen_counter = d.seal_gen_counter.max(seal_gen);
+            d.segments = Some(planted.clone());
+            true
+        })
+        .await
+        .unwrap();
+    assert!(stored, "the intent is planted");
+    let before = fresh_desc(state, name).await.segments.clone().unwrap();
+    let resumed = crate::scaler3::resume(state, &sref).await;
+    let after = fresh_desc(state, name).await.segments.clone().unwrap();
+    (resumed, before, after)
+}
+
+/// A split of segment 0 on a fresh collection whose allocator stands at
+/// `next_seg_id`: phase B must refuse it and keep the intent.
+async fn a_split_is_refused_with_the_allocator_at(name: &str, next_seg_id: u32) {
+    let (state, _addr) = keyed_collection(name).await;
+    let mut planted = crate::segmap::SegmentMap::initial("", 1);
+    planted.next_seg_id = next_seg_id;
+    planted.pending = Some(crate::segmap::PendingTransition {
+        kind: "split".into(),
+        segs: vec![0],
+        split_at: 0x8000_0000_0000_0000,
+        started_ms: 1,
+        seal_gen: 1,
+    });
+    let (resumed, before, after) = resume_planted(&state, name, &planted).await;
+    assert_eq!(
+        (resumed, after.pending.as_ref(), after.version),
+        (false, before.pending.as_ref(), before.version),
+        "a split with the allocator at {next_seg_id} was published or lost its intent"
+    );
+    assert_eq!(after, before, "a refused split leaves the map as planted");
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_split_the_allocator_cannot_number_keeps_its_intent_pending() {
+    // Both children get ids; the allocator has none left to advance to.
+    a_split_is_refused_with_the_allocator_at("spentsplit", u32::MAX - 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_split_with_no_id_for_its_high_child_keeps_its_intent_pending() {
+    a_split_is_refused_with_the_allocator_at("spentsplitmax", u32::MAX).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merge_the_segment_map_refuses_keeps_its_intent_pending() {
+    let (state, _addr) = keyed_collection("refusedmerge").await;
+    split_at_half(&state, "refusedmerge").await;
+    let desc = fresh_desc(&state, "refusedmerge").await;
+    let mut planted = desc.segments.clone().unwrap();
+    assert_eq!(planted.live().map(|s| s.seg_id).collect::<Vec<_>>(), [1, 2]);
+    // A sealed parent no successor was ever published for: merge() refuses
+    // it (AlreadySealed) before it allocates, whatever the allocator holds.
+    for high in planted.segments.iter_mut().filter(|s| s.seg_id == 2) {
+        high.sealed_ms = Some(1);
+        high.sealed_next_offset = Some(0);
+    }
+    planted.pending = Some(crate::segmap::PendingTransition {
+        kind: "merge".into(),
+        segs: vec![1, 2],
+        split_at: 0,
+        started_ms: 1,
+        seal_gen: 2,
+    });
+    let (resumed, before, after) = resume_planted(&state, "refusedmerge", &planted).await;
+    assert_eq!(
+        (resumed, after.pending.as_ref(), after.version),
+        (false, before.pending.as_ref(), before.version),
+        "a merge the segment map refused was published or lost its intent"
+    );
+    assert_eq!(after, before, "a refused merge leaves the map as planted");
+    engine_shutdown(&state).await;
+}
