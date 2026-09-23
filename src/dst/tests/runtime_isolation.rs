@@ -367,26 +367,21 @@ async fn two_runtimes_never_share_fleet_state() {
         )
         .await
         .unwrap();
-    // A drains ITS repository: nothing to emit, and B's document is
-    // untouched.
-    let emitted_a = crate::fleet::drain_fleet_events(&rig_a.state)
-        .await
-        .unwrap();
-    assert_eq!(emitted_a, 0, "A's drainer must never read B's outbox");
-    let still = fleet_b
-        .get_opts(
-            &object_store::path::Path::from("fleet/desired.json"),
-            GetOptions::default(),
-        )
-        .await
-        .unwrap()
-        .bytes()
-        .await
-        .unwrap();
-    let doc: crate::fleet::Desired = serde_json::from_slice(&still).unwrap();
+    // A drains ITS repository and never B's: B's event never reaches A's
+    // store, and B's outbox is left as it was. A's own loop may have queued
+    // scale events whose append this peerless rig's ring refuses; the drain
+    // reports that refusal (it used to answer a silent Ok(0)), so its result
+    // speaks for A's outbox, never for B's.
+    let drained_a = crate::fleet::drain_fleet_events(&rig_a.state).await;
+    assert!(
+        !pending_event_ids(&fleet_a)
+            .await
+            .contains(&"fleet/b/only/1".to_string()),
+        "B's event reached A's store (A's drain answered {drained_a:?})"
+    );
     assert_eq!(
-        doc.pending_events.len(),
-        1,
+        pending_event_ids(&fleet_b).await,
+        ["fleet/b/only/1"],
         "A must not clear B's event outbox"
     );
 
@@ -405,6 +400,29 @@ async fn two_runtimes_never_share_fleet_state() {
     for rig in [rig_a, rig_b, plain] {
         rig.tasks.shutdown(std::time::Duration::from_secs(3)).await;
     }
+}
+
+/// The pending fleet event ids one coordination store's outboxes hold.
+async fn pending_event_ids(store: &Arc<dyn ObjectStore>) -> Vec<String> {
+    let mut ids = Vec::new();
+    for doc in ["fleet/desired.json", "fleet/overrides.json"] {
+        let path = object_store::path::Path::from(doc);
+        let Ok(found) = store.get_opts(&path, GetOptions::default()).await else {
+            continue;
+        };
+        let body: serde_json::Value =
+            serde_json::from_slice(&found.bytes().await.unwrap()).unwrap();
+        let events = body["pending_events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        ids.extend(
+            events
+                .iter()
+                .filter_map(|e| e["event_id"].as_str().map(str::to_string)),
+        );
+    }
+    ids
 }
 
 /// The instance heartbeat documents present in one coordination store.

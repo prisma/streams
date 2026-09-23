@@ -6181,7 +6181,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1b00077c0238a1c6f0f432bddc429dccb316404d719a1029b745a7f55cb20e90",
+    "function_sha256": "f978bf0c3c160f6dfb3281bb98b1b548bb62c2b43de88e8ee6a5051c65617572",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_isolation.rs",
