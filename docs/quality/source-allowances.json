@@ -1433,13 +1433,6 @@
       "count": 1,
       "owner": "crate::main",
       "path": "src/main.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::main",
-      "path": "src/main.rs",
       "syntax": "std::thread::available_parallelism"
     },
     {

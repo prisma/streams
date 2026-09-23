@@ -320,6 +320,22 @@ pub struct RuntimeConfig {
     pub cert_sealed_publish_delay_ms_raw: Option<String>,
     /// STREAMS_CERTIFICATION_MODE, raw (Some("1") enables cert knobs).
     pub certification_mode: Option<String>,
+    /// TOKIO_WORKERS; None = one per available core.
+    pub tokio_workers: Option<usize>,
+}
+
+impl RuntimeConfig {
+    /// The Tokio worker count: TOKIO_WORKERS, else one per available core,
+    /// never below two. Run 13 measured ~230 ms p50 timer drift (vs 4 ms
+    /// for a raw thread) from inline blocking work; on a 1-vCPU box one
+    /// worker lets a single blocking poll freeze every future, durable
+    /// acks included (O14a), so a second worker lets the OS timeslice
+    /// around it.
+    pub fn worker_threads(&self, available: Option<std::num::NonZeroUsize>) -> usize {
+        self.tokio_workers
+            .unwrap_or_else(|| available.map_or(1, std::num::NonZeroUsize::get))
+            .max(2)
+    }
 }
 
 impl ServerConfig {

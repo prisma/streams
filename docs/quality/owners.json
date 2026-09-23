@@ -1921,14 +1921,6 @@
       "syntax": "tokio::spawn"
     },
     {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::main",
-      "path": "src/main.rs",
-      "reason": "Process entry reads the Tokio worker floor once before the runtime exists; no service configuration or credentials are inferred.",
-      "syntax": "std::env::var"
-    },
-    {
       "category": "global",
       "count": 1,
       "owner": "crate::reg::M",

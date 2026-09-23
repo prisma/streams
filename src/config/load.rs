@@ -304,5 +304,6 @@ impl ServerConfig {
         self.runtime.cert_sealed_publish_delay_ms_raw =
             env.get("STREAMS_CERT_SEALED_PUBLISH_DELAY_MS");
         self.runtime.certification_mode = env.get("STREAMS_CERTIFICATION_MODE");
+        self.runtime.tokio_workers = env_parse(env, "TOKIO_WORKERS");
     }
 }

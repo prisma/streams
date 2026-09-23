@@ -108,6 +108,7 @@ fn default_values_are_pinned() {
     // the pre-WP-01 default, moved not changed; a PR that edits one
     // must justify a configuration behavior change.
     let c = load_with(&[]);
+    assert_eq!(c.runtime.tokio_workers, None);
     assert_eq!(c.storage.pool_idle_secs, 4);
     assert_eq!(c.storage.store_max_concurrent, 0);
     assert_eq!(c.storage.bulk_inflight_max_bytes, 0);
