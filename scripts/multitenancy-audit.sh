@@ -7,9 +7,10 @@
 # against a reviewed baseline:
 #
 #   NEW fingerprints  -> FAIL (someone added a bare-name identity site)
-#   GONE fingerprints -> progress (reported, and the baseline should be
-#                        regenerated in the same commit that converts
-#                        the sites: scripts/multitenancy-audit.sh --regen)
+#   GONE fingerprints -> FAIL until the baseline is regenerated in the
+#                        commit that converts or moves the sites
+#                        (scripts/multitenancy-audit.sh --regen), so a
+#                        move is reviewed, never counted as progress
 #
 # Categories:
 #   stream-hash        crypto::stream_hash callers outside crypto.rs —
@@ -37,34 +38,61 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 BASELINE=scripts/mt-audit-baseline.txt
 
+# Every source file, at any depth: a site moved into a subdirectory is
+# the same site, not a converted one.
+SOURCES=()
+while IFS= read -r source; do
+  SOURCES+=("$source")
+done < <(find src -type f -name '*.rs' | LC_ALL=C sort)
+
 scan() {
-  local cat="$1" pat="$2"
+  local cat="$1" pat="$2" hits status=0
   shift 2
-  grep -nH -E "$pat" "$@" 2>/dev/null |
-    sed -E 's/^([^:]+):[0-9]+:[[:space:]]*/\1\t/' |
-    sed -E 's/[[:space:]]+/ /g' |
-    awk -v c="$cat" -F'\t' '{print c "\t" $1 "\t" $2}' || true
+  hits=$(grep -nH -E "$pat" "$@") || status=$?
+  # grep exits 1 for "no match"; anything above is an error, never silence.
+  if (( status > 1 )); then
+    echo "multitenancy-audit: grep failed ($status) scanning $cat" >&2
+    exit 2
+  fi
+  [ -n "$hits" ] || return 0
+  # file \t normalized text: split at the first two colons, collapse the
+  # TEXT's whitespace only, so the field separator survives.
+  printf '%s\n' "$hits" | awk -v c="$cat" '{
+    i = index($0, ":"); file = substr($0, 1, i - 1); rest = substr($0, i + 1)
+    j = index(rest, ":"); text = substr(rest, j + 1)
+    gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
+    print c "\t" file "\t" text
+  }'
+}
+
+existing() {
+  local path
+  for path in "$@"; do [ -f "$path" ] && printf '%s\n' "$path"; done
+  return 0
 }
 
 collect() {
-  # Contract-owned DST modules remain inside the identity audit after
-  # extraction; a shallow src/dst/*.rs glob silently drops their sites.
-  local dst_sources=()
-  while IFS= read -r source; do
-    dst_sources+=("$source")
-  done < <(find src/dst -type f -name '*.rs' | LC_ALL=C sort)
+  local registry_sources=() map_sources=()
+  while IFS= read -r source; do registry_sources+=("$source"); done \
+    < <(existing src/registry.rs; find src/registry -type f -name '*.rs' 2>/dev/null | LC_ALL=C sort)
+  while IFS= read -r source; do map_sources+=("$source"); done \
+    < <(existing src/scaler3.rs src/registry.rs)
   {
-    scan stream-hash 'stream_hash\(' src/*.rs src/config/*.rs "${dst_sources[@]}" src/bin/*.rs |
-      grep -v $'\tsrc/crypto.rs\t' || true
+    scan stream-hash 'stream_hash\(' "${SOURCES[@]}" |
+      awk -F'\t' '$2 != "src/crypto.rs"'
     scan registry-bare-name \
       'registry[[:space:]]*\.[[:space:]]*(get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)\("' \
-      src/*.rs src/config/*.rs "${dst_sources[@]}"
-    scan registry-bare-name \
-      'fn (get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)[^(]*\([^)]*name[^)]*&str' \
-      src/registry.rs
-    scan global-name-maps 'HashMap<String' src/scaler3.rs src/registry.rs
-    scan tenant-fallback '(acct_local|proj_local|"ACCOUNT_ID"|"PROJECT_ID")' src/*.rs src/config/*.rs
-    scan internal-target 'streams-internal-(epoch|seg|identity|project)' src/*.rs src/config/*.rs
+      "${SOURCES[@]}"
+    if (( ${#registry_sources[@]} )); then
+      scan registry-bare-name \
+        'fn (get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)[^(]*\([^)]*name[^)]*&str' \
+        "${registry_sources[@]}"
+    fi
+    if (( ${#map_sources[@]} )); then
+      scan global-name-maps 'HashMap<String' "${map_sources[@]}"
+    fi
+    scan tenant-fallback '(acct_local|proj_local|"ACCOUNT_ID"|"PROJECT_ID")' "${SOURCES[@]}"
+    scan internal-target 'streams-internal-(epoch|seg|identity|project)' "${SOURCES[@]}"
   } | LC_ALL=C sort -u
 }
 
@@ -85,10 +113,13 @@ GONE=$(comm -23 "$BASELINE" "$CURRENT")
 echo "multitenancy-audit: per-category remaining:"
 awk -F'\t' '{n[$1]++} END {for (c in n) printf "  %-20s %d\n", c, n[c]}' "$CURRENT" | LC_ALL=C sort
 
+FAILED=0
 if [ -n "$GONE" ]; then
-  echo "multitenancy-audit: $(echo "$GONE" | wc -l | tr -d ' ') fingerprint(s) converted/moved since baseline:"
-  echo "$GONE" | sed 's/^/  - /' | head -20
-  echo "  (regenerate the baseline in the converting commit: scripts/multitenancy-audit.sh --regen)"
+  echo "multitenancy-audit: FAIL — $(echo "$GONE" | wc -l | tr -d ' ') fingerprint(s) converted or moved since the baseline:"
+  echo "$GONE" | sed 's/^/  - /'
+  echo "Regenerate the baseline in the converting commit (scripts/multitenancy-audit.sh --regen)"
+  echo "so the conversion — or the move — is part of the reviewed diff."
+  FAILED=1
 fi
 
 if [ -n "$NEW" ]; then
@@ -98,6 +129,7 @@ if [ -n "$NEW" ]; then
   echo "the RouteHash/SegmentHash layout-4 constructors), or — only for"
   echo "a reviewed identity-neutral exception — regenerate the baseline"
   echo "in this same commit and justify it in the commit message."
-  exit 1
+  FAILED=1
 fi
+(( FAILED == 0 )) || exit 1
 echo "MT_AUDIT_OK"

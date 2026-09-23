@@ -1,67 +1,77 @@
-internal-target	src/http.rs .get("streams-internal-identity")	
-internal-target	src/product.rs "streams-internal-identity",	
-internal-target	src/product.rs "streams-internal-seg",	
-internal-target	src/product.rs .get("streams-internal-project")	
-internal-target	src/product.rs h("streams-internal-epoch"),	
-internal-target	src/product.rs h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),	
-internal-target	src/product.rs let matches = h("streams-internal-identity")	
-stream-hash	src/bin/keys.rs let hash = crypto::stream_hash(&stream);	
-stream-hash	src/crypto.rs /// Shard-routing identity: `stream_hash(name)`. Keys the usage counters	
-stream-hash	src/crypto.rs RoutingKeyHash(stream_hash(rk))	
-stream-hash	src/crypto.rs let hash = stream_hash("s");	
-stream-hash	src/crypto.rs let hash = stream_hash("s1");	
-stream-hash	src/crypto.rs pub(crate) fn stream_hash(name: &str) -> [u8; 16] {	
-stream-hash	src/dst/runtime.rs key_hash: crate::crypto::stream_hash(rk),	
-stream-hash	src/dst/tests/consumer_atomicity.rs keys_map.insert(0, crate::crypto::stream_hash("k0"));	
-stream-hash	src/dst/tests/consumer_atomicity.rs keys_map.insert(1, crate::crypto::stream_hash("k1"));	
-stream-hash	src/dst/tests/durability_fences.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/fixture_storage.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/fixture_storage.rs key_hash: crate::crypto::stream_hash(rk),	
-stream-hash	src/dst/tests/history_absorption.rs key_hash: crate::crypto::stream_hash("k"),	
-stream-hash	src/dst/tests/livefeed_history.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/livefeed_swap.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/persistence_faults.rs &crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/producer_protocol.rs key_hash: crate::crypto::stream_hash(&routing_key),	
-stream-hash	src/dst/tests/producer_protocol.rs let kh = crate::crypto::stream_hash("customer-42");	
-stream-hash	src/dst/tests/producer_protocol.rs let kh = crate::crypto::stream_hash("g");	
-stream-hash	src/dst/tests/reads_history.rs key_hash: crate::crypto::stream_hash("ck"),	
-stream-hash	src/dst/tests/reads_history.rs key_hash: crate::crypto::stream_hash("hot"),	
-stream-hash	src/dst/tests/reads_history.rs key_hash: crate::crypto::stream_hash("sp"),	
-stream-hash	src/dst/tests/reads_product.rs key_hash: crate::crypto::stream_hash("a"),	
-stream-hash	src/dst/tests/security_lineage.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/dst/tests/sse_delivery.rs let kh = crate::crypto::stream_hash("s1");	
-stream-hash	src/fleet.rs // stream_hash(name) - so it almost never matched and D3 never moved.	
-stream-hash	src/fleet.rs /// stream_hash(name); the two are unrelated, so the derived prefix	
-stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/history.rs let h = crate::crypto::stream_hash(prefix);	
-stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(routing_key),	
-stream-hash	src/product.rs let kh = crate::crypto::stream_hash(&rk);	
-stream-hash	src/registry.rs /// is an ordinary key at stream_hash("")'s position.	
-stream-hash	src/registry.rs assert_eq!(r.shard_route, stream_hash("shard-07"));	
-stream-hash	src/registry.rs assert_ne!(r.shard_route, stream_hash("t"));	
-stream-hash	src/registry.rs crate::crypto::stream_hash(&seg.shard_prefix)	
-stream-hash	src/registry.rs let h = crate::crypto::stream_hash(routing_key);	
-stream-hash	src/rollup.rs crate::crypto::hex(&crate::crypto::stream_hash(name))	
-stream-hash	src/shard.rs /// Shard-routing hash (stream_hash(name)); zeros for streams last	
-stream-hash	src/shard.rs /// Shard-routing identity (`stream_hash(name)`), persisted into the	
-stream-hash	src/shard.rs /// stream_hash(routing_key), computed once at admission: the	
-stream-hash	src/sketch.rs crate::crypto::stream_hash(&format!("k{i}")),	
-stream-hash	src/sketch.rs d.note(1000, p, crate::crypto::stream_hash(&p.to_string()), 1000, 1);	
-stream-hash	src/sketch.rs d2.note(t, 5, crate::crypto::stream_hash("solo"), 10, 1);	
-stream-hash	src/sketch.rs k[8..16].copy_from_slice(&crate::crypto::stream_hash(&format!("k{i}"))[..8]);	
-stream-hash	src/sketch.rs let a = crate::crypto::stream_hash("old-dominant");	
-stream-hash	src/sketch.rs let b = crate::crypto::stream_hash("new-traffic");	
-stream-hash	src/sketch.rs let k = crate::crypto::stream_hash("only");	
-stream-hash	src/sketch.rs one.note(1000, 6399, crate::crypto::stream_hash("z"), 100, 1);	
-tenant-fallback	src/config/cli.rs #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]	
-tenant-fallback	src/config/cli.rs #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]	
-tenant-fallback	src/config/cli.rs account_id: "acct_local".into(),	
-tenant-fallback	src/config/cli.rs project_id: "proj_local".into(),	
-tenant-fallback	src/config/tests.rs ("account-id", "ACCOUNT_ID", "acct_local"),	
-tenant-fallback	src/config/tests.rs ("project-id", "PROJECT_ID", "proj_local"),	
-tenant-fallback	src/config/validation.rs // shadow/enforce deployment — proj_local silently naming a	
-tenant-fallback	src/config/validation.rs if self.cli.account_id == "acct_local"	
-tenant-fallback	src/config/validation.rs if self.cli.project_id == "proj_local" {	
-tenant-fallback	src/config/validation.rs || self.cli.project_id == "proj_local"	
-tenant-fallback	src/config/validation_tests.rs assert_eq!(v.config().cli.project_id, "proj_local");	
-tenant-fallback	src/config/validation_tests.rs rejects(|c| c.project_id = "bad id!".into(), &[], "PROJECT_ID");	
+internal-target	src/application/read_remote.rs	"streams-internal-epoch",
+internal-target	src/application/read_remote.rs	"streams-internal-identity",
+internal-target	src/application/read_remote.rs	"streams-internal-project",
+internal-target	src/application/read_remote.rs	("streams-internal-seg", self.seg_id.to_string()),
+internal-target	src/http.rs	.get("streams-internal-identity")
+internal-target	src/product.rs	.get("streams-internal-project")
+internal-target	src/product.rs	h("streams-internal-epoch"),
+internal-target	src/product.rs	h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
+internal-target	src/product.rs	let matches = h("streams-internal-identity")
+internal-target	src/product/tests.rs	"streams-internal-identity",
+internal-target	src/product/tests.rs	"streams-internal-seg",
+stream-hash	src/application/consumer/delivery.rs	keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
+stream-hash	src/application/creation/initialization.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/application/watch.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/bin/keys.rs	let hash = crypto::stream_hash(&stream);
+stream-hash	src/crypto/compress_tests.rs	let hash = stream_hash("s");
+stream-hash	src/crypto/tests.rs	let hash = stream_hash("s1");
+stream-hash	src/dst/runtime.rs	key_hash: crate::crypto::stream_hash(rk),
+stream-hash	src/dst/tests/consumer_atomicity.rs	keys_map.insert(0, crate::crypto::stream_hash("k0"));
+stream-hash	src/dst/tests/consumer_atomicity.rs	keys_map.insert(1, crate::crypto::stream_hash("k1"));
+stream-hash	src/dst/tests/durability_fences.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/fixture_storage.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/fixture_storage.rs	key_hash: crate::crypto::stream_hash(rk),
+stream-hash	src/dst/tests/history_absorption.rs	key_hash: crate::crypto::stream_hash("k"),
+stream-hash	src/dst/tests/livefeed_history.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/livefeed_swap.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/persistence_faults.rs	&crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/producer_protocol.rs	key_hash: crate::crypto::stream_hash(&routing_key),
+stream-hash	src/dst/tests/producer_protocol.rs	let kh = crate::crypto::stream_hash("customer-42");
+stream-hash	src/dst/tests/producer_protocol.rs	let kh = crate::crypto::stream_hash("g");
+stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("ck"),
+stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("hot"),
+stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("sp"),
+stream-hash	src/dst/tests/reads_product.rs	key_hash: crate::crypto::stream_hash("a"),
+stream-hash	src/dst/tests/security_lineage.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/dst/tests/sse_delivery.rs	let kh = crate::crypto::stream_hash("s1");
+stream-hash	src/fleet.rs	/// stream_hash(name); the two are unrelated, so the derived prefix
+stream-hash	src/fleet/tests.rs	// stream_hash(name) - so it almost never matched and D3 never moved.
+stream-hash	src/history.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/history.rs	let h = crate::crypto::stream_hash(prefix);
+stream-hash	src/history/controller_tests.rs	key_hash: crate::crypto::stream_hash(""),
+stream-hash	src/history/worker.rs	let h = crate::crypto::stream_hash(&absorber.shard.prefix);
+stream-hash	src/product.rs	key_hash: crate::crypto::stream_hash(routing_key),
+stream-hash	src/product.rs	let kh = crate::crypto::stream_hash(&rk);
+stream-hash	src/registry.rs	/// is an ordinary key at stream_hash("")'s position.
+stream-hash	src/registry.rs	crate::crypto::stream_hash(&seg.shard_prefix)
+stream-hash	src/registry.rs	let h = crate::crypto::stream_hash(routing_key);
+stream-hash	src/registry/resolution_tests.rs	assert_eq!(r.shard_route, stream_hash("shard-07"));
+stream-hash	src/registry/resolution_tests.rs	assert_ne!(r.shard_route, stream_hash("t"));
+stream-hash	src/rollup.rs	crate::crypto::hex(&crate::crypto::stream_hash(name))
+stream-hash	src/shard.rs	/// Shard-routing hash (stream_hash(name)); zeros for streams last
+stream-hash	src/shard.rs	/// Shard-routing identity (`stream_hash(name)`), persisted into the
+stream-hash	src/shard.rs	/// stream_hash(routing_key), computed once at admission: the
+stream-hash	src/sketch.rs	crate::crypto::stream_hash(&format!("k{i}")),
+stream-hash	src/sketch.rs	d.note(1000, p, crate::crypto::stream_hash(&p.to_string()), 1000, 1);
+stream-hash	src/sketch.rs	d2.note(t, 5, crate::crypto::stream_hash("solo"), 10, 1);
+stream-hash	src/sketch.rs	k[8..16].copy_from_slice(&crate::crypto::stream_hash(&format!("k{i}"))[..8]);
+stream-hash	src/sketch.rs	let a = crate::crypto::stream_hash("old-dominant");
+stream-hash	src/sketch.rs	let b = crate::crypto::stream_hash("new-traffic");
+stream-hash	src/sketch.rs	let k = crate::crypto::stream_hash("only");
+stream-hash	src/sketch.rs	one.note(1000, 6399, crate::crypto::stream_hash("z"), 100, 1);
+stream-hash	src/sse/feed.rs	selector: crate::crypto::stream_hash(""),
+stream-hash	src/sse/feed.rs	selector: crate::crypto::stream_hash(rk),
+stream-hash	src/sse/session.rs	rk_hash: crate::crypto::stream_hash(&lane_rk),
+stream-hash	src/sse/session/tests.rs	rk_hash: crate::crypto::stream_hash(&lane_rk),
+tenant-fallback	src/config/cli.rs	#[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]
+tenant-fallback	src/config/cli.rs	#[arg(long, env = "PROJECT_ID", default_value = "proj_local")]
+tenant-fallback	src/config/cli.rs	account_id: "acct_local".into(),
+tenant-fallback	src/config/cli.rs	project_id: "proj_local".into(),
+tenant-fallback	src/config/tests.rs	("account-id", "ACCOUNT_ID", "acct_local"),
+tenant-fallback	src/config/tests.rs	("project-id", "PROJECT_ID", "proj_local"),
+tenant-fallback	src/config/validation.rs	// shadow/enforce deployment — proj_local silently naming a
+tenant-fallback	src/config/validation.rs	if self.cli.account_id == "acct_local"
+tenant-fallback	src/config/validation.rs	if self.cli.project_id == "proj_local" {
+tenant-fallback	src/config/validation.rs	|| self.cli.project_id == "proj_local"
+tenant-fallback	src/config/validation_tests.rs	assert_eq!(v.config().cli.project_id, "proj_local");
+tenant-fallback	src/config/validation_tests.rs	rejects(|c| c.project_id = "bad id!".into(), &[], "PROJECT_ID");
