@@ -48,29 +48,30 @@ where
                 ev.cell = cell.as_str().to_string();
             }
         }
-        let body = match serde_json::to_vec(&stamped) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        if append(body).await.is_err() {
-            continue; // outbox stays; retry next tick
-        }
+        let body =
+            serde_json::to_vec(&stamped).map_err(|error| format!("fleet event encode: {error}"))?;
+        // A refused append is the drain's failure: the outbox stays for the
+        // next tick and the telemetry loop reports it, instead of a silent
+        // Ok(0) behind which a stuck outbox grows unseen.
+        append(body)
+            .await
+            .map_err(|error| format!("fleet event append: {error}"))?;
         emitted += ids.len();
         // Clear EXACTLY the drained ids under CAS; concurrent writers'
-        // new events survive.
-        let cleared: Vec<u8> = if doc == FleetDocument::Desired {
-            let Ok(mut d) = serde_json::from_slice::<Desired>(&bytes) else {
-                continue;
-            };
+        // new events survive. The bytes decoded above, so they decode here;
+        // an encode failure keeps the outbox (its ids re-emit, deduplicated).
+        let cleared = if doc == FleetDocument::Desired {
+            let mut d = serde_json::from_slice::<Desired>(&bytes)
+                .map_err(|error| format!("invalid desired outbox: {error}"))?;
             d.pending_events.retain(|e| !ids.contains(&e.event_id));
-            serde_json::to_vec(&d).unwrap_or_default()
+            serde_json::to_vec(&d)
         } else {
-            let Ok(mut o) = serde_json::from_slice::<Overrides>(&bytes) else {
-                continue;
-            };
+            let mut o = serde_json::from_slice::<Overrides>(&bytes)
+                .map_err(|error| format!("invalid overrides outbox: {error}"))?;
             o.pending_events.retain(|e| !ids.contains(&e.event_id));
-            serde_json::to_vec(&o).unwrap_or_default()
-        };
+            serde_json::to_vec(&o)
+        }
+        .map_err(|error| format!("fleet outbox clear encode: {error}"))?;
         let _ = repository
             .replace_document(doc, cleared, Some(version))
             .await;
@@ -162,6 +163,68 @@ mod tests {
         );
         assert_eq!(*seen.lock().unwrap(), ["fixed-event-id", "fixed-event-id"]);
         assert!(pending(&repository).await.is_empty());
+    }
+    /// Review item 57: a refused append is the drain's failure, reported to
+    /// the telemetry loop, never a silent `Ok(0)` behind which a stuck
+    /// outbox grows unseen. The outbox keeps the events for the retry.
+    #[tokio::test]
+    async fn a_refused_fleet_append_is_reported_and_keeps_the_outbox() {
+        let repository =
+            FleetRepository::new(Some(Arc::new(object_store::memory::InMemory::new())));
+        seeded(&repository).await;
+        let cell = CellId::new("cell-test").unwrap();
+        let result = drain_events(&repository, &cell, |_| async {
+            Err("system append _ops_events: create not_ring_owner".to_string())
+        })
+        .await;
+        assert_eq!(
+            result,
+            Err("fleet event append: system append _ops_events: create not_ring_owner".to_string())
+        );
+        assert_eq!(pending(&repository).await, ["fixed-event-id"]);
+    }
+    /// The overrides document carries the same outbox contract as the
+    /// desired one: exactly the drained ids are cleared, and the document's
+    /// own entries survive the clear.
+    #[tokio::test]
+    async fn an_overrides_outbox_clears_exactly_what_it_appended() {
+        let repository =
+            FleetRepository::new(Some(Arc::new(object_store::memory::InMemory::new())));
+        let mut overrides = Overrides::default();
+        overrides.entries.insert(
+            "00".into(),
+            super::super::OverrideEntry {
+                to: "rig-b".into(),
+                ms: 1,
+            },
+        );
+        overrides.pending_events = vec![crate::ops::OpsEvent::new(
+            "override",
+            "overrides-event".into(),
+        )];
+        assert!(
+            repository
+                .replace_document(
+                    FleetDocument::Overrides,
+                    serde_json::to_vec(&overrides).unwrap(),
+                    None
+                )
+                .await
+        );
+        let cell = CellId::new("cell-test").unwrap();
+        let drained = drain_events(&repository, &cell, |_| async { Ok(()) }).await;
+        assert_eq!(drained, Ok(1));
+        let (body, _) = repository
+            .read_doc(FleetDocument::Overrides)
+            .await
+            .unwrap()
+            .unwrap();
+        let after: Overrides = serde_json::from_slice(&body).unwrap();
+        assert!(after.pending_events.is_empty(), "the drained id is cleared");
+        assert_eq!(
+            after.entries["00"].to, "rig-b",
+            "the entries survive the clear"
+        );
     }
     #[tokio::test]
     async fn cancelled_fleet_clear_follows_append_and_retains_retry_source() {
