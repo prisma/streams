@@ -55,6 +55,9 @@ pub(crate) struct FakeSource {
     /// and the maximum ever observed concurrently.
     pub(crate) reads_in_flight: AtomicU64,
     pub(crate) max_concurrent_reads: AtomicU64,
+    /// Every read, counted at entry: the pacing legs' clock-free witness
+    /// that a read which advanced nothing is not re-issued in a loop.
+    pub(crate) reads: AtomicU64,
     /// `next_source()` control: park between `next_started` and
     /// `next_release` when blocked; return `NewSource` of
     /// `next_result` when set (else the default GenuineClose).
@@ -84,6 +87,7 @@ impl FakeSource {
             payload,
             reads_in_flight: AtomicU64::new(0),
             max_concurrent_reads: AtomicU64::new(0),
+            reads: AtomicU64::new(0),
             next_source_block: AtomicBool::new(false),
             next_started: tokio::sync::Notify::new(),
             next_release: tokio::sync::Notify::new(),
@@ -106,6 +110,7 @@ impl Drop for ReadInFlight<'_> {
 #[async_trait::async_trait]
 impl FeedSourceRead for FakeSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let cur = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_concurrent_reads.fetch_max(cur, Ordering::SeqCst);
         let _in_flight = ReadInFlight(self);

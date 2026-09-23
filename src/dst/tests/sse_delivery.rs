@@ -694,3 +694,76 @@ async fn a_failed_live_read_is_retried_without_another_append() {
 async fn an_empty_live_read_is_retried_without_another_append() {
     live_read_fault_is_retried("no-progress", |s| &s.empty_pages).await;
 }
+
+/// Review item 86: a session catching up from 0 behind a feed whose ring
+/// already starts at 3 (the feed captured frontier 3 as head and floor)
+/// reads pages that advance nothing - a failed read or an empty partial
+/// page - until the fault clears. Nothing re-drives the pass but its own
+/// next read, so each re-read must follow a bounded wait; the records
+/// behind the fault still arrive exactly once. `FakeSource::reads` is the
+/// clock-free witness: a hot loop reads thousands of times per window.
+async fn catch_up_fault_is_retried(
+    leg: &str,
+    fault: fn(&crate::sse::feed::tests::FakeSource) -> &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (state, _addr) = http_rig(mem()).await;
+    let src = std::sync::Arc::new(crate::sse::feed::tests::FakeSource::new(3, 8));
+    fault(&src).store(true, SeqCst);
+    let Ok(slot) = crate::http::sse_acquire(&state) else {
+        panic!("{leg}: an SSE slot");
+    };
+    let response = crate::sse::session::serve(
+        state.clone(),
+        crate::sse::feed::tests::test_desc(leg),
+        crate::crypto::StreamKey([7; 32]),
+        [3; 16],
+        src.clone(),
+        crate::http::StartPos::At(0),
+        crate::http::ReadParams::default(),
+        None,
+        crate::http::SseSurface::Product,
+        slot,
+    )
+    .await;
+    let mut body = response.into_body().into_data_stream();
+    for _ in 0..500 {
+        if src.reads.load(SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let first = src.reads.load(SeqCst);
+    let window = std::time::Instant::now();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let reads = src.reads.load(SeqCst) - first;
+    let elapsed = window.elapsed();
+    fault(&src).store(false, SeqCst);
+    let text = collect_session(&mut body, 5, |t| t.contains("\"upToDate\":true")).await;
+    drop(body);
+    engine_shutdown(&state).await;
+    assert!(first > 0, "{leg}: the faulted catch-up read never ran");
+    // A re-read follows a whole wait, and a sleep never ends early.
+    let bound = elapsed.as_millis() / 100 + 2;
+    assert!(
+        u128::from(reads) <= bound,
+        "{leg}: the faulted catch-up read ran {reads} more times in {elapsed:?}; a read that advanced nothing must wait before it is read again (at most {bound})"
+    );
+    for off in 0..3 {
+        let record = format!("event: data\ndata:{off}\n");
+        assert_eq!(
+            text.matches(&record).count(),
+            1,
+            "{leg}: record {off} exactly once after the fault cleared:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("\"upToDate\":true"),
+        "{leg}: the session reaches live after the fault cleared:\n{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_catch_up_read_is_read_again_after_a_bounded_wait() {
+    catch_up_fault_is_retried("catch-up-failed", |s| &s.fail_reads).await;
+}

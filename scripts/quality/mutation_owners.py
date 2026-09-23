@@ -141,6 +141,7 @@ OWNERS = (
     owner('sse_service', 'src/sse/service.rs', 'sse::'),
     owner('sse_session', 'src/sse/session.rs', 'sse:: dst_tests::sse_delivery:: dst_tests::livefeed_swap:: livefeed_engine_retired'),
     owner('sse_session_read_retry', 'src/sse/session/read_retry.rs', 'sse::session::tests:: dst_tests::sse_delivery::'),
+    owner('sse_session_catch_up', 'src/sse/session/catch_up.rs', 'sse::session::tests:: dst_tests::sse_delivery::'),
     owner('sse_wire', 'src/sse/wire.rs', 'sse::'),
     # The assembly and the tick are proven by DST rigs, not by module tests:
     # `fleet::` alone ran zero tests against a mutated `start_configured`.

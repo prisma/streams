@@ -169,6 +169,17 @@
     ]
   },
   {
+    "name": "a_failed_catch_up_read_is_read_again_after_a_bounded_wait",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7ef83349d943c075dd8d8f9a6c895280b77081d32220dadd75496a3a0b5c4dd3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_failed_config_scan_aborts_the_delete_untouched",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
