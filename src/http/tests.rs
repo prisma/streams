@@ -61,4 +61,33 @@ fn stream_ttl_refuses_windows_past_the_ceiling() {
     assert_eq!(parse_ttl_strict("18446744073709551615"), None);
     assert_eq!(parse_ttl_strict("18446744073709551616"), None);
 }
+
+/// The raw surface's position tokens and fork-offset refusals, pinned as
+/// bytes: clients store the tokens and read the refusal words, so no codec
+/// refactor may move a byte of either.
+#[test]
+fn raw_position_tokens_and_fork_refusals_are_exact() {
+    assert_eq!(tail_token(0), "00000000000000000000000000");
+    assert_eq!(tail_token(42), "000000000000000000N0000000");
+    assert_eq!(append_position(3, 6, true), "000000R0000000000030000000");
+    assert_eq!(append_position(3, 42, false), "000000000000000000N0000000");
+    assert_eq!(parse_fork_offset("-1"), Ok(0));
+    assert_eq!(parse_fork_offset("000000000000000000N0000000"), Ok(42));
+    assert_eq!(
+        parse_fork_offset("0000000000000000_000000000000002a"),
+        Ok(42)
+    );
+    assert_eq!(
+        parse_fork_offset("000000R0000000000030000000"),
+        Err("unsupported offset epoch: 3".to_string())
+    );
+    assert_eq!(
+        parse_fork_offset("0"),
+        Err("invalid offset length: 1".to_string())
+    );
+    assert_eq!(
+        parse_fork_offset("0000000000000000000000000U"),
+        Err("invalid base32 char: U".to_string())
+    );
+}
 use super::*;

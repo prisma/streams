@@ -90,3 +90,20 @@ pub(crate) fn sse_control_ep(
     }
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
+
+#[cfg(test)]
+mod tests {
+    /// Segment 0's control names the scalar token and a successor segment
+    /// names its ordinal: raw transcripts are pinned byte for byte.
+    #[test]
+    fn raw_control_names_next_in_its_segment() {
+        assert_eq!(
+            super::sse_control_ep(0, 42, None, true, true),
+            "event: control\ndata:{\"streamNextOffset\":\"000000000000000000N0000000\",\"upToDate\":true,\"streamClosed\":true}\n\n"
+        );
+        assert_eq!(
+            super::sse_control_ep(3, 6, None, false, true),
+            "event: control\ndata:{\"streamNextOffset\":\"000000R0000000000030000000\",\"streamClosed\":true}\n\n"
+        );
+    }
+}

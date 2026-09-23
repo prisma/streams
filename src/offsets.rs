@@ -150,4 +150,30 @@ mod tests {
         // Tokens order lexicographically within a segment and across ordinals.
         assert!(encode_ep(1, Offset(Some(0))) > encode_ep(0, Offset(Some(999))));
     }
+
+    /// Today's decoder reads four kinds of non-canonical token as a position
+    /// instead of refusing it: a first digit above '7' (its top bits fall off
+    /// u128), a two-byte char (the gate counts bytes, the loop counts chars and
+    /// `as u8` keeps the low byte), nonzero pad bits and nonzero in_block bits.
+    /// Refusing them is a pending wire decision (review item 88 step 2); until
+    /// it is made, no refactor may move them.
+    #[test]
+    fn non_canonical_tokens_keep_their_lax_reading() {
+        assert_eq!(
+            Offset::parse("G0000000000000000000000000"),
+            Ok(Offset::START)
+        );
+        assert_eq!(
+            Offset::parse("00000000000000000\u{131}0000000"),
+            Ok(Offset(Some(1)))
+        );
+        assert_eq!(
+            Offset::parse("0000000000000000000G000003"),
+            Ok(Offset(Some(0)))
+        );
+        assert_eq!(
+            Offset::parse("0000000000000000000G000010"),
+            Ok(Offset(Some(0)))
+        );
+    }
 }
