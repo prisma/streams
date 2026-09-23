@@ -749,3 +749,77 @@ async fn a_fence_survives_engine_replacement() {
     );
     engine_shutdown(&state).await;
 }
+
+/// TLA-003-F2: a raw close that takes over another operation's abandoned
+/// final claim owns the seal from then on. Y's close-with-content crashes
+/// after its intent; its lease lapses; X, a different close-with-content,
+/// is admitted while the snapshot still shows Y's claim and then takes
+/// it over. X's own final used to carry the snapshot's Sealing refusal:
+/// the committer refused it as Closed, X answered 409 Stream-Closed for
+/// an open stream, and released the claim it had just installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record() {
+    let _serial = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let close = [
+        ("content-type", "application/json"),
+        ("stream-closed", "true"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/adopt", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    crate::failpoints::stop_after_seal_intent("adopt");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/adopt",
+        &close,
+        br#"[{"fin":"y"}]"#,
+    )
+    .await;
+    assert_eq!(st, 503);
+    crate::failpoints::stop_after_seal_intent_off("adopt");
+    let sref = state.deployment.raw_adapter_sref("adopt");
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/adopt",
+        &close,
+        br#"[{"fin":"x"}]"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "the close that took the abandoned claim was refused: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(
+        d.sealed && d.sealing.is_none(),
+        "X did not seal: {:?}",
+        d.sealing
+    );
+    let (_, _, body) = hreq(addr, "GET", "/v1/stream/adopt", &[], b"").await;
+    let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        records,
+        vec![serde_json::json!({"n": 0}), serde_json::json!({"fin": "x"})],
+        "X's final record is missing or Y's fenced record landed"
+    );
+    engine_shutdown(&state).await;
+}

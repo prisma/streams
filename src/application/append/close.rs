@@ -179,14 +179,15 @@ pub(super) async fn install_intent(
     #[cfg(test)]
     let name = desc.sref().name().as_str().to_string();
     if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
-        let intent = if entries.is_empty() {
-            crate::registry::SealIntent::Empty
-        } else {
+        let carries_final = !entries.is_empty();
+        let intent = if carries_final {
             crate::registry::SealIntent::Final {
                 routing_key: command.routing_key.clone(),
                 request_hash: this_close_op.clone(),
                 final_committed: false,
             }
+        } else {
+            crate::registry::SealIntent::Empty
         };
         match crate::application::lifecycle::begin_sealing_for_close(
             &state.lifecycle,
@@ -196,11 +197,19 @@ pub(super) async fn install_intent(
         )
         .await
         {
-            Ok(g) => {
-                if let Some(g) = g {
-                    plan.generation = Some(g);
+            Ok(Some(g)) => {
+                plan.generation = Some(g);
+                // The claim is now this operation's (installed, taken over or
+                // renewed). The admission snapshot may have shown another
+                // operation's claim: its Sealing refusal no longer applies, or
+                // this final would be refused as Closed and release the claim
+                // it just took (TLA-003-F2).
+                if carries_final {
+                    plan.owed_final = true;
+                    plan.sealed_reject_new = None;
                 }
             }
+            Ok(None) => {}
             Err(e) => return fail(FailureClass::Conflict, AppendCode::Sealed, &e.to_string()),
         }
         #[cfg(test)]

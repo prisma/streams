@@ -706,6 +706,20 @@
     "scenarios": []
   },
   {
+    "name": "a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e80b8587374dedc37691abf486ce7ff77c6d41c0a14b8187c3081be6144d1026",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"adopt\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"adopt\");"
+    ],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_raw_close_with_content_owes_its_records",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
