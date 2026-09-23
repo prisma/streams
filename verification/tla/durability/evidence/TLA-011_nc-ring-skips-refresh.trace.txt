@@ -1,0 +1,924 @@
+# TLA-011/nc-ring-skips-refresh: raw TLC counterexample, trimmed to the trace.
+# Run by scripts/quality/formal.py run --id TLA-005 --id TLA-006 --id TLA-011 --record; TLC 2.19 of 08 August 2024 (rev: 5a47802).
+# Command: java -XX:+UseParallelGC -Xmx3g -cp target/quality-tools/tla2tools.jar tlc2.TLC -workers 2 -metadir <tmp> -config verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.cfg verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.tla
+# Inputs (SHA-256): ServingOwnership.tla=1e122fbc900ce5745fd13c3bdabdfff90e4952a9469b11cd377f18744e2c93de, CommitHandoff.tla=03b318dd50dfa8c4f8dcd600d422bc6477eb0f46314e8e273a2820ead25cb0e8, MC_ServingOwnership_nc_ring_skips_refresh.tla=dbb65269671d18b9dc58478a0608f16ab8a0842af2d29f8015dd34b2503736ac, MC_ServingOwnership_nc_ring_skips_refresh.cfg=83584c1a9b896e803b46c8242810c4c2ab0544ada498b9533b7dfa8f75c3647f
+# Verdict: violation HigherEpochCoversAcks; trace length 13 states.
+
+Error: Invariant HigherEpochCoversAcks is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "n1"]
+/\ nEng = 0
+/\ everReady = {}
+/\ eng = << [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 0
+/\ crashes = 0
+/\ wal = <<>>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 2: <OpenStart line 333, col 5 to line 340, col 65 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "n1"]
+/\ nEng = 1
+/\ everReady = {}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "epoch",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 1
+/\ crashes = 0
+/\ wal = <<>>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 3: <Crash line 370, col 5 to line 383, col 65 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 1
+/\ everReady = {}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "epoch",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 1
+/\ crashes = 1
+/\ wal = <<>>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 4: <OpenStart line 333, col 5 to line 340, col 65 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "epoch",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "epoch",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = <<>>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 5: <OpenFence line 343, col 5 to line 348, col 78 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "epoch",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "fenced",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 6: <OpenFence line 343, col 5 to line 348, col 78 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "fenced",
+     fencePos |-> 2,
+     nextWal |-> 3,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "fenced",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 0, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 7: <OpenReady line 351, col 5 to line 361, col 60 of module ServingOwnership>
+/\ cst = [A |-> "idle", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 3,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "fenced",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 0]
+/\ tries = [A |-> 0, R |-> 0]
+
+State 8: <Send line 178, col 5 to line 188, col 71 of module ServingOwnership>
+/\ cst = [A |-> "waiting", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 3,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<[req |-> "A", att |-> 1]>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "fenced",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 0]
+/\ tries = [A |-> 1, R |-> 0]
+
+State 9: <Commit line 220, col 5 to line 251, col 72 of module ServingOwnership>
+/\ cst = [A |-> "waiting", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 3,
+     applied |-> [log |-> <<"a">>, prod |-> [has |-> TRUE, off |-> 0]],
+     ho |->
+         [ pending |->
+               << [ seq |-> 1,
+                    replies |->
+                        { [ off |-> 0,
+                            kind |-> "ok",
+                            req |-> "A",
+                            att |-> 1 ] } ] >>,
+           terminal |-> FALSE ],
+     q |-> <<>>,
+     buf |->
+         << [ off |-> 0,
+              prod |-> TRUE,
+              op |-> "a",
+              kind |-> "data",
+              eng |-> 1,
+              seq |-> 1 ] >>,
+     gseq |-> 1,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "fenced",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 0]
+/\ tries = [A |-> 1, R |-> 0]
+
+State 10: <OpenReady line 351, col 5 to line 361, col 60 of module ServingOwnership>
+/\ cst = [A |-> "waiting", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1, 2}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 3,
+     applied |-> [log |-> <<"a">>, prod |-> [has |-> TRUE, off |-> 0]],
+     ho |->
+         [ pending |->
+               << [ seq |-> 1,
+                    replies |->
+                        { [ off |-> 0,
+                            kind |-> "ok",
+                            req |-> "A",
+                            att |-> 1 ] } ] >>,
+           terminal |-> FALSE ],
+     q |-> <<>>,
+     buf |->
+         << [ off |-> 0,
+              prod |-> TRUE,
+              op |-> "a",
+              kind |-> "data",
+              eng |-> 1,
+              seq |-> 1 ] >>,
+     gseq |-> 1,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "ready",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 2]
+/\ tries = [A |-> 1, R |-> 0]
+
+State 11: <Land line 264, col 5 to line 279, col 57 of module ServingOwnership>
+/\ cst = [A |-> "waiting", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1, 2}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 4,
+     applied |-> [log |-> <<"a">>, prod |-> [has |-> TRUE, off |-> 0]],
+     ho |->
+         [ pending |->
+               << [ seq |-> 1,
+                    replies |->
+                        { [ off |-> 0,
+                            kind |-> "ok",
+                            req |-> "A",
+                            att |-> 1 ] } ] >>,
+           terminal |-> FALSE ],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 1,
+     reported |-> 1,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "ready",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> TRUE,
+     op |-> "a",
+     kind |-> "data",
+     eng |-> 1,
+     seq |-> 1 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 2]
+/\ tries = [A |-> 1, R |-> 0]
+
+State 12: <Claim line 285, col 8 to line 289, col 86 of module ServingOwnership>
+/\ cst = [A |-> "waiting", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1, 2}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 4,
+     applied |-> [log |-> <<"a">>, prod |-> [has |-> TRUE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 1,
+     reported |-> 1,
+     dbClosed |-> FALSE,
+     claimed |->
+         << [ seq |-> 1,
+              replies |->
+                  {[off |-> 0, kind |-> "ok", req |-> "A", att |-> 1]} ] >>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "ready",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> TRUE,
+     op |-> "a",
+     kind |-> "data",
+     eng |-> 1,
+     seq |-> 1 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 2]
+/\ tries = [A |-> 1, R |-> 0]
+
+State 13: <Reply line 294, col 5 to line 298, col 72 of module ServingOwnership>
+/\ cst = [A |-> "done", R |-> "idle"]
+/\ casFailed = {}
+/\ moves = 0
+/\ zombieLanded = {}
+/\ acks = {[r |-> "A", off |-> 0, kind |-> "ok", eng |-> 1, late |-> TRUE, ep |-> 1]}
+/\ ambigPos = 0
+/\ desired = "n1"
+/\ view = [n1 |-> "n1", n2 |-> "none"]
+/\ nEng = 2
+/\ everReady = {1, 2}
+/\ eng = << [ epoch |-> 1,
+     node |-> "n1",
+     st |-> "ready",
+     fencePos |-> 2,
+     nextWal |-> 4,
+     applied |-> [log |-> <<"a">>, prod |-> [has |-> TRUE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 1,
+     reported |-> 1,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 2,
+     node |-> "n2",
+     st |-> "ready",
+     fencePos |-> 1,
+     nextWal |-> 2,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ],
+   [ epoch |-> 0,
+     node |-> "none",
+     st |-> "none",
+     fencePos |-> 0,
+     nextWal |-> 0,
+     applied |-> [log |-> <<>>, prod |-> [has |-> FALSE, off |-> 0]],
+     ho |-> [pending |-> <<>>, terminal |-> FALSE],
+     q |-> <<>>,
+     buf |-> <<>>,
+     gseq |-> 0,
+     reported |-> 0,
+     dbClosed |-> FALSE,
+     claimed |-> <<>>,
+     zombie |-> <<>> ] >>
+/\ epochCtr = 2
+/\ crashes = 1
+/\ wal = << [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 2,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> FALSE,
+     op |-> "none",
+     kind |-> "fence",
+     eng |-> 1,
+     seq |-> 0 ],
+   [ off |-> 0,
+     prod |-> TRUE,
+     op |-> "a",
+     kind |-> "data",
+     eng |-> 1,
+     seq |-> 1 ] >>
+/\ resident = [n1 |-> 1, n2 |-> 2]
+/\ tries = [A |-> 1, R |-> 0]
