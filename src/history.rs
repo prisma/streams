@@ -16,7 +16,7 @@ pub(crate) use gather::StreamGatherFailure;
 mod postings_read;
 use postings_read::execute_postings_plan;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
 use object_store::ObjectStore;
@@ -32,9 +32,6 @@ mod controller_tests;
 #[cfg(test)]
 mod test_support;
 
-// ---- block transformer: AES-256-GCM with a random nonce per block ----
-
-/// Operator pause for the whole absorber (fleet runbook).
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
 /// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
@@ -80,11 +77,6 @@ pub(crate) fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) 
     k
 }
 
-// ---- settings (D23 maintenance profile + F2 pattern) ----
-
-/// Shared block cache for ALL history DBs (absorber writes + reads):
-/// SlateDB's per-DB default is 512 MB, and the absorber opens a DB per
-/// absorbed stream — unbounded aggregate cache on a 1 GB box.
 /// Per-partition L0 facts from the db's IN-MEMORY manifest snapshot
 /// (`Db::manifest()` — no object-store request). The manifest types
 /// only expose Serialize at this pin, so this walks the serde view
@@ -208,9 +200,6 @@ pub(crate) fn worst_frame_transient_for(body_limit: usize) -> usize {
     (body_limit + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
 }
 
-/// The gather packing limit AS RESOLVED at startup — after the clamp to
-/// `capacity / ABSORB_BUILD_MULTIPLIER`. Published so the concurrency
-/// arithmetic below matches what the absorber actually does.
 /// Runtime-scoped resources shared by every engine of that runtime.
 /// Construction captures validated capacities; no first caller can select
 /// configuration for a different runtime.
@@ -446,6 +435,8 @@ pub(crate) static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
+
+// ---- settings (D23 maintenance profile + F2 pattern) ----
 
 /// Settings for the SHARED history v2 partition (docs/HISTORY-V2.md).
 /// Differences from v1 per-stream DBs, each deliberate: NO compression
@@ -749,14 +740,6 @@ pub(crate) struct Absorber {
     shard: Arc<ShardEngine>,
     keys: Arc<KeyCache>,
     cfg: AbsorberConfig,
-    /// History DB handles kept open across passes. The original F2 design
-    /// opened and closed per pass ("maintenance-free"), but each open is
-    /// 1-2 s of manifest round-trips — at a 32 MB pass that caps absorb
-    /// throughput near ~5-8k rec/s, below a loaded stream's ingest, and
-    /// the backlog compounds into the OOM spiral (sinmax run 11 marathon).
-    /// Small LRU (4) + idle eviction keeps V4's idle-per-DB-overhead
-    /// concern bounded; entries are dropped on fence-class errors and on
-    /// absorber exit.
     /// Highest `upto` this absorber has submitted per stream, WITH the
     /// lane that submitted it (true = v2 shared partition). The
     /// published handle state only reflects a submit after the committer
@@ -858,8 +841,6 @@ impl Absorber {
         shard.spawn_required("absorber", absorber.run(rx));
     }
 }
-
-use std::sync::atomic::AtomicU64;
 
 /// Zero-route tails with unabsorbed data (a bug, not a layout — the v1
 /// per-stream format was deleted in the pre-launch clean switch).
