@@ -1,6 +1,7 @@
 //! R09: dirty-index discovery pages progress without exceeding the pending capacity,
 //! and its mark rollback cannot make a re-gather over-retire (TLA-016-F1) or
-//! warm the slice cache over a head it never read (TLA-016-F3).
+//! warm the slice cache over a head it never read (TLA-016-F3); a warm bridge
+//! never crosses a chunk the cache declined to admit.
 #![cfg(test)]
 use super::*;
 use slatedb::WriteBatch;
@@ -430,6 +431,143 @@ async fn stale_regather_never_warms_a_trimmed_head_as_absent() {
         "a keyed durable read skipped a durable record (completed={}, durable resume={}); the key's slice (covered_from, indexed_to, runs) is {slice:?}",
         page.completed,
         page.durable_resume(0),
+    );
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Polls until the stream's published durable absorbed boundary is `absorbed`.
+async fn until_published(handle: &crate::shard::StreamHandle, absorbed: u64) {
+    for _ in 0..1000 {
+        if handle.state.lock().unwrap().durable.absorbed == absorbed {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the absorbed boundary never published {absorbed}");
+}
+
+/// Installs another segment's slice weighing over half of a 1 MiB cache, so
+/// the cache admits no further fresh installs.
+fn cross_admission_line(cache: &crate::postings_cache::PostingsCache) {
+    let fat = (0..20_000u64)
+        .map(|i| crate::postings::AbsRun {
+            start: i * 2,
+            count: 1,
+            matching_bytes: 1,
+            gap_bytes_before: 0,
+        })
+        .collect();
+    cache.install_chunk(SegmentHash([33; 16]), 0, 40_000, vec![([34; 16], fat)]);
+}
+
+/// A warm bridge never crosses a chunk the slice cache declined to admit.
+/// Record 0 (key "a") is absorbed and published. Another segment's slice then
+/// lifts the cache over its admission line, so record 1's chunk (key "k",
+/// no slice yet) installs nothing while the window stays clean. That advance
+/// waits behind the held committer, and a durable keyed read at the
+/// published boundary 1 cold-loads key "k" over `[0, 1)`. Once the boundary
+/// publishes 2, a keyed read from 0 must deliver record 1.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_warm_bridge_never_crosses_an_unadmitted_install; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_warm_bridge_never_crosses_an_unadmitted_install() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(
+        Db::builder("admit-warm", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let engine = ShardEngine::start(
+        "admit-warm".into(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig {
+            postings_cache_bytes: 1, // clamps to the 1 MiB floor
+            ..Default::default()
+        },
+        tx,
+        None,
+        Default::default(),
+    );
+    let (hash, key) = ([32u8; 16], crate::crypto::StreamKey([8u8; 32]));
+    let coverage = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        1,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    )
+    .coverage();
+    let writer = crate::dst::Workload::new(coverage);
+    for (rk, body) in [("a", "r0"), ("k", "r1")] {
+        let out = writer
+            .attempt_with_deadline(&engine, hash, &key, rk, body, None, None)
+            .await;
+        assert!(matches!(out, crate::dst::Outcome::Acked { .. }));
+    }
+    // A one-byte gather cap makes every record its own chunk.
+    let absorber = Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(KeyCache::default()),
+        AbsorberConfig {
+            gather_max_bytes: 1,
+            ..Default::default()
+        },
+    );
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let ends =
+        |gather: &GatherOutcome| -> Vec<u64> { gather.advanced.iter().map(|a| a.2).collect() };
+    assert_eq!(
+        ends(&absorber.absorb_gather_v2(&[hash]).await.unwrap()),
+        [1]
+    );
+    until_published(&handle, 1).await;
+    cross_admission_line(&engine.postings_cache);
+    let commit = engine.test_hold_commit().await;
+    assert_eq!(
+        ends(&absorber.absorb_gather_v2(&[hash]).await.unwrap()),
+        [2]
+    );
+    let (inc, kh) = (SegmentHash(hash), crate::postings::rk_hash("k"));
+    assert_eq!(engine.postings_cache.debug_slice(&inc, &kh), None);
+    let read = || {
+        crate::http::read_merged(
+            &key,
+            &hash,
+            &handle,
+            &engine,
+            0,
+            Some("k"),
+            1 << 20,
+            crate::shard::Deliver::Durable,
+        )
+    };
+    let offsets = |page: &crate::application::read::ReadPage| -> Vec<u64> {
+        page.recs.iter().map(|rec| rec.off).collect()
+    };
+    assert_eq!(
+        offsets(&read().await.unwrap()),
+        [1],
+        "the tail serves record 1"
+    );
+    assert_eq!(
+        engine.postings_cache.debug_slice(&inc, &kh),
+        Some((0, 1, 0)),
+        "the stale read cold-loads [0, 1)"
+    );
+    drop(commit);
+    until_published(&handle, 2).await;
+    let page = read().await.unwrap();
+    assert_eq!(
+        offsets(&page),
+        [1],
+        "a keyed durable read skipped a durable record (completed={}); the key's slice is {:?}",
+        page.completed,
+        engine.postings_cache.debug_slice(&inc, &kh),
     );
     engine.begin_close();
     let _ = db.close().await;

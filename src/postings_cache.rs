@@ -84,23 +84,19 @@ type Key = ([u8; 16], [u8; 16]); // (segment identity, routing-key hash)
 
 /// Write-through warm state for one segment (spec §7: the absorber
 /// installs the runs it just encoded, so first-read-after-absorb skips
-/// the index round trip). `clean` guards the ABSENCE proof: a fresh
-/// install may claim "no matches in [from, chunk_start)" only while
-/// every chunk since `from` was installed contiguously in this process
-/// AND none of this segment's entries were evicted (an evicted entry's
-/// key could re-appear and falsely claim its pre-eviction history was
-/// empty).
+/// the index round trip). `[from, to)` bounds the ABSENCE proof: every
+/// chunk in it was installed contiguously in this process and recorded
+/// every key it carried. An install that records nothing for a key (a
+/// fresh install over the admission line, or a slice that cannot reach
+/// the chunk) raises `from` past its chunk: a slice a later load ends
+/// below it would otherwise count the key's absence from the installs
+/// as proof. `clean` also requires that none of this segment's entries
+/// were evicted (an evicted entry's key could re-appear and falsely
+/// claim its pre-eviction history was empty).
 struct SegWarm {
     from: u64,
     to: u64,
     clean: bool,
-    /// True while EVERY key of every chunk since `from` was actually
-    /// installed. Write-admission may skip cold keys once the cache
-    /// passes its admission line — after the first skip, a FRESH
-    /// install can no longer claim from-0 coverage (its key might have
-    /// had skipped matches). Extends and the demand bridge stay valid:
-    /// existing entries are always extended.
-    admitted_all: bool,
     touched: Instant,
 }
 
@@ -265,15 +261,15 @@ impl PostingsCache {
     /// ever evicted — otherwise it claims only the chunk itself.
     #[expect(
         clippy::unwrap_used,
-        reason = "PostingsCache::install_chunk; a poisoned cache index may hold a partially installed slice or in-flight load; recovering it could serve a truncated postings slice or miscount resident bytes"
+        reason = "PostingsCache::install_chunk; a poisoned cache index may hold a partially installed slice, a half-raised warm base or an in-flight load; recovering it could serve a truncated postings slice, bridge over runs no slice recorded or miscount resident bytes"
     )]
     #[expect(
         clippy::too_many_lines,
-        reason = "PostingsCache::install_chunk; installing a chunk decides replacement, bridging, fresh admission and eviction against one index snapshot; splitting it would separate the decisions from the snapshot they share"
+        reason = "PostingsCache::install_chunk; installing a chunk decides replacement, bridging, fresh admission, the warm base a dropped key raises and eviction against one index snapshot; splitting it would separate the decisions from the snapshot they share"
     )]
     #[expect(
         clippy::excessive_nesting,
-        reason = "PostingsCache::install_chunk; the install nests the bridge and eviction verdicts inside the resident-slice branches under the index lock; flattening them would separate the verdicts from the slice they judge"
+        reason = "PostingsCache::install_chunk; the install nests the bridge, drop and eviction verdicts inside the resident-slice branches under the index lock; flattening them would separate the verdicts from the slice they judge"
     )]
     pub(crate) fn install_chunk(
         &self,
@@ -323,9 +319,8 @@ impl PostingsCache {
         // must not churn the cache to dodge one first-read miss each.
         // Under half the budget, admit every fresh install (small and
         // medium key populations stay fully warm — the campaign shape);
-        // over it, only EXTEND existing entries. The first skipped
-        // install permanently downgrades this segment's fresh-claim
-        // strength.
+        // over it, only EXTEND existing entries. A skipped install
+        // raises the warm base past its chunk (see SegWarm).
         let admit_fresh = g.total_bytes < self.max_bytes / 2;
         if g.warm.len() >= WARM_MAX_SEGMENTS && !g.warm.contains_key(&inc.0) {
             // Bounded warm tracking: drop the least-recent record.
@@ -344,7 +339,6 @@ impl PostingsCache {
             from: chunk_from,
             to: chunk_from,
             clean: true,
-            admitted_all: true,
             touched: now,
         });
         if w.to != chunk_from {
@@ -354,25 +348,20 @@ impl PostingsCache {
                 from: chunk_from,
                 to: chunk_from,
                 clean: true,
-                admitted_all: true,
                 touched: now,
             };
         }
         w.to = chunk_to;
         w.touched = now;
-        if !admit_fresh {
-            w.admitted_all = false;
-        }
-        let (w_from, w_clean, w_admitted) = (w.from, w.clean, w.admitted_all);
+        let (w_from, w_clean) = (w.from, w.clean);
         // Fresh installs claim absence-of-earlier-matches only from the
-        // warm base, only from 0, and only while NO install was ever
-        // skipped: a skipped key's matches were never recorded, so
-        // absence stops being proof.
-        let fresh_from = if w_clean && w_admitted && w_from == 0 {
+        // warm base, and only while it is still 0.
+        let fresh_from = if w_clean && w_from == 0 {
             0
         } else {
             chunk_from
         };
+        let mut dropped = false;
         for (kh, runs) in per_key {
             let key: Key = (inc.0, kh);
             match g.slices.get(&key) {
@@ -383,7 +372,7 @@ impl PostingsCache {
                     }
                     // Adjacent chunks extend directly. A HOLE between the
                     // slice's coverage and this chunk is bridgeable iff
-                    // the warm window contiguously installed every chunk
+                    // the warm window installed and recorded every chunk
                     // across it with no evictions: this key's absence
                     // from those installs IS the proof the hole is
                     // match-free (a key active only intermittently would
@@ -392,6 +381,7 @@ impl PostingsCache {
                     let bridgeable = s.indexed_to_offset >= chunk_from
                         || (w_clean && s.indexed_to_offset >= w_from);
                     if !bridgeable {
+                        dropped = true;
                         continue;
                     }
                     let Some(merged) = s.runs.extend_after(&runs, s.indexed_to_offset) else {
@@ -423,6 +413,7 @@ impl PostingsCache {
                 }
                 None => {
                     if !admit_fresh {
+                        dropped = true;
                         continue; // over the admission line: extends only
                     }
                     let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
@@ -445,6 +436,9 @@ impl PostingsCache {
                     installs += 1;
                 }
             }
+        }
+        if dropped && let Some(w) = g.warm.get_mut(&inc.0) {
+            w.from = chunk_to; // a dropped key's runs are in no slice
         }
         // Weight eviction, poisoning each victim segment's absence proof.
         while g.total_bytes > self.max_bytes && g.slices.len() > 1 {

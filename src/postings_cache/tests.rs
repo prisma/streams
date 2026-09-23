@@ -1,6 +1,6 @@
 //! Postings cache fixtures: write-through installs, warm extensions,
-//! the process budget at scale, eviction poisoning and a re-gather's
-//! install after an eviction (TLA-016-F3).
+//! the process budget at scale, eviction poisoning, a re-gather's install
+//! after an eviction (TLA-016-F3) and bridges over unrecorded runs.
 #![cfg(test)]
 use super::*;
 
@@ -800,4 +800,88 @@ async fn read_after_regather_install(regather_from: u64) -> Vec<u64> {
 #[tokio::test]
 async fn a_regather_install_after_an_eviction_proves_nothing_below_its_rows() {
     assert_eq!(read_after_regather_install(1).await, vec![0, 2]);
+}
+
+/// Over the admission line a key with no slice is not installed, so its runs
+/// in that chunk are recorded nowhere, and nothing is evicted, so the warm
+/// window stays clean. Key 22 owns stored record 15 in the unadmitted chunk
+/// `[10, 20)`. A reader still at the published boundary 10 then cold-loads
+/// the key's `[0, 10)`, and (optionally) the key's next chunk `[20, 30)` is
+/// installed. A catch-up read from 0 is owed every stored record.
+async fn read_over_an_unadmitted_install(next_chunk: bool) -> Vec<u64> {
+    let part = mem_db("wt/admit").await;
+    let cache = PostingsCache::new(1); // clamps to the 1 MiB floor
+    let (_, inc, kh) = ids(22);
+    let (_, _, other) = ids(23);
+    let (_, fat_inc, fat) = ids(24);
+    cache.install_chunk(inc, 0, 10, vec![(other.0, vec![run(3, 1)])]);
+    let fat_runs: Vec<AbsRun> = (0..20_000u64).map(|i| run(i * 2, 1)).collect();
+    cache.install_chunk(fat_inc, 0, 40_000, vec![(fat.0, fat_runs)]);
+    put_run(&part, 22, 15, 1).await;
+    cache.install_chunk(inc, 10, 20, vec![(kh.0, vec![run(15, 1)])]);
+    assert_eq!(cache.debug_slice(&inc, &kh), None, "over the line: skipped");
+    assert!(runs_of(&cache, &part, 22, 0, 10).await.is_empty());
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, 10, 0)));
+    let end = if next_chunk {
+        put_run(&part, 22, 25, 1).await;
+        cache.install_chunk(inc, 20, 30, vec![(kh.0, vec![run(25, 1)])]);
+        30
+    } else {
+        20
+    };
+    assert_eq!(cache.evictions.load(Ordering::Relaxed), 0, "window clean");
+    offsets(&runs_of(&cache, &part, 22, 0, end).await)
+}
+
+/// The demand bridge must not extend a cold-loaded slice across a chunk in
+/// which the key's install was skipped.
+#[tokio::test]
+async fn a_demand_bridge_never_crosses_an_unadmitted_install() {
+    assert_eq!(read_over_an_unadmitted_install(false).await, vec![15]);
+}
+
+/// Nor may the key's next install bridge its slice across that chunk.
+#[tokio::test]
+async fn an_install_bridge_never_crosses_an_unadmitted_install() {
+    assert_eq!(read_over_an_unadmitted_install(true).await, vec![15, 25]);
+}
+
+/// Pages a keyed read of `[0, upto)` at the boundary `upto` the way a reader
+/// resumes: each page starts at the previous page's proven end.
+async fn page_offsets(c: &Arc<PostingsCache>, part: &Arc<Db>, n: u8, upto: u64) -> Vec<u64> {
+    let (route, inc, kh) = ids(n);
+    let (mut cursor, mut got) = (0, Vec::new());
+    while cursor < upto {
+        let answer = c.runs_for(part, route, inc, kh, cursor, upto, upto).await;
+        let CacheRuns::Runs { runs, provable_to } = answer.unwrap() else {
+            panic!("unexpected corruption");
+        };
+        assert!(provable_to > cursor, "a read must make progress");
+        got.extend(offsets(&runs.iter().collect::<Vec<_>>()));
+        cursor = provable_to;
+    }
+    got
+}
+
+/// A slice ending below the warm window when a chunk carrying its key lands
+/// is not extended across the hole, so the key's runs in that chunk are
+/// recorded nowhere either. Key 25's first read is a cold load capped at 64
+/// buckets; the first chunk this process installs spans buckets [100, 130)
+/// and carries the key's record near its end. A later load that ends inside
+/// that chunk must not be bridged across it.
+#[tokio::test]
+async fn a_bridge_never_crosses_a_chunk_that_found_its_key_short() {
+    let part = mem_db("wt/short").await;
+    let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+    let (route, inc, kh) = ids(25);
+    let capped = LOAD_MAX_BUCKETS * BUCKET_OFFSETS;
+    let (from, to) = (100 * BUCKET_OFFSETS, 130 * BUCKET_OFFSETS);
+    let owed = to - 5;
+    let first = cache.runs_for(&part, route, inc, kh, 0, 10, from).await;
+    assert!(matches!(first.unwrap(), CacheRuns::Runs { .. }));
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, capped, 0)));
+    put_run(&part, 25, owed, 1).await;
+    cache.install_chunk(inc, from, to, vec![(kh.0, vec![run(owed, 1)])]);
+    assert_eq!(cache.debug_slice(&inc, &kh), Some((0, capped, 0)));
+    assert_eq!(page_offsets(&cache, &part, 25, to).await, vec![owed]);
 }
