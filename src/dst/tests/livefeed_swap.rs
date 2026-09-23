@@ -350,7 +350,7 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected = crate::product_cursor::KeyCursor {
         epoch,
@@ -470,7 +470,7 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected = crate::product_cursor::KeyCursor {
         epoch,
@@ -635,7 +635,7 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected_terminal = crate::product_cursor::KeyCursor {
         epoch,
@@ -913,7 +913,7 @@ async fn livefeed_refresh_installs_after_external_completion() {
 
     // Refresh with the stale descriptor + old span signature: the
     // re-read must install the longer compatible lineage.
-    let epoch = old_desc.epoch_bytes().unwrap();
+    let epoch = old_desc.epoch();
     let outcome = crate::sse::source::refresh_transition(
         &state.read_service(),
         &old_desc,

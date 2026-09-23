@@ -13,10 +13,6 @@ use std::sync::Arc;
     clippy::too_many_arguments,
     reason = "delete; consumer deletion takes the tenant, stream, consumer, generation and fencing parts separately as the handler resolved them; a delete struct would exist only for this signature"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "delete; the fence, the tombstone and the per-segment cleanup are one deletion whose resumption depends on which step landed; splitting them would separate the steps from the resumption they order"
-)]
 pub(crate) async fn delete(
     state: Arc<ConsumerService>,
     sref: crate::tenant::TenantStreamRef,
@@ -54,15 +50,7 @@ pub(crate) async fn delete(
             ));
         }
     };
-    let Some(epoch) = desc.epoch_bytes() else {
-        return Err(failure(
-            FailureClass::Internal,
-            "internal",
-            "bad descriptor",
-            None,
-            true,
-        ));
-    };
+    let epoch = desc.epoch();
     if expect_epoch != epoch {
         // The stream incarnation the version was minted under no longer
         // exists — the old target died with it. Idempotent success, the
@@ -213,7 +201,7 @@ async fn resume_deletion(
         let segs = consumer_segments(&cur_desc);
         let target = SweepTarget {
             sref: sref.clone(),
-            epoch: cur_desc.epoch_bytes(),
+            epoch: cur_desc.epoch(),
             consumer: cname.clone(),
             generation: cgen,
         };
@@ -270,7 +258,7 @@ async fn resume_deletion(
         // changed epoch means the old stream (and with it the old
         // consumer) is gone. Idempotent success, replacement
         // untouched.
-        if fresh.epoch_bytes() != Some(epoch) {
+        if fresh.epoch() != epoch {
             return Ok(DeleteOutcome::TargetGone);
         }
         let pending = fresh.segments.as_ref().is_some_and(|m| m.pending.is_some());
@@ -313,7 +301,7 @@ async fn resume_deletion(
 /// topology round. Every local or relayed step shares the request's budget.
 struct SweepTarget {
     sref: crate::tenant::TenantStreamRef,
-    epoch: Option<[u8; 16]>,
+    epoch: [u8; 16],
     consumer: String,
     generation: u64,
 }
@@ -339,18 +327,9 @@ async fn sweep_segment(
                 .as_deref()
                 .and_then(|owner| state.peer.url_for(owner));
             if let Some(base) = peer {
-                let Some(stream_epoch) = round_epoch else {
-                    return Err((
-                        "segment_unavailable",
-                        format!(
-                            "segment {seg_id}: no incarnation to bind the \
-                         relayed sweep to; retry"
-                        ),
-                    ));
-                };
                 let t = InternalTarget {
                     project_id: sref.project_id().clone(),
-                    stream_epoch,
+                    stream_epoch: round_epoch,
                     seg_id,
                     identity,
                 };

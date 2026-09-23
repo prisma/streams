@@ -385,7 +385,7 @@ async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let desc = lf7_split_stream(addr, &state, "lf7p", 3, 2).await;
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
 
     // Cursor: consumed through predecessor record 1 (local offset 2).
     let tok = crate::product_cursor::KeyCursor {
@@ -422,7 +422,7 @@ async fn livefeed_connect_already_split_cursor_positions() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let desc = lf7_split_stream(addr, &state, "lf7c", 3, 2).await;
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let mk = |seg_id: u32, offset: u64| {
         crate::product_cursor::KeyCursor {
@@ -675,7 +675,7 @@ async fn livefeed_merge_continuation_in_place() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let merged_seg = desc.resolve_segment("").seg_id;
     let expected = crate::product_cursor::KeyCursor {
         epoch,

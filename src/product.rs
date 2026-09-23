@@ -3281,7 +3281,7 @@ pub(crate) fn verify_internal_target(
             false,
         ));
     };
-    if desc.epoch_bytes() != Some(want_epoch) {
+    if desc.epoch() != want_epoch {
         return Err(stale("epoch"));
     }
     // §16: the loaded descriptor must belong to the project the sender

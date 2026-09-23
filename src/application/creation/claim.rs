@@ -49,7 +49,7 @@ pub(super) async fn resolve(
             // snapshot can predate a fork anchored by another instance, and
             // replacing a retained source strands every fork reading through
             // it. One winner; a live winner validates like an idempotent PUT.
-            let mut fresh = fresh_desc(
+            let (mut fresh, _) = fresh_desc(
                 state,
                 &plan.sref,
                 key,
@@ -84,7 +84,7 @@ pub(super) async fn resolve(
             }
         }
         None => {
-            let mut fresh = fresh_desc(
+            let (mut fresh, _) = fresh_desc(
                 state,
                 &plan.sref,
                 key,

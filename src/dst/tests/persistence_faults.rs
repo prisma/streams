@@ -419,7 +419,7 @@ async fn cut_resume_never_skips_a_durable_record() {
             &cursor,
             &desc.project_id,
             &skey(),
-            &desc.epoch_bytes().unwrap(),
+            &desc.epoch(),
             &crate::crypto::stream_hash(""),
         )
         .expect("initial cursor must authenticate for this stream");

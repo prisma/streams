@@ -134,7 +134,7 @@ async fn product_read_pages_and_binds_cursors() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let sc = crate::product_cursor::ScanCursor {
         epoch,
         map_version: 0,
@@ -541,7 +541,7 @@ async fn product_scan_is_snapshot_exact() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let expired = crate::product_cursor::ScanCursor {
         epoch,
         map_version: 0,

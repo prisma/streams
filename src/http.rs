@@ -2359,7 +2359,6 @@ pub(crate) enum KeyCheck {
     Ok(StreamKey, [u8; 16]),
     Missing,
     Wrong,
-    BadDescriptor,
 }
 
 fn raw_key<'a>(headers: &'a HeaderMap, state: &'a AppState) -> Option<&'a str> {
@@ -2376,9 +2375,7 @@ pub(crate) fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
     let Ok(key) = StreamKey::from_b64(raw) else {
         return KeyCheck::Wrong;
     };
-    let Some(epoch) = desc.epoch_bytes() else {
-        return KeyCheck::BadDescriptor;
-    };
+    let epoch = desc.epoch();
     if key.fingerprint(&epoch) != desc.key_fingerprint {
         return KeyCheck::Wrong;
     }

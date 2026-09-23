@@ -439,13 +439,8 @@ impl StreamDesc {
     pub(crate) fn key_point(routing_key: &str) -> u64 {
         PersistedDescriptor::key_point(routing_key)
     }
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "StreamDesc::epoch_bytes; the option is the shape the raw and product readers already match against, and epoch() gives the bare value; unwrapping it here would move every caller's match"
-    )]
-    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
-        Some(self.epoch)
-    }
+    /// The incarnation epoch `validate_descriptor` decoded when this serving
+    /// descriptor was built: it cannot be absent, so no caller branches on it.
     pub(crate) fn epoch(&self) -> [u8; 16] {
         self.epoch
     }
@@ -627,10 +622,6 @@ fn default_content_type() -> String {
 }
 
 impl PersistedDescriptor {
-    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
-        crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
-    }
-
     /// The project-qualified identity of this stream. Names are
     /// validated at decode/create, so reconstructing the checked type
     /// is an invariant, not a convenience.

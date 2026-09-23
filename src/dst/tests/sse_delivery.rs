@@ -272,7 +272,7 @@ async fn product_sse_controls_carry_signed_cursors() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let kh = crate::crypto::stream_hash("s1");
     let kc = crate::product_cursor::KeyCursor::decode(
         &tok,

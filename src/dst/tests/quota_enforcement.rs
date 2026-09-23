@@ -683,7 +683,7 @@ async fn watch_waits_occupy_the_subscription_pool() {
         .unwrap()
         .stream_ref("orders");
     let desc = state.registry.get(&bref).await.unwrap().unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let khex = format!("{:016x}", 7u64);
     let tokk = crate::crypto::touch_token(&skey(), &epoch);
     let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
