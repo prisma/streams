@@ -480,12 +480,17 @@ const server = http.createServer(async (req, res) => {
           return json(res, 200, { fault: "generation-regression", cell: cellId, replayed_gen: prev.gen });
         }
         case "same-gen-drift": {
-          // Same feed_version, different content: flip every revoked
-          // grant back to active without touching the version.
+          // Same feed_version, different content: every revoked grant
+          // back to active at the grant_version it was revoked from
+          // (revocation bumps it by one). A status flip alone keeps the
+          // bumped version, which no token minted before the revocation
+          // carries, so a cell that ACCEPTED the drift would still refuse
+          // the battery's probe and the leg could not tell.
           const cur = hist[body.feed ?? "grants"]?.[0];
           if (!cur) return json(res, 409, { error: "no current publication" });
           const doc = JSON.parse(cur.body);
-          for (const c of doc.credentials ?? []) if (c.status === "revoked") c.status = "active";
+          for (const c of doc.credentials ?? [])
+            if (c.status === "revoked") Object.assign(c, { status: "active", grant_version: c.grant_version - 1 });
           for (const p of doc.projects ?? []) p.status = "active";
           atomicWrite(join(cell.dir, FEED_FILES[body.feed ?? "grants"]), JSON.stringify(doc));
           return json(res, 200, { fault: "same-gen-drift", cell: cellId, gen: cur.gen });

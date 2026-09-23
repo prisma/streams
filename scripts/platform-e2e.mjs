@@ -334,8 +334,13 @@ const afterClear = await readRecords(bBase, "e2e/orders", tokF.body.accessToken)
 check("clean republication lands the pending revocation", afterClear.status === 401 || afterClear.status === 403, `status ${afterClear.status}`);
 const regressed = await fault({ kind: "generation-regression", feed: "grants" });
 await sleep(2500);
+// A refused snapshot leaves the probe answering exactly as it did
+// before the fault; "not 200" also passed a cell the file crashed
+// (status 0) or one that took the snapshot and refused the token for
+// another reason.
+const afterRegression = (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status;
 check("generation regression refused: revoked grant does not resurrect",
-  (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status !== 200);
+  afterRegression === afterClear.status, `status ${afterRegression} (${afterClear.status} before the fault)`);
 const drifted = await fault({ kind: "same-gen-drift", feed: "grants" });
 // Drift reuses the generation the cell holds. A regression that
 // replayed that generation would be an identical republication, which
@@ -344,8 +349,9 @@ const drifted = await fault({ kind: "same-gen-drift", feed: "grants" });
 check("regression replayed a generation below the one drift reuses",
   drifted.gen > regressed.replayed_gen, `replayed_gen ${regressed.replayed_gen} gen ${drifted.gen}`);
 await sleep(2500);
+const afterDrift = (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status;
 check("same-generation content drift refused: revoked grant still dead",
-  (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status !== 200);
+  afterDrift === afterClear.status, `status ${afterDrift} (${afterClear.status} before the fault)`);
 // Round 3 F3: an owner change WITHOUT an ownership bump is refused by
 // the cell — the token minted for the OLD workspace keeps serving
 // (had the cell accepted ws-hostile, the exact workspace check would
