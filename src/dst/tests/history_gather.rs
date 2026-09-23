@@ -6,7 +6,6 @@ use super::fixture_storage::{
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 fn gather_hashes(tag: u8, count: u16) -> Vec<[u8; 16]> {
     (0..count)
@@ -558,14 +557,33 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
             ..Default::default()
         },
     );
-    let before = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed);
     let g1 = absorber.absorb_gather_v2(&hashes).await.expect("gather 1");
     assert_eq!(
         g1.advanced.len(),
         2,
         "postings killed the keyed double-write: both streams fit one budget"
     );
-    let postings = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed) - before;
+    // The gate is judged on the pages this gather stored, read back from
+    // every postings key of each stream in this engine's own partition
+    // (append_sized routes each stream by its own hash):
+    // POSTINGS_BYTES_WRITTEN is process-wide, and every gather a
+    // concurrently running test stages moves it.
+    let part = engine.history_partition().await.expect("partition");
+    let mut postings = 0u64;
+    for (hash, _, _) in &g1.advanced {
+        let (route, segment) = (
+            crate::crypto::RouteHash(*hash),
+            crate::crypto::SegmentHash(*hash),
+        );
+        let first = crate::crypto::RoutingKeyHash([0; 16]);
+        let last = crate::crypto::RoutingKeyHash([0xFF; 16]);
+        let lo = crate::postings::postings_key(route, segment, &first, 0, 0);
+        let hi = crate::postings::postings_key(route, segment, &last, u64::MAX, u64::MAX);
+        let mut pages = part.scan(lo..=hi).await.expect("postings scan");
+        while let Some(page) = pages.next().await.expect("postings page") {
+            postings += page.value.len() as u64;
+        }
+    }
     let canonical: u64 = g1.advanced.iter().map(|(_, _, b)| *b).sum();
     assert!(postings > 0, "keyed frames must produce postings pages");
     assert!(

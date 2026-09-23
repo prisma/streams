@@ -2598,7 +2598,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b45636c79f6a257ae0b2245dbbebfcabcdffc10cb2be9ebdb3881cc77b180c76",
+    "function_sha256": "3dc6188c7f5eb79d208e6cd2076c3c9c2a77d7c2d1b329264e13b74695b5b784",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::new(0, 0, 0));"
@@ -5661,7 +5661,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "32bbe393fe3970e971ea92f7fdd35fd72d473898bcd7233f7b6dbb8a01f095cf",
+    "function_sha256": "151fa54ad6b0a0aacfd5aa84d6f6f58e44786e2868559089d99ac37f3479c4b4",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 104, FaultPlan::new(0, 0, 0));"

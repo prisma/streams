@@ -238,9 +238,15 @@ async fn sparse_key_reads_page_with_bounded_spans() {
         got, expected,
         "sparse keyed paging lost or reordered records"
     );
+    // Hits on this engine's own slice cache (ShardConfig::default() shares
+    // none): each is a page the postings planner served. READ_FRAMES_MATCHED
+    // is process-wide, so any other test's keyed read already made it
+    // positive.
+    let cache = &engine.postings_cache;
     assert!(
-        crate::history::READ_FRAMES_MATCHED.load(Ordering::Relaxed) > 0,
-        "the postings planner path must have served this"
+        cache.hits.load(Ordering::Relaxed) > 0,
+        "the postings planner must have served a page from this engine's cache: {}",
+        cache.stats()
     );
     engine.begin_close();
 }
