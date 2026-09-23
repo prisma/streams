@@ -58,8 +58,6 @@ impl ServerConfig {
             },
             "billing": {
                 "meter_enabled": self.billing.meter_enabled,
-                "mode_env": &self.billing.mode_env,
-                "rollup_env": &self.billing.rollup_env,
                 "outbox_sweep_secs": self.billing.outbox_sweep_secs,
                 "telemetry_drain_secs": self.billing.telemetry_drain_secs,
                 "metrics_interval_secs": self.billing.metrics_interval_secs,

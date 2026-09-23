@@ -2291,6 +2291,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_readiness",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Billing-readiness scenarios for the clap-resolved billing selectors; real HTTP /health and /operator/billing.json against argv-configured rigs, and the read-spool root under the clap PATH_PREFIX; compiled and executed with DST.",
+      "syntax": "path = \"tests/billing_readiness.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::tests",
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",

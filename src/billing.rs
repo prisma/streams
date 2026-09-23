@@ -702,12 +702,6 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
     serde_json::to_vec(e).map(|v| v.len()).unwrap_or(4096) + 1
 }
 
-/// BILLING_MODE=required: production billing — volatile fallbacks are
-/// refused and billing infrastructure failures are fatal at startup.
-pub(crate) fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
-    cfg.mode_env.as_deref() == Some("required")
-}
-
 /// Drain step 1: move sealed batches into the durable spool. On a
 /// mid-loop store fault the failed batch AND the not-yet-persisted
 /// remainder requeue at the accumulator head (round-22 item 2a) — a
@@ -802,7 +796,7 @@ pub(crate) async fn drain_once(
             envelopes.push(env);
             spooled_keys.push(key);
         }
-    } else if billing_required(&state.config.billing) {
+    } else if state.config.cli.billing_required() {
         // Round-22 item 2b: required mode has NO memory-only window.
         // Until the spool is open, drains fail (the meter keeps
         // accumulating; nothing is emitted from volatile state).

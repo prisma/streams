@@ -35,6 +35,9 @@ pub(super) struct HttpRigOptions {
     /// (static fleet token, workload token source); None = the default
     /// static-bridge rig posture.
     pub(super) fleet_auth: Option<(Option<String>, Option<crate::peer::FleetTokenSource>)>,
+    /// The scenario's own command line over the hermetic fixture: a flag
+    /// given on argv, which clap resolves ahead of its variable.
+    pub(super) cli: fn(&mut crate::config::CliArgs),
 }
 
 impl Default for HttpRigOptions {
@@ -52,6 +55,7 @@ impl Default for HttpRigOptions {
             absorber: None,
             auth_service: None,
             fleet_auth: None,
+            cli: |_| {},
         }
     }
 }
@@ -330,6 +334,7 @@ pub(super) fn rig_opener(
 /// Resolve the fixture's hermetic CLI and admission inputs before any runtime
 /// owner is constructed, so its configured limits agree with the HTTP surface.
 fn fixture_config(
+    cli_edit: fn(&mut crate::config::CliArgs),
     max_request_body_bytes: Option<usize>,
     instance_name: Option<&str>,
     admission: Option<crate::config::AdmissionConfig>,
@@ -337,6 +342,7 @@ fn fixture_config(
     let mut rig_config = crate::config::ServerConfig::load(
         {
             let mut cli = crate::config::CliArgs::deterministic();
+            cli_edit(&mut cli);
             if let Some(limit) = max_request_body_bytes {
                 cli.max_request_body_bytes = limit;
             }
@@ -356,11 +362,11 @@ fn fixture_config(
 /// Build a rig from ONE process runtime and the focused options.
 #[expect(
     clippy::too_many_lines,
-    reason = "HTTP rig builder; every runtime owner is wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
+    reason = "HTTP rig builder; every runtime owner and the scenario's command-line edit are wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
 )]
 #[expect(
     clippy::let_underscore_must_use,
-    reason = "http_rig_build; the supervisor rejects a spawn only while it is stopping, when the rig is being torn down; a rejected rig task has nothing left to serve"
+    reason = "http_rig_build; the supervisor rejects a spawn only while it is stopping, when the rig is being torn down, whatever command line the scenario configured; a rejected rig task has nothing left to serve"
 )]
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
@@ -380,6 +386,7 @@ pub(super) async fn http_rig_build(
         absorber: absorber_cfg,
         auth_service,
         fleet_auth,
+        cli,
     } = opts;
     let registry = crate::registry::Registry::new(
         store.clone(),
@@ -412,7 +419,12 @@ pub(super) async fn http_rig_build(
     // so a rig's config claimed to be "streams" whatever the test called
     // it — and any assembly reading the config disagreed with the
     // runtime it was assembling.
-    let rig_config = fixture_config(max_request_body_bytes, instance_name.as_deref(), admission);
+    let rig_config = fixture_config(
+        cli,
+        max_request_body_bytes,
+        instance_name.as_deref(),
+        admission,
+    );
     let mut rig_runtime = rig_runtime.with_config(&rig_config);
     let protocol_clock: Arc<dyn crate::runtime::Clock> =
         Arc::new(crate::runtime::SystemClock::default());

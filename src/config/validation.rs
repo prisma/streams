@@ -831,7 +831,7 @@ impl crate::config::ServerConfig {
     /// billing-required prerequisites; the spool and rollup OPENS
     /// (store I/O) stay in bootstrap.
     fn validate_billing_prerequisites(&self, f: &mut Findings) {
-        if self.cli.billing_mode != "required" {
+        if !self.cli.billing_required() {
             return;
         }
         if self.cli.usage_stream_key.is_none() {

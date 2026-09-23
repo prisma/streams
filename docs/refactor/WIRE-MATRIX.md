@@ -199,7 +199,7 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 - `GET /operator` → 200 `text/html; charset=utf-8`, `Cache-Control: no-store`, compiled-in page.
 - `GET /operator/runbook` → 200 `text/markdown; charset=utf-8`, `Cache-Control: max-age=300`.
 - `GET /operator/data.json` → 200 JSON `{ts_ms, local{…load vectors…}, fleet{heartbeats, desired}}`; sections degrade to `null`.
-- `GET /operator/billing.json` → `billing_readiness_axum` (`src/http.rs:2131-2200`): 401 `unauthorized` or 200 JSON billing-readiness report.
+- `GET /operator/billing.json` → `billing_readiness_axum` (`src/http.rs:2131-2200`): 401 `unauthorized` or 200 JSON billing-readiness report; `mode` echoes the resolved `--billing-mode` (default `off`).
 
 ### Debug (all deployment-bearer gated → 401 `unauthorized`; err_resp envelope)
 One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested `/v1/debug` table): without the token EVERY `/v1/debug` path answers 401 `unauthorized` before method routing, including a path nothing routes, the bare prefix and a routed path under the wrong method (those were 404 empty / 405 + `Allow` before item 44, which let an anonymous caller map the routes). With the token (or Off mode with no bearer configured) an unrouted path is the bare 404 and a wrong method 405 + `Allow`, as before.
@@ -239,7 +239,7 @@ One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested
 - Any read of a stream mid-split ("seal gap") may carry records + resume cursor but never `Stream-Closed`/final `Stream-Up-To-Date`.
 - DELETE: 204 vs 404 vs 410 depending on descriptor state (hard-deletable vs missing vs soft-deleted/expired-with-forks).
 - Product append on a sealed/sealing collection: 409 `sealed` from `refuse_if_sealed` (handler) vs 409 `sealed` translated from raw `stream_closed` (committer) — same code, different origin.
-- `/health` readiness depends on auth mode and `BILLING_MODE`/`ROLLUP` env.
+- `/health` readiness depends on auth mode and the clap-resolved `--billing-mode`/`--rollup` (argv over the `BILLING_MODE`/`ROLLUP` variables).
 - SSE (both surfaces): a window at the durable frontier that carries NO record for a session (a match-free default/keyed-lane scan, or a cursor already past every record of a retained batch) still yields ONE standalone `upToDate` control (raw: `streamNextOffset` advanced past the scanned range; product: `nextCursor`), on solo and shared feeds alike; RAW folds `upToDate` into the paired control only for a record the session itself sent (`src/sse/session.rs` Take::Batch/Solo arms).
 
 **Intentional dual-surface differences (same operation, different contract):**

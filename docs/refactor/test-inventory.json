@@ -1594,6 +1594,28 @@
     "scenarios": []
   },
   {
+    "name": "argv_billing_mode_required_holds_readiness_until_the_spool_opens",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "57c24adc99feedfa7d34bcb6d980fd04dedd78a0a4285b98be7f0c057ff3ce69",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
+    "name": "argv_rollup_owner_is_unready_until_its_rollup_installs",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "14dd839a045d774b835923bfa2b3c68e880b952f07966823da8675ebc09c9fc6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
     "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
     "attributes": [
       "#[test]"
@@ -2055,6 +2077,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
+    "name": "default_billing_mode_reports_off_and_ready_without_a_spool",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f62991c23deab40ff15ccc96b8fe98ef196a89cf77aa832f17548467d9b31402",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
     "scenarios": []
   },
   {

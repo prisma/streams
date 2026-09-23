@@ -179,6 +179,25 @@ fn clap_owned_names_keep_their_environment_channel() {
     );
 }
 
+/// Item 32: the one reading of each selector keeps today's exact words;
+/// refusing the others instead of reading them as off is decision D-32a.
+#[test]
+fn billing_selectors_keep_their_exact_words() {
+    let mut cli = test_cli();
+    assert!(!cli.billing_required() && !cli.runs_rollup());
+    for (mode, rollup) in [("Required", "true"), ("required ", "yes"), ("", "")] {
+        cli.billing_mode = mode.into();
+        cli.rollup = rollup.into();
+        assert!(
+            !cli.billing_required() && !cli.runs_rollup(),
+            "{mode:?} / {rollup:?}"
+        );
+    }
+    cli.billing_mode = "required".into();
+    cli.rollup = "1".into();
+    assert!(cli.billing_required() && cli.runs_rollup());
+}
+
 #[test]
 fn default_values_are_pinned() {
     // The no-environment posture, knob by knob. Every literal here is
@@ -223,9 +242,9 @@ fn default_values_are_pinned() {
         c.http.h1_header_timeout,
         std::time::Duration::from_secs(120)
     );
-    assert_eq!(c.billing.mode_env, None);
+    assert!(!c.cli.billing_required());
     assert!(c.billing.meter_enabled);
-    assert_eq!(c.billing.rollup_env, None);
+    assert!(!c.cli.runs_rollup());
     assert_eq!(c.billing.path_prefix_env, None);
     assert_eq!(c.billing.outbox_sweep_secs, 300);
     assert_eq!(c.billing.telemetry_drain_secs, 2);

@@ -198,18 +198,8 @@ pub struct HttpConfig {
 /// Billing/telemetry/rollup knobs (src/billing.rs, src/ops.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BillingConfig {
-    /// RAW BILLING_MODE env value. `billing_required()` and the debug
-    /// endpoint read the ENVIRONMENT today, NOT the clap field
-    /// (`--billing-mode`, env BILLING_MODE) — a dual-channel quirk
-    /// preserved exactly here. Consumers of the CLI value keep reading
-    /// `args.billing_mode`. Scheduled for unification in WP-13.
-    pub mode_env: Option<String>,
     /// BILLING_METER: metering on unless == "off" (per-append read).
     pub meter_enabled: bool,
-    /// RAW ROLLUP env value. /health and /v1/debug/billing read the env
-    /// directly today; `spawn_rollup` uses the clap field. Same
-    /// dual-channel quirk as `mode_env`.
-    pub rollup_env: Option<String>,
     /// RAW PATH_PREFIX env value. `open_read_spool` reads the env
     /// directly (NOT `--path-prefix`), while `spawn_rollup` uses the clap
     /// field — preserved as-is; WP-13 owns the unification.
@@ -455,9 +445,7 @@ impl Default for HttpConfig {
 impl Default for BillingConfig {
     fn default() -> Self {
         Self {
-            mode_env: None,
             meter_enabled: true,
-            rollup_env: None,
             path_prefix_env: None,
             outbox_sweep_secs: 300,
             telemetry_drain_secs: 2,

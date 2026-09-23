@@ -652,6 +652,23 @@ impl CliArgs {
         .flatten()
         .collect()
     }
+
+    /// BILLING_MODE=required: production billing, where volatile fallbacks
+    /// are refused and billing infrastructure failures are fatal at startup.
+    /// Clap has already resolved `--billing-mode` over the variable and no
+    /// consumer re-reads the environment, so validation, the drain, /health
+    /// and /operator/billing.json agree with boot (item 32). Only the exact
+    /// word `required` selects it.
+    pub(crate) fn billing_required(&self) -> bool {
+        self.billing_mode == "required"
+    }
+
+    /// ROLLUP=1: this instance runs the usage rollup consumer and month
+    /// closer, so required-mode readiness waits for its rollup database.
+    /// Resolved by clap like `billing_required`; only the exact word `1`.
+    pub(crate) fn runs_rollup(&self) -> bool {
+        self.rollup == "1"
+    }
 }
 
 /// SR3-1: fleet-auth posture validation, extracted and GLOBAL. The

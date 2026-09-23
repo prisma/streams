@@ -1667,10 +1667,9 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
-    if crate::billing::billing_required(&state.config.billing) {
+    if state.config.cli.billing_required() {
         let spool_ok = state.billing.read_spool_open();
-        let rollup_ok =
-            state.config.billing.rollup_env.as_deref() != Some("1") || state.rollup.installed();
+        let rollup_ok = !state.config.cli.runs_rollup() || state.rollup.installed();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1742,13 +1741,12 @@ async fn billing_readiness_axum(
             "pendingCorrectionArtifacts": pending_corr,
         });
     }
-    let ready = !crate::billing::billing_required(&state.config.billing)
+    let ready = !state.config.cli.billing_required()
         || (state.billing.usage_key().is_some()
             && spool_open
-            && (state.config.billing.rollup_env.as_deref() != Some("1")
-                || state.rollup.get().is_some()));
+            && (!state.config.cli.runs_rollup() || state.rollup.get().is_some()));
     axum::Json(serde_json::json!({
-        "mode": state.config.billing.mode_env.clone().unwrap_or_else(|| "off".into()),
+        "mode": &state.config.cli.billing_mode,
         "ready": ready,
         "usageLedgerConfigured": state.billing.usage_key().is_some(),
         "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },

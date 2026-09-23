@@ -171,9 +171,8 @@ impl ServerConfig {
     }
 
     fn overlay_billing_telemetry_rollup(&mut self, env: &dyn Environment) {
-        self.billing.mode_env = env.get("BILLING_MODE");
+        // BILLING_MODE and ROLLUP are clap-owned: CliArgs::{billing_required, runs_rollup}.
         self.billing.meter_enabled = env.get("BILLING_METER").map(|v| v != "off").unwrap_or(true);
-        self.billing.rollup_env = env.get("ROLLUP");
         self.billing.path_prefix_env = env.get("PATH_PREFIX");
         if let Some(v) = env_parse(env, "OUTBOX_SWEEP_SECS") {
             self.billing.outbox_sweep_secs = v;
