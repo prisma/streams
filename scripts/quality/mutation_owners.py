@@ -62,6 +62,7 @@ OWNERS = (
     owner('rollup_allocation', 'src/rollup/allocation.rs', 'rollup_allocation::', 'harness-lib'),
     owner('rollup_storage', 'src/rollup/storage.rs', 'rollup_storage::', 'harness-lib'),
     owner('tasks', 'src/tasks.rs', 'tasks::'),
+    owner('tasks_refusal', 'src/tasks/refusal.rs', 'tasks::'),
     owner('touch', 'src/touch.rs', 'touch::'),
     owner('read_accumulator', 'src/billing/read_accumulator.rs', 'billing'),
     owner('read_spool', 'src/billing/read_spool.rs', 'billing'),

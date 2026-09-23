@@ -15,6 +15,7 @@
 //! state, and a strong edge from the state back to the supervisor would
 //! make a runtime that failed to start immortal.
 
+mod refusal;
 mod shutdown;
 /// The runtime's termination input, prepared before any task starts.
 pub(crate) mod signal;
@@ -367,7 +368,7 @@ impl TaskSupervisor {
     /// spawned — a stopped runtime stays stopped.
     #[expect(
         clippy::unwrap_used,
-        reason = "Supervisor registration; a poisoned phase may contain an incomplete task insertion; recovering and spawning again could leave a task outside the eventual drain"
+        reason = "Supervisor registration; a poisoned phase may contain an incomplete task insertion, and a task a closing runtime refused is dropped only after the lock is released; recovering and spawning again could leave a task outside the eventual drain"
     )]
     pub(crate) fn spawn<F, Fut>(
         &self,
@@ -379,28 +380,31 @@ impl TaskSupervisor {
         F: FnOnce(Cancellation) -> Fut,
         Fut: std::future::Future<Output = TaskResult> + Send + 'static,
     {
-        let mut st = self.inner.state.lock().unwrap();
-        match st.phase {
-            Phase::Running => {}
-            Phase::ShuttingDown => return Err(SpawnRejected::ShuttingDown),
-            Phase::Stopped => return Err(SpawnRejected::Stopped),
-        }
-        let id = TaskId(st.next_id);
-        st.next_id += 1;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "TaskSupervisor worker owner; the registration lock retains each handle before shutdown can take the map; spawning through another supervisor would recursively delegate this canonical owner"
-        )]
-        let handle = tokio::spawn(build(self.inner.cancel.clone()));
-        st.tasks.insert(
-            id,
-            Supervised {
-                name: label,
-                policy,
-                handle,
-            },
-        );
-        Ok(id)
+        let (registered, refused) = {
+            let mut st = self.inner.state.lock().unwrap();
+            match st.phase {
+                Phase::Running => {}
+                Phase::ShuttingDown => return Err(SpawnRejected::ShuttingDown),
+                Phase::Stopped => return Err(SpawnRejected::Stopped),
+            }
+            let id = TaskId(st.next_id);
+            st.next_id += 1;
+            let (handle, refused) = refusal::spawn_set_aside(build(self.inner.cancel.clone()));
+            st.tasks.insert(
+                id,
+                Supervised {
+                    name: label,
+                    policy,
+                    handle,
+                },
+            );
+            (Ok(id), refused)
+        };
+        // A task a closing runtime refused is dropped only here, after the
+        // registration lock is released: its destructors may re-enter this
+        // supervisor (see `refusal`).
+        drop(refused);
+        registered
     }
 
     /// Request the ordered shutdown without waiting for it: the phase

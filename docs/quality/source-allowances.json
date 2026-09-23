@@ -1508,13 +1508,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::TaskSupervisor::spawn",
-      "path": "src/tasks.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::TaskSupervisor::launch_shutdown",
       "path": "src/tasks/shutdown.rs",
       "syntax": "tokio::spawn"

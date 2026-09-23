@@ -635,10 +635,26 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::TaskSupervisor::spawn",
-      "path": "src/tasks.rs",
-      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership.",
+      "owner": "crate::spawn_set_aside",
+      "path": "src/tasks/refusal.rs",
+      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership; a task a closing runtime refuses is dropped after the lock is released.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "src/tasks/refusal.rs",
+      "reason": "Per-thread set-aside slot for one supervised spawn call: it is Some only while tokio::spawn runs on this thread, so a future the closing runtime drops inline is handed back to the caller instead of re-entering the registration lock; it holds nothing between calls.",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor",
+      "path": "src/tasks/tests.rs",
+      "reason": "F-G deadlock fixture owns one detached thread that drops the runtime under test; a deadlocked drop never returns, so a bounded channel receive observes it instead of hanging the suite.",
+      "syntax": "std::thread::spawn"
     },
     {
       "category": "macro-dsl",

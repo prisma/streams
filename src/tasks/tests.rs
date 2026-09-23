@@ -485,3 +485,60 @@ fn panicked_connections_are_counted_on_the_monitor() {
     drop(supervisor);
     assert_eq!(monitor.connection_panics(), 0);
 }
+
+/// F-G: a runtime that is shutting down refuses a new task by dropping its
+/// future INSIDE `tokio::spawn`. An engine's required task carries a guard
+/// whose drop closes the engine, which launches that supervisor's shutdown.
+/// If `spawn` still held the registration lock at that moment, the drop
+/// re-entered it on the same thread: the worker deadlocked and the runtime
+/// drop (which joins every worker, with no timeout) never returned.
+#[test]
+fn a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor() {
+    struct ShutsDownOnDrop(TaskSupervisor);
+    impl Drop for ShutsDownOnDrop {
+        fn drop(&mut self) {
+            self.0
+                .begin_shutdown_with(Duration::ZERO, "late-finalizer", async { TaskResult::Done });
+        }
+    }
+    struct SpawnsOnDrop(TaskSupervisor);
+    impl Drop for SpawnsOnDrop {
+        fn drop(&mut self) {
+            let guard = ShutsDownOnDrop(self.0.clone());
+            let spawned = self.0.spawn("late", Policy::Critical, move |_| async move {
+                let _guard = guard;
+                TaskResult::Done
+            });
+            assert!(spawned.is_ok(), "the supervisor itself is still running");
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let owner = SpawnsOnDrop(TaskSupervisor::new());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "F-G deadlock rig; the task exists only to be dropped by the runtime teardown under test; supervising it would put the supervisor under test in its own teardown path"
+    )]
+    runtime.spawn(async move {
+        let _owner = owner;
+        pending::<()>().await;
+    });
+    runtime.block_on(tokio::task::yield_now());
+    let (done, finished) = std::sync::mpsc::channel();
+    // A deadlocked teardown never returns: it runs on its own thread so
+    // the assertion below can report it instead of hanging the suite.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "F-G deadlock rig; the runtime drop under test may never return, so it runs on a detached thread the bounded receive below observes; a runtime task cannot host the drop of its own runtime"
+    )]
+    std::thread::spawn(move || {
+        drop(runtime);
+        done.send(()).ok();
+    });
+    assert!(
+        finished.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "runtime teardown deadlocked inside TaskSupervisor::spawn"
+    );
+}
