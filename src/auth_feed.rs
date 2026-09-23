@@ -520,6 +520,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A file feed's freshness is its last successful read, not its
+    /// author's liveness: a failed read refreshes nothing, and the same
+    /// generation read again is fresh although its author wrote nothing.
+    #[tokio::test]
+    async fn file_feed_freshness_means_last_successful_read_not_publisher_liveness() {
+        let dir = std::env::temp_dir().join(format!("mt-feed-freshness-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (kp, pp, gp) = (
+            dir.join("keys.json"),
+            dir.join("policies.json"),
+            dir.join("grants.json"),
+        );
+        let svc = AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap();
+        // The author last wrote generation 7 about 250 s ago.
+        let written = unix_now() - 250;
+        svc.publish_policies(PolicySnapshot {
+            fetched_at_unix: written,
+            feed_version: 7,
+            ..PolicySnapshot::empty()
+        })
+        .unwrap();
+        svc.publish_grants(GrantSnapshot {
+            fetched_at_unix: written,
+            feed_version: 7,
+            ..GrantSnapshot::empty()
+        })
+        .unwrap();
+        let (ks, ps, gs) = (
+            FileKeySource(kp.clone()),
+            FilePolicySource(pp.clone()),
+            FileGrantSource(gp.clone()),
+        );
+        for path in [&kp, &pp, &gp] {
+            std::fs::write(path, "{ not json").unwrap();
+        }
+        let report = refresh_once(&svc, &ks, &ps, &gs).await;
+        assert_eq!(
+            [report.policies, report.grants],
+            [RefreshOutcome::Unavailable; 2]
+        );
+        let feeds = svc.feed_json(unix_now());
+        for feed in ["policies", "grants"] {
+            let age = feeds[feed]["ageSecs"].as_i64();
+            assert!(
+                age.is_some_and(|a| a >= 250),
+                "{feed}: a failed read refreshes nothing"
+            );
+        }
+        std::fs::write(&pp, r#"{"feed_version":7,"projects":[]}"#).unwrap();
+        std::fs::write(&gp, r#"{"feed_version":7,"credentials":[]}"#).unwrap();
+        let report = refresh_once(&svc, &ks, &ps, &gs).await;
+        assert_eq!(
+            [report.policies, report.grants],
+            [RefreshOutcome::Published; 2]
+        );
+        let feeds = svc.feed_json(unix_now());
+        for feed in ["policies", "grants"] {
+            let age = feeds[feed]["ageSecs"].as_i64();
+            assert!(
+                age.is_some_and(|a| (0..=60).contains(&a)),
+                "{feed}: re-reading the same generation is fresh"
+            );
+            assert_eq!(feeds[feed]["feedVersion"], 7, "{feed}: no newer generation");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     const PUB: &str = include_str!("dst/fixtures/mt-test-rsa.pub.pem");
     const NOW: i64 = 1_786_600_600;
 
