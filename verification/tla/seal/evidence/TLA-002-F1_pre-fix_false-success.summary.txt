@@ -1,0 +1,85 @@
+PRE-FIX EVIDENCE. Recorded on the model revision before the fix, read against source revision 241eb28. Fixed by commit 234f69a "A seal takeover's fence outlives the engine that recorded it". On the current model the negative controls TLA-002/nc-engine-resident-fence-* reproduce this behaviour.
+
+Per-step view of evidence/TLA-002-F1_pre-fix_false-success.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [fence |-> 0, q |-> <<>>]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [crash |-> 1, retire |-> 1, cancel |-> 0, timeout |-> 0, reg |-> 0, enq |-> 0]
+      bud = (P0 :> 2 @@ T1 :> 1 @@ T2 :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+ 2 Issue
+      h[P0/2]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 Issue
+      h[P0/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 4 Issue
+      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 5 Issue
+      h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+ 6 FClaim
+      h[T1/1]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C1, NONE, 0>>, gen |-> 1, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+ 7 FCheck
+      h[T1/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE
+ 8 Lapse
+      desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C1, NONE, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+ 9 FClaim
+      h[P0/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+10 TReserve
+      h[P0/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C1, NONE, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+11 TFence
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> NONE, gen |-> 2, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[P0/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+12 ProcessFence
+      eng = [fence |-> 2, q |-> <<>>]
+      h[P0/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+13 TInstall
+      eng = [fence |-> 2, q |-> << >>]
+      h[P0/1]: pc="check" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+14 Lapse
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+15 RsPrep
+      h[T2/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+16 TReserve
+      h[T2/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ counter |-> 3, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+17 Replace
+      eng = [fence |-> 0, q |-> <<>>]
+18 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<T1, 1>>, op |-> T1, gen |-> 1, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T1/1]: pc="await" gen=1 rep=NONE rej=FALSE
+19 TFence
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<T1, 1>>, op |-> T1, gen |-> 1, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {<<T2, 1>>} ], [ hid |-> <<T2, 1>>, op |-> NONE, gen |-> 3, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+20 ProcessAppend
+      lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> 0, hash |-> NONE] )
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<T2, 1>>, op |-> NONE, gen |-> 3, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T1/1]: pc="await" gen=1 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [ fence |-> 0, closed |-> TRUE, finalRec |-> T1, closer |-> <<"product", C1, NONE, 0>> ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> TRUE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+21 ProcessFence
+      eng = [fence |-> 3, q |-> <<>>]
+      h[T2/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+22 TBehalfMark
+      h[T2/1]: pc="rs_prep" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 3, claim |-> [ fin |-> TRUE, com |-> TRUE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+23 RsPrep
+      h[T2/1]: pc="rs_close" gen=2 rep=NONE rej=FALSE
+24 RsClose
+      eng = [ fence |-> 3, q |-> << [ hid |-> <<T2, 1>>, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, kind |-> "close", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T2/1]: pc="rs_cwait" gen=2 rep=NONE rej=FALSE
+25 ProcessClose
+      eng = [fence |-> 3, q |-> <<>>]
+      h[T2/1]: pc="rs_cwait" gen=2 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+26 RsPublish
+      h[T2/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [ counter |-> 3, claim |-> NONE, sealed |-> TRUE, sealOp |-> <<"product", C0, NONE, 0>> ]
+27 FClaim
+      h[P0/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      hist = [ badClosed |-> FALSE, badSuccess |-> TRUE, fenceSeen |-> 2, staleEffect |-> TRUE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]

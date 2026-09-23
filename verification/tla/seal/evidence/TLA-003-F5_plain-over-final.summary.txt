@@ -1,0 +1,60 @@
+Per-step view of evidence/TLA-003-F5_plain-over-final.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = (<<"rawseal", CX>> :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [ held |-> 0, crash |-> 0, retire |-> 1, cancel |-> 1, timeout |-> 0, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      bud = (X :> 3 @@ S :> 1)
+      owner = B
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+ 2 Issue
+      h[X/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 3 FValidate
+      h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 4 FClaim
+      h[X/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, NONE, 0>>, gen |-> 1 ], sealed |-> FALSE, sealOp |-> NONE ]
+ 5 Issue
+      h[X/2]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 6 FValidate
+      h[X/2]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 7 FClaim
+      h[X/2]: pc="enqueue" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, NONE, 0>>, gen |-> 2 ], sealed |-> FALSE, sealOp |-> NONE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> TRUE, installOverMarked |-> FALSE ]
+ 8 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 2>>, op |-> X, gen |-> 2, rej |-> FALSE, kind |-> "append", dfr |-> TRUE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/2]: pc="await" gen=2 rep=NONE rej=FALSE
+ 9 Issue
+      h[S/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+10 ProcessAppend
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[X/2]: pc="await" gen=2 rep=[err |-> "BadBody", closed |-> FALSE, dup |-> FALSE] rej=FALSE
+11 FRelease
+      h[X/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 2, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> TRUE, installOverMarked |-> FALSE ]
+12 RsPrep
+      h[S/1]: pc="rs_close" gen=3 rep=NONE rej=FALSE
+      desc = [ counter |-> 3, claim |-> [lap |-> FALSE, fin |-> FALSE, com |-> FALSE, op |-> PLAIN, gen |-> 3], sealed |-> FALSE, sealOp |-> NONE ]
+13 Replace
+      owner = A
+14 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/1]: pc="await" gen=1 rep=NONE rej=FALSE
+15 RsClose
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ], [ hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 3, rej |-> FALSE, kind |-> "close", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[S/1]: pc="rs_cwait" gen=3 rep=NONE rej=FALSE
+16 ProcessAppend
+      lanes = (<<"rawseal", CX>> :> [seq |-> 0, hash |-> NONE])
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 3, rej |-> FALSE, kind |-> "close", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/1]: pc="await" gen=1 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [ fence |-> 0, closed |-> TRUE, finalRec |-> X, closer |-> <<"raw", CX, NONE, 0>> ]
+17 ProcessClose
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[S/1]: pc="rs_cwait" gen=3 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+18 RsPublish
+      h[S/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 3, claim |-> NONE, sealed |-> TRUE, sealOp |-> PLAIN]

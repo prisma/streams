@@ -171,31 +171,44 @@ actions to these contracts.
 
 ### ASM-OBJSTORE-CAS
 
-- **Scope:** TLA-005 (an ambiguous WAL PUT), TLA-011 (the fence), TLA-019
-  (`ForkPin`: every registry step is one conditional write).
+- **Scope:** TLA-001, and TLA-002 and TLA-003 through TLA-001 (the seal model
+  applies every registry decision at its conditional PUT); TLA-005 (an
+  ambiguous WAL PUT); TLA-011 (the fence); TLA-019 (`ForkPin`: every registry
+  step is one conditional write).
 - **Statement:** (a) A conditional create is atomic. A create on an existing
   path fails with `AlreadyExists`. An ambiguous reply (the PUT landed, the
   reply was lost) surfaces as an error (fatal, or a spurious `Fenced` on
-  retry), never as success for a PUT that did not land. (b) A conditional
-  update of a registry object is atomic: `Registry::mutate_incarnation` is one
-  conditional update of a stream descriptor, bound to the incarnation it
+  retry), never as success for a PUT that did not land. (b) A descriptor GET
+  returns one committed version with its ETag, or fails. A conditional update
+  (`PutMode::Update` with that ETag) commits atomically if and only if the
+  stored ETag still matches; otherwise it answers `Precondition`. Any other PUT
+  error may or may not have committed. A GET may return no ETag. An ETag
+  repeats only for byte-identical content. So `Registry::mutate_incarnation` is
+  one conditional update of a stream descriptor, bound to the incarnation it
   observed; a changed incarnation is reported (`IncarnationChanged`) and
   writes nothing.
-- **Origin:** `object_store` 0.14 `PutMode::Create` and `PutMode::Update`, and
-  the provider's conditional-write support; `src/application/creation/anchor.rs`
-  (`anchor::install`) and `src/application/creation/deletion.rs`
-  (`delete_transition`, `release_fork_ref`).
-- **Enforcement / evidence:** the object-store provider, which no repository
-  evidence covers. The registry's conditional-write tests and the DST fork
-  suites (`src/dst/tests/fork_cleanup.rs`) cover the repository's use of it.
-  The durability models include both ambiguous outcomes: TLA-005 `Restart`
+- **Origin:** the `object_store` crate (`PutMode::Create`, `PutMode::Update`)
+  and the provider's conditional-write support; `src/registry.rs`
+  `ConditionalUpdateToken`, `mutate_incarnation` and `recreate`;
+  `src/application/creation/anchor.rs` (`anchor::install`) and
+  `src/application/creation/deletion.rs` (`delete_transition`,
+  `release_fork_ref`).
+- **Enforcement / evidence:** the object-store provider, for which no
+  conformance evidence was reviewed. The registry code maps these outcomes as
+  TLA-001 models them (lost reply, failed dispatch, missing ETag, failed read),
+  and `registry::tests::r08_*` exercise that mapping on the in-memory store.
+  The registry's conditional-write tests and the DST fork suites
+  (`src/dst/tests/fork_cleanup.rs`) cover the repository's use of it. The
+  durability models include both ambiguous outcomes: TLA-005 `Restart`
   recovers an unreported prefix after `WalFail`, and TLA-011 `Land` has the
   `AmbiguousPut` outcome.
-- **Invalidation:** a provider or client change; a retry layer that turns
-  `AlreadyExists` into success; a registry write that is not conditional on
-  the observed incarnation.
-- **Standing:** **unestablished** for the provider's conditional writes; the
-  repository's use of them in (b) is established by code reading and tests.
+- **Invalidation:** an object-store client or provider change; a registry CAS
+  change; a retry layer that turns `AlreadyExists` or `Precondition` into
+  success; a registry write that is not conditional on the observed
+  incarnation.
+- **Standing:** **unestablished** for the provider's conditional writes.
+  TLA-001, TLA-002, TLA-003, TLA-005, TLA-011 and TLA-019 are conditional on
+  it; the repository's use of them is established by code reading and tests.
 
 ### ASM-DURABILITY-1
 
@@ -564,3 +577,201 @@ actions to these contracts.
 - **Invalidation:** a change to handle ownership or to the reload path.
 - **Standing:** established by code reading; that dispatch holds a clone
   until publication rests on the function's documentation.
+
+### ASM-SEAL-REPLY-ORDER
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** the shard committer releases acknowledgements (append and
+  duplicate acknowledgements, producer refusals staged in `effects.acks`,
+  `Closed`, fence and close acknowledgements) only after the group is durable,
+  in queue order. An acknowledgement therefore implies that every earlier
+  queued decision is durable. Three refusals are sent at staging, before any
+  durability: `SealSuperseded`, a deferred content error (`BadBody`,
+  `CtMismatch`) and `Internal`. A group stranded by an engine close is answered
+  `Moved` and may still become durable.
+- **Origin:** `src/shard/commit_plan.rs` `DurableEffects` (36-79);
+  `src/shard/transaction/append.rs` 96-101 and 139-142;
+  `src/shard/transaction/maintenance.rs` 142-146 and 178-188;
+  `src/shard.rs` `begin_close` (1876-1935).
+- **Enforcement / evidence:** source inspection; DST
+  `a_fence_waits_for_durability_before_reporting_closed`
+  (`src/dst/tests/durability_fences.rs`).
+- **Invalidation:** a change to where a committer reply is sent, to the commit
+  pipeline, or to SlateDB's durability reporting.
+- **Standing:** established (source and DST). The baseline configurations stage
+  and make durable each queue element in one step. That is exact for every
+  answer except a `SealSuperseded` that a fence staged in a not yet durable
+  group caused: `MaxHeldFence = 1` separates the two steps for a fence group,
+  and that configuration reproduces TLA-002-F2.
+
+### ASM-SEAL-ENGINE-HANDOFF
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** once the shard's engine is retired or its owner process
+  crashes, nothing that engine queued commits later, except groups it had
+  already staged; those may still become durable while their callers are told
+  `Moved`. The next `resolve` in the (new) owner opens a new engine over the
+  same durable state.
+- **Origin:** `src/shard_directory.rs` `resolve` (238-297) and `retire`
+  (434-456); `src/shard.rs` `begin_close` (1876-1935) and the committer's
+  shutdown path (2467-2500); SlateDB writer fencing on open.
+- **Enforcement / evidence:** source inspection of the engine. SlateDB writer
+  fencing is TLA-011's subject; this group does not check it.
+- **Invalidation:** a SlateDB revision; an open or fencing change; an engine
+  close that drains its queue into the database.
+- **Standing:** established (source) for the engine; conditional on SlateDB
+  writer fencing.
+
+### ASM-SEAL-FENCE-ROW
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** a segment's durable seal-fence row (`seal_fence_key`,
+  `<hash16> 'G'`) is written only by `CommitTransaction::fence`, always as
+  `max(cached, requested)`, and read only by `CommitTransaction::seal_fence`.
+  No deletion, prefix scan, fork, split, merge or history path removes or
+  lowers it.
+- **Origin:** commit "A seal takeover's fence outlives the engine that recorded
+  it"; `src/shard.rs` 189-195; `src/shard/transaction/maintenance.rs` 89-108
+  and 136-167.
+- **Enforcement / evidence:** source inspection: one writer and one reader, and
+  every shard prefix scan starts with a sentinel or a longer prefix. The golden
+  test `golden_layout4_seal_fence_key_bytes` pins the key.
+- **Invalidation:** a new writer, deleter or scanner of per-segment rows; a key
+  layout change.
+- **Standing:** established (source).
+
+### ASM-SEAL-QUEUE
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** fences, closes and appends for a segment travel one FIFO
+  committer queue (`try_seal_fence`, `try_close` and `try_enqueue` all go
+  through `try_command`).
+- **Origin:** `src/shard.rs` 1804-1856.
+- **Enforcement / evidence:** source inspection.
+- **Invalidation:** separate queues or priorities.
+- **Standing:** established (source).
+
+### ASM-SEAL-OWNER
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** ownership is decided only at submission. Request handlers do
+  all registry work (claim, renewal, the product `seal_auth` check) in whatever
+  process handles the request. The first ownership check is
+  `ShardDirectory::resolve` in `submit`: `NotOwner` for a non-owner, a fresh
+  engine for the owner. The takeover's fence needs local ownership. A relayed
+  segment close carries its generation and is modelled as a close queued at the
+  owner.
+- **Origin:** `src/application/append/submit.rs` 18-25;
+  `src/shard_directory.rs` 238-297; `src/application/lifecycle.rs` 874-879;
+  `src/application/topology.rs` 72-80.
+- **Enforcement / evidence:** source inspection.
+- **Invalidation:** an ownership check before the claim; server-side forwarding
+  of appends.
+- **Standing:** established (source).
+
+### ASM-SEAL-VALIDITY
+
+- **Scope:** TLA-003 (and TLA-002, where every request is valid).
+- **Statement:** whether a final passes validation depends on its bytes and on
+  the configuration of the process that handles it: the record ceiling
+  (`MAX_RECORD_PAYLOAD_BYTES`) and the per-stream ingest limits
+  (`LIMIT_BYTES_PER_SEC`, `LIMIT_RECS_PER_SEC`, `LIMIT_BURST_SECS`), fixed at
+  boot. An exact retry (same operation id) can pass on one instance and fail on
+  another, for example during a rolling configuration change. A raw close with
+  content always has a producer (its own or the synthetic `rawseal` lane), so
+  every content refusal except ingest capacity is deferred to the committer.
+- **Origin:** `src/application/append/content.rs` 14-127 (`parse_content`,
+  `stored_records`); `src/application/append/close.rs` 101-112;
+  `src/usage.rs` 327-340; `src/product.rs` 1661-1767.
+- **Enforcement / evidence:** source inspection, confirmed by two independent
+  refutation attempts of TLA-003-F4.
+- **Invalidation:** one validation configuration for the whole fleet;
+  validation that no longer depends on process settings.
+- **Standing:** established (source).
+
+### ASM-SEAL-CLOCK
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** a lease can lapse at any time. No bound is assumed on queue
+  residence or on the time a handler spends between its claim check and
+  `try_enqueue`.
+- **Origin:** roadmap L10; `src/registry.rs` `SEAL_CLAIM_MS` (298).
+- **Enforcement / evidence:** by construction: `Lapse` is an unconstrained
+  environment action.
+- **Invalidation:** adopting a time-based argument, which needs an owner
+  decision.
+- **Standing:** established (conservative over-approximation).
+
+### ASM-SEAL-RECOVERY-ACTOR
+
+- **Scope:** the TLA-002 liveness checks only.
+- **Statement:** a plain `:seal` client retries forever. Every other client and
+  every fault is bounded, so faults cease. The liveness shapes run on one
+  instance.
+- **Origin:** roadmap TLA-002 ("a specified retrying/reconciling actor").
+- **Enforcement / evidence:** configuration.
+- **Invalidation:** a change to who reconciles an abandoned claim.
+- **Standing:** a configuration of the claim, not a product guarantee.
+
+### ASM-SEAL-EPOCH
+
+- **Scope:** TLA-001, TLA-002, TLA-003.
+- **Statement:** `stream_epoch` is drawn fresh from 16 random bytes on every
+  create and recreate and is never reused.
+- **Origin:** `src/application/creation.rs` `fresh_desc` (207-220).
+- **Enforcement / evidence:** the runtime's entropy source.
+- **Invalidation:** deterministic or reused epochs.
+- **Standing:** established (probabilistic).
+
+### ASM-SEAL-PATH
+
+- **Scope:** TLA-001.
+- **Statement:** `desc_path` is injective over (project, name), so two projects
+  that share a name never share a descriptor object.
+- **Origin:** `src/registry.rs` `desc_path` (882-898).
+- **Enforcement / evidence:** source inspection (hex of both components);
+  `registry::tests::same_name_two_projects_share_no_identity`.
+- **Invalidation:** a path layout change.
+- **Standing:** established (source), not machine-checked (candidate for
+  KANI-033).
+
+### ASM-SEAL-NODELETE
+
+- **Scope:** TLA-001, TLA-002, TLA-003.
+- **Statement:** descriptor objects are never physically deleted; deletion
+  writes a tombstone. `MutationResult::Missing` is therefore unreachable after
+  creation and is not modelled.
+- **Origin:** `src/registry.rs`; grep finds no `store.delete` on descriptor
+  paths.
+- **Enforcement / evidence:** source inspection.
+- **Invalidation:** a hard-delete path for descriptors.
+- **Standing:** established (source).
+
+### ASM-SEAL-OPID
+
+- **Scope:** TLA-002, TLA-003.
+- **Statement:** operation ids and synthetic lanes are functions of (surface,
+  content, coordination): the model treats the hashes as injective on their
+  inputs, and an exact retry gets the same id.
+- **Origin:** `src/application/lifecycle/claims.rs` `seal_op_id_full` and
+  `seal_op_id_semantic` (132-176); `src/application/append/close.rs` 29-54 and
+  101-112.
+- **Enforcement / evidence:** KANI-043 (planned) for the preimages; hash
+  collision freedom is a cryptographic assumption (roadmap §1.5).
+- **Invalidation:** a change to an operation id's preimage.
+- **Standing:** **unestablished** (KANI-043 pending).
+
+### ASM-SEAL-DECIDE-FN
+
+- **Scope:** TLA-001 (and through it TLA-002, TLA-003).
+- **Statement:** every `decide` closure passed to `mutate_incarnation` is
+  `impl Fn(&StreamDesc)` and captures no interior mutability, so a value
+  returned with `Applied` is the winning attempt's own decision.
+- **Origin:** `src/registry.rs` 1157-1165; the production call sites.
+- **Enforcement / evidence:** the type system plus source inspection (no call
+  site captures a `Cell`, `RefCell`, atomic or `Mutex`);
+  `registry::tests::typed_mutation_never_leaks_a_lost_attempts_decision`. Not
+  TLC evidence.
+- **Invalidation:** a decide closure with interior mutability, or a caller that
+  reads captured state.
+- **Standing:** established (source inspection).

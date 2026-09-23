@@ -1,0 +1,63 @@
+PRE-FIX EVIDENCE. Recorded on the model revision before the fix, read against source revision 241eb28. Fixed by commit 234f69a "A seal takeover's fence outlives the engine that recorded it". On the current model the negative controls TLA-002/nc-engine-resident-fence-* reproduce this behaviour.
+
+Per-step view of evidence/TLA-002-F1_pre-fix_release-of-durable-final.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [fence |-> 0, q |-> <<>>]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [crash |-> 1, retire |-> 1, cancel |-> 0, timeout |-> 0, reg |-> 0, enq |-> 0]
+      bud = (P0 :> 2 @@ T1 :> 1 @@ T2 :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+ 2 Issue
+      h[P0/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 Issue
+      h[P0/2]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 4 FClaim
+      h[P0/2]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 1, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+ 5 FCheck
+      h[P0/2]: pc="enqueue" gen=1 rep=NONE rej=FALSE
+ 6 FClaim
+      h[P0/1]: pc="check" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+ 7 FCheck
+      h[P0/1]: pc="enqueue" gen=2 rep=NONE rej=FALSE
+ 8 Issue
+      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 9 Lapse
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+10 FClaim
+      h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+11 TReserve
+      h[T1/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ counter |-> 3, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 2, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+12 TFence
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<T1, 1>>, op |-> NONE, gen |-> 3, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T1/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+13 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<T1, 1>>, op |-> NONE, gen |-> 3, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 2, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[P0/1]: pc="await" gen=2 rep=NONE rej=FALSE
+14 ProcessFence
+      eng = [ fence |-> 3, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 2, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[T1/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+15 ProcessAppend
+      eng = [fence |-> 3, q |-> <<>>]
+      h[P0/1]: pc="await" gen=2 rep=[err |-> "SealSuperseded", closed |-> FALSE, dup |-> FALSE] rej=FALSE
+16 Replace
+      eng = [fence |-> 0, q |-> <<>>]
+      owner = B
+17 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 2>>, op |-> P0, gen |-> 1, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[P0/2]: pc="await" gen=1 rep=NONE rej=FALSE
+18 ProcessAppend
+      lanes = ( <<"rawseal", C0>> :> [seq |-> 0, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [fence |-> 0, q |-> <<>>]
+      h[P0/2]: pc="await" gen=1 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [ fence |-> 0, closed |-> TRUE, finalRec |-> P0, closer |-> <<"product", C0, NONE, 0>> ]
+19 FRelease
+      h[P0/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 3, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE ]

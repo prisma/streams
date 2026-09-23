@@ -1,0 +1,79 @@
+PRE-FIX EVIDENCE. Recorded on the model revision before the fix, read against source revision 241eb28. Fixed by commit 8e52a8f "A raw close that takes over an abandoned final claim writes its own record". On the current model the negative controls TLA-003/nc-admission-refusal-* reproduce this behaviour.
+
+Per-step view of evidence/TLA-003-F2c_pre-fix_plain-seal-over-committed-final.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = (LX :> [seq |-> -1, hash |-> NONE] @@ LY :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [crash |-> 1, retire |-> 0, cancel |-> 1, timeout |-> 1, reg |-> 0, enq |-> 0]
+      bud = (X :> 2 @@ Y :> 1 @@ S :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+ 2 Issue
+      h[X/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 3 FValidate
+      h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 4 Issue
+      h[X/2]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 5 Issue
+      h[S/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+ 6 Issue
+      h[Y/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 7 FClaim
+      h[Y/1]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", CX, LY, 0>>, gen |-> 1, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+ 8 FValidate
+      h[X/2]: pc="claim" gen=NONE rep=NONE rej=TRUE
+ 9 Lapse
+      desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", CX, LY, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+10 FClaim
+      h[X/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+11 TReserve
+      h[X/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", CX, LY, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
+12 TFence
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 1>>, op |-> NONE, gen |-> 2, kind |-> "fence", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+13 ProcessFence
+      eng = [fence |-> 2, q |-> <<>>]
+      h[X/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+14 TInstall
+      eng = [fence |-> 2, q |-> << >>]
+      h[X/1]: pc="enqueue" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, LX, 0>>, gen |-> 2, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+15 FClaim
+      h[X/2]: pc="enqueue" gen=3 rep=NONE rej=TRUE
+      desc = [ counter |-> 3, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, LX, 0>>, gen |-> 3, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+16 Enqueue
+      eng = [ fence |-> 2, q |-> << [ hid |-> <<X, 2>>, op |-> X, gen |-> 3, kind |-> "append", rej |-> TRUE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/2]: pc="await" gen=3 rep=NONE rej=TRUE
+17 Enqueue
+      eng = [ fence |-> 2, q |-> << [ hid |-> <<X, 2>>, op |-> X, gen |-> 3, kind |-> "append", rej |-> TRUE, dfr |-> FALSE, ahead |-> {} ], [ hid |-> <<X, 1>>, op |-> X, gen |-> 2, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/1]: pc="await" gen=2 rep=NONE rej=FALSE
+18 ProcessAppend
+      eng = [ fence |-> 2, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 2, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/2]: pc="await" gen=3 rep=[err |-> "Closed", closed |-> FALSE, dup |-> FALSE] rej=TRUE
+19 FRelease
+      h[X/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 3, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      hist = [ badClosed |-> TRUE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE ]
+20 RsPrep
+      h[S/1]: pc="rs_close" gen=4 rep=NONE rej=FALSE
+      desc = [ counter |-> 4, claim |-> [fin |-> FALSE, com |-> FALSE, op |-> PLAIN, gen |-> 4, lap |-> FALSE], sealed |-> FALSE, sealOp |-> NONE ]
+21 RsClose
+      eng = [ fence |-> 2, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 2, kind |-> "append", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 4, kind |-> "close", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[S/1]: pc="rs_cwait" gen=4 rep=NONE rej=FALSE
+22 ProcessAppend
+      lanes = (LX :> [seq |-> 0, hash |-> NONE] @@ LY :> [seq |-> -1, hash |-> NONE])
+      eng = [ fence |-> 2, q |-> << [ hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 4, kind |-> "close", rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/1]: pc="await" gen=2 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [fence |-> 0, closed |-> TRUE, finalRec |-> X, closer |-> <<"raw", CX, LX, 0>>]
+23 ProcessClose
+      eng = [fence |-> 2, q |-> <<>>]
+      h[S/1]: pc="rs_cwait" gen=4 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+24 RsPublish
+      h[S/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 4, claim |-> NONE, sealed |-> TRUE, sealOp |-> PLAIN]

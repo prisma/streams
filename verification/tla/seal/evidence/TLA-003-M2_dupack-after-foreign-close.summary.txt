@@ -1,0 +1,65 @@
+Recorded on the model revision before the TLA-002-F1 and TLA-003-F2 fixes. It documents model correction M2 and is not a check of the current model.
+
+Per-step view of evidence/TLA-003-M2_dupack-after-foreign-close.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = (L :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [sealed |-> FALSE, sealOp |-> NONE, counter |-> 0, claim |-> NONE]
+      faults = [crash |-> 1, retire |-> 0, cancel |-> 1, timeout |-> 1, reg |-> 0, enq |-> 0]
+      bud = (X :> 2 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]
+ 2 Issue
+      h[X/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 3 Issue
+      h[S/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+ 4 Issue
+      h[N0/1]: pc="a_prep" gen=NONE rep=NONE rej=FALSE
+ 5 APrep
+      h[N0/1]: pc="enqueue" gen=NONE rep=NONE rej=FALSE
+ 6 Issue
+      h[N1/1]: pc="a_prep" gen=NONE rep=NONE rej=FALSE
+ 7 Enqueue
+      eng = [ fence |-> 0, q |-> << [ kind |-> "append", hid |-> <<N0, 1>>, op |-> N0, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[N0/1]: pc="await" gen=NONE rep=NONE rej=FALSE
+ 8 APrep
+      h[N1/1]: pc="enqueue" gen=NONE rep=NONE rej=FALSE
+ 9 Enqueue
+      eng = [ fence |-> 0, q |-> << [ kind |-> "append", hid |-> <<N0, 1>>, op |-> N0, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ kind |-> "append", hid |-> <<N1, 1>>, op |-> N1, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[N1/1]: pc="await" gen=NONE rep=NONE rej=FALSE
+10 RsPrep
+      h[S/1]: pc="rs_close" gen=1 rep=NONE rej=FALSE
+      desc = [ sealed |-> FALSE, sealOp |-> NONE, counter |-> 1, claim |-> [fin |-> FALSE, com |-> FALSE, op |-> PLAIN, gen |-> 1, lap |-> FALSE] ]
+11 RsClose
+      eng = [ fence |-> 0, q |-> << [ kind |-> "append", hid |-> <<N0, 1>>, op |-> N0, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ kind |-> "append", hid |-> <<N1, 1>>, op |-> N1, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ kind |-> "close", hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 1, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[S/1]: pc="rs_cwait" gen=1 rep=NONE rej=FALSE
+12 ProcessAppend
+      lanes = (L :> [seq |-> 0, hash |-> NONE])
+      eng = [ fence |-> 0, q |-> << [ kind |-> "append", hid |-> <<N1, 1>>, op |-> N1, gen |-> NONE, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ], [ kind |-> "close", hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 1, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[N0/1]: pc="await" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+13 ProcessAppend
+      lanes = (L :> [seq |-> 1, hash |-> NONE])
+      eng = [ fence |-> 0, q |-> << [ kind |-> "close", hid |-> <<S, 1>>, op |-> PLAIN, gen |-> 1, rej |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[N1/1]: pc="await" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+14 ProcessClose
+      eng = [fence |-> 0, q |-> <<>>]
+      h[S/1]: pc="rs_cwait" gen=1 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [fence |-> 0, closed |-> TRUE, finalRec |-> NONE, closer |-> PLAIN]
+15 RsPublish
+      h[S/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [sealed |-> TRUE, sealOp |-> PLAIN, counter |-> 1, claim |-> NONE]
+16 FValidate
+      h[X/1]: pc="enqueue" gen=NONE rep=NONE rej=TRUE
+17 Enqueue
+      eng = [ fence |-> 0, q |-> << [ kind |-> "append", hid |-> <<X, 1>>, op |-> X, gen |-> NONE, rej |-> TRUE, dfr |-> FALSE, ahead |-> {} ] >> ]
+      h[X/1]: pc="await" gen=NONE rep=NONE rej=TRUE
+18 ProcessAppend
+      eng = [fence |-> 0, q |-> <<>>]
+      h[X/1]: pc="await" gen=NONE rep=[err |-> NONE, closed |-> TRUE, dup |-> TRUE] rej=TRUE
+19 FRawDup
+      h[X/1]: pc="rs_prep" gen=NONE rep=NONE rej=TRUE
+20 RsPrep
+      h[X/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      hist = [ badClosed |-> FALSE, badSuccess |-> TRUE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE ]

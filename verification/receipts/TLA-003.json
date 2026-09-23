@@ -1,0 +1,479 @@
+{
+  "checks": [
+    {
+      "check": "TLA-003/baseline-lanes",
+      "depth": 43,
+      "distinct_states": 661936,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 70.6,
+      "states_generated": 3770428,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-expanded",
+      "depth": 43,
+      "distinct_states": 1631963,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 251.3,
+      "states_generated": 10045318,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-lanes-engine",
+      "depth": 43,
+      "distinct_states": 1694525,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 600.3,
+      "states_generated": 8982006,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-renewal",
+      "depth": 50,
+      "distinct_states": 4966567,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 1012.1,
+      "states_generated": 33166876,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-renewal-product",
+      "depth": 48,
+      "distinct_states": 3483721,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 667.7,
+      "states_generated": 23186757,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-product-lanes",
+      "depth": 42,
+      "distinct_states": 702029,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 130.9,
+      "states_generated": 3942963,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-product-release",
+      "depth": 30,
+      "distinct_states": 17197,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 4.9,
+      "states_generated": 76842,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-shared-lane",
+      "depth": 53,
+      "distinct_states": 3676695,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 472.9,
+      "states_generated": 17860265,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-validation",
+      "depth": 24,
+      "distinct_states": 10676,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 3.4,
+      "states_generated": 54209,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-validation-capacity",
+      "depth": 19,
+      "distinct_states": 1603,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 2.4,
+      "states_generated": 6523,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-validation-ceiling",
+      "depth": 38,
+      "distinct_states": 64862,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 16.1,
+      "states_generated": 237369,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/baseline-validation-product",
+      "depth": 38,
+      "distinct_states": 13166,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 8.0,
+      "states_generated": 41084,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-003/nc-gap-definitive",
+      "depth": 7,
+      "distinct_states": 448,
+      "expected": "violation:ReleaseOnlyWhenUndeliverable",
+      "property": "ReleaseOnlyWhenUndeliverable",
+      "role": "negative-control",
+      "seconds": 3.1,
+      "states_generated": 939,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-moved-definitive",
+      "depth": 7,
+      "distinct_states": 730,
+      "expected": "violation:ReleaseOnlyWhenUndeliverable",
+      "property": "ReleaseOnlyWhenUndeliverable",
+      "role": "negative-control",
+      "seconds": 3.4,
+      "states_generated": 2101,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-release-by-operation-only",
+      "depth": 9,
+      "distinct_states": 2413,
+      "expected": "violation:ClosureAuthorized",
+      "property": "ClosureAuthorized",
+      "role": "negative-control",
+      "seconds": 4.8,
+      "states_generated": 7434,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-duplicate-completes-final",
+      "depth": 19,
+      "distinct_states": 206124,
+      "expected": "violation:SealedFinalHasItsRecord",
+      "property": "SealedFinalHasItsRecord",
+      "role": "negative-control",
+      "seconds": 51.0,
+      "states_generated": 1007924,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-admission-refusal-release",
+      "depth": 15,
+      "distinct_states": 41916,
+      "expected": "violation:ReleaseOnlyWhenUndeliverable",
+      "property": "ReleaseOnlyWhenUndeliverable",
+      "role": "negative-control",
+      "seconds": 14.1,
+      "states_generated": 170497,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-admission-refusal-false-closed",
+      "depth": 14,
+      "distinct_states": 35585,
+      "expected": "violation:FinalClosedTruthful",
+      "property": "FinalClosedTruthful",
+      "role": "negative-control",
+      "seconds": 11.8,
+      "states_generated": 145688,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-admission-refusal-orphaned",
+      "depth": 19,
+      "distinct_states": 268091,
+      "expected": "violation:ClosureAuthorized",
+      "property": "ClosureAuthorized",
+      "role": "negative-control",
+      "seconds": 44.3,
+      "states_generated": 1237961,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-admission-refusal-plain-over-final",
+      "depth": 24,
+      "distinct_states": 1408244,
+      "expected": "violation:PlainCannotCompleteOwedFinal",
+      "property": "PlainCannotCompleteOwedFinal",
+      "role": "negative-control",
+      "seconds": 363.8,
+      "states_generated": 7520698,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-admission-refusal-without-lapse",
+      "depth": 18,
+      "distinct_states": 2538,
+      "expected": "violation:FinalClosedTruthful",
+      "property": "FinalClosedTruthful",
+      "role": "negative-control",
+      "seconds": 5.2,
+      "states_generated": 10596,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-InvalidRefusedBeforeIntent",
+      "depth": 4,
+      "distinct_states": 29,
+      "expected": "violation:Witness_InvalidRefusedBeforeIntent",
+      "property": "Witness_InvalidRefusedBeforeIntent",
+      "role": "witness",
+      "seconds": 2.7,
+      "states_generated": 42,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-CommitAfterCancel",
+      "depth": 11,
+      "distinct_states": 10712,
+      "expected": "violation:Witness_CommitAfterCancel",
+      "property": "Witness_CommitAfterCancel",
+      "role": "witness",
+      "seconds": 6.2,
+      "states_generated": 35866,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-LostReplyThenRetrySucceeds",
+      "depth": 21,
+      "distinct_states": 324571,
+      "expected": "violation:Witness_LostReplyThenRetrySucceeds",
+      "property": "Witness_LostReplyThenRetrySucceeds",
+      "role": "witness",
+      "seconds": 80.8,
+      "states_generated": 1597818,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-GapRetainsClaim",
+      "depth": 7,
+      "distinct_states": 613,
+      "expected": "violation:Witness_GapRetainsClaim",
+      "property": "Witness_GapRetainsClaim",
+      "role": "witness",
+      "seconds": 2.2,
+      "states_generated": 1330,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-NonClosingDuplicateReleased",
+      "depth": 15,
+      "distinct_states": 73128,
+      "expected": "violation:Witness_NonClosingDuplicateReleased",
+      "property": "Witness_NonClosingDuplicateReleased",
+      "role": "witness",
+      "seconds": 14.7,
+      "states_generated": 313924,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-FinalSealCompletes",
+      "depth": 15,
+      "distinct_states": 72819,
+      "expected": "violation:Witness_FinalSealCompletes",
+      "property": "Witness_FinalSealCompletes",
+      "role": "witness",
+      "seconds": 12.5,
+      "states_generated": 312221,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-PlainSealCompletes",
+      "depth": 7,
+      "distinct_states": 544,
+      "expected": "violation:Witness_PlainSealCompletes",
+      "property": "Witness_PlainSealCompletes",
+      "role": "witness",
+      "seconds": 2.2,
+      "states_generated": 1212,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-DefinitiveRelease",
+      "depth": 13,
+      "distinct_states": 20474,
+      "expected": "violation:Witness_DefinitiveRelease",
+      "property": "Witness_DefinitiveRelease",
+      "role": "witness",
+      "seconds": 6.2,
+      "states_generated": 78745,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-TakeoverInstalls",
+      "depth": 11,
+      "distinct_states": 6840,
+      "expected": "violation:Witness_TakeoverInstalls",
+      "property": "Witness_TakeoverInstalls",
+      "role": "witness",
+      "seconds": 3.6,
+      "states_generated": 24116,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-SeqReusedReleased",
+      "depth": 11,
+      "distinct_states": 12756,
+      "expected": "violation:Witness_SeqReusedReleased",
+      "property": "Witness_SeqReusedReleased",
+      "role": "witness",
+      "seconds": 4.7,
+      "states_generated": 41907,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-SharedLaneDuplicate",
+      "depth": 16,
+      "distinct_states": 49558,
+      "expected": "violation:Witness_SharedLaneDuplicate",
+      "property": "Witness_SharedLaneDuplicate",
+      "role": "witness",
+      "seconds": 8.2,
+      "states_generated": 156579,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-RawMovedRetainsClaim",
+      "depth": 5,
+      "distinct_states": 76,
+      "expected": "violation:Witness_RawMovedRetainsClaim",
+      "property": "Witness_RawMovedRetainsClaim",
+      "role": "witness",
+      "seconds": 1.8,
+      "states_generated": 123,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-NotOwnerRedirect",
+      "depth": 6,
+      "distinct_states": 212,
+      "expected": "violation:Witness_NotOwnerRedirect",
+      "property": "Witness_NotOwnerRedirect",
+      "role": "witness",
+      "seconds": 1.7,
+      "states_generated": 495,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-RawTakeoverWritesItsRecord",
+      "depth": 18,
+      "distinct_states": 159276,
+      "expected": "violation:Witness_RawTakeoverWritesItsRecord",
+      "property": "Witness_RawTakeoverWritesItsRecord",
+      "role": "witness",
+      "seconds": 27.8,
+      "states_generated": 683896,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-RetryAfterMarkRunsItsSeal",
+      "depth": 18,
+      "distinct_states": 175639,
+      "expected": "violation:Witness_RetryAfterMarkRunsItsSeal",
+      "property": "Witness_RetryAfterMarkRunsItsSeal",
+      "role": "witness",
+      "seconds": 44.9,
+      "states_generated": 822907,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/witness-OrphanedCloseHealed",
+      "depth": 24,
+      "distinct_states": 91678,
+      "expected": "violation:Witness_OrphanedCloseHealed",
+      "property": "Witness_OrphanedCloseHealed",
+      "role": "witness",
+      "seconds": 19.6,
+      "states_generated": 287472,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-ceiling-after-intent-intent",
+      "depth": 4,
+      "distinct_states": 26,
+      "expected": "violation:IntentOnlyAfterValidation",
+      "property": "IntentOnlyAfterValidation",
+      "role": "negative-control",
+      "seconds": 2.7,
+      "states_generated": 28,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/nc-ceiling-after-intent-closed-without-claim",
+      "depth": 13,
+      "distinct_states": 7830,
+      "expected": "violation:ClosureAuthorized",
+      "property": "ClosureAuthorized",
+      "role": "negative-control",
+      "seconds": 5.2,
+      "states_generated": 29147,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/known-defect-F4-invalid-retry-renews",
+      "depth": 7,
+      "distinct_states": 252,
+      "expected": "violation:IntentOnlyAfterValidation",
+      "property": "IntentOnlyAfterValidation",
+      "role": "known-defect",
+      "seconds": 3.0,
+      "states_generated": 643,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/known-defect-F5-release-while-deliverable",
+      "depth": 10,
+      "distinct_states": 2014,
+      "expected": "violation:ReleaseOnlyWhenUndeliverable",
+      "property": "ReleaseOnlyWhenUndeliverable",
+      "role": "known-defect",
+      "seconds": 3.6,
+      "states_generated": 6455,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/known-defect-F5-closed-without-claim",
+      "depth": 13,
+      "distinct_states": 6997,
+      "expected": "violation:ClosureAuthorized",
+      "property": "ClosureAuthorized",
+      "role": "known-defect",
+      "seconds": 4.6,
+      "states_generated": 26149,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-003/known-defect-F5-plain-over-final",
+      "depth": 18,
+      "distinct_states": 24011,
+      "expected": "violation:PlainCannotCompleteOwedFinal",
+      "property": "PlainCannotCompleteOwedFinal",
+      "role": "known-defect",
+      "seconds": 8.0,
+      "states_generated": 91554,
+      "verdict": "violation"
+    }
+  ],
+  "id": "TLA-003",
+  "inputs_sha256": "4cdc6e56d5027080392c6155401cea3de9f6b66d1c3014b75227071760114510",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

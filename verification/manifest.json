@@ -2449,6 +2449,1124 @@
         "verification/tla/history/evidence/TLA-019_fork_no_retry.trace.txt",
         "verification/tla/history/evidence/TLA-019_fork_pin_after_successful_delete.trace.txt"
       ]
+    },
+    {
+      "id": "TLA-001",
+      "kind": "tla",
+      "title": "Registry CAS, attempt-local outcomes, and incarnation fencing",
+      "status": "pass-with-recorded-scope",
+      "owner": "stream registry: Registry::mutate_incarnation and Registry::recreate",
+      "source_paths": [
+        "src/registry.rs",
+        "src/application/creation/claim.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/RegistryCas.tla",
+        "verification/tla/seal/MC_RegistryCas.tla",
+        "verification/tla/seal/MC_RegistryCas3.tla",
+        "verification/tla/seal/MC_RegistryCas_NcLeak.tla",
+        "verification/tla/seal/MC_RegistryCas_NcEpoch.tla",
+        "verification/tla/seal/MC_RegistryCas_NcEtag.tla"
+      ],
+      "requirements": [
+        "C4",
+        "L5",
+        "L14",
+        "T8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-003",
+        "TLA-008",
+        "TLA-009",
+        "TLA-014",
+        "KANI-032",
+        "KANI-040",
+        "KANI-041"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-DECIDE-FN",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-PATH",
+        "ASM-SEAL-NODELETE"
+      ],
+      "input_scope": "Two projects share one stream name (two descriptor paths). Small: M1 and M2 race generation allocations on (P1, n) incarnation E1 while D tombstones E1 and recreates the same name and key as E2; M5, validated against E2, races them on the replacement; M3 allocates on (P2, n) at E3; every E1 mutator may start before, during or after the delete and recreate; 2 attempts per call; generations <= 3; one lost PUT reply, one failed dispatch, one missing ETag, one failed GET, one client retry of an ambiguous recreate. Expanded: three E1 racers (M1, M2, M4) and two E2 racers (M5, M6) on one name, the production bound of 5 attempts, two lost replies, two failed dispatches, two missing ETags, one failed GET, one recreate retry. Evidence properties: UniqueAllocation, IncarnationFenced, AllocatorCountsWrites. AttemptLocalResult and NegativeOutcomesWroteNothing hold by construction (ASM-SEAL-DECIDE-FN).",
+      "checks": [
+        {
+          "id": "TLA-001/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-001/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_RegistryCas3.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-001/nc-leaked-outcome",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcLeak.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_leak.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "UniqueAllocation"
+          }
+        },
+        {
+          "id": "TLA-001/nc-dropped-incarnation-check",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcEpoch.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_epoch.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IncarnationFenced"
+          }
+        },
+        {
+          "id": "TLA-001/nc-missing-etag-overwrite",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcEtag.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_etag.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AllocatorCountsWrites"
+          }
+        },
+        {
+          "id": "TLA-001/witness-LoserRetriesThenApplies",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_LoserRetriesThenApplies.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LoserRetriesThenApplies"
+          }
+        },
+        {
+          "id": "TLA-001/witness-AmbiguousAfterWrite",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_AmbiguousAfterWrite.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AmbiguousAfterWrite"
+          }
+        },
+        {
+          "id": "TLA-001/witness-StaleMutatorFenced",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_StaleMutatorFenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleMutatorFenced"
+          }
+        },
+        {
+          "id": "TLA-001/witness-MissingTokenRefused",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_MissingTokenRefused.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MissingTokenRefused"
+          }
+        },
+        {
+          "id": "TLA-001/witness-Recreated",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_Recreated.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_Recreated"
+          }
+        },
+        {
+          "id": "TLA-001/witness-ConflictExhausted",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_ConflictExhausted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ConflictExhausted"
+          }
+        },
+        {
+          "id": "TLA-001/witness-DeclinedOnTombstone",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_DeclinedOnTombstone.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DeclinedOnTombstone"
+          }
+        },
+        {
+          "id": "TLA-001/witness-ReplacementAllocatesWhileStaleFenced",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_ReplacementAllocatesWhileStaleFenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReplacementAllocatesWhileStaleFenced"
+          }
+        },
+        {
+          "id": "TLA-001/witness-AmbiguousRecreateRetried",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_AmbiguousRecreateRetried.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AmbiguousRecreateRetried"
+          }
+        }
+      ],
+      "regressions": [
+        "registry::tests::typed_mutation_never_leaks_a_lost_attempts_decision",
+        "registry::tests::r08_missing_conditional_token_fails_closed",
+        "registry::tests::r08_only_precondition_conflicts_are_retried",
+        "registry::tests::r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion",
+        "registry::tests::recreate_race_has_one_winner",
+        "dst::dst_tests::seal_incarnation::a_product_seal_never_binds_to_a_recreated_incarnation",
+        "verification/tla/seal/evidence/TLA-001_nc-leaked-outcome.txt",
+        "verification/tla/seal/evidence/TLA-001_nc-dropped-incarnation-check.txt",
+        "verification/tla/seal/evidence/TLA-001_nc-missing-etag-overwrite.txt"
+      ]
+    },
+    {
+      "id": "TLA-002",
+      "kind": "tla",
+      "title": "Seal claims, renewal, and competing takeover reservations",
+      "status": "counterexample",
+      "owner": "seal coordinator (application::lifecycle) and the shard committer's seal fence",
+      "source_paths": [
+        "src/application/lifecycle.rs",
+        "src/application/lifecycle/claims.rs",
+        "src/application/append/close.rs",
+        "src/application/append/submit.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/append.rs",
+        "src/shard/transaction/maintenance.rs",
+        "src/shard.rs",
+        "src/shard_directory.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/SealProtocol.tla",
+        "verification/tla/seal/MC_SealTakeover.tla",
+        "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+        "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+        "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla"
+      ],
+      "requirements": [
+        "L3",
+        "L5",
+        "L6",
+        "L7",
+        "L8",
+        "L9",
+        "L10",
+        "L13",
+        "L15"
+      ],
+      "models": [
+        "TLA-001",
+        "TLA-003",
+        "TLA-004",
+        "TLA-006",
+        "TLA-011",
+        "KANI-039",
+        "KANI-040",
+        "KANI-041",
+        "KANI-042"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-REPLY-ORDER",
+        "ASM-SEAL-ENGINE-HANDOFF",
+        "ASM-SEAL-FENCE-ROW",
+        "ASM-SEAL-QUEUE",
+        "ASM-SEAL-OWNER",
+        "ASM-SEAL-CLOCK",
+        "ASM-SEAL-RECOVERY-ACTOR",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-NODELETE",
+        "ASM-SEAL-OPID"
+      ],
+      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held and liveness-held, which, like the known-defect configurations, separate them for one fence group. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
+      "checks": [
+        {
+          "id": "TLA-002/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-faults",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_faults.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-002/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-xproc",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_xproc.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-retire",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_retire.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-002/baseline-engine",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_engine.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 5400
+        },
+        {
+          "id": "TLA-002/baseline-liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-liveness-contenders",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_contenders.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4200
+        },
+        {
+          "id": "TLA-002/baseline-liveness-faults",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_faults.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-xproc-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_held_xproc.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-liveness-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_held.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/nc-no-newest-reservation",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_newest.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NewestInstall"
+          }
+        },
+        {
+          "id": "TLA-002/nc-no-newest-reservation-live-fenced",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_newest_live.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LiveClaimNeverFenced"
+          }
+        },
+        {
+          "id": "TLA-002/nc-install-before-fence-durable",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_early_install.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-install-before-fence-inqueue",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_early_install_inqueue.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "QueuedFinalDecidedBeforeReplacement"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-xproc",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_xproc.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-retire",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_retire.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-false-success",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_false_success.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SuccessProvesOutcome"
+          }
+        },
+        {
+          "id": "TLA-002/witness-TakeoverInstalls",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_TakeoverInstalls.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        },
+        {
+          "id": "TLA-002/witness-CompetingReservations",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_CompetingReservations.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CompetingReservations"
+          }
+        },
+        {
+          "id": "TLA-002/witness-LowerReservationRestarts",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_LowerReservationRestarts.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LowerReservationRestarts"
+          }
+        },
+        {
+          "id": "TLA-002/witness-OldFinalSealedOnBehalf",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_OldFinalSealedOnBehalf.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OldFinalSealedOnBehalf"
+          }
+        },
+        {
+          "id": "TLA-002/witness-StaleClaimSuperseded",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_StaleClaimSuperseded.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleClaimSuperseded"
+          }
+        },
+        {
+          "id": "TLA-002/witness-ExactRenewalAfterReservation",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_ExactRenewalAfterReservation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ExactRenewalAfterReservation"
+          }
+        },
+        {
+          "id": "TLA-002/witness-FinalSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FinalSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FinalSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-002/witness-PlainSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_PlainSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PlainSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-002/witness-EngineRetiredMidFlight",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_EngineRetiredMidFlight.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EngineRetiredMidFlight"
+          }
+        },
+        {
+          "id": "TLA-002/witness-CommittedButAnsweredMoved",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_CommittedButAnsweredMoved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CommittedButAnsweredMoved"
+          }
+        },
+        {
+          "id": "TLA-002/witness-OwnershipMovedToOtherProcess",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_OwnershipMovedToOtherProcess.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OwnershipMovedToOtherProcess"
+          }
+        },
+        {
+          "id": "TLA-002/witness-NotOwnerRedirect",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_NotOwnerRedirect.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NotOwnerRedirect"
+          }
+        },
+        {
+          "id": "TLA-002/witness-StaleFinalRefusedAfterReplacement",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_StaleFinalRefusedAfterReplacement.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleFinalRefusedAfterReplacement"
+          }
+        },
+        {
+          "id": "TLA-002/witness-FenceUnverifiedRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FenceUnverifiedRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FenceUnverifiedRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-002/known-defect-F2-refusal-before-fence-durable",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_kd_refusal_before_fence_durable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/known-defect-F2-release-after-durable-final",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_kd_release_after_durable_final.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_fencing::a_fence_survives_engine_replacement",
+        "shard::durability_frontier_tests::a_seal_fence_survives_engine_replacement",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_cross-instance-crash-failover.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_engine-replacement.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_release-of-durable-final.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_false-success.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_refusal-before-fence-durable.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_release-after-durable-final.txt"
+      ]
+    },
+    {
+      "id": "TLA-003",
+      "kind": "tla",
+      "title": "Final-record sealing, ambiguous append outcomes, and owed debt",
+      "status": "counterexample",
+      "owner": "seal coordinator final-record path: raw close-with-content and product seal-with-final",
+      "source_paths": [
+        "src/application/lifecycle.rs",
+        "src/application/lifecycle/claims.rs",
+        "src/application/lifecycle/raw_close.rs",
+        "src/application/append.rs",
+        "src/application/append/close.rs",
+        "src/application/append/content.rs",
+        "src/application/append/contract.rs",
+        "src/application/append/submit.rs",
+        "src/product.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/append.rs",
+        "src/shard/transaction/maintenance.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/SealProtocol.tla",
+        "verification/tla/seal/MC_FinalSeal.tla",
+        "verification/tla/seal/MC_FinalSeal_NcGapDefinitive.tla",
+        "verification/tla/seal/MC_FinalSeal_NcMovedDefinitive.tla",
+        "verification/tla/seal/MC_FinalSeal_NcReleaseByOp.tla",
+        "verification/tla/seal/MC_FinalSeal_NcDupCompletes.tla",
+        "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+        "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla"
+      ],
+      "requirements": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L11",
+        "L12",
+        "L15",
+        "D6",
+        "D7",
+        "P8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-005",
+        "TLA-007",
+        "KANI-037",
+        "KANI-040",
+        "KANI-042",
+        "KANI-043",
+        "KANI-044",
+        "KANI-096"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-REPLY-ORDER",
+        "ASM-SEAL-ENGINE-HANDOFF",
+        "ASM-SEAL-FENCE-ROW",
+        "ASM-SEAL-QUEUE",
+        "ASM-SEAL-OWNER",
+        "ASM-SEAL-VALIDITY",
+        "ASM-SEAL-CLOCK",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-NODELETE",
+        "ASM-SEAL-OPID"
+      ],
+      "input_scope": "One incarnation, one segment; operation ids, producer lanes and request hashes derived from (surface, content, coordination); validity is a function of the request and the handling instance's record ceiling and ingest capacity; generations <= 5 (CONSTRAINT); MaxClaimLoop = 0. A: raw close-with-content X on client producer (L, 1), two requests; raw appends N0 = (L, 0) and N1 = (L, 1) with X's bytes; plain S; 1 crash, 1 cancellation, 1 timeout (expanded: also 1 registry fault, 1 enqueue failure). A2: X on two concurrent slots, the retry on instance B; 1 engine replacement, 1 enqueue failure; plus HandlersProgress. B: raw X (two concurrent slots) and product Y with the same bytes and different coordination, plain S. C: B with X on the product surface. P: product final X on client (L, 0), product append N1 and raw append N2 on the same tuple and bytes, plain S. SL: raw X and product Y without producer headers and with the same bytes (one synthetic lane), plain S. PW: product final X on (L, 0), product append N1 on the same tuple, raw close-with-content W admitted while X's claim stands (X's claim can be released without a lapse). V: one instance; raw X, two requests; product Y over the record ceiling; product Z refused before intent. V4: X's retry on B over B's ingest capacity. V5: X's retry on B over B's record ceiling, B owns the shard at start, 1 engine replacement, three X requests, plain S. VP: V5 for product Y. Exact retries at every persisted boundary. No TLA-003 liveness (renewal generations are unbounded).",
+      "checks": [
+        {
+          "id": "TLA-003/baseline-lanes",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_lanes.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-lanes-engine",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_lanes_engine.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-renewal",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_renewal.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4800
+        },
+        {
+          "id": "TLA-003/baseline-renewal-product",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_renewal_product.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-product-lanes",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_product_lanes.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-product-release",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_product_release.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-shared-lane",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_shared_lane.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-validation",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-capacity",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_capacity.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-ceiling",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_ceiling.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-product",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_product.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/nc-gap-definitive",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcGapDefinitive.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_gap_definitive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-moved-definitive",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcMovedDefinitive.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_moved_definitive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-release-by-operation-only",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcReleaseByOp.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_release_by_op.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-duplicate-completes-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcDupCompletes.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_dup_completes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SealedFinalHasItsRecord"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-false-closed",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_false_closed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "FinalClosedTruthful"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-orphaned",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_orphaned.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-plain-over-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_plain_over_final.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PlainCannotCompleteOwedFinal"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-without-lapse",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_without_lapse.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "FinalClosedTruthful"
+          }
+        },
+        {
+          "id": "TLA-003/witness-InvalidRefusedBeforeIntent",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_InvalidRefusedBeforeIntent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InvalidRefusedBeforeIntent"
+          }
+        },
+        {
+          "id": "TLA-003/witness-CommitAfterCancel",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_CommitAfterCancel.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CommitAfterCancel"
+          }
+        },
+        {
+          "id": "TLA-003/witness-LostReplyThenRetrySucceeds",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_LostReplyThenRetrySucceeds.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LostReplyThenRetrySucceeds"
+          }
+        },
+        {
+          "id": "TLA-003/witness-GapRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_GapRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GapRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-003/witness-NonClosingDuplicateReleased",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_NonClosingDuplicateReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NonClosingDuplicateReleased"
+          }
+        },
+        {
+          "id": "TLA-003/witness-FinalSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_FinalSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FinalSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-003/witness-PlainSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_PlainSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PlainSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-003/witness-DefinitiveRelease",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_DefinitiveRelease.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DefinitiveRelease"
+          }
+        },
+        {
+          "id": "TLA-003/witness-TakeoverInstalls",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_TakeoverInstalls.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SeqReusedReleased",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SeqReusedReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SeqReusedReleased"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SharedLaneDuplicate",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SharedLaneDuplicate.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SharedLaneDuplicate"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RawMovedRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RawMovedRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RawMovedRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-003/witness-NotOwnerRedirect",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_NotOwnerRedirect.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NotOwnerRedirect"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RawTakeoverWritesItsRecord",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RawTakeoverWritesItsRecord.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RawTakeoverWritesItsRecord"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RetryAfterMarkRunsItsSeal",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RetryAfterMarkRunsItsSeal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RetryAfterMarkRunsItsSeal"
+          }
+        },
+        {
+          "id": "TLA-003/witness-OrphanedCloseHealed",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_OrphanedCloseHealed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OrphanedCloseHealed"
+          }
+        },
+        {
+          "id": "TLA-003/nc-ceiling-after-intent-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_ceiling_after_intent_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IntentOnlyAfterValidation"
+          }
+        },
+        {
+          "id": "TLA-003/nc-ceiling-after-intent-closed-without-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_ceiling_after_intent_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/known-defect-F4-invalid-retry-renews",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_kd_f4_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IntentOnlyAfterValidation"
+          }
+        },
+        {
+          "id": "TLA-003/known-defect-F5-release-while-deliverable",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/known-defect-F5-closed-without-claim",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/known-defect-F5-plain-over-final",
+          "role": "known-defect",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_plain_over_final.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PlainCannotCompleteOwedFinal"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_fencing::a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
+        "dst::dst_tests::seal_cancellation::an_over_ceiling_product_final_is_refused_before_its_seal_intent",
+        "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_raw-takeover-releases-deliverable-debt.txt",
+        "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_false-closed-answer.txt",
+        "verification/tla/seal/evidence/TLA-003-F2b_pre-fix_committed-final-orphaned.txt",
+        "verification/tla/seal/evidence/TLA-003-F2c_pre-fix_plain-seal-over-committed-final.txt",
+        "verification/tla/seal/evidence/TLA-003-F2d_pre-fix_without-lapse.txt",
+        "verification/tla/seal/evidence/TLA-003-F3_pre-fix_intent-before-record-ceiling.txt",
+        "verification/tla/seal/evidence/TLA-003-F3_pre-fix_closed-without-claim.txt",
+        "verification/tla/seal/evidence/TLA-003-F4_invalid-retry-renews.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_release-while-deliverable.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_closed-without-claim.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_plain-over-final.txt",
+        "verification/tla/seal/evidence/TLA-003-M2_dupack-after-foreign-close.txt"
+      ]
     }
   ]
 }
