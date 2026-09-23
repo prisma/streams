@@ -761,11 +761,6 @@ impl LiveFeed {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn retained(&self) -> usize {
-        self.retained_charge.load(Ordering::Relaxed)
-    }
-
     /// Increment-only attach; called under the REGISTRY lock by
     /// `FeedRegistry::subscribe` so count, membership, captured head,
     /// version receiver, and SOURCE GENERATION all bind in one

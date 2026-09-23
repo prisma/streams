@@ -2125,7 +2125,7 @@
       "count": 1,
       "owner": "crate",
       "path": "src/sse/feed/test_support.rs",
-      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets.",
+      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets or read a feed's retained charge.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
