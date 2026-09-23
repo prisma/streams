@@ -1159,73 +1159,6 @@ async fn debug_usage_reconcile(
     }
 }
 
-/// #269: the one h1 serve loop — production and every test rig serve
-/// through THIS function, so the suite exercises the real connection
-/// path; what each connection is served with is `serve::h1_builder`.
-#[expect(
-    clippy::disallowed_methods,
-    clippy::let_underscore_must_use,
-    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled results would restate what the JoinSet already owns"
-)]
-pub(crate) async fn serve_h1(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-    http: &crate::config::HttpConfig,
-    tasks: crate::tasks::TaskSupervisor,
-) -> std::io::Result<()> {
-    let svc = hyper_util::service::TowerToHyperService::new(app);
-    let h1 = serve::h1_builder(http);
-    let limits = raise_nofile();
-    let (soft, hard) = (
-        limits.soft.map_or(0, |n| n.get()),
-        limits.hard.map_or(0, |n| n.get()),
-    );
-    NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
-    NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
-    tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
-    spawn_runtime_watchdog(&tasks);
-    // PR 6.1-A: the accept loop OWNS its connections. A connection is
-    // not request-scoped — keep-alives and live subscriptions outlive
-    // any one request — so on cancellation the loop stops accepting,
-    // releases the address, then aborts and JOINS every connection: a
-    // runtime that has shut down has no socket left open, and a
-    // replacement can bind the same address immediately.
-    let cancel = tasks.cancellation();
-    let mut conns = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            accepted = listener.accept() => match accepted {
-                Ok((sock, _peer)) => {
-                    let svc = svc.clone();
-                    let h1 = h1.clone();
-                    conns.spawn(async move {
-                        let _ = sock.set_nodelay(true);
-                        let io = hyper_util::rt::TokioIo::new(sock);
-                        // Errors here are routine client behavior (resets,
-                        // half-closed keep-alives, head deadlines), not
-                        // server faults.
-                        let _ = h1.serve_connection(io, svc).await;
-                    });
-                }
-                Err(e) => {
-                    // Transient accept errors (EMFILE bursts, aborted
-                    // handshakes) must not kill the acceptor.
-                    tracing::warn!("accept: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-            },
-            // Reap finished connections so the set never grows with
-            // completed entries.
-            Some(_) = conns.join_next(), if !conns.is_empty() => {}
-        }
-    }
-    drop(listener);
-    conns.abort_all();
-    while conns.join_next().await.is_some() {}
-    Ok(())
-}
-
 /// Every route the service answers. The operator debug table mounts under
 /// `/v1/debug` only through its one gate, `debug::gated`.
 pub(crate) fn router(state: Arc<AppState>) -> Router {
@@ -3213,6 +3146,7 @@ mod read_adapter;
 mod serve;
 mod telemetry_append;
 pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
+pub(crate) use serve::serve_h1;
 use telemetry_append::internal_telemetry_append;
 
 #[cfg(test)]

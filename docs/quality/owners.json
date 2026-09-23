@@ -2076,9 +2076,17 @@
       "category": "effect",
       "count": 1,
       "owner": "crate::serve_h1",
-      "path": "src/http.rs",
+      "path": "src/http/serve.rs",
       "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
       "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve_h1",
+      "path": "src/http/serve.rs",
+      "reason": "The accept loop selects cancellation, accept and connection reaping; the pinned Tokio macro is the await-any form and all three arms are owned by the loop; the http::serve rig tests drive every arm.",
+      "syntax": "tokio::select"
     },
     {
       "category": "effect",

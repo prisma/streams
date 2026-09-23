@@ -2880,13 +2880,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::serve_h1",
-      "path": "src/http.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::spawn_runtime_watchdog",
       "path": "src/http.rs",
       "syntax": "tokio::select"
