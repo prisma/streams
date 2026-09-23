@@ -2,7 +2,7 @@
 
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
-use super::fixture_storage::{mem, open_engine, skey};
+use super::fixture_storage::{absorb_through, mem, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
 use std::sync::Arc;
 
@@ -402,7 +402,7 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine.submit_absorbed(hash, tail0.next, backlog0).await;
+    absorb_through(&engine, hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -506,7 +506,7 @@ async fn balanced_append_absorb_group_still_writes_progress() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine.submit_absorbed(hash, tail0.next, backlog0).await;
+    absorb_through(&engine, hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -589,9 +589,7 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine
-        .submit_absorbed(hash, tail0.next, backlog0 + 999)
-        .await;
+    absorb_through(&engine, hash, tail0.next, backlog0 + 999).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -624,9 +622,7 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
         "engine wedged: {out:?}"
     );
     let tail2 = engine.tail_fields(&hash).await.unwrap().unwrap();
-    engine
-        .submit_absorbed(hash, tail2.next, tail2.unabsorbed_bytes)
-        .await;
+    absorb_through(&engine, hash, tail2.next, tail2.unabsorbed_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -728,9 +724,7 @@ async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
         None,
         maint,
     );
-    engine2
-        .submit_absorbed(hash, repaired.next, exact_bytes)
-        .await;
+    absorb_through(&engine2, hash, repaired.next, exact_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

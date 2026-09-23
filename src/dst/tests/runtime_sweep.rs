@@ -3,7 +3,7 @@
 use super::fixture_failpoints::sweep_lock;
 use super::fixture_http::http_rig_cold_absorb;
 use super::fixture_requests::hreq;
-use super::fixture_storage::mem;
+use super::fixture_storage::{absorb_through, mem};
 use std::sync::Arc;
 
 /// Drain billing debt until the sweep's own probes read clean, so the
@@ -111,8 +111,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
     let hash = dirty[0].0;
     let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
-    kept.submit_absorbed(hash, tail.next, tail.unabsorbed_bytes)
-        .await;
+    absorb_through(&kept, hash, tail.next, tail.unabsorbed_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

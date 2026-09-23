@@ -187,6 +187,20 @@ pub(super) async fn drain_filtered(
 
 /// Direct append of a payload of chosen size (the workload helper only
 /// sends tiny JSON bodies; the gather-budget tests need real volume).
+/// Stages one stream's absorbed-boundary advance the way one gather
+/// confirms it, so a fixture can put a stream into a maintenance state
+/// without running the absorber.
+pub(super) async fn absorb_through(
+    engine: &crate::shard::ShardEngine,
+    hash: [u8; 16],
+    upto: u64,
+    retired_bytes: u64,
+) {
+    engine
+        .submit_absorbed_batch_v2(vec![(hash, upto, retired_bytes)])
+        .await;
+}
+
 pub(super) async fn append_sized(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],

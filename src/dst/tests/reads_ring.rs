@@ -1,6 +1,8 @@
 //! Reads ring.
 
-use super::fixture_storage::{append_sized, mem, open_engine, open_engine_cfg, skey};
+use super::fixture_storage::{
+    absorb_through, append_sized, mem, open_engine, open_engine_cfg, skey,
+};
 use crate::dst::{FaultPlan, FaultStore, OpLog, Outcome, Workload, drain_observed};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -335,10 +337,10 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
     };
 
     // Advance 0 -> 10: deferred trim means nothing is deleted yet.
-    engine.submit_absorbed(hash, 10, 0).await;
+    absorb_through(&engine, hash, 10, 0).await;
     wait_absorbed(&engine, 10).await;
     // Advance 10 -> 18: trims up to the previous boundary, 10.
-    engine.submit_absorbed(hash, 18, 0).await;
+    absorb_through(&engine, hash, 18, 0).await;
     wait_absorbed(&engine, 18).await;
     let (absorbed, trimmed) = published(&engine).await;
     assert_eq!(absorbed, 18);
@@ -349,7 +351,7 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
 
     // The duplicate: re-submit the boundary the committer already holds,
     // exactly as an absorber pass that raced dispatch does.
-    engine.submit_absorbed(hash, 18, 0).await;
+    absorb_through(&engine, hash, 18, 0).await;
     // Sentinel append: the committer queue is FIFO, so this ack proves the
     // duplicate op was processed and its state published.
     w.run(&engine, hash, &key, &["d"], 1, false, &mut log).await;
