@@ -27,6 +27,26 @@ impl From<RecordCorruption> for slatedb::Error {
     }
 }
 
+/// A range read's refusal split by owner (item 35): `Corrupt` is the row's
+/// own bytes failing admission, so the same read fails the same way on
+/// every retry; `Store` is whatever the database said, with its kind
+/// (fence, unavailability, SST data) intact for the caller's policy.
+#[derive(Debug)]
+pub(crate) enum RangeReadError {
+    Corrupt(RecordCorruption),
+    Store(slatedb::Error),
+}
+impl From<RecordCorruption> for RangeReadError {
+    fn from(error: RecordCorruption) -> Self {
+        Self::Corrupt(error)
+    }
+}
+impl From<slatedb::Error> for RangeReadError {
+    fn from(error: slatedb::Error) -> Self {
+        Self::Store(error)
+    }
+}
+
 /// Decode one complete row, including the exact namespace, tag and offset.
 /// The prefix comes from the canonical key encoder for the selected segment.
 pub(crate) fn decode_row<'a>(
@@ -132,7 +152,7 @@ pub(crate) async fn read_frames_range(
     scan_from: u64,
     scan_to: u64,
     max_bytes: usize,
-) -> Result<FrameReadResult, slatedb::Error> {
+) -> Result<FrameReadResult, RangeReadError> {
     let hash = handle.hash;
     let mut out = FrameReadResult {
         frames: Vec::new(),

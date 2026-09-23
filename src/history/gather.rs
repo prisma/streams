@@ -14,6 +14,7 @@ use super::{
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
+use crate::shard::record::RangeReadError;
 use crate::shard::{FrameReadResult, StreamHandle, read_frames_range};
 use bytes::Bytes;
 use slatedb::config::WriteOptions;
@@ -169,6 +170,15 @@ fn stage_postings(
     }
     POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, Ordering::Relaxed);
     Ok(chunk_runs.into_iter().collect())
+}
+
+/// Every range-read refusal aborts the gather, a row's own corruption as
+/// the same slatedb error it has always been.
+fn abort_gather(error: RangeReadError) -> anyhow::Error {
+    match error {
+        RangeReadError::Corrupt(row) => slatedb::Error::from(row).into(),
+        RangeReadError::Store(error) => error.into(),
+    }
 }
 
 /// Drain trace for the DST harness: which frames this gather staged.
@@ -371,7 +381,8 @@ impl Absorber {
             let got = self.read_wave(wave, per_stream).await;
             self.pace_between_waves(&mut pacing).await;
             for (plan, read) in wave.iter().zip(got) {
-                self.stage_chunk(&mut staged, reservation, plan, &read?)?;
+                let chunk = read.map_err(abort_gather)?;
+                self.stage_chunk(&mut staged, reservation, plan, &chunk)?;
             }
         }
         GATHER_LAST_PACE_MS.store(millis(pacing.paced), Ordering::Relaxed);
@@ -447,7 +458,7 @@ impl Absorber {
         &self,
         wave: &[ReadPlan],
         per_stream: usize,
-    ) -> Vec<Result<FrameReadResult, slatedb::Error>> {
+    ) -> Vec<Result<FrameReadResult, RangeReadError>> {
         let reads = wave
             .iter()
             .map(|p| read_frames_range(&self.shard, &p.handle, p.from, p.upto, per_stream));
