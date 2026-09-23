@@ -290,3 +290,36 @@ proptest::proptest! {
         proptest::prop_assert_eq!(decode_seq_row(&raw).ok(), std::str::from_utf8(&raw).ok().map(str::to_owned));
     }
 }
+
+/// Review item 53: the tail row copies the lane's Stream-Seq only while its
+/// length fits the row's u16; a longer one is not copied, and the row still
+/// decodes every field (its lane row holds the sequence).
+#[test]
+fn r53_the_tail_copies_a_stream_seq_only_while_its_length_fits() {
+    let tail = |seq: String| TailFields {
+        next: 9,
+        absorbed: 4,
+        trimmed: 2,
+        trim_safe_to: 3,
+        route: [0xA5; 16],
+        unabsorbed_bytes: 77,
+        seq: Some(seq),
+        ..Default::default()
+    };
+    let fits = "s".repeat(usize::from(u16::MAX));
+    let decoded = stored_tail(&encode_tail(&tail(fits.clone()))).unwrap();
+    assert_eq!(decoded.seq.as_deref(), Some(fits.as_str()));
+    let past = stored_tail(&encode_tail(&tail("s".repeat(usize::from(u16::MAX) + 1)))).unwrap();
+    assert_eq!(past.seq, None, "a copy past the u16 length is not written");
+    assert_eq!(
+        (
+            past.next,
+            past.absorbed,
+            past.trim_safe_to,
+            past.route,
+            past.unabsorbed_bytes
+        ),
+        (9, 4, 3, [0xA5; 16], 77),
+        "every field decodes where it was written"
+    );
+}

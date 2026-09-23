@@ -488,3 +488,54 @@ async fn r12_an_undecodable_stream_seq_row_refuses_the_append_and_writes_nothing
     );
     assert!(unchanged, "a refused append writes no row");
 }
+
+/// Review item 53: the tail row keeps a copy of the lane's last Stream-Seq
+/// behind a u16 length. A longer header wrapped that length, and every
+/// later load of the stream refused the row for good; the lane's own row
+/// still holds the whole sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r53_a_stream_seq_past_the_tail_rows_u16_leaves_the_stream_openable() {
+    let fixture = Fixture::new().await;
+    let long = "s".repeat(usize::from(u16::MAX) + 1);
+    let (mut append, reply) = fixture.append(HASH, 0, AppendFinish::Open);
+    if let CommitOp::Append(req) = &mut append {
+        req.seq = Some(long.clone());
+    }
+    fixture
+        .engine
+        .commit_group(vec![append], &fixture.cfg)
+        .await;
+    let acked = tokio::time::timeout(Duration::from_secs(5), reply)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(acked.is_ok(), "the append itself commits, got {acked:?}");
+    let stored = fixture
+        .engine
+        .tail_fields(&HASH)
+        .await
+        .map(|tail| tail.map(|tail| tail.next))
+        .map_err(|e| e.to_string());
+    assert_eq!(
+        stored,
+        Ok(Some(1)),
+        "a Stream-Seq one byte past the tail row's u16 length must leave the stored tail decodable"
+    );
+    let lane = fixture
+        .engine
+        .load_seq_chain(&HASH, &[], &KEY)
+        .await
+        .unwrap();
+    assert_eq!(
+        lane.map(|seq| seq.len()),
+        Some(long.len()),
+        "the lane row holds the whole sequence"
+    );
+    fixture.journal.close();
+    fixture.engine.begin_close();
+    fixture
+        .engine
+        .await_terminated(Duration::from_secs(5))
+        .await
+        .unwrap();
+}

@@ -72,12 +72,11 @@ pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 /// caveat: a pre-bitmask binary reads flags with `== 1`, so it would
 /// see a closed+v2 stream (flags=3) as open — acceptable for
 /// forward-only deployments, noted here because it is not zero.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "encode_tail; the producer sequence is bounded by the u16 width the tail row stores; a checked conversion would only restate the row format"
-)]
+/// `seq` only copies the lane's Stream-Seq (its `s` row owns it): a copy past the
+/// u16 length is not written, since a wrapped length wedges every later load.
 fn encode_tail(t: &TailFields) -> Vec<u8> {
     let seq = t.seq.as_deref().unwrap_or("").as_bytes();
+    let (seq_len, seq) = u16::try_from(seq.len()).map_or((0, &[][..]), |len| (len, seq));
     let mut v = Vec::with_capacity(76 + seq.len());
     v.push(3);
     v.extend_from_slice(&t.next.to_le_bytes());
@@ -93,7 +92,7 @@ fn encode_tail(t: &TailFields) -> Vec<u8> {
         flags |= 2;
     }
     v.push(flags);
-    v.extend_from_slice(&(seq.len() as u16).to_le_bytes());
+    v.extend_from_slice(&seq_len.to_le_bytes());
     v.extend_from_slice(seq);
     v.extend_from_slice(&t.route);
     v.extend_from_slice(&t.trim_safe_to.to_le_bytes());
