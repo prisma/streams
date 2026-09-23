@@ -206,6 +206,56 @@ pub(crate) async fn read_frames(
     .await
 }
 
+impl Deliver {
+    /// The shard-log view a read at this visibility observes. A tail scan and
+    /// the absorbed boundary that revalidates it must share it (TLA-018-F1).
+    fn durability(self) -> DurabilityLevel {
+        match self {
+            Deliver::Durable => DurabilityLevel::Remote,
+            Deliver::Applied => DurabilityLevel::Memory,
+        }
+    }
+}
+
+impl ShardEngine {
+    /// `(absorbed, history_v2)` from the stored tail row as a `visibility`
+    /// read sees it: the strongest boundary a tail scan at that visibility
+    /// can have observed trims for. An applied scan sees applied trims whose
+    /// advance is not yet Remote-durable, so revalidating it against the
+    /// Remote row would accept its hole as consumed (TLA-018-F1). The
+    /// published handle state is NOT enough: trim deletes become scan-visible
+    /// when their batch is written (applied) or durable, while `handle.state`
+    /// advances only at publication or dispatch, which can lag arbitrarily
+    /// under load (2026-07-27 boundary-race DST failure). Returned TOGETHER:
+    /// a reader adopting a boundary with a stale in-memory layout flag would
+    /// refuse a v2 history range as v1 (observed in the first-absorption
+    /// flush-to-dispatch window).
+    pub(crate) async fn visible_absorbed(
+        &self,
+        hash: &[u8; 16],
+        visibility: Deliver,
+    ) -> Result<(u64, bool), slatedb::Error> {
+        #[cfg(test)]
+        if let Ok((entered, release)) = TEST_MARKER_HOLD.try_with(Clone::clone) {
+            entered.notify_one();
+            release.notified().await;
+        }
+        let v = self
+            .db
+            .get_with_options(
+                super::tail_key(hash),
+                &slatedb::config::ReadOptions {
+                    durability_filter: visibility.durability(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(v.map(|b| super::stored_tail(&b))
+            .transpose()?
+            .map_or((0, false), |t| (t.absorbed, t.history_v2)))
+    }
+}
+
 /// Application pages bound examined offsets as well as selected bytes.
 #[expect(
     clippy::too_many_arguments,
@@ -272,10 +322,7 @@ pub(crate) async fn read_frames_until(
         .scan_with_options(
             range,
             &ScanOptions {
-                durability_filter: match deliver {
-                    Deliver::Durable => DurabilityLevel::Remote,
-                    Deliver::Applied => DurabilityLevel::Memory,
-                },
+                durability_filter: deliver.durability(),
                 read_ahead_bytes: 2 * 1024 * 1024,
                 max_fetch_tasks: 4,
                 ..Default::default()

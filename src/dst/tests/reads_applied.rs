@@ -3,8 +3,8 @@
 use super::fixture_http::{engine_shutdown, http_rig, http_rig_at};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
-use super::fixture_storage::{mem, open_engine, skey};
-use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
+use super::fixture_storage::{append_sized, mem, open_engine, skey};
+use crate::dst::{FaultPlan, FaultStore, ObjClass, Outcome, StoreOp, Workload};
 use object_store::ObjectStore;
 use std::sync::Arc;
 
@@ -553,4 +553,110 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     .await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     engine_shutdown(&state3).await;
+}
+
+/// **TLA-018-F1: an applied keyed read never skips a durable record that
+/// an applied-but-not-durable advance trimmed.** Shard WAL PUTs stall
+/// while the history partition (WAL disabled) keeps flushing, so two
+/// one-record gathers apply the advances 0→1 and 1→2; the second trims
+/// row 0 in the memtable while the Remote-durable tail still says
+/// `absorbed = 0`. A `deliver=applied` read for the key from 0 scans at
+/// Memory level and cannot see row 0 in the tail, so its page must either
+/// serve record 0 (from history) or be an honest partial with no progress.
+/// It must never consume offset 0 without delivering it: both cursors
+/// would then move past a durable, acknowledged record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() {
+    let store = FaultStore::uniform(mem(), 1818, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0x18u8; 16];
+    let engine = open_engine(store.clone(), "dst-applied-trim").await;
+    for _ in 0..3 {
+        append_sized(&engine, hash, &key, "k", 64).await;
+    }
+    // Open the partition before the hold so nothing but the shard WAL parks.
+    engine.history_partition().await.expect("history partition");
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, u64::MAX);
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes: 1,
+            ..Default::default()
+        },
+    );
+    for upto in [1, 2] {
+        let gather = absorber.absorb_gather_v2(&[hash]).await.expect("gather");
+        assert_eq!(gather.advanced.len(), 1, "one record per gather");
+        assert_eq!(gather.advanced[0].1, upto);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let durable_absorbed = loop {
+        let (applied, durable) = {
+            let st = handle.state.lock().unwrap();
+            (
+                (st.applied.absorbed, st.applied.trimmed),
+                st.durable.absorbed,
+            )
+        };
+        if applied == (2, 1) {
+            break durable;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second advance never applied its trim"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
+    assert_eq!(durable_absorbed, 0, "both advances stay non-durable");
+    // The boundary the pre-fix race check read: the Remote-durable tail row.
+    let remote = engine.durable_absorbed(&hash).await.expect("remote tail");
+    assert_eq!(remote.0, 0, "the Remote-durable tail still says absorbed 0");
+
+    let read = |selector, deliver| {
+        crate::http::read_merged(&key, &hash, &handle, &engine, 0, selector, 1 << 20, deliver)
+    };
+    let keyed = read(Some("k"), crate::shard::Deliver::Applied)
+        .await
+        .expect("applied keyed read");
+    let unfiltered = read(None, crate::shard::Deliver::Applied)
+        .await
+        .expect("applied unfiltered read");
+    let durable = read(None, crate::shard::Deliver::Durable)
+        .await
+        .expect("durable read");
+    let offs = |page: &crate::application::read::ReadPage| -> Vec<u64> {
+        page.recs.iter().map(|r| r.off).collect()
+    };
+    let observed = |page: &crate::application::read::ReadPage| {
+        format!(
+            "delivered {:?}, last {:?}, completed {}, next cursor {}, durable cursor {}",
+            offs(page),
+            page.last,
+            page.completed,
+            page.scanned_through(0),
+            page.durable_resume(0),
+        )
+    };
+    let parked = engaged.load(std::sync::atomic::Ordering::SeqCst);
+    // Every record is key `k`, so the consumed prefix must be delivered whole.
+    assert_eq!(
+        offs(&keyed),
+        (0..keyed.scanned_through(0)).collect::<Vec<u64>>(),
+        "applied keyed read skipped a durable record: {} (WAL PUTs parked {parked})",
+        observed(&keyed)
+    );
+    // "Applied can never see LESS than a durable reader": the unfiltered
+    // applied read makes the durable reader's progress, not a stalled partial.
+    assert_eq!(
+        offs(&unfiltered),
+        offs(&durable),
+        "applied unfiltered read saw less than a durable reader: applied {}; durable {}",
+        observed(&unfiltered),
+        observed(&durable)
+    );
+    store.release_hold();
+    engine.begin_close();
 }

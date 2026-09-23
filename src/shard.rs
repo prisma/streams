@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use slatedb::config::{DurabilityLevel, WriteOptions};
+use slatedb::config::WriteOptions;
 use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -2252,41 +2252,13 @@ impl ShardEngine {
         )
     }
 
-    /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
-    /// the strongest boundary any `DurabilityLevel::Remote` scan of the
-    /// shard log can have observed trims for. The published handle state is
-    /// NOT enough for that purpose: trim deletes become scan-visible when
-    /// their batch is durable, while `handle.state.durable` advances only
-    /// at dispatch, which can lag durability arbitrarily under load
-    /// (2026-07-27 boundary-race DST failure). Readers revalidating a tail
-    /// scan against concurrent absorption must consult this.
-    /// Remotely-durable `(absorbed, history_v2)` from the stored tail
-    /// row. Returned TOGETHER because they must be read consistently: a
-    /// reader that adopts a remote boundary while keeping a stale
-    /// in-memory layout flag would refuse a v2 history range as v1
-    /// (observed in the first-absorption flush-to-dispatch window).
+    /// The Remote-durable `(absorbed, history_v2)`: `visible_absorbed`
+    /// (`shard/record.rs`) at `Deliver::Durable`, for durable-only callers.
     pub(crate) async fn durable_absorbed(
         &self,
         hash: &[u8; 16],
     ) -> Result<(u64, bool), slatedb::Error> {
-        #[cfg(test)]
-        if let Ok((entered, release)) = record::TEST_MARKER_HOLD.try_with(Clone::clone) {
-            entered.notify_one();
-            release.notified().await;
-        }
-        let v = self
-            .db
-            .get_with_options(
-                tail_key(hash),
-                &slatedb::config::ReadOptions {
-                    durability_filter: DurabilityLevel::Remote,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(v.map(|b| stored_tail(&b))
-            .transpose()?
-            .map_or((0, false), |t| (t.absorbed, t.history_v2)))
+        self.visible_absorbed(hash, Deliver::Durable).await
     }
 
     /// Durable consumer-cursor hint for the pull pre-read window. A

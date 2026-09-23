@@ -1518,6 +1518,19 @@
     "scenarios": []
   },
   {
+    "name": "applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f65b75b366f2ce473b177659f401d27208535d8d09a589637f1061785ac2f5df",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 1818, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/tests/reads_applied.rs",
+    "scenarios": []
+  },
+  {
     "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
     "attributes": [
       "#[test]"
