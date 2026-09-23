@@ -40,12 +40,7 @@ impl CreationError {
         }
     }
     fn gone(desc: Option<&StreamDesc>) -> Self {
-        if desc.is_some_and(|d| {
-            d.soft_deleted
-                || (!d.deleted
-                    && !d.fork_children.is_empty()
-                    && d.expires_at_ms.is_some_and(|expires| now_ms() >= expires))
-        }) {
+        if desc.is_some_and(|d| retained_for_forks(d, now_ms())) {
             Self::new(
                 CreationFailure::Gone,
                 "gone",

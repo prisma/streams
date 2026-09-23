@@ -7,7 +7,7 @@ mod contract;
 mod route;
 mod submit;
 use crate::crypto::derive_subkey;
-use crate::registry::{Registry, StreamDesc};
+use crate::registry::Registry;
 use crate::shard::{AppendReq, now_ms};
 pub(crate) use contract::fail;
 pub(crate) use contract::{
@@ -36,11 +36,6 @@ pub(crate) struct AppendService {
     pub(crate) meter_enabled: bool,
 }
 impl AppendService {
-    fn alive(&self, desc: &StreamDesc) -> bool {
-        !desc.deleted
-            && !desc.soft_deleted
-            && desc.expires_at_ms.is_none_or(|expiry| now_ms() < expiry)
-    }
     fn maintenance_limits(&self) -> crate::backpressure::Limits {
         crate::backpressure::Limits::from_config(&self.admission_config)
     }
@@ -50,7 +45,9 @@ impl AppendService {
         key: AppendKey,
     ) -> Result<AuthorizedAppend, AppendFailure> {
         let descriptor = match self.registry.get(sref).await {
-            Ok(Some(desc)) if self.alive(&desc) && desc.init.is_some() => {
+            Ok(Some(desc))
+                if crate::application::creation::desc_alive(&desc) && desc.init.is_some() =>
+            {
                 return Err(AppendFailure::new(
                     FailureClass::Unavailable,
                     AppendCode::Creating,
@@ -58,14 +55,11 @@ impl AppendService {
                 )
                 .retry(1));
             }
-            Ok(Some(desc)) if self.alive(&desc) => desc,
+            Ok(Some(desc)) if crate::application::creation::desc_alive(&desc) => desc,
             Ok(desc) => {
-                let gone = desc.as_ref().is_some_and(|d| {
-                    d.soft_deleted
-                        || (!d.deleted
-                            && !d.fork_children.is_empty()
-                            && d.expires_at_ms.is_some_and(|expiry| now_ms() >= expiry))
-                });
+                let gone = desc
+                    .as_ref()
+                    .is_some_and(|d| crate::application::creation::retained_for_forks(d, now_ms()));
                 return Err(AppendFailure::new(
                     if gone {
                         FailureClass::Gone

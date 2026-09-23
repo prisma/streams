@@ -11,7 +11,10 @@ pub(super) async fn resolve_segment(
     if seg.sealed {
         state.registry.invalidate(&sref);
         match state.registry.get(&sref).await {
-            Ok(Some(d2)) if state.alive(&d2) && d2.stream_epoch == desc.stream_epoch => {
+            Ok(Some(d2))
+                if crate::application::creation::desc_alive(&d2)
+                    && d2.stream_epoch == desc.stream_epoch =>
+            {
                 *desc = d2;
                 seg = desc.resolve_segment(routing_key);
             }
