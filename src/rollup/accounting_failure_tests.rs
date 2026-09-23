@@ -368,3 +368,51 @@ async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
     month.expect("the finalized row stays readable");
     db.close().await.unwrap();
 }
+
+/// Item 27: a pending monthly artifact whose key or body does not decode is
+/// never published and never counted as pending, so every scan logs it; it
+/// stays in the outbox for an operator.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
+    let db = Arc::new(
+        Db::builder(
+            "pending-bad",
+            Arc::new(object_store::memory::InMemory::new()),
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let r = UsageRollup {
+        db: db.clone(),
+        close_rows_visited: Default::default(),
+    };
+    let not_json = "artifact-pending/2026-07/a/p/not-json";
+    for (key, body) in [
+        ("artifact-pending/2026-07/a/p/good", "{}"),
+        (not_json, "not json"),
+        ("artifact-pending/2026-07/short", "{}"),
+    ] {
+        db.put(key, body).await.unwrap();
+    }
+    let log = crate::sse::test_log::ErrorLog::capture();
+    let pending = r.pending_artifacts(64).await.unwrap();
+    let causes = log.causes();
+    drop(log);
+    let streams: Vec<&str> = pending
+        .iter()
+        .map(|(.., stream, _)| stream.as_str())
+        .collect();
+    assert_eq!(streams, ["good"]);
+    let logged = |needle: &str| causes.iter().filter(|c| c.contains(needle)).count();
+    let skipped = logged("does not name a month") + logged("expected ident");
+    assert_eq!(
+        skipped, 2,
+        "every skipped pending artifact is logged: {causes:?}"
+    );
+    assert!(
+        db.get(not_json).await.unwrap().is_some(),
+        "it stays pending"
+    );
+    db.close().await.unwrap();
+}

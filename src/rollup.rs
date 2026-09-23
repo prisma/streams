@@ -586,7 +586,9 @@ impl UsageRollup {
     }
 
     /// Pending monthly artifacts (blocker 7): (pending key, month,
-    /// project, stream-id, row).
+    /// project, stream-id, row). A row whose key or body does not decode is
+    /// never published and never counted as pending, so every scan logs it;
+    /// it stays in the outbox for an operator.
     pub(crate) async fn pending_artifacts(
         &self,
         max: usize,
@@ -596,16 +598,25 @@ impl UsageRollup {
         while let Some(kv) = iter.next().await? {
             let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
             let parts: Vec<&str> = k.splitn(5, '/').collect();
-            if parts.len() == 5
-                && let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value)
-            {
-                out.push((
+            let [_, month, account, project, stream_id] = parts.as_slice() else {
+                tracing::error!(
+                    key = %String::from_utf8_lossy(&kv.key),
+                    error = "the key does not name a month, account, project and stream",
+                    "pending monthly artifact stays unpublished"
+                );
+                continue;
+            };
+            match serde_json::from_slice::<MonthRow>(&kv.value) {
+                Ok(row) => out.push((
                     kv.key.to_vec(),
-                    parts[1].to_string(),
-                    format!("{}/{}", parts[2], parts[3]),
-                    parts[4].to_string(),
+                    (*month).to_owned(),
+                    format!("{account}/{project}"),
+                    (*stream_id).to_owned(),
                     row,
-                ));
+                )),
+                Err(error) => {
+                    tracing::error!(key = %k, %error, "pending monthly artifact stays unpublished");
+                }
             }
             if out.len() >= max {
                 break;
