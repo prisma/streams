@@ -1,5 +1,8 @@
 //! Runtime open gate.
 
+use super::fixture_http::{http_rig, http_rig_at};
+use super::fixture_requests::hreq;
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, ObjClass, OpLog, StoreOp, Workload, mech};
 use object_store::ObjectStore;
@@ -193,13 +196,6 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
     );
 }
 
-/// OpenGate counters are process-global too; its three counter-asserting
-/// tests serialize here for the same reason as the reader-cache tests.
-fn gate_lock() -> &'static tokio::sync::Mutex<()> {
-    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    L.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
 /// **The fix.** Same sick store, same impatient clients, through
 /// `OpenGate`: one open, started once, owning its own completion. Clients
 /// get retryable 503s while it runs; the engine lands in the serving map
@@ -208,7 +204,6 @@ fn gate_lock() -> &'static tokio::sync::Mutex<()> {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn open_gate_survives_impatient_clients_without_a_storm() {
     use crate::sharddir::{OpenGate, OpenOutcome};
-    let _serial = gate_lock().lock().await;
     let inner = mem();
     seed_untrimmed_wal(inner.clone(), "dst-gate", 120).await;
 
@@ -220,7 +215,6 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
     };
     let store = FaultStore::uniform(inner.clone(), 61, plan);
 
-    OpenGate::reset_counters_for_tests();
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
     let st = store.clone();
     let gate = OpenGate::new(
@@ -264,10 +258,11 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
         "the open never completed into the serving map"
     );
 
-    let (started, completed, failed, coalesced) = gate.instance_counters();
+    let [started, completed, failed, coalesced, in_flight, ..] = open_counts(&gate.stats_json());
     assert_eq!(started, 1, "exactly one open may start (got {started})");
     assert_eq!(completed, 1);
     assert_eq!(failed, 0);
+    assert_eq!(in_flight, 0, "the one open is no longer in flight");
     assert!(coalesced >= 10, "later callers must join the first open");
 
     // One replay costs ~5 store ops per WAL SST (existence probes arrive
@@ -463,8 +458,6 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn health_reports_unready_when_no_shard_has_ever_opened() {
     use crate::sharddir::OpenGate;
-    let _serial = gate_lock().lock().await;
-    OpenGate::reset_counters_for_tests();
 
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
     let gate = OpenGate::new(
@@ -527,9 +520,7 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     use crate::sharddir::{OpenGate, OpenOutcome};
-    let _serial = gate_lock().lock().await;
     let inner = mem();
-    OpenGate::reset_counters_for_tests();
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
     let st = inner.clone();
     let gate = OpenGate::new(
@@ -601,9 +592,7 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     use crate::sharddir::{OpenGate, OpenOutcome};
-    let _serial = gate_lock().lock().await;
     let inner = mem();
-    OpenGate::reset_counters_for_tests();
 
     // The opener parks on a test-controlled gate until released — a stand-in
     // for "slatedb open looping in recovery".
@@ -651,9 +640,8 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     // Let the 30 s deadline pass. The open task must fail the attempt and
     // arm the holdoff without any help from callers.
     tokio::time::sleep(std::time::Duration::from_secs(35)).await;
-    let (_started, completed, failed, _coalesced) = gate.instance_counters();
-    assert_eq!(failed, 1, "the hung open must be failed by its deadline");
-    assert_eq!(completed, 0);
+    // started, completed, failed, coalesced, in_flight, deadlined, reaped
+    assert_eq!(open_counts(&gate.stats_json()), [1, 0, 1, 0, 0, 1, 0]);
     assert!(
         shards.read().unwrap().is_empty(),
         "nothing may be installed by a deadlined open"
@@ -674,6 +662,7 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
         }
     }
     assert!(reaped, "the late engine was never closed by the reaper");
+    assert_eq!(open_counts(&gate.stats_json()), [1, 0, 1, 0, 0, 1, 1]);
     assert!(
         shards.read().unwrap().is_empty(),
         "a reaped engine must never appear in the serving map"
@@ -697,4 +686,89 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     };
     assert!(!eng.is_closed(), "the recovery engine must be live");
     assert!(!shards.read().unwrap().is_empty());
+}
+
+/// `shard_opens` read in one fixed field order (started, completed, failed,
+/// coalesced, in_flight, deadlined, reaped); a missing or renamed key reads
+/// -1 and fails every comparison.
+fn open_counts(opens: &serde_json::Value) -> [i64; 7] {
+    [
+        "started",
+        "completed",
+        "failed",
+        "coalesced",
+        "in_flight",
+        "deadlined",
+        "reaped",
+    ]
+    .map(|key| opens[key].as_i64().unwrap_or(-1))
+}
+
+/// The reopen-storm detector on /v1/debug/store belongs to the runtime
+/// that serves it. Two runtimes share this process, as every DST rig
+/// does: the one that opened nothing must report nothing, and the one
+/// that opened its shard reports exactly that open. The sampler's
+/// `?swap=1` resets the outbound peak and never the cumulative open
+/// counters, and the operator dashboard carries the same object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debug_store_reports_this_runtimes_shard_opens() {
+    // Store ops only raise the process peak (fetch_max); the sampler's
+    // swap is the one thing that lowers it, and no real gauge gets here.
+    const SENTINEL_PEAK: i64 = 1 << 40;
+    crate::store_timing::stats()
+        .inflight_peak
+        .fetch_max(SENTINEL_PEAK, Ordering::Relaxed);
+    let (_opened_state, opened) = http_rig(mem()).await;
+    let (_idle_state, idle) = http_rig_at(mem(), RigRuntime::incarnation(1)).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(opened, "PUT", "/v1/stream/opens-x", &ct, b"").await;
+    assert!(st == 200 || st == 201, "create: {st}");
+    let (st, _, _) = hreq(opened, "POST", "/v1/stream/opens-x", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204, "append: {st}");
+    let json = |body: &[u8]| serde_json::from_slice::<serde_json::Value>(body).unwrap();
+    let peak = |store: &serde_json::Value| store["out_inflight_peak"].as_i64().unwrap();
+
+    let (st, _, body) = hreq(idle, "GET", "/v1/debug/store", &[], b"").await;
+    assert_eq!(st, 200);
+    let untouched = json(&body);
+    assert_eq!(
+        untouched["shard_opens"]["started"], 0,
+        "the idle runtime opened no shard; another runtime's opens reached its operator surface"
+    );
+    assert_eq!(
+        open_counts(&untouched["shard_opens"]),
+        [0; 7],
+        "{untouched}"
+    );
+
+    let (_, _, body) = hreq(opened, "GET", "/v1/debug/store?swap=1", &[], b"").await;
+    let sampled = json(&body);
+    let [started, completed, failed, _, in_flight, deadlined, reaped] =
+        open_counts(&sampled["shard_opens"]);
+    assert_eq!(
+        (started, completed, failed, in_flight, deadlined, reaped),
+        (1, 1, 0, 0, 0, 0),
+        "one shard, one completed open: {sampled}"
+    );
+    assert!(
+        peak(&sampled) >= SENTINEL_PEAK,
+        "the sampler reads the peak it resets"
+    );
+    let (_, _, body) = hreq(opened, "GET", "/v1/debug/store", &[], b"").await;
+    let after = json(&body);
+    assert!(
+        peak(&after) < SENTINEL_PEAK,
+        "?swap=1 must reset the outbound peak: {after}"
+    );
+    assert_eq!(
+        after["shard_opens"], sampled["shard_opens"],
+        "a swap never resets opens"
+    );
+    let (st, _, body) = hreq(opened, "GET", "/operator/data.json", &[], b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        json(&body)["local"]["store"]["shard_opens"],
+        after["shard_opens"],
+        "the operator dashboard carries the same counters"
+    );
 }

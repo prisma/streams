@@ -304,6 +304,12 @@ impl ShardDirectory {
         self.inner.gate.get_or_open(prefix, wait).await
     }
 
+    /// The directory hides its gate; the operator surfaces need exactly one
+    /// read of it, this runtime's reopen-storm counters (`shard_opens`).
+    pub(crate) fn open_stats(&self) -> serde_json::Value {
+        self.inner.gate.stats_json()
+    }
+
     /// The resident engine for `prefix`, if open (no adoption stamp).
     #[expect(
         clippy::unwrap_used,
@@ -545,6 +551,12 @@ mod directory_tests {
             other => panic!("expected OpenFailed, got {other:?}"),
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let opens = dir.open_stats();
+        assert_eq!(
+            opens["started"], 1,
+            "the directory reports its own gate: {opens}"
+        );
+        assert_eq!(opens["failed"], 1, "{opens}");
     }
 
     /// An open slower than the caller's patience is a retryable,

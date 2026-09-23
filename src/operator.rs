@@ -94,6 +94,7 @@ pub(crate) async fn data(
     let (heartbeats, desired) = state.fleet.operator_snapshot().await;
 
     let adm = state.admission.snapshot();
+    let shard_opens = state.shards.open_stats();
     let local = json!({
         "instance": state.ownership.instance(),
         "open_shards": state.shards.open_count(),
@@ -108,7 +109,7 @@ pub(crate) async fn data(
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "rss_shed_mb": adm.rss_shed_mb,
         // per-op-class store latency, sentinels, steal — non-destructive read
-        "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io),
+        "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });
 
     axum::Json(json!({

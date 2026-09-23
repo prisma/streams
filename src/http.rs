@@ -1051,12 +1051,8 @@ async fn debug_store(
         .unwrap_or(60)
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
-    let mut snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io);
-    if let Some(_obj) = snap.as_object_mut() {
-        // History DbReader service: hits vs misses shows how much
-        // per-request manifest traffic the cache absorbs; stale_reopens
-        // is bounded by absorb cadence; coalesced proves single-flight.
-    }
+    let opens = state.shards.open_stats();
+    let snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
     axum::Json(snap).into_response()
 }
 

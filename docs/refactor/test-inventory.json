@@ -451,7 +451,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
     ],
-    "function_sha256": "ffbcc709983c0f196682dbf2f0ddeda07bf0ecdca3170b652b185d7e1518dc1e",
+    "function_sha256": "a82bf5f9918026e6ca17007efb03adbb7349fd11976fddffc9245d8dd1068149",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",
@@ -1950,6 +1950,17 @@
     "scenarios": []
   },
   {
+    "name": "debug_store_reports_this_runtimes_shard_opens",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c55b6f5b555fa8f65bc93a3866e2632bea3e6cc43a5213fb3634f787c3816a8e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_open_gate.rs",
+    "scenarios": []
+  },
+  {
     "name": "delete_stays_inside_the_requesting_project",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2414,7 +2425,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
     ],
-    "function_sha256": "0e175df8da1f9425f96f22355867fd1f62c96f7759f061279d26ac74b1a6423a",
+    "function_sha256": "c3e186d64051c5e42b5c943711ffc170daf87483481cec182d61400ddb41dfd5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",
@@ -3731,7 +3742,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
     ],
-    "function_sha256": "b737e68ecd189bb75e0d070bbf6df2a20815d1f1859b2c8dec90cbdac032067f",
+    "function_sha256": "3ca8512f50b8bc57b22e60eb87590d9f3e74c4da033da6d55c9f619bc46273e7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",
@@ -3744,7 +3755,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
     ],
-    "function_sha256": "50e63f0369f90e3c1d24cf82afa883e8b1bf697e1f74f6363471d7a8ac0e68ff",
+    "function_sha256": "9c556be8122065e192d32c790dc11dbdbafd39bd03bccc61df9428a658c37105",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",

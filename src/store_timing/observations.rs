@@ -246,15 +246,18 @@ impl CellSamples {
 }
 
 /// Snapshot for /v1/debug/store: per (op,class) percentiles over
-/// `window_secs`, the slow-op ring, and the outbound gauge.
+/// `window_secs`, the slow-op ring, the outbound gauge, and the caller's
+/// `shard_opens`. Those counters belong to the runtime's directory, which
+/// this process-wide module cannot own.
 #[expect(
     clippy::unwrap_used,
-    reason = "process slow-operation ring; poison may follow an interrupted sample update; recovery would present partial diagnostic state as valid"
+    reason = "process slow-operation ring read beside the caller's shard-open counters; poison may follow an interrupted sample update; recovery would present partial diagnostic state as valid"
 )]
 pub(crate) fn snapshot(
     window_secs: u64,
     swap_peak: bool,
     resources: &StoreResources,
+    shard_opens: &serde_json::Value,
 ) -> serde_json::Value {
     let s = stats();
     let cutoff = now_ms().saturating_sub(window_secs * 1000);
@@ -317,7 +320,7 @@ pub(crate) fn snapshot(
         "wal_read_storm": storm,
         // Reopen-storm visibility (sharddir.rs): started climbing while
         // completed stays flat = the eu-central-1 wedge shape.
-        "shard_opens": crate::sharddir::stats_json(),
+        "shard_opens": shard_opens,
         "ops": ops,
         "slow": slow,
     })
