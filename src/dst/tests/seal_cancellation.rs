@@ -1,7 +1,8 @@
 //! Cancellation and typed final-record verdicts at the seal coordinator.
 
+use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{engine_shutdown, http_rig};
-use super::fixture_requests::hreq;
+use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 use crate::application::lifecycle::{
     FinalDisposition, FinalRecordFailure, FinalSealRequest, SealFinalError, seal_final,
@@ -94,4 +95,86 @@ async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it()
         assert!(!descriptor.sealed);
     }
     engine_shutdown(&state).await;
+}
+
+/// A product seal whose final record exceeds the per-record ceiling is
+/// refused before it publishes its seal intent (TLA-003-F3). The claim
+/// would put the collection in Sealing for a record the append must
+/// refuse, so the request may never reach the claim-to-append gap. The
+/// ceiling is measured on the record the append stores: a JSON collection
+/// stores the value re-encoded, and serde_json's default float parse
+/// lengthens `ceilfloat`'s value by a digit, so its own text fits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_over_ceiling_product_final_is_refused_before_its_seal_intent() {
+    let _serial = gap_lock().lock().await;
+    let (state, addr) = http_rig(mem()).await;
+    for (name, value, ceiling) in [
+        ("ceilfin", format!(r#"{{"pad":"{}"}}"#, "x".repeat(90)), 64),
+        ("ceilfloat", r#"{"f":1.7802719962921167e-19}"#.into(), 27),
+    ] {
+        let text = serde_json::from_str::<serde_json::Value>(&value)
+            .unwrap()
+            .to_string();
+        let stored = serde_json::from_str::<serde_json::Value>(&text)
+            .unwrap()
+            .to_string();
+        assert!(stored.len() > ceiling, "{name}: {stored} fits {ceiling}");
+        assert_eq!(text.len() <= ceiling, name == "ceilfloat", "{name}: {text}");
+        seal_is_refused_before_its_intent(&state, addr, name, &value, ceiling).await;
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Seals a new JSON collection `name` with `value` as its final record
+/// under `ceiling`, the final append parked, and asserts a 4xx answer with
+/// no arrival at the claim-to-append gap and no claim ever observed.
+async fn seal_is_refused_before_its_intent(
+    state: &crate::http::AppState,
+    addr: std::net::SocketAddr,
+    name: &str,
+    value: &str,
+    ceiling: usize,
+) {
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let point = crate::failpoints::Fp::ProductFinalBeforeAppend;
+    let path = format!("/v1/streams/{name}");
+    let format = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(preq(addr, "PUT", &path, &key, format).await.0, 201);
+    state.admission.set_record_ceiling(ceiling);
+    let stream = state.deployment.raw_adapter_sref(name);
+    let before = crate::failpoints::parked(point, name);
+    crate::failpoints::park_product_final_before_append(name);
+    let body = format!(r#"{{"final":{value}}}"#);
+    let seal = format!("{path}:seal");
+    let mut request = std::pin::pin!(preq(addr, "POST", &seal, &key, body.as_bytes()));
+    let mut claimed = None;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let (status, _, answer) = loop {
+        tokio::select! {
+            answer = &mut request => break answer,
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{name}: no answer");
+        if claimed.is_none() && crate::failpoints::parked(point, name) > before {
+            state.registry.invalidate(&stream);
+            let descriptor = state.registry.get(&stream).await.unwrap().unwrap();
+            claimed = Some(descriptor.sealing.clone());
+            crate::failpoints::release_product_final_before_append(name);
+        }
+    };
+    crate::failpoints::release_product_final_before_append(name);
+    let arrivals = crate::failpoints::parked(point, name) - before;
+    let answer = String::from_utf8_lossy(&answer);
+    assert!(
+        (400..500).contains(&status),
+        "{name} answered {status}: {answer}"
+    );
+    assert_eq!(
+        (arrivals, claimed),
+        (0, None),
+        "{name}: the over-ceiling final reached its append holding a published seal intent (answer {status}: {answer})"
+    );
+    state.registry.invalidate(&stream);
+    let descriptor = state.registry.get(&stream).await.unwrap().unwrap();
+    assert!(descriptor.sealing.is_none() && !descriptor.sealed, "{name}");
 }

@@ -9,6 +9,7 @@ mod submit;
 use crate::crypto::derive_subkey;
 use crate::registry::Registry;
 use crate::shard::{AppendReq, now_ms};
+pub(crate) use content::stored_records;
 pub(crate) use contract::fail;
 pub(crate) use contract::{
     AppendCode, AppendCommand, AppendFailure, AppendKey, AppendOutcome, AppendResult,

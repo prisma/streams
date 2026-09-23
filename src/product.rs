@@ -1575,7 +1575,7 @@ async fn product_metadata(
 #[expect(
     clippy::too_many_lines,
     clippy::excessive_nesting,
-    reason = "product_seal; the seal validates the intent, claims, finalises and answers in one sequence whose header and disposition checks nest inside the final record path; splitting it or flattening the checks would separate the steps from the claim they share"
+    reason = "product_seal; the seal refuses every deterministic failure of the final record, its capacity and per-record ceiling measured on the exact wire body the append submits, before it claims, then appends, finalises and answers under that one claim; splitting it or flattening the checks would separate the checked body from the submitted one and the steps from the claim they share"
 )]
 async fn product_seal(
     state: Arc<AppState>,
@@ -1735,15 +1735,16 @@ async fn product_seal(
                     false,
                 );
             }
-            // Capacity, measured on the EXACT wire body the append will
-            // build — a single product record travels as `[value]`, two
-            // bytes longer than the value itself, and a value on the
-            // boundary would otherwise pass here and be refused there,
-            // leaving the intent behind.
+            // Capacity and the per-record ceiling, measured on the EXACT
+            // wire body the final append submits — a single JSON record
+            // travels as `[value]`, two bytes longer than the value itself,
+            // and is stored re-encoded — or a value on a boundary would
+            // pass here and be refused there, leaving the intent behind.
+            let record = Bytes::from(fin.to_string());
             if let Some(kind) = state
                 .runtime
                 .usage
-                .permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
+                .permanently_unadmittable(record.len() as u64 + 2, 1)
             {
                 return perr(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1752,6 +1753,17 @@ async fn product_seal(
                     None,
                     false,
                 );
+            }
+            let wire = if validated.is_json() {
+                Bytes::from([b"[", record.as_ref(), b"]"].concat())
+            } else {
+                record.clone()
+            };
+            let ceiling = state.admission.record_ceiling();
+            if let (_, Some(refusal)) =
+                crate::application::append::stored_records(&validated, &wire, ceiling)
+            {
+                return render_product_append_error(refusal);
             }
             // Only now: enter Sealing. Ordinary appends are refused from
             // here, so nothing can land between the final record and the
@@ -1783,14 +1795,17 @@ async fn product_seal(
                 |auth| async {
                     #[cfg(test)]
                     crate::failpoints::pause_product_final_before_append(&name).await;
-                    product_append_sealing(
+                    submit_product_append(
                         state.clone(),
                         &sref,
                         &validated,
+                        &key_b64,
                         routing_key,
                         &headers,
-                        Bytes::from(fin.to_string()),
-                        auth,
+                        &record,
+                        wire,
+                        false,
+                        Some(auth),
                     )
                     .await
                     .map(|ack| crate::application::lifecycle::FinalRecordAck { closed: ack.closed })
@@ -1916,61 +1931,9 @@ fn parse_routing_key(raw: &[u8]) -> Result<&str, &'static str> {
     }
 }
 
-/// Both product append routes compile to the ONE committer command the
-/// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
-/// contract — explicit single/batch semantics, Prisma-* names — then
-/// drives the shared append path. A single JSON append wraps the value
-/// as `[value]`, the protocol's own one-level flattening rule, so an
-/// array-valued record stays ONE message; a batch passes its elements
-/// straight through.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "product_append_sealing; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
-)]
-async fn product_append_sealing(
-    state: Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    desc: &StreamDesc,
-    routing_key: &str,
-    headers: &HeaderMap,
-    body: Bytes,
-    auth: crate::application::lifecycle::SealAuthz,
-) -> crate::application::append::AppendResult {
-    use crate::application::append::{AppendCode, AppendFailure, FailureClass};
-    let key_b64 = product_key(headers).ok_or_else(|| {
-        AppendFailure::new(
-            FailureClass::Invalid,
-            AppendCode::MissingKey,
-            "Prisma-Encryption-Key required",
-        )
-    })?;
-    let wire_body = if desc.is_json() {
-        let mut bytes = Vec::with_capacity(body.len() + 2);
-        bytes.push(b'[');
-        bytes.extend_from_slice(&body);
-        bytes.push(b']');
-        Bytes::from(bytes)
-    } else {
-        body.clone()
-    };
-    submit_product_append(
-        state,
-        sref,
-        desc,
-        &key_b64,
-        routing_key,
-        headers,
-        &body,
-        wire_body,
-        false,
-        Some(auth),
-    )
-    .await
-}
-
 /// Appends refuse a collection that is sealed OR sealing — only the
 /// seal operation's own final record may write during Sealing, and it
-/// goes through product_append_sealing with seal_after set (audit P0).
+/// goes through submit_product_append with seal_after set (audit P0).
 fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> {
     if desc.sealed {
         return Some(perr(
@@ -2235,9 +2198,16 @@ async fn product_append_inner(
     render_product_append(&desc, &key, routing_key, count, result)
 }
 
+/// Both product append routes compile to the ONE committer command the
+/// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
+/// contract — explicit single/batch semantics, Prisma-* names — then
+/// drives the shared append path. A single JSON append wraps the value
+/// as `[value]`, the protocol's own one-level flattening rule, so an
+/// array-valued record stays ONE message; a batch passes its elements
+/// straight through.
 #[expect(
     clippy::too_many_arguments,
-    reason = "submit_product_append; parsed protocol fields converge here into one typed application command; bundling them earlier would parse the wire shape twice"
+    reason = "submit_product_append; parsed protocol fields, and the final record of a seal with its claim authority, converge here into one typed application command; bundling them earlier would parse the wire shape twice and let the seal submit a body other than the one it checked"
 )]
 async fn submit_product_append(
     state: Arc<AppState>,

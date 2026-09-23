@@ -62,39 +62,13 @@ pub(super) fn parse_content(
     // Body -> entries (batching rules); errors deferred with producers.
     let mut entries: Vec<Bytes> = Vec::new();
     if !close_only && deferred.is_none() {
-        if body.is_empty() {
-            if has_producer {
-                deferred = Some(crate::shard::DeferredErr::BadBody("empty body".into()));
-            } else {
-                return fail(FailureClass::Invalid, AppendCode::EmptyBody, "empty body");
+        let refusal;
+        (entries, refusal) = stored_records(desc, body, record_ceiling);
+        if let Some(refusal) = refusal {
+            if !has_producer {
+                return Err(refusal);
             }
-        } else if desc.is_json() {
-            match crate::application::creation::json_entries(body, false) {
-                Ok(v) => entries = v,
-                Err(m) => {
-                    if has_producer {
-                        deferred = Some(crate::shard::DeferredErr::BadBody(m));
-                    } else {
-                        return fail(FailureClass::Invalid, AppendCode::InvalidJson, &m);
-                    }
-                }
-            }
-        } else {
-            entries = vec![body.clone()];
-        }
-        if deferred.is_none()
-            && let Some(over) =
-                crate::application::creation::over_record_ceiling(record_ceiling, &entries)
-        {
-            let m = format!(
-                "record of {over} bytes exceeds the per-record ceiling \
-                 (MAX_RECORD_PAYLOAD_BYTES)"
-            );
-            if has_producer {
-                deferred = Some(crate::shard::DeferredErr::BadBody(m));
-            } else {
-                return fail(FailureClass::Invalid, AppendCode::RecordTooLarge, &m);
-            }
+            deferred = Some(crate::shard::DeferredErr::BadBody(refusal.message));
         }
     }
 
@@ -114,4 +88,40 @@ pub(super) fn parse_content(
         );
     }
     Ok(ContentPlan { entries, deferred })
+}
+
+/// The records a content append of `body` stores in `desc`, and the append's
+/// refusal of them: a JSON collection stores each array element re-encoded,
+/// any other collection the body itself, and no record may exceed the
+/// per-record ceiling. Records over the ceiling are still returned, since a
+/// producer's deferred refusal carries them to the committer. A product seal
+/// checks its final record's wire body here before publishing its intent.
+pub(crate) fn stored_records(
+    desc: &StreamDesc,
+    body: &Bytes,
+    record_ceiling: usize,
+) -> (Vec<Bytes>, Option<AppendFailure>) {
+    let invalid = |code, message: String| AppendFailure::new(FailureClass::Invalid, code, message);
+    let records = if body.is_empty() {
+        Err(invalid(AppendCode::EmptyBody, "empty body".into()))
+    } else if desc.is_json() {
+        crate::application::creation::json_entries(body, false)
+            .map_err(|message| invalid(AppendCode::InvalidJson, message))
+    } else {
+        Ok(vec![body.clone()])
+    };
+    match records {
+        Err(refusal) => (Vec::new(), Some(refusal)),
+        Ok(records) => {
+            let over = crate::application::creation::over_record_ceiling(record_ceiling, &records);
+            let refusal = over.map(|over| {
+                let message = format!(
+                    "record of {over} bytes exceeds the per-record ceiling \
+                     (MAX_RECORD_PAYLOAD_BYTES)"
+                );
+                invalid(AppendCode::RecordTooLarge, message)
+            });
+            (records, refusal)
+        }
+    }
 }

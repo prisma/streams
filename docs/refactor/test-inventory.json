@@ -1509,6 +1509,17 @@
     ]
   },
   {
+    "name": "an_over_ceiling_product_final_is_refused_before_its_seal_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "43b269d367da47be2bdeabdd5b06fc040eb4c59e094e6f0339f5b1183e0335b5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_oversized_chunk_gathers_alone",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

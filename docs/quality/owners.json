@@ -2343,6 +2343,22 @@
       "path": "src/application/lifecycle/claims/proofs.rs",
       "reason": "Kani proof harness for KANI-042 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_is_refused_before_its_intent",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Pre-intent seal fixture; pin the real product seal request so the test can poll it inline while observing the parked final-append failpoint; no task is spawned and no substitute request model is used.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_is_refused_before_its_intent",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Pre-intent seal fixture; the select macro races the pinned seal request against a short tick so the test can observe the claim-to-append failpoint and release it; compiled tests verify the request answers.",
+      "syntax": "tokio::select"
     }
   ]
 }
