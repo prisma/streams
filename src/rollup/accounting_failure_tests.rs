@@ -304,3 +304,67 @@ async fn a_late_read_correction_carries_a_written_zero_byte_time() {
     assert_eq!(project["corr"]["storage_byte_ms_delta"], "0");
     db.close().await.unwrap();
 }
+
+/// A late segment snapshot for a/p/s segment 0 (item 27).
+fn late_snapshot(usage_version: u64, storage_byte_ms_month: String) -> UsageEnvelope {
+    UsageEnvelope {
+        v: 1,
+        event_id: format!("snap/late/{usage_version}"),
+        event_time_ms: 0,
+        emitted_ms: 0,
+        cell: "c".into(),
+        payload: UsagePayload::SegmentSnapshot(crate::billing::SegmentSnapshot {
+            identity: crate::billing::BillingIdentity {
+                account_id: "a".into(),
+                project_id: "p".into(),
+                stream_id: "s".into(),
+                stream_name: "orders".into(),
+            },
+            segment_id: 0,
+            usage_version,
+            month: "2026-07".into(),
+            month_final: false,
+            ingest_payload_bytes_month: 0,
+            ingest_records_month: 0,
+            owned_frame_bytes_current: 0,
+            storage_byte_ms_month,
+            storage_accounted_through_ms: 0,
+            retained_by_forks: false,
+        }),
+    }
+}
+
+/// Item 27: one month of a 64-bit gauge cannot produce a byte-time
+/// difference wider than a correction's signed 128 bits. A late snapshot
+/// that claims one fails its page before any floor moves, instead of
+/// committing a correction that makes the month row unreadable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
+    let db = Arc::new(
+        Db::builder("late-wide", Arc::new(object_store::memory::InMemory::new()))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let r = UsageRollup {
+        db: db.clone(),
+        close_rows_visited: Default::default(),
+    };
+    let finalized = concat!(
+        r#"{"account_id":"a","finalized_at_ms":1,"#,
+        r#""segments":{"0":{"usage_version":1,"storage_byte_ms":"5"}}}"#,
+    );
+    db.put(k_month("2026-07", "a", "p", "s"), finalized)
+        .await
+        .unwrap();
+    let before = snapshot(&db).await;
+    let late = late_snapshot(2, u128::MAX.to_string());
+    assert!(
+        r.apply_page(&[late], "c1").await.is_err(),
+        "a byte-time difference no correction can carry must fail its page"
+    );
+    assert_eq!(snapshot(&db).await, before);
+    let month = r.month_row("2026-07", "a", "p", "s").await;
+    month.expect("the finalized row stays readable");
+    db.close().await.unwrap();
+}

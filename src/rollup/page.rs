@@ -352,7 +352,7 @@ impl<'a> Page<'a> {
             if snap.month_final && sm.final_seen && snap.usage_version <= sm.usage_version {
                 return Ok(()); // replayed final against a closed month
             }
-            if let Some(correction) = apply_late_snapshot(sm, snap) {
+            if let Some(correction) = apply_late_snapshot(sm, snap)? {
                 self.push_correction(&mut mr, correction).await?;
             }
             self.months.insert(mkey, mr);
@@ -420,10 +420,14 @@ impl<'a> Page<'a> {
 
 /// A closed invoice keeps its frozen base; only dedupe floors and an explicit
 /// correction advance. Returning no correction still preserves the new floors.
+/// A byte-time difference wider than a correction's signed 128 bits cannot
+/// come from one month of a 64-bit gauge (31 d x u64::MAX is about 4.9e28,
+/// below 1.7e38): it refuses the page before any floor moves, so no
+/// unreadable correction is staged.
 fn apply_late_snapshot(
     sm: &mut super::SegMonth,
     snap: &SegmentSnapshot,
-) -> Option<UsageCorrection> {
+) -> anyhow::Result<Option<UsageCorrection>> {
     let id = &snap.identity;
     // LATE data into a FINALIZED month (round-21 blocker 8):
     // the frozen base never mutates — the delta becomes an
@@ -435,7 +439,8 @@ fn apply_late_snapshot(
     let d_recs = snap.ingest_records_month.saturating_sub(sm.ingest_records);
     let new_ms: u128 = snap.storage_byte_ms_month.parse().unwrap_or(0);
     let old_ms: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
-    let d_ms = new_ms.saturating_sub(old_ms);
+    let d_ms = i128::try_from(new_ms.saturating_sub(old_ms))
+        .map_err(|_| anyhow::anyhow!("late byte-time difference exceeds a correction"))?;
     // Advance the floors FIRST (ends the segment borrow), so a
     // replay corrects exactly once; the deltas are already in
     // locals.
@@ -465,9 +470,9 @@ fn apply_late_snapshot(
             append_requests_delta: 0,
             storage_byte_ms_delta: d_ms.to_string(),
         };
-        Some(c)
+        Ok(Some(c))
     } else {
-        None
+        Ok(None)
     }
 }
 
