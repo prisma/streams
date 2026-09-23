@@ -632,7 +632,7 @@
         {
           "file": "src/history/controller_tests.rs",
           "name": "active_absorber_cancel",
-          "sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867"
+          "sha256": "8c23ffb4352ba4039a03706c8eaee18e81b8c3f90ee5a68bf6b27dc632da67d9"
         }
       ]
     },
@@ -928,8 +928,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
-      "after_sha256": "27bf37b6962f8c2801089c229b086b51751fa5375a5ae0fe84e91969ee432ef8",
-      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. The rig serves the production h1 loop with its own loaded HttpConfig (buffer ceiling and request-head deadline) instead of a literal buffer size, and no longer restates the heartbeat default that from_config already applied; no assertion or constructor value changed. Item 32 threads the scenario's command-line edit into the hermetic configuration factory; no other value or assertion changed."
+      "after_sha256": "32ea64dab629d115bb5cfc3679585c78a5476fe45811d9324de4ba9e6ceca572",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. The rig serves the production h1 loop with its own loaded HttpConfig (buffer ceiling and request-head deadline) instead of a literal buffer size, and no longer restates the heartbeat default that from_config already applied; no assertion or constructor value changed. Item 32 threads the scenario's command-line edit into the hermetic configuration factory; no other value or assertion changed. Item 76 stops handing the opener a key cache the absorber never read; the rig's own key cache and every value and assertion are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -937,8 +937,8 @@
       "finding": "R09",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "8bc4055ac728dca0543aa1e5742b7550840152476e39a32ff794c7889b16b0df",
-      "after_sha256": "1d2bc61cbf3ecd04938cbab3723d6f878cb6d8805f82d65e2dd7c92f0710bf86",
-      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged."
+      "after_sha256": "c2ab263bf970c6c380094f2b6a826f5e17b5dd607e6a579c40c9e130b210f6e8",
+      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged. Item 76 drops the key cache the absorber never read (and the store start_owned no longer takes) from the opener's inputs; absorption settings and scheduling unchanged."
     },
     {
       "file": "src/dst/tests/fixture_livefeed.rs",
@@ -1001,9 +1001,9 @@
       "name": "active_absorber_cancel",
       "before_commit": "93f77ecfdb053850773bb698b3512e3777ce3354",
       "before_sha256": "e9cdb62c69ba22f3c357d76e3e70aee900685a21b2fcea6b4b1a54af05b29405",
-      "after_sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867",
+      "after_sha256": "8c23ffb4352ba4039a03706c8eaee18e81b8c3f90ee5a68bf6b27dc632da67d9",
       "finding": "R17-A",
-      "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call."
+      "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call. Item 76 starts both absorbers without the store and key cache they never read; no assertion changed."
     },
     {
       "file": "src/application/creation.rs",

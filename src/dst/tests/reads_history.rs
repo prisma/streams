@@ -172,9 +172,7 @@ async fn sparse_key_reads_page_with_bounded_spans() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -288,9 +286,7 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -414,9 +410,7 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -550,7 +544,7 @@ async fn keyed_offsets(
 async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
     let key = skey();
     let hash = [0xC7u8; 16];
-    let (engine, _absorber) = open_engine_with_absorber(mem(), "dst-coldclaim", hash, &key).await;
+    let (engine, _absorber) = open_engine_with_absorber(mem(), "dst-coldclaim").await;
     let mut first = Vec::new();
     for _ in 0..4 {
         first.push(append_sized(&engine, hash, &key, "cold", 64).await);

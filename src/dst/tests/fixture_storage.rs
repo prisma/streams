@@ -92,17 +92,13 @@ pub(super) async fn open_engine_with_settings(
 pub(super) async fn open_engine_with_absorber(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
-    hash: [u8; 16],
-    key: &crate::crypto::StreamKey,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    open_engine_with_absorber_layout(store, prefix, hash, key).await
+    open_engine_with_absorber_layout(store, prefix).await
 }
 
 pub(super) async fn open_engine_with_absorber_layout(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
-    hash: [u8; 16],
-    key: &crate::crypto::StreamKey,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
     let db = slatedb::Db::builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
@@ -129,17 +125,13 @@ pub(super) async fn open_engine_with_absorber_layout(
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    // The absorber derives subkeys from (key, epoch); the workload uses the
-    // stream hash as the epoch, so the cache must agree or nothing decodes.
-    keys.put(hash, key.clone(), hash);
     let cfg = crate::history::AbsorberConfig {
         threshold_bytes: 1,
         threshold_age: std::time::Duration::from_millis(1),
         tick: std::time::Duration::from_millis(20),
         ..Default::default()
     };
-    let handle = crate::history::Absorber::start(store, engine.clone(), keys, cfg, absorb_rx);
+    let handle = crate::history::Absorber::start(engine.clone(), cfg, absorb_rx);
     (engine, handle)
 }
 

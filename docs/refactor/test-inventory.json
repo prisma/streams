@@ -354,7 +354,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "466bb3be8989a0d0f835abe488f87c26580609da3930f109125f58872e53e0c5",
+    "function_sha256": "31c258a87a397818df0061ad210f0b83ca32b667567bafede45f0eb9dc83fb6b",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 23, FaultPlan::CLEAN);"
@@ -486,7 +486,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d73563ebca407695e6d90324a2abb4f9ac327aac488e1272194b740d2495b356",
+    "function_sha256": "d33bd423e11903e5610711d13b22bed4540ac065adadf399cfcb86857d8b6a63",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 98, FaultPlan::new(0, 0, 0));"
@@ -997,7 +997,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2d711ccb28f09d2dc0a18a3b91b57adf22d00b489c3b0fbb1c91ed490f0ff14a",
+    "function_sha256": "1ebaaef98a1c0315ae460c02e9bf8a4a637203d89ef8112810916140d097aeed",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 96, FaultPlan::new(0, 0, 0));",
@@ -1249,7 +1249,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "61ac7eaa8cd71df361a37151d7edbc375e5105adc619cd105f284bc01f2f647b",
+    "function_sha256": "a19334eef8427a5860f0c1b5a01583f5762c3628681ecf44894bd39356c890e0",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
@@ -1264,7 +1264,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6d083b2cafcf94288fb02f02e9fa741b64ca01be49c2e5ad85d3688d610a867d",
+    "function_sha256": "9a81f8dfeb2ee100b87fbae698424791e6d87701ef49be29533e021cedca2744",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 77, FaultPlan::CLEAN);"
@@ -1277,7 +1277,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "189c12151259a5be6ecdfdea55a6d3e386de4c046a319835aa7e6a3c3c43c9b5",
+    "function_sha256": "d36485df872f9a6ff3ee4cb41883ad315242daa91008919520fe87ddb42d167e",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 51, FaultPlan::CLEAN);"
@@ -1303,7 +1303,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "45e4356f5368a0d1da430e34e23160c5a7834829e49418206d73e32b7a5d4592",
+    "function_sha256": "d1fe74e01afe1e5190213f2f6cd4e352bf22c85b189b3d9640f0b626c4469d0b",
     "mechanisms": [
       "READ_FROM_HISTORY"
     ],
@@ -1360,7 +1360,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "686c9da7412fbe2fb4786d73d60763fdcbcdbcdaa45b0aa8bb88a611c47188f8",
+    "function_sha256": "90a6e71b11683ced1861d678be00c38fba6194e365d137df3af3eb2e08b13fa7",
     "mechanisms": [],
     "configuration": [
       "\"estimate must seed at the worst case\""
@@ -1559,7 +1559,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d3aaa1278e33f9552a49a74a08ad5cb9017e563d98696740ad67f933ca3ee098",
+    "function_sha256": "83a7384aac08691a432c47537285e2191b88eba5beb8d8ae315f102ed8cd39f7",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 92, FaultPlan::new(0, 0, 0));"
@@ -1666,7 +1666,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "29c090172e1105e6fb13ebcfdd19589ebf4bc72968103b966fbbef1c36819e23",
+    "function_sha256": "6421e553d23b73d0da8f84432c112da9c203ac07176612576f6716600c1574e9",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 97, FaultPlan::new(0, 0, 0));"
@@ -1873,7 +1873,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7756278671fce8152ec21ef07aea367c6276ba8505c73becbd4faa84a6eb92b6",
+    "function_sha256": "4e620d16fd58f171ee125fc2bc656e89fe21a925fe6659fa13618198ae24ed32",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 105, FaultPlan::new(0, 0, 0));"
@@ -2174,7 +2174,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6c2a1d9eadacf1e5582fad0078e8c09d3cf04cf2e7db90c90de8b0e26b31cf72",
+    "function_sha256": "1d92fde97a849d8b9f5aaa1ab737d5c1d54d428f43aedb3b7b5c40cf037b482f",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 99, FaultPlan::new(0, 0, 0));"
@@ -2726,7 +2726,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9940313e72d53170cec6e75d159c9392a3874efa1e75ba2f1fb2e289c722d176",
+    "function_sha256": "b9b9e3738fed1f0b39f9816533a74be23dd0ec565bc490a69483c07aadc745d2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_history.rs",
@@ -2737,7 +2737,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3dc6188c7f5eb79d208e6cd2076c3c9c2a77d7c2d1b329264e13b74695b5b784",
+    "function_sha256": "9a14396d2992e3e3fc27194d95d1e6765dc2d1d54cba69c02a7a76303b39bc35",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::new(0, 0, 0));"
@@ -3563,7 +3563,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1b5b948f7223df56bdee59f9ace32965d97df6911235b920538048fd9013183b",
+    "function_sha256": "d6a469bf1b06657c0ebcb5634a02a9f743aa1e814d74692e42d0f11db3e9a2dd",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_raw.rs",
@@ -3854,7 +3854,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "795e469325bcf046fcfdd5ce01e2feaa147e8a7e01867df50f68193c2141c8f1",
+    "function_sha256": "082af97970db9e82e43583b07e542e0eede311cad87c0ce97b10562e2f07a257",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/history_gather.rs",
@@ -4089,7 +4089,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a2d1aafa07b5d04af90ffbcaa5a0bd1da525bc70e54f40e20cf2e362e50df2f5",
+    "function_sha256": "324c09221bbafffed8c396d03242718e18b7889c6318ca277dab12258c6cc034",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_raw.rs",
@@ -4128,7 +4128,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c63b0de32fbe1639203edb7725d6c346baa31aaff0e5b8cb0299059676261274",
+    "function_sha256": "5831919ed4526af3c7a091d5c34b98422c6d24c6131364d2c6b51504d9f9ca3f",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 101, FaultPlan::new(0, 0, 0));"
@@ -5274,7 +5274,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d0147be950bb6da647ccfb24d9040ed3e5953f8fe89c1f3017b1bbe31d11bcbe",
+    "function_sha256": "bd9707947670a3d783a446bb8016bcee82cefdf94bce08b1988a708f3d64d82f",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 107, FaultPlan::new(0, 0, 0));"
@@ -5796,7 +5796,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "174da5d260f9a1c648d98aa77529ac6fdc43a2431cf395375b4abd4e1db5b986",
+    "function_sha256": "cb65edb4b2dd2873c51200f77510ebd2bde89109a5abe9d7dc865833d19db6d3",
     "mechanisms": [],
     "configuration": [
       "// Sparse seed: ~2 KiB per stream \u2014 the 10k-tenant field shape in"
@@ -5809,7 +5809,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "151fa54ad6b0a0aacfd5aa84d6f6f58e44786e2868559089d99ac37f3479c4b4",
+    "function_sha256": "300f8a78fd2676fe28d3654922e2be3dc79d7ddfdbbdb7dfb05a08642ab905b1",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 104, FaultPlan::new(0, 0, 0));"
@@ -5825,7 +5825,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9e82b1b4e20f173a3501a4ca2f82ba28b3efa281986e5df5c06463b635a43708",
+    "function_sha256": "a1eef034ea41bea3a71c25d8cb7e77752bbfc92b18e10506baebb77522a57e45",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 100, FaultPlan::new(0, 0, 0));"
@@ -6270,7 +6270,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b96984e3b14d2aa83a7a78189abc626fecde05270bf58871e85e8ef4c4343027",
+    "function_sha256": "23000925074a484cfd983ea14b5281d858d688b8c1a3621bbe4656cb32152f5a",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 57, FaultPlan::CLEAN);"
@@ -6464,7 +6464,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "607fa56e7c9a52e4754314f8c2b640c202c6a6d9891172c0b812f387f3b3e441",
+    "function_sha256": "cbb218431c9a96e6515a618bd35bb1711e1fbab1aa5afc4f8e1d89ad1fe49cc3",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 94, FaultPlan::new(0, 0, 0));",
@@ -6517,7 +6517,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "40dc6e15b5c2e5a2f5f400c29a3e5b98fb16c22d15efda080502c1ca47aaca6a",
+    "function_sha256": "2c1e61e57d4c1cd5461a97e97b7e1236a5d754beccd15205f83b59b125f8b3cc",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 61, FaultPlan::new(0, 0, 10));"
@@ -6532,7 +6532,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "42ed86a0b483f501f7bfd920a6a4add20e89a7f52b6a2bf47879be06169d81a9",
+    "function_sha256": "bd3cce43af772525e82401afe1bd371e69ef4a5ab02a4e4e3c38ae9d47bd3f3d",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 0));"
@@ -6547,7 +6547,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0e2cfdf35272b7ca1f1574963af9c61aab03e438a1126f35f5d24632c54f46fc",
+    "function_sha256": "d48a5cf96a0552f8be06473e8f62f91004929aa303bd3b943c3ed25df5f2aedf",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 67, FaultPlan::CLEAN);"

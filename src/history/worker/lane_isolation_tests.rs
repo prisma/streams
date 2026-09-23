@@ -1,7 +1,7 @@
 //! Item 35: a stream whose stored row fails admission backs off alone;
 //! the lane-mates gathered beside it retire with the same flush.
 use super::{Absorber, PendingAbsorb};
-use crate::history::{AbsorberConfig, KeyCache, absorber_channel};
+use crate::history::{AbsorberConfig, absorber_channel};
 use crate::shard::{AppendFinish, AppendReq, ShardConfig, ShardEngine, record_key};
 use bytes::Bytes;
 use object_store::ObjectStore;
@@ -79,7 +79,7 @@ async fn corrupt_row_backs_off_only_its_stream() {
     overwrite_first_row(&engine, bad).await;
     let cfg = AbsorberConfig::default();
     let tick = cfg.tick;
-    let absorber = Absorber::new(store, engine.clone(), Arc::new(KeyCache::default()), cfg);
+    let absorber = Absorber::new(engine.clone(), cfg);
     let now = Instant::now();
     let entry = || PendingAbsorb {
         bytes: 1,

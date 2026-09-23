@@ -246,16 +246,11 @@ pub(super) async fn http_rig_with_auth_service(
 /// the anti-flap holdoff) instead of a rig-only shape with no close
 /// callback at all.
 #[expect(
-    clippy::too_many_arguments,
-    reason = "rig_opener; the rig opener takes the store, keys, shard config, park, absorber config and close notifier the rig assembles separately; a rig struct would restate the rig itself"
-)]
-#[expect(
     clippy::excessive_nesting,
     reason = "rig_opener; the opener nests the close callback inside the engine construction it must outlive; flattening it would separate the callback from the incarnation it reports"
 )]
 pub(super) fn rig_opener(
     store: Arc<dyn ObjectStore>,
-    keys: Arc<crate::history::KeyCache>,
     shard_cfg: crate::shard::ShardConfig,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
@@ -265,7 +260,6 @@ pub(super) fn rig_opener(
         move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
             let notifier = notifier.clone();
             let store = store.clone();
-            let keys = keys.clone();
             let shard_cfg = shard_cfg.clone();
             let open_park = open_park.clone();
             let absorber_cfg = absorber_cfg.clone();
@@ -310,9 +304,7 @@ pub(super) fn rig_opener(
                     __maint,
                 );
                 crate::history::Absorber::start_owned(
-                    store,
                     engine.clone(),
-                    keys,
                     absorber_cfg
                         .clone()
                         .unwrap_or(crate::history::AbsorberConfig {
@@ -406,7 +398,6 @@ pub(super) async fn http_rig_build(
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let opener_store = store.clone();
-    let opener_keys = keys.clone();
     let opener_absorber = absorber_cfg.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
@@ -501,7 +492,6 @@ pub(super) async fn http_rig_build(
             |notifier| {
                 rig_opener(
                     opener_store,
-                    opener_keys,
                     opener_shard_cfg,
                     open_park,
                     opener_absorber,

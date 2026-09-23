@@ -35,9 +35,7 @@ async fn fixture() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
         ShardMaintenance::default(),
     );
     crate::history::Absorber::start_owned(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig::default(),
         rx,
     );

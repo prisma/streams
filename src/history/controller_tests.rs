@@ -2,6 +2,7 @@ use super::*;
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::shard::{AppendFinish, AppendReq, ShardConfig};
 use bytes::Bytes;
+use object_store::ObjectStore;
 use std::sync::atomic::Ordering;
 
 #[expect(
@@ -106,13 +107,7 @@ async fn active_absorber_cancel(hold_store: bool) {
         threshold_age: Duration::ZERO,
         ..Default::default()
     };
-    Absorber::start_owned(
-        data_store.clone(),
-        engine.clone(),
-        Arc::new(KeyCache::default()),
-        absorber_cfg.clone(),
-        absorb_rx,
-    );
+    Absorber::start_owned(engine.clone(), absorber_cfg.clone(), absorb_rx);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let parked = match &entered {
@@ -167,13 +162,7 @@ async fn active_absorber_cancel(hold_store: bool) {
         None,
         maintenance,
     );
-    Absorber::start_owned(
-        data_store,
-        retry.clone(),
-        Arc::new(KeyCache::default()),
-        absorber_cfg,
-        absorb_rx,
-    );
+    Absorber::start_owned(retry.clone(), absorber_cfg, absorb_rx);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let tail = retry.tail_fields(&hash).await.unwrap().unwrap();

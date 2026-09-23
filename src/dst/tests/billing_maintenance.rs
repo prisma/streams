@@ -268,9 +268,7 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     // first boundary-advancing group must fail; the backlog must remain.
     engine.fail_next_absorbed_group();
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),

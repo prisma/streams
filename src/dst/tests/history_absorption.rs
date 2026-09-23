@@ -47,7 +47,7 @@ async fn acked_records_survive_absorption_into_history() {
     let cov = store.coverage();
     let key = skey();
     let hash = [8u8; 16];
-    let (engine, absorber) = open_engine_with_absorber(store.clone(), "dst-hist", hash, &key).await;
+    let (engine, absorber) = open_engine_with_absorber(store.clone(), "dst-hist").await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -117,15 +117,11 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(hash, key.clone(), hash);
     // The absorber listens on a channel that never carries a signal. Keep
     // the sender alive: a closed channel would exit the absorber loop.
     let (_quiet_tx, quiet_rx) = crate::history::absorber_channel();
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -204,14 +200,10 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(hash, key.clone(), hash);
     // 64 KiB gather cap: EVERY record below is bigger, so every gather
     // is truncated after exactly one record.
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -280,7 +272,7 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
 
 /// History v2's headline property: absorption WITHOUT the customer key.
 /// The gather lane copies raw encrypted frames into the shared
-/// partition, so an absorber whose KeyCache is EMPTY must still absorb
+/// partition, so the absorber, which holds no key cache, must still absorb
 /// — and the records must decode correctly on read, where the client
 /// supplies the key. (v1 required the key server-side and stranded
 /// key-expired backlogs; docs/COST-WIDE1.md §2.)
@@ -317,12 +309,8 @@ async fn v2_absorbs_without_customer_keys() {
         None,
         __maint,
     );
-    // NO keys.put: the v1 absorber would return key-missing forever.
-    let keys = Arc::new(crate::history::KeyCache::default());
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -380,7 +368,7 @@ async fn v2_history_survives_engine_handoff() {
     let hash = [51u8; 16];
     let prefix = "dst-v2reopen";
 
-    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
@@ -391,7 +379,7 @@ async fn v2_history_survives_engine_handoff() {
 
     // Successor opens the same shard; its first commit fences the old
     // owner, its partition open fences the old partition writer.
-    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix).await;
     // Same Workload: op numbering must continue, or the post-handoff ops
     // collide with the pre-handoff ones in the shared OpLog.
     w.run(&b, hash, &key, &["r"], 5, false, &mut log).await;
@@ -460,13 +448,8 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(tiny, key.clone(), tiny);
-    keys.put(fat, key.clone(), fat);
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             // Byte threshold out of reach; age immediate — absorption
             // happens purely through the age trigger, which must take

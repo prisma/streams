@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
-use object_store::ObjectStore;
 use slatedb::Db;
 use slatedb::config::{CompressionCodec, Settings};
 use tokio::sync::mpsc;
@@ -722,10 +721,6 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
 /// submitted it (true = the v2 shared partition).
 type LaneMarks = std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>;
 
-#[expect(
-    dead_code,
-    reason = "Absorber; the store and key cache it was started with are kept for the gather planner, which reaches them through the engine today; dropping them would touch boot's mutation-gated wiring for no behaviour change"
-)]
 pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
     /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
@@ -736,9 +731,7 @@ pub(crate) struct Absorber {
     /// estimate keeps the pressure line honest at sparse shapes while
     /// try_grow() + the pool keep the OOM bound exact.
     recent_transient: AtomicU64,
-    data_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
-    keys: Arc<KeyCache>,
     cfg: AbsorberConfig,
     /// Highest `upto` this absorber has submitted per stream, WITH the
     /// lane that submitted it (true = v2 shared partition). The
@@ -763,20 +756,13 @@ pub(crate) struct Absorber {
 impl Absorber {
     /// Construct without starting the pump — DST tests drive gathers
     /// directly for deterministic budget/packing assertions.
-    pub(crate) fn new(
-        data_store: Arc<dyn ObjectStore>,
-        shard: Arc<ShardEngine>,
-        keys: Arc<KeyCache>,
-        cfg: AbsorberConfig,
-    ) -> Self {
+    pub(crate) fn new(shard: Arc<ShardEngine>, cfg: AbsorberConfig) -> Self {
         let seed = cfg
             .gather_max_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
             .max(shard.history_resources.worst_frame_transient) as u64;
         Absorber {
-            data_store,
             shard,
-            keys,
             cfg,
             submitted: std::sync::Mutex::new(HashMap::new()),
             discovery_after: Default::default(),
@@ -831,13 +817,11 @@ impl Absorber {
         reason = "Absorber::start_owned; the engine handle is cloned into the absorber and then registers its task; borrowing it would ripple through boot's mutation-gated wiring and four fixtures for one clone"
     )]
     pub(crate) fn start_owned(
-        data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
-        keys: Arc<KeyCache>,
         cfg: AbsorberConfig,
         rx: mpsc::Receiver<AbsorbSignal>,
     ) {
-        let absorber = Self::new(data_store, shard.clone(), keys, cfg);
+        let absorber = Self::new(shard.clone(), cfg);
         shard.spawn_required("absorber", absorber.run(rx));
     }
 }
@@ -1070,7 +1054,7 @@ pub(crate) fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::{PutOptions, PutPayload, PutResult, path::Path as OPath};
+    use object_store::{ObjectStore, PutOptions, PutPayload, PutResult, path::Path as OPath};
 
     #[derive(Debug)]
     struct SlowPuts(Arc<dyn ObjectStore>);
@@ -1174,9 +1158,7 @@ mod tests {
             crate::shard::ShardMaintenance::default(),
         );
         let handle = Absorber::start(
-            store.clone(),
             engine.clone(),
-            Arc::new(KeyCache::default()),
             AbsorberConfig {
                 tick: Duration::from_millis(50),
                 ..Default::default()

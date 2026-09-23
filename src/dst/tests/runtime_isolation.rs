@@ -27,7 +27,7 @@ async fn a_fenced_owners_absorber_exits() {
     let hash = [11u8; 16];
     let prefix = "dst-zombie";
 
-    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["z"], 10, false, &mut log).await;
@@ -38,7 +38,7 @@ async fn a_fenced_owners_absorber_exits() {
     );
 
     // The handoff: a new owner opens the same shard log.
-    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix).await;
 
     // Give the old engine a reason to notice: its next commit attempt is
     // what discovers the fence.

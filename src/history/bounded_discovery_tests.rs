@@ -1,6 +1,7 @@
 //! R09: dirty-index discovery pages progress without exceeding the pending capacity.
 #![cfg(test)]
 use super::*;
+use object_store::ObjectStore;
 use slatedb::WriteBatch;
 
 #[test]
@@ -83,12 +84,7 @@ async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
         None,
         Default::default(),
     );
-    let absorber = Absorber::new(
-        store,
-        engine.clone(),
-        Arc::new(KeyCache::default()),
-        AbsorberConfig::default(),
-    );
+    let absorber = Absorber::new(engine.clone(), AbsorberConfig::default());
     let mut pending = HashMap::new();
     assert_eq!(
         absorber.seed_from_dirty_index(&mut pending).await.unwrap(),

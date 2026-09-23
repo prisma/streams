@@ -71,12 +71,7 @@ async fn gather_after_reopen(
         },
     )
     .await;
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine2.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        cfg,
-    );
+    let absorber = crate::history::Absorber::new(engine2.clone(), cfg);
     let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
     let mut advanced: Vec<([u8; 16], u64)> = outcome
         .advanced
@@ -112,12 +107,7 @@ async fn gather_with_pacing(
     for h in &hashes {
         append_sized(&engine, *h, key, "", 2048).await;
     }
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        cfg,
-    );
+    let absorber = crate::history::Absorber::new(engine.clone(), cfg);
     let t0 = std::time::Instant::now();
     let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
     let mut advanced: Vec<([u8; 16], u64)> = outcome
@@ -166,12 +156,7 @@ async fn adaptive_gather_estimate_seeds_decays_and_jumps() {
         slatedb::config::Settings::default(),
     )
     .await;
-    let absorber = crate::history::Absorber::new(
-        store,
-        engine,
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig::default(),
-    );
+    let absorber = crate::history::Absorber::new(engine, crate::history::AbsorberConfig::default());
     let cap = crate::history::AbsorberConfig::default()
         .gather_max_bytes
         .saturating_mul(crate::history::ABSORB_BUILD_MULTIPLIER)
@@ -322,12 +307,8 @@ async fn sparse_absorption_wave_bounds_append_latency() {
         append_sized(&engine, *h, &key, "", 2048).await;
     }
 
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig::default(),
-    );
+    let absorber =
+        crate::history::Absorber::new(engine.clone(), crate::history::AbsorberConfig::default());
 
     // Probe stream must exist before measuring.
     append_sized(&engine, [0xA7; 16], &key, "", 1024).await;
@@ -406,9 +387,7 @@ async fn v2_gather_packs_to_the_aggregate_budget() {
     // deterministic. ~16.6 KiB per unkeyed chunk against a 40 KiB budget
     // means exactly two streams per gather.
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 40 * 1024,
             ..Default::default()
@@ -483,9 +462,7 @@ async fn an_oversized_chunk_gathers_alone() {
     append_sized(&engine, small_b, &key, "", 16 * 1024).await;
 
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 64 * 1024,
             ..Default::default()
@@ -549,9 +526,7 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
     // Keyed chunks now weigh what unkeyed ones do (~16.6 KiB): the
     // canonical row plus a compact postings allowance.
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 40 * 1024,
             ..Default::default()
@@ -672,9 +647,7 @@ async fn untouched_streams_absorb_after_restart() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine_b.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -774,9 +747,7 @@ async fn absorber_on_pool(
     )
     .await;
     let absorber = crate::history::Absorber::new(
-        store,
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes,
             ..Default::default()
@@ -922,12 +893,8 @@ async fn one_corrupt_row_fails_only_its_stream() {
     overwrite.put(crate::shard::record_key(&bad, 0), b"invalid frame");
     let written = engine.db.write(overwrite).await.expect("overwrite the row");
     written.await_durable().await.expect("durable overwrite");
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig::default(),
-    );
+    let absorber =
+        crate::history::Absorber::new(engine.clone(), crate::history::AbsorberConfig::default());
     let outcome = absorber
         .absorb_gather_v2(&[a, bad, c])
         .await
