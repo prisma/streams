@@ -112,17 +112,15 @@ fn raw_start(
                 .as_ref()
                 .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
             if segmented {
-                let (segment, offset) =
-                    crate::offsets::parse_ep(raw).map_err(|_| ReadFailure::InvalidCursor)?;
-                Ok(ReadStart::Position(ReadPosition {
-                    segment,
-                    after: offset.scan_from(),
-                }))
+                let (segment, after) =
+                    crate::offsets::parse(raw).map_err(|_| ReadFailure::InvalidCursor)?;
+                Ok(ReadStart::Position(ReadPosition { segment, after }))
             } else {
-                let offset = Offset::parse(raw).map_err(|_| ReadFailure::InvalidCursor)?;
+                let after =
+                    crate::offsets::parse_scalar(raw).map_err(|_| ReadFailure::InvalidCursor)?;
                 Ok(ReadStart::Position(ReadPosition {
                     segment: desc.resolve_segment(selector.unwrap_or("")).seg_id,
-                    after: offset.scan_from(),
+                    after,
                 }))
             }
         }
@@ -340,13 +338,11 @@ pub(crate) fn read_payload(
     }
     body.freeze()
 }
+/// An unsplit stream answers the scalar (epoch 0) token whatever its
+/// resolved segment id: that surface never shows a segment lane.
 fn raw_position(position: ReadPosition, segmented: bool) -> String {
-    let offset = Offset(position.after.checked_sub(1));
-    if segmented {
-        crate::offsets::encode_ep(position.segment, offset)
-    } else {
-        offset.encode()
-    }
+    let epoch = if segmented { position.segment } else { 0 };
+    crate::offsets::encode(epoch, position.after)
 }
 pub(crate) fn meter_read_outcome(state: &AppState, out: &ReadOutcome) {
     crate::billing::meter_read(

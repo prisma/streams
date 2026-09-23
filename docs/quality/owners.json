@@ -353,6 +353,14 @@
       "syntax": "proptest::proptest"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/offsets.rs",
+      "reason": "Offset codec properties; the pinned macro generates the valid-position round trip and order, and arbitrary accepted-or-refused inputs, against the one production codec; all generated cases execute in the quality_ codec leg.",
+      "syntax": "proptest::proptest"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::decode",

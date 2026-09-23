@@ -378,14 +378,9 @@ async fn foreign_append(addr: std::net::SocketAddr, name: &str, i: u64) {
 }
 
 /// The raw `streamNextOffset` token a control names for `next`: the
-/// encoding `sse_control_ep` uses (segment 0; START when next is 0).
+/// encoding `sse_control_ep` uses (segment 0).
 fn raw_next_tok(next: u64) -> String {
-    let off = next
-        .checked_sub(1)
-        .map_or(crate::offsets::Offset::START, |o| {
-            crate::offsets::Offset(Some(o))
-        });
-    crate::offsets::encode_ep(0, off)
+    crate::offsets::encode(0, next)
 }
 
 /// Payloads of the control frames carrying `upToDate`, in wire order.
@@ -576,7 +571,7 @@ async fn raw_up_to_date_rides_only_the_last_record_of_a_multi_record_window() {
     assert!(st == 200 || st == 201, "create {st}");
 
     // CATCH-UP: both existing records are read privately from START.
-    let start = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start = crate::offsets::encode(0, 0);
     let mut raw = raw_sse_connect_at(addr, "rawpair", &start).await;
     assert_raw_pairing(&raw_window(&mut raw, 2).await, 2, 2, "raw catch-up");
 

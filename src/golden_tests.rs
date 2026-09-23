@@ -723,7 +723,7 @@ mod descriptor_json {
 
 mod cursors {
     use crate::crypto::StreamKey;
-    use crate::offsets::{Offset, encode_ep};
+    use crate::offsets::{encode, parse};
     use crate::product_cursor::KeyCursor;
     use crate::tenant::ProjectId;
 
@@ -777,39 +777,27 @@ mod cursors {
 
     /// Raw-surface cursor: the Durable Streams offset token — 26-char
     /// Crockford base32 over a big-endian 128-bit tuple (epoch u32,
-    /// rawSeq = offset+1 split hi/lo, in_block u32), padded to 130 bits.
+    /// rawSeq = next (the old offset+1) split hi/lo, in_block u32), padded to 130 bits.
     /// Expected strings recomputed from the alphabet
     /// "0123456789ABCDEFGHJKMNPQRSTVWXYZ" and the shift schedule.
     #[test]
     fn golden_layout4_raw_offset_tokens() {
-        assert_eq!(Offset::START.encode(), "00000000000000000000000000");
-        assert_eq!(Offset(Some(0)).encode(), "0000000000000000000G000000");
-        assert_eq!(Offset(Some(41)).encode(), "000000000000000000N0000000");
-        assert_eq!(
-            Offset(Some(u64::MAX - 1)).encode(),
-            "0000007ZZZZZZZZZZZZG000000"
-        );
+        assert_eq!(encode(0, 0), "00000000000000000000000000");
+        assert_eq!(encode(0, 1), "0000000000000000000G000000");
+        assert_eq!(encode(0, 42), "000000000000000000N0000000");
+        assert_eq!(encode(0, u64::MAX), "0000007ZZZZZZZZZZZZG000000");
         // "-1" is the wire form of start-of-stream; every token parses
-        // back to exactly its offset.
-        assert_eq!(Offset::parse("-1").unwrap(), Offset::START);
-        assert_eq!(
-            Offset::parse("0000000000000000000G000000").unwrap(),
-            Offset(Some(0))
-        );
-        assert_eq!(
-            Offset::parse("0000007ZZZZZZZZZZZZG000000").unwrap(),
-            Offset(Some(u64::MAX - 1))
-        );
+        // back to exactly its position.
+        assert_eq!(parse("-1"), Ok((0, 0)));
+        assert_eq!(parse("0000000000000000000G000000"), Ok((0, 1)));
+        assert_eq!(parse("0000007ZZZZZZZZZZZZG000000"), Ok((0, u64::MAX)));
     }
 
     #[test]
     fn golden_layout4_raw_epoch_offset_token() {
         // Per-key streams put the segment ordinal in the epoch lane.
-        assert_eq!(encode_ep(3, Offset(Some(5))), "000000R0000000000030000000");
-        assert_eq!(
-            crate::offsets::parse_ep("000000R0000000000030000000").unwrap(),
-            (3, Offset(Some(5)))
-        );
+        assert_eq!(encode(3, 6), "000000R0000000000030000000");
+        assert_eq!(parse("000000R0000000000030000000"), Ok((3, 6)));
     }
 }
 

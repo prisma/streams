@@ -29,7 +29,7 @@ pub(crate) fn append_failure_status(error: &AppendFailure) -> StatusCode {
 }
 fn append_position(seg: u32, next: u64, materialized: bool) -> String {
     if materialized {
-        crate::offsets::encode_ep(seg, Offset(next.checked_sub(1)))
+        crate::offsets::encode(seg, next)
     } else {
         tail_token(next)
     }
@@ -124,7 +124,6 @@ use serde_json::json;
 
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::history::KeyCache;
-use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
 
@@ -2229,7 +2228,7 @@ fn parse_fork_offset(tok: &str) -> Result<u64, String> {
         }
         return Err("malformed fork offset".into());
     }
-    Offset::parse(tok).map(|o| o.scan_from())
+    crate::offsets::parse_scalar(tok).map_err(|e| e.to_string())
 }
 
 /// Strict TTL grammar: canonical non-negative decimal, at most the `admit_ttl` ceiling.
@@ -2254,13 +2253,10 @@ fn want_close(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// Creates and appends to a stream without a segment map answer in the
+/// scalar (epoch 0) lane.
 pub(crate) fn tail_token(next: u64) -> String {
-    if next == 0 {
-        Offset::START
-    } else {
-        Offset(Some(next - 1))
-    }
-    .encode()
+    crate::offsets::encode(0, next)
 }
 
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {

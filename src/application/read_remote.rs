@@ -389,7 +389,7 @@ pub(crate) async fn remote_read_page(
     let offset = if from == u64::MAX {
         "now".to_string()
     } else {
-        crate::offsets::encode_ep(segment, crate::offsets::Offset(from.checked_sub(1)))
+        crate::offsets::encode(segment, from)
     };
     let mut owner = initial_owner.to_string();
     for hop in 0..2 {

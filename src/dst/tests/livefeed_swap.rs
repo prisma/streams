@@ -121,7 +121,7 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
 
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr2?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
@@ -689,7 +689,7 @@ async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
     crate::failpoints::arm(crate::failpoints::Fp::SseBeforeLeaseGate, "lfr3");
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr3?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
@@ -845,7 +845,7 @@ async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
     crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeSubscribe, "lfr5");
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr5?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"

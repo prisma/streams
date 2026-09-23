@@ -80,10 +80,8 @@ async fn r06_empty_filtered_page_has_one_position_across_application_and_protoco
     assert_eq!(status, 200);
     assert_eq!(&body[..], b"[]");
     assert_eq!(
-        crate::offsets::Offset::parse(headers.get("stream-next-offset").unwrap())
-            .unwrap()
-            .scan_from(),
-        out.next.after
+        crate::offsets::parse(headers.get("stream-next-offset").unwrap()),
+        Ok((0, out.next.after))
     );
     let (status, headers, body) = preq(
         addr,
@@ -413,8 +411,8 @@ async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelop
         ("streams-internal-max-bytes", "4096"),
     ];
     headers.extend(target_headers.iter().map(|(k, v)| (*k, v.as_str())));
-    // scan_from() == 100, two records: beyond the tail.
-    let offset = crate::offsets::encode_ep(0, crate::offsets::Offset(Some(99)));
+    // next == 100, two records: beyond the tail.
+    let offset = crate::offsets::encode(0, 100);
     let (status, _, body) = preq(
         addr,
         "GET",
