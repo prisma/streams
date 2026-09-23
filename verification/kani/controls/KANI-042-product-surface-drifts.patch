@@ -1,0 +1,12 @@
+diff --git a/src/application/append/contract.rs b/src/application/append/contract.rs
+--- a/src/application/append/contract.rs
++++ b/src/application/append/contract.rs
+@@ -292,7 +292,7 @@
+                 | FailureClass::Conflict
+         ) && !matches!(
+             self.code,
+-            AppendCode::ProducerGap | AppendCode::ProducerEpochSeq | AppendCode::NotOwner
++            AppendCode::ProducerGap | AppendCode::NotOwner
+         )
+     }
+ }

@@ -1,0 +1,18 @@
+diff --git a/src/application/lifecycle/claims.rs b/src/application/lifecycle/claims.rs
+--- a/src/application/lifecycle/claims.rs
++++ b/src/application/lifecycle/claims.rs
+@@ -234,11 +234,12 @@
+         | BadBody(_)
+         | SeqConflict { .. }
+         | Closed { .. }
+-        | SealSuperseded => FinalDisposition::DefinitivelyRejected,
++        | SealSuperseded
++        | ProducerGap { .. } => FinalDisposition::DefinitivelyRejected,
+         // A producer gap or epoch/sequence disagreement may still resolve
+         // once the producer catches up; an internal failure or a moved
+         // shard is about the moment.
+-        ProducerGap { .. } | ProducerEpochSeq | Internal(_) | Moved => {
++        ProducerEpochSeq | Internal(_) | Moved => {
+             FinalDisposition::AmbiguousOrTransient
+         }
+     }

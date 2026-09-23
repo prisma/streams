@@ -448,6 +448,66 @@
       "regressions": [
         "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
       ]
+    },
+    {
+      "id": "KANI-042",
+      "kind": "kani",
+      "title": "Final-append error disposition",
+      "status": "pass-with-recorded-scope",
+      "owner": "seal lifecycle",
+      "source_paths": [
+        "src/application/lifecycle/claims.rs",
+        "src/application/append/contract.rs"
+      ],
+      "verification_paths": [
+        "src/application/lifecycle/claims/proofs.rs"
+      ],
+      "requirements": [
+        "L10",
+        "L11",
+        "D7"
+      ],
+      "models": [
+        "TLA-003"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "every AppendErr variant (enumeration pinned by an exhaustive match) with symbolic numeric payloads and symbolic segment/materialized inputs to the product translation; string payloads empty (neither classifier reads them)",
+      "checks": [
+        {
+          "id": "KANI-042/disposition",
+          "role": "baseline",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-042/nc-producer-gap-releases-debt",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "patch": "verification/kani/controls/KANI-042-producer-gap-releases-debt.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the raw surface follows the contract"
+          }
+        },
+        {
+          "id": "KANI-042/nc-product-surface-drifts",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "patch": "verification/kani/controls/KANI-042-product-surface-drifts.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the product surface agrees with the raw surface"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_cancellation::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it"
+      ]
     }
   ]
 }

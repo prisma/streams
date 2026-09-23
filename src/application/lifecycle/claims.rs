@@ -190,10 +190,14 @@ pub(crate) struct SealAuthz {
 }
 
 /// What a refused FINAL append does to the seal intent it belongs to
-/// — ONE policy, shared verbatim by the raw and product surfaces
-/// (they previously kept separate stringly-typed lists, which drifted:
-/// the product list named codes its own translator never produces, so
-/// stale-epoch was "retained" in the comment and definitive in fact).
+/// — ONE policy for both surfaces (they previously kept separate
+/// stringly-typed lists, which drifted: the product list named codes its
+/// own translator never produces, so stale-epoch was "retained" in the
+/// comment and definitive in fact). The raw close applies
+/// [`final_err_disposition`] to the committer's error; the product seal
+/// classifies its typed `AppendFailure` with `definitively_rejected`,
+/// which must agree on every committer error: the KANI-042 proof checks
+/// both against this table.
 ///
 /// After round 11 every one of these verdicts is durability-barriered,
 /// and after round 8 every claim is generation-fenced — so releasing a
@@ -239,3 +243,6 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
         }
     }
 }
+
+#[cfg(kani)]
+mod proofs;

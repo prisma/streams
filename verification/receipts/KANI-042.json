@@ -1,0 +1,64 @@
+{
+  "checks": [
+    {
+      "check": "KANI-042/disposition",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "role": "baseline",
+      "seconds": 452.7,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-042/nc-producer-gap-releases-debt",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:the raw surface follows the contract",
+      "failed_checks": [
+        "\"the raw surface follows the contract\""
+      ],
+      "mutated": {
+        "src/application/lifecycle/claims.rs": {
+          "baseline": "26f44fb42b44d172507cbca5b20268daec8bcfdd524649b7678135d76e494948",
+          "control": "3c0dbbc7ca9768004b5728c5b2e4e3280a0390d3966e1333d025091fe9c46ee9"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 525.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-042/nc-product-surface-drifts",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:the product surface agrees with the raw surface",
+      "failed_checks": [
+        "\"the product surface agrees with the raw surface\""
+      ],
+      "mutated": {
+        "src/application/append/contract.rs": {
+          "baseline": "2785d9108eafa9c32c508c451683b00a5a19026189511b9379aad4566a74fb1b",
+          "control": "db5040b8bfb8253fb0480042260a9912f002bbfe5c1a3f8978ce74635dda76ea"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 1950.9,
+      "verdict": "fail"
+    }
+  ],
+  "id": "KANI-042",
+  "inputs_sha256": "c61c60f98698432a124341ef5673a5327945c9d24517d031ec684857a06b45ef",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}
