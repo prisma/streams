@@ -34,7 +34,8 @@ impl std::fmt::Display for OffsetError {
 /// The one token for "records from `next` on" in `epoch`; in_block is
 /// always 0, so equal positions are equal strings on every surface.
 pub(crate) fn encode(epoch: u32, next: u64) -> String {
-    let n: u128 = ((epoch as u128) << 96) | ((next as u128) << 32);
+    // Epoch and next occupy disjoint bits, so their sum is their concatenation.
+    let n: u128 = ((epoch as u128) << 96) + ((next as u128) << 32);
     let padded = n << 2; // 128 -> 130 bits
     let mut out = String::with_capacity(26);
     for i in 0..26 {
@@ -59,7 +60,7 @@ pub(crate) fn parse(input: &str) -> Result<(u32, u64), OffsetError> {
     let mut n: u128 = 0;
     for ch in input.chars() {
         let v = decode_char(ch).ok_or(OffsetError::Char(ch))?;
-        n = (n << 5) | v as u128;
+        n = (n << 5) + v as u128; // v < 32 fills the five bits the shift cleared
     }
     let n = n >> 2; // strip pad bits
     let epoch = (n >> 96) as u32;
@@ -76,9 +77,10 @@ pub(crate) fn parse_scalar(input: &str) -> Result<u64, OffsetError> {
     }
 }
 
+/// Digits and letters read as their ALPHABET index; O and I/L are
+/// Crockford's only other spellings.
 fn decode_char(ch: char) -> Option<u8> {
     match ch {
-        '0'..='9' => Some(ch as u8 - b'0'),
         'O' | 'o' => Some(0),
         'I' | 'i' | 'L' | 'l' => Some(1),
         _ => {

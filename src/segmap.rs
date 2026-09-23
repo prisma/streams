@@ -67,11 +67,17 @@ impl SegmentDesc {
                     self.seg_id
                 ));
             }
+            // Allocation order: a successor is newer and a predecessor older.
+            let reversed = if successor {
+                *id <= self.seg_id
+            } else {
+                *id >= self.seg_id
+            };
             // Missing historical predecessors may already have been absorbed.
             // A missing successor would lose future routing authority.
             let other = match map.get(*id) {
                 Some(other) => other,
-                None if !successor && *id < self.seg_id => continue,
+                None if !successor && !reversed => continue,
                 None => {
                     return Err(format!(
                         "segment {} references missing segment {id}",
@@ -79,7 +85,7 @@ impl SegmentDesc {
                     ));
                 }
             };
-            if (successor && *id <= self.seg_id) || (!successor && *id >= self.seg_id) {
+            if reversed {
                 return Err(format!(
                     "segment {} has cyclic/reversed lineage",
                     self.seg_id
