@@ -221,6 +221,8 @@ pub(crate) enum FinalDisposition {
 
 pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposition {
     use crate::shard::AppendErr::*;
+    // Every variant is named: a new refusal must choose whether it releases
+    // owed-final debt instead of inheriting either verdict from a default.
     match e {
         ProducerStale { .. }
         | ProducerSeqReused
@@ -230,7 +232,10 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
         | Closed { .. }
         | SealSuperseded => FinalDisposition::DefinitivelyRejected,
         // A producer gap or epoch/sequence disagreement may still resolve
-        // once the producer catches up, like every other error.
-        _ => FinalDisposition::AmbiguousOrTransient,
+        // once the producer catches up; an internal failure or a moved
+        // shard is about the moment.
+        ProducerGap { .. } | ProducerEpochSeq | Internal(_) | Moved => {
+            FinalDisposition::AmbiguousOrTransient
+        }
     }
 }
