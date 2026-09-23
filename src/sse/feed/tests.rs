@@ -199,13 +199,7 @@ pub(crate) fn feed_with(
     // The feed captures `frontier()` as its initial head — create
     // EMPTY, then advance: that is the live-append shape.
     let src = Arc::new(FakeSource::new(0, payload));
-    let feed = LiveFeed::new_with_budget(
-        FeedKey::default_lane([7u8; 16]),
-        src.clone(),
-        ring,
-        budget.clone(),
-        tpid(),
-    );
+    let feed = LiveFeed::new_with_budget(src.clone(), ring, budget.clone(), tpid());
     src.frontier.store(frontier, Ordering::Relaxed);
     (feed, src)
 }
@@ -654,7 +648,6 @@ async fn project_retention_tracker_is_bounded_under_churn() {
     // A long-lived feed pins its project's entry across the churn.
     let pinned_src = Arc::new(FakeSource::new(0, 8));
     let pinned = LiveFeed::new_with_budget(
-        FeedKey::default_lane([9u8; 16]),
         pinned_src,
         4096,
         budget.clone(),
@@ -665,7 +658,6 @@ async fn project_retention_tracker_is_bounded_under_churn() {
     for i in 0..300u16 {
         let src = Arc::new(FakeSource::new(0, 8));
         let feed = LiveFeed::new_with_budget(
-            FeedKey::default_lane([i.to_le_bytes()[0]; 16]),
             src,
             4096,
             budget.clone(),
@@ -783,22 +775,10 @@ async fn external_exhaustion_clears_unreachable_ring() {
     // Room for exactly two 340 batches, held by two DIFFERENT feeds.
     let budget = Arc::new(FeedMemoryBudget::new_for_test(680));
     let src_a = Arc::new(FakeSource::new(0, 8));
-    let feed_a = LiveFeed::new_with_budget(
-        FeedKey::default_lane([1u8; 16]),
-        src_a.clone(),
-        1 << 20,
-        budget.clone(),
-        tpid(),
-    );
+    let feed_a = LiveFeed::new_with_budget(src_a.clone(), 1 << 20, budget.clone(), tpid());
     src_a.frontier.store(1, Ordering::Relaxed);
     let src_b = Arc::new(FakeSource::new(0, 8));
-    let feed_b = LiveFeed::new_with_budget(
-        FeedKey::default_lane([2u8; 16]),
-        src_b.clone(),
-        1 << 20,
-        budget.clone(),
-        tpid(),
-    );
+    let feed_b = LiveFeed::new_with_budget(src_b.clone(), 1 << 20, budget.clone(), tpid());
     src_b.frontier.store(1, Ordering::Relaxed);
     for f in [&feed_a, &feed_b] {
         f.subscribe_locked();

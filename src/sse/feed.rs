@@ -550,7 +550,6 @@ pub(crate) struct LiveFeed {
 // Construction takes no lock, so it sits outside the poisoned-state exception below.
 impl LiveFeed {
     pub(crate) fn new_with_budget(
-        _key: FeedKey,
         src: Arc<dyn FeedSourceRead>,
         ring_budget: usize,
         budget: Arc<FeedMemoryBudget>,
