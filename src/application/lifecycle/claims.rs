@@ -199,8 +199,12 @@ pub(crate) struct SealAuthz {
 /// which must agree on every committer error: the KANI-042 proof checks
 /// both against this table.
 ///
-/// After round 11 every one of these verdicts is durability-barriered,
-/// and after round 8 every claim is generation-fenced — so releasing a
+/// After round 11 (TLA-002-F2 for `SealSuperseded`) every one of these
+/// verdicts that rests on committer state is durability-barriered: it is
+/// answered once everything staged before it is durable, and a lost group
+/// answers `Internal` or `Moved` instead. A deferred content refusal
+/// (`CtMismatch`, `BadBody`) rests on no committer state and is answered at
+/// once. After round 8 every claim is generation-fenced — so releasing a
 /// definitively-refused generation's intent can never destroy a
 /// concurrent exact retry (the retry renewed to a newer generation the
 /// release cannot name).

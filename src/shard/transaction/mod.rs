@@ -5,7 +5,8 @@
 //! Applied publication follows successful local write; DurableEffects move to
 //! the existing remote-WAL/dispatch barrier. Dropping or rejecting this owner
 //! cannot publish provisional successes. Conservative generation fences may
-//! ratchet before the write, as in the actor's existing fail-closed protocol.
+//! ratchet before the write, as in the actor's existing fail-closed protocol;
+//! a rejected group drops its streams' cached seal fences for a row re-read.
 use super::*;
 mod append;
 mod finalize;
@@ -187,7 +188,21 @@ impl<'a> CommitTransaction<'a> {
         }
         self.streams.insert(hash, local);
     }
+    /// A rejected group backs no fence it staged (a failed write retires the
+    /// engine first), so the seal fences cached for its streams go with it: a
+    /// later consult re-reads the row, which holds every fence a written group
+    /// staged, and no `SealSuperseded` rests on a fence nothing durable backs
+    /// (TLA-002-F2).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::reject; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
+    )]
     fn reject(self, message: &str) {
+        let mut fences = self.engine.seal_fences.lock().unwrap();
+        for hash in self.streams.keys() {
+            fences.remove(hash);
+        }
+        drop(fences);
         self.effects.reject(AppendErr::Internal(message.to_owned()));
     }
 }

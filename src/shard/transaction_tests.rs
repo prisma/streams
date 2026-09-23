@@ -322,12 +322,8 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
             }
             assert_eq!(
                 engine.seal_fences.lock().unwrap().get(&HASH).copied(),
-                if failure == "required-read" {
-                    None
-                } else {
-                    Some(8)
-                },
-                "only a staged fence may conservatively survive failure"
+                None,
+                "a failed group leaves no cached fence that no row backs (TLA-002-F2)"
             );
             assert_eq!(
                 fixture.engine.maintenance_snapshot(),

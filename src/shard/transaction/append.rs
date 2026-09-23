@@ -10,7 +10,7 @@ impl CommitTransaction<'_> {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail (the durable seal-fence check it calls is fallible and answers Internal instead); recovering it could accept an append against a boundary that was never committed"
+        reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail (the seal-fence check it calls answers its own refusals, Internal for an unreadable fence); recovering it could accept an append against a boundary that was never committed"
     )]
     #[expect(
         clippy::excessive_nesting,
@@ -136,11 +136,9 @@ impl CommitTransaction<'_> {
                 return;
             }
         }
-        if let Err(error) = self.seal_authorizes(hash, &req).await {
-            let _ = req.resp.send(Err(error));
-            return;
+        if let Some(req) = self.seal_authorizes(hash, req).await {
+            self.accept_append(local, hash, req, prod_echo);
         }
-        self.accept_append(local, hash, req, prod_echo);
     }
     fn accept_append(
         &mut self,

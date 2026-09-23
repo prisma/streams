@@ -108,21 +108,40 @@ impl CommitTransaction<'_> {
     }
     /// A closing or claim-authorized append carries a generation at or above
     /// the segment's seal fence; an untagged ordinary append is not a seal
-    /// decision.
+    /// decision. A refused append is answered here and not returned.
+    ///
+    /// `SealSuperseded` is definitive (the handler releases its claim), and
+    /// the fence behind it may be staged in this group or in one still in
+    /// flight, so it joins this group's replies (TLA-002-F2): it is sent once
+    /// everything staged before it is durable, and a group that fails or an
+    /// engine that retires answers `Internal` or `Moved`, which keep the claim.
+    /// An unverified fence decides nothing and never releases a claim, so it
+    /// is answered at once, like the committer's other failed reads.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::seal_authorizes; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
     pub(super) async fn seal_authorizes(
-        &self,
+        &mut self,
         hash: [u8; 16],
-        req: &AppendReq,
-    ) -> Result<(), AppendErr> {
+        req: AppendReq,
+    ) -> Option<AppendReq> {
         let closing = req.finish == AppendFinish::Close;
         if req.seal_gen.is_none() && !closing {
-            return Ok(());
+            return Some(req);
         }
-        let fence = self.seal_fence(hash).await?;
-        if seal_authorized(req.seal_gen, closing, fence) {
-            Ok(())
-        } else {
-            Err(AppendErr::SealSuperseded)
+        match self.seal_fence(hash).await {
+            Ok(fence) if seal_authorized(req.seal_gen, closing, fence) => Some(req),
+            Ok(_) => {
+                self.effects
+                    .acks
+                    .push((req.resp, Err(AppendErr::SealSuperseded)));
+                None
+            }
+            Err(unverified) => {
+                let _ = req.resp.send(Err(unverified));
+                None
+            }
         }
     }
     #[expect(
@@ -167,7 +186,7 @@ impl CommitTransaction<'_> {
     }
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "CommitTransaction::close; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+        reason = "CommitTransaction::close; an unverified fence's reply is a oneshot whose send fails only when the requester already went away (a superseded close waits in the group's replies); a handled result would only restate that nobody waits"
     )]
     pub(super) async fn close(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: CloseReq) {
         #[cfg(test)]
@@ -183,7 +202,10 @@ impl CommitTransaction<'_> {
                 }
             };
             if !seal_authorized(req.generation, true, fence) {
-                let _ = req.resp.send(Err(AppendErr::SealSuperseded));
+                // Definitive, so barriered with the fence (see seal_authorizes).
+                self.effects
+                    .acks
+                    .push((req.resp, Err(AppendErr::SealSuperseded)));
                 return;
             }
         }

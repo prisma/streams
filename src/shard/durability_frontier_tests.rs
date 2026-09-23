@@ -243,3 +243,152 @@ async fn a_seal_fence_survives_engine_replacement() {
         .await
         .unwrap();
 }
+
+/// A shard engine at `prefix` over `store` whose WAL flushes every 5 ms.
+async fn fence_engine(
+    prefix: &str,
+    store: &Arc<crate::dst::FaultStore>,
+) -> (Arc<ShardEngine>, mpsc::Receiver<super::AbsorbSignal>) {
+    let db = Db::builder(prefix, store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap();
+    let (tx, rx) = mpsc::channel(1);
+    let engine = ShardEngine::start(
+        prefix.into(),
+        Arc::new(db),
+        store.clone(),
+        ShardConfig::default(),
+        tx,
+        None,
+        ShardMaintenance::default(),
+    );
+    (engine, rx)
+}
+
+/// TLA-002-F2: `SealSuperseded` releases the refused handler's claim, so a
+/// refusal decided from a fence staged in its own group waits for that
+/// group's durability. While the fence's WAL write is held the superseded
+/// close has no answer; the engine then retires with the fence never
+/// durable, and the close is answered `Moved`, which keeps the claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_superseded_close_waits_for_its_fence_to_be_durable() {
+    let store = crate::dst::FaultStore::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        2407,
+        crate::dst::FaultProfile::clean(),
+    );
+    let (engine, _rx) = fence_engine("fence-barrier", &store).await;
+    let identity = [27; 16];
+    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+    let commit = engine.test_hold_commit().await;
+    let (fence_tx, fence) = oneshot::channel();
+    let (stale_tx, mut stale) = oneshot::channel();
+    engine
+        .try_seal_fence(SealFenceReq {
+            hash: identity,
+            generation: 2,
+            resp: fence_tx,
+        })
+        .unwrap();
+    engine
+        .try_close(CloseReq {
+            hash: identity,
+            generation: Some(1),
+            resp: stale_tx,
+        })
+        .unwrap();
+    drop(commit);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while engaged.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the fence's group reaches its WAL write");
+    let early = stale.try_recv();
+    assert!(
+        matches!(early, Err(oneshot::error::TryRecvError::Empty)),
+        "a superseded close was answered before its fence was durable: {early:?}"
+    );
+    engine.begin_close();
+    let late = stale.await.unwrap();
+    assert!(
+        matches!(late, Err(super::AppendErr::Moved)),
+        "a fence that never became durable left a definitive refusal: {late:?}"
+    );
+    assert!(matches!(fence.await.unwrap(), Err(super::AppendErr::Moved)));
+    store.release_hold();
+    engine
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+/// TLA-002-F2: a commit group that is never written leaves no fence row, so
+/// neither its own superseded close nor a later one may be refused on the
+/// strength of the engine cache it raised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_fence_group_refuses_nothing() {
+    let store = crate::dst::FaultStore::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        2408,
+        crate::dst::FaultProfile::clean(),
+    );
+    let (engine, _rx) = fence_engine("fence-lost", &store).await;
+    let identity = [28; 16];
+    let close = |generation| {
+        let (resp, reply) = oneshot::channel();
+        engine
+            .try_close(CloseReq {
+                hash: identity,
+                generation: Some(generation),
+                resp,
+            })
+            .unwrap();
+        reply
+    };
+    let commit = engine.test_hold_commit().await;
+    let (fence_tx, fence) = oneshot::channel();
+    engine
+        .try_seal_fence(SealFenceReq {
+            hash: identity,
+            generation: 2,
+            resp: fence_tx,
+        })
+        .unwrap();
+    let stale = close(1);
+    engine.fail_next_group_for(identity);
+    drop(commit);
+    assert!(matches!(
+        fence.await.unwrap(),
+        Err(super::AppendErr::Internal(_))
+    ));
+    let refused = stale.await.unwrap();
+    assert!(
+        matches!(refused, Err(super::AppendErr::Internal(_))),
+        "a failed fence group refused its close definitively: {refused:?}"
+    );
+    let later = close(1).await.unwrap();
+    assert!(
+        engine
+            .db
+            .get(super::seal_fence_key(&identity))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        later.as_ref().is_ok_and(|ack| ack.closed),
+        "a fence no group wrote refused a later close: {later:?}"
+    );
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+}

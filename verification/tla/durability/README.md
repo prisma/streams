@@ -743,7 +743,7 @@ or it is refused before staging.
 
 Code: `src/shard/transaction/finalize.rs:35-40`, `src/shard/transaction/append.rs:152-187`, `src/application/creation/initialization.rs:63`, `src/application/creation/initialization.rs:120-125`, `src/application/creation.rs:248-256`, `src/application/append/content.rs:64-70`.
 
-**TLA-005-F4 -- Replies sent outside `DurableEffects`; D5 holds only error-for-error; `SealSuperseded` is an open D4/D10 question** (classification: none; scope note)
+**TLA-005-F4 -- Replies sent outside `DurableEffects`; D5 holds only error-for-error; `SealSuperseded` was unbarriered (now fixed as TLA-002-F2)** (classification: none; scope note)
 
 `CommitTransaction` sends some replies directly instead of staging them.
 1. `Internal` on a handle, producer, sequence or seal-fence load failure, and
@@ -756,19 +756,20 @@ Code: `src/shard/transaction/finalize.rs:35-40`, `src/shard/transaction/append.r
    the group it depends on fails, durable state might have answered another
    error. The outcome is an error either way, so DST D5 ("no response may rely
    on state from that group") is met only error-for-error.
-3. `SealSuperseded` (append.rs:139-142; maintenance.rs:112-127, 184-188) is
-   `FailureClass::Conflict`, so it is definitively rejected. It is decided from
-   the engine's seal-fence cache (maintenance.rs:89-110). `fence` raises that
-   cache while staging, before its row is durable (maintenance.rs:136-167), and
-   the refusal is sent without a barrier. That breaks the letter of DST
-   D4/D10. Since commit 234f69a the cache is reloaded from a durable row by a
-   fresh engine, but the staging-time raise is unchanged.
+3. `SealSuperseded` was `FailureClass::Conflict`, so definitively rejected,
+   decided from the engine's seal-fence cache, which `fence` raises while
+   staging, and sent without a barrier. That broke the letter of DST D4/D10.
+   The seal group confirmed the consequence as TLA-002-F2 (a lost fence group
+   let an older generation close the segment with no claim standing), and
+   "A SealSuperseded refusal waits until the fence behind it is durable" fixed
+   it: the refusal now joins the group's barriered replies, and a rejected
+   group drops the fences it cached.
 
 None of these replies is a success, a duplicate or a closed/reused refusal
 about durable stream state, so D1-D4 as modelled are unaffected.
 
-Disposition: open questions handed on. TLA-002/003 own the `SealSuperseded`
-barrier question. The D5 error-for-error reading needs a spec-owner decision.
+Disposition: the `SealSuperseded` question was answered and fixed by TLA-002-F2.
+The D5 error-for-error reading needs a spec-owner decision.
 
 **TLA-005-F5 -- After a post-apply `db.write` error, the next group staged from the failed batch** (classification: production-defect; **fixed**)
 

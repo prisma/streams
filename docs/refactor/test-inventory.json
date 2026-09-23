@@ -1147,6 +1147,17 @@
     ]
   },
   {
+    "name": "a_superseded_final_waits_for_its_fence_to_be_durable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "27ec94eee75c7f485159da11febd9381230b38f489c7eed57365145cfd6bfd55",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_sweep_eviction_arms_only_the_base_holdoff",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
