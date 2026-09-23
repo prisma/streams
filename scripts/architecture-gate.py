@@ -94,6 +94,10 @@ def violations(sources: dict[str, str], baseline: dict, policy: dict) -> list[st
             failures.append(f'incomplete budget exception: {key}')
         if not isinstance(entry.get('limit'), int) or entry['limit'] <= 0:
             failures.append(f'invalid budget exception limit: {key}')
+    # Every exception must still be NEEDED: its file or function exists and
+    # exceeds the default limit the fixed baseline grants. Otherwise it is a
+    # waiver nobody reviewed for whatever grows under its name next.
+    needed, default_limits = set(), {}
     for path, source in sources.items():
         clean = architecture.strip_noncode(source)
         now = metric_source(path, source)
@@ -119,14 +123,26 @@ def violations(sources: dict[str, str], baseline: dict, policy: dict) -> list[st
                 if count > before.get('edges', {}).get(edge, 0):
                     failures.append(f'reverse dependency growth: {path} -> crate::{edge}: {count} > {before.get("edges", {}).get(edge, 0)}')
         file_key = f'file:{path}'
-        limit = exceptions.get(file_key, {}).get('limit', max(1000, before.get('lines', 0)))
+        default = max(1000, before.get('lines', 0))
+        default_limits[file_key] = default
+        if now['lines'] > default:
+            needed.add(file_key)
+        limit = exceptions.get(file_key, {}).get('limit', default)
         if now['lines'] > limit:
             failures.append(f'file budget growth: {path}: {now["lines"]} > {limit}')
         for name, count in now['functions'].items():
             key = f'function:{path}::{name}'
-            limit = exceptions.get(key, {}).get('limit', max(200, before.get('functions', {}).get(name, 0)))
+            default = max(200, before.get('functions', {}).get(name, 0))
+            default_limits[key] = default
+            if count > default:
+                needed.add(key)
+            limit = exceptions.get(key, {}).get('limit', default)
             if count > limit:
                 failures.append(f'function budget growth: {path}::{name}: {count} > {limit}')
+    for key in sorted(set(exceptions) - needed):
+        why = (f'the default limit {default_limits[key]} already covers it'
+               if key in default_limits else 'it names no current file or function')
+        failures.append(f'obsolete budget exception: {key}: {why}')
     return failures
 
 
@@ -153,11 +169,21 @@ def self_test() -> None:
     p['budget_exceptions']['file:src/new.rs'] = {'limit': 1001, 'owner': 'test', 'finding': 'R24', 'rationale': 'controlled exception', 'source_obligation': 'fixture'}
     assert not violations({'src/new.rs': '\n'*1001}, baseline, p)
     assert violations({'src/new.rs': '\n'*1002}, baseline, p)
+    # Review item 70: an exception the code no longer needs, or that names a
+    # file or function that no longer exists, is refused, so a moved
+    # function's waiver cannot silently cover whatever grows under its name.
+    assert any('obsolete budget exception: file:src/new.rs' in f
+               for f in violations({'src/new.rs': '\n'*999}, baseline, p))
+    moved = dict(p['budget_exceptions']['file:src/new.rs'], limit=250)
+    p['budget_exceptions']['function:src/new.rs::moved_away'] = moved
+    assert any('obsolete budget exception: function:src/new.rs::moved_away' in f
+               for f in violations({'src/new.rs': '\n'*1001}, baseline, p))
+    p['budget_exceptions'] = {}
     p['adapter_http_exports'] = {'src/sse/session.rs': ['AppState']}
     p['transport_and_composition_files'] = ['src/sse/session.rs']
     assert not violations({'src/sse/session.rs': 'use crate::http::AppState;'}, baseline, p)
     assert violations({'src/sse/session.rs': 'use crate::http::{AppState, read_core};'}, baseline, p)
-    print('architecture-gate self-test: OK (21 controls)')
+    print('architecture-gate self-test: OK (23 controls)')
 
 
 def main() -> int:

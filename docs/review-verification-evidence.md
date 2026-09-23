@@ -16,7 +16,9 @@ The two SSE HTTP adapters have exact allowed HTTP exports; adding a callback
 into HTTP-owned work fails the gate. New modules have a 1,000-line budget and
 functions a 200-line budget. Historical overages remain pinned to the reviewed
 commit. Every additional exception has a fixed numerical ceiling, owner,
-finding, concrete rationale and preserved source obligation. In particular,
+finding, concrete rationale and preserved source obligation, and must still
+be needed: an exception whose file or function no longer exists, or that the
+default limit already covers, fails the gate as obsolete. In particular,
 the retained shard transaction is visible debt; it is not silently accepted as
 a new baseline merely because other responsibilities moved out of HTTP.
 All newly extracted application functions now meet the default function
