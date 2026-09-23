@@ -39,8 +39,22 @@ pub(crate) enum LeaseInvalidReason {
     CredentialExpired,
 }
 
+// Every reason sits in `ALL` at its own discriminant, so `index` is a
+// slot in any array sized by `ALL`: an omission, a reorder or a reason
+// inserted mid-enum fails to compile here.
+const _: () = {
+    let mut slot = 0;
+    while slot < LeaseInvalidReason::ALL.len() {
+        assert!(LeaseInvalidReason::ALL[slot] as usize == slot);
+        slot += 1;
+    }
+};
+
 impl LeaseInvalidReason {
-    pub(crate) const ALL: [LeaseInvalidReason; 10] = [
+    /// Its length is spelled from the last reason, so a reason appended
+    /// after `CredentialExpired` must move it (and then the check above
+    /// demands its slot).
+    pub(crate) const ALL: [LeaseInvalidReason; Self::CredentialExpired as usize + 1] = [
         Self::TokenExpired,
         Self::PolicyStale,
         Self::GrantsStale,
@@ -66,8 +80,11 @@ impl LeaseInvalidReason {
             Self::CredentialExpired => "credential_expired",
         }
     }
+    /// The reason's slot in `sse::auth::LEASE_TERMINATIONS`: its
+    /// discriminant, which is its position in `ALL`, so no search can
+    /// miss and count one reason as another.
     pub(crate) fn index(self) -> usize {
-        Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
+        self as usize
     }
 }
 

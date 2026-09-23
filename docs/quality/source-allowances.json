@@ -2068,13 +2068,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::LEASE_TERMINATIONS",
-      "path": "src/sse/auth.rs",
-      "syntax": "[std :: sync :: atomic :: AtomicU64 ; 10]"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::sse_stats::BELOW_FLOOR_CATCHUPS",
       "path": "src/sse/auth.rs",
       "syntax": "AtomicU64"

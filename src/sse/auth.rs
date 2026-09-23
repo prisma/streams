@@ -5,6 +5,7 @@
 //! termination accounting established in rounds V4/3/4. Contract
 //! tests transfer unchanged.
 
+use crate::auth::LeaseInvalidReason;
 use crate::http::{AppState, InternalLease, SseSlot, err_resp};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -58,19 +59,11 @@ pub(crate) mod sse_stats {
     pub(crate) static FEED_VERSION_BUMPS: AtomicU64 = AtomicU64::new(0);
 }
 
-/// Review round 3 F1: lease terminations by reason (canary counter).
-pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64; 10] = [
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-];
+/// Review round 3 F1: lease terminations by reason (canary counter),
+/// one slot per reason at its `LeaseInvalidReason::index`.
+pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64;
+    LeaseInvalidReason::ALL.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; LeaseInvalidReason::ALL.len()];
 
 pub(crate) fn lease_terminations_json() -> serde_json::Value {
     let mut m = serde_json::Map::new();

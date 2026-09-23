@@ -2265,6 +2265,14 @@
       "syntax": "AtomicU64"
     },
     {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LEASE_TERMINATIONS",
+      "path": "src/sse/auth.rs",
+      "reason": "Process instrumentation counters: one AtomicU64 per lease-termination reason, sized by LeaseInvalidReason::ALL so a reason's slot is its discriminant; /v1/debug/load exports them as lease_terminations, and a per-runtime copy would hide terminations from the canary.",
+      "syntax": "[std :: sync :: atomic :: AtomicU64 ; LeaseInvalidReason :: ALL . len ()]"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::livefeed_engine_retired",
