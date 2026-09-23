@@ -341,10 +341,20 @@ async fn termination_reasons_count_exactly_once_per_subscription() {
 /// A RAW live subscription on `name` from the current frontier
 /// (`offset=now`): the raw surface always rides the default lane.
 async fn raw_sse_connect(addr: std::net::SocketAddr, name: &str) -> tokio::net::TcpStream {
+    raw_sse_connect_at(addr, name, "now").await
+}
+
+/// A RAW live subscription from a raw `offset` token: a session that
+/// starts below the frontier catches up privately before it goes live.
+async fn raw_sse_connect_at(
+    addr: std::net::SocketAddr,
+    name: &str,
+    offset: &str,
+) -> tokio::net::TcpStream {
     use tokio::io::AsyncWriteExt;
     let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "GET /v1/stream/{name}?live=sse&offset=now HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        "GET /v1/stream/{name}?live=sse&offset={offset} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
     );
     sck.write_all(req.as_bytes()).await.unwrap();
     sck
@@ -504,6 +514,93 @@ async fn shared_raw_subscriber_gets_up_to_date_after_a_match_free_batch() {
         lf_record_and_status(&p2, "\"r\":1"),
         "shared product: record, then standalone upToDate:\n{p2}"
     );
+    drop(raw);
+    drop(prod);
+    engine_shutdown(&state).await;
+}
+
+// ------------------------------------------------------------------
+// RAW pairing on multi-record windows: the catch-up read and a shared
+// batch fold upToDate into the LAST record's paired control only.
+// ------------------------------------------------------------------
+
+/// One RAW window: everything through the upToDate control naming
+/// `next`, then one quiet beat, so a standalone duplicate after the
+/// paired control is in the text the assertions count. Both collects
+/// are bounded: a hung collect would read as a mutation timeout.
+async fn raw_window(raw: &mut tokio::net::TcpStream, next: u64) -> String {
+    let (head, _) = hub_sse_collect(raw, 8, |t| status_at(t, next)).await;
+    let (quiet, _) = hub_sse_collect(raw, 2, |_| false).await;
+    format!("{head}{quiet}")
+}
+
+/// The pinned RAW protocol for a window of `records` records ending at
+/// `next`: ONE paired control per data event, no standalone status, and
+/// upToDate on the last record's control only.
+fn assert_raw_pairing(window: &str, records: usize, next: u64, leg: &str) {
+    assert_eq!(
+        window.matches("event: data").count(),
+        records,
+        "{leg}: every record of the window:\n{window}"
+    );
+    assert_eq!(
+        window.matches("event: control").count(),
+        records,
+        "{leg}: ONE paired control per data event, no standalone status:\n{window}"
+    );
+    let flagged = up_to_date_controls(window);
+    assert_eq!(
+        flagged.len(),
+        1,
+        "{leg}: upToDate rides exactly one control:\n{window}"
+    );
+    let last = raw_next_tok(next);
+    assert!(
+        flagged.iter().all(|d| d.contains(&last)),
+        "{leg}: upToDate rides the LAST record's control (next={next}):\n{window}"
+    );
+}
+
+/// RAW pairing on the session's two multi-record paths, the private
+/// catch-up read and a shared live batch: upToDate folds into the paired
+/// control of the last record at the frontier, never an earlier one, and
+/// no standalone status follows. The rank-13 test above sends one record
+/// per window, which cannot tell the last record from the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_up_to_date_rides_only_the_last_record_of_a_multi_record_window() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = ("content-type", "application/json");
+    let body = br#"[{"a":0},{"a":1}]"#;
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawpair", &[ct], body).await;
+    assert!(st == 200 || st == 201, "create {st}");
+
+    // CATCH-UP: both existing records are read privately from START.
+    let start = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let mut raw = raw_sse_connect_at(addr, "rawpair", &start).await;
+    assert_raw_pairing(&raw_window(&mut raw, 2).await, 2, 2, "raw catch-up");
+
+    // SHARED: a product session joins the default-lane feed, so the
+    // next append reaches the raw session as one retained batch.
+    let mut prod = lf_connect(addr, "rawpair", "?cursor=now").await;
+    let (p0, _) = hub_sse_collect(&mut prod, 8, |t| t.contains("\"upToDate\":true")).await;
+    assert!(
+        p0.contains("\"upToDate\":true"),
+        "product parks at the head:\n{p0}"
+    );
+    assert_eq!(
+        default_lane_feed(&state, "rawpair")
+            .await
+            .subscriber_count(),
+        2,
+        "raw and product sessions share ONE feed"
+    );
+
+    // LIVE: one append of two records is one shared batch of two.
+    let body = br#"[{"a":2},{"a":3}]"#;
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawpair", &[ct], body).await;
+    assert!(st == 200 || st == 204, "raw append {st}");
+    assert_raw_pairing(&raw_window(&mut raw, 4).await, 2, 4, "raw shared batch");
     drop(raw);
     drop(prod);
     engine_shutdown(&state).await;

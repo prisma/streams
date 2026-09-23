@@ -5005,6 +5005,17 @@
     "scenarios": []
   },
   {
+    "name": "raw_up_to_date_rides_only_the_last_record_of_a_multi_record_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0322f03f6171681e9fcc4b4a8ad8fb9246f6e311be9523cfed9bdb1f41da0c55",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
     "name": "read_batches_survive_crash_in_the_spool",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
