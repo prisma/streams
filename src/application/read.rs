@@ -113,17 +113,11 @@ pub(crate) struct ReadPage {
     pub(crate) completed: bool,
 }
 
-/// The merge itself, free of `AppState` so the simulation harness can call
-/// the production reader instead of reimplementing the history/tail split
-/// (`src/dst.rs`). A second copy of this boundary logic would be a copy
-/// that can drift, and drift here means the oracle stops testing what
-/// production does.
-/// Round-13 CODE-RED bisect: the repro's stream carries ONLY rk=""
-/// records, so keyed reads must be dense too — armed by the test.
-#[cfg(test)]
-pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
+// The merge itself, free of `AppState` so the simulation harness can call
+// the production reader instead of reimplementing the history/tail split
+// (`src/dst/runtime.rs`). A second copy of this boundary logic would be a
+// copy that can drift, and drift here means the oracle stops testing what
+// production does.
 #[expect(
     clippy::too_many_lines,
     reason = "execute_segment; the ring, history and tail legs of one segment read share the boundary the plan fixed; splitting them would separate the legs from the boundary that orders them"
@@ -131,13 +125,6 @@ pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
 #[expect(
     clippy::unwrap_used,
     reason = "execute_segment; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a page past a length never made durable"
-)]
-#[cfg_attr(
-    test,
-    expect(
-        clippy::excessive_nesting,
-        reason = "execute_segment; the keyed-dense audit nests the offset walk inside the test-armed check of the history leg; flattening it would separate the audit from the leg it inspects"
-    )
 )]
 async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let ReadPlan {
@@ -237,22 +224,6 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             // records for this key filter.
             if hist_upto > 0 {
                 out.last = Some(out.last.map_or(hist_upto - 1, |o| o.max(hist_upto - 1)));
-            }
-            #[cfg(test)]
-            if TEST_ASSERT_KEYED_DENSE.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut expect = scan_from;
-                for r in &out.recs {
-                    assert!(
-                        r.off <= expect,
-                        "HISTORY leg gap: expect {expect} got {} (scan_from {scan_from}, hist_upto {hist_upto}, boundary {boundary}, filter {key_filter:?})",
-                        r.off
-                    );
-                    expect = r.off + 1;
-                }
-                assert!(
-                    hist_upto <= expect,
-                    "HISTORY leg over-claim: hist_upto {hist_upto} beyond served {expect} (scan_from {scan_from}, boundary {boundary}, filter {key_filter:?})"
-                );
             }
             cursor = hist_upto;
         }

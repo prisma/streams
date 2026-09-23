@@ -2862,8 +2862,6 @@ pub(crate) async fn append_typed(
 pub(crate) use crate::application::lifecycle::SealAuthz;
 
 #[cfg(test)]
-pub(crate) use crate::application::read::TEST_ASSERT_KEYED_DENSE;
-#[cfg(test)]
 pub(crate) use crate::application::read::read_merged;
 
 #[expect(

@@ -365,11 +365,6 @@ async fn cut_resume_never_skips_a_durable_record() {
     let store: Arc<dyn ObjectStore> =
         Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));
     let (state, addr) = http_rig(store).await;
-    // NOTE: TEST_ASSERT_KEYED_DENSE stays DISARMED in-suite — it is a
-    // process-global bisect lever and the parallel suite runs
-    // legitimate sparse keyed lanes concurrently (arming it here
-    // failed five unrelated tests). The leg's protection is the exact
-    // reconciliation below, which is what caught the field loss.
     state.livefeed.budget().set_max_for_test(64 * 1024); // project cap 16 KiB
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = ("content-type", "application/json");

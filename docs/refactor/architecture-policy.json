@@ -51,13 +51,6 @@
       "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup. Resolve explicit usage and ops capabilities once per engine; no added per-append scan or policy duplication.",
       "source_obligation": "Two-runtime isolation and committer startup/readiness tests; runtime isolation and active-controller cancellation regressions"
     },
-    "function:src/sse/session.rs::serve": {
-      "limit": 721,
-      "owner": "SSE transport session",
-      "finding": "R10",
-      "rationale": "Original fixed-baseline owner retained under a narrow safety wiring cap. Thread the same runtime-local body ceiling and usage counter capability through transport collection and metering.",
-      "source_obligation": "Original scenario obligations retained; runtime isolation and active-controller cancellation regressions"
-    },
     "function:src/ops.rs::collect_snapshot": {
       "limit": 206,
       "owner": "ops::collect_snapshot",
@@ -88,8 +81,7 @@
       "sse_send",
       "sse_send_billed",
       "StartPos",
-      "SseSurface",
-      "TEST_ASSERT_KEYED_DENSE"
+      "SseSurface"
     ],
     "src/sse/auth.rs": [
       "AppState",

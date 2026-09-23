@@ -1753,13 +1753,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::TEST_ASSERT_KEYED_DENSE",
-      "path": "src/application/read.rs",
-      "syntax": "std :: sync :: atomic :: AtomicBool"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::ADOPTION_SEQ",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"
