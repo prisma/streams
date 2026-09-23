@@ -184,4 +184,28 @@ mod tests {
         );
         tasks.shutdown(Duration::from_secs(5)).await;
     }
+
+    /// The validated floor is exactly the one hyper asserts: a buffer at
+    /// the floor builds, one byte less panics. If hyper moves its private
+    /// minimum either way, this fails before a config it refuses can boot.
+    #[test]
+    fn the_validated_buffer_floor_is_the_one_hyper_asserts() {
+        let builds = |n: usize| {
+            std::panic::catch_unwind(move || {
+                drop(super::h1_builder(&HttpConfig {
+                    h1_max_buf: n,
+                    ..HttpConfig::default()
+                }));
+            })
+            .is_ok()
+        };
+        assert!(
+            builds(HttpConfig::MIN_H1_MAX_BUF),
+            "hyper refuses the validated floor"
+        );
+        assert!(
+            !builds(HttpConfig::MIN_H1_MAX_BUF - 1),
+            "hyper accepts less than the validated floor"
+        );
+    }
 }

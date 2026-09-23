@@ -689,6 +689,17 @@ mod validate_boundary_tests {
         }
     }
 
+    /// Review item 53: hyper asserts an h1 read buffer of at least 8 KiB
+    /// inside the serve loop, after bootstrap has opened engines and
+    /// spawned loops; validation must refuse less before anything boots.
+    #[test]
+    fn validation_rejects_an_h1_buffer_below_hypers_floor() {
+        rejects(|_| {}, &[("SSE_H1_MAX_BUF", "4096")], "SSE_H1_MAX_BUF");
+        rejects(|_| {}, &[("SSE_H1_MAX_BUF", "8191")], "SSE_H1_MAX_BUF");
+        validate_with(|_| {}, &[("SSE_H1_MAX_BUF", "8192")])
+            .expect("hyper's floor itself is a valid buffer");
+    }
+
     /// Review item 25: a limit posture whose buckets cannot admit one unit,
     /// or whose knobs are not finite numbers, never boots.
     #[test]

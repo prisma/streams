@@ -184,7 +184,9 @@ pub struct HttpConfig {
     pub debug_exit: bool,
     /// APP_BINARY_SHA256, default "unknown" (debug endpoint payload).
     pub binary_sha256: String,
-    /// SSE_H1_MAX_BUF, default 64 KiB — h1 connection buffer ceiling.
+    /// SSE_H1_MAX_BUF, default 64 KiB, at least `MIN_H1_MAX_BUF` — the h1
+    /// read-buffer threshold hyper tests only after a head fails to parse:
+    /// it limits memory per connection and does not bound header values.
     pub h1_max_buf: usize,
     /// SSE_H1_HEADER_TIMEOUT_MS, default 120_000 — the request-head and
     /// idle keep-alive deadline (`http::serve::h1_builder`); 0/unparseable =
@@ -457,6 +459,14 @@ impl Default for BillingConfig {
 impl FleetConfig {
     /// Bounds runtime ring allocation and every persisted membership document.
     pub const MAX_MEMBERS: u64 = 4096;
+}
+
+impl HttpConfig {
+    /// hyper's `http1::Builder::max_buf_size` asserts at least this (its
+    /// private `MINIMUM_MAX_BUFFER_SIZE`) inside `serve_h1`, after bootstrap
+    /// has opened engines and spawned loops; validation refuses less
+    /// before anything boots.
+    pub const MIN_H1_MAX_BUF: usize = 8 * 1024;
 }
 
 impl Default for FleetConfig {

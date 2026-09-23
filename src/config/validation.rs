@@ -778,11 +778,19 @@ impl crate::config::ServerConfig {
 
     /// The effective body ceiling (CHAOS-3: it sizes the absorber's
     /// worst-frame reservation, so it must be right BEFORE any
-    /// process-global budget reads it) and the effective initial shard
+    /// process-global budget reads it), the h1 read-buffer floor hyper
+    /// asserts inside the serve loop, and the effective initial shard
     /// count, resolved against the fleet-mode default and proven.
     fn validate_topology_and_ceilings(&self, f: &mut Findings) -> Option<InitialShards> {
         if let Err(e) = validate_body_ceiling(self.cli.max_request_body_bytes) {
             f.err(e);
+        }
+        if self.http.h1_max_buf < super::HttpConfig::MIN_H1_MAX_BUF {
+            f.err(format!(
+                "SSE_H1_MAX_BUF={} is below hyper's {}-byte h1 buffer floor",
+                self.http.h1_max_buf,
+                super::HttpConfig::MIN_H1_MAX_BUF
+            ));
         }
         if !(1..=super::FleetConfig::MAX_MEMBERS).contains(&self.cli.fleet_max)
             || self.fleet.fleet_min > super::FleetConfig::MAX_MEMBERS
