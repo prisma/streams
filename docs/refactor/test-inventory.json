@@ -1424,6 +1424,17 @@
     "scenarios": []
   },
   {
+    "name": "an_empty_catch_up_page_is_read_again_after_a_bounded_wait",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "87a3390aff8320fe109013f34ea3a4b6894754f14a4e1830219c3a3b6c9f77e1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_empty_live_read_is_retried_without_another_append",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

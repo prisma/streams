@@ -767,3 +767,8 @@ async fn catch_up_fault_is_retried(
 async fn a_failed_catch_up_read_is_read_again_after_a_bounded_wait() {
     catch_up_fault_is_retried("catch-up-failed", |s| &s.fail_reads).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_catch_up_page_is_read_again_after_a_bounded_wait() {
+    catch_up_fault_is_retried("catch-up-empty", |s| &s.empty_pages).await;
+}

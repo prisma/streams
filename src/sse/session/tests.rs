@@ -193,8 +193,8 @@ fn a_failure_after_progress_waits_the_first_delay_again() {
 }
 
 /// Item 86: a catch-up read that advanced nothing is answered at one
-/// owner. A fatal cutoff ends the session at once; a failed read waits the
-/// bounded retry before the same snapshot is read again.
+/// owner. A fatal cutoff ends the session at once; a failed read and an
+/// empty page each wait the bounded retry before the next read.
 #[tokio::test(start_paused = true)]
 async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
     let empty = crate::sse::feed::SourceBatch {
@@ -212,7 +212,7 @@ async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
             Stall::Failed,
             100,
         ),
-        ("empty", Ok(empty), Stall::NoProgress, 0),
+        ("empty", Ok(empty), Stall::NoProgress, 100),
     ] {
         let start = tokio::time::Instant::now();
         assert_eq!(catch_up::stalled(read).await, owed, "{leg}");

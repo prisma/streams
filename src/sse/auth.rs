@@ -50,7 +50,9 @@ pub(crate) mod sse_stats {
     pub(crate) static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
     pub(crate) static FEED_CUTOFF_ENGINE_RETIRED: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
-    /// session that had not reached live yet — NOT a disconnect).
+    /// session that had not reached live yet — NOT a disconnect). A hole
+    /// below the floor that the durable read cannot explain yet is
+    /// re-read after each catch-up wait, so it counts here at that pace.
     pub(crate) static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);
     /// Feed version publications (one per actual state change).
     pub(crate) static FEED_VERSION_BUMPS: AtomicU64 = AtomicU64::new(0);

@@ -1,9 +1,21 @@
 //! What a durable catch-up read that advanced nothing owes its pass.
 //!
-//! `serve`'s catch-up pass reads privately below a fixed bound; its answer
-//! to a read that moved nothing lives here so the pass meets every shape at
-//! one exhaustive match, outside the pass's size and nesting exceptions.
+//! `serve`'s catch-up pass reads privately below a bound taken from the
+//! feed head, so the frontier of every snapshot it reads is at or past the
+//! bound: an empty page there is a hole the read could not explain yet,
+//! never the snapshot's end. Nothing re-drives the pass but its own next
+//! read (no version bump, no park), so each read that advanced nothing
+//! waits here before the next one. The answer lives here so the pass meets
+//! every shape at one exhaustive match, outside its size and nesting
+//! exceptions.
 use crate::sse::feed::SourceBatch;
+use std::time::Duration;
+
+/// One re-read per 100 ms bounds what a failing or hole-bearing store
+/// costs a session in catch-up. The live phase backs off on its own
+/// (`read_retry`): that retry shortens a park other wakes may end first,
+/// and this pass has no park.
+const RETRY: Duration = Duration::from_millis(100);
 
 /// What the pass does next after a read that advanced nothing.
 #[derive(Debug, PartialEq, Eq)]
@@ -14,19 +26,27 @@ pub(super) enum Stall {
     /// The read failed and its wait passed: the same snapshot is read
     /// again at the same bound.
     Failed,
-    /// The page advanced nothing: the pass hands the session to the live
-    /// loop.
+    /// The page advanced nothing and its wait passed: the pass hands the
+    /// session to the live loop, which serves a cursor the ring covers and
+    /// sends one below the ring's floor back to catch-up at the current
+    /// head, now at most once per wait.
     NoProgress,
 }
 
 /// One owner for a stalled catch-up read's counters, log and wait.
 pub(super) async fn stalled(read: anyhow::Result<SourceBatch>) -> Stall {
-    // This source's spans are exhausted below the bound
-    // (a swap happened mid-catch-up): the live loop
-    // re-snapshots and, if the ring moved, re-catches-up
-    // through the 'handoff path.
-    let Err(e) = read else {
-        return Stall::NoProgress;
+    let e = match read {
+        Ok(page) => {
+            crate::sse::auth::sse_stats::FEED_NO_PROGRESS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(
+                cursor = page.scan_from,
+                "livefeed catch-up page made no progress; handing over after a bounded wait"
+            );
+            tokio::time::sleep(RETRY).await;
+            return Stall::NoProgress;
+        }
+        Err(e) => e,
     };
     // Round-11.2: fatal span outcomes disconnect
     // with the typed reason (no terminal) instead
@@ -43,6 +63,6 @@ pub(super) async fn stalled(read: anyhow::Result<SourceBatch>) -> Stall {
     // (finding 6 discipline applies here too).
     crate::sse::auth::sse_stats::FEED_SOURCE_FAILED
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(RETRY).await;
     Stall::Failed
 }
