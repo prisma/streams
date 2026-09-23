@@ -4290,6 +4290,17 @@
     ]
   },
   {
+    "name": "product_scan_answers_each_cursor_verdict",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6ba157a521a26aab62eecdab38b04fa264044504e93e055cb63beb8a36f55632",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "product_scan_bytes_stream",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
