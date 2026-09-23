@@ -52,6 +52,19 @@ pub(crate) const POLICY_STALENESS_MAX_SECS: i64 = 300;
 /// a revoked signing key must not verify forever on a wedged feed.
 pub(crate) const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
 
+/// §7.1: the last second a snapshot fetched at `fetched_at_unix` still
+/// authorizes. Every staleness refusal, the operator surface and every
+/// lease deadline derive from this one boundary, so "stale" and
+/// "re-check now" cannot disagree about when a window closes.
+fn feed_fresh_until(fetched_at_unix: i64, window_secs: i64) -> i64 {
+    fetched_at_unix.saturating_add(window_secs)
+}
+
+/// §7.1: the one fail-closed staleness predicate.
+fn feed_stale(fetched_at_unix: i64, window_secs: i64, now: i64) -> bool {
+    now > feed_fresh_until(fetched_at_unix, window_secs)
+}
+
 /// Separate JWT trust boundaries (§14): a customer token can never satisfy
 /// a fleet workload check and vice versa. Operator access uses its own bearer.
 pub(crate) const AUD_CUSTOMER: &str = "prisma-streams-data";
@@ -473,7 +486,7 @@ impl AuthService {
         let jwks = self.jwks.load();
         // Bounded key-set staleness (review item 6): fail closed like
         // policies and grants — retryable, not a credential error.
-        if now.saturating_sub(jwks.fetched_at_unix) > JWKS_STALENESS_MAX_SECS {
+        if feed_stale(jwks.fetched_at_unix, JWKS_STALENESS_MAX_SECS, now) {
             return Err(AuthError::KeysStale);
         }
         let entry = match jwks.keys.get(&kid) {
@@ -574,7 +587,7 @@ impl AuthService {
 
         // §7.1 fail-closed policy checks, all from local snapshots.
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::PolicyStale);
         }
         // §8.1: placement is not an authorization problem. This cell's
@@ -606,7 +619,7 @@ impl AuthService {
         }
 
         let grants = self.credentials.load();
-        if now - grants.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(grants.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::GrantsStale);
         }
         let cred = grants
@@ -734,7 +747,7 @@ impl AuthService {
         AuthError,
     > {
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::PolicyStale);
         }
         Ok(policies
@@ -764,13 +777,13 @@ impl AuthService {
                 "projects": policies.projects.len(),
                 "feedVersion": policies.feed_version,
                 "ageSecs": age(policies.fetched_at_unix),
-                "stale": now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+                "stale": feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now),
             },
             "grants": {
                 "credentials": grants.credentials.len(),
                 "feedVersion": grants.feed_version,
                 "ageSecs": age(grants.fetched_at_unix),
-                "stale": now - grants.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+                "stale": feed_stale(grants.fetched_at_unix, self.staleness_max_secs(), now),
             },
         })
     }
@@ -1545,5 +1558,34 @@ mod tests {
             "a NEW receiver must observe the CURRENT generation; \
              a dropped publication left it stale"
         );
+    }
+
+    /// Item 65: verification, the lease, its deadline, capability status
+    /// and the operator surface agree on the instant a feed goes stale,
+    /// including under a window a rig shortened.
+    #[test]
+    fn every_freshness_reader_shares_one_boundary() {
+        let svc = service();
+        svc.set_staleness_max_secs(3);
+        let lease = svc.verify_customer(&sign(&claims()), NOW).unwrap().lease();
+        let edge = NOW + 3; // age == window: fresh everywhere
+        assert!(svc.verify_customer(&sign(&claims()), edge).is_ok());
+        assert_eq!(svc.lease_check(&lease, edge), Ok(()));
+        assert_eq!(svc.lease_deadline(&lease), edge);
+        assert!(svc.status_and_quotas(&lease.project_id, edge).is_ok());
+        assert_eq!(svc.feed_json(edge)["policies"]["stale"], false);
+        let past = edge + 1; // one second later: stale everywhere
+        let refused = svc.verify_customer(&sign(&claims()), past).unwrap_err();
+        assert_eq!(refused, AuthError::PolicyStale);
+        assert_eq!(
+            svc.lease_check(&lease, past),
+            Err(LeaseInvalidReason::PolicyStale)
+        );
+        let surface = svc.feed_json(past);
+        assert_eq!(
+            surface["policies"]["stale"], true,
+            "the operator surface must call a refusing feed stale"
+        );
+        assert_eq!(surface["grants"]["stale"], true);
     }
 }

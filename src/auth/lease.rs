@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::AuthService;
+use super::{AuthService, feed_fresh_until, feed_stale};
 use crate::tenant::ProjectId;
 
 /// Review V4: compact authorization lease for LONG-LIVED
@@ -104,7 +104,7 @@ impl AuthService {
         let pols = self.projects.load();
         // Fail closed at the SAME window new requests use: an
         // established subscription must never outlive the feed truth.
-        if now_unix - pols.fetched_at_unix > w {
+        if feed_stale(pols.fetched_at_unix, w, now_unix) {
             return Err(R::PolicyStale);
         }
         let Some(p) = pols.projects.get(&l.project_id) else {
@@ -117,7 +117,7 @@ impl AuthService {
             return Err(R::OwnershipChanged);
         }
         let creds = self.credentials.load();
-        if now_unix - creds.fetched_at_unix > w {
+        if feed_stale(creds.fetched_at_unix, w, now_unix) {
             return Err(R::GrantsStale);
         }
         let Some(c) = creds.credentials.get(&l.credential_id) else {
@@ -144,9 +144,9 @@ impl AuthService {
     pub(crate) fn lease_deadline(&self, l: &AuthLease) -> i64 {
         let w = self.staleness_max_secs();
         let mut d = l.expires_at;
-        d = d.min(self.projects.load().fetched_at_unix + w);
+        d = d.min(feed_fresh_until(self.projects.load().fetched_at_unix, w));
         let creds = self.credentials.load();
-        d = d.min(creds.fetched_at_unix + w);
+        d = d.min(feed_fresh_until(creds.fetched_at_unix, w));
         if let Some(e) = creds
             .credentials
             .get(&l.credential_id)
