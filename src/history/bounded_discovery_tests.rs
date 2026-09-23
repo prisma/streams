@@ -1,5 +1,6 @@
 //! R09: dirty-index discovery pages progress without exceeding the pending capacity,
-//! and its mark rollback cannot make a re-gather over-retire (TLA-016-F1).
+//! and its mark rollback cannot make a re-gather over-retire (TLA-016-F1) or
+//! warm the slice cache over a head it never read (TLA-016-F3).
 #![cfg(test)]
 use super::*;
 use slatedb::WriteBatch;
@@ -294,6 +295,142 @@ async fn rolled_back_mark_regather_keeps_the_ledger_exact() {
         "later passes never drained the stream"
     );
     assert_postings_admit(&engine, hash, &tail, "k").await;
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Polls until row 0 of the stream is trimmed and its absorbed boundary is
+/// `absorbed`, both in the Remote-durable view a gather's scan reads.
+async fn until_row0_trimmed_durably(engine: &ShardEngine, hash: [u8; 16], absorbed: u64) {
+    let remote = slatedb::config::ReadOptions {
+        durability_filter: slatedb::config::DurabilityLevel::Remote,
+        ..Default::default()
+    };
+    for _ in 0..1000 {
+        let row0 = engine
+            .db
+            .get_with_options(crate::shard::record_key(&hash, 0), &remote)
+            .await
+            .unwrap();
+        let durable = engine
+            .visible_absorbed(&hash, crate::shard::Deliver::Durable)
+            .await
+            .unwrap();
+        if row0.is_none() && durable.0 == absorbed {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the advances and the trim of row 0 never became durable");
+}
+
+/// TLA-016-F3: a re-gather planned from a stale boundary warms the slice
+/// cache only over the rows it staged. Two one-record chunks queue behind
+/// the held committer and the rescan rolls their lane mark back. Both
+/// advances then commit, the second trimming row 0, while publication is
+/// held, so the re-gather plans from the published boundary 0 and its Remote
+/// scan finds only row 1. An idle sweep has evicted the key's slice before
+/// that install. A durable keyed read from 0 must still deliver record 0.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "stale_regather_never_warms_a_trimmed_head_as_absent; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_regather_never_warms_a_trimmed_head_as_absent() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(Db::builder("f3-warm", store.clone()).build().await.unwrap());
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let engine = ShardEngine::start(
+        "f3-warm".into(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        tx,
+        None,
+        Default::default(),
+    );
+    let (hash, key) = ([31u8; 16], crate::crypto::StreamKey([7u8; 32]));
+    let coverage = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        1,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    )
+    .coverage();
+    let writer = crate::dst::Workload::new(coverage);
+    for body in ["r0", "r1"] {
+        let out = writer
+            .attempt_with_deadline(&engine, hash, &key, "k", body, None, None)
+            .await;
+        assert!(matches!(out, crate::dst::Outcome::Acked { .. }));
+    }
+    // A one-byte gather cap makes every record its own chunk.
+    let absorber = Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(KeyCache::default()),
+        AbsorberConfig {
+            gather_max_bytes: 1,
+            ..Default::default()
+        },
+    );
+    let commit = engine.test_hold_commit().await;
+    for upto in [1, 2] {
+        let gather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+        let ends: Vec<u64> = gather.advanced.iter().map(|advance| advance.2).collect();
+        assert_eq!(ends, [upto]);
+    }
+    // The rescan reads absorbed 0 under mark 2 and rolls the mark back.
+    let mut pending = HashMap::new();
+    absorber.seed_from_dirty_index(&mut pending).await.unwrap();
+    assert!(!absorber.submitted.lock().unwrap().contains_key(&hash));
+    let dispatch = engine.test_hold_dispatch().await;
+    drop(commit);
+    until_row0_trimmed_durably(&engine, hash, 2).await;
+    let handle = engine.stream_handle(hash).await.unwrap();
+    assert_eq!(handle.state.lock().unwrap().durable.absorbed, 0);
+    engine.postings_cache.sweep_idle(Duration::ZERO);
+    let regather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    let chunks: Vec<(u64, u64)> = regather
+        .advanced
+        .iter()
+        .map(|advance| (advance.1, advance.2))
+        .collect();
+    assert_eq!(
+        chunks,
+        [(0, 2)],
+        "the re-gather must plan from the stale boundary"
+    );
+    drop(dispatch);
+    for _ in 0..1000 {
+        if handle.state.lock().unwrap().durable.absorbed == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let page = crate::http::read_merged(
+        &key,
+        &hash,
+        &handle,
+        &engine,
+        0,
+        Some("k"),
+        1 << 20,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .unwrap();
+    let delivered: Vec<u64> = page.recs.iter().map(|rec| rec.off).collect();
+    let slice = engine.postings_cache.debug_slice(
+        &crate::crypto::SegmentHash(hash),
+        &crate::postings::rk_hash("k"),
+    );
+    assert_eq!(
+        delivered,
+        [0, 1],
+        "a keyed durable read skipped a durable record (completed={}, durable resume={}); the key's slice (covered_from, indexed_to, runs) is {slice:?}",
+        page.completed,
+        page.durable_resume(0),
+    );
     engine.begin_close();
     let _ = db.close().await;
 }

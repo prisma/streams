@@ -1,5 +1,6 @@
 //! Postings cache fixtures: write-through installs, warm extensions,
-//! the process budget at scale and eviction poisoning.
+//! the process budget at scale, eviction poisoning and a re-gather's
+//! install after an eviction (TLA-016-F3).
 #![cfg(test)]
 use super::*;
 
@@ -758,4 +759,45 @@ async fn a_panicking_owned_load_clears_its_single_flight_marker() {
     // And the published slice serves every later read.
     let _ = runs_of(&cache, &part, 9, 0, 100).await;
     assert_eq!(cache.hits.load(Ordering::Relaxed), 2);
+}
+
+/// The TLA-016-F3 cache schedule: records 0 and 2 belong to key 16 and are
+/// stored, record 1 belongs to another key. Two chunks warm `[0, 3)`, then a
+/// later chunk's growth evicts key 16's slice and another segment's fat
+/// slice, which taints the window and drops the cache back under its
+/// admission line. A re-gather whose Remote scan skipped the trimmed row 0
+/// then installs its runs over `[regather_from, 3)`, and key 16 is read from
+/// 0 below the absorbed boundary 3.
+async fn read_after_regather_install(regather_from: u64) -> Vec<u64> {
+    let part = mem_db("wt/f3").await;
+    let cache = PostingsCache::new(1); // clamps to the 1 MiB floor
+    let (_, inc, kh) = ids(16);
+    let (_, _, other) = ids(17);
+    let (_, fat_inc, fat) = ids(18);
+    put_run(&part, 16, 0, 1).await;
+    put_run(&part, 16, 2, 1).await;
+    let staged = || vec![(kh.0, vec![run(2, 1)]), (other.0, vec![run(1, 1)])];
+    cache.install_chunk(inc, 0, 1, vec![(kh.0, vec![run(0, 1)])]);
+    cache.install_chunk(inc, 1, 3, staged());
+    let fat_runs: Vec<AbsRun> = (0..25_000u64).map(|i| run(i * 2, 1)).collect();
+    cache.install_chunk(fat_inc, 0, 50_000, vec![(fat.0, fat_runs)]);
+    let wide: Vec<AbsRun> = (0..10_000u64).map(|i| run(3 + i * 2, 1)).collect();
+    cache.install_chunk(inc, 3, 20_003, vec![(other.0, wide)]);
+    assert_eq!(cache.debug_slice(&inc, &kh), None, "key 16 must be evicted");
+    assert_eq!(
+        cache.debug_slice(&fat_inc, &fat),
+        None,
+        "the fat slice must be evicted"
+    );
+    cache.install_chunk(inc, regather_from, 3, staged());
+    offsets(&runs_of(&cache, &part, 16, 0, 3).await)
+}
+
+/// TLA-016-F3: an install claims exactly the range it names, whatever the
+/// warm window remembers. A re-gather names the rows it staged, so after an
+/// eviction tainted the window its gap reset gives the evicted key a slice
+/// that proves nothing below them: a read from 0 consults the store.
+#[tokio::test]
+async fn a_regather_install_after_an_eviction_proves_nothing_below_its_rows() {
+    assert_eq!(read_after_regather_install(1).await, vec![0, 2]);
 }
