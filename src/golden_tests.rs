@@ -75,6 +75,15 @@ mod shard_keys {
     }
 
     #[test]
+    fn golden_layout4_seal_fence_key_bytes() {
+        // <hash16> 'G' -> u64 LE: the durable seal fence (TLA-002-F1)
+        assert_eq!(
+            hex(&seal_fence_key(&H)),
+            concat!("11111111111111111111111111111111", "47")
+        );
+    }
+
+    #[test]
     fn golden_layout4_dirty_key_sentinel_bytes() {
         // <0xFF*16 sentinel> 'D' <hash16>
         assert_eq!(

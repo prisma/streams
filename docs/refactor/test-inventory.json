@@ -287,6 +287,22 @@
     ]
   },
   {
+    "name": "a_fence_survives_engine_replacement",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2b7cde81dc4b0f38eb60c0e0629c781270f4c27b7613ccc04fb026119e7f8a1b",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"refence\");",
+      "crate::failpoints::park_close_before_enqueue(\"refence\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"refence\") > before",
+      "crate::failpoints::release_close_before_enqueue(\"refence\");"
+    ],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fence_survives_handle_eviction",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

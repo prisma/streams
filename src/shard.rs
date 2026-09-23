@@ -186,6 +186,14 @@ pub(crate) fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
+/// A segment's durable seal fence (tag `G`, u64 LE): the highest takeover generation fenced.
+pub(crate) fn seal_fence_key(hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17);
+    k.extend_from_slice(hash);
+    k.push(b'G');
+    k
+}
+
 pub(crate) fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
     // <segment identity> 'q' <routing-key hash> <producer id> — producer
     // sessions are scoped per ROUTING KEY (review finding 5): one
@@ -1162,20 +1170,12 @@ pub(crate) struct ShardEngine {
     /// ONE process-wide compactor profile, from the engine's ShardConfig).
     history2_settings: slatedb::config::Settings,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
-    /// Seal fences by segment identity — ENGINE-level, deliberately
-    /// outside the evictable [`StreamHandle`], and deliberately WITHOUT
-    /// any expiry: an AppendReq has no maximum queue residence (a
-    /// timed-out HTTP handler drops only its receiver, and backpressure
-    /// can hold the queue arbitrarily long), so no wall-clock bound on
-    /// a fence is a proof about the request it exists to stop. One u64
-    /// per ever-fenced segment, for the engine's lifetime, is the
-    /// price of that proof; the map dies with the queue it protects. an AppendReq waiting in
-    /// the committer channel holds only the stream hash, so a handle
-    /// can be idle-evicted (or displaced by the resident cap) while a
-    /// stale claim-authorized write is still queued, and a fence that
-    /// lived in the handle would be reborn as zero when the committer
-    /// reloaded it. This map dies with the engine and its queue —
-    /// which is the exact lifetime the fence protects.
+    /// Seal fences by segment identity: a cache of the durable
+    /// [`seal_fence_key`] rows, ENGINE-level because a queued AppendReq
+    /// holds only the stream hash (an evictable handle would forget it)
+    /// and never expiring (a queue has no residence bound). A fresh engine
+    /// reloads the row, so a request that passed its claim check before an
+    /// engine replacement still meets the takeover's fence (TLA-002-F1).
     seal_fences: Mutex<HashMap<[u8; 16], u64>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<CommitHandoff>,

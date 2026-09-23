@@ -83,9 +83,9 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
 
     // These operations cannot share the first group: its applied close and
     // blocked object-store write were observed before they were submitted.
-    // They must share the second: a retry alone changes nothing, and a
-    // no-write group joins the prior barrier behind the held dispatch gate,
-    // so the commit gate parks the committer until both are queued.
+    // They must share the second: a retry alone changes nothing, and the
+    // fence's durable row waits behind the same blocked WAL, so the commit
+    // gate parks the committer until both are queued.
     let commit = engine.test_hold_commit().await;
     let (retry_tx, mut retry) = oneshot::channel();
     let (fence_tx, mut fence) = oneshot::channel();
@@ -170,4 +170,76 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
         "reopened durable state agrees with all three replies"
     );
     reopened.close().await.unwrap();
+}
+
+/// TLA-002-F1: a seal fence outlives the engine that recorded it. A
+/// replacement engine on the same storage reloads the durable fence row, so
+/// a close carrying the superseded generation is refused there as well,
+/// while the fenced generation still closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seal_fence_survives_engine_replacement() {
+    let store = crate::dst::FaultStore::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        2406,
+        crate::dst::FaultProfile::clean(),
+    );
+    let identity = [26; 16];
+    let open = || async {
+        let db = Db::builder("fence-replacement", store.clone())
+            .build()
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "fence-replacement".into(),
+            Arc::new(db),
+            store.clone(),
+            ShardConfig::default(),
+            tx,
+            None,
+            ShardMaintenance::default(),
+        );
+        (engine, _rx)
+    };
+    let (engine, _first_rx) = open().await;
+    let (fence_tx, fenced) = oneshot::channel();
+    engine
+        .try_seal_fence(SealFenceReq {
+            hash: identity,
+            generation: 2,
+            resp: fence_tx,
+        })
+        .unwrap();
+    assert!(fenced.await.unwrap().is_ok(), "the fence is durable");
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    let (replacement, _second_rx) = open().await;
+    let close = |generation| {
+        let (resp, reply) = oneshot::channel();
+        replacement
+            .try_close(CloseReq {
+                hash: identity,
+                generation: Some(generation),
+                resp,
+            })
+            .unwrap();
+        reply
+    };
+    assert!(
+        matches!(
+            close(1).await.unwrap(),
+            Err(super::AppendErr::SealSuperseded)
+        ),
+        "the replacement forgot the fence"
+    );
+    assert!(close(2).await.unwrap().unwrap().closed);
+    replacement.begin_close();
+    replacement
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
 }

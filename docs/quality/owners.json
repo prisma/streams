@@ -2255,6 +2255,14 @@
       "path": "src/offsets.rs",
       "reason": "Offset codec property owner; the pinned macro generates 1,024 actual-source round-trip and malformed-token cases per property; it produces test cases rather than service state.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_fence_survives_engine_replacement",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Seal fence replacement fixture owns the parked close; it is released and joined after the takeover and the engine replacement. Concurrent execution is required to hold the request across both.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

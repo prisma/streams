@@ -636,3 +636,116 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
     assert_eq!(recs, vec![serde_json::json!({"n": 0})], "{recs:?}");
     engine_shutdown(&state).await;
 }
+
+/// TLA-002-F1: the takeover fence outlives the engine that recorded it.
+/// A's final-bearing close passes its claim check and parks before it
+/// enqueues; its lease lapses; B takes over (reserve, fence, install);
+/// then every engine is replaced before A enqueues. The fence lived only
+/// in the retired engine's memory, so the fresh engine let A's superseded
+/// generation write its record and close the segment under B's claim.
+/// The durable fence row now refuses it on the new engine too.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal fence replacement fixture; the held close is released and joined before the winning claim and stored records are checked; running it inline cannot hold it across the takeover and the engine replacement"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_survives_engine_replacement() {
+    let _serial = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/refence", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, "refence");
+    crate::failpoints::park_close_before_enqueue("refence");
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/refence",
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
+            br#"[{"fin":"a"}]"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, "refence") > before
+        {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never reached the window");
+    let sref = state.deployment.raw_adapter_sref("refence");
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    let a_gen = d
+        .sealing
+        .as_ref()
+        .expect("A published no intent")
+        .claim_generation;
+    let b_intent = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "b-op".into(),
+        final_committed: false,
+    };
+    let claim = crate::product::claim_seal(&state, &sref, "b-op", &b_intent, &d.stream_epoch)
+        .await
+        .unwrap();
+    let b_gen = match claim {
+        crate::product::EnterSeal::Installed { generation } => generation,
+        other => panic!("takeover did not install: {other:?}"),
+    };
+    assert!(b_gen > a_gen, "no fresh generation");
+
+    // The engine that recorded B's fence is replaced before A enqueues.
+    engine_shutdown(&state).await;
+    crate::failpoints::release_close_before_enqueue("refence");
+    let (st, _, b) = a.await.unwrap();
+    let code = serde_json::from_slice::<serde_json::Value>(&b)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_owned));
+    assert_eq!(
+        (st, code.as_deref()),
+        (409, Some("seal_superseded")),
+        "a superseded close was not refused after engine replacement: {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(!d.sealed, "the superseded close sealed the collection");
+    assert_eq!(
+        d.sealing.as_ref().map(|s| s.operation_id.as_str()),
+        Some("b-op"),
+        "B's claim did not survive A's fenced write: {:?}",
+        d.sealing
+    );
+    let (_, headers, body) = hreq(addr, "GET", "/v1/stream/refence", &[], b"").await;
+    let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        records,
+        vec![serde_json::json!({"n": 0})],
+        "A's record landed"
+    );
+    assert!(
+        !headers.contains_key("stream-closed"),
+        "A's superseded close closed the segment: {headers:?}"
+    );
+    engine_shutdown(&state).await;
+}

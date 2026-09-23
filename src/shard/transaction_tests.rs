@@ -219,6 +219,8 @@ impl Fixture {
             producer.extend([5; 16]);
             expected.insert(producer_key(&hash, &KEY, "writer"), producer);
         }
+        // The generation-8 seal fence persists its own row (TLA-002-F1).
+        expected.insert(seal_fence_key(&HASH), 8u64.to_le_bytes().to_vec());
         expected.insert(
             crate::queue::config_key(&HASH, "c"),
             serde_json::to_vec(&ConsumerRecord {

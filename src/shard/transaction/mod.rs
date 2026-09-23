@@ -159,8 +159,8 @@ impl<'a> CommitTransaction<'a> {
         };
         match op {
             CommitOp::Append(req) => self.append(&mut local, hash, req).await,
-            CommitOp::Close(req) => self.close(&mut local, hash, req),
-            CommitOp::SealFence(req) => self.fence(&mut local, hash, req),
+            CommitOp::Close(req) => self.close(&mut local, hash, req).await,
+            CommitOp::SealFence(req) => self.fence(&mut local, hash, req).await,
             CommitOp::Queue { op, resp, .. } => self.queue(&mut local, hash, op, resp).await,
             CommitOp::UsageAck {
                 scope,
