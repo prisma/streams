@@ -86,7 +86,8 @@ pub(crate) struct SourceBatch {
 
 #[async_trait::async_trait]
 pub(crate) trait FeedSourceRead: Send + Sync {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch>;
+    async fn read_batch(&self, from: u64, max_bytes: usize)
+    -> Result<SourceBatch, SourceReadError>;
     fn frontier(&self) -> u64;
     fn closed(&self) -> bool;
     /// The DATA event for one record, formatted ONCE per lane. Cursor
@@ -148,6 +149,17 @@ pub(crate) enum SourceCutoff {
     /// The live tail's pinned engine closed under the SAME owner (fatal
     /// store, worker exit, sub-tick flap): resume through the route.
     EngineRetired,
+}
+
+/// A failed source read, typed by what its consumer owes it. No
+/// `From<anyhow::Error>` exists: each failure site names its verdict, so
+/// a `?` can never turn a cutoff into a retry or a retry into a cutoff.
+#[derive(Debug)]
+pub(crate) enum SourceReadError {
+    /// Sessions disconnect without a terminal control and resume.
+    Fatal(SourceCutoff),
+    /// The same bound is read again after a bounded backoff.
+    Retryable(anyhow::Error),
 }
 
 /// What a descriptor refresh decided about the current source.
@@ -893,12 +905,11 @@ impl LiveFeed {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::let_underscore_must_use,
         clippy::cast_possible_truncation,
         clippy::excessive_nesting,
         clippy::wildcard_enum_match_arm,
         clippy::expect_used,
-        reason = "LiveFeed::read_and_publish; one read publishes its batch, charges retention, evicts within the ring budget from a pre-counted eviction set and answers every other reserve outcome alike, with payload lengths that fit u32 by the record ceiling; splitting it, handling the watch send, checking the length, flattening the eviction, naming every outcome or a fallible pop would separate the publication from the budget it must honour"
+        reason = "LiveFeed::read_and_publish; one read publishes its batch, charges retention, evicts within the ring budget from a pre-counted eviction set and answers every other reserve outcome alike, with payload lengths that fit u32 by the record ceiling; splitting it, checking the length, flattening the eviction, naming every outcome or a fallible pop would separate the publication from the budget it must honour"
     )]
     async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
         let read = tokio::select! {
@@ -909,23 +920,7 @@ impl LiveFeed {
         };
         let batch = match read {
             Ok(x) => x,
-            Err(e) => {
-                // Round-11.2: FATAL span outcomes become the typed
-                // lifecycle cutoff — never an endless retry.
-                if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
-                    let reason = cut.0;
-                    let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone(reason);
-                    st.version += 1;
-                    let ver = st.version;
-                    drop(st);
-                    crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
-                    let _ = self.changed.send(ver);
-                    return DriveOutcome::IncarnationClosed(reason);
-                }
-                crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
-                return DriveOutcome::SourceFailed;
-            }
+            Err(e) => return self.read_failed(e),
         };
         // No-progress partial page (finding 6): nothing scanned, nothing
         // matched — report it WITHOUT touching head/version. The driving

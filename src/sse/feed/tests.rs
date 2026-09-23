@@ -113,16 +113,22 @@ impl Drop for ReadInFlight<'_> {
 
 #[async_trait::async_trait]
 impl FeedSourceRead for FakeSource {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+    async fn read_batch(
+        &self,
+        from: u64,
+        max_bytes: usize,
+    ) -> Result<SourceBatch, SourceReadError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         let cur = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_concurrent_reads.fetch_max(cur, Ordering::SeqCst);
         let _in_flight = ReadInFlight(self);
         if let Some(cut) = *self.cut_reads.lock().unwrap() {
-            return Err(anyhow::Error::new(crate::sse::source::FatalSpanCutoff(cut)));
+            return Err(SourceReadError::Fatal(cut));
         }
         if self.fail_reads.load(Ordering::Relaxed) {
-            anyhow::bail!("injected source failure");
+            return Err(SourceReadError::Retryable(anyhow::anyhow!(
+                "injected source failure"
+            )));
         }
         if self.block_reads.load(Ordering::Relaxed) {
             fixture::hold_until_release(&self.read_started, &self.read_release).await;

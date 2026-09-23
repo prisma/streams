@@ -9,4 +9,6 @@ pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod session;
 pub(crate) mod source;
+#[cfg(test)]
+pub(crate) mod test_log;
 pub(crate) mod wire;

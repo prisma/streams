@@ -8,7 +8,7 @@
 //! waits here before the next one. The answer lives here so the pass meets
 //! every shape at one exhaustive match, outside its size and nesting
 //! exceptions.
-use crate::sse::feed::SourceBatch;
+use crate::sse::feed::{SourceBatch, SourceReadError};
 use std::time::Duration;
 
 /// One re-read per 100 ms bounds what a failing or hole-bearing store
@@ -20,7 +20,7 @@ const RETRY: Duration = Duration::from_millis(100);
 /// What the pass does next after a read that advanced nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Stall {
-    /// A fatal span cutoff, counted and logged here: the session
+    /// A fatal read cutoff, counted and logged here: the session
     /// disconnects without a terminal control.
     Cutoff,
     /// The read failed and its wait passed: the same snapshot is read
@@ -34,8 +34,8 @@ pub(super) enum Stall {
 }
 
 /// One owner for a stalled catch-up read's counters, log and wait.
-pub(super) async fn stalled(read: anyhow::Result<SourceBatch>) -> Stall {
-    let e = match read {
+pub(super) async fn stalled(read: Result<SourceBatch, SourceReadError>) -> Stall {
+    let cause = match read {
         Ok(page) => {
             crate::sse::auth::sse_stats::FEED_NO_PROGRESS
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -46,23 +46,27 @@ pub(super) async fn stalled(read: anyhow::Result<SourceBatch>) -> Stall {
             tokio::time::sleep(RETRY).await;
             return Stall::NoProgress;
         }
-        Err(e) => e,
+        // Round-11.2: fatal read outcomes disconnect
+        // with the typed reason (no terminal) instead
+        // of retrying forever.
+        Err(SourceReadError::Fatal(cut)) => {
+            super::count_cutoff(cut);
+            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(reason = ?cut, "livefeed catch-up fatal cutoff");
+            return Stall::Cutoff;
+        }
+        Err(SourceReadError::Retryable(cause)) => cause,
     };
-    // Round-11.2: fatal span outcomes disconnect
-    // with the typed reason (no terminal) instead
-    // of retrying forever.
-    if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
-        super::count_cutoff(cut.0);
-        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!(reason = ?cut.0, "livefeed catch-up fatal cutoff");
-        return Stall::Cutoff;
-    }
     // Source failure mid-catch-up: bounded backoff,
     // then retry the SAME bound — never a hot loop
     // (finding 6 discipline applies here too).
     crate::sse::auth::sse_stats::FEED_SOURCE_FAILED
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tracing::debug!(
+        error = %format_args!("{cause:#}"),
+        "livefeed catch-up read failed; retrying the same bound after a bounded wait"
+    );
     tokio::time::sleep(RETRY).await;
     Stall::Failed
 }

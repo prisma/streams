@@ -203,12 +203,17 @@ async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
         records: crate::application::read::PlainBatch::default(),
         completed: false,
     };
-    let cut = crate::sse::source::FatalSpanCutoff(crate::sse::feed::SourceCutoff::TargetMismatch);
+    use crate::sse::feed::{SourceCutoff, SourceReadError};
     for (leg, read, owed, waited) in [
-        ("cutoff", Err(anyhow::Error::new(cut)), Stall::Cutoff, 0),
+        (
+            "cutoff",
+            Err(SourceReadError::Fatal(SourceCutoff::TargetMismatch)),
+            Stall::Cutoff,
+            0,
+        ),
         (
             "failed",
-            Err(anyhow::anyhow!("injected")),
+            Err(SourceReadError::Retryable(anyhow::anyhow!("injected"))),
             Stall::Failed,
             100,
         ),
@@ -222,4 +227,18 @@ async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
             "{leg}: the wait owed before the next read"
         );
     }
+}
+
+/// Item 87 (red on eb742c42: the retried cause was dropped): a failed
+/// catch-up read logs its cause before the bounded wait.
+#[tokio::test(start_paused = true)]
+async fn a_failed_catch_up_read_logs_its_cause() {
+    let log = crate::sse::test_log::ErrorLog::capture();
+    let failed = crate::sse::feed::SourceReadError::Retryable(anyhow::anyhow!("injected"));
+    assert_eq!(catch_up::stalled(Err(failed)).await, Stall::Failed);
+    assert_eq!(
+        log.causes(),
+        ["injected"],
+        "the retried catch-up read names its cause"
+    );
 }
