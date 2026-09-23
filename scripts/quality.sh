@@ -14,8 +14,19 @@ cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
-cargo clippy --locked --workspace --all-targets --message-format=json -- -D warnings > "$QUALITY_OUT/clippy.jsonl"
-python3 scripts/quality/gate.py --clippy "$QUALITY_OUT/clippy.jsonl"
+# The JSON goes to a file, so a failed clippy would otherwise stop here with
+# no finding on screen: the ratchet always reads it and prints what the
+# compiler refused (its rendered file:line and help), then both statuses
+# decide. A failed build is never success (gate.py refuses it too).
+clippy_status=0
+cargo clippy --locked --workspace --all-targets --message-format=json -- -D warnings \
+  > "$QUALITY_OUT/clippy.jsonl" || clippy_status=$?
+ratchet_status=0
+python3 scripts/quality/gate.py --clippy "$QUALITY_OUT/clippy.jsonl" || ratchet_status=$?
+if (( clippy_status != 0 || ratchet_status != 0 )); then
+  echo "QUALITY_FAIL: clippy exit $clippy_status, ratchet exit $ratchet_status" >&2
+  exit 1
+fi
 # rustdoc is a compiler too, and nothing else here runs it: an unclosed
 # tag or a link to a renamed item is a warning only it reports. Private
 # items are documented because most of this crate is pub(crate) — the

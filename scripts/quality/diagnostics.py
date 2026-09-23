@@ -48,6 +48,14 @@ def owner(items, line, column):
                i['location']['end_column'] - i['location']['column']))['qualified']
 
 
+def shown(diag):
+    """The compiler's own rendering (file:line, snippet, help) of a refused
+    diagnostic: a failure line that names only the lint sends the reader back
+    to rerun clippy by hand to learn where it fired."""
+    rendered = (diag.get('rendered') or '').rstrip()
+    return f'\n{rendered}' if rendered else ''
+
+
 def parse(log, sources, facts, root=ROOT, capture=False, metrics=None):
     found, locations, failures = Counter(), set(), []
     finished = False
@@ -63,15 +71,15 @@ def parse(log, sources, facts, root=ROOT, capture=False, metrics=None):
             continue
         lint = (diag.get('code') or {}).get('code')
         if not lint or (diag['level'] != 'warning' and not capture):
-            failures.append(f"unallowable diagnostic: {lint}: {diag['message']}")
+            failures.append(f"unallowable diagnostic: {lint}: {diag['message']}{shown(diag)}")
             continue
         if lint in DENIED:
             if not capture:
-                failures.append(f"denied lint: {lint}: {diag['message']}")
+                failures.append(f"denied lint: {lint}: {diag['message']}{shown(diag)}")
             continue
         spans = [s for s in diag['spans'] if s['is_primary']]
         if not spans:
-            failures.append(f'no source occurrence: {lint}')
+            failures.append(f'no source occurrence: {lint}{shown(diag)}')
         # Multi-primary diagnostics are one diagnostic with all physical anchors.
         physical, anchors, paths = [], [], []
         for span in spans:
@@ -105,7 +113,8 @@ def parse(log, sources, facts, root=ROOT, capture=False, metrics=None):
         found[identity] += 1
     if not finished:
         failures.append('Cargo did not report a successful complete build')
-    return found, failures
+    # The lib, bin and test compilations each report the same refusal.
+    return found, list(dict.fromkeys(failures))
 
 
 def compare(current, allowed):
