@@ -2,6 +2,7 @@
 #![cfg(test)]
 
 mod fixture;
+mod read_error;
 mod retry;
 use super::*;
 use std::sync::atomic::AtomicBool;
@@ -46,6 +47,8 @@ pub(crate) struct FakeSource {
     pub(crate) closed: AtomicBool,
     pub(crate) notify: tokio::sync::Notify,
     pub(crate) fail_reads: AtomicBool,
+    /// Some(reason): every read is that fatal cutoff.
+    pub(crate) cut_reads: Mutex<Option<SourceCutoff>>,
     pub(crate) empty_pages: AtomicBool,
     pub(crate) block_reads: AtomicBool,
     pub(crate) read_started: tokio::sync::Notify,
@@ -80,6 +83,7 @@ impl FakeSource {
             closed: AtomicBool::new(false),
             notify: tokio::sync::Notify::new(),
             fail_reads: AtomicBool::new(false),
+            cut_reads: Mutex::new(None),
             empty_pages: AtomicBool::new(false),
             block_reads: AtomicBool::new(false),
             read_started: tokio::sync::Notify::new(),
@@ -114,6 +118,9 @@ impl FeedSourceRead for FakeSource {
         let cur = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_concurrent_reads.fetch_max(cur, Ordering::SeqCst);
         let _in_flight = ReadInFlight(self);
+        if let Some(cut) = *self.cut_reads.lock().unwrap() {
+            return Err(anyhow::Error::new(crate::sse::source::FatalSpanCutoff(cut)));
+        }
         if self.fail_reads.load(Ordering::Relaxed) {
             anyhow::bail!("injected source failure");
         }
