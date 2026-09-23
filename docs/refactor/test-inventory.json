@@ -6088,11 +6088,33 @@
     "scenarios": []
   },
   {
+    "name": "telemetry_append_reads_to_the_configured_limit_after_authentication",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "911bcc275051787a0f6d2a5b8eff6697f89c13b93b9301d6bb82655bcd9acc9e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
+  },
+  {
     "name": "telemetry_append_receiver_reports_ownership_not_absence",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "343c178b54776d90fd228154d8b36011645cfc4ca6856989ab392da31b193cae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
+  },
+  {
+    "name": "telemetry_append_refuses_an_unauthenticated_body_unread",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9a07748c8f662005ac51e3f19731b6a2bff4713150547d482be94621f02f9e75",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_workload.rs",

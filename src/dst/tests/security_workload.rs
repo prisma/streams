@@ -761,3 +761,123 @@ async fn a_relay_the_skewed_owner_refuses_is_reported_not_counted_as_landed() {
     engine_shutdown(&state_a).await;
     engine_shutdown(&state_b).await;
 }
+
+// ---- review item 52: the receiver reads a body only after authentication ----
+
+/// The router in process, as `serve_h1` hands it each request: the test
+/// owns the body stream and can count what the receiver polled, where
+/// over TCP a refusal racing an unread upload surfaces as a reset.
+async fn route_in_process(
+    state: &std::sync::Arc<crate::http::AppState>,
+    request: axum::http::Request<axum::body::Body>,
+) -> (u16, String) {
+    use hyper::service::Service as _;
+    let router = crate::http::router(state.clone());
+    let Ok(response) = hyper_util::service::TowerToHyperService::new(router)
+        .call(request)
+        .await;
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A relay-shaped POST of `_audit_events` carrying the system key.
+fn telemetry_append_request(
+    bearer: Option<&str>,
+    body: axum::body::Body,
+) -> axum::http::Request<axum::body::Body> {
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/internal/telemetry-append/_audit_events")
+        .header("content-type", "application/json")
+        .header("stream-encryption-key", PRISMA_KEY);
+    if let Some(bearer) = bearer {
+        request = request.header("authorization", bearer);
+    }
+    request.body(body).unwrap()
+}
+
+/// RED (review item 52): R25-E - authenticate before buffering or
+/// materially consuming a request body. The receiver extracted
+/// `body: Bytes`, so axum buffered the upload under its implicit 2 MiB
+/// default BEFORE the fleet-credential check: an unauthenticated 3 MiB
+/// POST was read past 2 MiB and answered 413, never 401.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn telemetry_append_refuses_an_unauthenticated_body_unread() {
+    use futures_util::StreamExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const CHUNK: usize = 64 * 1024;
+    let (state, _addr) = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default())
+        .await
+        .parts();
+    let polled = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = polled.clone();
+    let upload = futures_util::stream::iter(0..48).map(move |_| {
+        counter.fetch_add(CHUNK, Ordering::Relaxed);
+        Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b' '; CHUNK]))
+    });
+    let request = telemetry_append_request(None, axum::body::Body::from_stream(upload));
+    let (status, text) = route_in_process(&state, request).await;
+    assert_eq!(
+        (status, polled.load(Ordering::Relaxed)),
+        (401, 0),
+        "an unauthenticated telemetry append is refused before its body is read: {text}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (review item 52): the receiver's body limit is the CONFIGURED
+/// request limit - the one the local append path enforces and the
+/// senders' journal batches are budgeted against - not axum's implicit
+/// 2 MiB: a relayed batch between the two was refused on the owner and
+/// requeued by its sender every round. Over the configured limit the
+/// refusal is the append contract's typed `too_large`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn telemetry_append_reads_to_the_configured_limit_after_authentication() {
+    const AXUM_DEFAULT: usize = 2 * 1024 * 1024;
+    const CONFIGURED: usize = 4 * 1024 * 1024;
+    let (state, _addr) = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            max_request_body_bytes: Some(CONFIGURED),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
+    let pad = "x".repeat(1024);
+    let rows: Vec<String> = (0..2560)
+        .map(|i| format!(r#"{{"eventId":"big-{i}","pad":"{pad}"}}"#))
+        .collect();
+    let batch = format!("[{}]", rows.join(","));
+    assert!(
+        (AXUM_DEFAULT..CONFIGURED).contains(&batch.len()),
+        "{}",
+        batch.len()
+    );
+    let fleet = Some("Bearer dst-internal-token");
+    let request = telemetry_append_request(fleet, axum::body::Body::from(batch));
+    let (status, text) = route_in_process(&state, request).await;
+    assert_eq!(
+        status, 204,
+        "an authorized batch within the configured limit lands: {text}"
+    );
+    let (page, _) = crate::billing::system_read(&state, "_audit_events", PRISMA_KEY, None)
+        .await
+        .expect("system read")
+        .expect("the batch created the stream");
+    assert!(
+        String::from_utf8_lossy(&page).contains("\"big-0\""),
+        "the batch landed"
+    );
+    let over = axum::body::Body::from(vec![b' '; CONFIGURED + 1]);
+    let (status, text) = route_in_process(&state, telemetry_append_request(fleet, over)).await;
+    assert!(
+        status == 413 && text.contains("\"too_large\""),
+        "over the configured limit the append contract refuses it: {status} {text}"
+    );
+    engine_shutdown(&state).await;
+}
