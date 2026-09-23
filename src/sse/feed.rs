@@ -25,7 +25,7 @@
 
 use bytes::Bytes;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Identity of a feed: stream incarnation + selector lane.
@@ -518,7 +518,6 @@ pub(crate) struct LiveFeed {
     source_changed: tokio::sync::watch::Sender<u64>,
     driving: AtomicBool,
     subscribers: AtomicU64,
-    retained_charge: AtomicUsize,
     source_reads: AtomicU64,
     ring_budget: usize,
     /// Driver read bound: derived from the ring so a prepared batch
@@ -578,7 +577,6 @@ impl LiveFeed {
             source_changed,
             driving: AtomicBool::new(false),
             subscribers: AtomicU64::new(0),
-            retained_charge: AtomicUsize::new(0),
             source_reads: AtomicU64::new(0),
             ring_budget,
             // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
@@ -827,7 +825,6 @@ impl LiveFeed {
         // fully passed can never be needed again — pop it and release
         // its reservation immediately instead of at feed drop.
         if self.subscribers.load(Ordering::Relaxed) == 1 {
-            let mut popped = false;
             while let Some(b) = st.batches.front() {
                 if b.scan_to > cursor {
                     break;
@@ -835,15 +832,11 @@ impl LiveFeed {
                 let b = st.batches.pop_front().expect("front checked");
                 st.charge -= b.charge;
                 self.budget.release(&self.project_reserved, b.charge);
-                popped = true;
-            }
-            if popped {
                 if st.batches.is_empty() {
                     // Nothing below the survivor's own cursor is owed
                     // to anyone: the floor may follow it.
                     st.floor = st.floor.max(cursor.min(st.head));
                 }
-                self.retained_charge.store(st.charge, Ordering::Relaxed);
             }
         }
         // ONE shared batch per hand-off; a match-free prepared range is
@@ -999,12 +992,7 @@ impl LiveFeed {
                 ring = self.ring_budget,
                 "livefeed batch exceeds the feed ring; published without retention"
             );
-            clear_ring(
-                &self.budget,
-                &self.project_reserved,
-                &mut st,
-                &self.retained_charge,
-            );
+            st.clear_ring(&self.budget, &self.project_reserved);
             st.floor = st.head;
             return DriveOutcome::Published;
         }
@@ -1045,12 +1033,7 @@ impl LiveFeed {
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                clear_ring(
-                    &self.budget,
-                    &self.project_reserved,
-                    &mut st,
-                    &self.retained_charge,
-                );
+                st.clear_ring(&self.budget, &self.project_reserved);
                 st.floor = st.head;
                 return DriveOutcome::Published;
             }
@@ -1068,24 +1051,19 @@ impl LiveFeed {
             charge: batch_charge,
             records: prepared.into(),
         }));
-        self.retained_charge.store(st.charge, Ordering::Relaxed);
         DriveOutcome::Published
     }
 }
 
-/// Release and clear EVERY retained batch (uncached posture): nothing
-/// unreachable may keep a global reservation.
-fn clear_ring(
-    budget: &Arc<FeedMemoryBudget>,
-    proj: &ProjectRetention,
-    st: &mut FeedState,
-    gauge: &AtomicUsize,
-) {
-    for b in st.batches.drain(..) {
-        budget.release(proj, b.charge);
+impl FeedState {
+    /// Release and clear EVERY retained batch (uncached posture): nothing
+    /// unreachable may keep a global reservation.
+    fn clear_ring(&mut self, budget: &FeedMemoryBudget, proj: &ProjectRetention) {
+        for b in self.batches.drain(..) {
+            budget.release(proj, b.charge);
+        }
+        self.charge = 0;
     }
-    st.charge = 0;
-    gauge.store(0, Ordering::Relaxed);
 }
 
 impl Drop for LiveFeed {
