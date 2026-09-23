@@ -7,7 +7,8 @@
 //! a loop that ignores cancellation is aborted AND joined, so nothing
 //! it owned outlives `shutdown`. Request-scoped child tasks are NOT
 //! supervised here — they belong to their request (the HTTP accept
-//! loop owns its connections itself, see `http::serve_h1`).
+//! loop owns its connections itself and reports only a panicked one
+//! here, see `http::serve_h1`).
 //!
 //! A runtime hands its state a read-only [`TaskMonitor`], never the
 //! supervisor: the supervisor owns the tasks, the tasks capture the
@@ -19,6 +20,7 @@ mod shutdown;
 pub(crate) mod signal;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::task::JoinHandle;
@@ -176,6 +178,11 @@ struct Inner {
     cancel_tx: tokio::sync::watch::Sender<bool>,
     cancel: Cancellation,
     workers_done: tokio::sync::Notify,
+    /// Connection tasks their accept loop reaped as panicked (item 37). The
+    /// loop owns and joins them, never this supervisor; only the count lives
+    /// here, on the record the health and debug surfaces read, because a
+    /// panicked handler's client sees nothing but a closed socket.
+    connection_panics: AtomicU64,
 }
 
 impl Inner {
@@ -287,6 +294,14 @@ impl TaskMonitor {
     pub(crate) fn phase(&self) -> Option<Phase> {
         self.inner.upgrade().map(|i| i.phase())
     }
+
+    /// Connection tasks reaped as panicked since the runtime started; a
+    /// runtime whose supervisor is gone reports none.
+    pub(crate) fn connection_panics(&self) -> u64 {
+        self.inner
+            .upgrade()
+            .map_or(0, |inner| inner.connection_panics.load(Ordering::Relaxed))
+    }
 }
 
 impl Default for TaskSupervisor {
@@ -311,6 +326,7 @@ impl TaskSupervisor {
                 cancel_tx,
                 cancel: Cancellation { rx },
                 workers_done: tokio::sync::Notify::new(),
+                connection_panics: AtomicU64::new(0),
             }),
         }
     }
@@ -331,6 +347,12 @@ impl TaskSupervisor {
         ShutdownRequest {
             inner: Arc::downgrade(&self.inner),
         }
+    }
+
+    /// The accept loop's report of a connection task that ended in a panic
+    /// (see `http::serve_h1`).
+    pub(crate) fn record_connection_panic(&self) {
+        self.inner.connection_panics.fetch_add(1, Ordering::Relaxed);
     }
 
     #[cfg(test)]

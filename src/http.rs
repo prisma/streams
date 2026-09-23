@@ -989,11 +989,11 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
         // should stay rare enough to investigate when it moves.
-        // PR 6-F: the supervised long-lived loops and the first critical
-        // exit, if any (readiness adopts it in WP-15's remaining slice).
+        // PR 6-F / item 37: supervised loops, the first critical exit and panicked connections.
         "tasks": {
             "phase": state.tasks.phase().map(|p| format!("{p:?}")),
             "critical_failure": state.tasks.critical_failure(),
+            "connection_panics": state.tasks.connection_panics(),
             "loops": state.tasks.snapshot().into_iter().map(|t| serde_json::json!({
                 "name": t.name,
                 "policy": format!("{:?}", t.policy),

@@ -39,13 +39,28 @@ pub(crate) fn h1_builder(http: &HttpConfig) -> hyper::server::conn::http1::Build
     b
 }
 
+/// A reaped connection's verdict (item 37). hyper does not catch a panic in
+/// the service or its response body, so a panicking handler unwinds the
+/// connection task and its client sees only a closed socket: this
+/// JoinError is the one place the server learns of it. A cancelled task
+/// is the shutdown's own abort, not a fault.
+fn reap(tasks: &crate::tasks::TaskSupervisor, joined: Result<(), tokio::task::JoinError>) {
+    match joined {
+        Err(error) if error.is_panic() => {
+            tracing::error!("connection task panicked; its request got no response: {error}");
+            tasks.record_connection_panic();
+        }
+        Ok(()) | Err(_) => {}
+    }
+}
+
 /// #269: the one h1 serve loop — production and every test rig serve
 /// through THIS function, so the suite exercises the real connection
 /// path; what each connection is served with is `serve::h1_builder`.
 #[expect(
     clippy::disallowed_methods,
     clippy::let_underscore_must_use,
-    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled results would restate what the JoinSet already owns"
+    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns, reaps (counting a panicked one) and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled connection results would restate what the JoinSet already owns"
 )]
 pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
@@ -97,12 +112,14 @@ pub(crate) async fn serve_h1(
             },
             // Reap finished connections so the set never grows with
             // completed entries.
-            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+            Some(joined) = conns.join_next(), if !conns.is_empty() => reap(&tasks, joined),
         }
     }
     drop(listener);
     conns.abort_all();
-    while conns.join_next().await.is_some() {}
+    while let Some(joined) = conns.join_next().await {
+        reap(&tasks, joined);
+    }
     Ok(())
 }
 
@@ -121,12 +138,20 @@ mod tests {
     /// this long fails by assertion, it never hangs.
     const BOUND: Duration = Duration::from_secs(4);
 
-    /// The production serve loop over a two-route app, on `deadline`.
+    /// A handler that panics mid-request: neither axum nor hyper catches the
+    /// unwind, so it ends the connection task.
+    async fn panicking_handler() -> &'static str {
+        panic!("scripted handler panic")
+    }
+
+    /// The production serve loop over the rig's routes, on `deadline`.
     async fn serve(deadline: Duration) -> (std::net::SocketAddr, TaskSupervisor) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = axum::Router::new()
             .route("/fast", axum::routing::get(|| async {}))
+            .route("/hang", axum::routing::get(std::future::pending::<()>))
+            .route("/panic", axum::routing::get(panicking_handler))
             .route(
                 "/slow",
                 axum::routing::get(move || async move {
@@ -252,6 +277,47 @@ mod tests {
             "idle keep-alive"
         );
         tasks.shutdown(Duration::from_secs(5)).await;
+    }
+
+    /// Item 37 (A): a panicking handler ends its connection with no response,
+    /// and the accept loop that reaps the task counts it on the runtime's task
+    /// record exactly once. A connection the shutdown aborts mid-request is
+    /// cancelled, not panicked, and is not counted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_handler_is_counted_once_and_an_aborted_connection_is_not() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        // Served once (so it is certainly accepted), then parked in a handler
+        // that never answers: only the shutdown's abort ends it.
+        let mut hung = TcpStream::connect(addr).await.unwrap();
+        hung.write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let head = response_head(&mut hung).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        hung.write_all(b"GET /hang HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let mut panicked = TcpStream::connect(addr).await.unwrap();
+        panicked
+            .write_all(b"GET /panic HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            closed_within(&mut panicked, BOUND).await,
+            Ok(()),
+            "a panicked request is answered by a closed socket"
+        );
+        tasks.shutdown(Duration::from_secs(5)).await;
+        assert_eq!(
+            closed_within(&mut hung, BOUND).await,
+            Ok(()),
+            "the shutdown aborts and joins the parked connection"
+        );
+        assert_eq!(
+            tasks.monitor().connection_panics(),
+            1,
+            "one panicked connection is counted; the aborted one is not"
+        );
     }
 
     /// The validated floor is exactly the one hyper asserts: a buffer at

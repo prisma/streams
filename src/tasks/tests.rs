@@ -470,3 +470,18 @@ async fn a_panicking_builder_poison_prevents_health_claims_and_later_spawns() {
     assert!(!built.get(), "the later future must not be constructed");
     assert!(!supervisor.cancellation().is_cancelled());
 }
+
+/// Item 37: the accept loop's panicked connections are counted on the
+/// runtime's task record, which a monitor reads while the supervisor
+/// lives and reports as none once it is gone.
+#[test]
+fn panicked_connections_are_counted_on_the_monitor() {
+    let supervisor = TaskSupervisor::new();
+    let monitor = supervisor.monitor();
+    assert_eq!(monitor.connection_panics(), 0);
+    supervisor.record_connection_panic();
+    supervisor.record_connection_panic();
+    assert_eq!(monitor.connection_panics(), 2);
+    drop(supervisor);
+    assert_eq!(monitor.connection_panics(), 0);
+}

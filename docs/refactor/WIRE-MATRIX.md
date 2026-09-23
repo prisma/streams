@@ -204,7 +204,7 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 ### Debug (all deployment-bearer gated → 401 `unauthorized`; err_resp envelope)
 One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested `/v1/debug` table): without the token EVERY `/v1/debug` path answers 401 `unauthorized` before method routing, including a path nothing routes, the bare prefix and a routed path under the wrong method (those were 404 empty / 405 + `Allow` before item 44, which let an anonymous caller map the routes). With the token (or Off mode with no bearer configured) an unrouted path is the bare 404 and a wrong method 405 + `Allow`, as before.
 - `GET /v1/debug/timings` (`1890`) → 200 JSON per-shard commit/pump/ring stats.
-- `GET /v1/debug/load` (`1040`) → 200 JSON inflight/shed/SSE/fd/runtime gauges (resets inflight peak).
+- `GET /v1/debug/load` (`1040`) → 200 JSON inflight/shed/SSE/fd/runtime gauges (resets inflight peak); `tasks.connection_panics` is this runtime's count of connection tasks the accept loop reaped as panicked (item 37: each one a request answered with a closed socket).
 - `GET /v1/debug/store[?window=][&swap=]` (`1272`) → 200 JSON store latency snapshot.
 - `GET /v1/debug/usage` (`1322`) → 200 JSON per-stream usage counters + limits.
 - `GET /v1/debug/auth` (`1302`) → 200 JSON shadow/feeds/admission.

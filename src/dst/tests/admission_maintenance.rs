@@ -696,7 +696,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
         &crate::config::AdmissionConfig::default(),
         Arc::new(crate::runtime::ManualClock::at(0)),
     ));
-    let (_state, addr) = http_rig_build(
+    let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
@@ -707,8 +707,10 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
             ..Default::default()
         },
     )
-    .await
-    .parts();
+    .await;
+    // One panicked connection reported on THIS runtime's task record.
+    rig.tasks.record_connection_panic();
+    let (_state, addr) = rig.parts();
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/load-t", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -719,6 +721,10 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     let (st, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
     assert_eq!(st, 200);
     let before = load(&body);
+    assert_eq!(
+        before["tasks"]["connection_panics"], 1,
+        "item 37: the runtime's own panicked connections reach /v1/debug/load: {before}"
+    );
     let m = &before["maintenance_shards"];
     assert!(
         m["ingest_frame_bytes_total"].as_u64().unwrap() >= 1,
