@@ -37,19 +37,9 @@ impl crate::application::read::TopologyResume for TopologyService {
 
 /// Seal one segment identity through its committer: an empty close
 /// append. Idempotent — re-closing a closed identity returns the same
-/// frozen next offset via AppendErr::Closed.
-/// Public seal of one segment identity (product lifecycle: collection
-/// seal closes every live segment).
+/// frozen next offset via AppendErr::Closed. The one seal a transition's
+/// parents and a collection seal's live segments both go through.
 pub(crate) async fn seal_segment_identity(
-    state: &TopologyService,
-    desc: &StreamDesc,
-    seg_id: u32,
-    seal_gen: Option<u64>,
-) -> Option<u64> {
-    seal_identity(state, desc, seg_id, seal_gen).await
-}
-
-async fn seal_identity(
     state: &TopologyService,
     desc: &StreamDesc,
     seg_id: u32,
@@ -410,14 +400,6 @@ pub(crate) async fn resume_fenced(
     resume_incarnation(st, sref, Some(epoch)).await
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "resume_incarnation; the segment map was checked present before the split resumes; a second fallible read would add a branch no checked topology reaches"
-)]
-#[expect(
-    clippy::excessive_nesting,
-    reason = "resume_incarnation; the route salt loop nests the prefix comparison inside the resumed split's mutation closure; flattening it would separate the candidate route from the topology it must differ from"
-)]
 async fn resume_incarnation(
     st: &TopologyService,
     sref: &crate::tenant::TenantStreamRef,
@@ -443,7 +425,7 @@ async fn resume_incarnation(
     }
     let seg_id = p.segs[0];
     let tg = (p.seal_gen > 0).then_some(p.seal_gen);
-    let Some(frozen) = seal_identity(st, &desc, seg_id, tg).await else {
+    let Some(frozen) = seal_segment_identity(st, &desc, seg_id, tg).await else {
         return false;
     };
     // Deterministic failpoint for the seal-to-publication gap tests
@@ -470,77 +452,67 @@ async fn resume_incarnation(
                 return Mutation::Decline(false);
             }
             let mut d = current.to_persisted();
-            let changed = {
-                // Phase B is a SECOND durable step, so it re-checks the
-                // lifecycle. Fencing only phase A left this race: publish
-                // pending -> seal the parent -> pause -> the collection
-                // seals (snapshotting the segments it can see) -> phase B
-                // resumes and publishes live children UNDER a sealed
-                // collection. Once sealed, no topology operation may create
-                // another live segment.
-                if d.sealed || d.sealing.is_some() {
-                    return Mutation::Decline(false);
-                }
-                let pending_matches = d
-                    .segments
-                    .as_ref()
-                    .is_some_and(|m| m.pending.as_ref() == Some(&p));
-                if !pending_matches {
-                    return Mutation::Decline(false); // someone else already completed it
-                }
-                let Some(low_route) = d.segment_route_by_id(seg_id) else {
-                    return Mutation::Decline(false);
-                };
-                // The high child's route must land on a DIFFERENT shard
-                // prefix than the parent whenever the topology has one —
-                // otherwise the "split" keeps both children behind the same
-                // serial committer and adds no capacity. Deterministic
-                // salting (same sequence on every CAS retry) walks candidate
-                // routes until the prefix differs; a single-shard topology
-                // accepts the first candidate (capacity comes when shards
-                // do).
-                let child_id = d.segments.as_ref().expect("checked").next_seg_id + 1;
-                let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
-                let mut high_route = [0u8; 16];
-                for salt in 0u32..16 {
-                    // Contract r1: route-child-v1 + project + name +
-                    // child_segment_id + salt — the layout-4 domain-
-                    // separated construction (was the "\0segroute\0"
-                    // delimiter string).
-                    high_route = crate::crypto::RouteHash::for_child(
-                        &d.sref(),
-                        child_id,
-                        &salt.to_be_bytes(),
-                    )
-                    .0;
-                    if prefixes.len() < 2
-                        || crate::registry::shard_for_hash(&prefixes, &high_route) != parent_prefix
-                    {
-                        break;
-                    }
-                }
-                let map = d.segments.as_mut().expect("checked above");
-                match map.split(
-                    seg_id,
-                    p.split_at,
-                    frozen,
-                    low_route,
-                    high_route,
-                    crate::shard::now_ms(),
-                ) {
-                    Ok(_) => {
-                        map.pending = None;
-                        true
-                    }
-                    Err(_) => {
-                        // Already split (idempotent completion): just clear.
-                        map.pending = None;
-                        map.version += 1;
-                        true
-                    }
-                }
+            // Phase B is a SECOND durable step, so it re-checks the
+            // lifecycle. Fencing only phase A left this race: publish
+            // pending -> seal the parent -> pause -> the collection
+            // seals (snapshotting the segments it can see) -> phase B
+            // resumes and publishes live children UNDER a sealed
+            // collection. Once sealed, no topology operation may create
+            // another live segment.
+            if d.sealed || d.sealing.is_some() {
+                return Mutation::Decline(false);
+            }
+            let Some(low_route) = d.segment_route_by_id(seg_id) else {
+                return Mutation::Decline(false);
             };
-            Mutation::Write(d, changed)
+            let stream = d.sref();
+            let Some(map) = d
+                .segments
+                .as_mut()
+                .filter(|m| m.pending.as_ref() == Some(&p))
+            else {
+                return Mutation::Decline(false); // someone else already completed it
+            };
+            // The high child's route must land on a DIFFERENT shard
+            // prefix than the parent whenever the topology has one —
+            // otherwise the "split" keeps both children behind the same
+            // serial committer and adds no capacity. Deterministic
+            // salting (same sequence on every CAS retry) walks candidate
+            // routes until the prefix differs; a single-shard topology
+            // accepts the first candidate (capacity comes when shards
+            // do).
+            let child_id = map.next_seg_id + 1;
+            let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
+            let mut high_route = [0u8; 16];
+            for salt in 0u32..16 {
+                // Contract r1: route-child-v1 + project + name +
+                // child_segment_id + salt — the layout-4 domain-
+                // separated construction (was the "\0segroute\0"
+                // delimiter string).
+                high_route =
+                    crate::crypto::RouteHash::for_child(&stream, child_id, &salt.to_be_bytes()).0;
+                if prefixes.len() < 2
+                    || crate::registry::shard_for_hash(&prefixes, &high_route) != parent_prefix
+                {
+                    break;
+                }
+            }
+            match map.split(
+                seg_id,
+                p.split_at,
+                frozen,
+                low_route,
+                high_route,
+                crate::shard::now_ms(),
+            ) {
+                Ok(_) => map.pending = None,
+                Err(_) => {
+                    // Already split (idempotent completion): just clear.
+                    map.pending = None;
+                    map.version += 1;
+                }
+            }
+            Mutation::Write(d, true)
         })
         .await
         .map(|result| matches!(result, MutationResult::Applied(true)))
@@ -560,10 +532,6 @@ async fn resume_incarnation(
 /// merged child on the low parent's route. Crash-resumable from the
 /// persisted pending intent; the seal-gap read semantics apply to both
 /// parents automatically (pending.segs names them).
-#[expect(
-    clippy::expect_used,
-    reason = "resume_merge; the segment map was checked present before the merge resumes; a second fallible read would add a branch no checked topology reaches"
-)]
 async fn resume_merge(
     st: &TopologyService,
     desc: &StreamDesc,
@@ -571,10 +539,10 @@ async fn resume_merge(
 ) -> bool {
     let (a_id, b_id) = (p.segs[0], p.segs[1]);
     let tg = (p.seal_gen > 0).then_some(p.seal_gen);
-    let Some(fa) = seal_identity(st, desc, a_id, tg).await else {
+    let Some(fa) = seal_segment_identity(st, desc, a_id, tg).await else {
         return false;
     };
-    let Some(fb) = seal_identity(st, desc, b_id, tg).await else {
+    let Some(fb) = seal_segment_identity(st, desc, b_id, tg).await else {
         return false;
     };
     #[cfg(test)]
@@ -586,42 +554,35 @@ async fn resume_merge(
                 return Mutation::Decline(false);
             }
             let mut d = current.to_persisted();
-            let changed = {
-                // Phase B is a SECOND durable step, so it re-checks the
-                // lifecycle. Fencing only phase A left this race: publish
-                // pending -> seal the parent -> pause -> the collection
-                // seals (snapshotting the segments it can see) -> phase B
-                // resumes and publishes live children UNDER a sealed
-                // collection. Once sealed, no topology operation may create
-                // another live segment.
-                if d.sealed || d.sealing.is_some() {
-                    return Mutation::Decline(false);
-                }
-                let pending_matches = d
-                    .segments
-                    .as_ref()
-                    .is_some_and(|m| m.pending.as_ref() == Some(&p));
-                if !pending_matches {
-                    return Mutation::Decline(false);
-                }
-                let Some(child_route) = d.segment_route_by_id(a_id) else {
-                    return Mutation::Decline(false);
-                };
-                let map = d.segments.as_mut().expect("checked");
-                match map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
-                    Ok(_) => {
-                        map.pending = None;
-                        true
-                    }
-                    Err(_) => {
-                        // Already merged (idempotent completion): just clear.
-                        map.pending = None;
-                        map.version += 1;
-                        true
-                    }
-                }
+            // Phase B is a SECOND durable step, so it re-checks the
+            // lifecycle. Fencing only phase A left this race: publish
+            // pending -> seal the parent -> pause -> the collection
+            // seals (snapshotting the segments it can see) -> phase B
+            // resumes and publishes live children UNDER a sealed
+            // collection. Once sealed, no topology operation may create
+            // another live segment.
+            if d.sealed || d.sealing.is_some() {
+                return Mutation::Decline(false);
+            }
+            let Some(child_route) = d.segment_route_by_id(a_id) else {
+                return Mutation::Decline(false);
             };
-            Mutation::Write(d, changed)
+            let Some(map) = d
+                .segments
+                .as_mut()
+                .filter(|m| m.pending.as_ref() == Some(&p))
+            else {
+                return Mutation::Decline(false); // someone else already completed it
+            };
+            match map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
+                Ok(_) => map.pending = None,
+                Err(_) => {
+                    // Already merged (idempotent completion): just clear.
+                    map.pending = None;
+                    map.version += 1;
+                }
+            }
+            Mutation::Write(d, true)
         })
         .await
         .map(|result| matches!(result, MutationResult::Applied(true)))
