@@ -352,11 +352,11 @@ impl SegmentMap {
     /// route (same discipline as split — review blocker 1).
     #[expect(
         clippy::too_many_arguments,
-        reason = "SegmentMap::merge; a merge names both segments, the new segment's id, epoch and owner and the transition version separately as the rebalancer decided them; a request struct would exist for this single call site"
+        reason = "SegmentMap::merge; phase B supplies both parents, each parent's frozen next offset, the child's route and the clock as separate facts it proved; a request struct would exist for this single call site"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "SegmentMap::merge; both segment ids were validated live and adjacent before the merge, so the lookup finds them; a fallible find would add a branch no validated merge reaches"
+        reason = "SegmentMap::merge; both parents were found live and adjacent and the child id allocated before either seals, so the lookup finds them; a fallible find would add a branch no validated merge reaches"
     )]
     pub(crate) fn merge(
         &mut self,
@@ -389,13 +389,16 @@ impl SegmentMap {
             return Err(MapError::NotAdjacent(a_id, b_id));
         };
         let c = self.next_seg_id;
+        // Allocate before either parent seals: a refused merge leaves the
+        // map exactly as phase B read it, so its intent can stay pending.
+        let next_seg_id = c.checked_add(1).ok_or(MapError::IdExhausted)?;
         for (id, next) in [(a_id, a_sealed_next), (b_id, b_sealed_next)] {
             let s = self.segments.iter_mut().find(|s| s.seg_id == id).unwrap();
             s.sealed_ms = Some(now_ms);
             s.sealed_next_offset = Some(next);
             s.successors = vec![c];
         }
-        self.next_seg_id += 1;
+        self.next_seg_id = next_seg_id;
         self.segments.push(SegmentDesc {
             seg_id: c,
             lo,
@@ -599,5 +602,27 @@ mod tests {
         let j = serde_json::to_string(&m).unwrap();
         let back: SegmentMap = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn an_exhausted_allocator_refuses_before_any_parent_seals() {
+        let mut m = SegmentMap::initial("root", 1);
+        let (a, b) = m
+            .split(0, KEYSPACE_END / 2, 0, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
+        m.next_seg_id = u32::MAX;
+        let spent = m.clone();
+        assert_eq!(
+            m.merge(a, b, 1, 2, [9u8; 16], 3),
+            Err(MapError::IdExhausted),
+            "a spent allocator refuses the merge"
+        );
+        assert_eq!(m, spent, "a refused merge seals neither parent");
+        assert_eq!(
+            m.split(a, KEYSPACE_END / 4, 0, [3u8; 16], [4u8; 16], 3),
+            Err(MapError::IdExhausted),
+            "the same allocator refuses a split"
+        );
+        assert_eq!(m, spent, "a refused split opens no child");
     }
 }
