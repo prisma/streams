@@ -1,6 +1,7 @@
 //! The SSE session's unit tests.
 #![cfg(test)]
 use super::*;
+use std::time::Duration;
 
 /// A materialized one-segment map whose only live segment has a
 /// NONZERO id (a lineage pruned down to a later segment) meets the
@@ -128,5 +129,65 @@ async fn bytes_out_accounts_exactly_the_emitted_frames() {
         usage.bytes_out.load(Ordering::Relaxed),
         want as u64,
         "bytes_out IS the emitted frame bytes, exactly"
+    );
+}
+
+/// Item 33: a failed live read owes exactly ONE bounded park; a park
+/// with nothing owed waits the lease nap alone (the retry is not a
+/// heartbeat).
+#[test]
+fn a_failed_live_read_owes_exactly_one_short_park() {
+    let hour = Duration::from_secs(3600);
+    let mut retry = ReadRetry::IDLE;
+    assert_eq!(retry.nap(0, hour), hour, "no failed read, no retry timer");
+    retry.failed();
+    assert_eq!(
+        retry.nap(0, hour),
+        Duration::from_millis(250),
+        "a failed read shortens the next park"
+    );
+    assert_eq!(
+        retry.nap(0, hour),
+        hour,
+        "the owed retry belongs to one park"
+    );
+}
+
+/// Failures without progress back off to the cap, and the lease
+/// deadline still bounds every park.
+#[test]
+fn failures_at_one_cursor_double_to_the_cap() {
+    let hour = Duration::from_secs(3600);
+    let mut retry = ReadRetry::IDLE;
+    let waits: Vec<u128> = (0..7)
+        .map(|_| {
+            retry.failed();
+            retry.nap(5, hour).as_millis()
+        })
+        .collect();
+    assert_eq!(waits, [250, 500, 1000, 2000, 4000, 5000, 5000]);
+    retry.failed();
+    assert_eq!(
+        retry.nap(5, Duration::from_secs(1)),
+        Duration::from_secs(1),
+        "a retry never postpones the lease deadline"
+    );
+}
+
+/// Progress resets the backoff: a failure at a later cursor is a new
+/// episode.
+#[test]
+fn a_failure_after_progress_waits_the_first_delay_again() {
+    let hour = Duration::from_secs(3600);
+    let mut retry = ReadRetry::IDLE;
+    retry.failed();
+    assert_eq!(retry.nap(5, hour), Duration::from_millis(250));
+    retry.failed();
+    assert_eq!(retry.nap(5, hour), Duration::from_millis(500));
+    retry.failed();
+    assert_eq!(
+        retry.nap(9, hour),
+        Duration::from_millis(250),
+        "a failure after progress starts over"
     );
 }

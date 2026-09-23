@@ -92,8 +92,8 @@ impl LiveFeed {
     /// The announcement REPEATS every tick while a closed tail stays
     /// unread, and that is deliberate, not an oversight to deduplicate.
     /// A closed source never fires its advance notification again, so
-    /// a session whose read of that tail failed has parked with nothing
-    /// else to wake it: this tick is the only retry of that read. It is
+    /// a session parked behind a failed read of that tail has only this
+    /// tick and its driver's own bounded retry to wake it. It is
     /// bounded (250 ms, the loop's 4800 ticks, and each session's own
     /// retry cap), and it stops the moment a subscriber reads the tail.
     async fn transition_pending(&self) -> bool {

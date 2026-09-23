@@ -32,8 +32,10 @@ Every connection runs ONE state machine:
 - poll the feed for progress;
 - emit shared data events plus its OWN control frames;
 - decide `upToDate`/`sealed` against the DURABLE frontier at send time;
-- park until: feed version change, heartbeat tick, lease deadline,
-  own cancellation;
+- park until: feed version change, lease deadline, own cancellation,
+  or — when THIS session's own drive read nothing (a failed read or an
+  empty partial page) — its bounded retry (250 ms doubling to 5 s at the
+  same cursor, never later than the lease deadline);
 - terminate on: genuine closure (exactly ONE final control, then EOF),
   authorization invalidation, lag disconnect, slow-client timeout.
 

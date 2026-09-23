@@ -508,3 +508,92 @@ async fn shared_raw_subscriber_gets_up_to_date_after_a_match_free_batch() {
     drop(prod);
     engine_shutdown(&state).await;
 }
+
+/// Collect a session body until `done` holds or `secs` pass; a hung
+/// collect would read as a mutation timeout, which is not detection.
+async fn collect_session(
+    body: &mut axum::body::BodyDataStream,
+    secs: u64,
+    done: impl Fn(&str) -> bool,
+) -> String {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut text = String::new();
+    while !done(&text) {
+        match tokio::time::timeout_at(deadline, futures_util::StreamExt::next(body)).await {
+            Ok(Some(Ok(chunk))) => text.push_str(&String::from_utf8_lossy(&chunk)),
+            Ok(Some(Err(_)) | None) | Err(_) => break,
+        }
+    }
+    text
+}
+
+/// Review item 33: a live read on an OPEN source fails (or returns an
+/// empty partial page), the fault clears, and nothing else happens - no
+/// append, no notify. A read that changed nothing bumps nothing, so only
+/// the session's own bounded retry can re-drive it; the record must still
+/// arrive (it used to wait for the next append, or for an unleased
+/// session's hour-long lease nap). The FakeSource makes the fault one flag
+/// on the source instead of a production hook.
+async fn live_read_fault_is_retried(
+    leg: &str,
+    fault: fn(&crate::sse::feed::tests::FakeSource) -> &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (state, _addr) = http_rig(mem()).await;
+    let src = std::sync::Arc::new(crate::sse::feed::tests::FakeSource::new(0, 8));
+    let Ok(slot) = crate::http::sse_acquire(&state) else {
+        panic!("{leg}: an SSE slot");
+    };
+    let response = crate::sse::session::serve(
+        state.clone(),
+        crate::sse::feed::tests::test_desc(leg),
+        crate::crypto::StreamKey([7; 32]),
+        [3; 16],
+        src.clone(),
+        crate::http::StartPos::At(0),
+        crate::http::ReadParams::default(),
+        None,
+        crate::http::SseSurface::Product,
+        slot,
+    )
+    .await;
+    let mut body = response.into_body().into_data_stream();
+    let head = collect_session(&mut body, 10, |t| t.contains("\"upToDate\":true")).await;
+    assert!(
+        head.contains("\"upToDate\":true"),
+        "{leg}: the session parks at the head:\n{head}"
+    );
+    // One durable record whose first read is faulted.
+    fault(&src).store(true, SeqCst);
+    src.frontier.store(1, SeqCst);
+    src.notify.notify_waiters();
+    // The faulted read entered (max_concurrent) and returned (none in flight).
+    let ran =
+        || src.max_concurrent_reads.load(SeqCst) >= 1 && src.reads_in_flight.load(SeqCst) == 0;
+    for _ in 0..500 {
+        if ran() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(ran(), "{leg}: the faulted live read never ran");
+    fault(&src).store(false, SeqCst);
+    let record = "event: data\ndata:0\n";
+    let text = collect_session(&mut body, 5, |t| t.contains(record)).await;
+    assert!(
+        text.contains(record),
+        "{leg}: the record behind a failed live read must arrive without another append:\n{head}{text}"
+    );
+    drop(body);
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_live_read_is_retried_without_another_append() {
+    live_read_fault_is_retried("source-failed", |s| &s.fail_reads).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_live_read_is_retried_without_another_append() {
+    live_read_fault_is_retried("no-progress", |s| &s.empty_pages).await;
+}

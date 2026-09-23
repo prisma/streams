@@ -213,6 +213,17 @@
     ]
   },
   {
+    "name": "a_failed_live_read_is_retried_without_another_append",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6d7ce6000c75fd08295e34163be5feffd0d0b5cee0fc5970b4ecf4fd5513b636",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_failed_queue_write_leaves_no_phantom_leases",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1366,6 +1377,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_empty_live_read_is_retried_without_another_append",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "50e823efbd23446714a910dee83ccec7aa07c410caddbf3ee7b136df8f18d65b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/sse_delivery.rs",
     "scenarios": []
   },
   {

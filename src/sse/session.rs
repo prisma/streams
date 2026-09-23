@@ -27,6 +27,8 @@ use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_send, sse_send_bi
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+mod read_retry;
+use read_retry::ReadRetry;
 
 /// Per-session wire vocabulary.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -347,6 +349,8 @@ pub(crate) async fn serve(
         // retries briefly; past the bound the session takes the typed
         // disconnect-and-resume fallback.
         let mut transition_retries = 0u32;
+        // The bounded retry this session owes its own failed live read.
+        let mut read_retry = ReadRetry::IDLE;
 
         // The handoff loop: durable catch-up to `catchup_bound`, then
         // live consumption. Re-entered when the ring overtakes a
@@ -737,9 +741,8 @@ pub(crate) async fn serve(
                                         );
                                         return;
                                     }
-                                    // Fall through to the park: the resume
-                                    // spawn or the next append/heartbeat
-                                    // wakes us.
+                                    // Fall through to the park: the feed's
+                                    // retry task or the next append wakes us.
                                 }
                             }
                         }
@@ -821,7 +824,7 @@ pub(crate) async fn serve(
                         }
                         // A publication or closure changed feed state
                         // (and bumped the version): loop and consume it.
-                        Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
+                        Some(DriveOutcome::Published | DriveOutcome::Closed) => continue,
                         Some(DriveOutcome::IncarnationClosed(reason)) => {
                             count_cutoff(reason);
                             crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
@@ -833,16 +836,15 @@ pub(crate) async fn serve(
                             );
                             return;
                         }
-                        // No-progress page or source failure: feed state
-                        // did NOT change and the version was NOT bumped —
-                        // park rather than spin (finding 6). The next
-                        // durable advance or the heartbeat retries.
                         // Idle means the head already covers the frontier;
                         // None means another driver won and its publication
                         // bumps ver_wait (registered at loop top).
-                        Some(DriveOutcome::NoProgress | DriveOutcome::Idle) | None => {}
-                        Some(DriveOutcome::SourceFailed) => {
-                            tracing::warn!("livefeed source read failed; parking until next wake");
+                        Some(DriveOutcome::Idle) | None => {}
+                        // A failed or empty read changed nothing and bumped
+                        // nothing (finding 6): no wake is owed, so the park
+                        // below is bounded by this session's own retry.
+                        Some(DriveOutcome::NoProgress | DriveOutcome::SourceFailed) => {
+                            read_retry.failed()
                         }
                         Some(DriveOutcome::Cancelled) => return,
                     }
@@ -866,9 +868,9 @@ pub(crate) async fn serve(
                     return;
                 }
                 // Park. Seal-publication convergence is the feed's ONE
-                // retry task (round-11.1) — it settles the transition,
-                // never reads, and its install, close or readable-tail
-                // bump wakes this park; no per-session timer exists.
+                // retry task (round-11.1): it never reads, and its bump
+                // wakes this park. The only per-session timer is the
+                // bounded retry a failed read of THIS session's drive owes.
                 tokio::select! {
                     _ = &mut ver_wait => {}
                     _ = &mut gen_wait => {}
@@ -878,7 +880,7 @@ pub(crate) async fn serve(
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
-                    _ = tokio::time::sleep(lease_watch.nap()) => {
+                    _ = tokio::time::sleep(read_retry.nap(cursor, lease_watch.nap())) => {
                         if lease_watch.revoked(&task_state) {
                             return;
                         }

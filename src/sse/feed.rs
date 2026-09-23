@@ -943,8 +943,8 @@ impl LiveFeed {
             }
         };
         // No-progress partial page (finding 6): nothing scanned, nothing
-        // matched — report it WITHOUT touching head/version. The session
-        // parks; the next durable advance or heartbeat retries.
+        // matched — report it WITHOUT touching head/version. The driving
+        // session re-drives it on its own bounded retry (ReadRetry).
         if batch.scan_to <= batch.scan_from && batch.records.is_empty() {
             if !batch.completed {
                 crate::sse::auth::sse_stats::FEED_NO_PROGRESS.fetch_add(1, Ordering::Relaxed);
@@ -1171,7 +1171,7 @@ pub(crate) enum DriveOutcome {
     Idle,
     /// The source returned an empty partial page (`scan_to == scan_from`,
     /// zero records): NO state changed, so the version was NOT bumped.
-    /// The session parks instead of spinning (finding 6).
+    /// The driving session retries on a bounded backoff (finding 6).
     NoProgress,
     Closed,
     /// The source cannot continue here (typed reason): sessions
@@ -1179,7 +1179,7 @@ pub(crate) enum DriveOutcome {
     /// from their cursors through the legacy lineage path).
     IncarnationClosed(SourceCutoff),
     /// The source read failed; no state changed, no version bump. The
-    /// session parks and retries on the next wake (finding 6).
+    /// driving session retries on a bounded backoff (finding 6).
     SourceFailed,
     /// The feed is tearing down (last subscriber left): the read was
     /// cancelled mid-flight. Nothing to deliver, nothing to retry.
