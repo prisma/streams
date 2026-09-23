@@ -129,13 +129,11 @@ pub struct HistoryConfig {
     /// runtime-mutable pause flag (the debug endpoint toggles the
     /// atomic at runtime).
     pub absorb_pause_initial: bool,
-    /// ABSORB_GLOBAL_BUDGET_BYTES. Defaults: 4 GiB under cfg(test),
-    /// 64 MiB otherwise (preserved exactly, including the test split);
-    /// `floored_budget_capacity()` still raises it to the worst-frame
-    /// floor at the use site.
+    /// ABSORB_GLOBAL_BUDGET_BYTES, default 64 MiB. The runtime floors it
+    /// at one worst-frame build (`HistoryResources::with_body_limit`), so
+    /// the default runs at 100,859,904 bytes under the 32 MiB body pin.
     pub absorb_global_budget_bytes: usize,
-    /// ABSORB_GLOBAL_GATHERS, max(1). Defaults: 64 under cfg(test),
-    /// 2 otherwise.
+    /// ABSORB_GLOBAL_GATHERS, max(1), default 2.
     pub absorb_global_gathers: usize,
     /// HISTORY_CACHE_BYTES, default 32 MiB.
     pub cache_bytes: usize,
@@ -387,15 +385,11 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             absorb_pause_initial: false,
-            // The test/profile split is preserved from the old
-            // history.rs OnceLock: tests get headroom, production
-            // gets the field-validated 64 MiB / 2 gathers posture.
-            absorb_global_budget_bytes: if cfg!(test) {
-                4 * 1024 * 1024 * 1024
-            } else {
-                64 * 1024 * 1024
-            },
-            absorb_global_gathers: if cfg!(test) { 64 } else { 2 },
+            // The field-validated posture in every build. Budgets are per
+            // runtime, so a test that needs more headroom states it in its
+            // own HistoryConfig; the default never forks on the build.
+            absorb_global_budget_bytes: 64 * 1024 * 1024,
+            absorb_global_gathers: 2,
             cache_bytes: 32 * 1024 * 1024,
             compactor_off: false,
             gc_interval: Some(Duration::from_secs(600)),

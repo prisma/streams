@@ -148,8 +148,8 @@ pub(crate) fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
 /// reserve() is the ONLY wait on the byte pool and it waits holding
 /// no bytes; growth mid-gather is try_grow(), which refuses instead
 /// of waiting — two holders can never wait on each other.
-/// Budgets are process-wide BY CONSTRUCTION: the semaphores live in one
-/// process-level static, not per absorber.
+/// Budgets are per runtime: `RuntimeCaps` owns the `HistoryResources` bootstrap
+/// hands every engine; an engine opened without one (tests) builds its own.
 pub(crate) struct AbsorbBudget {
     bytes: tokio::sync::Semaphore,
     gathers: tokio::sync::Semaphore,

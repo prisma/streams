@@ -123,8 +123,8 @@ fn default_values_are_pinned() {
     assert_eq!(c.shard.open_wait_ms, 10_000);
     assert_eq!(c.shard.unready_exit_after_secs, 300);
     assert!(!c.history.absorb_pause_initial);
-    assert_eq!(c.history.absorb_global_budget_bytes, 4 * 1024 * 1024 * 1024); // cfg(test)
-    assert_eq!(c.history.absorb_global_gathers, 64); // cfg(test)
+    assert_eq!(c.history.absorb_global_budget_bytes, 64 * 1024 * 1024);
+    assert_eq!(c.history.absorb_global_gathers, 2);
     assert_eq!(c.history.cache_bytes, 32 * 1024 * 1024);
     assert!(!c.history.compactor_off);
     assert_eq!(
@@ -185,6 +185,28 @@ fn default_values_are_pinned() {
     assert_eq!(c.runtime.memprofile_cert, None);
     assert_eq!(c.runtime.cert_sealed_publish_delay_ms_raw, None);
     assert_eq!(c.runtime.certification_mode, None);
+}
+
+/// The shipped absorber posture, built the way bootstrap builds it
+/// (`RuntimeCaps::production(..).with_config`). The 64 MiB default is
+/// below one worst-frame build, so the budget floors to exactly that
+/// build, (32 MiB + 64 KiB) x3, the value deploy/profiles/compute-1g.env
+/// pins, and admits one worst-case gather at a time.
+#[test]
+fn shipped_absorber_budget_floors_to_one_worst_frame_gather() {
+    let c = load_with(&[]);
+    let caps = crate::runtime::RuntimeCaps::production("absorber-defaults").with_config(&c);
+    let history = &caps.history;
+    assert_eq!(
+        history.budget.capacity(),
+        100_859_904,
+        "the 64 MiB default must floor to one worst-frame build"
+    );
+    assert_eq!(history.worst_frame_transient, 100_859_904);
+    assert_eq!(history.budget.gather_slots(), 2);
+    assert_eq!(history.packing_bytes, 32 * 1024 * 1024);
+    assert_eq!(history.per_gather_reservation_bytes(), 100_859_904);
+    assert_eq!(history.effective_gather_concurrency(), 1);
 }
 
 #[test]
