@@ -86,8 +86,9 @@ fn load_with_empty_environment_equals_knob_defaults() {
     let a = load_with(&[]);
     let b = ServerConfig::load(test_cli(), &MapEnvironment::empty());
     assert_eq!(a, b);
-    // And a different CLI changes only the CLI segment — knob defaults
-    // are environment-independent.
+    // And a different CLI changes only the CLI segment and the engine
+    // knob clap owns (the compactor poll interval) — knob defaults are
+    // environment-independent.
     let c = CliArgs::try_parse_from([
         "streams-slate",
         "--s3-endpoint",
@@ -99,7 +100,83 @@ fn load_with_empty_environment_equals_knob_defaults() {
     let c = ServerConfig::load(c, &MapEnvironment::empty());
     assert_eq!(a.storage, c.storage);
     assert_eq!(a.billing, c.billing);
+    assert_eq!(a.engine, c.engine);
     assert_eq!(c.cli.flush_interval_ms, 99);
+}
+
+/// Item 32: `--compactor-poll-ms` is clap-owned. A value given only on
+/// argv must reach the options every DB family opens with; the overlay
+/// used to re-read the environment and drop it.
+#[test]
+fn compactor_poll_given_on_argv_reaches_the_compactor_options() {
+    let mut cli = test_cli();
+    cli.compactor_poll_ms = 500;
+    let options = ServerConfig::load(cli, &MapEnvironment::empty())
+        .engine
+        .compactor_options();
+    assert_eq!(
+        options.poll_interval,
+        std::time::Duration::from_millis(500),
+        "--compactor-poll-ms on argv must reach the compactor"
+    );
+}
+
+/// Subject of `clap_owned_names_keep_their_environment_channel`: inert
+/// unless the parent set the marker and the five values under test.
+#[test]
+fn clap_owned_environment_helper() {
+    if ProcessEnvironment
+        .get("STREAMS_CLAP_OWNED_ENV_CHECK")
+        .is_none()
+    {
+        return;
+    }
+    let cli =
+        CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap();
+    assert_eq!(
+        (
+            cli.billing_mode.as_str(),
+            cli.rollup.as_str(),
+            cli.path_prefix.as_deref()
+        ),
+        ("required", "1", Some("pp"))
+    );
+    let options = ServerConfig::load(cli, &ProcessEnvironment)
+        .engine
+        .compactor_options();
+    assert_eq!(
+        (options.poll_interval, options.max_concurrent_compactions),
+        (std::time::Duration::from_millis(700), 2)
+    );
+}
+
+/// Item 32 pin: an environment-only deployment keeps every value of the
+/// five names clap and the overlay both read (BILLING_MODE, ROLLUP,
+/// PATH_PREFIX, COMPACTOR_POLL_MS, COMPACTOR_MAX_CONCURRENT): clap reads
+/// the process environment whenever argv is silent.
+#[test]
+fn clap_owned_names_keep_their_environment_channel() {
+    let out = run_helper_test(
+        "config::tests::clap_owned_environment_helper",
+        &[
+            ("STREAMS_CLAP_OWNED_ENV_CHECK", "1"),
+            ("BILLING_MODE", "required"),
+            ("ROLLUP", "1"),
+            ("PATH_PREFIX", "pp"),
+            ("COMPACTOR_POLL_MS", "700"),
+            ("COMPACTOR_MAX_CONCURRENT", "2"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "clap-owned environment parse failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "clap-owned environment helper did not run"
+    );
 }
 
 #[test]

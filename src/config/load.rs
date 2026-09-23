@@ -59,9 +59,7 @@ impl ServerConfig {
     }
 
     fn overlay_engine(&mut self, env: &dyn Environment) {
-        if let Some(v) = env_parse(env, "COMPACTOR_POLL_MS") {
-            self.engine.compactor_poll_ms = v;
-        }
+        // COMPACTOR_POLL_MS is clap-owned (with_knob_defaults).
         if let Some(v) = env_parse(env, "COMPACTOR_MAX_CONCURRENT") {
             self.engine.compactor_max_concurrent = v;
         }

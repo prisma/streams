@@ -69,7 +69,9 @@ pub struct StorageConfig {
 /// SlateDB this process opens — R27-4/R28).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineConfig {
-    /// COMPACTOR_POLL_MS, default `crate::DEFAULT_COMPACTOR_POLL_MS`.
+    /// `--compactor-poll-ms` (env COMPACTOR_POLL_MS), default
+    /// `crate::DEFAULT_COMPACTOR_POLL_MS`. Clap owns it: `with_knob_defaults`
+    /// copies the resolved value so an argv override reaches every DB family.
     pub compactor_poll_ms: u64,
     /// COMPACTOR_MAX_CONCURRENT, default 4.
     pub compactor_max_concurrent: usize,
@@ -339,14 +341,18 @@ impl RuntimeConfig {
 }
 
 impl ServerConfig {
-    /// The no-environment knob posture. `load()` overlays the
-    /// environment on top of this, so `load(cli, empty_env)` is provably
-    /// this value.
+    /// The no-environment knob posture over `cli` (whose compactor poll
+    /// interval it carries). `load()` overlays the environment on top of
+    /// this, so `load(cli, empty_env)` is provably this value.
     pub(crate) fn with_knob_defaults(cli: CliArgs) -> Self {
+        let engine = EngineConfig {
+            compactor_poll_ms: cli.compactor_poll_ms,
+            ..EngineConfig::default()
+        };
         Self {
             cli,
             storage: Default::default(),
-            engine: Default::default(),
+            engine,
             shard: Default::default(),
             history: Default::default(),
             postings: Default::default(),

@@ -20,8 +20,8 @@ use crate::config::notice::ConfigNotice;
 /// `..Default::default()`, silently reinstating the upstream worker
 /// (concurrency 4, 4 subcompactions, 4x2 MiB read-ahead, 256 MiB
 /// rolls) beside the bounded shard DBs. WP-01 PR 3: the knobs live in
-/// `config::EngineConfig`, parsed once at startup; clap args mirror the
-/// same env vars for --help discoverability.
+/// `config::EngineConfig`, parsed once at startup: the poll interval by
+/// clap (item 32), the others from the environment.
 pub(crate) fn resolved_compactor_options(
     engine: &crate::config::EngineConfig,
 ) -> slatedb::config::CompactorOptions {
