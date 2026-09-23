@@ -176,6 +176,22 @@ class ManifestValidation(unittest.TestCase):
         self.assertTrue(any('reuses a baseline model unchanged' in p for p in problems))
         self.assertTrue(any('Witness_' in p for p in problems))
 
+    def test_a_known_defect_keeps_the_obligation_a_counterexample(self):
+        def tla(status):
+            return {'schema': 1, 'obligations': [{
+                'id': 'TLA-Y', 'kind': 'tla', 'title': 't', 'status': status, 'owner': 'o',
+                'source_paths': ['src/offsets.rs'], 'verification_paths': ['models/M.tla'],
+                'requirements': [], 'input_scope': 's',
+                'checks': [{'id': 'TLA-Y/defect', 'role': 'known-defect', 'spec': 'models/M.tla',
+                            'config': 'models/M.cfg', 'expect': {'result': 'violation', 'property': 'Safe'}}]}]}
+        self.assertEqual(formal.validate(tla('counterexample')), [])
+        self.assertTrue(any('makes the status counterexample' in p
+                            for p in formal.validate(tla('implemented-unchecked'))))
+        self.assertTrue(formal.judge('known-defect', {'result': 'violation', 'property': 'Safe'},
+                                     'violation', {'property': 'Safe'}))
+        self.assertFalse(formal.judge('known-defect', {'result': 'violation', 'property': 'Safe'},
+                                      'pass', {}))
+
     def test_selection_follows_owners_models_and_global_inputs(self):
         manifest = self.kani()
         self.assertEqual(formal.select(manifest, ['src/offsets.rs']), ['KANI-X'])

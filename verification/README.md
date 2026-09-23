@@ -61,6 +61,11 @@ python3 scripts/quality/formal.py self-test          # the driver must reject ba
 - A **witness** is a `Witness_*` invariant, stating that a behaviour is *not*
   reachable. It must be violated on the unmodified model, which shows that the
   behaviour is reachable.
+- A **known defect** is a configuration of the unmodified model that still
+  reproduces a confirmed, open production defect: it must keep violating its
+  named property. Only an obligation with status `counterexample` may carry
+  one. When the defect is fixed, the check becomes a baseline and the
+  pre-fix behaviour becomes a negative control.
 
 A timeout, a parse or configuration error, a deadlock, an unwinding failure, an
 unsatisfied cover, zero discovered harnesses, or a control that fails for a

@@ -14,6 +14,10 @@ ran to completion with exactly that verdict:
   applied to a scratch copy of the tree, never a production switch.
 - witness: the unmodified TLC model reaches the named behaviour, reported as
   its `Witness_*` invariant being violated.
+- known-defect: the unmodified TLC model still reproduces a confirmed, open
+  production defect, reported as its named property being violated. Only an
+  obligation whose status is `counterexample` may carry one; when the defect
+  is fixed the check becomes a baseline.
 
 A missing harness, zero discovery, a parse or configuration error, a timeout,
 an unwinding failure, an unsatisfied cover, or a control that fails for any
@@ -40,7 +44,7 @@ ASSUMPTIONS = ROOT / 'verification/assumptions.md'
 TOOLS = ROOT / 'target/quality-tools'
 STATUSES = {'implemented-unchecked', 'pass-with-recorded-scope', 'counterexample',
             'incomplete', 'unsupported'}
-ROLES = {'baseline', 'negative-control', 'witness'}
+ROLES = {'baseline', 'negative-control', 'witness', 'known-defect'}
 # Files whose change can alter every verdict: this driver and the tool pins.
 # Kani proofs also compile against the locked dependencies and build inputs.
 # Selection treats any manifest or pin edit as affecting every obligation; a
@@ -199,6 +203,8 @@ def validate(manifest):
             for role in ('baseline', 'negative-control'):
                 if role not in roles:
                     problems.append(f'{where} a passing obligation needs a {role} check')
+        if 'known-defect' in roles and obligation.get('status') != 'counterexample':
+            problems.append(f'{where} an open known defect makes the status counterexample')
     return problems
 
 
@@ -231,8 +237,8 @@ def validate_kani_check(cid, role, check, expect, harnesses):
     harness = check.get('harness')
     if harness not in harnesses:
         problems.append(f'{cid}: harness {harness!r} is not declared in the obligation\'s verification_paths')
-    if role == 'witness':
-        problems.append(f'{cid}: Kani reachability is a satisfied cover, not a witness check')
+    if role in ('witness', 'known-defect'):
+        problems.append(f'{cid}: the {role} role is for TLA models; a Kani counterexample becomes a regression')
     wanted = 'pass' if role == 'baseline' else 'fail'
     if expect.get('result') != wanted:
         problems.append(f'{cid}: a {role} must expect {wanted}')
