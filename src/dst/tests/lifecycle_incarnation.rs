@@ -709,3 +709,164 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
     );
     engine_shutdown(&state).await;
 }
+
+/// A raw PUT may replace a dead name only when nothing reads through it, and
+/// only the STORED descriptor can say so: the snapshot the request judged first
+/// can be up to a cache TTL old and predate a fork another instance anchored.
+/// The recreate CAS ignored `fork_children`, so an expired source whose fork
+/// was anchored after the snapshot got a fresh epoch, and every read of the
+/// fork then failed as "a different incarnation".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_recreate_never_replaces_an_expired_source_its_forks_read() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let src = state.deployment.raw_adapter_sref("keptsrc");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keptsrc", &ct, br#"[{"n":0}]"#).await;
+    assert_eq!(st, 201);
+    // What an instance that never saw the fork holds.
+    let unforked = state.registry.get(&src).await.unwrap().unwrap();
+    let fork = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "keptsrc"),
+    ];
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/keptchild", &fork, b"").await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    // The source expires while its fork still reads through it.
+    let expired = crate::shard::now_ms() - 1;
+    state
+        .registry
+        .cas_update_retry(&src, |d| {
+            d.expires_at_ms = Some(expired);
+            true
+        })
+        .await
+        .unwrap();
+    let retained = state.registry.get(&src).await.unwrap().unwrap();
+    assert_eq!(retained.fork_children.len(), 1, "the fork pins its source");
+    let mut stale = unforked.to_persisted();
+    stale.expires_at_ms = Some(expired);
+    let stale = crate::registry::StreamDesc::try_from(stale).unwrap();
+    state.registry.test_poison_cache(&src, stale);
+
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/keptsrc", &ct, b"").await;
+    assert_eq!(
+        st,
+        409,
+        "a source retained for its fork was recreated: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let refusal: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(refusal["error"]["code"], "gone");
+    state.registry.invalidate(&src);
+    let after = state.registry.get(&src).await.unwrap().unwrap();
+    assert_eq!(after.stream_epoch, retained.stream_epoch, "epoch replaced");
+    assert_eq!(
+        after.fork_children, retained.fork_children,
+        "reference lost"
+    );
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/keptchild", &[], b"").await;
+    assert_eq!(
+        st,
+        200,
+        "the fork lost its source: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "inherited prefix: {recs:?}");
+    // Append and delete answer the same retained verdict.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/keptsrc", &ct, br#"[{"n":1}]"#).await;
+    assert_eq!(st, 410, "append to a source retained for its fork");
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/keptsrc", &[], b"").await;
+    assert_eq!(st, 410, "delete of a source retained for its fork");
+    // Control: an expired name nothing reads through is still replaced.
+    let free = state.deployment.raw_adapter_sref("keptfree");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keptfree", &ct, b"").await;
+    assert_eq!(st, 201);
+    let lapsed = state.registry.get(&free).await.unwrap().unwrap();
+    state
+        .registry
+        .cas_update_retry(&free, |d| {
+            d.expires_at_ms = Some(expired);
+            true
+        })
+        .await
+        .unwrap();
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keptfree", &ct, b"").await;
+    assert_eq!(st, 201, "an expired name without forks is recreated");
+    let fresh = state.registry.get(&free).await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, lapsed.stream_epoch);
+    engine_shutdown(&state).await;
+}
+
+/// A declined recreate CAS is not proof the name is live. The CAS declines a
+/// soft-deleted winner too, and the declined arm compared every winner as a
+/// live stream: a raw PUT whose snapshot was the name's previous tombstone
+/// answered 200 for a name that was deleted and is retained for its fork.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_put_behind_a_stale_tombstone_never_revives_a_deleted_source() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let src = state.deployment.raw_adapter_sref("heldsrc");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heldsrc", &ct, br#"[{"n":0}]"#).await;
+    assert_eq!(st, 201);
+    let fork = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "heldsrc"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heldchild", &fork, b"").await;
+    assert_eq!(st, 201);
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/heldsrc", &[], b"").await;
+    assert!(
+        st == 200 || st == 204,
+        "the fork retains the deleted source: {st}"
+    );
+    // This instance still holds the tombstone of the name's previous incarnation.
+    let mut stale = state
+        .registry
+        .get(&src)
+        .await
+        .unwrap()
+        .unwrap()
+        .to_persisted();
+    stale.soft_deleted = false;
+    stale.deleted = true;
+    stale.fork_children.clear();
+    stale.stream_epoch = "00000000000000000000000000000001".into();
+    let stale = crate::registry::StreamDesc::try_from(stale).unwrap();
+    state.registry.test_poison_cache(&src, stale);
+
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/heldsrc", &ct, b"").await;
+    assert_eq!(
+        st,
+        409,
+        "a PUT was answered for a deleted name: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let refusal: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(refusal["error"]["code"], "gone");
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/heldsrc", &[], b"").await;
+    assert_eq!(st, 410, "the name stays retained for its fork");
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/heldchild", &[], b"").await;
+    assert_eq!(st, 200, "the fork still reads through its source");
+    // Control: a LIVE winner behind the same stale tombstone is compared,
+    // exactly like an idempotent PUT.
+    let live = state.deployment.raw_adapter_sref("heldlive");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heldlive", &ct, b"").await;
+    assert_eq!(st, 201);
+    let mut stale = state
+        .registry
+        .get(&live)
+        .await
+        .unwrap()
+        .unwrap()
+        .to_persisted();
+    stale.deleted = true;
+    stale.stream_epoch = "00000000000000000000000000000001".into();
+    let stale = crate::registry::StreamDesc::try_from(stale).unwrap();
+    state.registry.test_poison_cache(&live, stale);
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heldlive", &ct, b"").await;
+    assert_eq!(st, 200, "a live winner is an idempotent create");
+    engine_shutdown(&state).await;
+}

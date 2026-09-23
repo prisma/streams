@@ -698,6 +698,30 @@
     ]
   },
   {
+    "name": "a_raw_put_behind_a_stale_tombstone_never_revives_a_deleted_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eb5330d57a95d1c05aa97a32455774a99b6d11e9ea95064a10e5923d919df3dc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_incarnation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_raw_recreate_never_replaces_an_expired_source_its_forks_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1450834f2942081d68ebb56adaef02d46a2ac05537d8985535c2ebf57ee1c5c5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_incarnation.rs",
+    "scenarios": [
+      "FRK-019"
+    ]
+  },
+  {
     "name": "a_receive_after_delete_in_the_same_group_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

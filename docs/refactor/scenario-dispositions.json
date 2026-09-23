@@ -268,13 +268,15 @@
   {
     "id": "FRK-019",
     "owner": "src/application/creation.rs fork preparation",
-    "state": "pending",
+    "state": "partial",
     "mechanism": "source expires with children; behaves as soft-deleted until final reference release.",
-    "disposition": "GAP: no test for TTL-expiry of a source with live fork references.",
+    "disposition": "The recreate CAS judges the STORED descriptor with one owner predicate (creation::recreatable / retained_for_forks): an expired source with live forks is refused 409 gone even behind a stale snapshot, keeps its epoch and fork_children, answers append/delete 410, and its fork still reads.",
     "closure_evidence": {
-      "source_tests": [],
+      "source_tests": [
+        "src/dst/tests/lifecycle_incarnation.rs::a_raw_recreate_never_replaces_an_expired_source_its_forks_read"
+      ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: source expires with children; behaves as soft-deleted until final reference release."
+      "remaining": "Pending: the source's own GET/HEAD answers 404 rather than 410 (read_request.rs authorize_read), and the final-release cascade from an expired-with-forks source."
     }
   },
   {

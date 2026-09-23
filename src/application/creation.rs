@@ -139,9 +139,29 @@ impl CreationService {
     }
 }
 pub(crate) fn desc_alive(desc: &crate::registry::PersistedDescriptor) -> bool {
-    !desc.deleted
-        && !desc.soft_deleted
-        && desc.expires_at_ms.is_none_or(|expires| now_ms() < expires)
+    alive_at(desc, now_ms())
+}
+/// Liveness at the caller's instant: the recreate CAS and the classification
+/// of the winner it declines on must judge one instant, or a winner expiring
+/// between the two would be neither live nor retained.
+fn alive_at(desc: &crate::registry::PersistedDescriptor, at_ms: i64) -> bool {
+    !desc.deleted && !desc.soft_deleted && desc.expires_at_ms.is_none_or(|expires| at_ms < expires)
+}
+/// A dead incarnation whose epoch and records its live forks still read
+/// through (pinned fork lifecycle): soft-deleted, or expired with children.
+/// Creation, append and delete answer it as gone and nothing may replace it
+/// until the last fork releases it, so this is the one place that decides it.
+pub(crate) fn retained_for_forks(desc: &crate::registry::PersistedDescriptor, at_ms: i64) -> bool {
+    desc.soft_deleted
+        || (!desc.deleted
+            && !desc.fork_children.is_empty()
+            && desc.expires_at_ms.is_some_and(|expires| at_ms >= expires))
+}
+/// The recreate CAS predicate. It judges the STORED descriptor, because a
+/// cached snapshot can predate a fork another instance anchored, and replacing
+/// a retained source strands every fork reading through it.
+pub(crate) fn recreatable(desc: &crate::registry::PersistedDescriptor, at_ms: i64) -> bool {
+    !alive_at(desc, at_ms) && !retained_for_forks(desc, at_ms)
 }
 fn init_claim_stale(desc: &crate::registry::PersistedDescriptor) -> bool {
     desc.init
@@ -312,5 +332,64 @@ mod tests {
         assert_eq!(work.test_keys(), std::collections::HashSet::from([other]));
         tasks.shutdown(Duration::from_secs(1)).await;
         assert!(work.test_keys().is_empty());
+    }
+
+    /// The recreate CAS and the classification of the winner it declines on
+    /// share one instant, so the three name verdicts must partition every
+    /// descriptor at that instant, the expiry instant itself included: live,
+    /// retained for forks, or recreatable, never two and never none.
+    #[test]
+    fn a_name_is_live_retained_or_recreatable_at_one_instant() {
+        use super::{alive_at, recreatable, retained_for_forks};
+        let at = 1_000;
+        let base = crate::registry::PersistedDescriptor {
+            seal_gen_counter: 0,
+            account_id: None,
+            project_id: crate::tenant::ProjectId::new("creation-test").unwrap(),
+            name: "verdict".into(),
+            stream_epoch: "0123456789abcdef0123456789abcdef".into(),
+            key_fingerprint: "fp".into(),
+            created_ms: 1,
+            expires_at_ms: None,
+            deleted: false,
+            content_type: "application/json".into(),
+            ttl_secs: None,
+            segments: None,
+            sealed: false,
+            watch_definitions: Vec::new(),
+            watch_sig_key: None,
+            parent_ref_pending: false,
+            soft_deleted: false,
+            logical_close_ms: None,
+            forked_from: None,
+            fork_children: Vec::new(),
+            init: None,
+            sealing: None,
+            seal_op: None,
+            layout_version: crate::registry::LAYOUT_VERSION,
+        };
+        // (expiry, deleted, soft-deleted, children) -> (live, retained, recreatable)
+        let cases = [
+            (None, false, false, 1, (true, false, false)),
+            (Some(at + 1), false, false, 0, (true, false, false)),
+            (Some(at), false, false, 0, (false, false, true)),
+            (Some(at), false, false, 1, (false, true, false)),
+            (Some(at - 1), false, false, 1, (false, true, false)),
+            (None, false, true, 1, (false, true, false)),
+            (None, true, false, 0, (false, false, true)),
+        ];
+        for (expiry, deleted, soft_deleted, children, want) in cases {
+            let mut d = base.clone();
+            d.expires_at_ms = expiry;
+            d.deleted = deleted;
+            d.soft_deleted = soft_deleted;
+            d.fork_children = (0..children).map(|i| format!("child-{i}")).collect();
+            let got = (
+                alive_at(&d, at),
+                retained_for_forks(&d, at),
+                recreatable(&d, at),
+            );
+            assert_eq!(got, want, "{expiry:?} {deleted} {soft_deleted} {children}");
+        }
     }
 }

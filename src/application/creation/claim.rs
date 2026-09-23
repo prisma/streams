@@ -29,6 +29,9 @@ pub(super) async fn resolve(
         }
     };
     let resume_init = resume_initialization(plan, existing.as_ref())?;
+    // One instant judges the stored descriptor inside the CAS and the winner
+    // a declined CAS returns: a declined winner not retained for forks is live.
+    let now = now_ms();
     let result = match existing {
         // Resume: the SAME creation request found its own in-flight
         // (or abandoned) initialization — redo it idempotently.
@@ -37,24 +40,15 @@ pub(super) async fn resolve(
             Ok(v) => v,
             Err(r) => return Err(r),
         },
-        Some(d)
-            if d.soft_deleted
-                || (!d.fork_children.is_empty()
-                    && !d.deleted
-                    && d.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false)) =>
-        {
-            // The name still backs live forks: blocked, not recreated
-            // (pinned fork lifecycle).
-            return Err(CreationError::new(
-                CreationFailure::Conflict,
-                "gone",
-                "name is soft-deleted; live forks retain its data",
-            ));
-        }
+        // The name still backs live forks: blocked, not recreated
+        // (pinned fork lifecycle).
+        Some(d) if retained_for_forks(&d, now) => return Err(retained_name()),
         Some(_) => {
             // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
-            // Predicated CAS — one winner; a loser validates against the
-            // winner's live descriptor exactly like an idempotent PUT.
+            // The CAS judges the STORED descriptor, not the snapshot above: a
+            // snapshot can predate a fork anchored by another instance, and
+            // replacing a retained source strands every fork reading through
+            // it. One winner; a live winner validates like an idempotent PUT.
             let mut fresh = fresh_desc(
                 state,
                 &plan.sref,
@@ -72,14 +66,14 @@ pub(super) async fn resolve(
             });
             match state
                 .registry
-                .recreate(&plan.sref, fresh, |d| !desc_alive(d) && !d.soft_deleted)
+                .recreate(&plan.sref, fresh, |d| recreatable(d, now))
                 .await
             {
                 Ok((true, d)) => (true, d),
-                Ok((false, winner)) => match validate_live(plan, winner) {
-                    Ok(v) => v,
-                    Err(r) => return Err(r),
-                },
+                Ok((false, winner)) if retained_for_forks(&winner, now) => {
+                    return Err(retained_name());
+                }
+                Ok((false, winner)) => validate_live(plan, winner)?,
                 Err(e) => {
                     return Err(CreationError::new(
                         CreationFailure::Storage,
@@ -159,6 +153,16 @@ pub(super) async fn resolve(
     };
 
     Ok(result)
+}
+
+/// The pinned fork lifecycle blocks re-creation while forks read through the
+/// name: its epoch and data are theirs until the last reference is released.
+fn retained_name() -> CreationError {
+    CreationError::new(
+        CreationFailure::Conflict,
+        "gone",
+        "name is soft-deleted; live forks retain its data",
+    )
 }
 
 fn validate_live(plan: &CreatePlan, d: StreamDesc) -> Result<(bool, StreamDesc), CreationError> {

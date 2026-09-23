@@ -16,8 +16,8 @@ Catalogue source: `docs/dst/SCENARIO-CATALOG.md` (189 scenarios).
 ## Counts
 
 - scenarios inventoried: **189**
-- mapped to concrete tests: **142** (full 117, partial 23, external 2)
-- unmapped (no concrete test): **47**
+- mapped to concrete tests: **143** (full 117, partial 24, external 2)
+- unmapped (no concrete test): **46**
 
 Status labels as recorded in the catalogue:
 - Existing: 87
@@ -82,7 +82,6 @@ Existing/Strengthen/L1-now entries are the gaps that matter
 - **FRK-008** (L1-now): Child init crash after tail seed — GAP: Fp::InitBeforeSeed park exists but is only used by the CRT-007 test (create seed); no fork-child crash-after-tail-seed resume test found.
 - **FRK-012** (L1-now): Delete wins before fork reference — GAP: opposite ordering (delete decides first, fork CAS sees dead source) not implemented; fork_creation_and_source_deletion_serialize has only the one ordering.
 - **FRK-017** (L1-now): Ready fork idempotent PUT after source soft-delete — GAP: idempotent fork PUT leg exists (22687) but BEFORE soft-delete; the 'exact target PUT returns existing fork after source soft-delete' leg is not tested.
-- **FRK-019** (L1-now): Expiry with fork references — GAP: no test for TTL-expiry of a source with live fork references.
 - **FRK-020** (L2-sim): Fork object reachability under GC
 - **HIS-016** (Existing campaign/property): Postings storage ratio — Campaign-level: bench/costab keyed drivers (run-keyed.sh, keyed-compare.py). In-suite mechanism pins: keyed_frames_no_longer_count_twice_against_the_budget:3800.
 - **HIS-022** (Existing): Reader cache cold stampede — MECHANISM REPLACED: no history-reader-cache module exists in current src/ (superseded by LiveFeed + postings cache). Nearest equivalents: livefeed_two_subscribers_share_one_feed_and_one_source_read:32317, src/sse/registry.rs:221 last_subscriber_evicts_and_reconnect_does_not_grow, src/postings_cache.rs:929 warm_install_serves_from_zero_without_index_load.

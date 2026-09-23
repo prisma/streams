@@ -1188,9 +1188,16 @@
     "id": "FRK-019",
     "title": "Expiry with fork references",
     "status": "L1-now",
-    "tests": [],
-    "mapped": false,
-    "note": "GAP: no test for TTL-expiry of a source with live fork references."
+    "tests": [
+      {
+        "name": "a_raw_recreate_never_replaces_an_expired_source_its_forks_read",
+        "file": "src/dst/tests/lifecycle_incarnation.rs",
+        "line": 720
+      }
+    ],
+    "mapped": true,
+    "note": "Covers re-creation refused on the STORED descriptor behind a stale snapshot (a raw PUT answers 409 gone, the epoch and fork_children are kept), append and delete 410, and the fork still reads. Not covered: the final-release cascade, and the source's own GET/HEAD, which answer 404 (authorize_read maps expired-with-forks to Missing) where the catalogue expects soft-deleted behaviour (410).",
+    "coverage": "partial"
   },
   {
     "id": "FRK-020",
