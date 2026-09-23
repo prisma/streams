@@ -100,6 +100,20 @@ const SKETCH_MAX: usize = 4_096;
 const SKETCH_IDLE_MS: i64 = 600_000;
 const SKETCH_SWEEP_EVERY: u64 = 4_096;
 
+/// Transitions are timed on the monotonic millisecond clock; a cooldown past
+/// that range (SCALE_COOLDOWN_SECS=inf loads as i64::MAX) holds for ever
+/// instead of wrapping into none.
+fn cooldown_ms(policy: &ScalePolicy) -> i64 {
+    policy.cooldown_secs.saturating_mul(1000)
+}
+
+/// Every segment of a stream must stay cold for four times the split
+/// patience before the stream may merge; a patience past u32 saturates
+/// instead of wrapping into "merge at once".
+fn merge_patience(policy: &ScalePolicy) -> u32 {
+    policy.hot_evals.saturating_mul(4)
+}
+
 #[derive(Default)]
 struct State {
     tick: u64,
@@ -119,14 +133,13 @@ impl State {
     /// receives traffic, but never beyond their useful horizon or capacity.
     #[expect(
         clippy::unwrap_used,
-        reason = "State::prune; the sketch table just exceeded its cap, so at least one entry exists to pick as the victim; a fallible pick would turn the cap into a no-op"
+        reason = "State::prune; the cooldown table just exceeded its cap, so at least one entry exists to pick as the victim; a fallible pick would turn the cap into a no-op"
     )]
     fn prune(&mut self, now: i64, policy: &ScalePolicy) {
         self.sketches
             .retain(|_, sk| now.saturating_sub(sk.last_fed_ms) < SKETCH_IDLE_MS);
-        self.last_transition_ms.retain(|_, at| {
-            now.saturating_sub(*at) < (policy.cooldown_secs * 1000).max(SKETCH_IDLE_MS)
-        });
+        self.last_transition_ms
+            .retain(|_, at| now.saturating_sub(*at) < cooldown_ms(policy).max(SKETCH_IDLE_MS));
         while self.last_transition_ms.len() > SKETCH_MAX {
             let victim = self
                 .last_transition_ms
@@ -319,7 +332,7 @@ type Decisions = (
 
 #[expect(
     clippy::too_many_lines,
-    reason = "evaluate_state; one pass ranks every sketched segment against the same policy and limits; splitting it would hide which rule chose each split or merge"
+    reason = "evaluate_state; one pass ranks every sketched segment against the same policy, limits and cooldown clock; splitting it would hide which rule chose each split or merge"
 )]
 fn evaluate_state(
     g: &mut State,
@@ -384,7 +397,7 @@ fn evaluate_state(
                 .get(&(name.clone(), sk.epoch.clone()))
                 .copied()
                 .unwrap_or(i64::MIN / 2)
-            < pol.cooldown_secs * 1000
+            < cooldown_ms(pol)
         {
             continue;
         }
@@ -418,7 +431,7 @@ fn evaluate_state(
             .entry(name)
             .or_insert((0, true, sk.epoch.clone()));
         e.0 += 1;
-        e.1 &= sk.cold_streak >= pol.hot_evals * 4;
+        e.1 &= sk.cold_streak >= merge_patience(pol);
         // Segments sketched under DIFFERENT incarnations never merge:
         // the decision would be about two different collections.
         e.1 &= e.2 == sk.epoch;
@@ -433,7 +446,7 @@ fn evaluate_state(
                         .get(&((*name).clone(), epoch.clone()))
                         .copied()
                         .unwrap_or(i64::MIN / 2)
-                    >= pol.cooldown_secs * 1000
+                    >= cooldown_ms(pol)
         })
         .map(|(name, (_, _, epoch))| (name.clone(), epoch))
         .collect();
@@ -701,6 +714,136 @@ mod tests {
             cold_streak: 0,
             last_fed_ms: now,
         }
+    }
+
+    /// A hot segment the split rule accepts: keys on both sides of the median.
+    fn splittable(epoch: &str, now: i64) -> SegSketch {
+        let mut sk = sketch(epoch, now, true, 1);
+        sk.dist
+            .note(now, u64::MAX / 4 * 3, [2; 16], 1_000_000_000_000, 1);
+        sk
+    }
+
+    /// Two cold segments of `name` whose streaks sit `short` evaluations
+    /// under the merge patience.
+    fn cold_pair(s: &mut State, name: &crate::tenant::TenantStreamRef, now: i64, short: u32) {
+        for seg in [0, 1] {
+            let mut sk = sketch("epoch", now, false, 1);
+            sk.cold_streak = ScalePolicy::default().hot_evals * 4 - short;
+            s.sketches.insert((name.clone(), seg), sk);
+        }
+    }
+
+    /// The streams one evaluation chose to split and to merge.
+    fn chosen(d: &Decisions) -> (Vec<String>, Vec<String>) {
+        let name = |r: &crate::tenant::TenantStreamRef| r.name().as_str().to_owned();
+        let splits = d.0.iter().map(|x| name(&x.0)).collect();
+        (splits, d.1.iter().map(|x| name(&x.0)).collect())
+    }
+
+    /// Item 41: SCALE_COOLDOWN_SECS=inf loads as i64::MAX; the cooldown in ms
+    /// used to wrap (to -1000 in release), switching every cooldown off.
+    #[test]
+    fn a_cooldown_beyond_the_millisecond_range_never_elapses() {
+        let pol = ScalePolicy {
+            cooldown_secs: i64::MAX,
+            ..ScalePolicy::default()
+        };
+        let now = 2 * SKETCH_IDLE_MS;
+        let [hot, quiet] = ["inf-hot", "inf-quiet"].map(|n| test_desc(n).sref());
+        let mut s = State::default();
+        s.sketches
+            .insert((hot.clone(), 0), splittable("epoch", now));
+        cold_pair(&mut s, &quiet, now, 1);
+        s.last_transition_ms.insert((hot, "epoch".into()), 0);
+        s.last_transition_ms.insert((quiet, "epoch".into()), 0);
+        let (splits, merges) = chosen(&evaluate_state(&mut s, now, &pol, crate::usage::limits()));
+        assert!(
+            splits.is_empty() && merges.is_empty(),
+            "{splits:?} {merges:?}"
+        );
+        assert_eq!(
+            s.last_transition_ms.len(),
+            2,
+            "records outlive the idle horizon"
+        );
+    }
+
+    /// Item 41: a stream merges once every segment was cold for four split
+    /// patiences, not one evaluation sooner; SCALE_HOT_EVALS=inf (u32::MAX)
+    /// used to wrap that patience to 0, making every hot stream a candidate.
+    #[test]
+    fn merge_patience_is_four_split_patiences_and_never_wraps() {
+        let pol = ScalePolicy::default();
+        let [quiet, busy] = ["patient", "busy"].map(|n| test_desc(n).sref());
+        let mut s = State::default();
+        cold_pair(&mut s, &quiet, 1_000, 2);
+        let (_, merges) = chosen(&evaluate_state(&mut s, 1_000, &pol, crate::usage::limits()));
+        assert!(merges.is_empty(), "merged one evaluation early: {merges:?}");
+        let (_, merges) = chosen(&evaluate_state(&mut s, 1_000, &pol, crate::usage::limits()));
+        assert_eq!(merges, ["patient"]);
+        let wide = ScalePolicy {
+            hot_evals: 1 << 30,
+            ..pol
+        };
+        let mut s = State::default();
+        s.sketches
+            .insert((busy.clone(), 0), splittable("epoch", 1_000));
+        s.sketches.insert((busy, 1), splittable("epoch", 1_000));
+        let (_, merges) = chosen(&evaluate_state(
+            &mut s,
+            1_000,
+            &wide,
+            crate::usage::limits(),
+        ));
+        assert!(
+            merges.is_empty(),
+            "a hot stream became a merge candidate: {merges:?}"
+        );
+    }
+
+    /// A cooldown holds a stream's next transition until exactly its span has
+    /// elapsed; a stream that never transitioned is not cooling down.
+    #[test]
+    fn a_cooldown_holds_transitions_until_exactly_its_span_has_elapsed() {
+        let pol = ScalePolicy {
+            cooldown_secs: 10,
+            ..ScalePolicy::default()
+        };
+        let [fresh, cooled, quiet] = ["fresh", "cooled", "quiet"].map(|n| test_desc(n).sref());
+        let mut s = State::default();
+        s.sketches.insert((fresh, 0), splittable("epoch", 1_000));
+        s.sketches
+            .insert((cooled.clone(), 0), splittable("epoch", 1_000));
+        cold_pair(&mut s, &quiet, 1_000, 0);
+        s.last_transition_ms.insert((cooled, "epoch".into()), 1_000);
+        let at = |s: &mut State, now| chosen(&evaluate_state(s, now, &pol, crate::usage::limits()));
+        let (splits, merges) = at(&mut s, 5_000);
+        assert_eq!(
+            (splits, merges),
+            (vec!["fresh".into()], vec!["quiet".into()])
+        );
+        // Exactly 10 s after its transition cooled splits again; quiet (which
+        // merged at 5 s) is still 4 s short, then merges exactly at 15 s.
+        let (splits, merges) = at(&mut s, 11_000);
+        assert_eq!((splits, merges), (vec!["cooled".into()], vec![]));
+        assert_eq!(at(&mut s, 15_000).1, ["quiet"]);
+    }
+
+    /// A cooldown record is kept exactly until max(cooldown, idle horizon).
+    #[test]
+    fn a_transition_record_expires_exactly_at_its_cooldown() {
+        let pol = ScalePolicy {
+            cooldown_secs: 700,
+            ..ScalePolicy::default()
+        };
+        let mut s = State::default();
+        s.last_transition_ms
+            .insert((test_desc("expiring").sref(), "epoch".into()), 0);
+        s.prune(699_999, &pol);
+        assert_eq!(s.last_transition_ms.len(), 1);
+        s.prune(700_000, &pol);
+        assert!(s.last_transition_ms.is_empty());
     }
 
     #[test]
