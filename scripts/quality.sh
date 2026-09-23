@@ -14,6 +14,9 @@ cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
+# The formal-verification manifest names real harnesses, models and
+# assumptions; running them needs the pinned verifiers (formal CI job).
+python3 scripts/quality/formal.py check
 # The JSON goes to a file, so a failed clippy would otherwise stop here with
 # no finding on screen: the ratchet always reads it and prints what the
 # compiler refused (its rendered file:line and help), then both statuses

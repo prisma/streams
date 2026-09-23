@@ -93,3 +93,30 @@ jobs:
       - name: Diff-scoped read-owner mutants
         if: env.CHECK_MUTANTS == 'true'
         run: scripts/quality/mutations.sh
+  formal:
+    runs-on: ubuntu-latest
+    # About 40 minutes of checks on an 8-core laptop for the whole first-spike
+    # portfolio (the scheduled run); a hosted runner has fewer cores.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned TLC and Kani
+        run: python3 scripts/install-formal-tools.py
+      - name: The driver rejects incomplete, misconfigured and empty runs
+        run: python3 scripts/quality/formal.py self-test
+      - name: Obligations the change can affect (all of them on a schedule)
+        run: |
+          set -euo pipefail
+          if [[ "$QUALITY_EVENT_NAME" == schedule ]]; then
+            python3 scripts/quality/formal.py run
+          else
+            base=$(python3 -c 'import sys; sys.path.insert(0, "scripts/quality"); import common; print(common.verification_comparison().comparison_revision)')
+            python3 scripts/quality/formal.py run --changed-from "$base"
+          fi

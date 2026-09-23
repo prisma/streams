@@ -235,7 +235,7 @@
     {
       "category": "effect",
       "count": 2,
-      "owner": "crate::main",
+      "owner": "crate::release_identity",
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"

@@ -3,12 +3,14 @@
 **Date:** 22 September 2026  
 **Basis:** source inspection of `streams-slate (58).zip`  
 **Archive SHA-256:** `f9acc8eb012ece0a2c6972c9ae9c8f4dfb0403af0b9f91d014939b6e294c7db5`  
-**Status:** proposed work catalog and implementation policy; **not verification results**. No TLA+ model or Kani harness in this document has been implemented or run as part of preparing it. Priority labels are planning judgments, not findings of existing defects.
+**Status:** proposed work catalog and implementation policy; **not verification results**. No TLA+ model or Kani harness in this document has been implemented or run as part of preparing it. Priority labels are planning judgments, not findings of existing defects.  
+**Implementation record:** §0 lists the items implemented since this catalog was written, their status, and the issues they found. Every other item remains planned.
 
 Place this document at the repository root so the source references remain easy to resolve. Paths refer to the inspected snapshot; agents must resolve the current canonical owner before implementing an item. Do not infer the current Git commit from a historical review document in the archive.
 
 ## Contents
 
+0. [Implementation record](#0-implementation-record)
 1. [Purpose, value, and verification boundaries](#1-purpose-value-and-verification-boundaries)
 2. [Mandatory behavior for coding agents](#2-mandatory-behavior-for-coding-agents)
 3. [Portfolio structure and implementation order](#3-portfolio-structure-and-implementation-order)
@@ -18,6 +20,28 @@ Place this document at the repository root so the source references remain easy 
 7. [Repository layout, CI, evidence, and maintenance](#7-repository-layout-ci-evidence-and-maintenance)
 8. [Acceptance criteria and initial work packets](#8-acceptance-criteria-and-initial-work-packets)
 9. [Source and tool references](#9-source-and-tool-references)
+
+## 0. Implementation record
+
+This section records what has been implemented against the catalog, what each
+check covers, and what it found. It follows the status vocabulary of §2.8. An
+item that is absent from this table is still **planned**.
+
+**First spike (23 September 2026).** It covers the four highest-value areas: the
+small Rust decisions and encodings (KANI-001–003, 036–039, 042); seal takeover
+and recoverable final-append work (TLA-001/002/003); durable replies and
+ownership changes (TLA-005/006/011); and history publication, read coverage and
+destructive cleanup (TLA-016/018/019). Packet A's tooling was built first so
+those checks have a driver, pins and receipts. The implemented obligations, their
+bounds, assumptions and receipts are in `verification/` (see
+`verification/README.md`), and `scripts/quality/formal.py` runs them. The tools
+are TLC 2.19 (tla2tools 1.7.4) on Java 17, and Kani 0.68.0 with CBMC 6.11.0 on
+its own `nightly-2026-08-21` compiler. Production gates keep Rust 1.98.1.
+
+| Item | Status | What was checked | Issues and bugs found |
+|---|---|---|---|
+| Packet A — inventory and compatibility | implemented | Pinned tools (`quality-tools.toml` `[formal]`, checksum-verified installer). `verification/manifest.json`, the assumption ledger and receipts. `scripts/quality/formal.py` validates the manifest (harness discovery, one attributable property per control or witness config, known statuses and assumptions), selects obligations from a diff, runs them, reconciles expected against actual verdicts, and records input-digest receipts. `formal.py check` runs in `scripts/quality.sh`. A new `formal` CI job runs the self-test, then the affected obligations (all of them on a schedule). Kani runs the unchanged crate: the whole `streams-slate` graph compiled under Kani in 81 s. | Exit condition met: the real-tool self-test passes, rejecting a wrong config (TLC exit 151), an incomplete search (timeout), a deadlock and a zero-discovery harness, and accepting a complete search and a reachable witness. Two tooling decisions: harnesses need `cfg(kani)`, declared in `build.rs`; that moved the build-identity environment reads into their own function, which narrows the existing exception instead of growing it. The raw-evidence upload hold is respected: logs and receipts stay local, so the CI job uploads nothing. |
+<!-- end of implementation record table -->
 
 ## 1. Purpose, value, and verification boundaries
 
