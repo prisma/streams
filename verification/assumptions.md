@@ -97,32 +97,53 @@ actions to these contracts.
 
 ### ASM-SLATEDB-DURABLE
 
-- **Scope:** TLA-005, TLA-006, TLA-011.
-- **Statement:** (a) `Db::write_with_options` returning `Ok` means the batch
-  is applied (visible to later default reads) in seqnum order, not durable.
-  (b) `DbStatus.durable_seq` is monotone and covers exactly the seqnum prefix
-  whose WAL SST (or L0 SST plus manifest) is in the object store. (c) After a
-  fatal WAL flush error, the flusher's `run_lifecycle` writes `closed_result`
-  (so `close_reason` is set and reads and writes fail) before its cleanup drops
-  the unflushed buffers. A PUT whose reply was lost may still have landed, so
-  the next open may recover any written prefix. A batch applied before its
-  `db.write` returned `Err` may also land, through a WAL flush already in
-  flight or the engine's own `Db::close`. (d) Liveness only: while the WAL
-  flusher lives, a written batch eventually lands, and while the Db is open its
-  durability is reported.
+- **Scope:** shard engine clauses (a)-(d): TLA-005, TLA-006, TLA-011. History
+  partition clauses (e)-(j): TLA-016, TLA-018, TLA-019.
+- **Statement, shard engine:** (a) `Db::write_with_options` returning `Ok`
+  means the batch is applied (visible to later default reads) in seqnum order,
+  not durable. (b) `DbStatus.durable_seq` is monotone and covers exactly the
+  seqnum prefix whose WAL SST (or L0 SST plus manifest) is in the object
+  store. (c) After a fatal WAL flush error, the flusher's `run_lifecycle`
+  writes `closed_result` (so `close_reason` is set and reads and writes fail)
+  before its cleanup drops the unflushed buffers. A PUT whose reply was lost
+  may still have landed, so the next open may recover any written prefix. A
+  batch applied before its `db.write` returned `Err` may also land, through a
+  WAL flush already in flight or the engine's own `Db::close`. (d) Liveness
+  only: while the WAL flusher lives, a written batch eventually lands, and
+  while the Db is open its durability is reported.
+- **Statement, history partitions and reads:** (e) A `WriteBatch` is applied
+  to the memtable atomically and becomes durable atomically. (f) Remote
+  durability is a prefix of applied order: `durable_seq` is monotone, and a
+  durable batch implies every earlier batch is durable. (g)
+  `DurabilityLevel::Remote` reads see exactly the durable prefix;
+  `DurabilityLevel::Memory` reads see applied state, tombstones included. (h)
+  On a WAL-disabled DB (the history partitions), `flush()` returning `Ok`
+  means every write applied before the call is in an SST the manifest
+  references and survives a crash; the memtable is lost on a crash. (i)
+  Durable data never rolls back. (j) A scan reads one snapshot: the state and
+  the sequence bound captured when it is created, so a delete applied or made
+  durable later does not remove a row from a running scan.
 - **Origin:** pinned SlateDB rev `0717cc1`: `db_status.rs`
   (`report_durable_seq`), `db.rs` `DbWalObserver` (WalFlushed ->
   `advance_durable_seq`), `wal_buffer.rs` (`WalFlushHandler::cleanup`:
   `mark_closed`, then `WalClosed`), `dispatcher.rs` `run_lifecycle`
-  (`closed_result.write_result` before `cleanup`).
+  (`closed_result.write_result` before `cleanup`), `config.rs`
+  `DurabilityLevel`, and `reader.rs` `prepare_max_seq` and
+  `scan_with_options` for (j). The repository relies on it in the shard pump
+  and `acker_loop` (`src/shard.rs`), the commit pipeline
+  (`src/shard/transaction/`), `src/shard/record.rs` (`read_frames_until`,
+  `visible_absorbed`) and `Absorber::commit` (`src/history/gather.rs`).
 - **Enforcement / evidence:** SlateDB. The shard engine only reads
-  `durable_seq` and `close_reason` (`src/shard.rs` pump and `acker_loop`).
-  Repository held-WAL tests in `src/shard/retirement_tests.rs` and
-  `src/dst/tests/durability_fences.rs`.
+  `durable_seq` and `close_reason`. Repository held-WAL tests in
+  `src/shard/retirement_tests.rs` and `src/dst/tests/durability_fences.rs`,
+  and the DST durability and persistence suites
+  (`src/dst/tests/durability_*.rs`, `src/dst/tests/persistence_faults.rs`).
 - **Invalidation:** a SlateDB revision or settings change; disabling the shard
-  WAL; a write path that waits for durability differently.
-- **Standing:** (a)-(c) established by upstream source inspection and the
-  repository integration tests; (d) conditional, used only by liveness.
+  WAL or enabling it on history partitions; a write path that waits for
+  durability differently.
+- **Standing:** (a)-(c) and (e)-(j) established by upstream source inspection
+  and the repository integration tests, not verified here; (d) conditional,
+  used only by liveness.
 
 ### ASM-SLATEDB-FENCE
 
@@ -150,20 +171,31 @@ actions to these contracts.
 
 ### ASM-OBJSTORE-CAS
 
-- **Scope:** TLA-005 (an ambiguous WAL PUT), TLA-011 (the fence).
-- **Statement:** a conditional create is atomic. A create on an existing path
-  fails with `AlreadyExists`. An ambiguous reply (the PUT landed, the reply was
-  lost) surfaces as an error (fatal, or a spurious `Fenced` on retry), never as
-  success for a PUT that did not land.
-- **Origin:** `object_store` 0.14 `PutMode::Create` and the provider's
-  conditional-write support.
-- **Enforcement / evidence:** the object-store provider. The durability group
-  holds no provider evidence. The models include both ambiguous outcomes:
-  TLA-005 `Restart` recovers an unreported prefix after `WalFail`, and TLA-011
-  `Land` has the `AmbiguousPut` outcome.
+- **Scope:** TLA-005 (an ambiguous WAL PUT), TLA-011 (the fence), TLA-019
+  (`ForkPin`: every registry step is one conditional write).
+- **Statement:** (a) A conditional create is atomic. A create on an existing
+  path fails with `AlreadyExists`. An ambiguous reply (the PUT landed, the
+  reply was lost) surfaces as an error (fatal, or a spurious `Fenced` on
+  retry), never as success for a PUT that did not land. (b) A conditional
+  update of a registry object is atomic: `Registry::mutate_incarnation` is one
+  conditional update of a stream descriptor, bound to the incarnation it
+  observed; a changed incarnation is reported (`IncarnationChanged`) and
+  writes nothing.
+- **Origin:** `object_store` 0.14 `PutMode::Create` and `PutMode::Update`, and
+  the provider's conditional-write support; `src/application/creation/anchor.rs`
+  (`anchor::install`) and `src/application/creation/deletion.rs`
+  (`delete_transition`, `release_fork_ref`).
+- **Enforcement / evidence:** the object-store provider, which no repository
+  evidence covers. The registry's conditional-write tests and the DST fork
+  suites (`src/dst/tests/fork_cleanup.rs`) cover the repository's use of it.
+  The durability models include both ambiguous outcomes: TLA-005 `Restart`
+  recovers an unreported prefix after `WalFail`, and TLA-011 `Land` has the
+  `AmbiguousPut` outcome.
 - **Invalidation:** a provider or client change; a retry layer that turns
-  `AlreadyExists` into success.
-- **Standing:** **unestablished**.
+  `AlreadyExists` into success; a registry write that is not conditional on
+  the observed incarnation.
+- **Standing:** **unestablished** for the provider's conditional writes; the
+  repository's use of them in (b) is established by code reading and tests.
 
 ### ASM-DURABILITY-1
 
@@ -327,3 +359,208 @@ actions to these contracts.
   supervisor.
 - **Invalidation:** a change to the acker, pump or committer ownership.
 - **Standing:** conditional (liveness only).
+
+### ASM-SLATEDB-GC
+
+- **Scope:** TLA-019 (`ReachGC`), and TLA-018 (`RError`).
+- **Statement:** (i) The compacted-SST collector deletes an SST only if
+  neither the latest manifest nor any checkpoint's manifest references it and
+  its id time is below `min(now − min_age, compaction low watermark, newest
+  L0)`. Each pass reads the compactions store, then the manifest, then lists
+  the objects. (ii) One writer's SST id times are monotone, and a newly
+  uploaded L0 is newer than every L0 of the manifest it is committed to.
+  (iii) A read that needs a deleted SST fails with an error unless the
+  blocks it needs are in the block or object cache, whose bytes are that
+  SST's immutable bytes. It never returns a short or empty success. (iv) The
+  writer `Db`'s in-memory manifest view merges the stored manifest only on
+  the `PollManifest` tick and in the conflict reload inside the writer's own
+  manifest write. The embedded compactor does not refresh it. (v) Each
+  collector task first drops the checkpoints whose expiry has passed, then
+  treats every SST named by the latest manifest or by a remaining
+  checkpoint's manifest as live.
+- **Origin:** SlateDB rev `0717cc1`: `garbage_collector/compacted_gc.rs`
+  (collector); `retrying_object_store.rs` (`NotFound` is not retried),
+  `error.rs` (`NotFound` becomes `Error::data`) and `tablestore.rs` (a
+  filter-cache miss falls through to a read that propagates the error) for
+  (iii); `memtable_flusher/manifest_writer.rs` and `compactor.rs` for (iv);
+  `garbage_collector.rs` (`remove_expired_checkpoints`),
+  `garbage_collector/compacted_gc.rs` (`list_active_l0_and_compacted_ssts`)
+  and `manifest/store.rs` (`read_referenced_manifests`) for (v).
+  Repository settings: `history_settings` in `src/history.rs`, shard DBs in
+  `src/config/validation.rs`.
+- **Enforcement / evidence:** reading the pinned upstream code. A real-code
+  diagnostic at `ab73296` observed (iii), (iv) and (v): the writer's view
+  still named four compacted-away L0s, the collector deleted none of them
+  while the compactor's checkpoint existed, and after that checkpoint was
+  deleted it removed them and a read over the stale view failed with an
+  object-store `NotFound`.
+- **Invalidation:** a SlateDB pin change; a change to `min_age`, the GC
+  interval or `manifest_poll_interval`; adding checkpoints, `DbReader`s or
+  `refresh_manifest` calls; mapping a storage error to an empty result
+  (control `nc_swallow_read_error`).
+- **Standing:** established by code reading; not verified.
+
+### ASM-SLATEDB-COMPACTION-CHECKPOINT
+
+- **Scope:** TLA-019 (`ReachGC`, the reader clause `LiveReadViewProtected`).
+- **Statement:** Before each compaction commit the embedded compactor writes
+  a checkpoint on the pre-compaction manifest with a 900 s lifetime, so the
+  SSTs a compaction replaces stay live for 900 s after it commits
+  (ASM-SLATEDB-GC (v)). The history partition's writer view is refreshed at
+  least every `manifest_poll_interval` (300 s), and a history read holds its
+  view for less than the remaining 600 s. A read therefore never needs an
+  SST the collector deleted. The model uses ticks of 300 s: a 3-tick
+  checkpoint, a refresh within 1 tick of the view going stale and a read
+  within 1 tick.
+- **Origin:** SlateDB rev `0717cc1` `compactor_state_protocols.rs`
+  (`write_manifest`, reached through `write_state_safely` →
+  `write_manifest_safely`), whose comment calls the 900 s lifetime an
+  interim choice. Repository: `manifest_poll_interval` 300 s for history
+  partitions (`src/history.rs:501`) and billing (`src/billing.rs:1516`), and
+  `manifest_poll_ms` for shard DBs (`src/config/validation.rs:51`).
+- **Enforcement / evidence:** the real-code tests
+  `dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view`
+  and `tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view`
+  (`src/dst/tests/read_history_lifecycle.rs`): after a compaction the
+  writer's view still names the replaced L0s, a checkpoint names them with
+  a lifetime greater than twice the history `manifest_poll_interval`, a
+  collection with compacted `min_age` 0 deletes nothing and the stale-view
+  read returns every record; with that checkpoint deleted the read fails
+  with `NotFound`. In the model, `baseline-small` and `baseline-expanded`
+  check the reader clause with the checkpoint, and
+  `nc-no-compaction-checkpoint` shows the clause fails without it.
+- **Invalidation:** a SlateDB change that shortens, removes or reconfigures
+  the compactor checkpoint; a longer `manifest_poll_interval`; manifest
+  polls that fail repeatedly (object-store errors), so the view stays stale
+  past the checkpoint; a history read that holds its view longer than the
+  checkpoint's remaining lifetime. `baseline-timing-lapse` covers those
+  cases: a read can then fail, but never completes short.
+- **Standing:** established by code reading and the real-code tests above;
+  it rests on an upstream constant that the code calls interim.
+
+### ASM-HISTORY-FENCED-VIEW
+
+- **Scope:** TLA-018 (ownership move), TLA-019 (`OrphanUpload`).
+- **Statement:** Opening a writer on a shard DB or history partition bumps
+  its writer epoch. The old writer's later manifest and WAL writes fail, so
+  an SST it uploads afterwards is never referenced. The old `Db` never merges
+  the new writer's state into its own reads, so a page served by the fenced
+  engine sees a frozen, self-consistent state, or fails.
+- **Origin:** SlateDB rev `0717cc1` (`manifest/store.rs`
+  `FenceableManifest`, `fence.rs`).
+- **Enforcement / evidence:** upstream contract, exercised by the DST
+  ownership and fencing suites (`src/dst/tests/durability_fences.rs`).
+- **Invalidation:** a SlateDB pin change; production reads through a
+  `DbReader` or a snapshot that refreshes.
+- **Standing:** established as an upstream contract; not verified here.
+
+### ASM-HISTORY-GC-CLOCK
+
+- **Scope:** TLA-019 (`ReachGC`).
+- **Statement:** SST id times, `min_age` and the collector's `now` share one
+  discrete clock. The collector runs in the writer's process, so skew and
+  reversal are not modelled. A writer may stall between an upload and its
+  manifest commit for longer than `min_age`; the generation condition must
+  cover that.
+- **Origin:** upstream ULID SST ids; the repository embeds the collector in
+  the writer process.
+- **Enforcement / evidence:** none for skew across hosts.
+- **Invalidation:** a detached or standalone collector on another host.
+- **Standing:** unestablished for multi-host operation.
+
+### ASM-HISTORY-ACTORS
+
+- **Scope:** TLA-016 and TLA-019 liveness checks.
+- **Statement:** The retrying in-process actors are the absorber task (a
+  5 s tick that gathers pending streams every tick, with a dirty-index
+  rescan every 120 ticks or every tick while paging), the committer, the WAL
+  flusher, the acker and dispatch loop, and the collector's interval
+  scheduler. Their attempts are fairly scheduled in the liveness checks. No
+  background actor repays a fork-reference debt: a debt on a child
+  tombstone is repaid only when a client issues `DELETE` for that child
+  again (`delete_lifecycle` → `repair_tombstone`, its only caller). Only
+  `LiveSpecClientRetries` assumes that client retry, and it says so.
+- **Origin:** `src/history/worker.rs`, `ShardEngine::spawn_required`
+  (`src/shard.rs`), `src/application/creation/deletion.rs`.
+- **Enforcement / evidence:** required-task supervision for the in-process
+  actors. The client retry is not enforced: after a `DELETE` that returned
+  success the client has no signal to retry (TLA-019-F4).
+- **Invalidation:** a change to task ownership or the rescan cadence; adding
+  a sweeper for tombstone debts.
+- **Standing:** established for the in-process actors; unestablished for
+  client `DELETE` retries.
+
+### ASM-HISTORY-WRITER
+
+- **Scope:** TLA-018 (the coarse writer `WHistFlush`/`WAdvance`).
+- **Statement:** Canonical and postings rows are durable and contiguous below
+  every committed absorbed boundary, and an advance follows the flush that
+  covers it.
+- **Origin / enforcement:** TLA-016's `H3_AbsorbedBackedByDurableHistory`
+  and `LastRecoverableCopy`, which pass for the recorded instances.
+- **Invalidation:** a change to the gather, flush and submit order, or to
+  `CommitTransaction::absorbed`.
+- **Standing:** established for the modelled instances only.
+
+### ASM-HISTORY-POSTINGS-CACHE
+
+- **Scope:** TLA-018 keyed reads.
+- **Statement:** `PostingsCache::runs_for` returns either the true runs of
+  the key restricted to `[from, provable_to)`, with `provable_to` at most the
+  requested `upto`, or `Corrupt`. A segment's warm window `[from, to)` is an
+  absence proof: every chunk in it was installed contiguously in this
+  process and recorded every key it carried, so a slice ending inside it may
+  be bridged to its end. An install that records nothing for a key raises
+  `from` past its chunk.
+- **Origin:** `src/postings_cache.rs` (`runs_for`, `install_chunk`,
+  `publish_load`).
+- **Enforcement / evidence:** the cache's unit tests, including
+  `postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows`
+  and the three `*_bridge_never_crosses_*` tests added with the fix
+  "A postings-cache bridge never crosses a chunk whose runs no slice
+  recorded". TLA-016's `CacheNeverProvesFalseAbsence` checks the gather's
+  write-through install; it failed before the TLA-016-F3 fix and passes
+  after it. The admission line, capped and merging loads, and single-flight
+  are not modelled (TLA-020, planned).
+- **Invalidation:** a change to the cache's coverage or warm-window rules,
+  or to the range the gather names for an install.
+- **Standing:** established for the install path in the modelled instance;
+  the rest of the cache is unverified. TLA-018's keyed results are
+  conditional on it.
+
+### ASM-HISTORY-RING
+
+- **Scope:** TLA-018 (durable ring reads).
+- **Statement:** `proves_durable_ring` implies that the ring returned dense,
+  durable copies of `[from, last]` for this engine and incarnation.
+- **Origin:** `src/shard/record.rs`, `src/shard/tail_ring.rs`.
+- **Enforcement / evidence:** the `src/dst/tests/reads_ring.rs` tests;
+  KANI-022 is planned.
+- **Invalidation:** a change to the ring's retention or density proof.
+- **Standing:** established by tests only.
+
+### ASM-HISTORY-REABSORB
+
+- **Scope:** TLA-016.
+- **Statement:** A gather reads only Remote-durable rows or durable ring
+  copies, and a durable frame at an offset never changes. Re-absorbing a
+  range therefore rewrites identical canonical bytes, so the model tracks
+  row presence only.
+- **Origin:** `read_frames_range` (`src/shard/record.rs`);
+  ASM-SLATEDB-DURABLE (e).
+- **Invalidation:** a gather that reads applied rows; a rewrite of stored
+  frames.
+- **Standing:** established by code reading.
+
+### ASM-HISTORY-EVICTION
+
+- **Scope:** TLA-016 (`MarkPrune`).
+- **Statement:** `evict_idle_handles` evicts only a handle that nothing but
+  the map references. Committer batches, dispatch, ring publication, readers
+  and waiters hold clones; a queued `AbsorbedBatch` holds none. A reloaded
+  handle reads the Memory-level tail row for both `durable` and `applied`.
+- **Origin:** `ShardEngine::evict_idle_handles` and
+  `ShardEngine::stream_handle` (`src/shard.rs`).
+- **Invalidation:** a change to handle ownership or to the reload path.
+- **Standing:** established by code reading; that dispatch holds a clone
+  until publication rests on the function's documentation.

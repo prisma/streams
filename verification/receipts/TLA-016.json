@@ -1,0 +1,373 @@
+{
+  "checks": [
+    {
+      "check": "TLA-016/baseline-small",
+      "depth": 85,
+      "distinct_states": 8380652,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 691.4,
+      "states_generated": 46227282,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/baseline-expanded",
+      "depth": 88,
+      "distinct_states": 16566674,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 1524.8,
+      "states_generated": 91522753,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/ledger-small",
+      "depth": 85,
+      "distinct_states": 8380652,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 429.1,
+      "states_generated": 46227282,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/ledger-overlap",
+      "depth": 70,
+      "distinct_states": 579554,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 21.6,
+      "states_generated": 2543064,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/liveness-small",
+      "depth": 68,
+      "distinct_states": 134989,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 62.5,
+      "states_generated": 495225,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/baseline-cache",
+      "depth": 72,
+      "distinct_states": 2338359,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 97.9,
+      "states_generated": 9714061,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/baseline-cache-cap2",
+      "depth": 78,
+      "distinct_states": 4234784,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 165.5,
+      "states_generated": 17607837,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-016/nc-publish-before-flush",
+      "depth": 8,
+      "distinct_states": 466,
+      "expected": "violation:H3_AbsorbedBackedByDurableHistory",
+      "property": "H3_AbsorbedBackedByDurableHistory",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 1288,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-canonical-only",
+      "depth": 9,
+      "distinct_states": 629,
+      "expected": "violation:H3_AbsorbedBackedByDurableHistory",
+      "property": "H3_AbsorbedBackedByDurableHistory",
+      "role": "negative-control",
+      "seconds": 1.4,
+      "states_generated": 1741,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-trim-to-proposed",
+      "depth": 10,
+      "distinct_states": 1084,
+      "expected": "violation:StaleReaderRangeIntact",
+      "property": "StaleReaderRangeIntact",
+      "role": "negative-control",
+      "seconds": 1.6,
+      "states_generated": 3220,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-duplicate-collapse",
+      "depth": 18,
+      "distinct_states": 17863,
+      "expected": "violation:StaleReaderRangeIntact",
+      "property": "StaleReaderRangeIntact",
+      "role": "negative-control",
+      "seconds": 2.3,
+      "states_generated": 66649,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-tick-trim-to-absorbed",
+      "depth": 11,
+      "distinct_states": 1748,
+      "expected": "violation:StaleReaderRangeIntact",
+      "property": "StaleReaderRangeIntact",
+      "role": "negative-control",
+      "seconds": 1.6,
+      "states_generated": 5358,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-lastcopy-publish-before-flush",
+      "depth": 16,
+      "distinct_states": 18465,
+      "expected": "violation:LastRecoverableCopy",
+      "property": "LastRecoverableCopy",
+      "role": "negative-control",
+      "seconds": 2.3,
+      "states_generated": 75599,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-lastcopy-trim-past-absorbed",
+      "depth": 3,
+      "distinct_states": 11,
+      "expected": "violation:LastRecoverableCopy",
+      "property": "LastRecoverableCopy",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 14,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-retire-chunk-bytes",
+      "depth": 18,
+      "distinct_states": 17286,
+      "expected": "violation:LedgerExact",
+      "property": "LedgerExact",
+      "role": "negative-control",
+      "seconds": 2.3,
+      "states_generated": 64090,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-retire-chunk-bytes-overlap",
+      "depth": 22,
+      "distinct_states": 9391,
+      "expected": "violation:LedgerExact",
+      "property": "LedgerExact",
+      "role": "negative-control",
+      "seconds": 2.1,
+      "states_generated": 30239,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-retire-chunk-bytes-liveness",
+      "distinct_states": 150281,
+      "expected": "violation:AbsorptionCompletes",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 62.5,
+      "states_generated": 531169,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/nc-warm-install-from-plan",
+      "depth": 29,
+      "distinct_states": 94714,
+      "expected": "violation:CacheNeverProvesFalseAbsence",
+      "property": "CacheNeverProvesFalseAbsence",
+      "role": "negative-control",
+      "seconds": 4.7,
+      "states_generated": 342385,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-TrimDurable",
+      "depth": 20,
+      "distinct_states": 27236,
+      "expected": "violation:Witness_TrimDurable",
+      "property": "Witness_TrimDurable",
+      "role": "witness",
+      "seconds": 2.7,
+      "states_generated": 104278,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-FullyAbsorbedDurable",
+      "depth": 22,
+      "distinct_states": 40777,
+      "expected": "violation:Witness_FullyAbsorbedDurable",
+      "property": "Witness_FullyAbsorbedDurable",
+      "role": "witness",
+      "seconds": 3.1,
+      "states_generated": 158648,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-LostPublicationRecovered",
+      "depth": 30,
+      "distinct_states": 260308,
+      "expected": "violation:Witness_LostPublicationRecovered",
+      "property": "Witness_LostPublicationRecovered",
+      "role": "witness",
+      "seconds": 8.3,
+      "states_generated": 1095219,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-FlushFailRecovered",
+      "depth": 27,
+      "distinct_states": 141440,
+      "expected": "violation:Witness_FlushFailRecovered",
+      "property": "Witness_FlushFailRecovered",
+      "role": "witness",
+      "seconds": 5.6,
+      "states_generated": 577432,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-StaleDuplicateIgnored",
+      "depth": 31,
+      "distinct_states": 308748,
+      "expected": "violation:Witness_StaleDuplicateIgnored",
+      "property": "Witness_StaleDuplicateIgnored",
+      "role": "witness",
+      "seconds": 9.7,
+      "states_generated": 1310707,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-CrashRecovered",
+      "depth": 23,
+      "distinct_states": 53357,
+      "expected": "violation:Witness_CrashRecovered",
+      "property": "Witness_CrashRecovered",
+      "role": "witness",
+      "seconds": 3.3,
+      "states_generated": 210244,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-GatherOverTrimmedPrefix",
+      "depth": 25,
+      "distinct_states": 97824,
+      "expected": "violation:Witness_GatherOverTrimmedPrefix",
+      "property": "Witness_GatherOverTrimmedPrefix",
+      "role": "witness",
+      "seconds": 4.6,
+      "states_generated": 395283,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-StaleSnapshotLosesTail",
+      "depth": 21,
+      "distinct_states": 36490,
+      "expected": "violation:Witness_StaleSnapshotLosesTail",
+      "property": "Witness_StaleSnapshotLosesTail",
+      "role": "witness",
+      "seconds": 2.8,
+      "states_generated": 141514,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-TwoAdvancesNotDurable",
+      "depth": 18,
+      "distinct_states": 16461,
+      "expected": "violation:Witness_TwoAdvancesNotDurable",
+      "property": "Witness_TwoAdvancesNotDurable",
+      "role": "witness",
+      "seconds": 2.2,
+      "states_generated": 60921,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-MarkRolledBackInFlight",
+      "depth": 9,
+      "distinct_states": 692,
+      "expected": "violation:Witness_MarkRolledBackInFlight",
+      "property": "Witness_MarkRolledBackInFlight",
+      "role": "witness",
+      "seconds": 1.4,
+      "states_generated": 2013,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-EvictedMarkPrunedInFlight",
+      "depth": 9,
+      "distinct_states": 700,
+      "expected": "violation:Witness_EvictedMarkPrunedInFlight",
+      "property": "Witness_EvictedMarkPrunedInFlight",
+      "role": "witness",
+      "seconds": 1.3,
+      "states_generated": 2041,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-RingGatherBelowTrim",
+      "depth": 25,
+      "distinct_states": 155100,
+      "expected": "violation:Witness_RingGatherBelowTrim",
+      "property": "Witness_RingGatherBelowTrim",
+      "role": "witness",
+      "seconds": 7.8,
+      "states_generated": 633318,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-WarmBridgeCovers",
+      "depth": 21,
+      "distinct_states": 10867,
+      "expected": "violation:Witness_WarmBridgeCovers",
+      "property": "Witness_WarmBridgeCovers",
+      "role": "witness",
+      "seconds": 2.3,
+      "states_generated": 36667,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-MisStartedAdvanceCompletes",
+      "depth": 22,
+      "distinct_states": 40536,
+      "expected": "violation:Witness_MisStartedAdvanceCompletes",
+      "property": "Witness_MisStartedAdvanceCompletes",
+      "role": "witness",
+      "seconds": 3.1,
+      "states_generated": 157530,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-016/witness-InstallStartsAbovePlan",
+      "depth": 28,
+      "distinct_states": 77829,
+      "expected": "violation:Witness_InstallStartsAbovePlan",
+      "property": "Witness_InstallStartsAbovePlan",
+      "role": "witness",
+      "seconds": 4.9,
+      "states_generated": 278687,
+      "verdict": "violation"
+    }
+  ],
+  "id": "TLA-016",
+  "inputs_sha256": "97e8cb434cc4eee3959d1879093d0911563d3310c7d05eb955e9708ca909ffb8",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

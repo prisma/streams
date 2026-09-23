@@ -1,0 +1,372 @@
+{
+  "checks": [
+    {
+      "check": "TLA-019/baseline-small",
+      "depth": 28,
+      "distinct_states": 3938288,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 95.8,
+      "states_generated": 14232827,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/baseline-expanded",
+      "depth": 31,
+      "distinct_states": 27990301,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 615.5,
+      "states_generated": 107732219,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/baseline-timing-lapse",
+      "depth": 28,
+      "distinct_states": 3594585,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 85.7,
+      "states_generated": 13215314,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/liveness-small",
+      "depth": 25,
+      "distinct_states": 637394,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 118.6,
+      "states_generated": 1969060,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/liveness-expanded",
+      "depth": 28,
+      "distinct_states": 4826314,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 821.6,
+      "states_generated": 16292987,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/nc-no-compaction-checkpoint",
+      "depth": 13,
+      "distinct_states": 257708,
+      "expected": "violation:LiveReadViewProtected",
+      "property": "LiveReadViewProtected",
+      "role": "negative-control",
+      "seconds": 3.8,
+      "states_generated": 658584,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-advance-on-upload",
+      "depth": 5,
+      "distinct_states": 148,
+      "expected": "violation:HistoryBacked",
+      "property": "HistoryBacked",
+      "role": "negative-control",
+      "seconds": 1.0,
+      "states_generated": 256,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-swallow-read-error",
+      "depth": 14,
+      "distinct_states": 451553,
+      "expected": "violation:NoFalseCompleteRead",
+      "property": "NoFalseCompleteRead",
+      "role": "negative-control",
+      "seconds": 5.7,
+      "states_generated": 1200525,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/probe-upstream-short-read",
+      "depth": 14,
+      "distinct_states": 482475,
+      "expected": "violation:NoFalseCompleteRead",
+      "property": "NoFalseCompleteRead",
+      "role": "negative-control",
+      "seconds": 5.8,
+      "states_generated": 1288993,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-no-generation-condition",
+      "depth": 10,
+      "distinct_states": 24456,
+      "expected": "violation:ManifestRefsPresent",
+      "property": "ManifestRefsPresent",
+      "role": "negative-control",
+      "seconds": 1.7,
+      "states_generated": 56567,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-ignore-checkpoint-pin",
+      "depth": 14,
+      "distinct_states": 1119614,
+      "expected": "violation:CheckpointPinned",
+      "property": "CheckpointPinned",
+      "role": "negative-control",
+      "seconds": 11.8,
+      "states_generated": 3018736,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-stale-inventory",
+      "distinct_states": 566760,
+      "expected": "violation:EligibleEventuallyReclaimed",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 71.5,
+      "states_generated": 1738489,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-CompactedInputReclaimed",
+      "depth": 14,
+      "distinct_states": 573358,
+      "expected": "violation:Witness_CompactedInputReclaimed",
+      "property": "Witness_CompactedInputReclaimed",
+      "role": "witness",
+      "seconds": 6.7,
+      "states_generated": 1549205,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-OrphanReclaimed",
+      "depth": 12,
+      "distinct_states": 180308,
+      "expected": "violation:Witness_OrphanReclaimed",
+      "property": "Witness_OrphanReclaimed",
+      "role": "witness",
+      "seconds": 3.3,
+      "states_generated": 448095,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-HistoryServedAfterReclaim",
+      "depth": 16,
+      "distinct_states": 1190546,
+      "expected": "violation:Witness_HistoryServedAfterReclaim",
+      "property": "Witness_HistoryServedAfterReclaim",
+      "role": "witness",
+      "seconds": 13.1,
+      "states_generated": 3499475,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-ReaderViewErrors",
+      "depth": 14,
+      "distinct_states": 526801,
+      "expected": "violation:Witness_ReaderViewErrors",
+      "property": "Witness_ReaderViewErrors",
+      "role": "witness",
+      "seconds": 6.4,
+      "states_generated": 1421734,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-StaleWriterViewRead",
+      "depth": 6,
+      "distinct_states": 668,
+      "expected": "violation:Witness_StaleWriterViewRead",
+      "property": "Witness_StaleWriterViewRead",
+      "role": "witness",
+      "seconds": 1.1,
+      "states_generated": 1392,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-QuietDeadZoneRetains",
+      "depth": 10,
+      "distinct_states": 22535,
+      "expected": "violation:Witness_QuietDeadZoneRetains",
+      "property": "Witness_QuietDeadZoneRetains",
+      "role": "witness",
+      "seconds": 1.6,
+      "states_generated": 51760,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-LateCommitAfterGcView",
+      "depth": 7,
+      "distinct_states": 2030,
+      "expected": "violation:Witness_LateCommitAfterGcView",
+      "property": "Witness_LateCommitAfterGcView",
+      "role": "witness",
+      "seconds": 1.1,
+      "states_generated": 4374,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-CheckpointProtectsReadView",
+      "depth": 12,
+      "distinct_states": 125897,
+      "expected": "violation:Witness_CheckpointProtectsReadView",
+      "property": "Witness_CheckpointProtectsReadView",
+      "role": "witness",
+      "seconds": 2.4,
+      "states_generated": 306387,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/fork-baseline",
+      "depth": 17,
+      "distinct_states": 16900,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 1.4,
+      "states_generated": 59200,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/fork-liveness-client-retries",
+      "depth": 17,
+      "distinct_states": 16900,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 3.1,
+      "states_generated": 59200,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-019/nc-ignore-fork-pin",
+      "depth": 5,
+      "distinct_states": 67,
+      "expected": "violation:ForkPinRespected",
+      "property": "ForkPinRespected",
+      "role": "negative-control",
+      "seconds": 0.9,
+      "states_generated": 89,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/nc-install-ignores-incarnation",
+      "depth": 6,
+      "distinct_states": 279,
+      "expected": "violation:ForkPinRespected",
+      "property": "ForkPinRespected",
+      "role": "negative-control",
+      "seconds": 1.0,
+      "states_generated": 465,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/probe-no-client-retry",
+      "distinct_states": 16900,
+      "expected": "violation:RefEventuallyReleased",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 2.3,
+      "states_generated": 59200,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-SoftDeleteRetainedForFork",
+      "depth": 6,
+      "distinct_states": 152,
+      "expected": "violation:Witness_SoftDeleteRetainedForFork",
+      "property": "Witness_SoftDeleteRetainedForFork",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 242,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-TwoChildrenPinSource",
+      "depth": 10,
+      "distinct_states": 3116,
+      "expected": "violation:Witness_TwoChildrenPinSource",
+      "property": "Witness_TwoChildrenPinSource",
+      "role": "witness",
+      "seconds": 1.2,
+      "states_generated": 7329,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-ForkCascadeTombstone",
+      "depth": 6,
+      "distinct_states": 157,
+      "expected": "violation:Witness_ForkCascadeTombstone",
+      "property": "Witness_ForkCascadeTombstone",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 253,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-InstallAfterChildDeleted",
+      "depth": 5,
+      "distinct_states": 54,
+      "expected": "violation:Witness_InstallAfterChildDeleted",
+      "property": "Witness_InstallAfterChildDeleted",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 71,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-InstallDeclinedOnRecreatedSource",
+      "depth": 6,
+      "distinct_states": 134,
+      "expected": "violation:Witness_InstallDeclinedOnRecreatedSource",
+      "property": "Witness_InstallDeclinedOnRecreatedSource",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 205,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-DebtClearedOnRecreatedSource",
+      "depth": 7,
+      "distinct_states": 280,
+      "expected": "violation:Witness_DebtClearedOnRecreatedSource",
+      "property": "Witness_DebtClearedOnRecreatedSource",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 463,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-PermanentPinWithoutRetry",
+      "depth": 7,
+      "distinct_states": 333,
+      "expected": "violation:Witness_PermanentPinWithoutRetry",
+      "property": "Witness_PermanentPinWithoutRetry",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 571,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-019/witness-fork-PinAfterSuccessfulDelete",
+      "depth": 6,
+      "distinct_states": 244,
+      "expected": "violation:Witness_PinAfterSuccessfulDelete",
+      "property": "Witness_PinAfterSuccessfulDelete",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 386,
+      "verdict": "violation"
+    }
+  ],
+  "id": "TLA-019",
+  "inputs_sha256": "a583456d1e0c4b0166abe8c55fa4da0e6e4ccbe2d575539947f46ba49675725c",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

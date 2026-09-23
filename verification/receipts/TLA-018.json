@@ -1,0 +1,297 @@
+{
+  "checks": [
+    {
+      "check": "TLA-018/baseline-durable-keyed-small",
+      "depth": 44,
+      "distinct_states": 12482967,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 1294.1,
+      "states_generated": 52437598,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-durable-unfiltered-small",
+      "depth": 33,
+      "distinct_states": 3777005,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 293.6,
+      "states_generated": 16116332,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-applied-keyed-small",
+      "depth": 43,
+      "distinct_states": 11351025,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 541.1,
+      "states_generated": 48449863,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-applied-unfiltered-small",
+      "depth": 36,
+      "distinct_states": 3045185,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 101.1,
+      "states_generated": 11906624,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-durable-keyed-expanded",
+      "depth": 41,
+      "distinct_states": 19356657,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 668.5,
+      "states_generated": 73846453,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-durable-unfiltered-expanded",
+      "depth": 39,
+      "distinct_states": 6582468,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 519.4,
+      "states_generated": 25334125,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/baseline-applied-unfiltered-expanded",
+      "depth": 53,
+      "distinct_states": 18856204,
+      "expected": "pass",
+      "role": "baseline",
+      "seconds": 1009.0,
+      "states_generated": 68082000,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-018/known-defect-stale-applied-cursor",
+      "depth": 22,
+      "distinct_states": 2386543,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "known-defect",
+      "seconds": 100.0,
+      "states_generated": 7533434,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/nc-old-history-view",
+      "depth": 15,
+      "distinct_states": 565256,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 30.0,
+      "states_generated": 1840987,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/nc-filtered-race-never",
+      "depth": 13,
+      "distinct_states": 197406,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 10.0,
+      "states_generated": 561651,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/nc-short-index-accepted",
+      "depth": 8,
+      "distinct_states": 8231,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 2.6,
+      "states_generated": 20407,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/nc-applied-race-remote",
+      "depth": 11,
+      "distinct_states": 48792,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 5.1,
+      "states_generated": 123264,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/nc-applied-race-remote-unfiltered",
+      "depth": 11,
+      "distinct_states": 43613,
+      "expected": "violation:TailGapExplained",
+      "property": "TailGapExplained",
+      "role": "negative-control",
+      "seconds": 4.4,
+      "states_generated": 111740,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/probe-lost-durable-postings",
+      "depth": 8,
+      "distinct_states": 7256,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 2.4,
+      "states_generated": 19638,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/probe-lost-durable-canonical",
+      "depth": 8,
+      "distinct_states": 9098,
+      "expected": "violation:ExactDurablePrefix",
+      "property": "ExactDurablePrefix",
+      "role": "negative-control",
+      "seconds": 2.5,
+      "states_generated": 26590,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-BoundaryRaceAdopted",
+      "depth": 9,
+      "distinct_states": 9627,
+      "expected": "violation:Witness_BoundaryRaceAdopted",
+      "property": "Witness_BoundaryRaceAdopted",
+      "role": "witness",
+      "seconds": 2.9,
+      "states_generated": 23845,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-UnfilteredRaceAdopted",
+      "depth": 13,
+      "distinct_states": 155709,
+      "expected": "violation:Witness_BoundaryRaceAdopted",
+      "property": "Witness_BoundaryRaceAdopted",
+      "role": "witness",
+      "seconds": 10.4,
+      "states_generated": 467300,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-AppliedRaceAdopted",
+      "depth": 8,
+      "distinct_states": 4113,
+      "expected": "violation:Witness_AppliedRaceAdopted",
+      "property": "Witness_AppliedRaceAdopted",
+      "role": "witness",
+      "seconds": 2.0,
+      "states_generated": 9449,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-LargeFirstRecordDelivered",
+      "depth": 5,
+      "distinct_states": 134,
+      "expected": "violation:Witness_LargeFirstRecordDelivered",
+      "property": "Witness_LargeFirstRecordDelivered",
+      "role": "witness",
+      "seconds": 1.4,
+      "states_generated": 239,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-EnvelopeServed",
+      "depth": 7,
+      "distinct_states": 1230,
+      "expected": "violation:Witness_EnvelopeServed",
+      "property": "Witness_EnvelopeServed",
+      "role": "witness",
+      "seconds": 1.9,
+      "states_generated": 2774,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-ShortIndexPartial",
+      "depth": 7,
+      "distinct_states": 1445,
+      "expected": "violation:Witness_ShortIndexPartial",
+      "property": "Witness_ShortIndexPartial",
+      "role": "witness",
+      "seconds": 2.0,
+      "states_generated": 3252,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-ReadFromFencedEngine",
+      "depth": 5,
+      "distinct_states": 369,
+      "expected": "violation:Witness_ReadFromFencedEngine",
+      "property": "Witness_ReadFromFencedEngine",
+      "role": "witness",
+      "seconds": 1.8,
+      "states_generated": 750,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-RingServed",
+      "depth": 4,
+      "distinct_states": 113,
+      "expected": "violation:Witness_RingServed",
+      "property": "Witness_RingServed",
+      "role": "witness",
+      "seconds": 1.6,
+      "states_generated": 207,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-ReaderCompletes",
+      "depth": 8,
+      "distinct_states": 3720,
+      "expected": "violation:Witness_ReaderCompletes",
+      "property": "Witness_ReaderCompletes",
+      "role": "witness",
+      "seconds": 2.2,
+      "states_generated": 8844,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-TrimBelowReaderCursor",
+      "depth": 9,
+      "distinct_states": 10489,
+      "expected": "violation:Witness_TrimBelowReaderCursor",
+      "property": "Witness_TrimBelowReaderCursor",
+      "role": "witness",
+      "seconds": 2.7,
+      "states_generated": 25998,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-018/witness-ReadErrorCurrentEngine",
+      "depth": 4,
+      "distinct_states": 43,
+      "expected": "violation:Witness_ReadErrorCurrentEngine",
+      "property": "Witness_ReadErrorCurrentEngine",
+      "role": "witness",
+      "seconds": 1.5,
+      "states_generated": 67,
+      "verdict": "violation"
+    }
+  ],
+  "id": "TLA-018",
+  "inputs_sha256": "7e6f34d772ac9a62f6a53298de26cfea21a479a623f229cb0b44e4efab56b202",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  },
+  "schema": 1,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "x86_64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

@@ -1,0 +1,975 @@
+TLA-018/known-defect-stale-applied-cursor: ExactDurablePrefix counterexample (open defect TLA-018-F3): a stale applied cursor minted over a lost applied suffix is accepted once the new owner's tail has passed it (raw TLC trace from the formal.py driver log, trimmed to the trace).
+Spec: verification/tla/history/MC_ReadCompose.tla  Config: verification/tla/history/MC_ReadCompose_kd_stale_applied_cursor.cfg
+COMMAND: python3 scripts/quality/formal.py run --id TLA-018 (TLC 2.19, -workers 2)
+Search at violation: 7533434 states generated, 2386543 distinct states found, 465831 states left on queue.
+
+Error: Invariant ExactDurablePrefix is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 0
+/\ rd = [ hsnap |-> 0,
+  ph |-> "idle",
+  eng |-> 0,
+  B |-> 0,
+  E |-> 0,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 2: <WAppend line 183, col 5 to line 186, col 81 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 0
+/\ rd = [ hsnap |-> 0,
+  ph |-> "idle",
+  eng |-> 0,
+  B |-> 0,
+  E |-> 0,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 3: <RStart line 259, col 5 to line 266, col 50 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 1
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 4: <RHist line 289, col 5 to line 322, col 70 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 1
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tailstart",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 5: <RTailStart line 325, col 5 to line 340, col 64 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 1
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 6: <RTailStep line 343, col 5 to line 349, col 57 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 0 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 0
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = FALSE
+/\ unexplainedGap = FALSE
+/\ pages = 1
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {0},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 0
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 7: <RTailCheck line 352, col 5 to line 381, col 72 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 1
+/\ rd = [ hsnap |-> 0,
+  ph |-> "idle",
+  eng |-> 0,
+  B |-> 0,
+  E |-> 0,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 8: <RStart line 259, col 5 to line 266, col 50 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 0
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 0 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 1
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 9: <WMove line 218, col 5 to line 223, col 66 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 10: <WAppend line 183, col 5 to line 186, col 81 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 0)
+/\ lostPost = {}
+
+State 11: <WAppend line 183, col 5 to line 186, col 81 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = << [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+   [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0] >>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 12: <WDurable line 189, col 5 to line 191, col 86 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 13: <WDispatch line 194, col 5 to line 195, col 92 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 14: <RHist line 289, col 5 to line 322, col 70 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tailstart",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 15: <RTailStart line 325, col 5 to line 340, col 64 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 1,
+  tseen |-> {},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 16: <RTailStep line 343, col 5 to line 349, col 57 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 0 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 1
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = FALSE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 1,
+  B |-> 0,
+  E |-> 2,
+  cur |-> 1,
+  cn |-> 1,
+  pg |-> {},
+  tcur |-> 2,
+  tseen |-> {1},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 17: <RTailCheck line 352, col 5 to line 381, col 72 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 2
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 2
+/\ rd = [ hsnap |-> 0,
+  ph |-> "idle",
+  eng |-> 0,
+  B |-> 0,
+  E |-> 0,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 18: <RStart line 259, col 5 to line 266, col 50 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 2
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 3
+/\ rd = [ hsnap |-> 0,
+  ph |-> "hist",
+  eng |-> 2,
+  B |-> 0,
+  E |-> 3,
+  cur |-> 2,
+  cn |-> 2,
+  pg |-> {},
+  tcur |-> 2,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 19: <RHist line 289, col 5 to line 322, col 70 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 2
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 3
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tailstart",
+  eng |-> 2,
+  B |-> 0,
+  E |-> 3,
+  cur |-> 2,
+  cn |-> 2,
+  pg |-> {},
+  tcur |-> 2,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 20: <RTailStart line 325, col 5 to line 340, col 64 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 2
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 3
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 2,
+  B |-> 0,
+  E |-> 3,
+  cur |-> 2,
+  cn |-> 2,
+  pg |-> {},
+  tcur |-> 2,
+  tseen |-> {},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 21: <RTailStep line 343, col 5 to line 349, col 57 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 0)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 2
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 3
+/\ rd = [ hsnap |-> 0,
+  ph |-> "tail",
+  eng |-> 2,
+  B |-> 0,
+  E |-> 3,
+  cur |-> 2,
+  cn |-> 2,
+  pg |-> {},
+  tcur |-> 3,
+  tseen |-> {2},
+  maxb |-> 2,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 1
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}
+
+State 22: <RTailCheck line 352, col 5 to line 381, col 72 of module ReadCompose>
+/\ ceilBreach = FALSE
+/\ envelopeUsed = FALSE
+/\ underClaim = FALSE
+/\ raceAdopted = FALSE
+/\ A = [abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]
+/\ D = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ P = [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0]
+/\ dgen = (0 :> 1 @@ 1 :> 1 @@ 2 :> 1)
+/\ moves = 1
+/\ lostCanon = {}
+/\ pos = 3
+/\ pend = <<[abs |-> 0, next |-> 3, safe |-> 0, trimmed |-> 0]>>
+/\ ringUsed = FALSE
+/\ readOld = TRUE
+/\ bigDelivered = TRUE
+/\ unexplainedGap = FALSE
+/\ pages = 3
+/\ rd = [ hsnap |-> 0,
+  ph |-> "idle",
+  eng |-> 0,
+  B |-> 0,
+  E |-> 0,
+  cur |-> 0,
+  cn |-> 0,
+  pg |-> {},
+  tcur |-> 0,
+  tseen |-> {},
+  maxb |-> 0,
+  loops |-> 0 ]
+/\ old = [ A |-> [abs |-> 0, next |-> 2, safe |-> 0, trimmed |-> 0],
+  D |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  P |-> [abs |-> 0, next |-> 1, safe |-> 0, trimmed |-> 0],
+  hF |-> 0,
+  gen |-> (0 :> 1 @@ 1 :> 1 @@ 2 :> 0) ]
+/\ dupSeen = FALSE
+/\ eng = 2
+/\ hF = 0
+/\ dpos = 2
+/\ shortPartial = FALSE
+/\ readErr = FALSE
+/\ gen = (0 :> 1 @@ 1 :> 2 @@ 2 :> 1)
+/\ lostPost = {}

@@ -1365,6 +1365,1090 @@
         "dst::dst_tests::runtime_retirement::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
         "verification/tla/durability/evidence/TLA-011_nc-ring-grants-storage.trace.txt"
       ]
+    },
+    {
+      "id": "TLA-016",
+      "kind": "tla",
+      "title": "History absorption, publication, and safe hot-data trimming",
+      "status": "pass-with-recorded-scope",
+      "owner": "history absorber (gather, lane marks, dirty-index rescan), shard committer maintenance (absorbed advance, trims, byte ledger) and the postings warm install",
+      "source_paths": [
+        "src/history/gather.rs",
+        "src/history/worker.rs",
+        "src/shard/transaction/maintenance.rs",
+        "src/shard/transaction/mod.rs",
+        "src/shard/transaction/prepare.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/shard/record.rs",
+        "src/shard.rs",
+        "src/postings_cache.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/HistoryAbsorb.tla",
+        "verification/tla/history/MC_HistoryAbsorb.tla"
+      ],
+      "requirements": [
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H11",
+        "H13"
+      ],
+      "models": [
+        "TLA-017",
+        "TLA-018",
+        "TLA-019",
+        "TLA-020"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-HISTORY-ACTORS",
+        "ASM-HISTORY-REABSORB",
+        "ASM-HISTORY-EVICTION"
+      ],
+      "input_scope": "one stream incarnation, 3 one-byte record offsets (1 durable at Init, 2 appends) with routing keys K1, K1, K2; per-stream gather cap 2 records (small, ledger, liveness, cache-cap2) or 1 record (expanded, cache); gathers by one Remote scan over the snapshot taken when it starts (small, ledger, liveness) or by that scan or the durable ring (expanded, cache); up to 2 (small) or 3 (expanded) applied-not-durable commit groups; up to 2 AbsorbedBatch messages in flight, each carrying its chunk start; dirty-index rescan with mark rollback, and mark prune for evictable handles; 1 crash, 1 failed or ambiguous history flush and 1 refused or dropped committer operation (small, expanded; none in the ledger-overlap, cache and liveness shapes); 1 (small) or 2 (expanded) reader snapshots; per-operation trim allowances {0,1,3}; postings-slice cache with 1 weight eviction and cold loads (cache shape only); liveness with bounded faults and fairness on actor attempts only. No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-016/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/ledger-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/ledger-overlap",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_overlap.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-016/liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-016/baseline-cache",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_cache.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-016/baseline-cache-cap2",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_cache_cap2.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/nc-publish-before-flush",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_publish_before_flush.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "H3_AbsorbedBackedByDurableHistory"
+          }
+        },
+        {
+          "id": "TLA-016/nc-canonical-only",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_canonical_only.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "H3_AbsorbedBackedByDurableHistory"
+          }
+        },
+        {
+          "id": "TLA-016/nc-trim-to-proposed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_trim_to_proposed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-duplicate-collapse",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_duplicate_collapse.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-tick-trim-to-absorbed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_tick_trim_to_absorbed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-lastcopy-publish-before-flush",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_publish_before_flush.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LastRecoverableCopy"
+          }
+        },
+        {
+          "id": "TLA-016/nc-lastcopy-trim-past-absorbed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_trim_past_absorbed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LastRecoverableCopy"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LedgerExact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes-overlap",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_overlap.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LedgerExact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes-liveness",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_liveness.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AbsorptionCompletes"
+          }
+        },
+        {
+          "id": "TLA-016/nc-warm-install-from-plan",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_warm_install_from_plan.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CacheNeverProvesFalseAbsence"
+          }
+        },
+        {
+          "id": "TLA-016/witness-TrimDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_TrimDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TrimDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-FullyAbsorbedDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_FullyAbsorbedDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FullyAbsorbedDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-LostPublicationRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_LostPublicationRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LostPublicationRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-FlushFailRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_FlushFailRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FlushFailRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-StaleDuplicateIgnored",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleDuplicateIgnored.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleDuplicateIgnored"
+          }
+        },
+        {
+          "id": "TLA-016/witness-CrashRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_CrashRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CrashRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-GatherOverTrimmedPrefix",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_GatherOverTrimmedPrefix.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GatherOverTrimmedPrefix"
+          }
+        },
+        {
+          "id": "TLA-016/witness-StaleSnapshotLosesTail",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleSnapshotLosesTail.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleSnapshotLosesTail"
+          }
+        },
+        {
+          "id": "TLA-016/witness-TwoAdvancesNotDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_TwoAdvancesNotDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TwoAdvancesNotDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-MarkRolledBackInFlight",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_MarkRolledBackInFlight.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MarkRolledBackInFlight"
+          }
+        },
+        {
+          "id": "TLA-016/witness-EvictedMarkPrunedInFlight",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_EvictedMarkPrunedInFlight.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EvictedMarkPrunedInFlight"
+          }
+        },
+        {
+          "id": "TLA-016/witness-RingGatherBelowTrim",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_RingGatherBelowTrim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RingGatherBelowTrim"
+          }
+        },
+        {
+          "id": "TLA-016/witness-WarmBridgeCovers",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_WarmBridgeCovers.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_WarmBridgeCovers"
+          }
+        },
+        {
+          "id": "TLA-016/witness-MisStartedAdvanceCompletes",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_MisStartedAdvanceCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MisStartedAdvanceCompletes"
+          }
+        },
+        {
+          "id": "TLA-016/witness-InstallStartsAbovePlan",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_InstallStartsAbovePlan.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallStartsAbovePlan"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog",
+        "history::bounded_discovery_tests::rolled_back_mark_regather_keeps_the_ledger_exact",
+        "dst::dst_tests::history_absorption::misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group",
+        "history::bounded_discovery_tests::stale_regather_never_warms_a_trimmed_head_as_absent",
+        "postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows",
+        "postings_cache::tests::a_demand_bridge_never_crosses_an_unadmitted_install",
+        "postings_cache::tests::an_install_bridge_never_crosses_an_unadmitted_install",
+        "postings_cache::tests::a_bridge_never_crosses_a_chunk_that_found_its_key_short",
+        "history::bounded_discovery_tests::a_warm_bridge_never_crosses_an_unadmitted_install",
+        "dst::dst_tests::reads_ring::a_duplicate_absorbed_op_does_not_advance_the_trim",
+        "verification/tla/history/evidence/TLA-016_ledger_under_retire.trace.txt",
+        "verification/tla/history/evidence/TLA-016_ledger_over_retire.trace.txt",
+        "verification/tla/history/evidence/TLA-016_liveness_stall.trace.txt",
+        "verification/tla/history/evidence/TLA-016_cache_false_absence.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-018",
+      "kind": "tla",
+      "title": "Exact composition of history, hot storage, and read visibility",
+      "status": "counterexample",
+      "owner": "merged read path: execute_segment, the absorption race check and the durable resume cursor",
+      "source_paths": [
+        "src/application/read.rs",
+        "src/application/read_request.rs",
+        "src/application/read_budget.rs",
+        "src/shard/record.rs",
+        "src/history/postings_read.rs",
+        "src/history.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/ReadCompose.tla",
+        "verification/tla/history/MC_ReadCompose.tla"
+      ],
+      "requirements": [
+        "H1",
+        "H2",
+        "H9",
+        "H10",
+        "H11",
+        "D8",
+        "D9"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-015",
+        "TLA-016",
+        "TLA-019",
+        "TLA-020",
+        "TLA-021",
+        "KANI-022"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-HISTORY-FENCED-VIEW",
+        "ASM-SLATEDB-GC",
+        "ASM-HISTORY-WRITER",
+        "ASM-HISTORY-POSTINGS-CACHE",
+        "ASM-HISTORY-RING"
+      ],
+      "input_scope": "one stream incarnation and segment, 3 offsets with routing keys K1, K2, K1 and sizes 3, 1, 1 bytes, page request 2 bytes (the first record exceeds a page); durable and applied visibility, keyed (K1) and unfiltered reads; small shapes: 3 records durable at Init, 4 pages; expanded shapes: 1 durable record and 2 appends during the reads, 5 pages; up to 2 applied-not-durable commit groups; 1 ownership move; race-check loop bound 2 (production 16); trim allowances {0,1,3}; durable tail ring (durable mode); corrupt postings and short postings windows (keyed); history read errors on the current engine (small shapes); the probes lose a durable postings page or canonical row. No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-018/baseline-durable-keyed-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/baseline-durable-unfiltered-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-applied-keyed-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/baseline-applied-unfiltered-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-durable-keyed-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 5400
+        },
+        {
+          "id": "TLA-018/baseline-durable-unfiltered-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-applied-unfiltered-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/known-defect-stale-applied-cursor",
+          "role": "known-defect",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_kd_stale_applied_cursor.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-018/nc-old-history-view",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_old_history_view.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-filtered-race-never",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_filtered_race_never.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-short-index-accepted",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_short_index_accepted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-applied-race-remote",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-applied-race-remote-unfiltered",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote_unfiltered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "TailGapExplained"
+          }
+        },
+        {
+          "id": "TLA-018/probe-lost-durable-postings",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_probe_lost_postings.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/probe-lost-durable-canonical",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_probe_lost_canonical.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/witness-BoundaryRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_BoundaryRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BoundaryRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-UnfilteredRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_UnfilteredRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BoundaryRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-AppliedRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_AppliedRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AppliedRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-LargeFirstRecordDelivered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_LargeFirstRecordDelivered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LargeFirstRecordDelivered"
+          }
+        },
+        {
+          "id": "TLA-018/witness-EnvelopeServed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_EnvelopeServed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EnvelopeServed"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ShortIndexPartial",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ShortIndexPartial.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ShortIndexPartial"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReadFromFencedEngine",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReadFromFencedEngine.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReadFromFencedEngine"
+          }
+        },
+        {
+          "id": "TLA-018/witness-RingServed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_RingServed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RingServed"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReaderCompletes",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReaderCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReaderCompletes"
+          }
+        },
+        {
+          "id": "TLA-018/witness-TrimBelowReaderCursor",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_TrimBelowReaderCursor.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TrimBelowReaderCursor"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReadErrorCurrentEngine",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReadErrorCurrentEngine.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReadErrorCurrentEngine"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::reads_applied::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+        "dst::dst_tests::reads_applied::a_stale_applied_cursor_is_refused_after_crash_restart",
+        "verification/regressions/TLA-018-F3/README.md",
+        "verification/tla/history/evidence/TLA-018_applied_keyed_skip.trace.txt",
+        "verification/tla/history/evidence/TLA-018_applied_stale_cursor.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-019",
+      "kind": "tla",
+      "title": "Reachability-based garbage collection and reader/fork protection",
+      "status": "pass-with-recorded-scope",
+      "owner": "history-partition GC settings and read view, and fork-reference retention and release",
+      "source_paths": [
+        "src/history.rs",
+        "src/application/read.rs",
+        "src/application/creation/deletion.rs",
+        "src/application/creation/anchor.rs",
+        "src/application/creation/fork.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/ReachGC.tla",
+        "verification/tla/history/MC_ReachGC.tla",
+        "verification/tla/history/ForkPin.tla",
+        "verification/tla/history/MC_ForkPin.tla"
+      ],
+      "requirements": [
+        "F5",
+        "F6",
+        "F8",
+        "F10",
+        "H13",
+        "H14",
+        "R4"
+      ],
+      "models": [
+        "TLA-013",
+        "TLA-014",
+        "TLA-016",
+        "TLA-018",
+        "TLA-020",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-GC",
+        "ASM-SLATEDB-COMPACTION-CHECKPOINT",
+        "ASM-HISTORY-FENCED-VIEW",
+        "ASM-HISTORY-GC-CLOCK",
+        "ASM-HISTORY-ACTORS",
+        "ASM-OBJSTORE-CAS"
+      ],
+      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations, 2 fork children, creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE), client DELETE retries weakly fair only in the client-retry liveness check. No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-019/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-019/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-019/baseline-timing-lapse",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_lapse.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-019/liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/liveness-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_liveness_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-019/nc-no-compaction-checkpoint",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_no_compaction_checkpoint.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LiveReadViewProtected"
+          }
+        },
+        {
+          "id": "TLA-019/nc-advance-on-upload",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_advance_on_upload.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HistoryBacked"
+          }
+        },
+        {
+          "id": "TLA-019/nc-swallow-read-error",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_swallow_read_error.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoFalseCompleteRead"
+          }
+        },
+        {
+          "id": "TLA-019/probe-upstream-short-read",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_probe_upstream_short_read.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoFalseCompleteRead"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-generation-condition",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_no_generation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ManifestRefsPresent"
+          }
+        },
+        {
+          "id": "TLA-019/nc-ignore-checkpoint-pin",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_ignore_checkpoint_pin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CheckpointPinned"
+          }
+        },
+        {
+          "id": "TLA-019/nc-stale-inventory",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_stale_inventory.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "EligibleEventuallyReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-CompactedInputReclaimed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_CompactedInputReclaimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CompactedInputReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-OrphanReclaimed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_OrphanReclaimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OrphanReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-HistoryServedAfterReclaim",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_HistoryServedAfterReclaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_HistoryServedAfterReclaim"
+          }
+        },
+        {
+          "id": "TLA-019/witness-ReaderViewErrors",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_ReaderViewErrors.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReaderViewErrors"
+          }
+        },
+        {
+          "id": "TLA-019/witness-StaleWriterViewRead",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_StaleWriterViewRead.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleWriterViewRead"
+          }
+        },
+        {
+          "id": "TLA-019/witness-QuietDeadZoneRetains",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_QuietDeadZoneRetains.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_QuietDeadZoneRetains"
+          }
+        },
+        {
+          "id": "TLA-019/witness-LateCommitAfterGcView",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_LateCommitAfterGcView.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateCommitAfterGcView"
+          }
+        },
+        {
+          "id": "TLA-019/witness-CheckpointProtectsReadView",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_CheckpointProtectsReadView.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CheckpointProtectsReadView"
+          }
+        },
+        {
+          "id": "TLA-019/fork-baseline",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_baseline.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-client-retries",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_client_retries.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/nc-ignore-fork-pin",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_ignore_fork_pin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ForkPinRespected"
+          }
+        },
+        {
+          "id": "TLA-019/nc-install-ignores-incarnation",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_install_ignores_incarnation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ForkPinRespected"
+          }
+        },
+        {
+          "id": "TLA-019/probe-no-client-retry",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_probe_no_client_retry.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-SoftDeleteRetainedForFork",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_SoftDeleteRetainedForFork.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SoftDeleteRetainedForFork"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-TwoChildrenPinSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_TwoChildrenPinSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TwoChildrenPinSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-ForkCascadeTombstone",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ForkCascadeTombstone.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ForkCascadeTombstone"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-InstallAfterChildDeleted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_InstallAfterChildDeleted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallAfterChildDeleted"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-InstallDeclinedOnRecreatedSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_InstallDeclinedOnRecreatedSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallDeclinedOnRecreatedSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-DebtClearedOnRecreatedSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_DebtClearedOnRecreatedSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DebtClearedOnRecreatedSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-PermanentPinWithoutRetry",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_PermanentPinWithoutRetry.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PermanentPinWithoutRetry"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-PinAfterSuccessfulDelete",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_PinAfterSuccessfulDelete.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PinAfterSuccessfulDelete"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
+        "dst::dst_tests::read_history_lifecycle::tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
+        "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+        "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",
+        "verification/tla/history/evidence/TLA-019_fork_no_retry.trace.txt",
+        "verification/tla/history/evidence/TLA-019_fork_pin_after_successful_delete.trace.txt"
+      ]
     }
   ]
 }
