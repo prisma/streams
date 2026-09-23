@@ -4,19 +4,18 @@ use super::fixture_storage::{
     append_n, append_sized, drain_filtered, mem, open_engine_with_absorber, skey, wait_all_absorbed,
 };
 use crate::dst::{FaultPlan, FaultStore};
+use crate::shard::{TailFields, encode_tail_for_tests, tail_key};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-/// Round-4 root cause: the absorber's lane classification races
-/// dispatch (a signal can arrive before its append's tail publishes, so
-/// the zero-route guard briefly reads route==0 and picks v1; a tick
-/// later a stale absorbed==0 re-admits v2). The two lanes then
-/// interleave and a flagged-v2 stream ends up with ranges that exist
-/// ONLY in the v1 per-stream DB — acked records the v2 read path can
-/// never see. The COMMITTER seals the layout at the first advance:
-/// cross-layout advances are dropped, boundaries never cover a range
-/// the sealed tier doesn't hold.
+/// The committer owns the history layout. A stream's first advancing
+/// boundary claims the shared partition and later advances continue on
+/// it. A tail the deleted per-stream lane absorbed (absorbed > 0 without
+/// the shared-partition bit) keeps its boundary: covering more of it from
+/// the shared partition would publish a range the read path refuses as v1
+/// history. The drop is counted so a namespace still carrying such a tail
+/// shows in /v1/debug/load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_advance_seals_the_history_layout() {
     let inner = mem();
@@ -32,6 +31,17 @@ async fn the_first_advance_seals_the_history_layout() {
         .build()
         .await
         .expect("open db");
+    // Stream B's tail as the deleted per-stream lane left it.
+    let b = [0xF2u8; 16];
+    let legacy = TailFields {
+        next: 5,
+        absorbed: 3,
+        route: b,
+        ..Default::default()
+    };
+    let mut plant = slatedb::WriteBatch::new();
+    plant.put(tail_key(&b), encode_tail_for_tests(&legacy));
+    db.write(plant).await.expect("plant the legacy tail");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     // R25-A: tests use the REAL load path — a fresh DB rebuilds to
     // zero; a reopened DB restores its durable backlog, exactly as
@@ -74,8 +84,8 @@ async fn the_first_advance_seals_the_history_layout() {
         (s.durable.absorbed, s.durable.history_v2)
     }
 
-    // Stream A: sealed v2 by its first advance; a later v1 advance (the
-    // racy in-flight v1 pass) must be DROPPED — boundary and flag hold.
+    // Stream A: the first advance claims the shared partition; later
+    // advances continue on it.
     let a = [0xF1u8; 16];
     for _ in 0..5 {
         append_sized(&engine, a, &key, "", 512).await;
@@ -83,33 +93,15 @@ async fn the_first_advance_seals_the_history_layout() {
     engine.submit_absorbed_batch_v2(vec![(a, 3, 0)]).await;
     let (abs, flag) = wait_absorbed(&engine, a, 3).await;
     assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
-    engine.submit_absorbed(a, 5, 0).await; // cross-layout v1 advance
-    // Sentinel append proves the committer processed the op above.
-    append_sized(&engine, a, &key, "", 64).await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let h = engine.stream_handle(a).await.unwrap();
-    let (abs, flag) = {
-        let s = h.state.lock().unwrap();
-        (s.durable.absorbed, s.durable.history_v2)
-    };
-    assert_eq!(
-        (abs, flag),
-        (3, true),
-        "a v1 advance on a sealed-v2 stream must be dropped whole"
-    );
+    engine.submit_absorbed_batch_v2(vec![(a, 5, 0)]).await;
+    let (abs, flag) = wait_absorbed(&engine, a, 5).await;
+    assert_eq!((abs, flag), (5, true), "sealed v2 keeps advancing");
 
-    // Stream B: sealed v1 by its first advance; a later v2 AbsorbedBatch
-    // entry must be dropped — the flag must never flip mid-stream.
-    let b = [0xF2u8; 16];
-    for _ in 0..5 {
-        append_sized(&engine, b, &key, "", 512).await;
-    }
-    engine.submit_absorbed(b, 3, 0).await;
-    let (abs, flag) = wait_absorbed(&engine, b, 3).await;
-    assert_eq!((abs, flag), (3, false), "first v1 advance seals v1");
+    // Stream B: the advance over the legacy tail is dropped whole. The
+    // committer queue is FIFO, so the sentinel's ack proves it was staged.
     engine.submit_absorbed_batch_v2(vec![(b, 5, 0)]).await;
-    append_sized(&engine, b, &key, "", 64).await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let sentinel = append_sized(&engine, b, &key, "", 64).await;
+    assert_eq!(sentinel, 5, "the sentinel lands after the planted tail");
     let h = engine.stream_handle(b).await.unwrap();
     let (abs, flag) = {
         let s = h.state.lock().unwrap();
@@ -118,18 +110,12 @@ async fn the_first_advance_seals_the_history_layout() {
     assert_eq!(
         (abs, flag),
         (3, false),
-        "a v2 advance on a sealed-v1 stream must be dropped whole"
+        "a v2 advance on a legacy per-stream tail must be dropped whole"
     );
-    // Continuation on the SEALED lane still works.
-    engine.submit_absorbed(b, 5, 0).await;
-    let (abs, flag) = wait_absorbed(&engine, b, 5).await;
-    assert_eq!((abs, flag), (5, false));
-    assert!(
-        engine
-            .absorb_lane_dropped
-            .load(std::sync::atomic::Ordering::Relaxed)
-            >= 2,
-        "both cross-layout advances must be counted"
+    assert_eq!(
+        engine.absorb_lane_dropped.load(Ordering::Relaxed),
+        1,
+        "the dropped cross-layout advance must be counted"
     );
     engine.begin_close();
 }

@@ -946,10 +946,10 @@ pub(crate) enum CommitOp {
     /// (deferred one round so in-flight readers never lose their range).
     /// `v2` marks the range as living in the SHARED per-shard partition
     /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
-    /// history_v2 flag, which gates the read path's history source. The
-    /// v2 absorber flushes MANY streams once and then submits one of
-    /// these per covered stream; they coalesce into the same committer
-    /// batch, so the boundaries land in one tracker write-batch.
+    /// history_v2 flag, which gates the read path's history source. Only
+    /// the AbsorbedBatch expansion builds this op, and its one producer
+    /// always sets `v2`: the per-stream lane is deleted, and the seal keeps
+    /// the tails it absorbed out of the shared partition.
     Absorbed {
         hash: [u8; 16],
         upto: u64,
@@ -1271,10 +1271,10 @@ pub(crate) struct ShardEngine {
     pub trim_deletes_last: AtomicU64,
     pub trim_deletes_max_batch: AtomicU64,
     pub trim_deletes_total: AtomicU64,
-    /// Advances rejected by the layout seal (cross-lane absorb after the
-    /// stream's history layout was decided). Nonzero means the absorber
-    /// raced its own lane classification — harmless with the seal, but
-    /// worth seeing.
+    /// Advances rejected by the layout seal: a shared-partition advance
+    /// over a tail the deleted per-stream lane absorbed. Nonzero means the
+    /// namespace still carries such a tail; the seal keeps its boundary,
+    /// but it is worth seeing.
     pub absorb_lane_dropped: AtomicU64,
     /// Decoded postings-slice cache (spec §7): keyed historical reads
     /// pay the index once per active window.
@@ -1969,29 +1969,6 @@ impl ShardEngine {
     /// Combined wedge signal: blocked commit write OR stale durability.
     pub(crate) fn wedge_ms(&self) -> i64 {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
-    }
-
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
-    )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST billing fixtures' way to stage maintenance state and the service submits batches; deleting it would strip the submit those fixtures pin"
-        )
-    )]
-    pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
-        let _ = self
-            .tx
-            .send(CommitOp::Absorbed {
-                hash,
-                upto,
-                bytes,
-                v2: false,
-            })
-            .await;
     }
 
     /// One gather's boundary advances as a SINGLE committer message:
