@@ -56,6 +56,11 @@ loom = "=0.7.2"
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
+# TLA-005-F5 regression (src/shard/retirement_tests.rs): SlateDB's own
+# write failpoints (the feature compiles them into test builds only) and the
+# log call inside its batch-writer exit window. Both are already in the graph.
+fail-parallel = { version = "0.6", features = ["failpoints"] }
+log = { version = "0.4", features = ["std"] }
 
 [[bin]]
 name = "streams-slate"
