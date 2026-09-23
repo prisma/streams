@@ -1,4 +1,5 @@
 //! The absorber's owned worker future, shared by owned and legacy test spawns.
+use super::gather::GatherOutcome;
 use super::{
     ABSORB_ZERO_ROUTE_DROPPED, AbsorbSignal, Absorber, GATHER_LAST_RESERVED, MAX_PENDING_STREAMS,
     PendingAbsorb, SegmentHash, absorb_error_is_fence, due_streams,
@@ -303,10 +304,6 @@ impl Absorber {
         }
         v2_lane
     }
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "Absorber::gather_due; the outcome handling nests the per-stream bookkeeping inside the advanced, partial, no-work and failed arms of one gather; flattening it would separate the bookkeeping from the outcome that decides it"
-    )]
     async fn gather_due(
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,
@@ -341,78 +338,99 @@ impl Absorber {
                 return; // fenced while waiting for budget
             }
             match self.absorb_gather_v2_with(v2_lane, &mut _reservation).await {
-                Ok(outcome) => {
-                    // Retire ONLY what the gather settled:
-                    // covered streams advanced; no_work had
-                    // nothing durable to absorb (residues
-                    // and new data re-arrive via
-                    // signals/sweep). Budget-deferred
-                    // streams KEEP their pending entry, lag
-                    // and age — they gather next tick
-                    // without needing a new signal or the
-                    // ~60 s handle sweep (review round 4:
-                    // removing them silently stranded
-                    // their backlog for up to a minute and
-                    // blinded the fleet lag view).
-                    let partial: std::collections::HashMap<[u8; 16], u64> =
-                        outcome.partial.iter().copied().collect();
-                    for (h, _, _) in &outcome.advanced {
-                        // A PARTIAL advance is progress, not
-                        // completion: keep it pending so the
-                        // next tick continues immediately.
-                        if partial.contains_key(h) {
-                            continue;
-                        }
-                        pending.remove(h);
-                        self.shard
-                            .usage
-                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                    }
-                    for (h, remaining) in &partial {
-                        let est = remaining.saturating_mul(1024);
-                        pending
-                            .entry(*h)
-                            .and_modify(|p| {
-                                p.bytes = p.bytes.max(est);
-                                // Progress clears the failure
-                                // backoff; the age is left
-                                // alone so age-based due keeps
-                                // its original meaning.
-                                p.failures = 0;
-                                p.retry_after = None;
-                            })
-                            .or_insert(PendingAbsorb {
-                                bytes: est,
-                                since: Instant::now(),
-                                failures: 0,
-                                retry_after: None,
-                            });
-                    }
-                    for h in &outcome.no_work {
-                        pending.remove(h);
-                        self.shard
-                            .usage
-                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                    }
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    if absorb_error_is_fence(&e) {
-                        tracing::warn!("v2 gather fence-class ({} streams): {msg}", v2_lane.len());
-                        // Engine is dying; the exit path
-                        // clears pending.
-                    } else {
-                        tracing::warn!("v2 gather failed ({} streams): {msg}", v2_lane.len());
-                        for h in v2_lane {
-                            if let Some(p) = pending.get_mut(h) {
-                                p.failures = p.failures.saturating_add(1);
-                                let shift = p.failures.min(6);
-                                p.retry_after = Some(now + self.cfg.tick * 2u32.pow(shift));
-                            }
-                        }
-                    }
-                }
+                Ok(outcome) => self.settle_gather(pending, &outcome),
+                Err(e) => self.settle_gather_error(pending, &e, now, v2_lane),
             }
         }
     }
+    /// Settles one gather's outcome into the pending roster.
+    fn settle_gather(
+        &self,
+        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+        outcome: &GatherOutcome,
+    ) {
+        // Retire ONLY what the gather settled:
+        // covered streams advanced; no_work had
+        // nothing durable to absorb (residues
+        // and new data re-arrive via
+        // signals/sweep). Budget-deferred
+        // streams KEEP their pending entry, lag
+        // and age — they gather next tick
+        // without needing a new signal or the
+        // ~60 s handle sweep (review round 4:
+        // removing them silently stranded
+        // their backlog for up to a minute and
+        // blinded the fleet lag view).
+        let partial: std::collections::HashMap<[u8; 16], u64> =
+            outcome.partial.iter().copied().collect();
+        for (h, _, _) in &outcome.advanced {
+            // A PARTIAL advance is progress, not
+            // completion: keep it pending so the
+            // next tick continues immediately.
+            if partial.contains_key(h) {
+                continue;
+            }
+            pending.remove(h);
+            self.shard
+                .usage
+                .clear_absorb_lag(crate::crypto::SegmentHash(*h));
+        }
+        for (h, remaining) in &partial {
+            let est = remaining.saturating_mul(1024);
+            pending
+                .entry(*h)
+                .and_modify(|p| {
+                    p.bytes = p.bytes.max(est);
+                    // Progress clears the failure
+                    // backoff; the age is left
+                    // alone so age-based due keeps
+                    // its original meaning.
+                    p.failures = 0;
+                    p.retry_after = None;
+                })
+                .or_insert(PendingAbsorb {
+                    bytes: est,
+                    since: Instant::now(),
+                    failures: 0,
+                    retry_after: None,
+                });
+        }
+        for h in &outcome.no_work {
+            pending.remove(h);
+            self.shard
+                .usage
+                .clear_absorb_lag(crate::crypto::SegmentHash(*h));
+        }
+    }
+
+    /// A gather that failed as a whole backs off every stream in its lane.
+    fn settle_gather_error(
+        &self,
+        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+        e: &anyhow::Error,
+        now: Instant,
+        v2_lane: &[[u8; 16]],
+    ) {
+        let msg = e.to_string();
+        if absorb_error_is_fence(e) {
+            tracing::warn!("v2 gather fence-class ({} streams): {msg}", v2_lane.len());
+            // Engine is dying; the exit path
+            // clears pending.
+            return;
+        }
+        tracing::warn!("v2 gather failed ({} streams): {msg}", v2_lane.len());
+        for h in v2_lane {
+            if let Some(p) = pending.get_mut(h) {
+                back_off(p, now, self.cfg.tick);
+            }
+        }
+    }
+}
+
+/// Exponential retry after a failed absorb: tick·2^n, capped at 2^6, so a
+/// persistent failure costs one read per backoff window, not one per tick.
+fn back_off(p: &mut PendingAbsorb, now: Instant, tick: Duration) {
+    p.failures = p.failures.saturating_add(1);
+    let shift = p.failures.min(6);
+    p.retry_after = Some(now + tick * 2u32.pow(shift));
 }
