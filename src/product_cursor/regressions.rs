@@ -1,7 +1,8 @@
 //! Falsifiable shape, authentication and allocation-admission controls.
 use super::{
     CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_LEASE_V2, KIND_MSG_V2, KIND_SCAN_V2,
-    KeyCursor, LeaseToken, MessageId, ScanCursor, StreamKey, b64, mac_key, mac16, unb64,
+    KeyCursor, LeaseToken, MessageId, ScanCursor, ScanCursorError, StreamKey, TokenError, b64,
+    mac_key, mac16, unb64,
 };
 use crate::tenant::ProjectId;
 use proptest::{prop_assert, prop_assert_eq};
@@ -48,7 +49,7 @@ fn scan_count_is_admitted_against_the_complete_wire_rows() {
                 &[1; 16],
                 0
             ),
-            Err("invalid_cursor")
+            Err(ScanCursorError::Invalid)
         );
     }
     let empty =
@@ -60,7 +61,7 @@ fn scan_count_is_admitted_against_the_complete_wire_rows() {
     assert_eq!(empty.expires_at_ms, 0);
     assert_eq!(
         ScanCursor::decode(&scan_shape(0, &[], &tail), &project(), &key(), &[1; 16], 1),
-        Err("scan_expired")
+        Err(ScanCursorError::Expired)
     );
 }
 
@@ -88,7 +89,7 @@ fn scan_accepts_the_last_complete_wire_size_and_rejects_the_next() {
             &[1; 16],
             23
         ),
-        Err("invalid_cursor")
+        Err(ScanCursorError::Invalid)
     );
 }
 
@@ -139,35 +140,35 @@ fn fixed_tokens_reject_each_truncation_and_trailing_byte() {
             &[1; 16],
             &[2; 16]
         ),
-        Err("wrong_cursor_kind")
+        Err(TokenError::WrongKind)
     );
     assert_eq!(
         ScanCursor::decode(&b64(&[KIND_KEY_V2]), &project(), &key(), &[1; 16], 0),
-        Err("wrong_cursor_kind")
+        Err(ScanCursorError::WrongKind)
     );
     assert_eq!(
         MessageId::decode(&b64(&[KIND_LEASE_V2]), &project(), &key(), &[1; 16]),
-        Err("wrong_token_kind")
+        Err(TokenError::WrongKind)
     );
     assert_eq!(
         LeaseToken::decode(&b64(&[KIND_MSG_V2]), &project(), &key(), &[1; 16]),
-        Err("wrong_token_kind")
+        Err(TokenError::WrongKind)
     );
     assert_eq!(
         KeyCursor::decode("!", &project(), &key(), &[1; 16], &[2; 16]),
-        Err("invalid_cursor")
+        Err(TokenError::Invalid)
     );
     assert_eq!(
         ScanCursor::decode("!", &project(), &key(), &[1; 16], 0),
-        Err("invalid_cursor")
+        Err(ScanCursorError::Invalid)
     );
     assert_eq!(
         MessageId::decode("!", &project(), &key(), &[1; 16]),
-        Err("invalid_message_id")
+        Err(TokenError::Invalid)
     );
     assert_eq!(
         LeaseToken::decode("!", &project(), &key(), &[1; 16]),
-        Err("invalid_lease_token")
+        Err(TokenError::Invalid)
     );
 }
 
@@ -191,11 +192,11 @@ fn every_authenticator_byte_is_required() {
     let stranger = ProjectId::new("stranger").unwrap();
     assert_eq!(
         ScanCursor::decode(&token, &stranger, &key(), &[1; 16], 0),
-        Err("invalid_cursor")
+        Err(ScanCursorError::Invalid)
     );
     assert_eq!(
         ScanCursor::decode(&token, &project(), &key(), &[2; 16], 99),
-        Err("invalid_cursor"),
+        Err(ScanCursorError::Invalid),
         "identity errors precede expiry"
     );
 }
@@ -215,7 +216,7 @@ fn paired_mac_corruption_and_resigned_extra_fields_are_rejected() {
     }
     assert_eq!(
         KeyCursor::decode(&b64(&raw), &project(), &key(), &[1; 16], &[2; 16]),
-        Err("invalid_cursor")
+        Err(TokenError::Invalid)
     );
     let message = MessageId {
         epoch: cursor.epoch,
@@ -296,7 +297,7 @@ fn encoded_size_boundary_preserves_kind_error_priority() {
     assert_eq!(token.len(), 21_848);
     assert_eq!(
         ScanCursor::decode(&token, &project(), &key(), &[1; 16], 0),
-        Err("wrong_cursor_kind")
+        Err(ScanCursorError::WrongKind)
     );
     assert!(
         unb64(&"A".repeat(21_849)).is_none(),
@@ -307,6 +308,6 @@ fn encoded_size_boundary_preserves_kind_error_priority() {
     assert_eq!(token.len(), 21_850);
     assert_eq!(
         ScanCursor::decode(&token, &project(), &key(), &[1; 16], 0),
-        Err("invalid_cursor")
+        Err(ScanCursorError::Invalid)
     );
 }
