@@ -621,6 +621,17 @@
     ]
   },
   {
+    "name": "a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2b141f2efc035776ab07f4141d17cbd70243640819acfcc37c84c15d6842748d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/product_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_final_never_writes_into_a_recreated_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

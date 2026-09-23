@@ -108,18 +108,18 @@ impl CreationService {
         let (created, desc) = match existing {
             Some(d) if desc_alive(&d) => (false, validate_live(d)?),
             Some(_) => {
+                // One instant judges the CAS and the winner it declines on.
+                let now = now_ms();
                 let (created, winner) = self
                     .registry
-                    .recreate(&sref, build_fresh(), |d| {
-                        !desc_alive(d) && !d.soft_deleted && d.fork_children.is_empty()
-                    })
+                    .recreate(&sref, build_fresh(), |d| recreatable(d, now))
                     .await
                     .map_err(|e| {
                         CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
                     })?;
                 if created {
                     (true, winner)
-                } else if winner.soft_deleted || !winner.fork_children.is_empty() {
+                } else if retained_for_forks(&winner, now) {
                     return Err(CreationError::new(
                         CreationFailure::Conflict,
                         "gone",

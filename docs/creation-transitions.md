@@ -14,7 +14,7 @@ winner; idempotent losers release it through Drop.
 | Initializing, different request/key | Create | Refuse; elapsed claim age does not publish missing content. |
 | Active, same immutable config/key | Create replay | Return the current incarnation. |
 | Soft-deleted, or expired with children (retained for forks) | Create | Refuse 409 `gone`: forks read through this incarnation's epoch and records. The recreate CAS re-judges the STORED descriptor, so a snapshot older than a fork anchored by another instance can never replace the source. |
-| Tombstone, or expired without children | Create | Predicated recreate CAS with a fresh epoch, judged at one instant (`creation::recreatable`). A declined winner is either retained for forks (409 `gone`) or live (compared like an idempotent create), never anything else. |
+| Tombstone, or expired without children | Create | Predicated recreate CAS with a fresh epoch, judged at one instant (`creation::recreatable`), on both the raw and the product surface. A declined winner is either retained for forks (409 `gone`) or live (compared like an idempotent create — a live winner with forks included), never anything else. |
 | Active or initializing, has children | Delete | Persist soft deletion, retain data/name and parent reference. |
 | Active or initializing, no children | Delete | Persist tombstone, close timestamp and parent-release debt in one conditional registry write. |
 | Soft-deleted source, last child released | Release child | Atomically remove exact child ID and tombstone, then retry ancestor debt. |

@@ -817,3 +817,55 @@ async fn an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_de
     assert_eq!(recs[0]["n"], 3);
     engine_shutdown(&state).await;
 }
+
+/// A product create that loses its recreate CAS to a LIVE incarnation is an
+/// idempotent create against that incarnation, forks or not. The declined arm
+/// answered 409 `gone` ("retained for live forks") for any winner holding a
+/// child reference: a serving collection another instance had recreated and
+/// forked while this instance still cached the previous tombstone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let cfg = br#"{"format":{"kind":"json"}}"#;
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/livefork", &pk, cfg).await;
+    assert_eq!(st, 201);
+    let sref = state.deployment.raw_adapter_sref("livefork");
+    // Another instance forked the live incarnation.
+    state
+        .registry
+        .cas_update_retry(&sref, |d| {
+            d.fork_children.push("livefork-child".into());
+            true
+        })
+        .await
+        .unwrap();
+    let live = state.registry.get(&sref).await.unwrap().unwrap();
+    // This instance still holds the tombstone of the previous incarnation.
+    let mut stale = live.to_persisted();
+    stale.deleted = true;
+    stale.fork_children.clear();
+    stale.stream_epoch = "00000000000000000000000000000001".into();
+    let stale = crate::registry::StreamDesc::try_from(stale).unwrap();
+    state.registry.test_poison_cache(&sref, stale);
+
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/livefork", &pk, cfg).await;
+    assert_eq!(
+        st,
+        200,
+        "a live forked collection was refused as retained: {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate(&sref);
+    let after = state.registry.get(&sref).await.unwrap().unwrap();
+    assert_eq!(
+        after.stream_epoch, live.stream_epoch,
+        "the live incarnation was replaced"
+    );
+    assert_eq!(
+        after.fork_children, live.fork_children,
+        "its fork reference was lost"
+    );
+    engine_shutdown(&state).await;
+}
