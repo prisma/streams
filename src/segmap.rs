@@ -593,17 +593,22 @@ mod tests {
         );
     }
 
-    /// Both invariants anchor at key 0: a map whose only segment starts
-    /// above it routes nothing below and must be refused.
+    /// Both invariants anchor at key 0 and at KEYSPACE_END: a map whose
+    /// only segment starts above 0, or ends below the end, routes nothing
+    /// there and must be refused. Each bound is checked on its own.
     #[test]
-    fn a_keyspace_that_starts_late_is_neither_covered_nor_partitioned() {
+    fn a_keyspace_that_starts_late_or_ends_early_is_neither_covered_nor_partitioned() {
         let mut late = SegmentMap::initial("root", 1);
         late.segments[0].lo = 1;
-        assert!(!late.check_partition());
-        assert_eq!(
-            late.validate().unwrap_err(),
-            "terminal segments do not exactly cover keyspace"
-        );
+        let mut early = SegmentMap::initial("root", 1);
+        early.segments[0].hi = KEYSPACE_END - 1;
+        for map in [late, early] {
+            assert!(!map.check_partition());
+            assert_eq!(
+                map.validate().unwrap_err(),
+                "terminal segments do not exactly cover keyspace"
+            );
+        }
     }
 
     #[test]

@@ -69,6 +69,11 @@ OWNERS = (
     owner('sweep_custody', 'src/billing/sweep_custody.rs', 'billing::sweep_custody:: dst_tests::runtime_sweep::'),
     owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
     owner('admission_limits', 'src/config/admission_limits.rs', 'config::admission_limits:: usage::runtime_tests:: validation_rejects_a_limit_posture'),
+    # Codec and admission owners outside the critical prefixes: the row is
+    # their only mutation selection; each whole file was killed at registration.
+    owner('offsets', 'src/offsets.rs', 'offsets::'),
+    owner('segmap', 'src/segmap.rs', 'segmap::'),
+    owner('telemetry_batch', 'src/telemetry_batch.rs', 'telemetry_batch::'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops::'),

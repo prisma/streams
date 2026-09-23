@@ -86,6 +86,16 @@ class Triggers(unittest.TestCase):
         self.assertEqual(quiet['mutation_source_files'], [])
         self.assertFalse(quiet['mutants'])
 
+    def test_small_codec_and_admission_owners_select_their_mutations(self):
+        for path, owner in (('src/offsets.rs', 'offsets'), ('src/segmap.rs', 'segmap'),
+                            ('src/telemetry_batch.rs', 'telemetry_batch')):
+            with self.subTest(path=path):
+                checks = plan([path])
+                self.assertEqual(checks['selected_mutation_owners'], [owner])
+                self.assertTrue(checks['mutants'])
+                self.assertEqual([entry.name for entry in validate_plan(checks)], [owner])
+                self.assertFalse(plan([path], production_unchanged=[path])['mutants'])
+
     def test_registered_non_prefix_source_is_selected_without_policy_duplication(self):
         checks = plan(['src/scaler3.rs'])
         self.assertEqual(checks['mutation_source_files'], ['src/scaler3.rs'])
