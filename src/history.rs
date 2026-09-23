@@ -714,13 +714,13 @@ fn due_streams(
 
 /// Per-stream classification of one v2 gather (review round 4, P1): the
 /// pump must retire ONLY what the gather settled. `advanced` carries
-/// (hash, new upto, raw frame bytes copied — the committer's
-/// unabsorbed_bytes decrement); `no_work` had nothing durable to absorb;
+/// (hash, chunk start, new upto, raw frame bytes copied for the chunk);
+/// `no_work` had nothing durable to absorb;
 /// `deferred_budget` did not fit this batch's byte budget and MUST stay
 /// pending — with lag and age intact — for the next tick.
 #[derive(Default)]
 pub(crate) struct GatherOutcome {
-    pub(crate) advanced: Vec<([u8; 16], u64, u64)>,
+    pub(crate) advanced: Vec<([u8; 16], u64, u64, u64)>,
     pub(crate) no_work: Vec<[u8; 16]>,
     pub(crate) deferred_budget: Vec<[u8; 16]>,
     /// Streams whose gather ADVANCED but did not reach the stream's

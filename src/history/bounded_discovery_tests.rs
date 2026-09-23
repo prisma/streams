@@ -1,4 +1,5 @@
-//! R09: dirty-index discovery pages progress without exceeding the pending capacity.
+//! R09: dirty-index discovery pages progress without exceeding the pending capacity,
+//! and its mark rollback cannot make a re-gather over-retire (TLA-016-F1).
 #![cfg(test)]
 use super::*;
 use slatedb::WriteBatch;
@@ -118,6 +119,181 @@ async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
     }
     absorber.seed_from_dirty_index(&mut pending).await.unwrap();
     assert_eq!(pending.len(), MAX_PENDING_STREAMS);
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Polls the stream's committed tail until `done` holds.
+async fn tail_until(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    done: impl Fn(&crate::shard::TailFields) -> bool,
+) -> crate::shard::TailFields {
+    for _ in 0..1000 {
+        if let Some(tail) = engine.tail_fields(&hash).await.unwrap()
+            && done(&tail)
+        {
+            return tail;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the stream's committed tail never reached the awaited state");
+}
+
+/// The keyed reader's own admission over `[0, next)`: every postings page of
+/// `rk` decodes, no page overlaps another, and together they cover each
+/// record exactly once.
+async fn assert_postings_admit(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    tail: &crate::shard::TailFields,
+    rk: &str,
+) {
+    let part = engine.history_partition().await.unwrap();
+    let route = crate::crypto::RouteHash(tail.route);
+    let inc = crate::crypto::SegmentHash(hash);
+    let kh = crate::postings::rk_hash(rk);
+    let (lo, hi) = crate::postings::postings_range(route, inc, &kh, 0, tail.next);
+    let mut pages = part.scan(lo..hi).await.unwrap();
+    let mut runs = Vec::new();
+    while let Some(kv) = pages.next().await.unwrap() {
+        let admitted = crate::postings::decode_stored_page(route, inc, &kh, &kv.key, &kv.value)
+            .and_then(|page| crate::postings::append_page_runs(&mut runs, page));
+        assert!(
+            admitted.is_some(),
+            "a postings page overlaps or fails to decode"
+        );
+    }
+    let covered: u64 = runs.iter().map(|run| u64::from(run.count)).sum();
+    assert!(crate::postings::ValidatedRuns::new(runs).is_some());
+    assert_eq!(
+        covered, tail.next,
+        "the postings must cover every record once"
+    );
+}
+
+/// TLA-016-F1 (over-retirement): a rescan rolls the lane mark back while the
+/// advance that raised it is still queued at the committer, and the re-gather
+/// re-plans from the lagging published boundary over more than the queued
+/// chunk. Applied behind that advance, it must not retire the queued chunk's
+/// bytes twice: after both commits the tail gauge holds exactly the frame
+/// bytes of `[absorbed, next)`, later passes still drain it to zero, and the
+/// re-gather's postings replace the queued chunk's pages instead of
+/// overlapping them, so a keyed read still admits the index.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "rolled_back_mark_regather_keeps_the_ledger_exact; the fixture's appends wait on the held dispatch while the test drives the gathers, and each is joined once dispatch is released; only concurrent requests can commit behind a lagging published end"
+)]
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "rolled_back_mark_regather_keeps_the_ledger_exact; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rolled_back_mark_regather_keeps_the_ledger_exact() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(
+        Db::builder("f1-ledger", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let engine = ShardEngine::start(
+        "f1-ledger".into(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        tx,
+        None,
+        Default::default(),
+    );
+    let hash = [29u8; 16];
+    let coverage = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        1,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    )
+    .coverage();
+    let append = |body: &'static str| {
+        let (engine, w) = (engine.clone(), crate::dst::Workload::new(coverage.clone()));
+        tokio::spawn(async move {
+            let key = crate::crypto::StreamKey([7u8; 32]);
+            let out = w
+                .attempt_with_deadline(&engine, hash, &key, "k", body, None, None)
+                .await;
+            matches!(out, crate::dst::Outcome::Acked { .. })
+        })
+    };
+    // Record 0 is published. Records 1 and 2 commit one at a time while
+    // dispatch is held, so the published end lags at 1.
+    assert!(append("r0").await.unwrap());
+    let mut frames = vec![tail_until(&engine, hash, |_| true).await.unabsorbed_bytes];
+    let dispatch = engine.test_hold_dispatch().await;
+    let mut riders = Vec::new();
+    for (next, body) in [(2, "r1"), (3, "r2")] {
+        riders.push(append(body));
+        let tail = tail_until(&engine, hash, |t| t.next == next).await;
+        frames.push(tail.unabsorbed_bytes - frames.iter().sum::<u64>());
+    }
+    let owed = |tail: &crate::shard::TailFields| -> u64 {
+        let skip = usize::try_from(tail.absorbed).unwrap();
+        frames.iter().skip(skip).sum()
+    };
+    // Two frames per chunk, so the re-gather covers more than the queued one.
+    let absorber = Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(KeyCache::default()),
+        AbsorberConfig {
+            gather_max_bytes: usize::try_from(frames[0] + frames[1]).unwrap(),
+            ..Default::default()
+        },
+    );
+    // G1 plans [0, 1) from the lagging published end; its advance queues
+    // behind the held committer and raises the lane mark to 1.
+    let commit = engine.test_hold_commit().await;
+    let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!((g1.advanced.len(), g1.partial.len()), (1, 0));
+    assert_eq!(
+        absorber.submitted.lock().unwrap().get(&hash),
+        Some(&(1, true))
+    );
+    drop(dispatch);
+    for rider in riders {
+        assert!(rider.await.unwrap());
+    }
+    // The rescan reads absorbed 0 under mark 1 and rolls the mark back.
+    let mut pending = HashMap::new();
+    absorber.seed_from_dirty_index(&mut pending).await.unwrap();
+    assert!(!absorber.submitted.lock().unwrap().contains_key(&hash));
+    // G2 re-plans [0, 2) from the published boundary and queues behind G1.
+    let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(g2.partial, vec![(hash, 1)]);
+    drop(commit);
+    // Both queued advances apply: G1 moves 0 -> 1, then G2 moves 1 -> 2.
+    let mut tail = tail_until(&engine, hash, |t| t.absorbed == 2).await;
+    for _ in 0..50 {
+        assert_eq!(
+            tail.unabsorbed_bytes,
+            owed(&tail),
+            "the tail gauge must hold exactly [absorbed={}, next={}) of frames {frames:?}",
+            tail.absorbed,
+            tail.next,
+        );
+        if tail.absorbed == tail.next {
+            break;
+        }
+        absorber.seed_from_dirty_index(&mut pending).await.unwrap();
+        absorber.absorb_gather_v2(&[hash]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    }
+    assert_eq!(
+        (tail.absorbed, tail.unabsorbed_bytes),
+        (tail.next, 0),
+        "later passes never drained the stream"
+    );
+    assert_postings_admit(&engine, hash, &tail, "k").await;
     engine.begin_close();
     let _ = db.close().await;
 }

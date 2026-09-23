@@ -201,19 +201,20 @@ impl CommitTransaction<'_> {
     }
     #[expect(
         clippy::too_many_arguments,
-        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, its new boundary, the retired bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
+        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, the chunk the absorber copied, its bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
     )]
     #[cfg_attr(
         test,
         expect(
             clippy::disallowed_methods,
-            reason = "CommitTransaction::absorbed; the drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
+            reason = "CommitTransaction::absorbed; the drain trace, which prints each chunk against the applied boundary, is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
         )
     )]
-    pub(super) fn absorbed(
+    pub(super) async fn absorbed(
         &mut self,
         local: &mut StreamOverlay,
         hash: [u8; 16],
+        from: u64,
         upto: u64,
         bytes: u64,
         v2: bool,
@@ -224,7 +225,7 @@ impl CommitTransaction<'_> {
         #[cfg(test)]
         if std::env::var("DST_DRAIN_TRACE").is_ok() {
             eprintln!(
-                "ADVANCE {} prev={prev_absorbed} upto={upto} v2={v2} next={} trimmed={} flag={}",
+                "ADVANCE {} prev={prev_absorbed} from={from} upto={upto} v2={v2} next={} trimmed={} flag={}",
                 crate::crypto::hex(&hash[..4]),
                 local.fields.next,
                 local.fields.trimmed,
@@ -249,6 +250,26 @@ impl CommitTransaction<'_> {
             );
         }
         if lane_ok && upto > prev_absorbed {
+            // TLA-016-F1: `bytes` counts the chunk [from, upto). A chunk
+            // planned from the lane mark of a refused group starts above the
+            // boundary; one re-planned after a rescan dropped the mark of an
+            // advance still queued here starts below it. The gather flushed
+            // history for the whole chunk before submitting it, and a lane
+            // mark only ever rests on flushed chunks, so the boundary still
+            // moves, but it retires exactly the stored bytes it advances over.
+            let exact = if from == prev_absorbed {
+                Ok(bytes)
+            } else {
+                let end = upto.min(local.fields.next);
+                self.stored_frame_bytes(&hash, prev_absorbed, end).await
+            };
+            let bytes = match exact {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.accounting_diverged = Some(error);
+                    return;
+                }
+            };
             let Some(remaining) = local.fields.unabsorbed_bytes.checked_sub(bytes) else {
                 self.accounting_diverged = Some(format!(
                     "absorbed-boundary retirement exceeds the stream ledger: \
@@ -279,6 +300,47 @@ impl CommitTransaction<'_> {
             }
             self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
             local.fields.trimmed = local.fields.trimmed.max(trim_to);
+        }
+    }
+    /// TLA-016-F1: the stored frame bytes of `[from, to)` at the committer's
+    /// read level, which sees every group applied before this one. Trimming
+    /// never reaches the absorbed boundary, so every offset must be present;
+    /// a missing row or a failed read settles nothing and refuses the group.
+    async fn stored_frame_bytes(&self, hash: &[u8; 16], from: u64, to: u64) -> Result<u64, String> {
+        let unreadable = |why: String| {
+            format!(
+                "absorbed-boundary retirement unreadable: stream={} range=[{from}, {to}): {why}",
+                crate::crypto::hex(&hash[..4]),
+            )
+        };
+        let options = slatedb::config::ScanOptions {
+            read_ahead_bytes: 2 * 1024 * 1024,
+            max_fetch_tasks: 4,
+            ..Default::default()
+        };
+        let range = record_key(hash, from)..record_key(hash, to);
+        let mut rows = self
+            .engine
+            .db
+            .scan_with_options(range, &options)
+            .await
+            .map_err(|error| unreadable(error.to_string()))?;
+        let (mut offset, mut bytes) = (from, 0u64);
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|error| unreadable(error.to_string()))?
+        {
+            if row.key != record_key(hash, offset) {
+                break;
+            }
+            bytes += row.value.len() as u64;
+            offset += 1;
+        }
+        if offset == to {
+            Ok(bytes)
+        } else {
+            Err(unreadable(format!("stored record {offset} is missing")))
         }
     }
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {

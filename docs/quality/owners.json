@@ -2263,6 +2263,22 @@
       "path": "src/dst/tests/seal_fencing.rs",
       "reason": "Seal fence replacement fixture owns the parked close; it is released and joined after the takeover and the engine replacement. Concurrent execution is required to hold the request across both.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::rolled_back_mark_regather_keeps_the_ledger_exact",
+      "path": "src/history/bounded_discovery_tests.rs",
+      "reason": "TLA-016-F1 ledger regression owns its append handles: each append waits on the held dispatch while the test drives the gathers, and is joined once dispatch is released. Only concurrent requests can commit behind a lagging published end.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group",
+      "path": "src/dst/tests/history_absorption.rs",
+      "reason": "Maintenance group fixture owns the rider request handle; it is joined after the refused group is released. Concurrent execution is required for the rider to land in the refused group.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

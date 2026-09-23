@@ -2,11 +2,11 @@ use super::*;
 impl CommitTransaction<'_> {
     #[expect(
         clippy::excessive_nesting,
-        reason = "CommitTransaction::expand; the expansion nests the trim cursor walk inside the trim-tick arm of the op match; flattening it would separate the walk from the tick that schedules it"
+        reason = "CommitTransaction::expand; the expansion nests the trim cursor walk inside the trim-tick arm of the op match, beside the absorbed-batch arm that forwards each chunk; flattening it would separate the walk from the tick that schedules it"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "CommitTransaction::expand; a poisoned trim debt or cursor may hold a half-recorded stream set; recovering it could trim a stream twice or never"
+        reason = "CommitTransaction::expand; a poisoned trim debt or cursor may hold a half-recorded stream set; recovering it could trim a stream twice or never, and the absorbed-batch arm only forwards chunks without taking either lock"
     )]
     pub(super) fn expand(engine: &ShardEngine, ops: Vec<CommitOp>) -> Vec<CommitOp> {
         const TRIM_STREAMS_PER_TICK: usize = 64;
@@ -14,9 +14,10 @@ impl CommitTransaction<'_> {
         for op in ops {
             match op {
                 CommitOp::AbsorbedBatch { streams, v2 } => {
-                    expanded.extend(streams.into_iter().map(|(hash, upto, bytes)| {
+                    expanded.extend(streams.into_iter().map(|(hash, from, upto, bytes)| {
                         CommitOp::Absorbed {
                             hash,
+                            from,
                             upto,
                             bytes,
                             v2,

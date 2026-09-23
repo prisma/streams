@@ -82,7 +82,7 @@ async fn gather_after_reopen(
     let mut advanced: Vec<([u8; 16], u64)> = outcome
         .advanced
         .iter()
-        .map(|(h, upto, _)| (*h, *upto))
+        .map(|(h, _, upto, _)| (*h, *upto))
         .collect();
     advanced.sort_unstable();
     (advanced, engine2)
@@ -124,7 +124,7 @@ async fn gather_with_pacing(
     let mut advanced: Vec<([u8; 16], u64)> = outcome
         .advanced
         .iter()
-        .map(|(h, upto, _)| (*h, *upto))
+        .map(|(h, _, upto, _)| (*h, *upto))
         .collect();
     advanced.sort_unstable();
     (advanced, t0.elapsed(), engine)
@@ -566,7 +566,7 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
         "postings killed the keyed double-write: both streams fit one budget"
     );
     let postings = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed) - before;
-    let canonical: u64 = g1.advanced.iter().map(|(_, _, b)| *b).sum();
+    let canonical: u64 = g1.advanced.iter().map(|(_, _, _, b)| *b).sum();
     assert!(postings > 0, "keyed frames must produce postings pages");
     assert!(
         postings * 100 <= canonical * 8,

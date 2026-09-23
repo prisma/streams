@@ -1,7 +1,7 @@
 //! History absorption.
 
-use super::fixture_storage::{drain_filtered, mem, open_engine_with_absorber, skey};
-use crate::dst::{FaultPlan, FaultStore, OpLog, Workload, drain_observed, mech};
+use super::fixture_storage::{drain_filtered, mem, open_engine, open_engine_with_absorber, skey};
+use crate::dst::{FaultPlan, FaultStore, OpLog, Outcome, Workload, drain_observed, mech};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -541,4 +541,98 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         .audit(&obs_fat)
         .expect("fat stream readable after absorption");
     absorber.abort();
+}
+
+/// TLA-016-F1: an advance whose chunk does not start at the boundary
+/// retires the stored bytes of the range it advances over, never the
+/// chunk's reported count. When that range cannot be read whole the
+/// committer guesses nothing: the group, a rider append included, is
+/// refused, and the boundary, the ledger and the durable row stay put.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "maintenance group fixture; the rider request is joined after the refused group is released; it must ride the group concurrently to observe the refusal"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-f1exact").await;
+    let key = skey();
+    let hash = [30u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov.clone());
+    let mut frames = Vec::new();
+    for i in 0..4 {
+        let out = w
+            .attempt_with_deadline(&engine, hash, &key, "k", &format!("m{i}"), None, None)
+            .await;
+        assert!(matches!(out, Outcome::Acked { .. }));
+        let row = engine.db.get(crate::shard::record_key(&hash, i)).await;
+        frames.push(row.unwrap().unwrap().len() as u64);
+    }
+    // Chunk [1, 2) with a bogus count, applied at boundary 0: the committer
+    // retires the stored bytes of [0, 2).
+    engine.submit_absorbed(hash, 1, 2, 999_999).await;
+    let mut tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    for _ in 0..400 {
+        if tail.absorbed == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    }
+    let owed = frames[2] + frames[3];
+    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (2, owed));
+    assert_eq!(engine.maintenance_snapshot().unabsorbed_frame_bytes, owed);
+    let row_before = crate::shard::decode_shard_maint(
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+
+    // Record 3 disappears underneath the committer, so [2, 4) cannot be
+    // read whole for the chunk [3, 4).
+    let _deleted = engine
+        .db
+        .delete(crate::shard::record_key(&hash, 3))
+        .await
+        .unwrap();
+    let hold = engine.test_hold_commit().await;
+    let base = engine.appends_enqueued();
+    let (e2, k2) = (engine.clone(), key.clone());
+    let mut w2 = Workload::new(cov.clone());
+    w2.max_attempts = 1;
+    let rider = tokio::spawn(async move {
+        w2.attempt_with_deadline(&e2, hash, &k2, "k", "doomed", None, None)
+            .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.submit_absorbed(hash, 3, 4, frames[3]).await;
+    drop(hold);
+    let out = rider.await.unwrap();
+    assert!(
+        !matches!(out, Outcome::Acked { .. }),
+        "an unreadable retirement must refuse the group, but the rider acked: {out:?}"
+    );
+    let after = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(
+        (after.absorbed, after.next, after.unabsorbed_bytes),
+        (2, 4, owed)
+    );
+    let row_after = crate::shard::decode_shard_maint(
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row_after, row_before, "durable row must not move");
+    engine.begin_close();
 }

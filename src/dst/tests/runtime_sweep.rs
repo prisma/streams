@@ -111,7 +111,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
     let hash = dirty[0].0;
     let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
-    kept.submit_absorbed(hash, tail.next, tail.unabsorbed_bytes)
+    kept.submit_absorbed(hash, tail.absorbed, tail.next, tail.unabsorbed_bytes)
         .await;
     let mut drained = false;
     for _ in 0..400 {

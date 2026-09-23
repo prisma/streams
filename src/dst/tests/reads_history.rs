@@ -80,10 +80,10 @@ async fn the_first_advance_seals_the_history_layout() {
     for _ in 0..5 {
         append_sized(&engine, a, &key, "", 512).await;
     }
-    engine.submit_absorbed_batch_v2(vec![(a, 3, 0)]).await;
+    engine.submit_absorbed_batch_v2(vec![(a, 0, 3, 0)]).await;
     let (abs, flag) = wait_absorbed(&engine, a, 3).await;
     assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
-    engine.submit_absorbed(a, 5, 0).await; // cross-layout v1 advance
+    engine.submit_absorbed(a, 3, 5, 0).await; // cross-layout v1 advance
     // Sentinel append proves the committer processed the op above.
     append_sized(&engine, a, &key, "", 64).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -104,10 +104,10 @@ async fn the_first_advance_seals_the_history_layout() {
     for _ in 0..5 {
         append_sized(&engine, b, &key, "", 512).await;
     }
-    engine.submit_absorbed(b, 3, 0).await;
+    engine.submit_absorbed(b, 0, 3, 0).await;
     let (abs, flag) = wait_absorbed(&engine, b, 3).await;
     assert_eq!((abs, flag), (3, false), "first v1 advance seals v1");
-    engine.submit_absorbed_batch_v2(vec![(b, 5, 0)]).await;
+    engine.submit_absorbed_batch_v2(vec![(b, 3, 5, 0)]).await;
     append_sized(&engine, b, &key, "", 64).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let h = engine.stream_handle(b).await.unwrap();
@@ -121,7 +121,7 @@ async fn the_first_advance_seals_the_history_layout() {
         "a v2 advance on a sealed-v1 stream must be dropped whole"
     );
     // Continuation on the SEALED lane still works.
-    engine.submit_absorbed(b, 5, 0).await;
+    engine.submit_absorbed(b, 3, 5, 0).await;
     let (abs, flag) = wait_absorbed(&engine, b, 5).await;
     assert_eq!((abs, flag), (5, false));
     assert!(

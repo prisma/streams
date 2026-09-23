@@ -259,8 +259,8 @@ impl Absorber {
     /// source of truth: a mark ahead of it at rescan time describes a
     /// submission that did not land, so roll it back. A genuine in-flight
     /// advance re-submitted after this is harmless — the committer
-    /// ignores non-advancing boundaries and the history write is
-    /// idempotent.
+    /// ignores non-advancing boundaries, retires exactly the range it
+    /// advances over (TLA-016-F1), and the history write is idempotent.
     #[expect(
         clippy::unwrap_used,
         reason = "Absorber::roll_back_stranded_mark; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
@@ -498,7 +498,10 @@ impl Absorber {
         staged
             .warm_installs
             .push((SegmentHash(plan.hash), plan.from, last + 1, runs));
-        staged.out.advanced.push((plan.hash, last + 1, chunk_raw));
+        staged
+            .out
+            .advanced
+            .push((plan.hash, plan.from, last + 1, chunk_raw));
         // Truncated by the per-stream cap: more durable data sits
         // below `upto`. The caller must keep this stream pending.
         if last + 1 < plan.upto {
@@ -557,7 +560,7 @@ impl Absorber {
         let flush_ms = millis(t_flush.elapsed());
         GATHER_LAST_FLUSH_MS.store(flush_ms, ord);
         HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
-        let absorbed_bytes = out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>();
+        let absorbed_bytes = out.advanced.iter().map(|(_, _, _, b)| *b).sum::<u64>();
         ABSORB_BYTES_TOTAL.fetch_add(absorbed_bytes, ord);
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
@@ -585,11 +588,11 @@ impl Absorber {
     /// re-absorb a range whose committer batch has not dispatched yet.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::raise_lane_marks; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could re-absorb or fence off a range whose submission is still in flight"
+        reason = "Absorber::raise_lane_marks; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could re-absorb or fence off a range whose chunk advance is still in flight"
     )]
-    fn raise_lane_marks(&self, advanced: &[([u8; 16], u64, u64)]) {
+    fn raise_lane_marks(&self, advanced: &[([u8; 16], u64, u64, u64)]) {
         let mut submitted = self.submitted.lock().unwrap();
-        for (hash, upto, _) in advanced {
+        for (hash, _, upto, _) in advanced {
             let e = submitted.entry(*hash).or_insert((0, true));
             if e.1 {
                 e.0 = e.0.max(*upto);

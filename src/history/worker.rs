@@ -356,7 +356,7 @@ impl Absorber {
                     // blinded the fleet lag view).
                     let partial: std::collections::HashMap<[u8; 16], u64> =
                         outcome.partial.iter().copied().collect();
-                    for (h, _, _) in &outcome.advanced {
+                    for (h, _, _, _) in &outcome.advanced {
                         // A PARTIAL advance is progress, not
                         // completion: keep it pending so the
                         // next tick continues immediately.

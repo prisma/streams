@@ -884,7 +884,7 @@ type ConsumerFences = Mutex<HashMap<([u8; 16], String), u64>>;
 
 #[expect(
     clippy::large_enum_variant,
-    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op; boxing it would add a heap hop to the hottest path"
+    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op, and the absorbed chunk start is one more scalar far below it; boxing it would add a heap hop to the hottest path"
 )]
 pub(crate) enum CommitOp {
     Append(AppendReq),
@@ -934,12 +934,12 @@ pub(crate) enum CommitOp {
     /// committer message so every covered boundary lands in the same
     /// write batch deterministically (the per-stream sends only
     /// coalesced opportunistically — the committer could run between
-    /// them). Each entry is (hash, new upto, frame bytes the absorber
-    /// copied for that stream — decremented from the tail's
-    /// unabsorbed_bytes gauge). Expanded into per-stream `Absorbed` ops
-    /// at commit_group entry.
+    /// them). Each entry is (hash, chunk start, new upto, frame bytes the
+    /// absorber copied for that chunk — the committer retires the exact
+    /// bytes of the range it advances over). Expanded into per-stream
+    /// `Absorbed` ops at commit_group entry.
     AbsorbedBatch {
-        streams: Vec<([u8; 16], u64, u64)>,
+        streams: Vec<([u8; 16], u64, u64, u64)>,
         v2: bool,
     },
     /// Trim maintenance pulse (flush ticker, whenever the trim-debt set
@@ -954,14 +954,13 @@ pub(crate) enum CommitOp {
     /// (deferred one round so in-flight readers never lose their range).
     /// `v2` marks the range as living in the SHARED per-shard partition
     /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
-    /// history_v2 flag, which gates the read path's history source. The
-    /// v2 absorber flushes MANY streams once and then submits one of
-    /// these per covered stream; they coalesce into the same committer
-    /// batch, so the boundaries land in one tracker write-batch.
+    /// history_v2 flag, which gates the read path's history source.
     Absorbed {
         hash: [u8; 16],
+        /// The chunk `[from, upto)` the absorber copied and its stored frame
+        /// bytes, which settle an advance only from `from` (TLA-016-F1).
+        from: u64,
         upto: u64,
-        /// Stored frame bytes the absorber copied for this advance.
         bytes: u64,
         v2: bool,
     },
@@ -1983,20 +1982,21 @@ impl ShardEngine {
 
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+        reason = "ShardEngine::submit_absorbed; a chunk advance the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST billing fixtures' way to stage maintenance state and the service submits batches; deleting it would strip the submit those fixtures pin"
+            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST fixtures' way to stage maintenance state from a chunk start they name, and the service submits batches; deleting it would strip the submit those fixtures pin"
         )
     )]
-    pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
+    pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], from: u64, upto: u64, bytes: u64) {
         let _ = self
             .tx
             .send(CommitOp::Absorbed {
                 hash,
+                from,
                 upto,
                 bytes,
                 v2: false,
@@ -2007,12 +2007,12 @@ impl ShardEngine {
     /// One gather's boundary advances as a SINGLE committer message:
     /// every covered stream lands in the same write batch by
     /// construction (per-stream sends only coalesced opportunistically).
-    /// Entries are (hash, new upto, frame bytes copied).
+    /// Entries are (hash, chunk start, new upto, frame bytes copied).
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed_batch_v2; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+        reason = "ShardEngine::submit_absorbed_batch_v2; a batch of chunk advances the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
-    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
+    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64, u64)>) {
         if streams.is_empty() {
             return;
         }
