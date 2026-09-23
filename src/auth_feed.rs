@@ -13,6 +13,19 @@
 //! `PolicySource`/`GrantSource`/`KeySource` traits when the platform
 //! side (Stage 1) lands; nothing on the request path changes then.
 //!
+//! Freshness belongs to the refresher, never to a source. A feed's age
+//! counts from the pass that last asked its source and published the
+//! answer, so no source can post-date its data or keep alive a feed it did
+//! not fetch. For a FILE feed that means "read and parsed then", not "its
+//! author is still publishing": an unchanged file stays fresh while it
+//! stays readable and valid, and whether its author has published a newer
+//! generation shows only as the policy and grant `feedVersion` on
+//! `/v1/debug/auth`. A source therefore answers `Ok` only with what this
+//! call obtained from its origin: a cached copy standing in for an
+//! unreachable origin would restart the age the fail-closed window
+//! measures, while an `Err` leaves the previous snapshot ageing toward
+//! refusal.
+//!
 //! Parsing is STRICT. These files are authorization inputs: an
 //! unknown scope name, an empty `stream_prefixes` array (§4.2: that
 //! means "none", which no operator writes on purpose), or an
@@ -104,9 +117,11 @@ struct GrantDoc {
 }
 
 // ---------------------------------------------------------------------
-// Strict parsers (pure; the sources wrap file I/O around them)
+// Strict parsers (pure; the sources wrap file I/O around them). A parsed
+// snapshot is unstamped (0, the never-fetched age): only the refresher
+// stamps, so one that skipped it reads as unpublished and fails closed.
 
-pub(crate) fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
+pub(crate) fn parse_keys(json: &str) -> anyhow::Result<JwksSnapshot> {
     let doc: KeysDoc = serde_json::from_str(json)?;
     anyhow::ensure!(!doc.keys.is_empty(), "keys file lists no keys");
     let mut keys = HashMap::new();
@@ -141,12 +156,12 @@ pub(crate) fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
     }
     Ok(JwksSnapshot {
         keys,
-        fetched_at_unix: now,
+        fetched_at_unix: 0,
         feed_version: doc.feed_version,
     })
 }
 
-pub(crate) fn parse_policies(json: &str, now: i64) -> anyhow::Result<PolicySnapshot> {
+pub(crate) fn parse_policies(json: &str) -> anyhow::Result<PolicySnapshot> {
     let doc: PoliciesDoc = serde_json::from_str(json)?;
     let mut projects = HashMap::new();
     for p in doc.projects {
@@ -169,12 +184,12 @@ pub(crate) fn parse_policies(json: &str, now: i64) -> anyhow::Result<PolicySnaps
     }
     Ok(PolicySnapshot {
         projects,
-        fetched_at_unix: now,
+        fetched_at_unix: 0,
         feed_version: doc.feed_version,
     })
 }
 
-pub(crate) fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot> {
+pub(crate) fn parse_grants(json: &str) -> anyhow::Result<GrantSnapshot> {
     let doc: GrantsDoc = serde_json::from_str(json)?;
     let mut credentials = HashMap::new();
     for g in doc.credentials {
@@ -224,7 +239,7 @@ pub(crate) fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot
     }
     Ok(GrantSnapshot {
         credentials,
-        fetched_at_unix: now,
+        fetched_at_unix: 0,
         feed_version: doc.feed_version,
     })
 }
@@ -236,18 +251,11 @@ pub(crate) struct FileKeySource(pub std::path::PathBuf);
 pub(crate) struct FilePolicySource(pub std::path::PathBuf);
 pub(crate) struct FileGrantSource(pub std::path::PathBuf);
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 #[async_trait::async_trait]
 impl KeySource for FileKeySource {
     async fn fetch(&self) -> anyhow::Result<JwksSnapshot> {
         let raw = tokio::fs::read_to_string(&self.0).await?;
-        parse_keys(&raw, unix_now())
+        parse_keys(&raw)
     }
 }
 
@@ -255,7 +263,7 @@ impl KeySource for FileKeySource {
 impl PolicySource for FilePolicySource {
     async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
         let raw = tokio::fs::read_to_string(&self.0).await?;
-        parse_policies(&raw, unix_now())
+        parse_policies(&raw)
     }
 }
 
@@ -263,12 +271,19 @@ impl PolicySource for FilePolicySource {
 impl GrantSource for FileGrantSource {
     async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
         let raw = tokio::fs::read_to_string(&self.0).await?;
-        parse_grants(&raw, unix_now())
+        parse_grants(&raw)
     }
 }
 
 // ---------------------------------------------------------------------
 // The refresher
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 /// A single pass has exactly three independent operations and a fixed
 /// per-source deadline. Each successful source publishes immediately.
@@ -289,13 +304,18 @@ pub(crate) struct RefreshReport {
 
 const SOURCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The one place freshness is stamped: the instant the pass asked,
+/// attached only to a snapshot the source returned inside the deadline.
+/// Asking time rather than answering time, because the origin's answer is
+/// only known to be at least that new.
 async fn refresh_source<T>(
     source_label: &str,
     fetch: impl std::future::Future<Output = anyhow::Result<T>>,
-    publish: impl FnOnce(T) -> Result<(), String>,
+    publish: impl FnOnce(T, i64) -> Result<(), String>,
 ) -> RefreshOutcome {
+    let asked_at = unix_now();
     match tokio::time::timeout(SOURCE_DEADLINE, fetch).await {
-        Ok(Ok(snapshot)) => match publish(snapshot) {
+        Ok(Ok(snapshot)) => match publish(snapshot, asked_at) {
             Ok(()) => RefreshOutcome::Published,
             Err(why) => {
                 tracing::warn!(source = source_label, %why, "auth snapshot refused; previous snapshot retained");
@@ -323,14 +343,23 @@ pub(crate) async fn refresh_once(
     grants: &dyn GrantSource,
 ) -> RefreshReport {
     let (keys, policies, grants) = tokio::join!(
-        refresh_source("keys", keys.fetch(), |s| auth
-            .publish_jwks(s)
+        refresh_source("keys", keys.fetch(), |s, fetched_at_unix| auth
+            .publish_jwks(JwksSnapshot {
+                fetched_at_unix,
+                ..s
+            })
             .map_err(|e| e.to_string())),
-        refresh_source("policies", policies.fetch(), |s| auth
-            .publish_policies(s)
+        refresh_source("policies", policies.fetch(), |s, fetched_at_unix| auth
+            .publish_policies(PolicySnapshot {
+                fetched_at_unix,
+                ..s
+            })
             .map_err(|e| e.to_string())),
-        refresh_source("grants", grants.fetch(), |s| auth
-            .publish_grants(s)
+        refresh_source("grants", grants.fetch(), |s, fetched_at_unix| auth
+            .publish_grants(GrantSnapshot {
+                fetched_at_unix,
+                ..s
+            })
             .map_err(|e| e.to_string())),
     );
     RefreshReport {
@@ -402,14 +431,14 @@ mod tests {
     #[async_trait::async_trait]
     impl PolicySource for EmptyPolicies {
         async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
-            parse_policies(r#"{"feed_version":1,"projects":[]}"#, unix_now())
+            parse_policies(r#"{"feed_version":1,"projects":[]}"#)
         }
     }
     struct EmptyGrants;
     #[async_trait::async_trait]
     impl GrantSource for EmptyGrants {
         async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
-            parse_grants(r#"{"feed_version":1,"credentials":[]}"#, unix_now())
+            parse_grants(r#"{"feed_version":1,"credentials":[]}"#)
         }
     }
 
@@ -587,8 +616,73 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Stands in for a cached origin that stamps its own reads: the
+    /// refresher must not take a source's word for how fresh its answer is.
+    struct SelfStamped(i64);
+    #[async_trait::async_trait]
+    impl KeySource for SelfStamped {
+        async fn fetch(&self) -> anyhow::Result<JwksSnapshot> {
+            Ok(JwksSnapshot {
+                fetched_at_unix: self.0,
+                ..JwksSnapshot::empty()
+            })
+        }
+    }
+    #[async_trait::async_trait]
+    impl PolicySource for SelfStamped {
+        async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
+            Ok(PolicySnapshot {
+                fetched_at_unix: self.0,
+                ..PolicySnapshot::empty()
+            })
+        }
+    }
+    #[async_trait::async_trait]
+    impl GrantSource for SelfStamped {
+        async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
+            Ok(GrantSnapshot {
+                fetched_at_unix: self.0,
+                ..GrantSnapshot::empty()
+            })
+        }
+    }
+
+    /// Item 93: freshness belongs to the refresher. An ancient source stamp
+    /// would refuse fresh data; a post-dated one would keep a dead feed
+    /// authorizing past the fail-closed window.
+    #[tokio::test]
+    async fn the_refresher_not_the_source_stamps_feed_freshness() {
+        for stamp in [1, unix_now() + 86_400] {
+            let svc =
+                AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap();
+            let source = SelfStamped(stamp);
+            let report = refresh_once(&svc, &source, &source, &source).await;
+            assert_eq!(
+                [report.keys, report.policies, report.grants],
+                [RefreshOutcome::Published; 3]
+            );
+            assert_eq!(
+                stale_feeds(&svc),
+                Vec::<&str>::new(),
+                "a published fetch is fresh whatever the source stamped ({stamp})"
+            );
+        }
+    }
+
+    /// The feeds whose age is outside the fresh window right now.
+    fn stale_feeds(svc: &AuthService) -> Vec<&'static str> {
+        let feeds = svc.feed_json(unix_now());
+        ["jwks", "policies", "grants"]
+            .into_iter()
+            .filter(|f| {
+                !feeds[*f]["ageSecs"]
+                    .as_i64()
+                    .is_some_and(|a| (0..=60).contains(&a))
+            })
+            .collect()
+    }
+
     const PUB: &str = include_str!("dst/fixtures/mt-test-rsa.pub.pem");
-    const NOW: i64 = 1_786_600_600;
 
     fn keys_json() -> String {
         serde_json::json!({
@@ -599,15 +693,18 @@ mod tests {
 
     #[test]
     fn keys_parse_and_reject() {
-        let s = parse_keys(&keys_json(), NOW).unwrap();
+        let s = parse_keys(&keys_json()).unwrap();
         assert!(s.keys.contains_key("test-1"));
-        assert_eq!(s.fetched_at_unix, NOW);
+        assert_eq!(
+            s.fetched_at_unix, 0,
+            "parsing never stamps freshness; the refresher does"
+        );
         // HMAC must fail at LOAD, per the §7 alg allowlist.
         let hmac = serde_json::json!({
             "keys": [{ "kid": "h", "alg": "HS256", "pem": PUB }]
         });
-        assert!(parse_keys(&hmac.to_string(), NOW).is_err());
-        assert!(parse_keys(r#"{"keys":[]}"#, NOW).is_err());
+        assert!(parse_keys(&hmac.to_string()).is_err());
+        assert!(parse_keys(r#"{"keys":[]}"#).is_err());
     }
 
     #[test]
@@ -623,7 +720,7 @@ mod tests {
                 "status": "active"
             }]
         });
-        let s = parse_policies(&ok.to_string(), NOW).unwrap();
+        let s = parse_policies(&ok.to_string()).unwrap();
         let pid = ProjectId::new("proj_456").unwrap();
         assert_eq!(s.projects[&pid].ownership_version, 12);
         assert_eq!(s.projects[&pid].status, ProjectStatus::Active);
@@ -631,7 +728,7 @@ mod tests {
         // Unknown fields refuse: an operator typo (say "stauts") must
         // not silently leave the real field defaulted.
         let typo = ok.to_string().replace("\"status\"", "\"stauts\"");
-        assert!(parse_policies(&typo, NOW).is_err());
+        assert!(parse_policies(&typo).is_err());
     }
 
     #[test]
@@ -647,7 +744,7 @@ mod tests {
                 "stream_prefixes": ["customers/acme"]
             }]
         });
-        let s = parse_grants(&base.to_string(), NOW).unwrap();
+        let s = parse_grants(&base.to_string()).unwrap();
         let c = &s.credentials[&Arc::from("strcred_123")];
         assert_eq!(c.grant_version, 7);
         assert!(matches!(&c.grant, StreamGrant::Prefixes(p) if p.len() == 1));
@@ -658,11 +755,11 @@ mod tests {
             "streams.records.read",
             "streams.recods.read", // typo
         );
-        assert!(parse_grants(&bad_scope, NOW).is_err());
+        assert!(parse_grants(&bad_scope).is_err());
 
         // EMPTY prefixes array: authoring error, refuse (§4.2).
         let empty = base.to_string().replace("[\"customers/acme\"]", "[]");
-        assert!(parse_grants(&empty, NOW).is_err());
+        assert!(parse_grants(&empty).is_err());
 
         // Absent prefixes = all streams.
         let absent = serde_json::json!({
@@ -675,7 +772,7 @@ mod tests {
                 "scopes": "streams.records.read"
             }]
         });
-        let s = parse_grants(&absent.to_string(), NOW).unwrap();
+        let s = parse_grants(&absent.to_string()).unwrap();
         assert!(matches!(
             s.credentials[&Arc::from("c2")].grant,
             StreamGrant::All

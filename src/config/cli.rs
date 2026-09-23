@@ -327,6 +327,12 @@ pub struct CliArgs {
     pub(crate) streams_auth_issuer: String,
     /// Operator-authored snapshot files (src/auth_feed.rs wire formats).
     /// All three are required when STREAMS_AUTH_MODE != off.
+    ///
+    /// A feed's age counts from the refresh pass that last read it
+    /// successfully, so an unchanged file stays fresh while it stays
+    /// readable and valid; whether its author has published a newer
+    /// generation shows only as the policy and grant `feedVersion` on
+    /// /v1/debug/auth.
     #[arg(long, env = "STREAMS_AUTH_KEYS_FILE")]
     pub(crate) streams_auth_keys_file: Option<std::path::PathBuf>,
     #[arg(long, env = "STREAMS_AUTH_POLICY_FILE")]
