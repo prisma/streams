@@ -442,3 +442,70 @@ async fn an_advance_that_skips_offsets_is_dropped_whole() {
     assert_eq!(ledger, all, "the shard ledger is not the stream's");
     engine.begin_close();
 }
+
+async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + ANSWER_WITHIN;
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} never happened"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+}
+
+/// Settlement: the group that retired a receipted advance holds its
+/// receipt while the group is applied but not yet durable, and drops it
+/// once durable dispatch has published the tail. Until then the absorber
+/// may not roll the stream's lane mark back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
+    let (engine, store) = rig("settle-durable").await;
+    let h = [0x2c; 16];
+    for _ in 0..4 {
+        append(&engine, h).await.unwrap();
+    }
+    let b04 = stored_bytes(&engine, &h, 0, 4).await;
+    let handle = engine.stream_handle(h).await.unwrap();
+    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+    let submissions = Arc::new(Submissions::default());
+    let copied = CopiedBytes::new(0, b04).receipted(submissions.submit(&h));
+    engine.submit_absorbed_batch_v2(vec![(h, 4, copied)]).await;
+    wait_for("the advance applied behind a held WAL put", || {
+        engaged.load(Ordering::SeqCst) >= 1 && handle.state.lock().unwrap().applied.absorbed == 4
+    })
+    .await;
+    assert!(
+        !submissions.settled(&h),
+        "an advance settled before its group was durable"
+    );
+    assert_eq!(handle.state.lock().unwrap().durable.absorbed, 0);
+    store.release_hold();
+    wait_for("the advance durable", || {
+        handle.state.lock().unwrap().durable.absorbed == 4
+    })
+    .await;
+    wait_for("the durable advance settled", || submissions.settled(&h)).await;
+    engine.begin_close();
+}
+
+/// Settlement: a refused group drops its advance's receipt with the
+/// refusal, and the boundary does not move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_advance_settles_with_its_group() {
+    let (engine, _store) = rig("settle-refused").await;
+    let h = [0x2d; 16];
+    for _ in 0..4 {
+        append(&engine, h).await.unwrap();
+    }
+    let b04 = stored_bytes(&engine, &h, 0, 4).await;
+    engine.fail_next_absorbed_group();
+    let submissions = Arc::new(Submissions::default());
+    let copied = CopiedBytes::new(0, b04).receipted(submissions.submit(&h));
+    engine.submit_absorbed_batch_v2(vec![(h, 4, copied)]).await;
+    wait_for("the group refused", || engine.group_failures_tripped() >= 1).await;
+    wait_for("the refused advance settled", || submissions.settled(&h)).await;
+    let tail = applied(&engine, h).await;
+    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (0, b04));
+    engine.begin_close();
+}

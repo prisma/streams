@@ -24,7 +24,7 @@ use slatedb::config::{CompressionCodec, Settings};
 use tokio::sync::mpsc;
 
 use crate::crypto::{RouteHash, SegmentHash, StreamKey};
-use crate::shard::{AbsorbSignal, ShardEngine};
+use crate::shard::{AbsorbSignal, ShardEngine, Submissions};
 
 #[cfg(test)]
 mod controller_tests;
@@ -734,22 +734,20 @@ pub(crate) struct Absorber {
     shard: Arc<ShardEngine>,
     cfg: AbsorberConfig,
     /// Highest `upto` this absorber has submitted per stream, WITH the
-    /// lane that submitted it (true = v2 shared partition). The
-    /// published handle state only reflects a submit after the committer
-    /// batch it landed in is durable AND dispatched, so pacing passes off
-    /// the published value alone re-absorbs the same range whenever
-    /// dispatch lags a tick — wasted decrypt/write work, and the duplicate
-    /// `Absorbed` op it produces used to collapse the deferred-trim lag
-    /// (2026-07-27 boundary-race DST failure). LANE-SCOPED (round 4):
-    /// each lane trusts only its OWN mark — during the brief pre-seal
-    /// window both lanes can claim a stream, and the committer's layout
-    /// seal then DROPS one side's advance; if the surviving lane trusted
-    /// the dropped lane's floor it would skip a range that only exists
-    /// in the dropped tier, permanently hiding acked records. Per-
-    /// instance state: a restarted or new-owner absorber starts from
-    /// published state again, which is safe because re-absorbing is
-    /// idempotent.
+    /// lane that submitted it (true = v2 shared partition). Durable handle
+    /// state reflects a submit only once its batch is durable AND
+    /// dispatched, and the committer retires an advance only from its
+    /// boundary, so a regather from the published value alone copies
+    /// what an in-flight advance covers and is dropped. A mark is rolled
+    /// back only while `submissions` shows its stream settled. LANE-
+    /// SCOPED (round 4): each lane trusts only its OWN mark — the layout
+    /// seal DROPS one lane's advance, and trusting the dropped lane's
+    /// floor would hide acked records. A restarted or new-owner absorber
+    /// starts from durable state, where nothing of its own is in flight.
     submitted: LaneMarks,
+    /// This absorber's advances that could still land, per stream
+    /// bucket: the receipts the committer holds until each settles.
+    submissions: Arc<Submissions>,
     discovery_after: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
@@ -765,6 +763,7 @@ impl Absorber {
             shard,
             cfg,
             submitted: std::sync::Mutex::new(HashMap::new()),
+            submissions: Default::default(),
             discovery_after: Default::default(),
             // Seeded at the worst-case est: boot-time gathers (restart
             // rediscovery drains the whole backlog) reserve like the

@@ -41,6 +41,10 @@ pub(super) struct DurableEffects {
     pub signals: Vec<AbsorbSignal>,
     pub touches: Vec<TouchFeed>,
     pub usage: Vec<(Arc<crate::usage::Counters>, u64, u64)>,
+    /// Receipts of the absorbed advances this group retired. They settle
+    /// when the group drops: after durable dispatch has published its
+    /// tails, or with its refusal.
+    pub receipts: Vec<SubmitReceipt>,
 }
 
 impl DurableEffects {
@@ -154,16 +158,122 @@ pub(super) fn seal_authorized(generation: Option<u64>, closing: bool, fence: u64
 /// over the same rows the append path counted). The committer retires
 /// them only from the stream's absorbed boundary, so every byte of
 /// `[absorbed, next)` leaves the ledger once, provided `len` is the
-/// stored size of `[from, upto)`.
-#[derive(Clone, Copy)]
+/// stored size of `[from, upto)`. An absorber's copy also carries its
+/// submission's receipt, which settles once the advance can no longer
+/// land.
 pub(crate) struct CopiedBytes {
     pub(super) from: u64,
     pub(super) len: u64,
+    receipt: Option<SubmitReceipt>,
 }
 
 impl CopiedBytes {
     pub(crate) fn new(from: u64, len: u64) -> Self {
-        Self { from, len }
+        Self {
+            from,
+            len,
+            receipt: None,
+        }
+    }
+
+    /// The same copy, carrying the receipt its submission was counted by.
+    pub(crate) fn receipted(self, receipt: SubmitReceipt) -> Self {
+        Self {
+            receipt: Some(receipt),
+            ..self
+        }
+    }
+
+    /// The receipt, for the group that retired this copy to hold until
+    /// its durable dispatch.
+    pub(super) fn into_receipt(self) -> Option<SubmitReceipt> {
+        self.receipt
+    }
+}
+
+/// The settlement counters' atomic word: generic so the Loom model runs
+/// these same transitions, a receipt's drop included, on instrumented
+/// atomics.
+pub(crate) trait SettlementWord: Default {
+    fn load(&self, order: Ordering) -> u64;
+    fn fetch_add(&self, value: u64, order: Ordering) -> u64;
+    fn fetch_sub(&self, value: u64, order: Ordering) -> u64;
+}
+
+impl SettlementWord for AtomicU64 {
+    fn load(&self, order: Ordering) -> u64 {
+        AtomicU64::load(self, order)
+    }
+    fn fetch_add(&self, value: u64, order: Ordering) -> u64 {
+        AtomicU64::fetch_add(self, value, order)
+    }
+    fn fetch_sub(&self, value: u64, order: Ordering) -> u64 {
+        AtomicU64::fetch_sub(self, value, order)
+    }
+}
+
+/// Stream buckets of an absorber's settlement counters: 1,024 words of
+/// 8 bytes, 8 KiB per absorber (one per engine). Streams share a word only
+/// when the last ten bits of their hashes agree, and sharing only delays a
+/// rollback, never permits one.
+pub(crate) const SETTLEMENT_BUCKETS: usize = 1024;
+
+/// The absorbed advances an absorber submitted that could still land,
+/// counted per stream bucket. Each advance is counted when it is submitted
+/// and settles when its receipt drops: at staging when the committer
+/// drops the advance, with its group's refusal, or after durable dispatch
+/// has published the group's tails. A bucket at zero therefore proves no
+/// advance of its streams can still move a boundary, so a lane mark ahead
+/// of the durable boundary is stranded, and one still in flight is not.
+pub(crate) struct Submissions<W: SettlementWord = AtomicU64, const N: usize = SETTLEMENT_BUCKETS> {
+    unsettled: [W; N],
+}
+
+impl<W: SettlementWord, const N: usize> Default for Submissions<W, N> {
+    fn default() -> Self {
+        Self {
+            unsettled: std::array::from_fn(|_| W::default()),
+        }
+    }
+}
+
+impl<W: SettlementWord, const N: usize> Submissions<W, N> {
+    /// A stream's counter, from the last two bytes of its hash: shard
+    /// placement consumes the leading bits, so these stay uniform within
+    /// one engine.
+    fn bucket(hash: &[u8; 16]) -> usize {
+        usize::from(u16::from_le_bytes([hash[14], hash[15]])) % N
+    }
+
+    /// Count one advance of `hash` as submitted; its receipt settles it.
+    pub(crate) fn submit(self: &Arc<Self>, hash: &[u8; 16]) -> SubmitReceipt<W, N> {
+        let bucket = Self::bucket(hash);
+        self.unsettled[bucket].fetch_add(1, Ordering::Relaxed);
+        SubmitReceipt {
+            submissions: Arc::clone(self),
+            bucket,
+        }
+    }
+
+    /// No advance of `hash`'s bucket can still land. Acquire pairs with
+    /// the settling Release: a caller that sees zero also sees every
+    /// durable boundary published before those receipts dropped.
+    pub(crate) fn settled(&self, hash: &[u8; 16]) -> bool {
+        self.unsettled[Self::bucket(hash)].load(Ordering::Acquire) == 0
+    }
+}
+
+/// One submitted advance's claim on its stream bucket; dropping it settles
+/// the advance.
+pub(crate) struct SubmitReceipt<W: SettlementWord = AtomicU64, const N: usize = SETTLEMENT_BUCKETS>
+{
+    submissions: Arc<Submissions<W, N>>,
+    bucket: usize,
+}
+
+impl<W: SettlementWord, const N: usize> Drop for SubmitReceipt<W, N> {
+    fn drop(&mut self) {
+        self.submissions.unsettled[self.bucket].fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -232,6 +342,48 @@ mod tests {
         assert_eq!(retire(6, 8, 60), (AbsorbRetirement::Detached, 4, 100));
         assert_eq!(retire(4, 6, 101), (AbsorbRetirement::Diverged, 4, 100));
         assert_eq!(retire(4, 9, 100), (AbsorbRetirement::Exact, 8, 0));
+    }
+
+    /// A stream settles when the last receipt of its bucket drops; another
+    /// bucket's receipts never hold it, and a stream sharing its bucket is
+    /// held with it (a rollback waits, it never runs early).
+    #[test]
+    fn a_stream_settles_when_its_last_receipt_drops() {
+        let stream = |last: [u8; 2], first: u8| {
+            let mut hash = [first; 16];
+            hash[14..].copy_from_slice(&last);
+            hash
+        };
+        let (a, b) = (stream([1, 0], 0), stream([2, 0], 0));
+        let (shares_a, wraps_to_a) = (stream([1, 0], 9), stream([1, 4], 0));
+        let submissions = Arc::new(Submissions::<AtomicU64>::default());
+        assert!(submissions.settled(&a) && submissions.settled(&b));
+        let first = submissions.submit(&a);
+        assert!(!submissions.settled(&a), "a submitted advance is settled");
+        assert!(
+            submissions.settled(&b),
+            "another bucket's advance holds a stream"
+        );
+        assert!(!submissions.settled(&shares_a) && !submissions.settled(&wraps_to_a));
+        let second = submissions.submit(&a);
+        drop(first);
+        assert!(
+            !submissions.settled(&a),
+            "an advance settled with an earlier one"
+        );
+        let other = submissions.submit(&b);
+        drop(second);
+        assert!(
+            submissions.settled(&a),
+            "the last receipt left its stream unsettled"
+        );
+        assert!(!submissions.settled(&b));
+        let copy = CopiedBytes::new(0, 1).receipted(submissions.submit(&a));
+        assert!(!submissions.settled(&a));
+        let receipt = copy.into_receipt();
+        assert!(receipt.is_some() && !submissions.settled(&a));
+        drop((receipt, other));
+        assert!(submissions.settled(&a) && submissions.settled(&b));
     }
 
     #[test]

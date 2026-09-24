@@ -283,7 +283,6 @@ impl Absorber {
             if recs == 0 {
                 continue;
             }
-            self.roll_back_stranded_mark(h, absorbed);
             // Backdate by the age threshold so recovered work is eligible
             // promptly rather than a full window later.
             let since = Instant::now()
@@ -329,13 +328,15 @@ impl Absorber {
     /// that advance FAILED, the durable boundary never moved and the mark
     /// now fences the range off from every future gather: `from =
     /// max(mark, absorbed) >= upto` reads as no_work forever, and the
-    /// backlog is stranded until a restart. The durable tail is the
-    /// source of truth: a mark ahead of it at rescan time describes a
-    /// submission that did not land, so roll it back. A genuine in-flight
-    /// advance is NOT harmless to regather under: the regather starts
-    /// below it, and the committer drops an advance that does not start
-    /// at its boundary, so that gather's copy is wasted and its postings
-    /// pages overlap the ones the stream's next gather writes.
+    /// backlog is stranded until a restart. Called at plan time, and
+    /// only while the stream's settlement bucket is at zero: then no
+    /// advance of the stream can still land, so a mark ahead of the
+    /// durable boundary describes a submission that never will, and the
+    /// durable tail is the truth. A mark whose advance is still in flight
+    /// must not be rolled back: the regather would start below it, the
+    /// committer drops an advance that does not start at its boundary,
+    /// and the dropped copy's postings pages would overlap the ones the
+    /// stream's next gather writes.
     #[expect(
         clippy::unwrap_used,
         reason = "Absorber::roll_back_stranded_mark; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
@@ -451,7 +452,9 @@ impl Absorber {
     }
 
     /// Plan every requested stream's read; streams with nothing durable
-    /// to absorb are classified `no_work` here.
+    /// to absorb are classified `no_work` here. A settled stream's
+    /// stranded mark is rolled back first, so a refused advance is
+    /// regathered from the durable boundary by the stream's next gather.
     async fn plan_reads(
         &self,
         streams: &[[u8; 16]],
@@ -460,6 +463,11 @@ impl Absorber {
         let mut plans = Vec::new();
         for hash in streams {
             let handle = self.shard.stream_handle(*hash).await?;
+            if self.submissions.settled(hash)
+                && let Some(durable) = self.shard.resident_absorbed(hash)
+            {
+                self.roll_back_stranded_mark(*hash, durable);
+            }
             match self.plan_read(*hash, handle) {
                 Some(plan) => plans.push(plan),
                 None => out.no_work.push(*hash),
@@ -666,7 +674,16 @@ impl Absorber {
                 .postings_cache
                 .install_chunk(inc, chunk_from, chunk_to, per_key);
         }
-        self.shard.submit_absorbed_batch_v2(copies).await;
+        // Each advance is counted before it can be staged; its receipt
+        // settles it once it can no longer land.
+        let receipted = copies
+            .into_iter()
+            .map(|(hash, upto, copied)| {
+                let receipt = self.submissions.submit(&hash);
+                (hash, upto, copied.receipted(receipt))
+            })
+            .collect();
+        self.shard.submit_absorbed_batch_v2(receipted).await;
         self.raise_lane_marks(&out.advanced);
         tracing::info!(
             "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",

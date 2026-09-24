@@ -35,7 +35,7 @@ use commit_plan::{
     decide_billing_ack, decide_consumer_generation, decide_producer, seal_authorized,
 };
 pub(crate) use commit_plan::{
-    AppendFinish, CloseReq, CopiedBytes, EnqueueError, SealFenceReq, UsageAckScope,
+    AppendFinish, CloseReq, CopiedBytes, EnqueueError, SealFenceReq, Submissions, UsageAckScope,
 };
 use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;

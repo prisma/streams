@@ -245,6 +245,12 @@ impl CommitTransaction<'_> {
         }
         self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
         local.fields.trimmed = local.fields.trimmed.max(trim_to);
+        // Only a retired advance can still land: the group holds its
+        // receipt until durable dispatch or refusal. Every other advance
+        // settled when its copy dropped above.
+        if let Some(receipt) = bytes.into_receipt() {
+            self.effects.receipts.push(receipt);
+        }
         true
     }
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {

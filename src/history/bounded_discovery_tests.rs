@@ -329,3 +329,155 @@ async fn a_rescan_during_an_inflight_advance_never_fails_an_append() {
     );
     assert_ledger_is_exact(&regather);
 }
+
+/// The causal fix: the rescan leaves G1's in-flight mark alone, so G2
+/// regathers from it, [4, 8), and both advances land exactly: the
+/// boundary reaches 8, trimming follows one advance behind, and only the
+/// queued append is left in the ledger.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark() {
+    let regather = append_behind_a_regather(true).await;
+    assert!(regather.answer.is_ok(), "{:?}", regather.answer);
+    let tail = &regather.tail;
+    assert_eq!(
+        tail.absorbed, 8,
+        "the regather after a rescan started below the in-flight advance"
+    );
+    assert_eq!((tail.trim_safe_to, tail.trimmed), (4, 4));
+    assert_eq!(tail.unabsorbed_bytes, regather.stored[8]);
+    assert_ledger_is_exact(&regather);
+}
+
+/// Append one record, wait for its answer and note its stored bytes.
+async fn append_stored(engine: &ShardEngine, hash: [u8; 16], stored: &mut Vec<u64>) {
+    enqueue_record(engine, hash).await.unwrap().unwrap();
+    let offset = u64::try_from(stored.len()).unwrap();
+    stored.push(stored_len(engine, &hash, offset).await.unwrap());
+}
+
+async fn applied_tail(engine: &ShardEngine, hash: [u8; 16]) -> crate::shard::TailFields {
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let state = handle.state.lock().unwrap();
+    state.applied.clone()
+}
+
+/// The stream's postings pages for its (empty) routing key tile: every
+/// page decodes and none overlaps another, so keyed reads never fall back
+/// to the envelope scan.
+async fn pages_tile(engine: &ShardEngine, hash: [u8; 16]) -> bool {
+    let part = engine.history_partition().await.unwrap();
+    let (route, inc, key) = (
+        RouteHash(hash),
+        SegmentHash(hash),
+        crate::postings::rk_hash(""),
+    );
+    let (lo, hi) = crate::postings::postings_range(route, inc, &key, 0, u64::MAX);
+    let mut pages = part.scan(lo..hi).await.unwrap();
+    let mut runs = Vec::new();
+    let mut seen = 0;
+    while let Some(page) = pages.next().await.unwrap() {
+        seen += 1;
+        let decoded = crate::postings::decode_stored_page(route, inc, &key, &page.key, &page.value);
+        if decoded
+            .and_then(|page| crate::postings::append_page_runs(&mut runs, page))
+            .is_none()
+        {
+            return false;
+        }
+    }
+    seen > 0
+}
+
+/// A refused advance settles with its group: the stream's next gather
+/// finds its mark stranded, rolls it back and regathers from the durable
+/// boundary, so the ledger keeps no phantom backlog of the refused range.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_advance_is_regathered_from_the_durable_boundary() {
+    let (engine, absorber, _store) = rig("refused-regather").await;
+    let hash = [0x48; 16];
+    let mut stored = Vec::new();
+    for _ in 0..4 {
+        append_stored(&engine, hash, &mut stored).await;
+    }
+    engine.fail_next_absorbed_group();
+    let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(
+        g1.advanced.first().map(|a| a.1),
+        Some(4),
+        "G1 gathers [0, 4)"
+    );
+    wait_until("G1's group refused", || {
+        engine.group_failures_tripped() >= 1
+    })
+    .await;
+    // FIFO behind the refused group: its receipt is gone once this answers.
+    append_stored(&engine, hash, &mut stored).await;
+    let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(g2.advanced.first().map(|a| a.1), Some(5), "G2 gathers to 5");
+    append_stored(&engine, hash, &mut stored).await;
+    let tail = applied_tail(&engine, hash).await;
+    assert_eq!(
+        tail.absorbed, 5,
+        "a refused advance was not regathered from the durable boundary"
+    );
+    assert_eq!(
+        tail.unabsorbed_bytes, stored[5],
+        "a refused advance left a phantom backlog"
+    );
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert_eq!(ledger, stored[5], "the shard ledger is not the stream's");
+    engine.begin_close();
+}
+
+/// Skeptic C5: a refused advance heals at its stream's next gather even
+/// when another stream's advance is in flight at every one of its plans —
+/// a rollback waits only on its own stream's settlement bucket. Every
+/// advance lands (none is dropped for not starting at its boundary), each
+/// ledger is exact after every round, and the healed stream's postings
+/// pages tile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber() {
+    let (engine, absorber, _store) = rig("busy-regather").await;
+    let (x, y) = ([0x58; 16], [0x59; 16]);
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    for _ in 0..4 {
+        append_stored(&engine, x, &mut xs).await;
+    }
+    engine.fail_next_absorbed_group();
+    absorber.absorb_gather_v2(&[x]).await.unwrap();
+    wait_until("X's group refused", || engine.group_failures_tripped() >= 1).await;
+    append_stored(&engine, x, &mut xs).await;
+    for round in 0..3 {
+        append_stored(&engine, y, &mut ys).await;
+        let gate = engine.test_hold_commit().await;
+        let gy = absorber.absorb_gather_v2(&[y]).await.unwrap();
+        let busy = applied_tail(&engine, y).await.absorbed;
+        assert!(
+            busy < ys.len() as u64,
+            "round {round}: Y's advance is in flight"
+        );
+        let gx = absorber.absorb_gather_v2(&[x]).await.unwrap();
+        let queued = enqueue_record(&engine, x);
+        drop(gate);
+        queued.await.unwrap().unwrap();
+        xs.push(stored_len(&engine, &x, xs.len() as u64).await.unwrap());
+        let (tx, ty) = (
+            applied_tail(&engine, x).await,
+            applied_tail(&engine, y).await,
+        );
+        let (ux, uy) = (gx.advanced[0].1, gy.advanced[0].1);
+        assert_eq!(tx.absorbed, ux, "round {round}: X's advance was dropped");
+        assert_eq!(ty.absorbed, uy, "round {round}: Y's advance was dropped");
+        assert_eq!(tx.absorbed + 1, tx.next, "round {round}: X is not healed");
+        let (lx, ly) = (exact_ledger(&tx, &xs), exact_ledger(&ty, &ys));
+        assert_eq!(
+            (tx.unabsorbed_bytes, ty.unabsorbed_bytes),
+            (lx, ly),
+            "round {round}"
+        );
+        let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+        assert_eq!(ledger, lx + ly, "round {round}: the shard ledger");
+    }
+    assert!(pages_tile(&engine, x).await, "X's postings pages overlap");
+    engine.begin_close();
+}
