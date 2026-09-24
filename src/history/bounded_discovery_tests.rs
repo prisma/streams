@@ -1,4 +1,5 @@
-//! R09: dirty-index discovery pages progress without exceeding the pending capacity.
+//! R09: dirty-index discovery pages progress without exceeding the pending
+//! capacity, and a rescan must not make a gather retire bytes twice.
 #![cfg(test)]
 use super::*;
 use object_store::ObjectStore;
@@ -116,4 +117,150 @@ async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
     assert_eq!(pending.len(), MAX_PENDING_STREAMS);
     engine.begin_close();
     let _ = db.close().await;
+}
+
+// ---- a rescan racing an in-flight boundary advance ----------------------
+// The release hold on the capacity run's one-off 500: the discovery rescan
+// reads the dirty index while a gather's advance still waits in the
+// committer queue, takes the submitted mark for a stranded one and rolls it
+// back; the next gather re-reads from the durable boundary, and the
+// committer retires the overlap's bytes a second time. When the ledger is
+// smaller than the double count the whole commit group is rejected
+// ("maintenance accounting diverged"), and every append in it answers
+// Internal: HTTP 500 on both append surfaces.
+
+type AppendAnswer = Result<crate::shard::AppendAck, crate::shard::AppendErr>;
+
+/// One 100-byte record for `hash`, enqueued; the receiver is its answer.
+fn enqueue_record(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+) -> tokio::sync::oneshot::Receiver<AppendAnswer> {
+    let key = crate::crypto::StreamKey([7; 32]);
+    let (resp, answer) = tokio::sync::oneshot::channel();
+    let req = crate::shard::AppendReq {
+        enqueued_at: Instant::now(),
+        hash,
+        route: hash,
+        entries: vec![bytes::Bytes::from(vec![0x5a; 100])],
+        usage: crate::usage::counters(&hash),
+        routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
+        key_version: 0,
+        subkey: crate::crypto::derive_subkey(&key, &hash, "", 0),
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 100,
+        finish: crate::shard::AppendFinish::Open,
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        seal_gen: None,
+        billing: None,
+        resp,
+    };
+    assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+    answer
+}
+
+async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        assert!(Instant::now() < deadline, "{what} never happened");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// Four records durable and gathered by G1, whose advance waits in the held
+/// committer queue; four more records made durable meanwhile; with
+/// `rescan`, a discovery pass before G2 gathers. The answer is that of an
+/// append queued behind G2's advance, in the one group that applies both.
+async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
+    let store = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        0x47,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    );
+    let db = Db::builder("regather", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(Settings {
+            flush_interval: Some(Duration::from_millis(5)),
+            manifest_poll_interval: Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap();
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let (tx, _signals) = mpsc::channel(1);
+    let engine = ShardEngine::start(
+        "regather".into(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        tx,
+        None,
+        maintenance,
+    );
+    let absorber = Absorber::new(engine.clone(), AbsorberConfig::default());
+    let hash = [0x47; 16];
+    let handle = engine.stream_handle(hash).await.unwrap();
+    for _ in 0..4 {
+        enqueue_record(&engine, hash).await.unwrap().unwrap();
+    }
+    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+    let held: Vec<_> = (0..4).map(|_| enqueue_record(&engine, hash)).collect();
+    wait_until("four records applied behind a held WAL write", || {
+        engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1
+            && handle.state.lock().unwrap().applied.next == 8
+    })
+    .await;
+    let gate = engine.test_hold_commit().await;
+    let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(
+        g1.advanced.first().map(|a| a.1),
+        Some(4),
+        "G1 gathers [0, 4)"
+    );
+    store.release_hold();
+    for answer in held {
+        answer.await.unwrap().unwrap();
+    }
+    if rescan {
+        absorber
+            .seed_from_dirty_index(&mut HashMap::new())
+            .await
+            .unwrap();
+    }
+    let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(g2.advanced.first().map(|a| a.1), Some(8), "G2 gathers to 8");
+    let queued = enqueue_record(&engine, hash);
+    drop(gate);
+    let answer = queued.await.unwrap();
+    engine.begin_close();
+    answer
+}
+
+/// The control: without the rescan, G2 starts at G1's submitted mark and
+/// the group applies both advances and the append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_regather_from_the_submitted_mark_retires_each_byte_once() {
+    let answer = append_behind_a_regather(false).await;
+    assert!(answer.is_ok(), "{answer:?}");
+}
+
+/// Red: the rescan rolls G1's in-flight mark back, G2 re-reads [0, 4), and
+/// the co-grouped append is refused as Internal (today:
+/// `Internal("maintenance accounting diverged")`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "red regression: the capacity run's one-off 500 (a rescan rolls back an in-flight absorb mark and the regather retires its bytes twice); un-ignore with the fix"]
+async fn a_rescan_during_an_inflight_advance_never_fails_an_append() {
+    let answer = append_behind_a_regather(true).await;
+    assert!(
+        answer.is_ok(),
+        "an append co-grouped with a re-gathered advance was refused: {answer:?}"
+    );
 }
