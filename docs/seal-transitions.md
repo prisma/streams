@@ -11,7 +11,7 @@ append capability; adapters translate its outcome once.
 | Active, topology quiet | Install empty or final-bearing claim | Allocate a fresh generation in the successful registry CAS |
 | Topology pending | Resume topology before claiming seal | Persisted split/merge intent survives physical-close failures |
 | Initializing | Creation owner completes initialization first | Adapters refuse seal admission while initialization is incomplete |
-| Same seal claim | Renew exact operation, only once its content is valid on this instance | New generation exceeds every earlier reservation/fence; a retry refused by this instance's limits leaves the claim unrenewed |
+| Same seal claim | Renew exact operation, only once its content is valid on this instance | New generation exceeds every earlier reservation/fence; a retry refused by this instance's limits leaves the claim unrenewed; only a close is an exact retry, and a plain append with the final's body is refused as Sealing |
 | Other live final-bearing claim | Refuse conflict | Preserve the other operation's promised record |
 | Abandoned final-bearing claim | Reserve generation, fence physical committer, inspect closed acknowledgement | Only the winning reservation may install; a committed old final is completed on its owner's behalf |
 | Final append ambiguous or cancelled | Leave owed-final claim | Exact retry can discover durable progress; cancellation is never proof of rejection |

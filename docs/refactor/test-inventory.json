@@ -661,6 +661,21 @@
     ]
   },
   {
+    "name": "a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5daa1f81f3bd61e9a86269cecb43501b138298edef19d86efae62774234a1b05",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_close_before_enqueue(name);",
+      "wait_parked(crate::failpoints::Fp::CloseBeforeEnqueue, name, 1).await;",
+      "crate::failpoints::release_close_before_enqueue(name);"
+    ],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_plain_seal_cannot_finish_someone_elses_final",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

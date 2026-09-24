@@ -835,6 +835,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Plain-append identity fixture owns the parked close's request handle; it is released and joined after the plain append answers. Concurrent execution is required to hold the close at its enqueue failpoint while the plain append runs.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
       "path": "src/dst/tests/seal_cancellation.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",

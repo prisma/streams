@@ -373,3 +373,77 @@ async fn two_record_close(
     )
     .await
 }
+
+/// A plain append is never its stream's owed final. Its body, content type
+/// and coordination headers equal those of a raw close-with-content parked
+/// before its enqueue, and the close flag is not part of the operation
+/// identity they share. It must be refused as every append during Sealing
+/// is, and neither renew the claim nor land a record; the parked close then
+/// seals with its final written once.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "plain-append identity fixture; the parked close is spawned and joined after the plain append answers; running it inline cannot hold it at its failpoint while the append runs"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_append_with_the_owed_finals_body_is_refused_during_sealing() {
+    let _serial = gap_lock().lock().await;
+    let name = "plainfinal";
+    let path = format!("/v1/stream/{name}");
+    let (state, addr) = http_rig(mem()).await;
+    let ct = [("content-type", "application/json")];
+    let (status, _, _) = hreq(addr, "PUT", &path, &ct, br#"[{"n":0}]"#).await;
+    assert!(status == 200 || status == 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let claim = async || {
+        state.registry.invalidate(&sref);
+        let d = state.registry.get(&sref).await.unwrap().unwrap();
+        d.sealing
+            .as_ref()
+            .map(|c| (c.operation_id.clone(), c.claim_generation, c.claimed_ms))
+    };
+    crate::failpoints::park_close_before_enqueue(name);
+    let close = tokio::spawn(two_record_close(addr, path.clone()));
+    wait_parked(crate::failpoints::Fp::CloseBeforeEnqueue, name, 1).await;
+    let installed = claim().await;
+    assert!(installed.is_some(), "the close published no claim");
+
+    let (other, _, _) = hreq(addr, "POST", &path, &ct, br#"[{"n":1}]"#).await;
+    let (plain, _, plain_body) =
+        hreq(addr, "POST", &path, &ct, br#"[{"fin":"a"},{"fin":"b"}]"#).await;
+    let after_plain = claim().await;
+    crate::failpoints::release_close_before_enqueue(name);
+    let (close_status, _, close_body) = close.await.unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    let (_, _, records) = hreq(addr, "GET", &path, &[], b"").await;
+    let records: Vec<serde_json::Value> = serde_json::from_slice(&records).unwrap();
+    let observed = format!(
+        "another append answered {other}; the plain append answered {plain} {}; claim \
+         installed {installed:?}, after the plain append {after_plain:?}; the close \
+         answered {close_status} {}; sealed={}, sealing={:?}, records={records:?}",
+        String::from_utf8_lossy(&plain_body),
+        String::from_utf8_lossy(&close_body),
+        d.sealed,
+        d.sealing,
+    );
+    assert_eq!(other, 409, "a plain append during Sealing: {observed}");
+    assert_eq!(plain, other, "the plain append was not refused: {observed}");
+    assert_eq!(
+        after_plain, installed,
+        "the plain append moved the claim: {observed}"
+    );
+    assert!(
+        (close_status == 200 || close_status == 204) && d.sealed && d.sealing.is_none(),
+        "the close did not seal: {observed}"
+    );
+    assert_eq!(
+        records,
+        [
+            serde_json::json!({"n": 0}),
+            serde_json::json!({"fin": "a"}),
+            serde_json::json!({"fin": "b"}),
+        ],
+        "{observed}"
+    );
+    engine_shutdown(&state).await;
+}

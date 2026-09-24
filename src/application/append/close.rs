@@ -68,8 +68,13 @@ pub(super) async fn prepare_close(
             );
         }
     }
+    // Only a close resumes an owed final. The close flag is not part of the
+    // operation identity, so a plain append with the final's body and
+    // coordination would otherwise pass as its exact retry: it would skip
+    // the Sealing refusal, renew the claim and land the record twice.
     let owed_claim = desc.sealing.as_ref().filter(|sl| {
-        sl.owes_final()
+        close
+            && sl.owes_final()
             && (sl.operation_id == this_close_op
                 || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|a| a.op_id.as_str()))
     });
