@@ -7,19 +7,20 @@ The manifest entries, checks and bounds are in
 [`verification/assumptions.md`](../../assumptions.md), and the last complete
 runs in `verification/receipts/TLA-00N.json`.
 
-The models describe the code after three fixes that the models found:
+The models describe the code after four fixes that the models found:
 "A seal takeover's fence outlives the engine that recorded it" (TLA-002-F1),
-"A raw close that takes over an abandoned final claim writes its own record"
-(TLA-003-F2) and "A product seal refuses an over-ceiling final before it
-publishes its intent" (TLA-003-F3). Each fix's earlier behaviour is now a
-negative control.
+"A SealSuperseded refusal waits until the fence behind it is durable"
+(TLA-002-F2), "A raw close that takes over an abandoned final claim writes its
+own record" (TLA-003-F2) and "A product seal refuses an over-ceiling final
+before it publishes its intent" (TLA-003-F3). Each fix's earlier behaviour is
+now a negative control.
 
 ## Status
 
 | ID | Title | Status | Result |
 |---|---|---|---|
 | TLA-001 | Registry CAS, attempt-local outcomes, and incarnation fencing | pass-with-recorded-scope | Both baselines pass. Each negative control fails on its property. Every witness is reached. |
-| TLA-002 | Seal claims, renewal, and competing takeover reservations | counterexample | Every baseline passes, including engine replacement, crash failover and the liveness shapes. F1 is fixed. **F2** (new) is open: a `SealSuperseded` refusal can precede the durability of the fence that caused it, and an older generation of the same operation can then close the segment with no claim standing. |
+| TLA-002 | Seal claims, renewal, and competing takeover reservations | pass-with-recorded-scope | Every baseline passes, including engine replacement, crash failover, a fence group lost or rejected before its durability, and the liveness shapes. F1 and F2 are fixed; each fix's earlier behaviour is a negative control. |
 | TLA-003 | Final-record sealing, ambiguous append outcomes, and owed debt | counterexample | Every baseline passes. The two shapes with configuration skew between instances exclude the properties F4 or F5 violate. F2 and F3 are fixed. **F4** and **F5** are open and need an owner decision. |
 
 ## How to run
@@ -42,8 +43,10 @@ still violates its named property.
 ## Results
 
 The receipts were recorded on `ab73296` with uncommitted changes: the Kani
-proof modules committed ahead of this work, the TLA-003-F3 fix, and these
-verification files. Line numbers in this README refer to that tree.
+proof modules committed ahead of this work, the TLA-003-F3 and TLA-002-F2
+fixes, and these verification files. Line numbers in this README refer to
+that tree. TLA-001's receipt predates the TLA-002-F2 fix, which touches none
+of its inputs.
 
 ### TLA-001
 
@@ -72,41 +75,45 @@ Receipt `verification/receipts/TLA-002.json`: run on `ab73296773bc` plus uncommi
 
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-small` | baseline | pass | pass | 895,724 | 64.0 |
-| `baseline-faults` | baseline | pass | pass | 3,875,480 | 246.1 |
-| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 158.3 |
-| `baseline-xproc` | baseline | pass | pass | 523,650 | 41.0 |
-| `baseline-retire` | baseline | pass | pass | 5,811,402 | 419.4 |
-| `baseline-engine` | baseline | pass | pass | 3,773,720 | 310.7 |
-| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 1.9 |
-| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 175.5 |
-| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 2.9 |
-| `baseline-xproc-held` | baseline | pass | pass | 1,094,008 | 56.1 |
-| `baseline-liveness-held` | baseline | pass | pass | 6,024 | 1.8 |
-| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 17,953 | 1.7 |
-| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,512 | 2.3 |
-| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,671 | 1.2 |
-| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,526 | 1.3 |
-| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 21,937 | 2.0 |
-| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,738 | 2.1 |
-| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 400,103 | 16.3 |
-| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,856,637 | 123.6 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,379 | 1.2 |
-| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,337 | 1.1 |
-| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,400 | 1.4 |
-| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 35,006 | 2.5 |
-| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,184 | 1.4 |
-| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,442 | 1.1 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,520 | 1.3 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 475 | 0.9 |
-| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,143 | 1.1 |
-| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 473 | 0.9 |
-| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.0 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 320 | 0.9 |
-| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,772 | 1.8 |
-| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 639 | 1.1 |
-| `known-defect-F2-refusal-before-fence-durable` | known-defect | violation:ClosureAuthorized | violation:ClosureAuthorized | 128,919 | 5.7 |
-| `known-defect-F2-release-after-durable-final` | known-defect | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 289,272 | 10.2 |
+| `baseline-small` | baseline | pass | pass | 895,724 | 150.0 |
+| `baseline-faults` | baseline | pass | pass | 3,875,480 | 564.2 |
+| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 381.0 |
+| `baseline-xproc` | baseline | pass | pass | 523,650 | 123.9 |
+| `baseline-retire` | baseline | pass | pass | 5,811,402 | 1237.4 |
+| `baseline-engine` | baseline | pass | pass | 3,773,720 | 933.4 |
+| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 3.9 |
+| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 508.4 |
+| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 7.9 |
+| `baseline-xproc-held` | baseline | pass | pass | 1,210,271 | 181.5 |
+| `baseline-retire-held` | baseline | pass | pass | 7,770,035 | 1228.5 |
+| `baseline-liveness-held` | baseline | pass | pass | 8,791 | 5.5 |
+| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 18,049 | 4.2 |
+| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,316 | 5.7 |
+| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,141 | 2.8 |
+| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,237 | 2.4 |
+| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 21,911 | 4.9 |
+| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,927 | 5.0 |
+| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 399,899 | 46.6 |
+| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,859,595 | 360.8 |
+| `nc-refusal-at-staging-closure` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 141,164 | 16.8 |
+| `nc-refusal-at-staging-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 311,674 | 30.9 |
+| `nc-cache-survives-rejected-group` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 186,069 | 22.5 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,453 | 2.5 |
+| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,214 | 2.3 |
+| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,001 | 3.2 |
+| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 35,000 | 5.9 |
+| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,277 | 2.9 |
+| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,388 | 2.3 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,406 | 2.5 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 575 | 1.7 |
+| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,066 | 2.0 |
+| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 513 | 1.7 |
+| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.6 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 286 | 1.6 |
+| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,466 | 4.0 |
+| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 530 | 1.8 |
+| `witness-SupersededAfterFenceDurable` | witness | violation:Witness_SupersededAfterFenceDurable | violation:Witness_SupersededAfterFenceDurable | 15,062 | 4.1 |
+| `witness-FenceGroupRejected` | witness | violation:Witness_FenceGroupRejected | violation:Witness_FenceGroupRejected | 4,346 | 2.9 |
 
 ### TLA-003
 
@@ -114,49 +121,49 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
 
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-lanes` | baseline | pass | pass | 661,936 | 70.6 |
-| `baseline-expanded` | baseline | pass | pass | 1,631,963 | 251.3 |
-| `baseline-lanes-engine` | baseline | pass | pass | 1,694,525 | 600.3 |
-| `baseline-renewal` | baseline | pass | pass | 4,966,567 | 1012.1 |
-| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 667.7 |
-| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 130.9 |
-| `baseline-product-release` | baseline | pass | pass | 17,197 | 4.9 |
-| `baseline-shared-lane` | baseline | pass | pass | 3,676,695 | 472.9 |
-| `baseline-validation` | baseline | pass | pass | 10,676 | 3.4 |
-| `baseline-validation-capacity` | baseline | pass | pass | 1,603 | 2.4 |
-| `baseline-validation-ceiling` | baseline | pass | pass | 64,862 | 16.1 |
-| `baseline-validation-product` | baseline | pass | pass | 13,166 | 8.0 |
-| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 448 | 3.1 |
-| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 730 | 3.4 |
-| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,413 | 4.8 |
-| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 206,124 | 51.0 |
-| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 41,916 | 14.1 |
-| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 35,585 | 11.8 |
-| `nc-admission-refusal-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 268,091 | 44.3 |
-| `nc-admission-refusal-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,408,244 | 363.8 |
-| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,538 | 5.2 |
-| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 29 | 2.7 |
-| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 10,712 | 6.2 |
-| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 324,571 | 80.8 |
-| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 613 | 2.2 |
-| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 73,128 | 14.7 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,819 | 12.5 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 544 | 2.2 |
-| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 20,474 | 6.2 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,840 | 3.6 |
-| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 12,756 | 4.7 |
-| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 49,558 | 8.2 |
-| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 76 | 1.8 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 212 | 1.7 |
-| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 159,276 | 27.8 |
-| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 175,639 | 44.9 |
-| `witness-OrphanedCloseHealed` | witness | violation:Witness_OrphanedCloseHealed | violation:Witness_OrphanedCloseHealed | 91,678 | 19.6 |
-| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 26 | 2.7 |
-| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,830 | 5.2 |
-| `known-defect-F4-invalid-retry-renews` | known-defect | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 252 | 3.0 |
-| `known-defect-F5-release-while-deliverable` | known-defect | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 2,014 | 3.6 |
-| `known-defect-F5-closed-without-claim` | known-defect | violation:ClosureAuthorized | violation:ClosureAuthorized | 6,997 | 4.6 |
-| `known-defect-F5-plain-over-final` | known-defect | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 24,011 | 8.0 |
+| `baseline-lanes` | baseline | pass | pass | 661,936 | 93.5 |
+| `baseline-expanded` | baseline | pass | pass | 1,631,963 | 234.5 |
+| `baseline-lanes-engine` | baseline | pass | pass | 1,694,525 | 339.6 |
+| `baseline-renewal` | baseline | pass | pass | 4,966,567 | 683.8 |
+| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 485.7 |
+| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 94.5 |
+| `baseline-product-release` | baseline | pass | pass | 17,197 | 5.0 |
+| `baseline-shared-lane` | baseline | pass | pass | 3,676,695 | 275.3 |
+| `baseline-validation` | baseline | pass | pass | 10,676 | 1.9 |
+| `baseline-validation-capacity` | baseline | pass | pass | 1,603 | 1.4 |
+| `baseline-validation-ceiling` | baseline | pass | pass | 64,862 | 3.7 |
+| `baseline-validation-product` | baseline | pass | pass | 13,166 | 1.9 |
+| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 580 | 1.1 |
+| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 673 | 1.1 |
+| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,556 | 1.4 |
+| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 212,545 | 9.5 |
+| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 36,149 | 2.8 |
+| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 35,056 | 3.0 |
+| `nc-admission-refusal-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 268,957 | 11.2 |
+| `nc-admission-refusal-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,402,305 | 56.4 |
+| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,568 | 1.5 |
+| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 21 | 0.9 |
+| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 11,208 | 1.8 |
+| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 322,197 | 16.4 |
+| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 571 | 1.1 |
+| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 77,469 | 4.7 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,639 | 4.6 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 434 | 1.1 |
+| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 21,669 | 2.3 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,936 | 1.8 |
+| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 14,783 | 1.9 |
+| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 49,763 | 3.3 |
+| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 98 | 1.0 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 235 | 1.2 |
+| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 159,404 | 8.2 |
+| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 164,021 | 8.6 |
+| `witness-OrphanedCloseHealed` | witness | violation:Witness_OrphanedCloseHealed | violation:Witness_OrphanedCloseHealed | 91,527 | 4.8 |
+| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 19 | 1.0 |
+| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,969 | 1.8 |
+| `known-defect-F4-invalid-retry-renews` | known-defect | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 257 | 1.1 |
+| `known-defect-F5-release-while-deliverable` | known-defect | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 2,074 | 1.2 |
+| `known-defect-F5-closed-without-claim` | known-defect | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,342 | 1.8 |
+| `known-defect-F5-plain-over-final` | known-defect | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 24,297 | 2.2 |
 
 ## Findings
 
@@ -196,80 +203,51 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
   baseline, so the situation is no longer reachable. The missing re-check stays
   a defence-in-depth observation, not a finding.
 
-### TLA-002-F2 (new, open): a `SealSuperseded` refusal can precede the durability of its fence
+### TLA-002-F2 (fixed): a `SealSuperseded` refusal preceded the durability of its fence
 
-- **Classification.** Production-defect candidate: a remaining window in the
-  F1 fix. It is a TLC counterexample checked against the code. It has no
-  executable reproduction. The durability group raised the same question
-  (their TLA-005-F4); this is the answer.
-- **Checks.** `MaxHeldFence = 1` lets one fence group be staged before it is
-  durable.
-  - `known-defect-F2-refusal-before-fence-durable` (two instances, one crash)
-    violates `ClosureAuthorized` in 19 states. Trace:
-    `evidence/TLA-002-F2_refusal-before-fence-durable.txt`.
-  - `known-defect-F2-release-after-durable-final` (one instance, one engine
-    replacement) violates `ReleaseOnlyWhenUndeliverable` in 19 states: the
-    older generation commits on the new engine first, then the newer
-    attempt's refusal releases the claim although the record is durable.
-    Trace: `evidence/TLA-002-F2_release-after-durable-final.txt`.
-  - `baseline-xproc-held` passes every other safety property in the
-    two-instance shape: `SuccessProvesOutcome`, `FinalClosedTruthful`,
-    `FenceBarrier` and `ReleaseOnlyWhenUndeliverable` hold there. A direct TLC
-    run of the one-instance shape with `MaxHeldFence = 1` (not in the manifest,
-    7,202,668 states) found no violation other than `ClosureAuthorized`,
-    `ReleaseOnlyWhenUndeliverable` and `PlainCannotCompleteOwedFinal`.
-  - `baseline-liveness-held` passes: the window does not stop the collection
-    from sealing. The takeover's install declines on the changed claim,
-    `claim_seal` restarts, and the next iteration installs afresh.
-- **Code path.**
-  1. The committer stages a fence: it raises the engine cache
-     (`maintenance.rs` 153-155) and puts the row in its group.
-  2. A later claim-authorized append in the same group, or in a group staged
-     before that one is durable, is refused `SealSuperseded` from the raised
-     cache and answered at once (`transaction/append.rs` 139-142;
-     `maintenance.rs` 185-188 for a close). Acknowledgements wait for
-     durability; this refusal does not.
-  3. `SealSuperseded` is definitive. `seal_final` releases the exact claim
-     (`lifecycle.rs` 126-135); `complete_raw_close` does the same
-     (`raw_close.rs` 37-46).
-  4. The fence's group never becomes durable: the owner crashes before the
-     WAL flush, or the write fails (`finalize.rs` `write_failed`).
-  5. The next engine reads the old row. An older generation of the same
-     operation, stalled before its enqueue, passes the fence and closes the
-     segment while no claim stands.
-- **Schedule (the trace).** P0's request on instance B claims generation 1
-  and stalls before `submit`. P0's exact retry on A renews the claim to 2 and
-  stalls too. The claim lapses. T1 reserves 3 and fences on A. The
-  generation-2 final enqueues behind the fence, is refused `SealSuperseded`
-  from the staged cache, and releases (P0, 2). A crashes before the fence group
-  is durable, and the ring moves the shard to B. The generation-1 final
-  enqueues on B's new engine, whose row reads 0, and closes the segment.
-- **Consequences.** A closed segment with no claim and no seal. P0's
-  generation-1 mark declines (`InvalidClaim`, 500). A later plain `:seal` can
-  publish Sealed over P0's record (`PlainCannotCompleteOwedFinal`), as in F5.
-  An exact retry of P0 before that completes the seal. Without an older
-  attempt in flight the early release is harmless: the outcome equals a
-  refusal by a durable fence, whose takeover then replaces the claim.
-- **Why the baselines pass.** Baselines stage a committer element and make it
-  durable in one step (ASM-SEAL-REPLY-ORDER). That is exact for every answer
-  except this one.
-- **Proposed regression.** In `src/dst/tests/seal_fencing.rs`: two exact
-  product seal-with-final requests of one operation, both parked at
-  `Fp::CloseBeforeEnqueue` (the second renewed the claim). Age the claim and
-  start a takeover. Hold the commit gate (`test_hold_commit`) so the fence and
-  the second request's final share one group, and arm `fail_next_group_for`
-  for the segment so that group fails. Retire the engine
-  (`state.shards.retire`), release the first request, and assert that it is
-  refused and the segment stays open.
-- **Decision needed (owner).** Options:
-  1. Send `SealSuperseded` through the durability barrier (`effects.acks`), so
-     a lost group answers `Moved` or `Internal`, which retain the claim.
-  2. Treat `SealSuperseded` as retaining the claim. The takeover's install
-     replaces it anyway.
-  3. TLA-003-F5's options (b) or (c) also close this case.
-
-  The `FinalDisposition` comment in `claims.rs` says every definitive verdict
-  is durability-barriered. `SealSuperseded` is not.
+- **Defect.** The committer raises the fence cache while it stages the
+  fence's group. A stale claim-authorized final refused `SealSuperseded` from
+  that cache was answered at once, before the fence row was durable.
+  `SealSuperseded` is definitive, so the handler released its claim. If the
+  fence group was then lost (the owner crashed before the WAL flush, or the
+  write failed), the next engine read the old row, and an older generation of
+  the same operation passed it. A group rejected without an engine retirement
+  (a maintenance-accounting divergence) also left the raised fence cached with
+  no row behind it. The durability group raised the same schedule as their
+  TLA-005-F4.
+- **Consequences before the fix.** A segment closed by the older generation
+  with no claim standing (`ClosureAuthorized`, 19 states); with an engine
+  replacement instead of a crash, the release came after that record was
+  durable (`ReleaseOnlyWhenUndeliverable`, 19 states); a later plain `:seal`
+  could publish over the record (`PlainCannotCompleteOwedFinal`).
+  `SuccessProvesOutcome`, `FinalClosedTruthful`, `FenceBarrier` and liveness
+  held.
+- **Fix.** Commit "A SealSuperseded refusal waits until the fence behind it is
+  durable". `seal_authorizes` and `close` put `SealSuperseded` in the group's
+  replies (`maintenance.rs` 109-146, 191-223), so it is sent once everything
+  staged before it is durable; a failed group answers `Internal` and a retired
+  engine `Moved`, which keep the claim. An unreadable fence row still answers
+  `Internal` at once. `CommitTransaction::reject` drops the rejected group's
+  cached seal fences (`transaction/mod.rs` 191-207), so the next consult
+  re-reads the row.
+- **Model.** `ImmediateRefusal` no longer includes `SealSuperseded`.
+  `MaxHeldFence = 1` stages one fence group before its durability; the group
+  then becomes durable (`FenceGroupDurable`), is lost with its engine
+  (`Replace`, `Crash`), or is rejected without a retirement
+  (`FenceGroupRejected`), after which the cache is `FenceAfterRejectedGroup`,
+  the row.
+- **Checks.** `baseline-xproc-held`, `baseline-retire-held` and
+  `baseline-liveness-held` pass every property. The witnesses
+  `SupersededAfterFenceDurable` and `FenceGroupRejected` are reached.
+- **Pre-fix behaviour.** `nc-refusal-at-staging-closure` and
+  `nc-refusal-at-staging-release` send `SealSuperseded` at staging and fail on
+  `ClosureAuthorized` and `ReleaseOnlyWhenUndeliverable`.
+  `nc-cache-survives-rejected-group` keeps a rejected group's fence cached and
+  fails on `ClosureAuthorized` (20 states). The traces are
+  `evidence/TLA-002-F2_pre-fix_*`.
+- **Regressions.** `dst::dst_tests::seal_fencing::a_superseded_final_waits_for_its_fence_to_be_durable`,
+  `shard::durability_frontier_tests::a_superseded_close_waits_for_its_fence_to_be_durable`
+  and `shard::durability_frontier_tests::a_failed_fence_group_refuses_nothing`.
 
 ### TLA-003-F2 (fixed): a raw close that took over another operation's claim refused its own final
 
@@ -393,19 +371,17 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
   release the original, and assert that the claim still stands when the
   segment closes.
 
-### Decision needed for F4, F5 and TLA-002-F2
+### Decision needed for F4 and F5
 
 Each option fixes a different part:
 
 - (a) Validate configuration-dependent content before renewing. This fixes F4
   only.
 - (b) Make a renewal raise the shard fence, so an older generation of the same
-  operation can no longer commit. This removes the closed-without-claim forms
-  of F5 and TLA-002-F2 (for the same operation). F5's release of deliverable
-  debt remains.
+  operation can no longer commit. This removes F5's closed-without-claim form;
+  its release of deliverable debt remains.
 - (c) Do not abandon a claim on a definitive refusal of a renewed exact retry
-  while an older attempt may be in flight. This fixes F5 and TLA-002-F2 at the
-  release.
+  while an older attempt may be in flight. This fixes F5 at the release.
 
 ### Model corrections and observations
 
@@ -450,8 +426,9 @@ Each option fixes a different part:
   pre-intent refusal), `capacity` (ingest capacity), `ceiling` (record
   ceiling, and on the raw surface every deferred content refusal).
 - **Committer.** One queue element per step: decide, apply, durable, reply
-  (ASM-SEAL-REPLY-ORDER). `MaxHeldFence = 1` splits a fence into staging and
-  durability for the TLA-002-F2 check.
+  (ASM-SEAL-REPLY-ORDER). `MaxHeldFence = 1` splits one fence into staging and
+  durability; while it is staged only an immediate refusal is decided behind
+  it.
 - **Merged steps.** Verdict classification with its release, mark or answer;
   the fence reply with the mark on behalf; `publish_sealed`'s CAS with its
   proof read (monotonic).
@@ -478,15 +455,15 @@ Each option fixes a different part:
 | `FClaim` | product: `seal_final` → `enter_sealing` (`lifecycle.rs` 383) → `claim_seal` (193) → `enter_sealing_cas` (168) → `decide_claim` (`claims.rs` 68-126). Raw, fresh: `install_intent` (`close.rs` 166-226) → `begin_sealing_for_close` (`lifecycle.rs` 414); the plan then owes the final (`close.rs` 200-211). Raw, owed: `renew_owed_claim` (`lifecycle.rs` 449), then `parse_content` | one `mutate_incarnation`; the local verdict after a renewal is merged |
 | `TReserve` | `take_over_abandoned` reservation CAS (`lifecycle.rs` 272-289); a decline returns to `claim_seal`'s loop (200) | one CAS |
 | `TFence` | `fence_segment_for_key` (856-893): `resolve(Adoption::Internal)` (874-879; a non-owner answers Resumable) → `try_seal_fence` (`shard.rs` 1829) | enqueue at the owner |
-| `ProcessFence` | `CommitTransaction::fence` (`maintenance.rs` 136-167): `seal_fence` (89-108: the cache, else the durable row; a read error answers `Internal`), raise the cache, write the row in the group, acknowledge in `effects.acks` | one queue element; the reply after the group's durability |
-| `FenceGroupDurable` | the fence group's durability releasing its reply (only with `MaxHeldFence = 1`) | separate step for the F2 window |
+| `ProcessFence` | `CommitTransaction::fence` (`maintenance.rs` 155-186): `seal_fence` (89-108: the cache, else the durable row; a read error answers `Internal`), raise the cache, write the row in the group, acknowledge in `effects.acks` | one queue element; the reply after the group's durability |
+| `FenceGroupDurable`, `FenceGroupRejected` | the staged fence group becomes durable and its replies are released (`DurableEffects`), or it is rejected without an engine retirement: `CommitTransaction::reject` (`transaction/mod.rs` 191-207) answers `Internal` and drops the cached fences (only with `MaxHeldFence = 1`) | separate steps for a staged fence group |
 | `TFenceLost` | a fence answered `Moved` or `Internal` ("fence refused") or dropped → Resumable (`lifecycle.rs` 888-892) | local |
 | `TInstall` | `install_reserved_claim` (349-381) with the newest-reservation check (365); a raw final's plan then owes its final (`close.rs` 200-211) | one CAS |
 | `TBehalfMark` | a closed fence: `mark_final_committed(old)` (526) then `run_seal(old)` (`lifecycle.rs` 297-313) | the reply is local; one CAS |
 | `FCheck` | product `prepare_close` `seal_auth` check (`close.rs` 55-67); a failure is `SealSuperseded` and `seal_final` releases exactly (`lifecycle.rs` 126-135) | a read, then the release CAS |
 | `Enqueue` | `execute_once` (`append.rs` 246-395) → `submit` (`submit.rs` 18-25: `NotOwner` for a non-owner) → sheds → `try_enqueue` (79-85) | enqueue at the owner; unbounded pre-queue window |
-| `ProcessAppend` | `CommitTransaction::append` (`transaction/append.rs` 19-144): `decide_producer` (`commit_plan.rs` 88-143), closed tail (71-95), deferred content error (96-102), `seal_authorizes` (139-142; `maintenance.rs` 112-127; `seal_authorized` `commit_plan.rs` 145-150) | one queue element |
-| `ProcessClose` | `CommitTransaction::close` (`maintenance.rs` 172-201): the fence is consulted only for an open segment | one queue element |
+| `ProcessAppend` | `CommitTransaction::append` (`transaction/append.rs` 19-142): `decide_producer` (`commit_plan.rs` 88-143), closed tail (71-95), deferred content error (96-102), `seal_authorizes` (139-141; `maintenance.rs` 109-146: `SealSuperseded` joins the group's replies; `seal_authorized` `commit_plan.rs` 145-150) | one queue element; a refusal other than `BadBody` or `Internal` waits for the group's durability |
+| `ProcessClose` | `CommitTransaction::close` (`maintenance.rs` 191-223): the fence is consulted only for an open segment; `SealSuperseded` joins the group's replies | one queue element |
 | `FAnswer`, `FRelease`, `FMark`, `FRawDup` | `seal_final` (`lifecycle.rs` 84-161) and `complete_raw_close` (`raw_close.rs` 15-87): `final_err_disposition` (`claims.rs` 226-245), `definitively_rejected` (`contract.rs` 285-297, via `product.rs` 1813), `abandon_seal_intent` (486-517), `mark_final_committed` (526-566) | local classification merged with its CAS |
 | `RsPrep`, `RsClose`, `RsCloseFailed`, `RsPublish` | `run_seal` (576) → `prepare_execution` (593-701) → `close_claimed_segments` (705-770) → `topology::seal_segment_identity` (`topology.rs` 43-91) → `close_segment_on_engine` (99) or `relay_segment_close` (143) → `publish_sealed` (774-848) | read and CAS merged; enqueue at the owner; CAS and proof read merged |
 | `APrep`, `AReceive` | product `refuse_if_sealed` (`product.rs` 1937); raw `sealed_reject_new` | a read; local |
@@ -551,8 +528,8 @@ the committer, each handler's own step, lease time and T2's issue.
 | `live_small` | 1 | P0 one request; 1 crash, 1 engine replacement |
 | `live_contenders` | 1 | P0 and T1 one request each; 1 engine replacement |
 | `live_faults` | 1 | P0 one request; 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout |
-| `held_xproc`, `kd_refusal_before_fence_durable` | 2 | 1 crash, 1 staged fence group |
-| `kd_release_after_durable_final` | 1 | 1 crash, 1 engine replacement, 1 staged fence group |
+| `held_xproc` | 2 | 1 crash, 1 staged fence group |
+| `held_retire` | 1 | 1 crash, 1 engine replacement, 1 staged fence group |
 | `live_held` | 1 | as `live_small`, plus 1 staged fence group |
 
 **TLA-003** (`MC_FinalSeal`): shapes A, A2, B, C, P, PW, SL, V, V4, V5 and VP are
@@ -573,6 +550,8 @@ substitutes one operator; its configuration checks only the target property.
 | TLA-002 `nc-no-newest-reservation`, `-live-fenced` | `InstallAllowed <- InstallWithoutNewest` | `NewestInstall`, `LiveClaimNeverFenced` |
 | TLA-002 `nc-install-before-fence-durable`, `-inqueue` | `FenceAcknowledged <- FenceNotAwaited` | `ClosureAuthorized`, `QueuedFinalDecidedBeforeReplacement` |
 | TLA-002 `nc-engine-resident-fence-*` (F1 pre-fix) | `OpenedEngineFence <- EngineResidentFence` | `ClosureAuthorized` (xproc, retire), `ReleaseOnlyWhenUndeliverable`, `SuccessProvesOutcome` (engine) |
+| TLA-002 `nc-refusal-at-staging-*` (F2 pre-fix) | `ImmediateRefusal <- RefusalAtStaging` | `ClosureAuthorized` (xproc, staged fence), `ReleaseOnlyWhenUndeliverable` (retire, staged fence) |
+| TLA-002 `nc-cache-survives-rejected-group` (F2 pre-fix) | `FenceAfterRejectedGroup <- CacheSurvivesRejection` | `ClosureAuthorized` (xproc, staged fence) |
 | TLA-003 `nc-gap-definitive` | `RawDisposition <- GapIsDefinitive` | `ReleaseOnlyWhenUndeliverable` |
 | TLA-003 `nc-moved-definitive` | `RawDisposition <- MovedIsDefinitive` | `ReleaseOnlyWhenUndeliverable` |
 | TLA-003 `nc-release-by-operation-only` | `ReleaseMatches <- ReleaseByOpOnly` | `ClosureAuthorized` |
@@ -593,58 +572,66 @@ substitutes one operator; its configuration checks only the target property.
   response class; liveness across instances.
 - The fence-row read failure may happen at any fence consult (production:
   only on a cache miss). This over-approximates.
-- The staged-fence window (`MaxHeldFence`) lets only an immediate refusal at
-  the head of the queue be decided while the fence's group is not durable. It
-  is enough to exhibit TLA-002-F2 and is not a complete model of pipelined
-  groups.
+- The staged-fence window (`MaxHeldFence`) stages one fence group at a time
+  and decides only an immediate refusal at the head of the queue behind it.
+  It is not a complete model of pipelined groups.
 - Bounds: two contenders, at most three requests per operation, generations
   ≤ 5 or 6, at most one fault of each kind, at most two instances.
 
 ## Coverage
 
 Coverage runs used TLC's `-coverage 1` directly, outside the driver, on the
-19 safety baselines of `SealProtocol.tla` (the liveness shapes are excluded).
+20 safety baselines of `SealProtocol.tla` (the liveness shapes are excluded).
 Each run passed. An action counts as covered when some run generated a state
 with it; an expression counts as evaluated when some run evaluated it. The runs
 are diagnostic; every verdict above comes from the receipts.
 
-| Coverage run | Verdict | Distinct states | Actions with no generated state (of 31) |
+The TLA-002-F2 fix changed only the staged-fence steps: `ImmediateRefusal`,
+`FenceGroupDurable` and the new `FenceGroupRejected`. The 18 runs with
+`MaxHeldFence = 0` never reach them, so their reachable graph is unchanged;
+those runs were made on the model just before that fix, and their line
+numbers are mapped onto the current file. The two staged-fence baselines were
+rerun on the current model.
+
+| Coverage run | Verdict | Distinct states | Actions with no generated state (of 32) |
 |---|---|---|---|
-| `TLA-002/baseline-small` | pass | 895,724 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost, Timeout |
-| `TLA-002/baseline-faults` | pass | 3,875,480 | APrep, AReceive, Crash, FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost, Timeout |
-| `TLA-002/baseline-expanded` | pass | 2,306,562 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost, Timeout |
-| `TLA-002/baseline-xproc` | pass | 523,650 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost, Timeout |
-| `TLA-002/baseline-retire` | pass | 5,811,402 | APrep, AReceive, Cancel, FRawDup, FValidate, FenceGroupDurable, Timeout |
-| `TLA-002/baseline-engine` | pass | 3,773,720 | APrep, AReceive, Cancel, FRawDup, FValidate, FenceGroupDurable, Timeout |
-| `TLA-002/baseline-xproc-held` | pass | 1,094,008 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, Replace, RsCloseFailed, TFenceLost, Timeout |
-| `TLA-003/baseline-lanes` | pass | 661,936 | FCheck, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-expanded` | pass | 1,631,963 | FCheck, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-lanes-engine` | pass | 1,694,525 | Cancel, Crash, FCheck, FenceGroupDurable, Timeout |
-| `TLA-003/baseline-renewal` | pass | 4,966,567 | APrep, AReceive, FAnswer, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-renewal-product` | pass | 3,483,721 | APrep, AReceive, FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-product-lanes` | pass | 702,029 | FAnswer, FRawDup, FValidate, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-product-release` | pass | 17,197 | FAnswer, FRawDup, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-shared-lane` | pass | 3,676,695 | APrep, AReceive, FAnswer, FenceGroupDurable, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-validation` | pass | 10,676 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
-| `TLA-003/baseline-validation-capacity` | pass | 1,603 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
-| `TLA-003/baseline-validation-ceiling` | pass | 64,862 | APrep, AReceive, Crash, FCheck, FenceGroupDurable, TFenceLost, Timeout |
-| `TLA-003/baseline-validation-product` | pass | 13,166 | APrep, AReceive, Crash, FAnswer, FRawDup, FenceGroupDurable, TFenceLost, Timeout |
+| `TLA-002/baseline-small` | pass | 895,724 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
+| `TLA-002/baseline-faults` | pass | 3,875,480 | APrep, AReceive, Crash, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
+| `TLA-002/baseline-expanded` | pass | 2,306,562 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
+| `TLA-002/baseline-xproc` | pass | 523,650 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
+| `TLA-002/baseline-retire` | pass | 5,811,402 | APrep, AReceive, Cancel, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Timeout |
+| `TLA-002/baseline-engine` | pass | 3,773,720 | APrep, AReceive, Cancel, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Timeout |
+| `TLA-002/baseline-xproc-held` | pass | 1,210,271 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, Replace, RsCloseFailed, Timeout |
+| `TLA-002/baseline-retire-held` | pass | 7,770,035 | APrep, AReceive, Cancel, FRawDup, FValidate, Timeout |
+| `TLA-003/baseline-lanes` | pass | 661,936 | FCheck, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-expanded` | pass | 1,631,963 | FCheck, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-lanes-engine` | pass | 1,694,525 | Cancel, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, Timeout |
+| `TLA-003/baseline-renewal` | pass | 4,966,567 | APrep, AReceive, FAnswer, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-renewal-product` | pass | 3,483,721 | APrep, AReceive, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-product-lanes` | pass | 702,029 | FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-product-release` | pass | 17,197 | FAnswer, FRawDup, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-shared-lane` | pass | 3,676,695 | APrep, AReceive, FAnswer, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-validation` | pass | 10,676 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
+| `TLA-003/baseline-validation-capacity` | pass | 1,603 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
+| `TLA-003/baseline-validation-ceiling` | pass | 64,862 | APrep, AReceive, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
+| `TLA-003/baseline-validation-product` | pass | 13,166 | APrep, AReceive, Crash, FAnswer, FRawDup, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
 
-Union of the 19 runs: 1,543 expressions, 2 never evaluated. Every action
-generated states in at least one run.
+Union of the 20 runs:
 
 ```
-916:14-916:25  desc' = desc
-918:14-918:29  UNCHANGED faults
+module SealProtocol: 1550 expressions, 2 never evaluated, 2 maximal
+actions with zero generated states: none (of 32)
+  917:14-917:25  desc' = desc
+  919:14-919:29  UNCHANGED faults
 ```
 
-Both belong to `RsPrep`'s `OwedFinal` refusal (`prepare_execution`,
-`lifecycle.rs` 633-638). A final-bearing operation enters `run_seal` under its
-own id only after its record is marked (`FMark`, `TBehalfMark`); raw
-duplicates and plain seals run it as `PLAIN`. The previous revision reached
-this branch only through F1(e), in the engine shape. No run of the fixed model
-reaches it, which agrees with `InstallOnlyOverOwedClaim` holding. The
-production guard stays as defence in depth.
+Both unevaluated expressions belong to `RsPrep`'s `OwedFinal` refusal
+(`prepare_execution`, `lifecycle.rs` 633-638). A final-bearing operation
+enters `run_seal` under its own id only after its record is marked (`FMark`,
+`TBehalfMark`); raw duplicates and plain seals run it as `PLAIN`. The previous
+revision reached this branch only through F1(e), in the engine shape. No run
+of the fixed model reaches it, which agrees with `InstallOnlyOverOwedClaim`
+holding. The production guard stays as defence in depth.
 
 `RegistryCas.tla` has not changed since the previous revision, so its coverage
 was not rerun. Those runs (`baseline-small`, `baseline-expanded`) left five
@@ -664,7 +651,7 @@ references.
 | `MC_RegistryCas_Nc*.tla` | TLA-001 negative controls |
 | `SealProtocol.tla` | TLA-002 and TLA-003 specification |
 | `MC_SealTakeover.tla` | TLA-002 instances |
-| `MC_SealTakeover_Nc*.tla` | TLA-002 negative controls (`NcEngineFence`: F1 pre-fix) |
+| `MC_SealTakeover_Nc*.tla` | TLA-002 negative controls (`NcEngineFence`: F1 pre-fix; `NcRefusalAtStaging`, `NcCacheSurvivesReject`: F2 pre-fix) |
 | `MC_FinalSeal.tla` | TLA-003 instances |
 | `MC_FinalSeal_Nc*.tla` | TLA-003 negative controls (`NcAdmissionRefusal`: F2 pre-fix; `NcCeilingAfterIntent`: F3 pre-fix) |
 | `*.cfg` | one configuration per check; `_nc_` controls, `_w_` witnesses, `_kd_` known defects |

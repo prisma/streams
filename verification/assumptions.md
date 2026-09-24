@@ -581,28 +581,35 @@ actions to these contracts.
 ### ASM-SEAL-REPLY-ORDER
 
 - **Scope:** TLA-002, TLA-003.
-- **Statement:** the shard committer releases acknowledgements (append and
-  duplicate acknowledgements, producer refusals staged in `effects.acks`,
-  `Closed`, fence and close acknowledgements) only after the group is durable,
-  in queue order. An acknowledgement therefore implies that every earlier
-  queued decision is durable. Three refusals are sent at staging, before any
-  durability: `SealSuperseded`, a deferred content error (`BadBody`,
-  `CtMismatch`) and `Internal`. A group stranded by an engine close is answered
-  `Moved` and may still become durable.
+- **Statement:** the shard committer releases a group's replies only after
+  the group is durable, in queue order: acknowledgements (append and duplicate
+  acknowledgements, fence and close acknowledgements) and every refusal that
+  rests on committer state, `SealSuperseded` included. A no-write group joins
+  the newest earlier barrier. Two refusals are sent at staging: a deferred
+  content error (`BadBody`, `CtMismatch`), which rests on no committer state,
+  and `Internal` for an unreadable fence row. A group whose write fails
+  retires its engine and answers `Internal`; a group rejected without a
+  retirement answers `Internal` and drops its streams' cached seal fences; a
+  group stranded by an engine close answers `Moved` and may still become
+  durable.
 - **Origin:** `src/shard/commit_plan.rs` `DurableEffects` (36-79);
-  `src/shard/transaction/append.rs` 96-101 and 139-142;
-  `src/shard/transaction/maintenance.rs` 142-146 and 178-188;
+  `src/shard/transaction/append.rs` 96-101 and 139-141;
+  `src/shard/transaction/maintenance.rs` 109-146 and 191-223;
+  `src/shard/transaction/mod.rs` `reject` (191-207);
+  `src/shard/transaction/finalize.rs` (`join_prior_barrier`, `write_failed`);
   `src/shard.rs` `begin_close` (1876-1935).
 - **Enforcement / evidence:** source inspection; DST
-  `a_fence_waits_for_durability_before_reporting_closed`
-  (`src/dst/tests/durability_fences.rs`).
+  `a_fence_waits_for_durability_before_reporting_closed`,
+  `a_superseded_final_waits_for_its_fence_to_be_durable`, and
+  `shard::durability_frontier_tests::a_superseded_close_waits_for_its_fence_to_be_durable`
+  and `a_failed_fence_group_refuses_nothing`.
 - **Invalidation:** a change to where a committer reply is sent, to the commit
   pipeline, or to SlateDB's durability reporting.
-- **Standing:** established (source and DST). The baseline configurations stage
-  and make durable each queue element in one step. That is exact for every
-  answer except a `SealSuperseded` that a fence staged in a not yet durable
-  group caused: `MaxHeldFence = 1` separates the two steps for a fence group,
-  and that configuration reproduces TLA-002-F2.
+- **Standing:** established (source and tests). Most configurations stage an
+  element and make it durable in one step, which is exact now that no
+  definitive refusal precedes its group's durability. `MaxHeldFence = 1`
+  separates the two steps for one fence group (durable, lost with its engine,
+  or rejected without a retirement); those configurations pass too.
 
 ### ASM-SEAL-ENGINE-HANDOFF
 

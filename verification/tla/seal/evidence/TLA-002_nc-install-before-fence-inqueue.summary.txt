@@ -20,19 +20,19 @@ Per-step view of evidence/TLA-002_nc-install-before-fence-inqueue.txt (action, t
       eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
       h[P0/1]: pc="await" gen=1 rep=NONE rej=FALSE
  6 Issue
-      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+      h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
  7 Lapse
       desc = [ counter |-> 1, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
- 8 FClaim
-      h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+ 8 RsPrep
+      h[T2/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
  9 TReserve
-      h[T1/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      h[T2/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
       desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C0, NONE, 0>>, gen |-> 1, lap |-> TRUE ], sealed |-> FALSE, sealOp |-> NONE ]
 10 TFence
-      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {<<T1, 1>>} ], [ hid |-> <<T1, 1>>, op |-> NONE, gen |-> 2, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
-      h[T1/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {<<T2, 1>>} ], [ hid |-> <<T2, 1>>, op |-> NONE, gen |-> 2, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
 11 TInstall
-      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {<<T1, 1>>} ], [ hid |-> NONE, op |-> NONE, gen |-> 2, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
-      h[T1/1]: pc="check" gen=2 rep=NONE rej=FALSE
-      desc = [ counter |-> 2, claim |-> [ fin |-> TRUE, com |-> FALSE, op |-> <<"product", C1, NONE, 0>>, gen |-> 2, lap |-> FALSE ], sealed |-> FALSE, sealOp |-> NONE ]
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<P0, 1>>, op |-> P0, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {<<T2, 1>>} ], [ hid |-> NONE, op |-> NONE, gen |-> 2, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T2/1]: pc="rs_close" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [fin |-> FALSE, com |-> FALSE, op |-> PLAIN, gen |-> 2, lap |-> FALSE], sealed |-> FALSE, sealOp |-> NONE ]
       hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> TRUE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]

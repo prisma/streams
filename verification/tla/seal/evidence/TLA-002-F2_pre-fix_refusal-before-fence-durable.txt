@@ -1,3 +1,5 @@
+PRE-FIX EVIDENCE. Recorded by the known-defect check TLA-002/known-defect-F2-refusal-before-fence-durable before commit "A SealSuperseded refusal waits until the fence behind it is durable" fixed it. On the current model the negative control TLA-002/nc-refusal-at-staging-closure reproduces this behaviour.
+
 Check: TLA-002/known-defect-F2-refusal-before-fence-durable (known-defect, expects violation of ClosureAuthorized)
 Tool: TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
 Spec: verification/tla/seal/MC_SealTakeover.tla

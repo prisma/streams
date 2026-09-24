@@ -114,7 +114,10 @@ State 1: <Initial predicate>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 2 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -128,7 +131,7 @@ State 1: <Initial predicate>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
+State 2: <Issue line 388, col 5 to line 394, col 68 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<X, 1>> :>
@@ -237,7 +240,10 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -251,7 +257,7 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 3: <FValidate line 413, col 5 to line 430, col 68 of module SealProtocol>
+State 3: <FValidate line 414, col 5 to line 431, col 68 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<X, 1>> :>
@@ -360,7 +366,10 @@ State 3: <FValidate line 413, col 5 to line 430, col 68 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -374,7 +383,7 @@ State 3: <FValidate line 413, col 5 to line 430, col 68 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 4: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
+State 4: <FClaim line 453, col 5 to line 504, col 54 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<X, 1>> :>
@@ -491,7 +500,10 @@ State 4: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -505,7 +517,7 @@ State 4: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 5: <Enqueue line 763, col 5 to line 777, col 55 of module SealProtocol>
+State 5: <Enqueue line 764, col 5 to line 778, col 55 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [ fence |-> 0,
   q |->
@@ -631,7 +643,10 @@ State 5: <Enqueue line 763, col 5 to line 777, col 55 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -645,7 +660,7 @@ State 5: <Enqueue line 763, col 5 to line 777, col 55 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 6: <Replace line 1237, col 5 to line 1260, col 30 of module SealProtocol>
+State 6: <Replace line 1262, col 5 to line 1285, col 30 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<X, 1>> :>
@@ -762,7 +777,10 @@ State 6: <Replace line 1237, col 5 to line 1260, col 30 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -776,7 +794,7 @@ State 6: <Replace line 1237, col 5 to line 1260, col 30 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 7: <FRelease line 821, col 5 to line 825, col 54 of module SealProtocol>
+State 7: <FRelease line 822, col 5 to line 826, col 54 of module SealProtocol>
 /\ lanes = (L :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<X, 1>> :>
@@ -885,7 +903,10 @@ State 7: <FRelease line 821, col 5 to line 825, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (X :> 1 @@ S :> 1 @@ N0 :> 1 @@ N1 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -899,5 +920,5 @@ State 7: <FRelease line 821, col 5 to line 825, col 54 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-2101 states generated, 730 distinct states found, 454 states left on queue.
+1834 states generated, 673 distinct states found, 438 states left on queue.
 The depth of the complete state graph search is 7.

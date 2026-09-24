@@ -12,9 +12,9 @@ Per-step view of evidence/TLA-003-F2d_pre-fix_without-lapse-producer-release.txt
       owner = A
       hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
  2 Issue
-      h[W/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
- 3 Issue
       h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 Issue
+      h[W/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
  4 Issue
       h[N1/1]: pc="a_prep" gen=NONE rep=NONE rej=FALSE
  5 APrep

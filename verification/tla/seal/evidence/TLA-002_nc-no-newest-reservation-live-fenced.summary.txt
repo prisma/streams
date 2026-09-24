@@ -15,13 +15,13 @@ Per-step view of evidence/TLA-002_nc-no-newest-reservation-live-fenced.txt (acti
       h[P0/1]: pc="check" gen=1 rep=NONE rej=FALSE
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> FALSE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
  4 Issue
-      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
- 5 Lapse
-      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
- 6 FClaim
-      h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
- 7 Issue
       h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+ 5 Issue
+      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 6 Lapse
+      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
+ 7 FClaim
+      h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
  8 RsPrep
       h[T2/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
  9 TReserve
@@ -31,27 +31,27 @@ Per-step view of evidence/TLA-002_nc-no-newest-reservation-live-fenced.txt (acti
       h[T1/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
 11 TFence
-      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
-      h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
-12 TFence
-      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ], [ op |-> NONE, gen |-> 3, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
       h[T1/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+12 TFence
+      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ], [ op |-> NONE, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
 13 ProcessFence
-      eng = [ fence |-> 2, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
-      h[T2/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
-      seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
-14 TInstall
-      h[T2/1]: pc="rs_close" gen=2 rep=NONE rej=FALSE
-      desc = [ claim |-> [op |-> PLAIN, gen |-> 2, fin |-> FALSE, com |-> FALSE, lap |-> FALSE], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
-      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
-15 RsClose
-      eng = [ fence |-> 2, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ], [ op |-> PLAIN, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "close", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
-      h[T2/1]: pc="rs_cwait" gen=2 rep=NONE rej=FALSE
-16 ProcessFence
-      eng = [ fence |-> 3, q |-> << [ op |-> PLAIN, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "close", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      eng = [ fence |-> 3, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
       h[T1/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
       seg = [fence |-> 3, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+14 ProcessFence
+      eng = [fence |-> 3, q |-> <<>>, held |-> NONE]
+      h[T2/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+15 TInstall
+      eng = [fence |-> 3, q |-> << >>, held |-> NONE]
+      h[T2/1]: pc="rs_close" gen=2 rep=NONE rej=FALSE
+      desc = [ claim |-> [op |-> PLAIN, gen |-> 2, fin |-> FALSE, com |-> FALSE, lap |-> FALSE], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> TRUE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+16 RsClose
+      eng = [ fence |-> 3, q |-> << [ op |-> PLAIN, gen |-> 2, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "close", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T2/1]: pc="rs_cwait" gen=2 rep=NONE rej=FALSE
 17 ProcessClose
       eng = [fence |-> 3, q |-> <<>>, held |-> NONE]
       h[T2/1]: pc="rs_cwait" gen=2 rep=[err |-> "SealSuperseded", closed |-> FALSE, dup |-> FALSE] rej=FALSE
-      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> TRUE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> TRUE, liveFenced |-> TRUE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]

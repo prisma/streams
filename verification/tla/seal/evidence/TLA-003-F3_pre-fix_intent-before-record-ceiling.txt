@@ -88,7 +88,10 @@ State 1: <Initial predicate>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (Y :> 3 @@ S :> 1)
 /\ owner = B
 /\ hist = [ badClosed |-> FALSE,
@@ -102,7 +105,7 @@ State 1: <Initial predicate>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
+State 2: <Issue line 388, col 5 to line 394, col 68 of module SealProtocol>
 /\ lanes = (<<"rawseal", CY>> :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<Y, 1>> :>
@@ -183,7 +186,10 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (Y :> 2 @@ S :> 1)
 /\ owner = B
 /\ hist = [ badClosed |-> FALSE,
@@ -197,7 +203,7 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
+State 3: <FClaim line 453, col 5 to line 504, col 54 of module SealProtocol>
 /\ lanes = (<<"rawseal", CY>> :> [seq |-> -1, hash |-> NONE])
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
 /\ h = ( <<Y, 1>> :>
@@ -286,7 +292,10 @@ State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (Y :> 2 @@ S :> 1)
 /\ owner = B
 /\ hist = [ badClosed |-> FALSE,
@@ -300,5 +309,5 @@ State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   invalidIntent |-> TRUE,
   installOverMarked |-> FALSE ]
 
-28 states generated, 26 distinct states found, 19 states left on queue.
+21 states generated, 19 distinct states found, 12 states left on queue.
 The depth of the complete state graph search is 4.

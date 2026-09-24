@@ -16,30 +16,30 @@ Per-step view of evidence/TLA-002_nc-no-newest-reservation.txt (action, then the
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> FALSE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
  4 Issue
       h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
- 5 Issue
-      h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
- 6 Lapse
+ 5 Lapse
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
- 7 FClaim
+ 6 FClaim
       h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
- 8 TReserve
+ 7 TReserve
       h[T1/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 2, sealed |-> FALSE, sealOp |-> NONE ]
- 9 TFence
+ 8 TFence
       eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
       h[T1/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+ 9 Issue
+      h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
 10 RsPrep
       h[T2/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
-11 ProcessFence
-      eng = [fence |-> 2, q |-> <<>>, held |-> NONE]
-      h[T1/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
-      seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
-12 TReserve
+11 TReserve
       h[T2/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
       desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
-13 TFence
-      eng = [ fence |-> 2, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+12 TFence
+      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ], [ op |-> NONE, gen |-> 3, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
       h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+13 ProcessFence
+      eng = [ fence |-> 2, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T1/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+      seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
 14 ProcessFence
       eng = [fence |-> 3, q |-> <<>>, held |-> NONE]
       h[T2/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE

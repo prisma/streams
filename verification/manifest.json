@@ -2648,7 +2648,7 @@
       "id": "TLA-002",
       "kind": "tla",
       "title": "Seal claims, renewal, and competing takeover reservations",
-      "status": "counterexample",
+      "status": "pass-with-recorded-scope",
       "owner": "seal coordinator (application::lifecycle) and the shard committer's seal fence",
       "source_paths": [
         "src/application/lifecycle.rs",
@@ -2656,8 +2656,10 @@
         "src/application/append/close.rs",
         "src/application/append/submit.rs",
         "src/shard/commit_plan.rs",
+        "src/shard/transaction/mod.rs",
         "src/shard/transaction/append.rs",
         "src/shard/transaction/maintenance.rs",
+        "src/shard/transaction/finalize.rs",
         "src/shard.rs",
         "src/shard_directory.rs"
       ],
@@ -2666,7 +2668,9 @@
         "verification/tla/seal/MC_SealTakeover.tla",
         "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
         "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
-        "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla"
+        "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+        "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+        "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla"
       ],
       "requirements": [
         "L3",
@@ -2703,7 +2707,7 @@
         "ASM-SEAL-NODELETE",
         "ASM-SEAL-OPID"
       ],
-      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held and liveness-held, which, like the known-defect configurations, separate them for one fence group. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
+      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held, retire-held and liveness-held, which separate them for one fence group: it may become durable, be lost with its engine, or be rejected without an engine retirement. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
       "checks": [
         {
           "id": "TLA-002/baseline-small",
@@ -2797,7 +2801,18 @@
           "config": "verification/tla/seal/MC_SealTakeover_held_xproc.cfg",
           "expect": {
             "result": "pass"
-          }
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-002/baseline-retire-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_held_retire.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4200
         },
         {
           "id": "TLA-002/baseline-liveness-held",
@@ -2886,6 +2901,36 @@
           "expect": {
             "result": "violation",
             "property": "SuccessProvesOutcome"
+          }
+        },
+        {
+          "id": "TLA-002/nc-refusal-at-staging-closure",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_refusal_at_staging_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-refusal-at-staging-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_refusal_at_staging_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-002/nc-cache-survives-rejected-group",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_cache_survives_reject.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
           }
         },
         {
@@ -3029,35 +3074,39 @@
           }
         },
         {
-          "id": "TLA-002/known-defect-F2-refusal-before-fence-durable",
-          "role": "known-defect",
+          "id": "TLA-002/witness-SupersededAfterFenceDurable",
+          "role": "witness",
           "spec": "verification/tla/seal/MC_SealTakeover.tla",
-          "config": "verification/tla/seal/MC_SealTakeover_kd_refusal_before_fence_durable.cfg",
+          "config": "verification/tla/seal/MC_SealTakeover_w_SupersededAfterFenceDurable.cfg",
           "expect": {
             "result": "violation",
-            "property": "ClosureAuthorized"
+            "property": "Witness_SupersededAfterFenceDurable"
           }
         },
         {
-          "id": "TLA-002/known-defect-F2-release-after-durable-final",
-          "role": "known-defect",
+          "id": "TLA-002/witness-FenceGroupRejected",
+          "role": "witness",
           "spec": "verification/tla/seal/MC_SealTakeover.tla",
-          "config": "verification/tla/seal/MC_SealTakeover_kd_release_after_durable_final.cfg",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FenceGroupRejected.cfg",
           "expect": {
             "result": "violation",
-            "property": "ReleaseOnlyWhenUndeliverable"
+            "property": "Witness_FenceGroupRejected"
           }
         }
       ],
       "regressions": [
         "dst::dst_tests::seal_fencing::a_fence_survives_engine_replacement",
         "shard::durability_frontier_tests::a_seal_fence_survives_engine_replacement",
+        "dst::dst_tests::seal_fencing::a_superseded_final_waits_for_its_fence_to_be_durable",
+        "shard::durability_frontier_tests::a_superseded_close_waits_for_its_fence_to_be_durable",
+        "shard::durability_frontier_tests::a_failed_fence_group_refuses_nothing",
         "verification/tla/seal/evidence/TLA-002-F1_pre-fix_cross-instance-crash-failover.txt",
         "verification/tla/seal/evidence/TLA-002-F1_pre-fix_engine-replacement.txt",
         "verification/tla/seal/evidence/TLA-002-F1_pre-fix_release-of-durable-final.txt",
         "verification/tla/seal/evidence/TLA-002-F1_pre-fix_false-success.txt",
-        "verification/tla/seal/evidence/TLA-002-F2_refusal-before-fence-durable.txt",
-        "verification/tla/seal/evidence/TLA-002-F2_release-after-durable-final.txt"
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_refusal-before-fence-durable.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_release-after-durable-final.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_cache-survives-rejected-group.txt"
       ]
     },
     {

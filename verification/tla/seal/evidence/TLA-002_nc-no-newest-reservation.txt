@@ -101,7 +101,10 @@ State 1: <Initial predicate>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 2 @@ T1 :> 1 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -115,7 +118,7 @@ State 1: <Initial predicate>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
+State 2: <Issue line 388, col 5 to line 394, col 68 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -211,7 +214,10 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 1 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -225,7 +231,7 @@ State 2: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
+State 3: <FClaim line 453, col 5 to line 504, col 54 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -329,7 +335,10 @@ State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 1 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -343,7 +352,7 @@ State 3: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 4: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
+State 4: <Issue line 388, col 5 to line 394, col 68 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -447,7 +456,10 @@ State 4: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -461,7 +473,7 @@ State 4: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 5: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
+State 5: <Lapse line 1215, col 5 to line 1217, col 76 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -514,126 +526,8 @@ State 5: <Issue line 387, col 5 to line 393, col 68 of module SealProtocol>
         rep |-> NONE,
         resumed |-> FALSE,
         rej |-> FALSE,
-        pc |-> "rs_prep",
-        rop |-> PLAIN,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] )
-/\ seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
-/\ wset = [ orphan |-> {},
-  rawTook |-> {},
-  orphanClosed |-> {},
-  openFence |-> 0,
-  resv |-> {} ]
-/\ desc = [ claim |->
-      [ op |-> <<"product", C0, NONE, 0>>,
-        gen |-> 1,
-        fin |-> TRUE,
-        com |-> FALSE,
-        lap |-> FALSE ],
-  counter |-> 1,
-  sealed |-> FALSE,
-  sealOp |-> NONE ]
-/\ faults = [ held |-> 0,
-  crash |-> 1,
-  retire |-> 0,
-  cancel |-> 0,
-  timeout |-> 0,
-  reg |-> 0,
-  enq |-> 0,
-  fread |-> 0 ]
-/\ wit = [ install |-> FALSE,
-  lower |-> FALSE,
-  behalfSealed |-> FALSE,
-  superseded |-> FALSE,
-  renewAfterRes |-> FALSE,
-  moved |-> FALSE,
-  invalidRefused |-> FALSE,
-  gap |-> FALSE,
-  defRelease |-> FALSE,
-  dupRelease |-> FALSE,
-  seqReused |-> FALSE,
-  lostReplyRetry |-> FALSE,
-  rawRetained |-> FALSE,
-  notOwner |-> FALSE,
-  appliedMoved |-> FALSE,
-  sharedLaneDup |-> FALSE,
-  crossOwner |-> FALSE,
-  refusedByRow |-> FALSE,
-  fenceUnverified |-> FALSE,
-  rawTookOwn |-> FALSE,
-  markedRetry |-> FALSE,
-  healed |-> FALSE ]
-/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
-/\ owner = A
-/\ hist = [ badClosed |-> FALSE,
-  badSuccess |-> FALSE,
-  fenceSeen |-> 0,
-  staleEffect |-> FALSE,
-  badInstall |-> FALSE,
-  liveFenced |-> FALSE,
-  earlyInstall |-> FALSE,
-  badRelease |-> FALSE,
-  invalidIntent |-> FALSE,
-  installOverMarked |-> FALSE ]
-
-State 6: <Lapse line 1190, col 5 to line 1192, col 76 of module SealProtocol>
-/\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
-  <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
-/\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
-/\ h = ( <<P0, 1>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> 1,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "check",
-        rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] @@
-  <<P0, 2>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> NONE,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
         pc |-> "idle",
         rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] @@
-  <<T1, 1>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> NONE,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "claim",
-        rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] @@
-  <<T2, 1>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> NONE,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "rs_prep",
-        rop |-> PLAIN,
         orop |-> NONE,
         behalf |-> FALSE,
         rawdup |-> FALSE,
@@ -683,8 +577,11 @@ State 6: <Lapse line 1190, col 5 to line 1192, col 76 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
-/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
+/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
   badSuccess |-> FALSE,
@@ -697,7 +594,7 @@ State 6: <Lapse line 1190, col 5 to line 1192, col 76 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 7: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
+State 6: <FClaim line 453, col 5 to line 504, col 54 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -750,8 +647,8 @@ State 7: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
         rep |-> NONE,
         resumed |-> FALSE,
         rej |-> FALSE,
-        pc |-> "rs_prep",
-        rop |-> PLAIN,
+        pc |-> "idle",
+        rop |-> NONE,
         orop |-> NONE,
         behalf |-> FALSE,
         rawdup |-> FALSE,
@@ -801,8 +698,11 @@ State 7: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
-/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
+/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
   badSuccess |-> FALSE,
@@ -815,7 +715,7 @@ State 7: <FClaim line 452, col 5 to line 503, col 54 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 8: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
+State 7: <TReserve line 538, col 5 to line 558, col 48 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
@@ -868,8 +768,8 @@ State 8: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
         rep |-> NONE,
         resumed |-> FALSE,
         rej |-> FALSE,
-        pc |-> "rs_prep",
-        rop |-> PLAIN,
+        pc |-> "idle",
+        rop |-> NONE,
         orop |-> NONE,
         behalf |-> FALSE,
         rawdup |-> FALSE,
@@ -919,8 +819,11 @@ State 8: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
-/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
+/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 1)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
   badSuccess |-> FALSE,
@@ -933,7 +836,137 @@ State 8: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 9: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
+State 8: <TFence line 569, col 5 to line 583, col 55 of module SealProtocol>
+/\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
+  <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+/\ eng = [ fence |-> 0,
+  q |->
+      << [ op |-> NONE,
+           gen |-> 2,
+           hid |-> <<T1, 1>>,
+           rej |-> FALSE,
+           kind |-> "fence",
+           dfr |-> FALSE,
+           ahead |-> {} ] >>,
+  held |-> NONE ]
+/\ h = ( <<P0, 1>> :>
+      [ old |-> NONE,
+        res |-> NONE,
+        gen |-> 1,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "check",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> NONE,
+        iter |-> 0 ] @@
+  <<P0, 2>> :>
+      [ old |-> NONE,
+        res |-> NONE,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "idle",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> NONE,
+        iter |-> 0 ] @@
+  <<T1, 1>> :>
+      [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
+        res |-> 2,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "fwait",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> "claim",
+        iter |-> 0 ] @@
+  <<T2, 1>> :>
+      [ old |-> NONE,
+        res |-> NONE,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "idle",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> NONE,
+        iter |-> 0 ] )
+/\ seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+/\ wset = [ orphan |-> {},
+  rawTook |-> {},
+  orphanClosed |-> {},
+  openFence |-> 0,
+  resv |-> {} ]
+/\ desc = [ claim |->
+      [ op |-> <<"product", C0, NONE, 0>>,
+        gen |-> 1,
+        fin |-> TRUE,
+        com |-> FALSE,
+        lap |-> TRUE ],
+  counter |-> 2,
+  sealed |-> FALSE,
+  sealOp |-> NONE ]
+/\ faults = [ held |-> 0,
+  crash |-> 1,
+  retire |-> 0,
+  cancel |-> 0,
+  timeout |-> 0,
+  reg |-> 0,
+  enq |-> 0,
+  fread |-> 0 ]
+/\ wit = [ install |-> FALSE,
+  lower |-> FALSE,
+  behalfSealed |-> FALSE,
+  superseded |-> FALSE,
+  renewAfterRes |-> FALSE,
+  moved |-> FALSE,
+  invalidRefused |-> FALSE,
+  gap |-> FALSE,
+  defRelease |-> FALSE,
+  dupRelease |-> FALSE,
+  seqReused |-> FALSE,
+  lostReplyRetry |-> FALSE,
+  rawRetained |-> FALSE,
+  notOwner |-> FALSE,
+  appliedMoved |-> FALSE,
+  sharedLaneDup |-> FALSE,
+  crossOwner |-> FALSE,
+  refusedByRow |-> FALSE,
+  fenceUnverified |-> FALSE,
+  rawTookOwn |-> FALSE,
+  markedRetry |-> FALSE,
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
+/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 1)
+/\ owner = A
+/\ hist = [ badClosed |-> FALSE,
+  badSuccess |-> FALSE,
+  fenceSeen |-> 0,
+  staleEffect |-> FALSE,
+  badInstall |-> FALSE,
+  liveFenced |-> FALSE,
+  earlyInstall |-> FALSE,
+  badRelease |-> FALSE,
+  invalidIntent |-> FALSE,
+  installOverMarked |-> FALSE ]
+
+State 9: <Issue line 388, col 5 to line 394, col 68 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [ fence |-> 0,
@@ -1046,7 +1079,10 @@ State 9: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1060,7 +1096,7 @@ State 9: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 10: <RsPrep line 908, col 5 to line 943, col 54 of module SealProtocol>
+State 10: <RsPrep line 909, col 5 to line 944, col 54 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [ fence |-> 0,
@@ -1173,7 +1209,10 @@ State 10: <RsPrep line 908, col 5 to line 943, col 54 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1187,10 +1226,19 @@ State 10: <RsPrep line 908, col 5 to line 943, col 54 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 11: <ProcessFence line 1115, col 5 to line 1134, col 61 of module SealProtocol>
+State 11: <TReserve line 538, col 5 to line 558, col 48 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
-/\ eng = [fence |-> 2, q |-> <<>>, held |-> NONE]
+/\ eng = [ fence |-> 0,
+  q |->
+      << [ op |-> NONE,
+           gen |-> 2,
+           hid |-> <<T1, 1>>,
+           rej |-> FALSE,
+           kind |-> "fence",
+           dfr |-> FALSE,
+           ahead |-> {} ] >>,
+  held |-> NONE ]
 /\ h = ( <<P0, 1>> :>
       [ old |-> NONE,
         res |-> NONE,
@@ -1223,125 +1271,7 @@ State 11: <ProcessFence line 1115, col 5 to line 1134, col 61 of module SealProt
       [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
         res |-> 2,
         gen |-> NONE,
-        rep |-> [err |-> NONE, closed |-> FALSE, dup |-> FALSE],
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "fwait",
-        rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> "claim",
-        iter |-> 0 ] @@
-  <<T2, 1>> :>
-      [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
-        res |-> NONE,
-        gen |-> NONE,
         rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "reserve",
-        rop |-> PLAIN,
-        orop |-> PLAIN,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> "rs",
-        iter |-> 0 ] )
-/\ seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
-/\ wset = [ orphan |-> {},
-  rawTook |-> {},
-  orphanClosed |-> {},
-  openFence |-> 0,
-  resv |-> {} ]
-/\ desc = [ claim |->
-      [ op |-> <<"product", C0, NONE, 0>>,
-        gen |-> 1,
-        fin |-> TRUE,
-        com |-> FALSE,
-        lap |-> TRUE ],
-  counter |-> 2,
-  sealed |-> FALSE,
-  sealOp |-> NONE ]
-/\ faults = [ held |-> 0,
-  crash |-> 1,
-  retire |-> 0,
-  cancel |-> 0,
-  timeout |-> 0,
-  reg |-> 0,
-  enq |-> 0,
-  fread |-> 0 ]
-/\ wit = [ install |-> FALSE,
-  lower |-> FALSE,
-  behalfSealed |-> FALSE,
-  superseded |-> FALSE,
-  renewAfterRes |-> FALSE,
-  moved |-> FALSE,
-  invalidRefused |-> FALSE,
-  gap |-> FALSE,
-  defRelease |-> FALSE,
-  dupRelease |-> FALSE,
-  seqReused |-> FALSE,
-  lostReplyRetry |-> FALSE,
-  rawRetained |-> FALSE,
-  notOwner |-> FALSE,
-  appliedMoved |-> FALSE,
-  sharedLaneDup |-> FALSE,
-  crossOwner |-> FALSE,
-  refusedByRow |-> FALSE,
-  fenceUnverified |-> FALSE,
-  rawTookOwn |-> FALSE,
-  markedRetry |-> FALSE,
-  healed |-> FALSE ]
-/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
-/\ owner = A
-/\ hist = [ badClosed |-> FALSE,
-  badSuccess |-> FALSE,
-  fenceSeen |-> 0,
-  staleEffect |-> FALSE,
-  badInstall |-> FALSE,
-  liveFenced |-> FALSE,
-  earlyInstall |-> FALSE,
-  badRelease |-> FALSE,
-  invalidIntent |-> FALSE,
-  installOverMarked |-> FALSE ]
-
-State 12: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
-/\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
-  <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
-/\ eng = [fence |-> 2, q |-> <<>>, held |-> NONE]
-/\ h = ( <<P0, 1>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> 1,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "check",
-        rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] @@
-  <<P0, 2>> :>
-      [ old |-> NONE,
-        res |-> NONE,
-        gen |-> NONE,
-        rep |-> NONE,
-        resumed |-> FALSE,
-        rej |-> FALSE,
-        pc |-> "idle",
-        rop |-> NONE,
-        orop |-> NONE,
-        behalf |-> FALSE,
-        rawdup |-> FALSE,
-        org |-> NONE,
-        iter |-> 0 ] @@
-  <<T1, 1>> :>
-      [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
-        res |-> 2,
-        gen |-> NONE,
-        rep |-> [err |-> NONE, closed |-> FALSE, dup |-> FALSE],
         resumed |-> FALSE,
         rej |-> FALSE,
         pc |-> "fwait",
@@ -1365,7 +1295,7 @@ State 12: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
         rawdup |-> FALSE,
         org |-> "rs",
         iter |-> 0 ] )
-/\ seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+/\ seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
 /\ wset = [ orphan |-> {},
   rawTook |-> {},
   orphanClosed |-> {},
@@ -1409,7 +1339,10 @@ State 12: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1423,7 +1356,144 @@ State 12: <TReserve line 537, col 5 to line 557, col 48 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 13: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
+State 12: <TFence line 569, col 5 to line 583, col 55 of module SealProtocol>
+/\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
+  <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+/\ eng = [ fence |-> 0,
+  q |->
+      << [ op |-> NONE,
+           gen |-> 2,
+           hid |-> <<T1, 1>>,
+           rej |-> FALSE,
+           kind |-> "fence",
+           dfr |-> FALSE,
+           ahead |-> {} ],
+         [ op |-> NONE,
+           gen |-> 3,
+           hid |-> <<T2, 1>>,
+           rej |-> FALSE,
+           kind |-> "fence",
+           dfr |-> FALSE,
+           ahead |-> {} ] >>,
+  held |-> NONE ]
+/\ h = ( <<P0, 1>> :>
+      [ old |-> NONE,
+        res |-> NONE,
+        gen |-> 1,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "check",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> NONE,
+        iter |-> 0 ] @@
+  <<P0, 2>> :>
+      [ old |-> NONE,
+        res |-> NONE,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "idle",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> NONE,
+        iter |-> 0 ] @@
+  <<T1, 1>> :>
+      [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
+        res |-> 2,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "fwait",
+        rop |-> NONE,
+        orop |-> NONE,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> "claim",
+        iter |-> 0 ] @@
+  <<T2, 1>> :>
+      [ old |-> [op |-> <<"product", C0, NONE, 0>>, gen |-> 1],
+        res |-> 3,
+        gen |-> NONE,
+        rep |-> NONE,
+        resumed |-> FALSE,
+        rej |-> FALSE,
+        pc |-> "fwait",
+        rop |-> PLAIN,
+        orop |-> PLAIN,
+        behalf |-> FALSE,
+        rawdup |-> FALSE,
+        org |-> "rs",
+        iter |-> 0 ] )
+/\ seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+/\ wset = [ orphan |-> {},
+  rawTook |-> {},
+  orphanClosed |-> {},
+  openFence |-> 0,
+  resv |-> {} ]
+/\ desc = [ claim |->
+      [ op |-> <<"product", C0, NONE, 0>>,
+        gen |-> 1,
+        fin |-> TRUE,
+        com |-> FALSE,
+        lap |-> TRUE ],
+  counter |-> 3,
+  sealed |-> FALSE,
+  sealOp |-> NONE ]
+/\ faults = [ held |-> 0,
+  crash |-> 1,
+  retire |-> 0,
+  cancel |-> 0,
+  timeout |-> 0,
+  reg |-> 0,
+  enq |-> 0,
+  fread |-> 0 ]
+/\ wit = [ install |-> FALSE,
+  lower |-> FALSE,
+  behalfSealed |-> FALSE,
+  superseded |-> FALSE,
+  renewAfterRes |-> FALSE,
+  moved |-> FALSE,
+  invalidRefused |-> FALSE,
+  gap |-> FALSE,
+  defRelease |-> FALSE,
+  dupRelease |-> FALSE,
+  seqReused |-> FALSE,
+  lostReplyRetry |-> FALSE,
+  rawRetained |-> FALSE,
+  notOwner |-> FALSE,
+  appliedMoved |-> FALSE,
+  sharedLaneDup |-> FALSE,
+  crossOwner |-> FALSE,
+  refusedByRow |-> FALSE,
+  fenceUnverified |-> FALSE,
+  rawTookOwn |-> FALSE,
+  markedRetry |-> FALSE,
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
+/\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
+/\ owner = A
+/\ hist = [ badClosed |-> FALSE,
+  badSuccess |-> FALSE,
+  fenceSeen |-> 0,
+  staleEffect |-> FALSE,
+  badInstall |-> FALSE,
+  liveFenced |-> FALSE,
+  earlyInstall |-> FALSE,
+  badRelease |-> FALSE,
+  invalidIntent |-> FALSE,
+  installOverMarked |-> FALSE ]
+
+State 13: <ProcessFence line 1127, col 5 to line 1147, col 61 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [ fence |-> 2,
@@ -1536,7 +1606,10 @@ State 13: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1550,7 +1623,7 @@ State 13: <TFence line 568, col 5 to line 582, col 55 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 14: <ProcessFence line 1115, col 5 to line 1134, col 61 of module SealProtocol>
+State 14: <ProcessFence line 1127, col 5 to line 1147, col 61 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 3, q |-> <<>>, held |-> NONE]
@@ -1654,7 +1727,10 @@ State 14: <ProcessFence line 1115, col 5 to line 1134, col 61 of module SealProt
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1668,7 +1744,7 @@ State 14: <ProcessFence line 1115, col 5 to line 1134, col 61 of module SealProt
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-State 15: <TInstall line 625, col 5 to line 654, col 43 of module SealProtocol>
+State 15: <TInstall line 626, col 5 to line 655, col 43 of module SealProtocol>
 /\ lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@
   <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
 /\ eng = [fence |-> 3, q |-> << >>, held |-> NONE]
@@ -1772,7 +1848,10 @@ State 15: <TInstall line 625, col 5 to line 654, col 43 of module SealProtocol>
   fenceUnverified |-> FALSE,
   rawTookOwn |-> FALSE,
   markedRetry |-> FALSE,
-  healed |-> FALSE ]
+  healed |-> FALSE,
+  heldDurable |-> FALSE,
+  supersededAfterDurable |-> FALSE,
+  groupRejected |-> FALSE ]
 /\ bud = (P0 :> 1 @@ T1 :> 0 @@ T2 :> 0)
 /\ owner = A
 /\ hist = [ badClosed |-> FALSE,
@@ -1786,5 +1865,5 @@ State 15: <TInstall line 625, col 5 to line 654, col 43 of module SealProtocol>
   invalidIntent |-> FALSE,
   installOverMarked |-> FALSE ]
 
-63532 states generated, 17953 distinct states found, 5795 states left on queue.
+63677 states generated, 18049 distinct states found, 5809 states left on queue.
 The depth of the complete state graph search is 15.

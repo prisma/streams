@@ -64,7 +64,7 @@ CONSTANTS
     MaxRegFault, \* registry faults (read unavailable / write committed but reply lost)
     MaxEnqFail,  \* engine opening / queue full / backpressure refusals before enqueue
     MaxFenceReadFail, \* reads of the durable fence row that fail (answered Internal)
-    MaxHeldFence, \* fence groups staged before their durability (TLA-002-F2 window)
+    MaxHeldFence, \* fence groups staged before their durability (TLA-002-F2)
     MaxClaimLoop, \* claim_seal's iteration bound (production: `for _ in 0..6`);
                   \* 0 = safety over-approximation: unbounded restarts, and any
                   \* restart may instead give up (Resumable)
@@ -372,7 +372,8 @@ Init ==
               rawRetained |-> FALSE, notOwner |-> FALSE, appliedMoved |-> FALSE,
               sharedLaneDup |-> FALSE, crossOwner |-> FALSE, refusedByRow |-> FALSE,
               fenceUnverified |-> FALSE, rawTookOwn |-> FALSE, markedRetry |-> FALSE,
-              healed |-> FALSE]
+              healed |-> FALSE, heldDurable |-> FALSE, supersededAfterDurable |-> FALSE,
+              groupRejected |-> FALSE]
     /\ wset = [resv |-> {}, orphan |-> {}, openFence |-> 0, rawTook |-> {},
                orphanClosed |-> {}]
 
@@ -1037,10 +1038,19 @@ LiveAt(g) == g # NONE /\ desc.claim # NONE /\ desc.claim.gen = g /\ ~desc.claim.
 \* Internal ("seal_fence_unverified") and nothing is decided.
 Unverified == [rep |-> Rep("Internal", FALSE, FALSE), commit |-> FALSE, seg |-> seg]
 
-\* Refusals the committer sends at staging, before its group is durable
-\* (transaction/append.rs 96-101, 139-142; maintenance.rs 144-146, 178-188).
-\* Every other answer waits for the group's durability (DurableEffects).
-ImmediateRefusal(rep) == rep.err \in {"SealSuperseded", "BadBody", "Internal"}
+\* Refusals the committer sends at staging, before its group is durable: a
+\* deferred content error and an unreadable fence row (transaction/append.rs
+\* 96-101; maintenance.rs 141-144).  Every other answer, SealSuperseded
+\* included, joins the group's replies and waits for its durability
+\* (DurableEffects; TLA-002-F2 fix).  The pre-fix control
+\* (MC_SealTakeover_NcRefusalAtStaging) adds "SealSuperseded".
+ImmediateRefusal(rep) == rep.err \in {"BadBody", "Internal"}
+
+\* CommitTransaction::reject (transaction/mod.rs): a group rejected without
+\* retiring its engine drops its streams' cached seal fences, so the next
+\* consult re-reads the row (TLA-002-F2 fix).  The pre-fix control
+\* (MC_SealTakeover_NcCacheSurvivesReject) keeps the raised cache.
+FenceAfterRejectedGroup(cache, sg) == sg.fence
 
 \* CommitTransaction::close (transaction/maintenance.rs 172-201): an open
 \* segment consults the fence; an already-closed one answers its
@@ -1104,6 +1114,8 @@ AppendWset(r, d) ==
     ELSE wset
 AppendW(r, d) ==
     (IF d.rep.err = "SealSuperseded" THEN {"superseded"} ELSE {})
+    \cup (IF d.rep.err = "SealSuperseded" /\ r.op \in FinalOps /\ wit.heldDurable
+          THEN {"supersededAfterDurable"} ELSE {})
     \cup (IF d.rep.err = "SealSuperseded" /\ r.op \in FinalOps /\ r.gen # NONE
              /\ r.gen < wset.openFence THEN {"refusedByRow"} ELSE {})
 
@@ -1125,7 +1137,8 @@ ProcessFence ==
           /\ UNCHANGED seg
        \/ \* The group is staged: the cache is raised now, the row and the reply
           \* wait for the group's durability (FenceGroupDurable), which an engine
-          \* loss may prevent.  Immediate refusals already see the raised cache.
+          \* loss or a rejected group (FenceGroupRejected) may prevent.  Until
+          \* then only immediate refusals are decided behind it.
           /\ faults.held > 0
           /\ faults' = [faults EXCEPT !.held = @ - 1]
           /\ eng' = [eng EXCEPT !.fence = Max(@, r.gen), !.q = Tail(@),
@@ -1140,7 +1153,19 @@ FenceGroupDurable ==
     /\ seg' = PersistFence(seg, eng.held.gen)
     /\ h' = Deliver(eng.held.hid, Rep(NONE, FALSE, seg.closed))
     /\ eng' = [eng EXCEPT !.held = NONE]
-    /\ UNCHANGED <<desc, lanes, owner, bud, faults, hist, wit, wset>>
+    /\ wit' = WitUpd({"heldDurable"})
+    /\ UNCHANGED <<desc, lanes, owner, bud, faults, hist, wset>>
+
+\* The staged fence group is rejected without retiring the engine
+\* (CommitTransaction::reject: a maintenance-accounting divergence, including
+\* a failed read during an absorbed-boundary advance): its replies answer
+\* Internal, its row is never written, and the engine keeps serving.
+FenceGroupRejected ==
+    /\ eng.held # NONE
+    /\ h' = Deliver(eng.held.hid, Unverified.rep)
+    /\ eng' = [eng EXCEPT !.held = NONE, !.fence = FenceAfterRejectedGroup(eng.fence, seg)]
+    /\ wit' = WitUpd({"groupRejected"})
+    /\ UNCHANGED <<desc, seg, lanes, owner, bud, faults, hist, wset>>
 
 ApplyClose(r, d) ==
     /\ eng.held = NONE \/ ImmediateRefusal(d.rep)
@@ -1306,7 +1331,7 @@ HandlerStep(hid) ==
     \/ RsPrep(hid) \/ RsClose(hid) \/ RsCloseFailed(hid) \/ RsPublish(hid)
     \/ APrep(hid) \/ AReceive(hid)
 
-Process == ProcessFence \/ FenceGroupDurable \/ ProcessClose \/ ProcessAppend
+Process == ProcessFence \/ FenceGroupDurable \/ FenceGroupRejected \/ ProcessClose \/ ProcessAppend
 
 \* Legitimate quiescence: no handler, no queued work, no client request left.
 Settled ==
@@ -1464,6 +1489,12 @@ Witness_StaleFinalRefusedAfterReplacement == ~wit.refusedByRow
 \* TLA-002-F1 fix: an unreadable fence row answers Internal and the owed
 \* claim is retained.
 Witness_FenceUnverifiedRetainsClaim == ~wit.fenceUnverified
+\* TLA-002-F2 fix: a stale final is refused SealSuperseded only after the
+\* staged fence group behind the refusal became durable.
+Witness_SupersededAfterFenceDurable == ~wit.supersededAfterDurable
+\* TLA-002-F2 fix: a fence group rejected without an engine retirement
+\* answers Internal (the takeover restarts or gives up; no claim changes).
+Witness_FenceGroupRejected == ~wit.groupRejected
 \* TLA-003-F2 fix: a raw close that took over another operation's lapsed
 \* claim writes its own record and is sealed under its own operation.
 Witness_RawTakeoverWritesItsRecord == ~wit.rawTookOwn

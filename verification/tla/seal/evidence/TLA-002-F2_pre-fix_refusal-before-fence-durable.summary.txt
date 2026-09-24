@@ -1,4 +1,6 @@
-Per-step view of evidence/TLA-002-F2_refusal-before-fence-durable.txt (action, then the variables it changed; handlers: changed slots only).
+PRE-FIX EVIDENCE. Recorded by the known-defect check TLA-002/known-defect-F2-refusal-before-fence-durable before commit "A SealSuperseded refusal waits until the fence behind it is durable" fixed it. On the current model the negative control TLA-002/nc-refusal-at-staging-closure reproduces this behaviour.
+
+Per-step view of evidence/TLA-002-F2_pre-fix_refusal-before-fence-durable.txt (action, then the variables it changed; handlers: changed slots only).
 
  1 Initial predicate
       lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
