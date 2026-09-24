@@ -436,17 +436,8 @@ pub(crate) enum ProductRoute {
 }
 
 /// Split a trailing `:verb` off the final segment. Only the known verbs
-/// count — a colon is legal inside a collection name.
+/// (`VERBS`) count — a colon is legal inside a collection name.
 pub(crate) fn strip_verb(path: &str) -> (&str, Option<&str>) {
-    const VERBS: [&str; 7] = [
-        "batch",
-        "long-poll",
-        "sse",
-        "pull",
-        "settle",
-        "seal",
-        "scan",
-    ];
     match path.rsplit_once(':') {
         Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => (p, Some(v)),
         _ => (path, None),
@@ -577,70 +568,6 @@ pub(crate) fn shadow_observe_request(
     state
         .auth
         .shadow_observe(bearer, crate::shard::now_ms() / 1000);
-}
-
-/// §6.1: the route/method -> required-scope matrix. `None` only for
-/// the watch-wait route, which authorizes itself with a §15
-/// capability. Compound rules (fork creation adds forks.create +
-/// source read; DLQ configuration adds dlq.configure on the target)
-/// are enforced where those requests are RECOGNIZED — the gate cannot
-/// see a request body — and land with Stage 5c.
-pub(crate) fn required_scope(
-    route: &ProductRoute,
-    verb: Option<&str>,
-    method: &Method,
-) -> Option<crate::tenant::Scope> {
-    use crate::tenant::Scope as S;
-    let read = *method == Method::GET || *method == Method::HEAD;
-    Some(match route {
-        ProductRoute::Collection { .. } => {
-            if *method == Method::PUT {
-                S::Create
-            } else if *method == Method::DELETE || verb == Some("seal") {
-                S::LifecycleManage
-            } else if verb == Some("scan") {
-                // :scan pages back DECRYPTED record bodies — a bulk
-                // record read, so it takes records.read, NOT the
-                // metadata scope the other Collection GETs use (§6.1).
-                // Without this, a metadata-only credential (which a
-                // create/monitor service legitimately holds, along with
-                // the stream key) could export every record, and
-                // revoking records.read would not cut off record access.
-                S::RecordsRead
-            } else {
-                S::MetadataRead
-            }
-        }
-        ProductRoute::Records { .. } => {
-            if *method == Method::POST {
-                S::RecordsAppend
-            } else {
-                S::RecordsRead
-            }
-        }
-        ProductRoute::Consumer { .. } => {
-            if verb == Some("pull") {
-                S::ConsumersPull
-            } else if verb == Some("settle") {
-                S::ConsumersSettle
-            } else if read {
-                // Reading a consumer's config/positions is stream
-                // metadata; mutation is configuration.
-                S::MetadataRead
-            } else {
-                S::ConsumersConfigure
-            }
-        }
-        ProductRoute::Watches { .. } | ProductRoute::Watch { .. } => {
-            if read {
-                S::MetadataRead
-            } else {
-                S::WatchesManage
-            }
-        }
-        ProductRoute::Usage { .. } => S::UsageRead,
-        ProductRoute::WatchWait { .. } => return None,
-    })
 }
 
 fn route_stream_name(route: &ProductRoute) -> &str {
@@ -960,12 +887,15 @@ pub(crate) fn product_auth_gate(
     if state.auth.mode == crate::auth::AuthMode::Enforce {
         // §9 order: the exact route parses FIRST (grammar errors are
         // not authentication outcomes), then authenticate, then
-        // authorize scope + prefix. No legacy fallback: in enforce the
-        // customer token is the only product credential.
+        // authorize the scope of the operation the request names, then
+        // the prefix. A request that names no operation has no scope to
+        // lack: the entry refuses it (404/405) only after this
+        // authentication and prefix check. No legacy fallback: in
+        // enforce the customer token is the only product credential.
         let route = classify_route(path)?;
         let principal = enforce_customer(state, headers)?;
         let (_, verb) = strip_verb(path);
-        if let Some(scope) = required_scope(&route, verb, method)
+        if let Some(scope) = ProductOperation::demanded_scope(&route, verb, method)
             && let Err(e) = principal.require(scope)
         {
             return Err(crate::audit::tag_project(
@@ -3946,6 +3876,8 @@ use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_b
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
+mod operation;
+pub(crate) use operation::{ProductOperation, VERBS};
 mod scan;
 use scan::product_scan;
 mod usage;

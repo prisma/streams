@@ -485,7 +485,7 @@ streams.usage.read
 | Operation                     | Required scope                |
 | ----------------------------- | ----------------------------- |
 | Read stream metadata          | `streams.metadata.read`       |
-| HEAD/read/scan/SSE records    | `streams.records.read`        |
+| Read/scan/SSE records         | `streams.records.read`        |
 | Append/appendMany             | `streams.records.append`      |
 | Create/recreate stream        | `streams.create`              |
 | Seal/delete/update lifecycle  | `streams.lifecycle.manage`    |
@@ -494,9 +494,26 @@ streams.usage.read
 | Create/update/delete consumer | `streams.consumers.configure` |
 | Create fork                   | `streams.forks.create`        |
 | Configure DLQ                 | `streams.dlq.configure`       |
-| Create/delete watch           | `streams.watches.manage`      |
+| Create watch (create body)    | `streams.watches.manage`      |
 | List project streams          | `streams.catalog.read`        |
 | Read stream/project usage     | `streams.usage.read`          |
+
+The gate authorizes the scope of the product operation a request names
+(`ProductOperation`, `src/product/operation.rs`), and the product entry
+dispatches exactly those operations. A request that names none, such as
+an unknown collection operation or a method a resource does not serve,
+demands no scope. It is still authenticated and prefix-checked (§9 steps
+2-3) and is then refused by route: 404 `unknown_route` or 405
+`method_not_allowed`, never 403 `missing_scope`. With no scope to check it
+also passes project admission, the POST memory backstop, the reserved-name
+guard (403 `reserved_stream` for a `_`-prefixed name) and, for POST and
+PUT, body buffering (§9 steps 5-6) before that refusal. The product
+surface serves no HEAD on records and no watch delete: until item 73
+(D1) a credential without `streams.records.read` or
+`streams.watches.manage` got 403 `missing_scope` for them from a
+fallback matrix; it now gets 405. Non-GET watch waits never demanded a
+scope, so any authenticated credential of the project already reached
+admission and body buffering through them before item 73.
 
 Fork creation must authorize:
 

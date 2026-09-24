@@ -890,6 +890,17 @@
     "scenarios": []
   },
   {
+    "name": "a_request_naming_no_operation_is_refused_by_route_not_by_scope",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c021a0ba2b519bf6d6cdfeb375ab23e84ef0f6512df016f9927e1bbf4cad0e47",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_operations.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_resumed_mark_never_seals_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6380,6 +6391,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_entry_dispatches_exactly_the_resolved_operations",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3d5dd68fa0bac0276fb1a260476dd1b6a83bab3e6801ef971a7a3d8f75824d39",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_operations.rs",
     "scenarios": []
   },
   {
