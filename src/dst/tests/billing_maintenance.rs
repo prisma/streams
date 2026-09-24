@@ -266,6 +266,8 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
 
     // Arm the absorbed-group failpoint, then start the absorber. Its
     // first boundary-advancing group must fail; the backlog must remain.
+    // The refused group replays on the next tick, so the tick is long
+    // enough for the check below to run before that retry.
     engine.fail_next_absorbed_group();
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -274,7 +276,7 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
+            tick: std::time::Duration::from_secs(1),
             sweep_every: u32::MAX,
             ..Default::default()
         },
