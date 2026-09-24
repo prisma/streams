@@ -20,7 +20,8 @@
 //! stop was requested becomes the cause of a stop the supervisor requests
 //! itself, and the process then fails naming it. Every stop it is asked for,
 //! that one or a termination signal's, is bounded off the executor (see
-//! `exits`). Every other supervisor's owner answers for its loops.
+//! `exits`); a signal that no executor worker is free to observe asks for
+//! nothing. Every other supervisor's owner answers for its loops.
 
 mod exits;
 mod refusal;
@@ -275,7 +276,9 @@ pub(crate) struct ShutdownRequest {
 
 impl ShutdownRequest {
     /// Requests the ordered stop. On a process root this also arms the
-    /// stop's bound off the executor (item 38, owner decision D1).
+    /// stop's bound off the executor (item 38, owner decision D1). The
+    /// signal task that calls it runs on the executor, so a signal that
+    /// arrives when every worker is already blocked never gets here.
     pub(crate) fn request(&self) {
         if let Some(inner) = self.inner.upgrade() {
             exits::arm_root_deadline(&inner);

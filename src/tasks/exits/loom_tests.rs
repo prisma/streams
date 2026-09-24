@@ -16,13 +16,21 @@
 //! dropped after `serve_h1`'s cancelled return) modelled: it is a
 //! consequence only transitively, through that cancelled return.
 //!
+//! The consequence rule (an exit that finds a stop requested never claims)
+//! is L1's exit sequenced after the signal: a model whose exits only race
+//! the signal passes without that rule, since the signalling thread's own
+//! request makes "the stop is published" hold either way.
+//!
 //! The observer of a published stop runs on a thread of its own. Measured
 //! with loom 0.7.2: with the observer on the model's main thread, whose read
 //! of the flag precedes the exit thread's own read, the checker explored ONE
 //! execution and passed with the two writes swapped (its reduction appears
 //! to reorder a write only against the object's last access). With the
-//! observer spawned, L1 explores 430 executions and L2 36, and swapping the
-//! writes fails L2 with "a stop without its cause".
+//! observer spawned, L1 explores 476 executions and L2 36. Controls:
+//! swapping the writes fails L2 with "a stop without its cause"; deleting
+//! the consequence check from `stop_on_exit` fails L1 with "an exit after
+//! the signal claimed the cause" (without its sequenced exit, L1 explored 96
+//! executions and passed).
 #![cfg(test)]
 
 use super::{CauseCell, StopFlag, stop_on_exit};
@@ -65,9 +73,12 @@ fn cells() -> Cells {
     (Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)))
 }
 
-/// Item 38: two critical exits race a termination signal. Whatever the
+/// Item 38: two critical exits race a termination signal, and a third exit
+/// ends after the signal, on the signalling thread. Whatever the
 /// interleaving, at most one exit is the cause, the recorded cause is the
-/// exit that claimed it, and the stop is published once anything asked.
+/// exit that claimed it, the stop is published once anything asked, and the
+/// exit sequenced after the signal is its consequence: it never claims, even
+/// when neither racer has claimed yet.
 #[test]
 fn quality_loom_one_cause_at_most_and_the_stop_always_published() {
     model().check(|| {
@@ -80,6 +91,10 @@ fn quality_loom_one_cause_at_most_and_the_stop_always_published() {
             })
             .collect();
         flag.request();
+        assert!(
+            !stop_on_exit(&*flag, &*cause, "auth-refresher"),
+            "an exit after the signal claimed the cause"
+        );
         let claimed: Vec<_> = racers
             .into_iter()
             .map(|racer| racer.join().unwrap())

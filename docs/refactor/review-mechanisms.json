@@ -179,7 +179,7 @@
           "panic"
         ]
       },
-      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root, a termination signal's included, is bounded at 30 s off the executor (item 38). The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
+      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root is bounded at 30 s off the executor once it is requested (item 38). A termination signal requests it only through the signal task, which runs on that executor: a SIGTERM that arrives when every executor worker is already blocked is never observed, arms no bound, and the process waits for the platform's SIGKILL, as before item 38. The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
       "execution": "requires_final_head_receipt",
       "tests": [
         {

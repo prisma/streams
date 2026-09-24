@@ -12,6 +12,13 @@
 //! report. Every stop of a process root, this one or a termination
 //! signal's, is bounded off the executor (`arm_stop_deadline`), and
 //! `ordered_stop` fails the process with the cause once it has run.
+//!
+//! Limitation: a termination signal asks for its stop through the signal
+//! task, which runs on the executor. A SIGTERM that arrives when every
+//! executor worker is already blocked is never observed, so it arms no
+//! bound, and the process waits for the platform's SIGKILL, as it did
+//! before item 38. A critical exit's own stop, and a signal observed before
+//! the executor wedged, are bounded.
 
 use super::{Inner, Policy, TaskOutcome, TaskResult, TaskSupervisor, shutdown};
 use futures_util::FutureExt;

@@ -422,6 +422,14 @@ The deployed wrapper is `deploy/app-server/{index,supervise}.ts`
 `$PORT` and had been up for 60 s) ends it with its exit code, and Compute
 replaces the instance (item 39).
 
+Once a stop is requested — a critical loop's exit, or a SIGTERM/SIGINT the
+binary has observed — streams-slate bounds it at 30 s on a thread of its
+own and exits 1 if it has not finished (item 38). The signal itself is
+observed by a task on the async executor, so a SIGTERM that reaches a
+process whose executor workers are all already blocked is never observed:
+it arms no bound, and that process runs until the platform's SIGKILL,
+exactly as before item 38.
+
 The ELF check is not optional politeness — it converts the silent
 crash-loop-zombie failure mode (§10) into a readable boot log. Binaries are
 uploaded to the object store and passed as 24 h-presigned GET URLs
