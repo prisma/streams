@@ -2,6 +2,16 @@
 #![cfg(test)]
 use super::*;
 
+/// Commits `ops` as one group of `engine`. Staging, refusing and writing
+/// never wait on dispatch, so a held dispatch gate cannot hold the group.
+async fn commit(engine: &ShardEngine, ops: Vec<CommitOp>) {
+    let cfg = ShardConfig::default();
+    let group = engine.commit_group(ops, &cfg);
+    tokio::time::timeout(std::time::Duration::from_secs(10), group)
+        .await
+        .expect("the group waited on the held dispatch");
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch; the scenario pins one ordered sequence of the staged generation, the refusal, the group failure and its dispatch; helper phases would hide which step each assertion observes"
@@ -38,35 +48,34 @@ async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispa
             engine.fail_next_group_for(hash);
         }
         let dispatch = engine.test_hold_dispatch().await;
-        engine
-            .commit_group(
-                vec![
-                    CommitOp::Queue {
-                        hash,
-                        op: crate::queue::QueueOp::ConfigPut {
-                            consumer: "c".into(),
-                            cfg: Default::default(),
-                        },
-                        resp: created_tx,
+        commit(
+            &engine,
+            vec![
+                CommitOp::Queue {
+                    hash,
+                    op: crate::queue::QueueOp::ConfigPut {
+                        consumer: "c".into(),
+                        cfg: Default::default(),
                     },
-                    CommitOp::Queue {
-                        hash,
-                        op: crate::queue::QueueOp::ConfigLifecycle {
-                            consumer: "c".into(),
-                            expect_gen: 2,
-                            deleting: true,
-                        },
-                        resp: conflict_tx,
+                    resp: created_tx,
+                },
+                CommitOp::Queue {
+                    hash,
+                    op: crate::queue::QueueOp::ConfigLifecycle {
+                        consumer: "c".into(),
+                        expect_gen: 2,
+                        deleting: true,
                     },
-                    CommitOp::Close(CloseReq {
-                        hash,
-                        generation: None,
-                        resp: close_tx,
-                    }),
-                ],
-                &ShardConfig::default(),
-            )
-            .await;
+                    resp: conflict_tx,
+                },
+                CommitOp::Close(CloseReq {
+                    hash,
+                    generation: None,
+                    resp: close_tx,
+                }),
+            ],
+        )
+        .await;
         if fail {
             // The conflict was derived from the uncommitted ConfigPut.
             // If the group fails, the consumer generation never existed.

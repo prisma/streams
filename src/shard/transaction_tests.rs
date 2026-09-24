@@ -139,6 +139,14 @@ impl Fixture {
             vec![created, conflicted],
         )
     }
+    /// Commits `ops` as one group. Staging, refusing and writing never wait
+    /// on dispatch, so a held dispatch gate cannot hold the group itself.
+    async fn commit(&self, ops: Vec<CommitOp>) {
+        let group = self.engine.commit_group(ops, &self.cfg);
+        tokio::time::timeout(Duration::from_secs(10), group)
+            .await
+            .expect("the group waited on the held dispatch");
+    }
     async fn rows(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
         let mut out = BTreeMap::new();
         let mut rows = self.engine.db.scan(..).await.unwrap();
@@ -288,7 +296,7 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
         let engine = fixture.engine.clone();
         let dispatch = engine.test_hold_dispatch().await;
         let start = now_ms();
-        fixture.engine.commit_group(ops, &fixture.cfg).await;
+        fixture.commit(ops).await;
         fixture.assert_quiet().await;
         if let Some(failure) = failure {
             assert_eq!(

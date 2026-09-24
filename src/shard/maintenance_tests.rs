@@ -220,3 +220,134 @@ async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     );
     db.close().await.unwrap();
 }
+
+type Reply = oneshot::Receiver<Result<AppendAck, AppendErr>>;
+
+/// `n` untagged records appended to `hash` in one request.
+fn records(hash: [u8; 16], n: usize) -> (AppendReq, Reply) {
+    let (resp, reply) = oneshot::channel();
+    let entries: Vec<Bytes> = (0..n)
+        .map(|i| Bytes::from(format!("record-{i}-{}", "x".repeat(i * 8))))
+        .collect();
+    let req = AppendReq {
+        hash,
+        route: [0; 16],
+        enqueued_at: std::time::Instant::now(),
+        bytes: entries.iter().map(Bytes::len).sum(),
+        entries,
+        routing_key: "lane".into(),
+        key_hash: [7; 16],
+        producer_lineage: vec![],
+        key_version: 1,
+        subkey: [1; 32],
+        ts_hint_ms: None,
+        seq: None,
+        finish: AppendFinish::Open,
+        billing: None,
+        seal_gen: None,
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        usage: Arc::new(Default::default()),
+        resp,
+    };
+    (req, reply)
+}
+
+/// Waits until the stream's boundary is `upto` and both the stream ledger
+/// and the published shard ledger owe exactly `owed` frame bytes.
+async fn settled(engine: &ShardEngine, hash: &[u8; 16], upto: u64, owed: u64) {
+    let mut seen = None;
+    let reached = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let tail = engine.tail_fields(hash).await.unwrap().unwrap();
+            let shard = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+            seen = Some((tail.absorbed, tail.unabsorbed_bytes, shard));
+            if seen == Some((upto, owed, owed)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        reached.is_ok(),
+        "(absorbed, stream ledger, shard ledger) = {seen:?}, expected ({upto}, {owed}, {owed})"
+    );
+}
+
+/// TLA-016-F1, through the single-stream absorbed submit: an advance moves
+/// the absorbed boundary and retires what it covers from the stream and
+/// shard ledgers. An aligned chunk retires the count it reports without a
+/// read; one that does not start at the boundary retires the stored bytes
+/// of the range it advances over, read back from the flushed SST; the same
+/// bogus count on an aligned chunk is past the ledger, so it refuses its
+/// whole group, the rider append included, and moves nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submitted_absorbed_advances_retire_exactly_what_they_cover() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Db::builder("absorb-submit", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let (tx, _signals) = mpsc::channel(16);
+    let engine = ShardEngine::start(
+        "absorb-submit".into(),
+        Arc::new(db),
+        store,
+        ShardConfig::default(),
+        tx,
+        None,
+        ShardMaintenance::default(),
+    );
+    let hash = [41; 16];
+    let (append, reply) = records(hash, 4);
+    engine.try_enqueue(append).unwrap();
+    assert_eq!(reply.await.unwrap().unwrap().next_offset, 4);
+    let mut frames = Vec::new();
+    for offset in 0..4 {
+        let row = engine.db.get(record_key(&hash, offset)).await.unwrap();
+        frames.push(row.unwrap().len() as u64);
+    }
+    let owed = |from: usize| frames[from..].iter().sum::<u64>();
+    settled(&engine, &hash, 0, owed(0)).await;
+
+    engine.submit_absorbed(hash, 0, 1, frames[0]).await;
+    settled(&engine, &hash, 1, owed(1)).await;
+    // The records now live in an SST, as they do by the time a real
+    // absorber reports, and the chunk [2, 3) at boundary 1 carries a count
+    // no chunk copied.
+    let memtable = slatedb::config::FlushOptions {
+        flush_type: slatedb::config::FlushType::MemTable,
+    };
+    engine.db.flush_with_options(memtable).await.unwrap();
+    engine.submit_absorbed(hash, 2, 3, 999_999).await;
+    settled(&engine, &hash, 3, owed(3)).await;
+
+    let hold = engine.test_hold_commit().await;
+    let (rider, refused) = records(hash, 1);
+    engine.try_enqueue(rider).unwrap();
+    engine.submit_absorbed(hash, 3, 4, 999_999).await;
+    drop(hold);
+    let refused = refused.await.unwrap();
+    assert!(
+        refused.is_err(),
+        "a group retiring past the ledger acked its rider: {refused:?}"
+    );
+    let tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(
+        (tail.absorbed, tail.next),
+        (3, 4),
+        "the refused group moved"
+    );
+    settled(&engine, &hash, 3, owed(3)).await;
+
+    engine.submit_absorbed(hash, 3, 4, frames[3]).await;
+    settled(&engine, &hash, 4, 0).await;
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+}
