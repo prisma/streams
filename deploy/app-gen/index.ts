@@ -78,6 +78,8 @@ console.log(
   `starting awsbench system=${process.env.BENCH_SYSTEM} shape=${process.env.BENCH_SHAPE}`,
 );
 // See app-server/index.ts: a dead binary serves its own diagnostic rather
-// than leaving the domain to 404 like a cold start.
-const { superviseBinary } = await import("./supervise");
-await superviseBinary(bin);
+// than leaving the domain to 404 like a cold start. A load generator holds
+// every death, a ready one's included (item 39; policyFor, pinned by
+// deploy/supervise.test.ts).
+const { superviseBinary, policyFor } = await import("./supervise");
+await superviseBinary(bin, [], process.env, policyFor("app-gen", process.env));

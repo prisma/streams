@@ -35,18 +35,33 @@ curl -s https://<domain>/ | head -20
 ```
 
 A binary that dies after it was ready — it accepted on `$PORT` and had
-been up for 60 s (an OOM kill; streams-slate's exit 1 after a critical
-loop's exit, item 38) — died at runtime: `app-server` and `app-lb` in
-`MODE=lb` pass `{ onDeathAfterReady: "exit" }`, so the wrapper exits
-with the child's own code (a graceful 0 stays 0; a signal is 128 + its
-number) and Compute replaces the instance (item 39). The wrapper's log
-line `binary exited with code N after serving on :PORT ...` is then the
-only record of that death: an OOM kill after boot is no longer readable
-as `exitCode: 137` over HTTP. `app-gen`, and `app-lb` running the pilot
-load generator (`PILOT_MODE=gen`), hold every death, because a workload
-that runs to completion must not be restarted mid-campaign. `bun test
-./deploy/supervise.test.ts` pins both paths, the 60 s boot window, the
-preserved exit code and that the three copies stay byte-identical.
+been up for 60 s, counted on the monotonic clock from the spawn (owner
+decision D4(c)) — died at runtime (an OOM kill; streams-slate's exit 1
+after a critical loop's exit, item 38). `app-server`, and `app-lb` as the
+router (`PILOT_MODE` unset or `lb`), then exit with the child's own code
+(a graceful 0 stays 0; a signal is 128 + its number, e.g. 137 for an OOM
+kill) and Compute replaces the instance (item 39). The wrapper's log line
+`binary exited with code N after serving on :PORT ...` is then the only
+record of that death: an OOM kill after boot is no longer readable as
+`exitCode: 137` over HTTP. `app-gen`, and `app-lb` running the pilot's
+generator or benchmark (`PILOT_MODE=gen` or `bench`), hold every death,
+because a workload that runs to completion must not be restarted
+mid-campaign. The choice is `policyFor(app, env)` in `supervise.ts`; every
+`index.ts` passes `policyFor("<its app>", process.env)`, and
+`superviseBinary` has no default policy: called without one it refuses to
+start, rather than silently holding every death. `bun test
+./deploy/supervise.test.ts` pins every app's policy, the wiring in each
+`index.ts`, both death paths, the 60 s boot window, the preserved exit code
+(0, 1 and 137), the wrapper's log line, and that the three copies stay
+byte-identical.
+
+Known gap (predates item 39): the wrapper does not forward SIGTERM or
+SIGINT to the binary. A signal sent to the wrapper never reaches the
+binary: it ends the wrapper at once and orphans the still-serving binary,
+or, when the wrapper runs as PID 1, it is ignored until the platform's
+SIGKILL. streams-slate's graceful stop (and its 30 s stop bound) therefore
+runs only when the platform signals the binary itself; how Compute
+delivers its stop signal is not yet verified (D10).
 
 Distinct env names per role (`SERVER_BINARY_S3_KEY` vs `LB_BINARY_S3_KEY`,
 `BIN_S3_*` vs `SLATE_S3_*`) — Compute env vars are project-scoped and

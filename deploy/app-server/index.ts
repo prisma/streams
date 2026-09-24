@@ -92,8 +92,7 @@ console.log(`starting streams-slate on :${port}`);
 // serves its exit code + stderr tail, so a dead service is diagnosable over
 // HTTP instead of looking like a platform 404; one that dies after it was
 // serving (an OOM kill, item 38's critical exit) ends this wrapper with its
-// code, so Compute replaces the instance (item 39, deploy/README.md).
-const { superviseBinary } = await import("./supervise");
-await superviseBinary(bin, ["--listen", `0.0.0.0:${port}`], process.env, {
-  onDeathAfterReady: "exit",
-});
+// code, so Compute replaces the instance (item 39, deploy/README.md;
+// policyFor, pinned by deploy/supervise.test.ts).
+const { superviseBinary, policyFor } = await import("./supervise");
+await superviseBinary(bin, ["--listen", `0.0.0.0:${port}`], process.env, policyFor("app-server", process.env));

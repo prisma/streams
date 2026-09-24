@@ -22,12 +22,24 @@
 // first READY_UPTIME_MS, failed its boot (arguments, environment, arch, a
 // store it cannot open); restarting it would crash-loop into a silent
 // platform zombie, so that death is still held and served, as it always was.
+//
+// Which app passes which policy is `policyFor`, and every caller must pass
+// one: there is no default, because a silently defaulted "hold" would bring
+// back the unreplaced 500 that item 39 removed.
+//
+// Known gap (predates item 39): the wrapper does not forward SIGTERM/SIGINT
+// to the child. A signal to the wrapper ends it at once and leaves the child
+// running; the child's graceful stop runs only when the platform signals
+// the child itself.
 
 const TAIL_BYTES = 16 * 1024;
 /// How often the wrapper checks whether the child accepts on $PORT yet.
 const READY_PROBE_MS = 250;
 /// How long a child that accepted on $PORT must have been up before its
 /// death counts as a runtime death rather than a boot failure (item 39).
+/// Counted from the spawn, not from the first accept (owner decision
+/// D4(c)), on the monotonic clock: a wall-clock step at boot cannot move a
+/// death across the line.
 const READY_UPTIME_MS = 60_000;
 
 export type DeathPolicy = {
@@ -39,14 +51,43 @@ export type DeathPolicy = {
   readyUptimeMs?: number;
 };
 
+/// The wrapper apps under deploy/, each with its own index.ts.
+export type App = "app-server" | "app-lb" | "app-gen";
+
+/// Item 39's policy per app, from the environment the app was deployed with
+/// (owner decisions D5 and skeptic C2). The stream server and the pilot
+/// router (app-lb with PILOT_MODE unset or "lb") serve until they die, so a
+/// death after ready ends the wrapper and Compute replaces the instance. A
+/// load generator holds every death: app-gen (awsbench), and app-lb running
+/// the pilot's generator or benchmark (PILOT_MODE=gen or bench), because a
+/// restarted generator would re-ramp load mid-campaign and lose the stderr
+/// tail that explains its failure.
+export function policyFor(app: App, env: Record<string, string | undefined>): DeathPolicy {
+  switch (app) {
+    case "app-server":
+      return { onDeathAfterReady: "exit" };
+    case "app-lb":
+      return { onDeathAfterReady: (env.PILOT_MODE ?? "lb") === "lb" ? "exit" : "hold" };
+    case "app-gen":
+      return { onDeathAfterReady: "hold" };
+  }
+  throw new Error(`policyFor: unknown wrapper app ${JSON.stringify(app)}`);
+}
+
 export async function superviseBinary(
   bin: string,
-  argv: string[] = [],
-  env: Record<string, string | undefined> = process.env,
-  policy: DeathPolicy = { onDeathAfterReady: "hold" },
+  argv: string[],
+  env: Record<string, string | undefined>,
+  policy: DeathPolicy,
 ): Promise<never> {
+  const death = policy?.onDeathAfterReady;
+  if (death !== "exit" && death !== "hold") {
+    throw new Error(
+      `superviseBinary: a death policy is required (policyFor), got ${JSON.stringify(policy)}`,
+    );
+  }
   const port = process.env.PORT ?? "8080";
-  const started = Date.now();
+  const started = performance.now();
   const proc = Bun.spawn([bin, ...argv], {
     env,
     stdout: "inherit",
@@ -76,7 +117,7 @@ export async function superviseBinary(
 
   const code = await proc.exited;
   exited = true;
-  const uptime = Date.now() - started;
+  const uptime = Math.round(performance.now() - started);
   await pump.catch(() => {});
   await probe.catch(() => {});
 
