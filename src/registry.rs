@@ -907,7 +907,6 @@ fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
     format!("{PROJECTS_ROOT}{}/streams/", hex(project.as_bytes()))
 }
 
-/// One page of the stream catalog.
 /// Why a generation-fenced mutation did not apply.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg(test)]
@@ -1495,6 +1494,7 @@ mod cache;
 mod catalog;
 #[cfg(test)]
 mod failpoints;
+pub(crate) mod fork_debt;
 #[cfg(test)]
 mod resolution_tests;
 #[cfg(test)]

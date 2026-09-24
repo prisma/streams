@@ -25,7 +25,7 @@ use std::time::Duration;
 /// (or their narrow sub-config) at construction.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
-    /// The parsed CLI surface (84 flags). Contains secret material
+    /// The parsed CLI surface (85 flags). Contains secret material
     /// (access keys, tokens) — never log it; `redacted_summary` excludes
     /// it entirely.
     pub cli: CliArgs,

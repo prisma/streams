@@ -123,6 +123,7 @@ with an empty pool rather than dead sockets.
 | `ROLLUP` | — | `1` = this instance runs the usage rollup consumer + month closer |
 | `TELEMETRY_DRAIN_SECS` | 2 | drain cadence: sealed reads + dirty snapshots -> `_usage` |
 | `OUTBOX_SWEEP_SECS` | 300 | owned-shard outbox sweep + billing tombstone walk cadence |
+| `FORK_DEBT_SWEEP_SECS` | 300 | pause between fork-debt reconciler circles (releases source references deleted forks still owe; a backlog drains back to back) |
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |

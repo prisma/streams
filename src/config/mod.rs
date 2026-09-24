@@ -12,7 +12,7 @@
 //! `run()` entry starts physical process infrastructure only once.
 //!
 //! Layout:
-//! - [`cli`]: the 84-flag command-line surface (clap DTO);
+//! - [`cli`]: the 85-flag command-line surface (clap DTO);
 //! - [`environment`]: the environment source trait + process/map impls;
 //! - [`model`]: `ServerConfig` and the 13 knob sub-configs;
 //! - [`admission_limits`]: the boot-time proof of the token-bucket posture;

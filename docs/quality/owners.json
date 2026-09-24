@@ -1275,6 +1275,22 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::a_crashed_creators_late_reference_is_released_without_a_client_retry",
+      "path": "src/dst/tests/fork_cleanup.rs",
+      "reason": "Crashed creator fixture owns the parked creator handle; it is released and joined before shutdown. Concurrent execution is required to park it at the simulated crash point while the reconciler repairs the source without a second DELETE.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+      "path": "src/dst/tests/fork_cleanup.rs",
+      "reason": "Live creator race fixture owns both parked creator handles; each is released and joined before shutdown. Concurrent execution is required to hold both creators in their install windows while reconciler passes interleave with them.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::fork_creation_and_source_deletion_serialize",
       "path": "src/dst/tests/fork_lifecycle.rs",
       "reason": "Fork serialization fixture owns the source deletion handle; it is joined after the fork creation it races. Concurrent execution is required to serialize the two on the source.",
@@ -2383,6 +2399,38 @@
       "path": "src/dst/tests/seal_fencing.rs",
       "reason": "Unfenced refusal fixture owns P's two seal attempts and T's takeover; each is joined before the claim and the tail are checked. Concurrent execution is required to hold them at their failpoints and behind the held commit gate.",
       "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/reconcile.rs",
+      "reason": "The fork-debt reconciler imports its enclosing creation owner; the compiler resolves the parent exports and the reconciler only pays debts through the owner's deletion protocol.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::spawn_fork_debt_reconciler",
+      "path": "src/application/creation/reconcile.rs",
+      "reason": "The supervised fork-debt reconciler selects cancellation around each bounded pass and each pause between circles; the restart DST (an_interrupted_reconcile_pass_is_completed_after_a_restart) cancels it mid-pass.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/fork_debt.rs",
+      "reason": "The fork-debt index imports its enclosing registry owner; the compiler resolves the parent exports and the index only writes, lists and deletes its own marker keys.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/registry/fork_debt.rs",
+      "reason": "The fork-debt index tests import the index module under test; the compiler resolves the parent exports.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

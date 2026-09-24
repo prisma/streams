@@ -335,6 +335,12 @@ pub struct CliArgs {
     pub(crate) streams_auth_grants_file: Option<std::path::PathBuf>,
     #[arg(long, env = "STREAMS_AUTH_REFRESH_SECS", default_value_t = 30)]
     pub(crate) streams_auth_refresh_secs: u64,
+    /// Pause (seconds, floored at 1) between circles of the fork-debt
+    /// reconciler, which releases the source references that deleted forks
+    /// still owe (TLA-019-F4). Same cadence as OUTBOX_SWEEP_SECS, the
+    /// neighbouring tombstone walk; a backlog drains without waiting for it.
+    #[arg(long, env = "FORK_DEBT_SWEEP_SECS", default_value_t = 300)]
+    pub(crate) fork_debt_sweep_secs: u64,
     /// Base64 32-byte key signing catalog cursors (review item 3).
     /// Set the SAME value fleet-wide so page walks verify on any
     /// instance; optional on a single instance.
@@ -595,6 +601,7 @@ impl CliArgs {
             streams_auth_policy_file: None,
             streams_auth_grants_file: None,
             streams_auth_refresh_secs: 30,
+            fork_debt_sweep_secs: 300,
             streams_cursor_key: None,
             fleet_internal_token: None,
             fleet_auth_mode: "static".into(),

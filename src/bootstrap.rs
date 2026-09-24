@@ -115,27 +115,27 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 /// drive owners directly, not this.
 #[expect(
     clippy::too_many_lines,
-    reason = "run; boot wires the stores, keys, runtime, caches and tasks in one visible dependency order; splitting it would hide which resource each later step relies on"
+    reason = "run; boot wires the stores, keys, runtime, caches and tasks, the fork-debt reconciler included, in one visible dependency order; splitting it would hide which resource each later step relies on"
 )]
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "run; the flush interval fits u64 milliseconds and the shared cache size fits usize on the 64-bit targets the service builds for; checked conversions would only restate the target width"
+    reason = "run; the flush interval fits u64 milliseconds and the shared cache size fits usize on the 64-bit targets the service builds for, and the fork-debt reconciler start adds no cast; checked conversions would only restate the target width"
 )]
 #[expect(
     clippy::let_underscore_must_use,
-    reason = "run; the probe delete is best effort, the supervisor rejects a spawn only while stopping, and the capability publication is advisory; handled results would only restate what boot already logs"
+    reason = "run; the probe delete is best effort, the supervisor rejects a spawn only while stopping (the fork-debt reconciler logs that rejection itself), and the capability publication is advisory; handled results would only restate what boot already logs"
 )]
 #[expect(
     clippy::expect_used,
-    reason = "run; covers exactly one site, the maintenance-worker spawn: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
+    reason = "run; covers exactly one site, the maintenance-worker spawn, which the fork-debt reconciler start does not add to: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths, which the fork-debt reconciler start does not add to: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
 #[expect(
     clippy::excessive_nesting,
-    reason = "run; boot nests each shard opener's flush stagger, database open and close callback inside the opener closure it hands the directory; flattening them would separate the opener from the shard it builds"
+    reason = "run; boot nests each shard opener's flush stagger, database open and close callback inside the opener closure it hands the directory, while the fork-debt reconciler start stays flat; flattening them would separate the opener from the shard it builds"
 )]
 pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // The executable has one process bootstrap: OS-resource setup, the
@@ -767,6 +767,13 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     }
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
     crate::scaler3::start(Arc::downgrade(&state), &tasks);
+    // TLA-019-F4: the service, not a client repeating DELETE, settles the
+    // fork-reference debt a deleted fork's tombstone retains.
+    crate::application::creation::spawn_fork_debt_reconciler(
+        state.creation_service(),
+        &tasks,
+        std::time::Duration::from_secs(config.cli.fork_debt_sweep_secs.max(1)),
+    );
     {
         // RSS sampler for the shed check (500 ms; /proc read per request
         // would be silly). Unconditional: this used to live inside the

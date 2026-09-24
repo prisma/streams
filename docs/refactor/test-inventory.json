@@ -102,6 +102,26 @@
     ]
   },
   {
+    "name": "a_crashed_creators_late_reference_is_released_without_a_client_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f865287d00f70270a0e269837d02c7dfa6ba59992ef7c68202bdc2dcb411c307",
+    "mechanisms": [],
+    "configuration": [
+      "let pre = crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk19kid\");",
+      "let post = crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk19kid\");",
+      "crate::failpoints::park_fork_before_source_ref(\"frk19kid\");",
+      "crate::failpoints::park_fork_after_source_ref(\"frk19kid\");",
+      "park_reached(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk19kid\", pre).await;",
+      "crate::failpoints::release_fork_before_source_ref(\"frk19kid\");",
+      "park_reached(crate::failpoints::Fp::ForkAfterSourceRef, \"frk19kid\", post).await;",
+      "crate::failpoints::release_fork_after_source_ref(\"frk19kid\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1567,6 +1587,22 @@
       "CRT-003",
       "SEC-004"
     ]
+  },
+  {
+    "name": "an_interrupted_reconcile_pass_is_completed_after_a_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8f06ef8210deba9730d761cb13c7bf7195cbf2019b72004f3e3733a1db51f7e5",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ReleaseAfterEpochCheck, \"frk21src\");",
+      "crate::failpoints::park_release_after_epoch_check(\"frk21src\");",
+      "crate::failpoints::Fp::ReleaseAfterEpochCheck,",
+      "crate::failpoints::release_release_after_epoch_check(\"frk21src\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
   },
   {
     "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
@@ -6237,6 +6273,27 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d06c151ae63a1cab3b231f3a0cd9cca578ba397c1d6e3a3d55dc124255fd9070",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk20kid\"),",
+      "crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk20kid\"),",
+      "crate::failpoints::park_fork_before_source_ref(\"frk20kid\");",
+      "crate::failpoints::park_fork_after_source_ref(\"frk20kid\");",
+      "park_reached(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk20kid\", pre).await;",
+      "crate::failpoints::release_fork_before_source_ref(\"frk20kid\");",
+      "park_reached(crate::failpoints::Fp::ForkAfterSourceRef, \"frk20kid\", post).await;",
+      "crate::failpoints::Fp::ForkAfterSourceRef,",
+      "crate::failpoints::release_fork_after_source_ref(\"frk20kid\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
     "scenarios": []
   },
   {
