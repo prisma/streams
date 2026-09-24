@@ -417,6 +417,11 @@ const proc = Bun.spawn([bin, "--listen", `0.0.0.0:${port}`], {
 process.exit(await proc.exited);
 ```
 
+The deployed wrapper is `deploy/app-server/{index,supervise}.ts`
+(deploy/README.md); a binary that dies after it was ready (it accepted on
+`$PORT` and had been up for 60 s) ends it with its exit code, and Compute
+replaces the instance (item 39).
+
 The ELF check is not optional politeness — it converts the silent
 crash-loop-zombie failure mode (§10) into a readable boot log. Binaries are
 uploaded to the object store and passed as 24 h-presigned GET URLs
@@ -494,7 +499,7 @@ drop writes that would have succeeded.
 | deploy CLI throws `styleText` import error | Node < 20 resolving the CLI | run `bunx --bun @prisma/compute-cli …` |
 | first requests after idle are slow | scale-to-zero wake + connection-pool warmup | expected; the 4 s pool idle timeout (§3.1) exists for exactly this |
 | a URL that worked before now 503s, service looks healthy | **preview domains are per-version**: a redeploy mints a new one and retires the old | re-resolve after every deploy: `compute versions list --project P --service S \| awk '$2=="running"{print $3}'` |
-| domain returns a JSON `binary_exited` body | the wrapper's supervisor caught the child dying | read `exitCode` + `stderrTail` in the body — usually a missing required env var or wrong arch |
+| domain returns a JSON `binary_exited` body | the binary died at boot — before it ever accepted on `$PORT`, or within its first 60 s — and the wrapper holds the port to explain it | read `exitCode` + `stderrTail` in the body — usually a missing required env var, wrong arch, or a store it cannot open |
 | parallel deploys fail with `EEXIST` | concurrent `bunx` invocations race on the shared package cache | fan out regions **sequentially**, or pre-warm with one call |
 | `--service` calls all fail after a scripted deploy | the script captured the **version** id (`cpv_…`) that `deploy` prints, not the **service** id (`cps_…`) | take service ids from `services list` only |
 

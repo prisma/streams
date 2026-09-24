@@ -87,8 +87,13 @@ process.env.APP_BINARY_SHA256 = hasher.digest("hex");
 console.log(`binary sha256 ${process.env.APP_BINARY_SHA256}`);
 const port = process.env.PORT ?? "8080";
 console.log(`starting streams-slate on :${port}`);
-// superviseBinary never returns: if the binary exits it binds $PORT and
-// serves the exit code + stderr tail, so a dead service is diagnosable
-// over HTTP instead of looking like a platform 404 (deploy/README.md).
+// superviseBinary: a binary that dies at boot (before it accepted on $PORT,
+// or within its first minute) is held, and the wrapper binds $PORT and
+// serves its exit code + stderr tail, so a dead service is diagnosable over
+// HTTP instead of looking like a platform 404; one that dies after it was
+// serving (an OOM kill, item 38's critical exit) ends this wrapper with its
+// code, so Compute replaces the instance (item 39, deploy/README.md).
 const { superviseBinary } = await import("./supervise");
-await superviseBinary(bin, ["--listen", `0.0.0.0:${port}`]);
+await superviseBinary(bin, ["--listen", `0.0.0.0:${port}`], process.env, {
+  onDeathAfterReady: "exit",
+});

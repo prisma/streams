@@ -20,11 +20,12 @@ warm instance keeps `/tmp` across versions and would otherwise pin the
 previous release.
 
 `supervise.ts` closes the same gap from the other side. If the binary
-exits — bad arch, missing required env var, workload finished — the
-wrapper binds `$PORT` itself and serves a 500 carrying the exit code and
-the tail of stderr. Without it the only symptom is the domain answering
-404/503, which is indistinguishable from a cold start; with it a dead
-service explains itself:
+exits at boot — before it ever accepted on `$PORT`, or within its first
+minute (bad arch, missing required env var, a store it cannot open,
+workload finished) — the wrapper binds `$PORT` itself and serves a 500
+carrying the exit code and the tail of stderr. Without it the only
+symptom is the domain answering 404/503, which is indistinguishable from
+a cold start; with it a dead service explains itself:
 
 ```bash
 curl -s https://<domain>/ | head -20
@@ -32,6 +33,20 @@ curl -s https://<domain>/ | head -20
 #  required env vars ...","stderrTail":"error: the following required
 #  arguments were not provided: --shape <SHAPE>"}
 ```
+
+A binary that dies after it was ready — it accepted on `$PORT` and had
+been up for 60 s (an OOM kill; streams-slate's exit 1 after a critical
+loop's exit, item 38) — died at runtime: `app-server` and `app-lb` in
+`MODE=lb` pass `{ onDeathAfterReady: "exit" }`, so the wrapper exits
+with the child's own code (a graceful 0 stays 0; a signal is 128 + its
+number) and Compute replaces the instance (item 39). The wrapper's log
+line `binary exited with code N after serving on :PORT ...` is then the
+only record of that death: an OOM kill after boot is no longer readable
+as `exitCode: 137` over HTTP. `app-gen`, and `app-lb` running the pilot
+load generator (`PILOT_MODE=gen`), hold every death, because a workload
+that runs to completion must not be restarted mid-campaign. `bun test
+./deploy/supervise.test.ts` pins both paths, the 60 s boot window, the
+preserved exit code and that the three copies stay byte-identical.
 
 Distinct env names per role (`SERVER_BINARY_S3_KEY` vs `LB_BINARY_S3_KEY`,
 `BIN_S3_*` vs `SLATE_S3_*`) — Compute env vars are project-scoped and
