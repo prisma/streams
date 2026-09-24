@@ -378,7 +378,7 @@ pub(crate) async fn remote_read_page(
     initial_owner: &str,
     command: &super::read::ReadCommand,
     segment: u32,
-    from: u64,
+    from: super::read::ScanStart,
 ) -> Result<super::read::ReadOutcome, super::read::ReadFailure> {
     use super::read::ReadFailure;
     let target =
@@ -386,10 +386,15 @@ pub(crate) async fn remote_read_page(
     let key = command.key.as_ref().ok_or(ReadFailure::MissingKey)?;
     use base64::Engine;
     let key = base64::engine::general_purpose::STANDARD.encode(key.0);
-    let offset = if from == u64::MAX {
-        "now".to_string()
-    } else {
-        crate::offsets::encode_ep(segment, crate::offsets::Offset::before(from))
+    // Every version of the page route spells "now" as the literal `now`,
+    // never as a number, so a numeric offset is an ordinary position here.
+    // Until every owner runs this change, an older owner still reads a
+    // relayed index of 2^64-1 as its own tail.
+    let offset = match from {
+        super::read::ScanStart::Now => "now".to_string(),
+        super::read::ScanStart::At(from) => {
+            crate::offsets::encode_ep(segment, crate::offsets::Offset::before(from))
+        }
     };
     let mut owner = initial_owner.to_string();
     for hop in 0..2 {

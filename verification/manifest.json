@@ -82,10 +82,9 @@
       "assumptions": [
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER",
-        "ASM-OFFSET-DOMAIN",
-        "ASM-READ-NOW-SENTINEL"
+        "ASM-OFFSET-DOMAIN"
       ],
-      "input_scope": "START and every u64 scan index including u64::MAX, with every u32 epoch through the digit codec; the read planner's u64::MAX \"now\" sentinel is recorded as a domain question, not proven",
+      "input_scope": "START and every u64 scan index including u64::MAX, with every u32 epoch through the digit codec",
       "checks": [
         {
           "id": "KANI-002/successor-indices",

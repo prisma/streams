@@ -13,6 +13,26 @@ pub(crate) enum ReadStart {
     Now,
     Position(ReadPosition),
 }
+/// Where a span scan starts. "Now" has its own variant so that every scan
+/// index, `u64::MAX` included, is an ordinary position with ordinary
+/// past-the-tail semantics; no number selects live-tail behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScanStart {
+    /// The span's tail at the moment the owner executes the read.
+    Now,
+    At(u64),
+}
+impl ScanStart {
+    /// A span's first record.
+    const FIRST: Self = Self::At(0);
+    /// The scan index this start denotes in a span whose tail is `tail`.
+    const fn against(self, tail: u64) -> u64 {
+        match self {
+            Self::Now => tail,
+            Self::At(at) => at,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReadMode {
     Replay,
@@ -217,7 +237,7 @@ impl ReadService {
         if spans.is_empty() {
             return Err(ReadFailure::Storage("empty read lineage".into()));
         }
-        let (mut index, mut start) = match command.position_in(&topology) {
+        let (mut index, mut from) = match command.position_in(&topology) {
             Ok(position) => position,
             Err(_) if command.refresh => return self.refreshed_read(command).await,
             Err(error) => return Err(error),
@@ -241,7 +261,7 @@ impl ReadService {
                                 owner,
                                 &command,
                                 span.seg_id,
-                                start,
+                                from,
                             )
                             .await;
                         }
@@ -285,15 +305,13 @@ impl ReadService {
                     .and_then(|m| m.pending.as_ref())
                     .is_some_and(|p| p.segs.contains(&span.seg_id));
             end = span.sealed_next_offset.unwrap_or(end);
-            if start == u64::MAX {
-                start = end;
-            }
+            let start = from.against(end);
             if command.visibility == Deliver::Applied && start > end {
                 return Err(ReadFailure::CursorBeyondTail);
             }
             if start >= end && !last {
                 index += 1;
-                start = 0;
+                from = ScanStart::FIRST;
                 continue;
             }
             let position = ReadPosition {
@@ -314,7 +332,7 @@ impl ReadService {
                     identity,
                 ));
             }
-            if matches!(command.start, ReadStart::Now) && matches!(command.mode, ReadMode::Replay) {
+            if from == ScanStart::Now && matches!(command.mode, ReadMode::Replay) {
                 let mut out = ReadOutcome::empty(
                     &command,
                     position,
@@ -603,15 +621,15 @@ impl ResolvedRead<'_> {
 }
 
 impl ReadCommand {
-    fn position_in(&self, topology: &ReadTopology) -> Result<(usize, u64), ReadFailure> {
+    fn position_in(&self, topology: &ReadTopology) -> Result<(usize, ScanStart), ReadFailure> {
         match self.start {
-            ReadStart::Beginning => Ok((0, 0)),
-            ReadStart::Now => Ok((topology.spans.len() - 1, u64::MAX)),
+            ReadStart::Beginning => Ok((0, ScanStart::FIRST)),
+            ReadStart::Now => Ok((topology.spans.len() - 1, ScanStart::Now)),
             ReadStart::Position(position) => topology
                 .spans
                 .iter()
                 .position(|span| span.seg_id == position.segment)
-                .map(|index| (index, position.after))
+                .map(|index| (index, ScanStart::At(position.after)))
                 .ok_or(ReadFailure::InvalidCursor),
         }
     }

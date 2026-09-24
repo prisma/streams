@@ -40,16 +40,21 @@ characters followed by `U+0141` (26 bytes, 25 chars) on the pre-fix code gave
 **Fix:** the parser walks the 26 bytes. A non-ASCII byte is never a digit.
 Regression: `offsets::tests::a_multibyte_char_is_not_a_digit`.
 
-## 3. Tracked, not changed: scan index `u64::MAX` doubles as "now"
+## 3. Resolved: scan index `u64::MAX` no longer doubles as "now"
 
-`ReadCommand::position_in` maps `ReadStart::Now` to scan index `u64::MAX`, and
-`read_request.rs` then replaces any start of `u64::MAX` with the current tail
-(`if start == u64::MAX { start = end }`). The peer path does the same
-(`read_remote.rs`: `from == u64::MAX` is forwarded as `"now"`). A position token
-whose rawSeq is `2^64 - 1` is therefore served as "now" rather than as a
-position at or beyond the tail. The server issues such a token only after a
-stream has held `2^64 - 1` records, so the conflation is reachable only through
-a crafted token. Its effect is live-tail semantics instead of
-`CursorBeyondTail`/an empty read. This is recorded as a domain decision for the
-owner under KANI-002. It needs an explicit meaning, or a separate `Now` carried
-through the read planner.
+`ReadCommand::position_in` used to map `ReadStart::Now` to scan index
+`u64::MAX`, and `read_request.rs` replaced any start of `u64::MAX` with the
+current tail. A position token whose rawSeq is `2^64 - 1` was therefore served
+as "now". The server issues such a token only after a stream has held
+`2^64 - 1` records, so only a crafted token reached it; its effect was
+live-tail semantics instead of `CursorBeyondTail` or an empty read.
+
+Fixed by "A read position of u64::MAX is a position, and now has its own
+representation": the planner carries `ScanStart { Now, At(u64) }`, the peer
+relay sends "now" as the literal `now` (as it always did on the wire), and
+every numeric scan index follows the ordinary past-the-tail rule. Regressions:
+`dst::dst_tests::read_application::scan_index_u64_max_is_a_position_not_now_locally_and_relayed`
+and `dst::dst_tests::read_application::adapters_never_serve_a_u64_max_token_as_the_live_tail`.
+During a mixed-version rollout, an owner that has not been upgraded still
+treats a forwarded `2^64 - 1` position as its tail until every owner runs the
+fix.

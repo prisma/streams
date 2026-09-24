@@ -704,7 +704,7 @@ mod read_contract_tests {
 #[path = "read_request.rs"]
 mod request;
 pub(crate) use request::{
-    ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart,
+    ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart, ScanStart,
 };
 
 /// One history range retains its physical identity and proven boundary while

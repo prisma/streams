@@ -1369,6 +1369,17 @@
     "scenarios": []
   },
   {
+    "name": "adapters_never_serve_a_u64_max_token_as_the_live_tail",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "08595fc8a4d3f9634dec679a7f18c54ee9a4e85978ba981d3aad92e8bc86ea14",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "adaptive_gather_estimate_seeds_decays_and_jumps",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -4784,7 +4795,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2ccad8807a4df1c37f0121206e5f3e649e0150e73ead70385a7743f1a23bba6a",
+    "function_sha256": "33b3d4a3ffac0c128af885fce57a5d49f732bbbfb0de9e3ef37fba730e33a560",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_page_limits.rs",
@@ -5220,7 +5231,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7259128bc09702563a3755070c2ec7af5d2e0c6e1d5d2a6070ecda34061841a1",
+    "function_sha256": "0388b415a8a64482a5d6cff78d4e06888aee52e482cb170aaf7fc9d1506c6e20",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
@@ -5499,6 +5510,17 @@
       "SEL-028",
       "TOP-012"
     ]
+  },
+  {
+    "name": "scan_index_u64_max_is_a_position_not_now_locally_and_relayed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "be45eaac80e8c63816a0b74638c366089d8ee03fab0866fc2132341c168002c8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
   },
   {
     "name": "scan_pages_draw_on_the_read_byte_quota",

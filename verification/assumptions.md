@@ -59,20 +59,6 @@ defined here.
   to the token layout.
 - **Standing:** established.
 
-### ASM-READ-NOW-SENTINEL
-
-- **Scope:** KANI-002 (a tracked domain question, not a verified property).
-- **Statement:** the read planner uses scan index `u64::MAX` as its in-band "now"
-  sentinel (`ReadCommand::position_in`, `read_request.rs`, `read_remote.rs`). The
-  KANI-002 harness proves the codec, not this caller convention.
-- **Origin:** source inspection during KANI-002.
-- **Enforcement / evidence:** none beyond the unreachability of a real
-  `2^64 - 1`-record stream.
-- **Invalidation:** a separate `Now` carried through the planner, which removes
-  this entry.
-- **Standing:** unestablished; owner decision pending. See
-  `regressions/KANI-002/README.md`.
-
 ### ASM-PRODUCER-ROW
 
 - **Scope:** KANI-036, KANI-037, KANI-038.

@@ -3,7 +3,9 @@ use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_bu
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
-use crate::application::read::{ReadCommand, ReadFailure, ReadMode, ReadPosition, ReadStart};
+use crate::application::read::{
+    ReadCommand, ReadFailure, ReadMode, ReadPosition, ReadStart, ScanStart,
+};
 use crate::application::read_remote::{InternalTarget, remote_read_page};
 use std::time::Duration;
 
@@ -384,7 +386,7 @@ async fn relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict() {
         matches!(local, ReadFailure::CursorBeyondTail),
         "local verdict: {local:?}"
     );
-    let relayed = remote_read_page(&state.peer, "relay-owner", &command, 0, 100)
+    let relayed = remote_read_page(&state.peer, "relay-owner", &command, 0, ScanStart::At(100))
         .await
         .err()
         .expect("an applied read beyond the tail is refused through the relay");
@@ -480,6 +482,188 @@ async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelop
     assert_eq!(status, 404);
     let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(envelope["error"]["code"], "not_found", "{envelope}");
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// ASM-READ-NOW-SENTINEL: scan index `u64::MAX` is an ordinary position.
+/// It used to be the planner's in-band "now", so a token whose rawSeq is
+/// 2^64-1 silently started at the live tail. It now takes the past-the-tail
+/// rule every position beyond the tail takes, locally and through the relay,
+/// while a genuine "now" still starts at the tail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scan_index_u64_max_is_a_position_not_now_locally_and_relayed() {
+    let (rig, desc) = relay_tail_rig().await;
+    let state = &rig.state;
+    let at = |after| {
+        let mut command = command(&desc);
+        command.start = ReadStart::Position(ReadPosition { segment: 0, after });
+        command.refresh = false;
+        command
+    };
+    let now = || {
+        let mut command = at(0);
+        command.start = ReadStart::Now;
+        command
+    };
+    let service = state.read_service();
+    let beyond = service.execute_read(at(100)).await.unwrap();
+    assert!(beyond.records.is_empty());
+    assert_eq!(beyond.next.after, 100);
+    for out in [
+        service.execute_read(at(u64::MAX)).await.unwrap(),
+        remote_read_page(
+            &state.peer,
+            "relay-owner",
+            &at(u64::MAX),
+            0,
+            ScanStart::At(u64::MAX),
+        )
+        .await
+        .unwrap(),
+    ] {
+        assert_eq!(out.kind, beyond.kind, "any past-the-tail position");
+        assert!(out.records.is_empty());
+        assert_eq!(
+            out.next.after,
+            u64::MAX,
+            "the position is kept, not the tail"
+        );
+    }
+    for out in [
+        service.execute_read(now()).await.unwrap(),
+        remote_read_page(&state.peer, "relay-owner", &now(), 0, ScanStart::Now)
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(out.kind, crate::application::read::ReadResultKind::Snapshot);
+        assert_eq!(out.next.after, 2, "a genuine now starts at the tail");
+    }
+    let mut applied = at(u64::MAX);
+    applied.visibility = crate::shard::Deliver::Applied;
+    assert!(matches!(
+        service.execute_read(applied.clone()).await,
+        Err(ReadFailure::CursorBeyondTail)
+    ));
+    assert!(matches!(
+        remote_read_page(
+            &state.peer,
+            "relay-owner",
+            &applied,
+            0,
+            ScanStart::At(u64::MAX)
+        )
+        .await,
+        Err(ReadFailure::CursorBeyondTail)
+    ));
+    engine_shutdown(state).await;
+    rig.tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// The raw, product and page-route adapters admit a rawSeq of 2^64-1 as a
+/// position: nothing past the tail, a resume cursor that keeps the position,
+/// and an applied read refused as beyond the tail. Their "now" is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
+    let (rig, desc) = relay_tail_rig().await;
+    let addr = rig.addr;
+    let raw_key = [("stream-encryption-key", PRISMA_KEY)];
+    let max = crate::offsets::Offset::before(u64::MAX).encode();
+    let raw_next = |headers: &std::collections::HashMap<String, String>| {
+        crate::offsets::Offset::parse(headers.get("stream-next-offset").unwrap())
+            .unwrap()
+            .scan_from()
+    };
+    let (status, headers, body) = preq(
+        addr,
+        "GET",
+        &format!("/v1/stream/relay-tail?offset={max}"),
+        &raw_key,
+        b"",
+    )
+    .await;
+    assert_eq!((status, &body[..]), (200, &b"[]"[..]));
+    assert_eq!(raw_next(&headers), u64::MAX);
+    let (status, headers, _) = preq(
+        addr,
+        "GET",
+        "/v1/stream/relay-tail?offset=now",
+        &raw_key,
+        b"",
+    )
+    .await;
+    assert_eq!((status, raw_next(&headers)), (200, 2));
+
+    let credentials = [("prisma-encryption-key", PRISMA_KEY)];
+    let cursor = crate::product_cursor::KeyCursor {
+        epoch: desc.epoch(),
+        key_hash: crate::crypto::RoutingKeyHash::of("").0,
+        seg_id: 0,
+        offset: u64::MAX,
+    }
+    .encode(&desc.project_id, &skey());
+    let product_next = |headers: &std::collections::HashMap<String, String>| {
+        crate::product_cursor::KeyCursor::decode(
+            headers.get("prisma-next-cursor").unwrap(),
+            &desc.project_id,
+            &skey(),
+            &desc.epoch(),
+            &crate::crypto::RoutingKeyHash::of("").0,
+        )
+        .unwrap()
+        .offset
+    };
+    let records = "/v1/streams/relay-tail/records";
+    let (status, headers, body) = preq(
+        addr,
+        "GET",
+        &format!("{records}?cursor={cursor}"),
+        &credentials,
+        b"",
+    )
+    .await;
+    assert_eq!((status, &body[..]), (200, &b"[]"[..]));
+    assert_eq!(product_next(&headers), u64::MAX);
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        &format!("{records}?cursor={cursor}&deliver=applied"),
+        &credentials,
+        b"",
+    )
+    .await;
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    let (status, headers, _) = preq(
+        addr,
+        "GET",
+        &format!("{records}?cursor=now"),
+        &credentials,
+        b"",
+    )
+    .await;
+    assert_eq!((status, product_next(&headers)), (200, 2));
+
+    let target = InternalTarget::of(&desc, 0).unwrap().headers();
+    let mut page = vec![
+        ("authorization", "Bearer dst-internal-token"),
+        ("stream-encryption-key", PRISMA_KEY),
+        ("streams-internal-read-page", "1"),
+        ("streams-internal-deliver", "applied"),
+        ("streams-internal-max-bytes", "4096"),
+    ];
+    page.extend(target.iter().map(|(k, v)| (*k, v.as_str())));
+    let max = crate::offsets::encode_ep(0, crate::offsets::Offset::before(u64::MAX));
+    let (status, _, body) = preq(
+        addr,
+        "GET",
+        &format!("/v1/internal/segment-read/relay-tail?offset={max}"),
+        &page,
+        b"",
+    )
+    .await;
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(reply["refused"], "cursor_beyond_tail", "{reply}");
     engine_shutdown(&rig.state).await;
     rig.tasks.shutdown(Duration::from_secs(5)).await;
 }
