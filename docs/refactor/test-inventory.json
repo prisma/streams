@@ -841,6 +841,17 @@
     "scenarios": []
   },
   {
+    "name": "a_request_naming_no_operation_authenticates_before_its_404_or_405",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "adda502b0e2e1f4fca628d8f8d6709b76d4c1f52e2c6d6d5e0085c660514434a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_operations.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_resumed_mark_never_seals_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2294,6 +2305,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "every_dispatched_operation_demands_exactly_its_scope",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c45aec5ca10f50a1b7d650e3cbd4828ea8069781342d29ea1c9f95df370b1124",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_operations.rs",
     "scenarios": []
   },
   {

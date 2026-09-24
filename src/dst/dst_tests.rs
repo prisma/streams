@@ -192,6 +192,9 @@ mod security_modes;
 #[path = "tests/security_noninterference.rs"]
 mod security_noninterference;
 
+#[path = "tests/security_operations.rs"]
+mod security_operations;
+
 #[path = "tests/security_policy.rs"]
 mod security_policy;
 

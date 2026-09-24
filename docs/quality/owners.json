@@ -2299,6 +2299,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::security_operations",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Product-operation authorization scenarios; the section 6.1 scope every dispatched operation demands and authentication before a route refusal, over real HTTP against an enforce-mode rig; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_operations.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::tests",
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
