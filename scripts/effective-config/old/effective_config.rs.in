@@ -1,0 +1,4 @@
+//! INJECTED (see effective_config_dump.rs.in): the old-model dumper's entry point.
+fn main() {
+    streams_slate::effective_config_dump::dump();
+}

@@ -1,0 +1,54 @@
+# Single-instance saturation benchmark (bench-fra-ab.sh server), with the
+# generator's env merged in (same BENCH_PROJECT, reused across runs;
+# RUNBOOK §7.3). MANIFEST_POLL_MS=1000 re-tightens the poll cadence that
+# RUNBOOK.md:103 says deploy scripts must not override (plan §1.6).
+source scripts/bench-fra-ab.sh "--path $HERE/../deploy/app-server --http-port 8080"
+note The stop step redeploys the generator with STREAMS=0 CONC_START=0 CONC_MAX=0 and --unset-env KEEP_AWAKE; the gen step's values are modelled.
+argv --listen 0.0.0.0:8080
+platform PORT=8080
+
+role gen
+env AWSBENCH_S3_KEY=bin/pilot-placeholder-x64
+env MODE=gen
+env S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+env S3_BUCKET=placeholder-artifact-bucket
+env S3_REGION=auto
+env S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+env S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env AUTH_TOKEN=placeholder-auth-token
+env STREAM_KEY=placeholder-stream-key
+env LB_URL=https://placeholder-bench-server.invalid
+env STREAM_PREFIX=bench-placeholder-run
+env STREAMS=32
+env CONC_START=128
+env CONC_MAX=128
+env RAMP_SECS=60
+env BATCH=16
+supervisor KEEP_AWAKE=1
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-placeholder-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+env PATH_PREFIX=bench
+env INSTANCE_NAME=bench-server
+env FLUSH_INTERVAL_MS=50
+env L0_MAX_SSTS_PER_KEY=0
+env MANIFEST_POLL_MS=1000
+env INITIAL_SHARDS=4
+env ADMIT_MAX_INFLIGHT=256
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=300
+env TRIM_PER_OP=8192
+supervisor KEEP_AWAKE=1
+include deploy/profiles/compute-1g.env
+supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

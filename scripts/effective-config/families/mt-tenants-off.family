@@ -1,0 +1,73 @@
+# MT-TENANTS campaign, stage 0: the server with auth OFF (raw-surface
+# regression control). Every run provisions a fresh project, and this is its
+# first deploy, so no generator env is merged yet (the stage-0 generator is
+# deployed after it).
+source bench/soak/mt-tenants.sh "deploy server \"${SERVER_COMMON[@]}\" --env STREAMS_AUTH_MODE=off"
+note SOAK_RUN_ID / BIN_TAG / SOAK_PREFIX are mtten-<UTC timestamp>; a fixed stand-in is used.
+argv --listen 0.0.0.0:8080
+platform PORT=8080
+omit STREAMS_AUTH_ISSUER enforce redeploy only (mt-tenants-enforce)
+omit STREAMS_AUTH_KEYS_FILE enforce redeploy only (mt-tenants-enforce)
+omit STREAMS_AUTH_POLICY_FILE enforce redeploy only (mt-tenants-enforce)
+omit STREAMS_AUTH_GRANTS_FILE enforce redeploy only (mt-tenants-enforce)
+omit STREAMS_AUTH_REFRESH_SECS enforce redeploy only (mt-tenants-enforce)
+omit FEEDS_S3_KEY enforce redeploy only (mt-tenants-enforce)
+omit AWSBENCH_S3_KEY generator env, deployed after this server version in a fresh project
+omit S3_ENDPOINT generator env, deployed after this server version in a fresh project
+omit S3_BUCKET generator env, deployed after this server version in a fresh project
+omit S3_REGION generator env, deployed after this server version in a fresh project
+omit S3_ACCESS_KEY_ID generator env, deployed after this server version in a fresh project
+omit S3_SECRET_ACCESS_KEY generator env, deployed after this server version in a fresh project
+omit BENCH_SYSTEM generator env, deployed after this server version in a fresh project
+omit BENCH_SHAPE generator env, deployed after this server version in a fresh project
+omit BENCH_TARGET generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_STREAMS generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_ACTIVE generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_SECS generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_APPEND_INTERVAL_MS generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_SCAN_RPS generator env, deployed after this server version in a fresh project
+omit BENCH_WIDE_SETUP_CONC generator env, deployed after this server version in a fresh project
+omit BENCH_RECORD_BYTES generator env, deployed after this server version in a fresh project
+omit BENCH_BATCH generator env, deployed after this server version in a fresh project
+omit BENCH_HOLD generator env, deployed after this server version in a fresh project
+omit BENCH_START_GATED generator env, deployed after this server version in a fresh project
+omit STREAM_KEY generator env, deployed after this server version in a fresh project
+omit BENCH_STREAM generator env, deployed after this server version in a fresh project
+omit BENCH_MT stage >= 1 generator env, deployed after this server version
+omit BENCH_PROJECTS_ACTIVE stage >= 1 generator env, deployed after this server version
+omit TOKENS_S3_KEY stage >= 1 generator env, deployed after this server version
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-mtten-20260924T000000Z-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+env PATH_PREFIX=mtten-20260924T000000Z
+env INSTANCE_NAME=streams-1
+env INITIAL_SHARDS=4
+env WAL_GROUP_COMMIT=1
+env WAL_FLUSH_GAP_MS=10
+env FLUSH_INTERVAL_MS=25
+env WAL_POST_ACK_GATHER_MS=6
+env FRAME_COMPRESS=1
+env ADMIT_MAX_INFLIGHT=512
+env ADMIT_MAX_INFLIGHT_PER_STREAM=256
+env LIMIT_RECS_PER_SEC=100000
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=60
+env TRIM_PER_OP=65536
+env POOL_IDLE_SECS=4
+supervisor KEEP_AWAKE=1
+env CELL_ID=mt-cell-1
+env PROJECT_ID=proj-mt-deploy
+env STREAMS_AUTH_MODE=off
+include deploy/profiles/compute-1g.env
+supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

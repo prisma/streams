@@ -1,0 +1,30 @@
+{
+  "comment": "Every flattened path present on one side only must be declared here, or the run fails (K9). A pair compares the old path's value with the new path's value; none_equals is the Debug value a None on the old side stands for (the new field's clap default), so a family that leaves the name unset is not reported as unequal.",
+  "pairs": [
+    {
+      "old": "billing.mode_env",
+      "new": "cli.billing_mode",
+      "none_equals": "\"off\"",
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "why": "BILLING_MODE had two readers at rc.4 (the clap flag and the env copy BillingConfig.mode_env that the readiness gate read); HEAD reads only the clap-resolved value. Equal-effective whenever the flag is not given on argv."
+    },
+    {
+      "old": "billing.rollup_env",
+      "new": "cli.rollup",
+      "none_equals": "\"0\"",
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "why": "ROLLUP: the same reader split as BILLING_MODE."
+    }
+  ],
+  "added": [
+    {
+      "new": "http.h1_header_timeout",
+      "old_semantics": "no request-head deadline and no idle keep-alive close (hyper's 30 s header_read_timeout was dropped for want of a timer)",
+      "commit": "71345c03",
+      "edge_record": 12
+    }
+  ],
+  "removed": []
+}

@@ -1,0 +1,101 @@
+# #113 fleet campaign, ordinals 2..4 (streams-2 shown). The script passes
+# KEEP_AWAKE=1 and ROLLUP=1 only to ordinal 1, but Compute env is
+# project-scoped and merged (RUNBOOK §7.3): ordinal 1's ROLLUP=1 and
+# KEEP_AWAKE=1, the LB's and the generator's --env all reach this process.
+source bench/fleet/deploy-fleet.sh "--service-name \"fleet-s$i\""
+note ROLLUP=1 and KEEP_AWAKE=1 reach ordinals 2..4 only through the project merge (role project); a platform export (D2) must confirm what these services really hold.
+note ${FLEET_MIN:-1}, ${REBALANCE_*}, ${MAX_ABSORB_LAG_SECS:-900}, ${STREAMS_DEBUG_EXIT:-0}, ${FLEET_DATA_PREFIX:-fleetd2} take the script defaults.
+argv --listen 0.0.0.0:8080
+platform PORT=8080
+
+role lb
+env LB_BINARY_S3_KEY=bin/pilot-fleet1-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env S3_BUCKET=placeholder-data-bucket
+env S3_REGION=auto
+env S3_ACCESS_KEY_ID=placeholder-data-key-id
+env S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env FLEET_PREFIX=fleetops
+env DATA_PREFIX=fleetd2
+env PILOT_MODE=lb
+env ROUTER_NAME=router-1
+env UPSTREAMS=https://placeholder-fleet-s1.invalid,https://placeholder-fleet-s2.invalid,https://placeholder-fleet-s3.invalid,https://placeholder-fleet-s4.invalid
+supervisor KEEP_AWAKE=1
+supervisor RESOLV_OVERRIDE=nameserver 108.61.10.10\nnameserver 8.8.8.8
+
+role gen
+env LB_BINARY_S3_KEY=bin/pilot-fleet1-x64
+env PILOT_MODE=gen
+env LB_URL=https://placeholder-fleet-lb.invalid
+env AUTH_TOKEN=placeholder-auth-token
+env STREAM_KEY=placeholder-stream-key
+env STREAMS=32
+env STREAM_PREFIX=fleet1
+env CONC_START=4
+env CONC_MAX=512
+env RAMP_SECS=120
+
+role project
+env ROLLUP=1
+supervisor KEEP_AWAKE=1
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-freeze4-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+# minted by the script: head -c 32 /dev/urandom | base64 | tr -d '/+=' (about 43 chars)
+env FLEET_INTERNAL_TOKEN=placeholder-fleet-internal-token-0000000000
+env FLEET_PEER_DOMAINS=prisma.build
+# minted by the script: head -c 32 /dev/urandom | base64 (a 32-byte key)
+env USAGE_STREAM_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+env BILLING_MODE=required
+env ACCOUNT_ID=acct_fleet_soak
+env PROJECT_ID=proj_fleet_soak
+env CELL_ID=fra-fleet-2
+env PATH_PREFIX=fleetd2
+env INSTANCE_NAME=streams-2
+env SELF_URL=https://placeholder-fleet-s2.prisma.build
+env FLEET_PREFIX=fleetops
+env FLEET_MAX=4
+env FLEET_MIN=1
+env REBALANCE_LAG_SECS=60
+env REBALANCE_RETURN_SECS=300
+env MAX_ABSORB_LAG_SECS=900
+env SCALE_OUT_CPU_PCT=30
+env SCALE_CPU_SUSTAIN_SECS=10
+env SCALE_IN_CPU_PCT=5
+env SCALE_IN_SECS=900
+env INITIAL_SHARDS=16
+env STREAMS_DEBUG_EXIT=0
+env SCALE_HOT_PCT=1
+env SCALE_HOT_EVALS=1
+env SCALE_EVAL_SECS=5
+env SCALE_RATE_WINDOW_SECS=10
+env WAL_GROUP_COMMIT=1
+env WAL_FLUSH_GAP_MS=10
+env FLUSH_INTERVAL_MS=25
+env WAL_POST_ACK_GATHER_MS=6
+env FRAME_COMPRESS=1
+env ADMIT_MAX_INFLIGHT=512
+env ADMIT_MAX_INFLIGHT_PER_STREAM=256
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=60
+env TRIM_PER_OP=65536
+env POOL_IDLE_SECS=4
+include deploy/profiles/compute-1g.env
+supervisor RESOLV_OVERRIDE=nameserver 108.61.10.10\nnameserver 8.8.8.8
+supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

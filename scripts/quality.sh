@@ -14,6 +14,7 @@ cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
+python3 -m unittest discover -s scripts/effective-config -v
 # The JSON goes to a file, so a failed clippy would otherwise stop here with
 # no finding on screen: the ratchet always reads it and prints what the
 # compiler refused (its rendered file:line and help), then both statuses

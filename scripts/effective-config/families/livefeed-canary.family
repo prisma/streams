@@ -1,0 +1,41 @@
+# LiveFeed field canary (release certification, local): instance streams-1
+# of the three-instance fleet. The RELEASE posture: STREAMS_RELEASE_POSTURE=1,
+# the compute-1g profile verbatim, enforce auth, workload fleet auth, and the
+# certification instrument (sealed-publish delay).
+source bench/canary/livefeed-canary.mjs "const instEnv = (name) => ({"
+note The canary spreads ...process.env first (non-hermetic): the invoking shell's variables reach the server too. Modelled hermetically here.
+note AUTH_TOKEN is the canary's DEBUG_TOKEN, substituted by a placeholder; USAGE_STREAM_KEY is the canary's own 32 x 0x09 test key. Temp-dir paths use a fixed stand-in.
+argv --listen 127.0.0.1:9872 --s3-endpoint http://127.0.0.1:9873 --bucket lfcanary-placeholder --flush-interval-ms 1 --wal-flush-gap-ms 2
+
+role server
+include deploy/profiles/compute-1g.env
+env STREAMS_RELEASE_POSTURE=1
+env STREAMS_CERTIFICATION_MODE=1
+env STREAMS_CERT_SEALED_PUBLISH_DELAY_MS=1500
+env STREAMS_AUTH_MODE=enforce
+env STREAMS_AUTH_ISSUER=https://auth.prisma.io
+env STREAMS_AUTH_KEYS_FILE=/tmp/lfcanary-placeholder/a/keys.json
+env STREAMS_AUTH_POLICY_FILE=/tmp/lfcanary-placeholder/a/policies.json
+env STREAMS_AUTH_GRANTS_FILE=/tmp/lfcanary-placeholder/a/grants.json
+env STREAMS_AUTH_REFRESH_SECS=1
+env FLEET_AUTH_MODE=workload
+env WORKLOAD_TOKEN_FILE=/tmp/lfcanary-placeholder/a/workload.jwt
+env CELL_ID=cell-a
+env PROJECT_ID=proj-lc
+env USAGE_STREAM_KEY=CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=
+env AUTH_TOKEN=placeholder-lfcanary-debug-token-0123456789
+env FLEET_ALLOW_HTTP_PEERS=1
+env SSE_HEARTBEAT_MS=1000
+env INSTANCE_NAME=streams-1
+env SELF_URL=http://127.0.0.1:9872
+env FLEET_PREFIX=fleet
+env FLEET_MAX=3
+env FLEET_MIN=3
+env REBALANCE_LAG_SECS=1000000
+env REBALANCE_RETURN_SECS=1000000
+env INITIAL_SHARDS=8
+env SCALE_EVAL_SECS=5
+env SCALE_RATE_WINDOW_SECS=10
+env SCALE_HOT_PCT=1
+env SCALE_HOT_EVALS=1
+env SCALE_COOLDOWN_SECS=5
