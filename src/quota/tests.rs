@@ -3,6 +3,8 @@
 use super::{
     IDLE_EVICT_MS, MAX_TRACKED_PROJECTS, ProjectId, ProjectQuotas, QuotaRefusal, QuotaRegistry,
 };
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 fn q(rps: u64, inflight: u64) -> ProjectQuotas {
     ProjectQuotas {
@@ -304,4 +306,144 @@ fn tracker_bound_refuses_new_projects_only() {
     ));
     // Already-tracked projects are untouched by tracker pressure.
     assert!(r.admit(&pid("p0"), &q(0, 0), 1_000).is_ok());
+}
+
+/// External review §9: admit looked its entry up under the tracker lock
+/// but counted it in use (inflight) only after the lock dropped, so a
+/// first-seen project's sweep in between evicted the entry the request
+/// went on to charge: its append then refused TrackerCapacity, and its
+/// other charges skipped enforcement. The request parks on its own rate
+/// bucket after the lookup, with a clock that trails the sweeper's by
+/// more than the idle horizon (a clock step, or two callers reading
+/// now_ms apart), so recency cannot hold the entry; only a pin taken
+/// under the tracker lock can.
+#[test]
+fn a_looked_up_entry_survives_a_sweep_before_its_charge() {
+    let r = QuotaRegistry::default();
+    let t0: i64 = 1_000_000;
+    for i in 0..MAX_TRACKED_PROJECTS {
+        r.admit(&pid(&format!("idle_{i}")), &q(0, 0), t0).unwrap();
+    }
+    let parked = pid("idle_0");
+    let held = r.tracked(&parked).unwrap();
+    let late = t0 + IDLE_EVICT_MS + 2_000;
+    let (survived, guard) = std::thread::scope(|s| {
+        // Held until the sweep has run: the request blocks on it after
+        // its lookup and before its charge.
+        let bucket = held.bucket.lock().unwrap();
+        let request = s.spawn(|| r.admit(&parked, &q(1, 0), t0 + 1_000));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Arc::strong_count(&held) < 3 {
+            assert!(Instant::now() < deadline, "the request never looked up");
+            std::thread::yield_now();
+        }
+        r.admit(&pid("first_seen"), &q(0, 0), late).unwrap();
+        let survived = r.tracked(&parked).is_some_and(|e| Arc::ptr_eq(&e, &held));
+        let swept = r.tracked(&pid("idle_1")).is_none();
+        drop(bucket);
+        assert!(swept, "the sweep ran");
+        (survived, request.join().unwrap())
+    });
+    assert!(
+        survived,
+        "a sweep evicted the entry an admitted request was still charging"
+    );
+    let guard = guard.unwrap();
+    let appends = ProjectQuotas {
+        append_bytes_per_sec: 1_000,
+        ..Default::default()
+    };
+    assert!(r.admit_append(&parked, &appends, 1, 1, late).is_ok());
+    assert_eq!(r.stats(), (2, 1), "idle_0 and first_seen; one request");
+    drop(guard);
+}
+
+/// Each admission holds its entry from the tracker lookup to its end. A
+/// refused one, on rate or on concurrency, lets go, so its entry is
+/// evictable once idle: a hold kept past the refusal would pin it for
+/// ever.
+#[test]
+fn a_refused_admission_leaves_its_entry_evictable() {
+    let r = QuotaRegistry::default();
+    let limited = pid("limited");
+    r.admit(&limited, &q(1, 1), 0).unwrap();
+    assert!(matches!(
+        r.admit(&limited, &q(1, 1), 0),
+        Err(QuotaRefusal::Rate { .. })
+    ));
+    let held = r.admit(&limited, &q(1, 1), 1_000).unwrap();
+    assert!(matches!(
+        r.admit(&limited, &q(1, 1), 2_000),
+        Err(QuotaRefusal::Concurrency)
+    ));
+    drop(held);
+    for i in 1..MAX_TRACKED_PROJECTS {
+        r.admit(&pid(&format!("p{i}")), &q(0, 0), 2_000).unwrap();
+    }
+    r.admit(&pid("p_new"), &q(0, 0), 2_000 + IDLE_EVICT_MS)
+        .unwrap();
+    assert!(
+        r.tracked(&limited).is_none(),
+        "a refused admission kept its entry in use"
+    );
+}
+
+/// A streaming response outlives its handler: its live subscription keeps
+/// the entry in use once the request's guard, and its pin, are gone.
+#[test]
+fn a_live_subscription_keeps_its_entry_through_a_sweep() {
+    let r = QuotaRegistry::default();
+    let watched = pid("watched");
+    r.admit(&watched, &q(0, 0), 0).unwrap();
+    let subscription = r
+        .admit_subscription(&watched, &q(0, 0))
+        .unwrap()
+        .expect("a tracked project counts its subscriptions");
+    for i in 1..MAX_TRACKED_PROJECTS {
+        r.admit(&pid(&format!("p{i}")), &q(0, 0), 0).unwrap();
+    }
+    r.admit(&pid("p_new"), &q(0, 0), IDLE_EVICT_MS).unwrap();
+    assert!(r.tracked(&pid("p1")).is_none(), "the sweep ran");
+    assert!(
+        r.tracked(&watched).is_some(),
+        "a sweep evicted a project with a live subscription"
+    );
+    drop(subscription);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: 1024,
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// Every admission attempt, admitted or refused, whatever the quota
+    /// mix (0 = unlimited) and however the clock steps, leaves its entry
+    /// exactly at the guards still held: inflight counts them, and once
+    /// idle the entry is in use only while one is held.
+    #[test]
+    fn quality_quota_admission_leaves_exactly_the_held_guards(
+        steps in proptest::collection::vec(
+            (0u64..3, 0u64..3, -1_500i64..1_500, proptest::bool::ANY),
+            1..64,
+        ),
+    ) {
+        let r = QuotaRegistry::default();
+        let p = pid("prop");
+        let mut now = 1_000_000;
+        let mut held = Vec::new();
+        for (rps, max_inflight, step, release) in steps {
+            now += step;
+            if release {
+                drop(held.pop());
+            }
+            if let Ok(guard) = r.admit(&p, &q(rps, max_inflight), now) {
+                held.push(guard);
+            }
+            let expected = u64::try_from(held.len()).unwrap();
+            proptest::prop_assert_eq!(r.stats(), (1, expected));
+            let idle = now + 1_500 * 64 + IDLE_EVICT_MS;
+            proptest::prop_assert_eq!(r.tracked(&p).unwrap().in_use(idle), !held.is_empty());
+        }
+    }
 }

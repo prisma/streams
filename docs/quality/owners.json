@@ -2319,6 +2319,30 @@
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
       "syntax": "path = \"read_remote_tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
+      "path": "src/quota/tests.rs",
+      "reason": "Tracker-race regression owns one scoped thread; it joins before the test returns, even on panic, and parks a real admit on its own rate bucket between the lookup and the charge.",
+      "syntax": "std::thread::scope"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
+      "path": "src/quota/tests.rs",
+      "reason": "Tracker-race regression yields while it waits, bounded by a 10 s deadline, for the parked admit to have looked its entry up.",
+      "syntax": "std::thread::yield_now"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/quota/tests.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

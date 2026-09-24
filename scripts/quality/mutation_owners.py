@@ -104,6 +104,7 @@ OWNERS = (
     owner('product_cursor', 'src/product_cursor.rs', 'product_cursor::'),
     owner('product_cursor_regressions', 'src/product_cursor/regressions.rs', 'product_cursor::', 'harness-lib'),
     owner('quota_registry', 'src/quota.rs', 'quota::'),
+    owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     owner('commit_handoff', 'src/shard/commit_handoff.rs', 'shard::'),
     owner('commit_plan', 'src/shard/commit_plan.rs', 'shard::'),
