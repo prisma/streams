@@ -22,7 +22,12 @@ object_store = { version = "0.14.1", features = ["aws"] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: every server-side parse of a record (watch keys, the
+# record validator's range check) is correctly rounded, as JavaScript's is.
+# raw_value: JSON records are stored and served as the client's own text.
+# Never arbitrary_precision: it breaks the billing envelope's flatten decode.
+# creation::json_record_tests pins all three.
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.10"
 slatedb = { version = "0.15.0", features = ["zstd", "wal_disable"] }
 tokio = { version = "1", features = ["full"] }

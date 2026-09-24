@@ -46,6 +46,9 @@ mod consumer_product;
 #[path = "tests/consumer_saga.rs"]
 mod consumer_saga;
 
+#[path = "tests/json_fidelity.rs"]
+mod json_fidelity;
+
 #[path = "tests/durability_failures.rs"]
 mod durability_failures;
 

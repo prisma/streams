@@ -2467,13 +2467,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::dlq_and_settle",
-      "path": "src/application/consumer/delivery.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::relay_sweep_segment",
       "path": "src/application/consumer_remote.rs",
       "syntax": "serde_json::json"
@@ -2764,20 +2757,6 @@
       "owner": "crate::concurrent_plain_seals_serialize_into_one_terminal_transition",
       "path": "src/dst/tests/seal_convergence.rs",
       "syntax": "tokio::join"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::a_plain_seal_cannot_finish_someone_elses_final",
-      "path": "src/dst/tests/seal_coordination.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 5,
-      "owner": "crate::seal_requests_are_identified_and_validated_exactly",
-      "path": "src/dst/tests/seal_coordination.rs",
-      "syntax": "serde_json::json"
     },
     {
       "category": "macro-dsl",

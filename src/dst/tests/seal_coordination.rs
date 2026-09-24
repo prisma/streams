@@ -81,18 +81,10 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         .cas_update(&state.deployment.raw_adapter_sref("sealint"), |d| {
             d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
-                operation_id: crate::product::seal_op_id_full(
-                    &serde_json::json!({"done": true}),
-                    "",
-                    None,
-                ),
+                operation_id: crate::product::seal_op_id_full(br#"{"done":true}"#, "", None),
                 intent: crate::registry::SealIntent::Final {
                     routing_key: String::new(),
-                    request_hash: crate::product::seal_op_id_full(
-                        &serde_json::json!({"done": true}),
-                        "",
-                        None,
-                    ),
+                    request_hash: crate::product::seal_op_id_full(br#"{"done":true}"#, "", None),
                     final_committed: false,
                 },
                 claimed_ms: crate::shard::now_ms(),
@@ -526,14 +518,14 @@ async fn seal_requests_are_identified_and_validated_exactly() {
 
     // 2. Operation identity: the audit's collision pair. Concatenating
     //    record+key made {1,"23"} and {12,"3"} hash the same "123".
-    let a = crate::product::seal_op_id_full(&serde_json::json!(1), "23", None);
-    let b2 = crate::product::seal_op_id_full(&serde_json::json!(12), "3", None);
+    let a = crate::product::seal_op_id_full(b"1", "23", None);
+    let b2 = crate::product::seal_op_id_full(b"12", "3", None);
     assert_ne!(a, b2, "distinct seal requests share an operation id");
     // …and two attempts that differ ONLY in producer coordination are
     // different operations, so one cannot tear down the other's intent.
-    let p1 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "0")));
-    let p2 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "5")));
-    let none = crate::product::seal_op_id_full(&serde_json::json!(1), "k", None);
+    let p1 = crate::product::seal_op_id_full(b"1", "k", Some(("p", "1", "0")));
+    let p2 = crate::product::seal_op_id_full(b"1", "k", Some(("p", "1", "5")));
+    let none = crate::product::seal_op_id_full(b"1", "k", None);
     assert_ne!(p1, p2, "producer sequence is not part of the seal identity");
     assert_ne!(
         p1, none,

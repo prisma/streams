@@ -102,6 +102,17 @@
     ]
   },
   {
+    "name": "a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f1fcb852cc1995ecc16fc040e77bfaa1b5aee22bb00524bf1951da0f3975f1c6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crashed_creators_late_reference_is_released_without_a_client_retry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -711,7 +722,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1a4ca92fc1de23b0bb1f88a3270f70b582f7a212e5397e72d921b66561f2e262",
+    "function_sha256": "3857c2974483398436c3b0ab823b5b1292244849f7a6a874419225eee979adb5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",
@@ -1645,7 +1656,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "43b269d367da47be2bdeabdd5b06fc040eb4c59e094e6f0339f5b1183e0335b5",
+    "function_sha256": "35c0bfc47ad1d27eb6522816da628f22649e500434debc3748e1285ce8123c47",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_cancellation.rs",
@@ -2342,6 +2353,17 @@
     "scenarios": []
   },
   {
+    "name": "every_read_surface_serves_the_minified_client_text",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6a8e309d821b18ac97ae9281b466bbbfc78cd6dca155b829a98237ed3584929b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
     "name": "expiry_closes_the_storage_gauge",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2744,6 +2766,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
+    "scenarios": []
+  },
+  {
+    "name": "json_records_are_admitted_measured_and_billed_on_their_stored_text",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d6203dd45c91a9ad97f3353ad2cb9aeab41d818b09d9d947de6a2436af5def4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
+    "name": "json_request_identities_cover_the_client_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "14651aa0dcd0c2035d47da38b5640f2863c54b713dbbc73e23af55eb7afe0a83",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
     "scenarios": []
   },
   {
@@ -5765,7 +5809,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "f6f2dd1675d155b913d7addae37639e2b2d654a8f52cca5543dd9d893fe2317a",
+    "function_sha256": "c1bcd8d46a7159e3651abc36cddf2eb193b2c60d86b2233d110372ce67a2fae6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",

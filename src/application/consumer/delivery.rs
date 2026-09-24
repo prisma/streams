@@ -4,11 +4,12 @@ use super::{
     DeliveryMessage, FailureClass, PullInput, PullOutcome, SettleInput, SettleOutcome,
     consumer_segments, failure,
 };
+use crate::application::append::AppendCode;
 use crate::application::consumer_remote::relay_queue_cursor;
 use crate::application::read_remote::InternalTarget;
 use crate::registry::StreamDesc;
 use bytes::Bytes;
-use serde_json::json;
+use serde_json::value::RawValue;
 use std::sync::Arc;
 
 #[expect(
@@ -179,7 +180,7 @@ pub(crate) async fn pull(
                     },
                     &leased,
                     &by_off,
-                );
+                )?;
                 let delivered_payload: u64 = leased
                     .iter()
                     .filter_map(|(off, ..)| by_off.get(off))
@@ -260,7 +261,7 @@ fn delivery_messages(
     context: MessageContext<'_>,
     leased: &[(u64, u32, u32, [u8; 16])],
     by_off: &DeliveryRecords,
-) -> Vec<DeliveryMessage> {
+) -> Result<Vec<DeliveryMessage>, ConsumerFailure> {
     let MessageContext {
         desc,
         key: skey,
@@ -286,12 +287,10 @@ fn delivery_messages(
             consumer_gen: cgen,
             deadline_ms,
         };
-        let value: serde_json::Value = if desc.is_json() {
-            serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-        } else {
-            use base64::Engine;
-            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
-        };
+        let value = served_value(desc, payload).map_err(|error| {
+            let message = format!("the record at offset {off} cannot be served: {error}");
+            failure(FailureClass::Internal, "internal", &message, None, false)
+        })?;
         messages.push(DeliveryMessage {
             id: msg.encode(&desc.project_id, skey),
             routing_key: rkey.to_owned(),
@@ -300,7 +299,36 @@ fn delivery_messages(
             value,
         });
     }
-    messages
+    Ok(messages)
+}
+
+/// The value a consumer surface serves for a stored payload: a JSON
+/// collection's stored record text unchanged (validated when it was
+/// stored), any other collection's bytes as a base64 string. Stored bytes
+/// that are not JSON are an explicit error, never a `null`.
+fn served_value(desc: &StreamDesc, payload: &[u8]) -> serde_json::Result<Box<RawValue>> {
+    if desc.is_json() {
+        serde_json::from_slice(payload)
+    } else {
+        use base64::Engine;
+        serde_json::value::to_raw_value(&base64::engine::general_purpose::STANDARD.encode(payload))
+    }
+}
+
+/// The dead-letter copy of one message. The fields are in the order the
+/// envelope has always had (serde_json's sorted map), and `value` is the
+/// source's stored text embedded unparsed, so the copy's value is
+/// byte-identical to the source record and the request hash over this body
+/// depends on stored bytes alone, never on a parser or formatter.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeadLetterCopy<'a> {
+    attempts: u32,
+    consumer: &'a str,
+    message_id: &'a str,
+    routing_key: &'a str,
+    source_stream: &'a str,
+    value: Box<RawValue>,
 }
 
 /// A durable read pins the stream key/epoch and consumer generation used by Receive.
@@ -600,11 +628,11 @@ struct DeadLetterPass {
 // Preserve the explicit source incarnation and one bounded poisoned segment.
 #[expect(
     clippy::too_many_arguments,
-    reason = "dlq_and_settle; the dead-letter path takes the stream, consumer, key, epoch, identity, engine and segment separately as settlement resolved them; a context struct would exist only for this signature"
+    reason = "dlq_and_settle; the dead-letter path takes the stream, consumer, key, epoch, identity, engine and segment separately as settlement resolved them, with the stored records its copies embed; a context struct would exist only for this signature"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "dlq_and_settle; the dead-letter appends and the settlement of the poisoned leases are one bounded sequence over the same leases; splitting it would separate the appends from the leases they release"
+    reason = "dlq_and_settle; the dead-letter copies of the stored records, their appends (an own-sequence reuse proving an earlier copy) and the settlement of the poisoned leases are one bounded sequence over the same leases; splitting it would separate the appends from the leases they release"
 )]
 async fn dlq_and_settle(
     state: &Arc<ConsumerService>,
@@ -659,21 +687,24 @@ async fn dlq_and_settle(
                 offset: *off,
             }
             .encode(&desc.project_id, skey);
-            let value: serde_json::Value = if desc.is_json() {
-                serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-            } else {
-                use base64::Engine;
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
+            let copy = served_value(desc, payload).and_then(|value| {
+                serde_json::to_string(&DeadLetterCopy {
+                    attempts: *attempts,
+                    consumer: cname,
+                    message_id: &msg_id,
+                    routing_key: rkey,
+                    source_stream: &desc.name,
+                    value,
+                })
+            });
+            let body = match copy {
+                Ok(body) => body,
+                Err(error) => {
+                    pass.blocked += 1;
+                    tracing::warn!(stream=%desc.name,consumer=%cname,offset=off,error=%error,"dead-letter copy cannot embed the stored record; source lease retained");
+                    continue;
+                }
             };
-            let body = json!({
-                "sourceStream": desc.name,
-                "consumer": cname,
-                "messageId": msg_id,
-                "routingKey": rkey,
-                "attempts": attempts,
-                "value": value,
-            })
-            .to_string();
             let request_hash = crate::application::append::product_request_hash(
                 false,
                 "",
@@ -709,10 +740,20 @@ async fn dlq_and_settle(
                 ts_hint_ms: None,
                 key_version: 0,
             };
-            if let Err(error) = state.append.execute(command).await {
-                pass.blocked += usize::from(error.definitively_rejected());
-                tracing::warn!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,error=%error,"dead-letter delivery failed; source lease retained");
-                continue;
+            match state.append.execute(command).await {
+                Ok(_) => {}
+                // The producer names this one message, so a committed
+                // sequence 0 IS its delivery, even when the copy that
+                // committed differs from this one (built by an earlier
+                // release before a crash kept its settle from running).
+                Err(error) if error.code == AppendCode::ProducerSequenceReused => {
+                    tracing::info!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,"dead-letter copy already committed under this message's producer; settling the source lease");
+                }
+                Err(error) => {
+                    pass.blocked += usize::from(error.definitively_rejected());
+                    tracing::warn!(stream=%desc.name,consumer=%cname,dead_letter_stream=%dlq,error=%error,"dead-letter delivery failed; source lease retained");
+                    continue;
+                }
             }
         }
         if let Ok(crate::queue::QueueOut::Settled { acked, .. }) = engine
@@ -733,4 +774,47 @@ async fn dlq_and_settle(
         }
     }
     pass
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeadLetterCopy, served_value};
+
+    /// A dead-letter copy embeds the source's stored text unparsed, so its
+    /// value is byte-identical to the source record, and its producer hash
+    /// is fixed by stored bytes alone (golden): no parser or formatter
+    /// change can turn a retried handoff into a sequence conflict.
+    #[test]
+    fn dead_letter_copies_embed_the_stored_record_and_hash_golden() {
+        let desc = crate::sse::feed::tests::test_desc("src");
+        let stored = br#"{"f":1.7802719962921167e-19,"b":1E+2,"a":1,"a":2}"#;
+        let value = served_value(&desc, stored).unwrap();
+        assert_eq!(value.get().as_bytes(), stored);
+        let copy = |value| DeadLetterCopy {
+            attempts: 3,
+            consumer: "work",
+            message_id: "m1",
+            routing_key: "k",
+            source_stream: "src",
+            value,
+        };
+        let record = br#"{"f":1.7802719962921167e-19}"#;
+        let body = serde_json::to_string(&copy(served_value(&desc, record).unwrap())).unwrap();
+        assert_eq!(
+            body,
+            r#"{"attempts":3,"consumer":"work","messageId":"m1","routingKey":"k","sourceStream":"src","value":{"f":1.7802719962921167e-19}}"#
+        );
+        let hash = crate::application::append::product_request_hash(
+            false,
+            "",
+            "application/json",
+            body.as_bytes(),
+            false,
+        );
+        assert_eq!(
+            crate::crypto::hex(&hash),
+            "39b34621c0efb3a17c2f7969b86f8072"
+        );
+        assert!(served_value(&desc, b"{\"a\":").is_err(), "never a null");
+    }
 }

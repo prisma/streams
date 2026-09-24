@@ -1632,17 +1632,10 @@ async fn product_seal(
         #[derive(serde::Deserialize, Default)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         struct SealDoc {
-            // Double Option: serde collapses a PRESENT `null` into
-            // `None`, so `{"final": null}` silently became a seal with
-            // no final record — dropping a perfectly valid JSON null
-            // that the SDK sends whenever T admits it. The outer layer
-            // is presence, the inner is the value.
-            #[serde(default, deserialize_with = "deserialize_some")]
-            #[expect(
-                clippy::option_option,
-                reason = "final; absent, null and a value are three distinct wire states the seal contract names; a tri-state enum would restate serde's own null handling"
-            )]
-            r#final: Option<Option<serde_json::Value>>,
+            // A PRESENT `null` is the record `null`: a plain Option drops
+            // the valid JSON null the SDK sends whenever T admits it.
+            #[serde(default, deserialize_with = "stored_final")]
+            r#final: Option<Bytes>,
             #[serde(default)]
             routing_key: Option<String>,
         }
@@ -1658,7 +1651,7 @@ async fn product_seal(
                 );
             }
         };
-        if let Some(fin) = doc.r#final.map(|v| v.unwrap_or(serde_json::Value::Null)) {
+        if let Some(record) = doc.r#final {
             // EVERY deterministic error first. Publishing the intent
             // before validating let a request that could never complete
             // — no key, wrong key, unusable routing key — leave the
@@ -1736,15 +1729,14 @@ async fn product_seal(
                 );
             }
             // Capacity and the per-record ceiling, measured on the EXACT
-            // wire body the final append submits — a single JSON record
-            // travels as `[value]`, two bytes longer than the value itself,
-            // and is stored re-encoded — or a value on a boundary would
-            // pass here and be refused there, leaving the intent behind.
-            let record = Bytes::from(fin.to_string());
+            // record the final append stores (the final's own text without
+            // insignificant whitespace, the bytes its operation id and
+            // producer hash cover), or a value on a boundary would pass here
+            // and be refused there, leaving the intent behind.
             if let Some(kind) = state
                 .runtime
                 .usage
-                .permanently_unadmittable(record.len() as u64 + 2, 1)
+                .permanently_unadmittable(record.len() as u64, 1)
             {
                 return perr(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1778,7 +1770,7 @@ async fn product_seal(
             };
             let (pid, pep, pseq) = (hv("producer-id"), hv("producer-epoch"), hv("producer-seq"));
             let op_id = seal_op_id_full(
-                &fin,
+                &record,
                 routing_key,
                 (!pid.is_empty()).then_some((pid.as_str(), pep.as_str(), pseq.as_str())),
             );
@@ -1841,13 +1833,14 @@ async fn product_seal(
     product_seal_only(state, tenant, name, headers, validated_epoch).await
 }
 
-/// Distinguishes an ABSENT field from one present as `null`.
-fn deserialize_some<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(d).map(Some)
+/// An ABSENT final is `None`; a present one, `null` included, is the record
+/// the seal stores: the client's own text, validated and without whitespace
+/// (`creation::json_record`), never re-serialised.
+fn stored_final<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Bytes>, D::Error> {
+    let text = Box::<serde_json::value::RawValue>::deserialize(d)?;
+    crate::application::creation::json_record(text.get().as_bytes())
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[expect(
@@ -2130,8 +2123,7 @@ async fn product_append_inner(
                 );
             }
             // [value]: one-level flattening stores exactly one message,
-            // preserving array-valued records (retains a body slice; no
-            // DOM reserialization).
+            // preserving array-valued records, as the value's own text.
             let mut w = Vec::with_capacity(body.len() + 2);
             w.push(b'[');
             w.extend_from_slice(&body);
@@ -2150,10 +2142,10 @@ async fn product_append_inner(
         }
         (body.clone(), 1)
     };
-    // §17.2 append-volume backstop, with the EXACT parsed shape: the
-    // request payload size and the true record count (batch-aware).
-    // Internal writers (DLQ delivery, the seal's final record) carry
-    // no principal and are bounded by their own mechanisms.
+    // §17.2 append-volume backstop: the client body (never less than the
+    // records it stores) and the true record count (batch-aware). Internal
+    // writers (DLQ delivery, the seal's final record) carry no principal
+    // and are bounded by their own mechanisms.
     if let Some(p) = principal
         && let Err(refusal) = state.quotas.admit_append(
             &p.project_id,

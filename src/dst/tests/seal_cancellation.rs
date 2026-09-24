@@ -103,27 +103,51 @@ async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it()
 /// refused before it publishes its seal intent (TLA-003-F3). The claim
 /// would put the collection in Sealing for a record the append must
 /// refuse, so the request may never reach the claim-to-append gap. The
-/// ceiling is measured on the record the append stores: a JSON collection
-/// stores the value re-encoded, and serde_json's default float parse
-/// lengthens `ceilfloat`'s value by a digit, so its own text fits.
+/// ceiling is measured on the record the append stores: the final's own
+/// client text without its insignificant whitespace, number literals kept
+/// digit for digit. `ceilfloat`'s client text is longer than the ceiling,
+/// but only its whitespace; its stored record is one byte over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_over_ceiling_product_final_is_refused_before_its_seal_intent() {
     let _serial = gap_lock().lock().await;
     let (state, addr) = http_rig(mem()).await;
-    for (name, value, ceiling) in [
-        ("ceilfin", format!(r#"{{"pad":"{}"}}"#, "x".repeat(90)), 64),
-        ("ceilfloat", r#"{"f":1.7802719962921167e-19}"#.into(), 27),
+    for (name, value, stored, ceiling) in [
+        (
+            "ceilfin",
+            format!(r#"{{"pad":"{}"}}"#, "x".repeat(90)),
+            format!(r#"{{"pad":"{}"}}"#, "x".repeat(90)),
+            64,
+        ),
+        (
+            "ceilfloat",
+            r#"{ "f" : 1.7802719962921167e-19 }"#.into(),
+            r#"{"f":1.7802719962921167e-19}"#.into(),
+            27,
+        ),
     ] {
-        let text = serde_json::from_str::<serde_json::Value>(&value)
-            .unwrap()
-            .to_string();
-        let stored = serde_json::from_str::<serde_json::Value>(&text)
-            .unwrap()
-            .to_string();
+        let record = crate::application::creation::json_record(value.as_bytes()).unwrap();
+        assert_eq!(record, stored.as_bytes(), "{name}");
         assert!(stored.len() > ceiling, "{name}: {stored} fits {ceiling}");
-        assert_eq!(text.len() <= ceiling, name == "ceilfloat", "{name}: {text}");
+        assert_eq!(stored.len() == ceiling + 1, name == "ceilfloat", "{name}");
         seal_is_refused_before_its_intent(&state, addr, name, &value, ceiling).await;
     }
+    // At exactly its stored length the same final is admitted, and stored
+    // as that text: its client text's extra whitespace is never measured.
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let format = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(
+        preq(addr, "PUT", "/v1/streams/ceilexact", &key, format)
+            .await
+            .0,
+        201
+    );
+    state.admission.set_record_ceiling(28);
+    let body = br#"{"final":{ "f" : 1.7802719962921167e-19 }}"#;
+    let (status, _, answer) = preq(addr, "POST", "/v1/streams/ceilexact:seal", &key, body).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&answer));
+    let (status, _, read) = preq(addr, "GET", "/v1/streams/ceilexact/records", &key, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(read, br#"[{"f":1.7802719962921167e-19}]"#);
     engine_shutdown(&state).await;
 }
 

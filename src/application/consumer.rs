@@ -273,14 +273,16 @@ pub(crate) struct PullInput {
     pub(crate) wait_ms: Option<u64>,
     pub(crate) visibility_ms: Option<u64>,
 }
+/// Fields in the order the Receive body has always carried them.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeliveryMessage {
-    pub(crate) id: String,
-    pub(crate) routing_key: String,
     pub(crate) attempts: u32,
+    pub(crate) id: String,
     pub(crate) lease_token: String,
-    pub(crate) value: serde_json::Value,
+    pub(crate) routing_key: String,
+    /// The stored record's own text (base64 for a byte stream), served as is.
+    pub(crate) value: Box<serde_json::value::RawValue>,
 }
 pub(crate) struct PullOutcome {
     pub(crate) messages: Vec<DeliveryMessage>,

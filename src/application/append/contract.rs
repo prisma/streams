@@ -458,6 +458,23 @@ mod boundary_tests {
         stale.message = "retry later while temporarily unavailable".into();
         assert!(stale.definitively_rejected());
     }
+    /// The product producer identity covers the client's bytes: fixed hex
+    /// over the repository's float example, single and batch.
+    #[test]
+    fn product_request_hashes_are_golden() {
+        let record = br#"{"f":1.7802719962921167e-19}"#;
+        let single = product_request_hash(false, "", "application/json", record, false);
+        assert_eq!(
+            crate::crypto::hex(&single),
+            "025e6dab9d953a75528ad39e158cf16e"
+        );
+        let batch = br#"[{"f":1.7802719962921167e-19}]"#;
+        let batch = product_request_hash(true, "k", "application/json", batch, false);
+        assert_eq!(
+            crate::crypto::hex(&batch),
+            "924ec299968304dc50ac28558c3e5e8c"
+        );
+    }
     #[test]
     fn producer_parser_rejects_partial_reserved_and_noncanonical_numbers() {
         for (id, epoch, seq) in [

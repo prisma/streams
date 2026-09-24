@@ -2463,6 +2463,54 @@
       "path": "src/bootstrap/tests/provider_contract/s3lite_harness.rs",
       "reason": "Provider contract fixture; the pinned select macro serves the in-process emulator only while the contract future runs, so no detached server task outlives the test.",
       "syntax": "tokio::select"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::json_fidelity",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "JSON record fidelity scenarios; real HTTP appends, seals, reads, scans, SSE, the peer segment-scan wire, consumer Receive and dead-letter copies against one stored-text contract; compiled and executed with DST.",
+      "syntax": "path = \"tests/json_fidelity.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::whitespace",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::number",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::string",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::json_record_tests::document",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::macro(proptest::proptest)",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

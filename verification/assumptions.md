@@ -763,8 +763,10 @@ actions to these contracts.
   content, coordination): the model treats the hashes as injective on their
   inputs, and an exact retry gets the same id.
 - **Origin:** `src/application/lifecycle/claims.rs` `seal_op_id_full` and
-  `seal_op_id_semantic` (132-176); `src/application/append/close.rs` 29-54 and
-  101-112.
+  `seal_op_id_semantic`; `src/application/append/close.rs` 29-54 and
+  101-112. Since `prisma-seal-v3` the product id's record preimage is the
+  final's stored client text (golden: `claims::tests`), not a serde
+  re-serialisation, so no parser or formatter change can move it.
 - **Enforcement / evidence:** KANI-043 (planned) for the preimages; hash
   collision freedom is a cryptographic assumption (roadmap §1.5).
 - **Invalidation:** a change to an operation id's preimage.

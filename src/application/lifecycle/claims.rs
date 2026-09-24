@@ -128,9 +128,12 @@ pub(super) fn decide_claim(
 /// Identity of a seal-with-final operation: the record it promised,
 /// under the routing key it promised it for. A retry of the same seal
 /// derives the same id and resumes; anything else is a different
-/// operation and may not finish this one.
+/// operation and may not finish this one. `record` is the stored text
+/// of the client's final (`creation::json_record`), so the id depends on
+/// the client's bytes alone, never on a parser or formatter. v3 hashes that
+/// text; v2 hashed a serde re-serialisation, so the two never collide.
 pub(crate) fn seal_op_id_full(
-    final_value: &serde_json::Value,
+    record: &[u8],
     routing_key: &str,
     producer: Option<(&str, &str, &str)>,
 ) -> String {
@@ -140,13 +143,18 @@ pub(crate) fn seal_op_id_full(
     // different producer coordination are different operations: sharing
     // one id let a request that was definitively refused tear down the
     // intent a concurrent valid attempt was still committing under.
-    let record = final_value.to_string();
     let (pid, pep, pseq) = producer.unwrap_or(("", "", ""));
     let mut h = Sha256::new();
-    h.update(b"prisma-seal-v2\0");
-    for part in [routing_key, &record, pid, pep, pseq] {
+    h.update(b"prisma-seal-v3\0");
+    for part in [
+        routing_key.as_bytes(),
+        record,
+        pid.as_bytes(),
+        pep.as_bytes(),
+        pseq.as_bytes(),
+    ] {
         h.update((part.len() as u64).to_le_bytes());
-        h.update(part.as_bytes());
+        h.update(part);
     }
     crate::crypto::hex(&h.finalize()[..16])
 }
@@ -253,3 +261,21 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
 
 #[cfg(kani)]
 mod proofs;
+
+#[cfg(test)]
+mod tests {
+    /// The product seal's operation id over the repository's float example.
+    /// A parser, formatter or serde change can no longer move it: a failure
+    /// here is an identity change that turns in-flight seal retries into
+    /// conflicts, and needs a new domain tag and a rollout note.
+    #[test]
+    fn seal_operation_ids_are_golden() {
+        let record = br#"{"f":1.7802719962921167e-19}"#;
+        let id = super::seal_op_id_full;
+        assert_eq!(id(record, "", None), "dde70a03bdf3bcb2083a444b38ac9fa5");
+        assert_eq!(
+            id(record, "k", Some(("p", "1", "0"))),
+            "a9302ad7eada99064917c2f48a645981"
+        );
+    }
+}
