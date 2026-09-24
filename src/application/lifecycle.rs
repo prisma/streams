@@ -411,12 +411,14 @@ pub(crate) async fn enter_sealing(
 /// Publish the Sealing intent for a RAW close, before the physical
 /// segment closes. Refuses when another operation still owes a final
 /// record — that seal must finish first, or its record would be lost.
+/// Answers the claim's generation and whether this call installed it
+/// (false: it renewed a claim this operation already held).
 pub(crate) async fn begin_sealing_for_close(
     state: &LifecycleService,
     sref: &crate::tenant::TenantStreamRef,
     intent: crate::registry::SealIntent,
     expect_epoch: &str,
-) -> Result<Option<u64>, SealError> {
+) -> Result<Option<(u64, bool)>, SealError> {
     // The intent's request_hash IS the operation id: one identity,
     // computed once by the request that owns it. The epoch is the
     // ADMISSION descriptor's — the close is fenced to the incarnation
@@ -426,9 +428,8 @@ pub(crate) async fn begin_sealing_for_close(
         crate::registry::SealIntent::Final { request_hash, .. } => request_hash.clone(),
     };
     match claim_seal(state, sref, &op, &intent, expect_epoch).await? {
-        EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
-            Ok(Some(generation))
-        }
+        EnterSeal::Installed { generation } => Ok(Some((generation, true))),
+        EnterSeal::AlreadyOurs { generation } => Ok(Some((generation, false))),
         // Already terminal or absent: the close is a no-op.
         EnterSeal::AlreadyCompleted | EnterSeal::AlreadySealed | EnterSeal::Missing => Ok(None),
         EnterSeal::Conflicting(m) => Err(SealError::Conflict(m)),

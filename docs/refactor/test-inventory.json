@@ -57,6 +57,32 @@
     "scenarios": []
   },
   {
+    "name": "a_ceiling_limited_exact_retry_still_completes_a_committed_final",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a2940d00afc409d7092315c03a7fdb3ca2215979918d15137556536054f00862",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_before_mark_committed(name);",
+      "crate::failpoints::stop_before_mark_committed_off(name);",
+      "assert_eq!(status, 503, \"the failpoint did not interrupt the close\");"
+    ],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7b6db75dcce4f5ea0ae77b25c576e02a00badd5654b5cad40a8db6afc7c8d282",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1490,6 +1516,17 @@
       "SEL-001",
       "SEL-007"
     ]
+  },
+  {
+    "name": "an_ingest_refused_exact_retry_leaves_the_claim_to_its_original",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "913ef138b034f51ff1baa6792c815b37ee21a9e79ad3d959746c342262d1275b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
   },
   {
     "name": "an_initialization_cannot_be_resumed_with_another_key",

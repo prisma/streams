@@ -194,7 +194,10 @@ pub(crate) struct SealAuthz {
 /// stringly-typed lists, which drifted: the product list named codes its
 /// own translator never produces, so stale-epoch was "retained" in the
 /// comment and definitive in fact). The raw close applies
-/// [`final_err_disposition`] to the committer's error; the product seal
+/// [`final_err_disposition`] to the committer's error, and releases only
+/// for the attempt that installed the claim: a record ceiling is per
+/// instance, so a retry's `BadBody` proves nothing about its original
+/// (TLA-003-F5, `complete_raw_close`); the product seal
 /// classifies its typed `AppendFailure` with `definitively_rejected`,
 /// which must agree on every committer error: the KANI-042 proof checks
 /// both against this table.

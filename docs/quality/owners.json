@@ -842,6 +842,14 @@
     },
     {
       "category": "effect",
+      "count": 1,
+      "owner": "crate::original_survives_a_refused_retry",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Refused-retry fixture owns the original close's request handle; it is released and joined after the exact retry answers on the second instance. Concurrent execution is required to hold the original at its enqueue failpoint while the retry runs.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
       "count": 2,
       "owner": "crate::a_parked_split_cannot_publish_under_a_sealed_collection",
       "path": "src/dst/tests/seal_coordination.rs",

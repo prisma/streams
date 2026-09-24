@@ -8,10 +8,18 @@ pub(crate) struct RawClose<'a> {
     pub(crate) generation: Option<u64>,
     pub(crate) carries_content: bool,
     pub(crate) resumes_owed_final: bool,
+    pub(crate) installed_claim: bool,
 }
 
 /// A raw final and the product final share the same claim/mark/seal machinery.
 /// Only this owner decides whether a durable or ambiguous verdict releases debt.
+/// A definitive refusal releases the claim only for the attempt that
+/// installed it: that attempt's content was valid where the claim was taken,
+/// so its refusal rests on committer state every attempt shares. An exact
+/// retry that joined or renewed the claim may have been refused by its own
+/// instance's lower limits while the installing attempt can still commit, so
+/// its refusal leaves the claim to that attempt, to a capable exact retry, or
+/// to the fenced takeover once the lease lapses (TLA-003-F5).
 pub(crate) async fn complete_raw_close(
     service: &LifecycleService,
     descriptor: &StreamDesc,
@@ -38,6 +46,7 @@ pub(crate) async fn complete_raw_close(
         Ok(ack) => ack,
         Err(error) => {
             if close.carries_content
+                && close.installed_claim
                 && final_err_disposition(error) == FinalDisposition::DefinitivelyRejected
             {
                 release().await;
