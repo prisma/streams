@@ -727,17 +727,10 @@ impl AuthService {
     /// CAPABILITY principal is held to (SR-3): the capability is a
     /// bearer credential, so suspension and admission apply to it the
     /// same instant they apply to token principals.
-    /// Project status + quotas for a NON-JWT principal (watch
-    /// capabilities). SR2 finding 3: this must carry the SAME
-    /// freshness contract as JWT verification — a capability holding
-    /// a policy older than the staleness window fails CLOSED
-    /// (`PolicyStale` -> retryable 503), never open on a stale
-    /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
-    /// (not served here); the caller's uniform refusal applies.
-    /// §8.1: the policy of a project this cell serves, present in the
-    /// snapshot AND placed here. Request verification and the lease ask
-    /// this one question, so a policy republished for another cell cannot
-    /// keep authorizing one path after the other refuses it.
+    /// §8.1: the policy of a project this cell serves: present in the snapshot
+    /// AND placed here. Verification, the lease and capability status ask this
+    /// one question, so a policy republished for another cell cannot keep
+    /// authorizing one path after another refuses it.
     fn served_policy<'a>(
         &self,
         policies: &'a PolicySnapshot,
@@ -749,6 +742,14 @@ impl AuthService {
             .filter(|p| p.cell_id == self.cell_id)
     }
 
+    /// Project status + quotas for a NON-JWT principal (watch
+    /// capabilities). SR2 finding 3: this must carry the SAME
+    /// freshness contract as JWT verification — a capability holding
+    /// a policy older than the staleness window fails CLOSED
+    /// (`PolicyStale` -> retryable 503), never open on a stale
+    /// `Active`. `Ok(None)` = the project is not served here (absent
+    /// from a FRESH snapshot, or placed on another cell); the caller's
+    /// uniform refusal applies.
     pub(crate) fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
@@ -764,9 +765,8 @@ impl AuthService {
         if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::PolicyStale);
         }
-        Ok(policies
-            .projects
-            .get(project)
+        Ok(self
+            .served_policy(&policies, project)
             .map(|p| (p.status, p.quotas.clone())))
     }
 
@@ -854,7 +854,7 @@ mod tests {
     const KID: &str = "test-1";
     const ISS: &str = "https://auth.prisma.io";
     const CELL: &str = "fra-cell-07";
-    const NOW: i64 = 1_786_600_600;
+    pub(super) const NOW: i64 = 1_786_600_600;
 
     #[derive(serde::Serialize)]
     struct C {
@@ -904,7 +904,7 @@ mod tests {
         encode(&h, c, &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap()).unwrap()
     }
 
-    fn service() -> AuthService {
+    pub(super) fn service() -> AuthService {
         let svc = AuthService::new(AuthMode::Shadow, ISS.into(), CELL).unwrap();
         let mut keys = HashMap::new();
         keys.insert(
@@ -1605,7 +1605,7 @@ mod tests {
 
     /// Republishes proj_456's policy as placed on `cell`, with new policy
     /// and feed versions so publication accepts it.
-    fn place_on(svc: &AuthService, cell: &str) {
+    pub(super) fn place_on(svc: &AuthService, cell: &str) {
         let mut snap = (**svc.projects.load()).clone();
         let policy = snap
             .projects

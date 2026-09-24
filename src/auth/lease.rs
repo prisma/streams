@@ -158,3 +158,29 @@ impl AuthService {
         d
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{NOW, place_on, service};
+    use crate::tenant::ProjectId;
+
+    /// Item 65 (C7): a watch capability asks the placement question
+    /// request verification and the lease ask, so a policy republished for
+    /// another cell stops authorizing it too: the project is not served
+    /// here.
+    #[test]
+    fn a_capability_is_not_served_for_a_project_placed_on_another_cell() {
+        let svc = service();
+        let pid = ProjectId::new("proj_456").unwrap();
+        assert_eq!(
+            svc.status_and_quotas(&pid, NOW).map(|s| s.is_some()),
+            Ok(true)
+        );
+        place_on(&svc, "sin-cell-01");
+        assert_eq!(
+            svc.status_and_quotas(&pid, NOW).map(|s| s.is_some()),
+            Ok(false),
+            "a capability must not outlive its project's placement on this cell"
+        );
+    }
+}
