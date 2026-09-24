@@ -1986,6 +1986,22 @@
     },
     {
       "category": "effect",
+      "count": 2,
+      "owner": "crate::tests::held_scan",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Teardown regression, run only in a child process: a closing probe and one scan are ordinary tasks in the served runtime because the runtime's close is the subject; the scan deliberately deadlocks its worker inside a foyer cache miss, and the child exits after the bounded teardown without it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::a_panic_resumes_only_after_the_runtime_is_torn_down",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Teardown regression spawns one idle probe into the served runtime; the bounded teardown drops it before the panic resumes, which is what the test observes.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
       "count": 1,
       "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
       "path": "src/application/read_wire_tests.rs",

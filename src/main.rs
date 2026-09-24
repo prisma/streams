@@ -1,7 +1,8 @@
 //! `streams-slate` binary — the composition root and nothing more:
-//! allocator, tracing init, ONE configuration load, tokio runtime
-//! construction, then `streams_slate::run(config)`. All server logic
-//! lives in the library crate (src/lib.rs).
+//! allocator, tracing init, ONE configuration load, the Tokio worker
+//! floor, then `streams_slate::serve(config, workers)`, which owns the
+//! service runtime from construction to its bounded teardown. All server
+//! logic lives in the library crate (src/lib.rs).
 
 // musl's allocator fragments badly under this workload (docker phase 1:
 // RSS 2x the accounted budgets); mimalloc keeps RSS near actual live set.
@@ -51,9 +52,5 @@ fn main() -> anyhow::Result<()> {
         })
         .max(2);
     tracing::info!("tokio runtime: {workers} worker threads");
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(workers)
-        .enable_all()
-        .build()?
-        .block_on(streams_slate::run(config))
+    streams_slate::serve(config, workers)
 }

@@ -14,7 +14,7 @@
 //! let cli = CliArgs::parse();                        // clap
 //! let parsed = ServerConfig::load(cli, &ProcessEnvironment);
 //! let config = parsed.validate()?;                   // ValidatedServerConfig
-//! run(config).await                                  // preflight, owners, serve
+//! serve(config, workers)                             // runtime, owners, serve
 //! ```
 
 mod admission;
@@ -76,14 +76,17 @@ mod usage;
 pub use config::validation::{ConfigError, ValidatedServerConfig};
 pub use config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 
-/// Build the runtime owners and serve until shutdown. Called once by
-/// the binary composition root with the PROVEN configuration —
-/// [`ServerConfig::validate`] is the only way to construct the
-/// argument, so validation precedes every startup side effect by type,
-/// not by convention. Process infrastructure starts once (see
-/// `bootstrap::run`); a second invocation in one process fails loudly.
-pub async fn run(config: ValidatedServerConfig) -> anyhow::Result<()> {
-    bootstrap::run(config).await
+/// Build the service runtime with `worker_threads` workers, build the
+/// runtime owners on it and serve until shutdown, then stop the runtime
+/// within a bound. Called once by the binary composition root with the
+/// PROVEN configuration — [`ServerConfig::validate`] is the only way to
+/// construct the argument, so validation precedes every startup side
+/// effect by type, not by convention. Process infrastructure starts once
+/// (see `bootstrap::run`); a second invocation in one process fails
+/// loudly. The bounded teardown (`bootstrap::serve`) means that a
+/// runtime thread that cannot stop never holds the process's exit.
+pub fn serve(config: ValidatedServerConfig, worker_threads: usize) -> anyhow::Result<()> {
+    bootstrap::serve(worker_threads, bootstrap::run(config))?
 }
 
 /// Default metadata-poll cadences, shared with the DST idle-cost pin

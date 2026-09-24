@@ -85,6 +85,9 @@ pub(crate) use process_executor::{init_slatedb_runtime_threads, slatedb_runtime}
 mod runtime_handoff;
 pub(crate) use runtime_handoff::on_slatedb_rt;
 
+mod service_runtime;
+pub(crate) use service_runtime::serve;
+
 static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The CLI-to-active-absorber boundary. Legacy compatibility options are not
