@@ -153,6 +153,13 @@ pub(crate) struct AuthorizedConsumerContext {
     stream: AuthorizedStreamContext,
     record: crate::queue::ConsumerRecord,
 }
+impl AuthorizedConsumerContext {
+    /// The incarnation this context was authorized against: the one a
+    /// queue operation under it is counted to (§4.5).
+    pub(crate) fn descriptor(&self) -> &StreamDesc {
+        &self.stream.desc
+    }
+}
 impl ConsumerService {
     #[expect(
         clippy::too_many_arguments,
@@ -307,8 +314,6 @@ pub(crate) struct SettleInput {
     #[serde(default)]
     pub(crate) extends: Vec<SettleItem>,
 }
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct SettleOutcome {
     acked: usize,
     retried: usize,
@@ -317,6 +322,22 @@ pub(crate) struct SettleOutcome {
     stale: usize,
     backlog: u64,
     dlq_blocked: usize,
+}
+impl SettleOutcome {
+    /// The settle answer's body: every counter under its camelCase wire
+    /// name. Built from plain integers, so it cannot fail — a completed
+    /// settle never turns into a serialization error.
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Object(serde_json::Map::from_iter([
+            ("acked".to_string(), self.acked.into()),
+            ("retried".to_string(), self.retried.into()),
+            ("extended".to_string(), self.extended.into()),
+            ("dlq".to_string(), self.dlq.into()),
+            ("stale".to_string(), self.stale.into()),
+            ("backlog".to_string(), self.backlog.into()),
+            ("dlqBlocked".to_string(), self.dlq_blocked.into()),
+        ]))
+    }
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DeleteOutcome {

@@ -1020,29 +1020,6 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
 /// explicit matching before wildcard interpretation).
-/// The settle's queue operation (§4.5) is still counted at the dispatch
-/// choke point, from a second registry read after the answer; an append
-/// is counted from its typed outcome (`render_product_append`).
-enum OpKind {
-    Queue,
-}
-
-async fn meter_op_if_ok(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    ok: bool,
-    kind: OpKind,
-) {
-    if !ok {
-        return;
-    }
-    if let Ok(Some(desc)) = state.registry.get(sref).await {
-        match kind {
-            OpKind::Queue => crate::billing::meter_queue_op(state, &desc),
-        }
-    }
-}
-
 #[expect(
     clippy::unwrap_used,
     reason = "product_entry; the preflight response builder holds a fixed status and literal ASCII header values, so building it cannot fail, and every handler the entry dispatches to (the consumer pull now with its identity resolved here) decides its own wire status; mapping a builder error into a substitute response would report a status the handler never decided"
@@ -1230,7 +1207,7 @@ pub(crate) async fn product_entry(
                     product_consumer_pull(state, sref, cname, headers, body, access).await
                 }
                 (Method::POST, Some("settle")) => {
-                    let r = product_consumer_settle(
+                    product_consumer_settle(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1239,10 +1216,7 @@ pub(crate) async fn product_entry(
                         body,
                         access,
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Queue).await;
-                    r
+                    .await
                 }
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
@@ -3621,10 +3595,6 @@ async fn product_consumer_delete(
 }
 
 #[expect(
-    clippy::expect_used,
-    reason = "product_consumer_settle; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
-)]
-#[expect(
     clippy::too_many_arguments,
     reason = "product_consumer_settle; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
 )]
@@ -3659,7 +3629,20 @@ async fn product_consumer_settle(
         Ok(c) => c,
         Err(e) => return consumer_failure_response(e),
     };
-    let doc = match serde_json::from_slice::<crate::application::consumer::SettleInput>(&body) {
+    settle_authorized(&state, context, &body).await
+}
+
+/// The settle under an authorized, active consumer context. An accepted
+/// settle, one whose tokens were all stale included, is one queue
+/// operation (§4.5), counted against the incarnation the context was
+/// authorized for, with no second descriptor read and before the answer
+/// exists; a refusal counts nothing.
+async fn settle_authorized(
+    state: &AppState,
+    context: crate::application::consumer::AuthorizedConsumerContext,
+    body: &[u8],
+) -> Response {
+    let doc = match serde_json::from_slice::<crate::application::consumer::SettleInput>(body) {
         Ok(d) => d,
         Err(e) => {
             return perr(
@@ -3671,8 +3654,12 @@ async fn product_consumer_settle(
             );
         }
     };
+    let desc = context.descriptor().clone();
     match crate::application::consumer::settle(context, doc).await {
-        Ok(out) => json_ok(&serde_json::to_value(out).expect("settle outcome serializable")),
+        Ok(out) => {
+            crate::billing::meter_queue_op(state, &desc);
+            json_ok(&out.to_json())
+        }
         Err(e) => consumer_failure_response(e),
     }
 }

@@ -1058,6 +1058,19 @@
     ]
   },
   {
+    "name": "a_settle_counts_when_its_descriptor_cannot_be_read_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7089288edc58fb4bfa6fe065c61478e2d62d55a4d7e513ec31e35785a4c01146",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_append_before_enqueue(\"opcdlqtgt\");"
+    ],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5862,6 +5875,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_convergence.rs",
+    "scenarios": []
+  },
+  {
+    "name": "settle_counts_follow_the_typed_outcome",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0b9f4ce38f06d7491d36974e7bd3be8d3b2594baee743c192d31d402e748783d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
     "scenarios": []
   },
   {

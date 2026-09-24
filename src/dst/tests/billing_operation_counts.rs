@@ -1,8 +1,8 @@
-//! Operation counts (docs/OBSERVABILITY-BILLING.md §4.5 `append_requests`)
-//! follow the typed outcome (item 28 step B). An accepted request is counted
-//! once, against the incarnation it committed to, with no second descriptor
-//! read between the outcome and the count; a refusal, and a request whose
-//! handler never answered, count nothing.
+//! Operation counts (docs/OBSERVABILITY-BILLING.md §4.5 `append_requests`,
+//! `queue_operations`) follow the typed outcome (item 28 step B). An
+//! accepted request is counted once, against the incarnation it committed
+//! to, with no second descriptor read between the outcome and the count; a
+//! refusal, and a request whose handler never answered, count nothing.
 
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
@@ -408,5 +408,122 @@ async fn a_recreated_stream_counts_each_incarnation_on_its_own_identity() {
     assert_eq!(product_post(addr, records, &[], br#"{"n":2}"#).await.0, 200);
     assert_eq!(counts(&state, &first.stream_epoch).append_requests, 1);
     assert_eq!(counts(&state, &second.stream_epoch).append_requests, 1);
+    engine_shutdown(&state).await;
+}
+
+/// A pulled consumer `c1` on a fresh JSON product stream holding `records`
+/// messages: the stream's descriptor and the pull's lease tokens.
+async fn pulled(
+    state: &crate::http::AppState,
+    addr: std::net::SocketAddr,
+    name: &str,
+    consumer: &[u8],
+    records: usize,
+) -> (crate::registry::StreamDesc, Vec<String>) {
+    let desc = product_stream(state, addr, name).await;
+    let path = format!("/v1/streams/{name}/records");
+    for n in 0..records {
+        // One routing key each: a key has at most one message in flight.
+        let key = format!("k{n}");
+        let body = format!(r#"{{"n":{n}}}"#);
+        let routing = [("prisma-routing-key", key.as_str())];
+        assert_eq!(
+            product_post(addr, &path, &routing, body.as_bytes()).await.0,
+            200
+        );
+    }
+    let path = format!("/v1/streams/{name}/consumers/c1");
+    let (st, _, body) = preq(addr, "PUT", &path, &KEY, consumer).await;
+    assert_eq!(st, 201, "consumer: {}", String::from_utf8_lossy(&body));
+    let pull = format!("/v1/streams/{name}/consumers/c1:pull");
+    let (st, _, body) = product_post(addr, &pull, &[], b"{}").await;
+    assert_eq!(st, 200, "{body}");
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), records, "{body}");
+    let tokens = messages
+        .iter()
+        .map(|m| m["leaseToken"].as_str().unwrap().to_string());
+    (desc, tokens.collect())
+}
+
+/// Red: a settle that dead-letters appends to its DLQ target, and the
+/// count is taken from the settle's own outcome, so a source descriptor
+/// store that fails right after the settle cannot lose it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_settle_counts_when_its_descriptor_cannot_be_read_again() {
+    let (state, addr) = http_rig(mem()).await;
+    product_stream(&state, addr, "opcdlqtgt").await;
+    let config = br#"{"maxAttempts":1,"deadLetterStream":"opcdlqtgt"}"#;
+    let (desc, tokens) = pulled(&state, addr, "opcdlqsrc", config, 1).await;
+    assert_eq!(counts(&state, &desc.stream_epoch).queue_operations, 1);
+    // The retry exceeds maxAttempts, so the settle hands the message to
+    // the DLQ target: that append parks at the enqueue, keyed on the target.
+    let retry = format!(
+        r#"{{"retries":[{{"leaseToken":"{}","delayMs":0}}]}}"#,
+        tokens[0]
+    );
+    let settle = "/v1/streams/opcdlqsrc/consumers/c1:settle";
+    let request = async move { product_post(addr, settle, &[], retry.as_bytes()).await };
+    let answer = park_append("opcdlqtgt", request).await;
+    state.registry.fail_next_get("opcdlqsrc");
+    crate::failpoints::release_append_before_enqueue("opcdlqtgt");
+    let (st, _, body) = answer.await.unwrap();
+    assert_eq!(
+        (st, &body["dlq"]),
+        (200, &serde_json::Value::from(1)),
+        "{body}"
+    );
+    assert_eq!(
+        counts(&state, &desc.stream_epoch).queue_operations,
+        2,
+        "a failed descriptor re-read dropped a committed settle's count"
+    );
+    let sref = state.deployment.raw_adapter_sref("opcdlqsrc");
+    assert!(
+        state.registry.get(&sref).await.is_err(),
+        "the metering path read the descriptor again"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Pin: one queue operation per accepted settle (an all-stale settle
+/// included), none for a refusal; the settle answer's exact bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settle_counts_follow_the_typed_outcome() {
+    let (state, addr) = http_rig(mem()).await;
+    let config = br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#;
+    let (desc, tokens) = pulled(&state, addr, "opcsettle", config, 2).await;
+    let queued = |n: u64| {
+        let got = counts(&state, &desc.stream_epoch).queue_operations;
+        assert_eq!(got, n, "queue_operations after step {n}");
+    };
+    queued(1);
+    let settle = "/v1/streams/opcsettle/consumers/c1:settle";
+    let ack = format!(r#"{{"acks":[{{"leaseToken":"{}"}}]}}"#, tokens[0]);
+    let (st, head, body) = preq(addr, "POST", settle, &KEY, ack.as_bytes()).await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        head.get("content-type").map(String::as_str),
+        Some("application/json")
+    );
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        r#"{"acked":1,"backlog":1,"dlq":0,"dlqBlocked":0,"extended":0,"retried":0,"stale":0}"#
+    );
+    queued(2);
+    let stale = br#"{"acks":[{"leaseToken":"not-a-token"}]}"#;
+    let (st, _, body) = product_post(addr, settle, &[], stale).await;
+    assert_eq!(
+        (st, &body["stale"]),
+        (200, &serde_json::Value::from(1)),
+        "{body}"
+    );
+    queued(3);
+    assert_eq!(
+        product_post(addr, settle, &[], br#"{"bogus":[]}"#).await.0,
+        400
+    );
+    let got = counts(&state, &desc.stream_epoch).queue_operations;
+    assert_eq!(got, 3, "a refusal was counted");
     engine_shutdown(&state).await;
 }

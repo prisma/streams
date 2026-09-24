@@ -2325,7 +2325,7 @@
       "count": 1,
       "owner": "crate::billing_operation_counts",
       "path": "src/dst/dst_tests.rs",
-      "reason": "Operation-count scenarios for §4.5 append_requests: real HTTP appends on both surfaces, appends parked at the committer enqueue under registry faults, and a handler dropped mid-commit; compiled and executed with DST.",
+      "reason": "Operation-count scenarios for §4.5 append_requests/queue_operations: real HTTP appends on both surfaces and settles, appends (a dead-letter handoff included) parked at the committer enqueue under registry faults, and a handler dropped mid-commit; compiled and executed with DST.",
       "syntax": "path = \"tests/billing_operation_counts.rs\""
     },
     {
