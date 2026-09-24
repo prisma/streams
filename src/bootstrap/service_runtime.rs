@@ -139,6 +139,10 @@ mod tests {
         if ProcessEnvironment.get(HELPER_MARKER).is_none() {
             return;
         }
+        // The parent reads the overrun warning from this process's stderr.
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .init();
         let (released, released_rx) = mpsc::channel();
         let (fetched, fetched_rx) = mpsc::channel();
         let started = Instant::now();
@@ -195,6 +199,10 @@ mod tests {
         assert!(
             transcript.contains(RETURNED),
             "the helper never reached its teardown:\n{transcript}"
+        );
+        assert!(
+            transcript.contains("still running at the teardown bound"),
+            "the overrun teardown logged no warning:\n{transcript}"
         );
         assert!(
             transcript.contains("1 passed"),
