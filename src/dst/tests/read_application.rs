@@ -667,3 +667,99 @@ async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
     engine_shutdown(&rig.state).await;
     rig.tasks.shutdown(Duration::from_secs(5)).await;
 }
+
+/// A position minted at a span's live tail sits at that span's sealed end
+/// once a split seals it. The read passes over the exhausted span and serves
+/// its successor from the successor's first record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_position_at_a_sealed_span_end_continues_in_its_successor() {
+    let _serial = super::fixture_failpoints::gap_lock().lock().await;
+    let (state, addr) = http_rig(mem()).await;
+    let credentials = [("prisma-encryption-key", PRISMA_KEY)];
+    assert_eq!(
+        preq(
+            addr,
+            "PUT",
+            "/v1/streams/hop",
+            &credentials,
+            br#"{"format":{"kind":"json"}}"#
+        )
+        .await
+        .0,
+        201
+    );
+    let append = |n: u32| async move {
+        let body = format!("{{\"n\":{n}}}");
+        let headers = [
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "ga"),
+        ];
+        let status = preq(
+            addr,
+            "POST",
+            "/v1/streams/hop/records",
+            &headers,
+            body.as_bytes(),
+        )
+        .await
+        .0;
+        assert_eq!(status, 200, "record {n}");
+    };
+    let sref = state.deployment.raw_adapter_sref("hop");
+    let descriptor = || async {
+        state.registry.invalidate(&sref);
+        state.registry.get(&sref).await.unwrap().unwrap()
+    };
+    let keyed = |desc: &crate::registry::StreamDesc, start: ReadStart| ReadCommand {
+        start,
+        selector: Some("ga".into()),
+        refresh: false,
+        ..command(desc)
+    };
+    append(0).await;
+    append(1).await;
+    let desc = descriptor().await;
+    let tail = state
+        .read_service()
+        .execute_read(keyed(&desc, ReadStart::Beginning))
+        .await
+        .unwrap()
+        .next;
+    assert_eq!(tail.after, 2, "the live tail");
+    assert!(crate::scaler3::execute_split(&state, &sref, tail.segment, 1 << 63).await);
+    append(2).await;
+    let desc = descriptor().await;
+    let spans = crate::application::read::ReadTopology::new(&desc, Some("ga")).spans;
+    assert_eq!(spans.len(), 2, "the parent and the child that owns the key");
+    assert_eq!(
+        (spans[0].seg_id, spans[0].sealed_next_offset),
+        (tail.segment, Some(tail.after)),
+        "the split sealed the parent at the old live tail"
+    );
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        state
+            .read_service()
+            .execute_read(keyed(&desc, ReadStart::Position(tail))),
+    )
+    .await
+    .expect("the read passes over the exhausted span")
+    .unwrap();
+    let served: Vec<_> = out
+        .records
+        .iter()
+        .map(|record| (record.off, record.rkey.as_str()))
+        .collect();
+    assert_eq!(served, [(0, "ga")], "the successor's first record");
+    assert_eq!(
+        (out.next, out.scan_from),
+        (
+            ReadPosition {
+                segment: spans[1].seg_id,
+                after: 1
+            },
+            0
+        )
+    );
+    engine_shutdown(&state).await;
+}

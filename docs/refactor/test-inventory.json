@@ -113,6 +113,19 @@
     "scenarios": []
   },
   {
+    "name": "a_continuation_carries_across_provisional_pages_and_is_verified_over_both",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "11384ebace840fe40e0fd9f723f12060a5322c5f7c96babc85a01ab0cc9dd288",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 0xF5, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crashed_creators_late_reference_is_released_without_a_client_retry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -729,6 +742,19 @@
     "scenarios": [
       "SEL-005"
     ]
+  },
+  {
+    "name": "a_position_at_a_sealed_span_end_continues_in_its_successor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "4d3490f2a41f5171c049f0fc8b73ba73e59f177baa7bfe399912665f5ecb21ea",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
+    ],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
   },
   {
     "name": "a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent",

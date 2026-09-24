@@ -521,3 +521,129 @@ async fn an_owner_change_that_loses_nothing_keeps_the_continuation() {
     assert_eq!((status, page), (200, serde_json::json!([{"n":2}])));
     engine_shutdown(&state2).await;
 }
+
+/// An applied read of `tp`'s records on the application surface.
+async fn applied_read(
+    reads: &crate::application::read::ReadService,
+    desc: &crate::registry::StreamDesc,
+    start: ReadStart,
+    mode: ReadMode,
+) -> crate::application::read::ReadOutcome {
+    let command = ReadCommand {
+        descriptor: desc.clone(),
+        key: Some(skey()),
+        start,
+        selector: None,
+        mode,
+        visibility: crate::shard::Deliver::Applied,
+        max_bytes: 4096,
+        tail_max_bytes: 4096,
+        allow_remote: false,
+        refresh: false,
+    };
+    reads
+        .execute_read(command)
+        .await
+        .unwrap_or_else(|error| panic!("an applied read from {start:?}: {error}"))
+}
+
+fn offsets(out: &crate::application::read::ReadOutcome) -> Vec<u64> {
+    out.records.iter().map(|record| record.off).collect()
+}
+
+/// Waits until the records below `next` are applied behind the held WAL PUT,
+/// which keeps the durable frontier at 1.
+async fn provisional_through(handle: &crate::shard::StreamHandle, next: u64) {
+    until("a record never applied behind the held WAL PUT", || {
+        handle.state.lock().unwrap().applied.next >= next
+    })
+    .await;
+    assert_eq!(handle.state.lock().unwrap().durable.next, 1);
+}
+
+/// With records 1 and 2 provisional, the page from the continuation at 2
+/// carries its proof: it equals the continuation of one page over both
+/// records. A head from the same continuation starts at the applied tail, so
+/// it carries nothing it did not observe and equals a head from `now`.
+async fn second_provisional_page(
+    reads: &crate::application::read::ReadService,
+    desc: &crate::registry::StreamDesc,
+    handle: &crate::shard::StreamHandle,
+    at: ReadStart,
+) -> (ReadPosition, Continuation) {
+    provisional_through(handle, 3).await;
+    let second = applied_read(reads, desc, at, ReadMode::Replay).await;
+    assert_eq!(offsets(&second), [2]);
+    let whole = applied_read(reads, desc, ReadStart::Beginning, ReadMode::Replay).await;
+    assert_eq!(offsets(&whole), [0, 1, 2]);
+    let continued = second.continuation.expect("record 2 is provisional");
+    assert_eq!((continued.recover(), continued.from()), (1, 1));
+    assert_eq!(Some(continued), whole.continuation, "the carried proof");
+    let head = applied_read(reads, desc, at, ReadMode::Head).await;
+    let fresh = applied_read(reads, desc, ReadStart::Now, ReadMode::Head).await;
+    assert_eq!(head.next.after, 3);
+    assert_eq!(head.durable.map(|durable| durable.after), Some(1));
+    assert_eq!(
+        head.continuation.map(|c| (c.recover(), c.from())),
+        Some((1, 3)),
+        "a head at the applied tail observed nothing"
+    );
+    assert_eq!(head.continuation, fresh.continuation);
+    (second.next, continued)
+}
+
+/// **A continuation carries across provisional pages.** Records 1 and 2 are
+/// applied behind the held WAL PUT and read on two pages; the second page's
+/// continuation still proves record 1 (`second_provisional_page`). Once both
+/// records are durable, a new writer verifies that continuation by reading
+/// both records back, and continues it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_continuation_carries_across_provisional_pages_and_is_verified_over_both() {
+    let store = FaultStore::uniform(mem(), 0xF5, FaultPlan::CLEAN);
+    let dyn_store: Arc<dyn ObjectStore> = store.clone();
+    let (state1, addr1) = stream_with_one_durable_record(&dyn_store, "").await;
+    let engaged = hold_shard_wal(&store, &state1).await;
+    let reads = state1.read_service();
+    let (_, handle) = handle_of(&state1).await;
+    let scenario = async {
+        until("the shard WAL PUT was never held", || {
+            engaged.load(Ordering::SeqCst) > 0
+        })
+        .await;
+        provisional_through(&handle, 2).await;
+        let desc = descriptor(&state1).await;
+        let first = applied_read(&reads, &desc, ReadStart::Beginning, ReadMode::Replay).await;
+        assert_eq!(offsets(&first), [0, 1]);
+        let carried = first
+            .continuation
+            .expect("a page past the durable frontier continues");
+        assert_eq!(
+            (first.next.after, carried.recover(), carried.from()),
+            (2, 1, 1)
+        );
+        let at = ReadStart::Continue(first.next, carried);
+        let later = async {
+            let proof = second_provisional_page(&reads, &desc, &handle, at).await;
+            store.release_hold();
+            proof
+        };
+        let (acked, proof) =
+            futures_util::future::join(append(addr1, "", br#"{"n":2}"#), later).await;
+        assert_eq!(acked, 200, "record 2 is acknowledged once durable");
+        proof
+    };
+    let (acked, (next, continued)) =
+        futures_util::future::join(append(addr1, "", br#"{"n":1}"#), scenario).await;
+    assert_eq!(acked, 200, "record 1 is acknowledged once durable");
+    drop(handle);
+    drop(reads);
+    engine_shutdown(&state1).await;
+
+    let (state2, addr2) = http_rig_at(dyn_store.clone(), RigRuntime::incarnation(2)).await;
+    assert_eq!(append(addr2, "", br#"{"n":3}"#).await, 200);
+    let desc = descriptor(&state2).await;
+    let start = ReadStart::Continue(next, continued);
+    let out = applied_read(&state2.read_service(), &desc, start, ReadMode::Replay).await;
+    assert_eq!(offsets(&out), [3], "a continuation over a durable suffix");
+    engine_shutdown(&state2).await;
+}
