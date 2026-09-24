@@ -91,6 +91,18 @@ impl EngineTasks {
     pub(super) fn abort(&self, role: &str) -> tokio::task::AbortHandle {
         self.supervisor.abort_named(role)
     }
+    /// Tests only: the engine's storage close FAILS. No store fault produces
+    /// this (SlateDB retries its faults, and `close_db` settles Clean and
+    /// Fenced), so the proof of what a failed close means to the directory
+    /// installs one. The roles are aborted and joined as a real close would;
+    /// the database stays open for the test to close.
+    #[cfg(test)]
+    pub(super) fn begin_failed_close_for_test(&self, error: &'static str) {
+        self.supervisor
+            .begin_shutdown_with(Duration::ZERO, "storage-close", async move {
+                TaskResult::Failed(error.into())
+            });
+    }
 }
 /// Retains join authority and its report, without retaining engine caches.
 #[derive(Clone)]
@@ -101,6 +113,12 @@ impl EngineShutdown {
     }
     pub(crate) fn terminated(&self) -> bool {
         self.0.monitor().phase() == Some(crate::tasks::Phase::Stopped)
+    }
+    /// Its close is over: termination proved, or the close failed for good.
+    /// A failed close is final (item 38): its owner keeps the replacement
+    /// fence and the readiness failure, and no wait turns it into a close.
+    pub(crate) fn settled(&self) -> bool {
+        self.terminated() || self.failure().is_some()
     }
     pub(crate) async fn wait(&self, timeout: Duration) -> Result<(), String> {
         let report = tokio::time::timeout(timeout, self.0.observe_shutdown())

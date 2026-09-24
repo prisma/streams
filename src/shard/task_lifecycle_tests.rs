@@ -296,3 +296,91 @@ async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
     assert!(engine.shutdown_handle().failure().is_none());
     assert!(engine.required_task_failure().is_none());
 }
+
+/// A directory whose one prefix is served by `engine`.
+fn serving(engine: &Arc<ShardEngine>) -> crate::shard_directory::ShardDirectory {
+    let opened = engine.clone();
+    crate::shard_directory::ShardDirectory::new(
+        vec![engine.prefix.clone()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: Duration::from_secs(10),
+            open_wait: Duration::from_secs(1),
+        },
+        move |_| Box::new(move |_, _| Box::pin(std::future::ready(Ok(opened.clone())))),
+    )
+}
+
+/// Item 38: a failed storage close is final, so the directory stop answers
+/// at once, with the report that names it, and the owner keeps its fence
+/// and readiness failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_storage_close_ends_the_directory_stop_at_once() {
+    let (engine, _store) = fixture().await;
+    let directory = serving(&engine);
+    assert!(matches!(
+        directory
+            .open_or_wait(&engine.prefix, Duration::from_secs(1))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    engine
+        .tasks
+        .begin_failed_close_for_test("scripted close failure");
+    let stopped = tokio::time::timeout(
+        Duration::from_secs(5),
+        directory.shutdown(Duration::from_secs(30)),
+    )
+    .await
+    .expect("a failed close is final: the directory stop must not wait out its grace");
+    let error = stopped.unwrap_err();
+    assert!(
+        error.contains("storage-close: Failed(\"scripted close failure\")"),
+        "{error}"
+    );
+    assert!(
+        directory
+            .unready_reason()
+            .unwrap()
+            .contains("scripted close failure"),
+        "the owner keeps the readiness failure"
+    );
+    assert!(
+        !engine.termination_complete(),
+        "a failed close proves no termination"
+    );
+    drop(engine.db.close().await);
+}
+
+/// Item 38: a directory stop that reaches its deadline still names what it
+/// joined, so a failed close is never dropped beside a pending one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
+    let (engine, store) = held_wal().await;
+    let directory = serving(&engine);
+    assert!(matches!(
+        directory
+            .open_or_wait(&engine.prefix, Duration::from_secs(1))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    let stopped = tokio::time::timeout(
+        Duration::from_secs(5),
+        directory.shutdown(Duration::from_millis(5)),
+    )
+    .await
+    .expect("the stop is bounded by its grace");
+    assert_eq!(
+        stopped.unwrap_err(),
+        "shutdown ongoing or failed: 0 opens, 1 engines; owners retained; joined reports: [\"engine shutdown still running; join authority retained\"]"
+    );
+    store.release_hold();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        directory.shutdown(Duration::from_secs(10)),
+    )
+    .await
+    .expect("the released close completes within its grace")
+    .unwrap();
+    assert!(engine.termination_complete());
+}

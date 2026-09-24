@@ -74,7 +74,7 @@ OWNERS = (
     owner('offsets', 'src/offsets.rs', 'offsets::'),
     owner('segmap', 'src/segmap.rs', 'segmap::'),
     owner('telemetry_batch', 'src/telemetry_batch.rs', 'telemetry_batch::'),
-    owner('shard_directory', 'src/shard_directory.rs', 'shard_directory::'),
+    owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3::'),

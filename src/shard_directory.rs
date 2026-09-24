@@ -380,7 +380,10 @@ impl ShardDirectory {
 
     /// Stops admission and observes the same retirement owners on every call.
     /// A deadline cancels observers only; late opens and database closes remain
-    /// fenced in the gate until their owners establish termination.
+    /// fenced in the gate until their owners establish termination. A close
+    /// that failed is settled, not pending (item 38): its owner keeps the fence
+    /// and the readiness failure, no wait turns it into a close, and the stop
+    /// answers with the joined reports that name it, also at the deadline.
     #[expect(
         clippy::excessive_nesting,
         reason = "ShardDirectory::shutdown; the drain nests the joined-report verdict inside the no-pending branch of the wait loop; flattening it would separate the verdict from the drain it concludes"
@@ -397,9 +400,9 @@ impl ShardDirectory {
                 engine.wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
             }))
             .await;
-            let pending = engines.iter().filter(|engine| !engine.terminated()).count();
+            let pending = engines.iter().filter(|engine| !engine.settled()).count();
+            let failures: Vec<_> = reports.into_iter().filter_map(Result::err).collect();
             if opens == 0 && pending == 0 {
-                let failures: Vec<_> = reports.into_iter().filter_map(Result::err).collect();
                 return if failures.is_empty() {
                     Ok(())
                 } else {
@@ -408,7 +411,7 @@ impl ShardDirectory {
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!(
-                    "shutdown ongoing or failed: {opens} opens, {pending} engines; owners retained"
+                    "shutdown ongoing or failed: {opens} opens, {pending} engines; owners retained; joined reports: {failures:?}"
                 ));
             }
             tokio::time::sleep_until(
