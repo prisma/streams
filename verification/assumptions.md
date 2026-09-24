@@ -140,7 +140,10 @@ actions to these contracts.
   replays the WAL up to the fence. Every later WAL SST write is put-if-absent
   on the writer's next id, so an older writer whose next id is taken fails with
   `Fenced` and closes. A conditional PUT that landed but whose reply was lost
-  is retried and reported `Fenced` (`AlreadyExists`), with the batch durable.
+  is retried and reported either `Fenced` (`AlreadyExists`) or, where the
+  store returns user metadata, as the writer's own success (SlateDB tags each
+  conditional PUT with a `slatedbputid` attribute and checks it with a HEAD
+  after a refusal); the batch is durable in both cases.
 - **Origin:** pinned SlateDB `fence.rs` (`WriterFencer::fence`),
   `wal/writer_init.rs` (`fence_and_init`), `manifest/store.rs`
   (`FenceableManifest::init_writer`), `tablestore.rs`
@@ -148,7 +151,10 @@ actions to these contracts.
   `Fenced`).
 - **Enforcement / evidence:** SlateDB plus the object store's conditional put.
   Repository tests `history::tests::absorber_exits_when_shard_engine_is_fenced`
-  and `src/dst/tests/producer_handoff.rs`.
+  and `src/dst/tests/producer_handoff.rs`; the provider contract suite's
+  SlateDB cases (`src/bootstrap/tests/provider_contract/slatedb_cases.rs`,
+  docs/PROVIDER-CONTRACT.md) check fencing and both lost-reply outcomes
+  through the production client.
 - **Invalidation:** a SlateDB upgrade; an object store without put-if-absent;
   the WAL disabled.
 - **Standing:** established by upstream source inspection and repository
@@ -179,22 +185,32 @@ actions to these contracts.
   `src/application/creation/anchor.rs` (`anchor::install`) and
   `src/application/creation/deletion.rs` (`delete_transition`,
   `release_fork_ref`).
-- **Enforcement / evidence:** the object-store provider, for which no
-  conformance evidence was reviewed. The registry code maps these outcomes as
-  TLA-001 models them (lost reply, failed dispatch, missing ETag, failed read),
-  and `registry::tests::r08_*` exercise that mapping on the in-memory store.
-  The registry's conditional-write tests and the DST fork suites
-  (`src/dst/tests/fork_cleanup.rs`) cover the repository's use of it. The
+- **Enforcement / evidence:** the provider contract suite
+  (`src/bootstrap/tests/provider_contract/`, docs/PROVIDER-CONTRACT.md) runs
+  every clause through the client exactly as the server builds it: against
+  object_store's InMemory and the repository's s3lite emulator in the normal
+  test suite, and against a real provider only when explicitly configured
+  (`STREAMS_PROVIDER_CONTRACT=1`). It has not been run against the production
+  provider. The registry's conditional-write tests, `registry::tests::r08_*`
+  and the DST fork suites cover the repository's use of these writes. The
   durability models include both ambiguous outcomes: TLA-005 `Restart`
   recovers an unreported prefix after `WalFail`, and TLA-011 `Land` has the
   `AmbiguousPut` outcome.
+- **Client-layer caveat (found by the suite):** object_store 0.14 re-sends a
+  conditional PUT after a 5xx, 429 or 408 with the original precondition. If
+  the first attempt committed, the retry is refused, so the caller sees
+  `Precondition` or `AlreadyExists` for its own write. Clause (b)'s "otherwise
+  it answers `Precondition`" can therefore hold at the provider and fail at the
+  client; see "Registry conditional writes never mistake their own committed
+  write for a refusal".
 - **Invalidation:** an object-store client or provider change; a registry CAS
   change; a retry layer that turns `AlreadyExists` or `Precondition` into
   success; a registry write that is not conditional on the observed
   incarnation.
-- **Standing:** **unestablished** for the provider's conditional writes.
-  TLA-001, TLA-002, TLA-003, TLA-005, TLA-011 and TLA-019 are conditional on
-  it; the repository's use of them is established by code reading and tests.
+- **Standing:** **unestablished** until the provider contract suite has
+  passed against the production provider, endpoint and configuration and the
+  run is logged (a point-in-time qualification). TLA-001, TLA-002, TLA-003,
+  TLA-005, TLA-011 and TLA-019 are conditional on it.
 
 ### ASM-DURABILITY-1
 

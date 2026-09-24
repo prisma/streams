@@ -4,6 +4,8 @@ use super::{RUN_WAS_INVOKED, absorber_config, run};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+mod provider_contract;
+
 #[test]
 fn ignored_absorber_options_cannot_change_active_runtime_configuration() {
     let mut base = crate::config::CliArgs::deterministic();
