@@ -54,15 +54,42 @@ fn reap(tasks: &crate::tasks::TaskSupervisor, joined: Result<(), tokio::task::Jo
     }
 }
 
-/// #269: the one h1 serve loop — production and every test rig serve
+/// #269: the one h1 serve entry — production and every test rig serve
 /// through THIS function, so the suite exercises the real connection
-/// path; what each connection is served with is `serve::h1_builder`.
+/// path; what each connection is served with is `serve::h1_builder`, and
+/// every response it serves passes `challenge`.
+pub(crate) async fn serve_h1(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    http: &crate::config::HttpConfig,
+    tasks: crate::tasks::TaskSupervisor,
+) -> std::io::Result<()> {
+    let app = app.layer(axum::middleware::map_response(challenge));
+    serve_connections(listener, app, http, tasks).await
+}
+
+/// RFC 9110 §15.5.2: a 401 names how to authenticate. Every credential the
+/// server takes, on the product, raw and operator surfaces, is a bearer
+/// token (RFC 6750). A challenge a handler already set is kept.
+async fn challenge(mut response: axum::response::Response) -> axum::response::Response {
+    if response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        response
+            .headers_mut()
+            .entry(axum::http::header::WWW_AUTHENTICATE)
+            .or_insert(axum::http::HeaderValue::from_static(
+                "Bearer realm=\"streams\"",
+            ));
+    }
+    response
+}
+
+/// The accept loop behind `serve_h1`.
 #[expect(
     clippy::disallowed_methods,
     clippy::let_underscore_must_use,
     reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns, reaps (counting a panicked one) and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled connection results would restate what the JoinSet already owns"
 )]
-pub(crate) async fn serve_h1(
+async fn serve_connections(
     listener: tokio::net::TcpListener,
     app: axum::Router,
     http: &crate::config::HttpConfig,
@@ -341,6 +368,31 @@ mod tests {
         assert!(
             !builds(HttpConfig::MIN_H1_MAX_BUF - 1),
             "hyper accepts less than the validated floor"
+        );
+    }
+
+    /// A 401 gains the bearer challenge; any other status does not, and a
+    /// challenge a handler already set is kept.
+    #[tokio::test]
+    async fn only_a_401_is_challenged_and_an_existing_challenge_is_kept() {
+        use axum::http::{HeaderValue, StatusCode, header::WWW_AUTHENTICATE};
+        use axum::response::IntoResponse;
+        let challenged = super::challenge(StatusCode::UNAUTHORIZED.into_response()).await;
+        assert_eq!(
+            challenged.headers().get(WWW_AUTHENTICATE),
+            Some(&HeaderValue::from_static("Bearer realm=\"streams\""))
+        );
+        for status in [StatusCode::OK, StatusCode::FORBIDDEN, StatusCode::NOT_FOUND] {
+            let response = super::challenge(status.into_response()).await;
+            assert_eq!(response.headers().get(WWW_AUTHENTICATE), None, "{status}");
+        }
+        let mut own = StatusCode::UNAUTHORIZED.into_response();
+        own.headers_mut()
+            .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Basic"));
+        let kept = super::challenge(own).await;
+        assert_eq!(
+            kept.headers().get(WWW_AUTHENTICATE),
+            Some(&HeaderValue::from_static("Basic"))
         );
     }
 }

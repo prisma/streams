@@ -2308,6 +2308,17 @@
     "scenarios": []
   },
   {
+    "name": "every_401_carries_its_bearer_challenge",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ef46499e2265f6226610a956fe4703e6e27250dfadcd7f00d0ebab85159d7028",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_operations.rs",
+    "scenarios": []
+  },
+  {
     "name": "every_dispatched_operation_demands_exactly_its_scope",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

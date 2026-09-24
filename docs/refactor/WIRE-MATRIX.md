@@ -8,6 +8,7 @@ Baseline for every refactor PR that moves a handler: each entry pins the current
 
 - Router: `router()` at `src/http.rs:1552`. One listener, one axum router (`src/main.rs:2500-2513`, h1 only via `serve_h1`).
 - **Every response** (including axum-default 404/405) passes `map_response_with_state` adding `x-content-type-options: nosniff` and `prisma-streams-origin: <instance marker>` (`src/http.rs:1842-1854`). Purpose: distinguish server 404 from platform-edge 404.
+- **Every 401** (any surface: raw, product, SSE lease refusals, `/v1/debug`, `/operator`, fleet-internal) carries `WWW-Authenticate: Bearer realm="streams"` (RFC 9110 §15.5.2; every credential the server takes is a bearer token, RFC 6750). It is added by the `challenge` response layer in `serve_h1` (`src/http/serve.rs`), so a new 401 cannot omit it; a challenge a handler sets itself is kept. Bodies and codes are unchanged.
 - Middleware `track_inflight` (`src/http.rs:885-944`): pre-auth survival shed only — if inflight > 4× `admit_max_inflight` AND path starts with `/v1/stream` (note: matches BOTH `/v1/stream` and `/v1/streams` prefixes): instant `503`, body `{"error":{"code":"overloaded","message":"retry"}}` (JSON), `retry-after: 1`. No tarpit pre-auth.
 - **Two error envelopes**:
   - Raw: `err_resp` (`src/http.rs:1879-1886`) → `Content-Type: application/json`, body `{"error":{"code":<c>,"message":<m>}}`. No `Cache-Control`.

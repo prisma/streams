@@ -234,3 +234,28 @@ async fn a_request_naming_no_operation_authenticates_before_its_404_or_405() {
     }
     engine_shutdown(&state).await;
 }
+
+/// RFC 9110 §15.5.2: a 401 names how to authenticate. Every credential this
+/// server takes is a bearer token (RFC 6750), on the product, raw and
+/// operator surfaces alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_401_carries_its_bearer_challenge() {
+    let (_svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
+    let forged: &[(&str, &str)] = &[("authorization", "Bearer not-a-token")];
+    for (method, path, headers) in [
+        ("GET", "/v1/streams/opgrid", &[][..]),
+        ("GET", "/v1/streams/opgrid", forged),
+        ("GET", "/v1/debug/load", &[]),
+        ("GET", "/v1/stream/opgrid", &[]),
+    ] {
+        let (status, headers, body) = preq(addr, method, path, headers, b"").await;
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, 401, "{method} {path}: {body}");
+        assert_eq!(
+            headers.get("www-authenticate").map(String::as_str),
+            Some("Bearer realm=\"streams\""),
+            "{method} {path}: {body}"
+        );
+    }
+    engine_shutdown(&state).await;
+}
