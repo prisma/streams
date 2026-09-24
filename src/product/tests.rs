@@ -423,3 +423,54 @@ async fn every_auth_refusal_keeps_its_response() {
         assert_eq!(body["error"]["retryable"], retryable, "{kind}");
     }
 }
+
+/// A transient append refusal keeps its wait on the product surface: the
+/// per-stream limiter's 429 carries `retry-after` in decimal seconds and
+/// `retryable: true` (pins `render_product_append_error`'s header value).
+#[tokio::test]
+async fn a_transient_append_refusal_keeps_its_retry_after() {
+    use crate::application::append::{AppendCode, AppendFailure, FailureClass};
+    let code = AppendCode::RateLimited("limit_bytes_per_sec");
+    let refused = AppendFailure::new(FailureClass::Capacity, code, "x").retry(7);
+    let response = render_product_append_error(refused);
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry = response.headers().get("retry-after");
+    assert_eq!(retry.and_then(|v| v.to_str().ok()), Some("7"));
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let error = &body["error"];
+    assert_eq!(
+        (error["code"].as_str(), error["retryable"].as_bool()),
+        (Some("rate_limited"), Some(true))
+    );
+}
+
+/// The core's permanent capacity refusal renders as the ONE product 413:
+/// `payload_too_large` with its limit in `details`, not retryable, no
+/// `retry-after` (external review §5). This is the backstop arm a producer
+/// request reaches, and the only renderer of the seal's final record.
+#[tokio::test]
+async fn a_core_capacity_refusal_renders_the_stable_413() {
+    use crate::application::append::AppendFailure;
+    let refusal = crate::usage::CapacityRefusal::new("records", 100.0, 101);
+    let response = render_product_append_error(AppendFailure::from_capacity(refusal));
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.headers().get("retry-after"), None);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let (error, d) = (&body["error"], &body["error"]["details"]);
+    assert_eq!(
+        (
+            error["code"].as_str(),
+            error["retryable"].as_bool(),
+            d["capacity"].as_u64(),
+            d["requested"].as_u64()
+        ),
+        (Some("payload_too_large"), Some(false), Some(100), Some(101)),
+        "{body}"
+    );
+}

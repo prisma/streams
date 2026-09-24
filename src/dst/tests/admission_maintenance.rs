@@ -798,6 +798,10 @@ async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
         "10,001 records never fit a 10,000-record bucket: {body}"
     );
     assert!(body.contains("payload_too_large"), "{body}");
+    assert!(
+        body.contains("of 10001 records exceeds the per-stream ingest capacity of 10000 records"),
+        "the refusal names its limit: {body}"
+    );
     assert_eq!(
         headers.get("retry-after"),
         None,
@@ -813,9 +817,10 @@ async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
 
 /// The product batch surface reaches the same owner: with a record bucket
 /// smaller than MAX_BATCH_RECORDS, a batch larger than a fresh bucket is a
-/// permanent 413 (the product spelling is `body_too_large`), and exactly
-/// the capacity is still admitted afterwards because the refusal consumed
-/// nothing (the rig's usage clock never refills between the two).
+/// permanent 413 (one spelling on both surfaces, `payload_too_large`, with
+/// its limit in `details`), and exactly the capacity is still admitted
+/// afterwards because the refusal consumed nothing (the rig's usage clock
+/// never refills between the two).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn product_batch_over_record_capacity_is_413_without_retry_after() {
     let usage = Arc::new(crate::usage::UsageService::new(
@@ -855,9 +860,24 @@ async fn product_batch_over_record_capacity_is_413_without_retry_after() {
         &records_body(101),
     )
     .await;
-    let body = String::from_utf8_lossy(&body).to_string();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(st, 413, "101 records never fit a 100-record bucket: {body}");
-    assert!(body.contains("body_too_large"), "{body}");
+    let (code, d) = (body["error"]["code"].as_str(), &body["error"]["details"]);
+    assert_eq!(
+        (
+            code,
+            d["dimension"].as_str(),
+            d["capacity"].as_u64(),
+            d["requested"].as_u64()
+        ),
+        (
+            Some("payload_too_large"),
+            Some("records"),
+            Some(100),
+            Some(101)
+        ),
+        "{body}"
+    );
     assert_eq!(headers.get("retry-after"), None);
     let (st, _, body) = preq(
         rig.addr,

@@ -105,13 +105,10 @@ pub(super) fn parse_content(
     // limiter will always refuse. A deferred verdict outranks it: the shard
     // still answers a duplicate producer request 204.
     if deferred.is_none()
-        && let Some(kind) = usage.permanently_unadmittable(body.len() as u64, entries.len() as u64)
+        && let Some(refusal) =
+            usage.permanently_unadmittable(body.len() as u64, entries.len() as u64)
     {
-        return fail(
-            FailureClass::Invalid,
-            AppendCode::PayloadTooLarge,
-            &format!("request exceeds the per-stream ingest {kind} capacity"),
-        );
+        return Err(AppendFailure::from_capacity(refusal));
     }
     Ok(ContentPlan { entries, deferred })
 }

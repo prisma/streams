@@ -242,6 +242,31 @@ async fn an_impossible_final_never_publishes_an_intent() {
     assert_eq!(st, 400, "partial producer headers accepted");
     untouched("a partial producer trio").await;
 
+    // A final no FRESH per-stream bucket admits (external review §5):
+    // the 413 names its limit, measured on the `[value]` wire body.
+    let body = format!(r#"{{"final":"{}"}}"#, "x".repeat(10_000_000));
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/impossible:seal",
+        &key,
+        body.as_bytes(),
+    )
+    .await;
+    let b: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let d = &b["error"]["details"];
+    assert_eq!(
+        (
+            st,
+            d["dimension"].as_str(),
+            d["capacity"].as_u64(),
+            d["requested"].as_u64()
+        ),
+        (413, Some("bytes"), Some(10_000_000), Some(10_000_004)),
+        "{b}"
+    );
+    untouched("an over-capacity final").await;
+
     // And a valid one still seals.
     let (st, _, b) = preq(
         addr,

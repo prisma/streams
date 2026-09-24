@@ -118,6 +118,9 @@ enum AppendConflict {
         received: u64,
     },
     ProducerEpoch(u64),
+    /// Not a conflict: the permanent capacity refusal's limit, which the
+    /// renderers report (external review §5).
+    Capacity(crate::usage::CapacityRefusal),
 }
 
 #[derive(Debug)]
@@ -189,6 +192,25 @@ impl AppendFailure {
         match self.conflict.as_deref() {
             Some(AppendConflict::ProducerEpoch(epoch)) => Some(*epoch),
             _ => None,
+        }
+    }
+    /// The permanent 413 for a request no fresh per-stream bucket admits: one
+    /// code on every surface, its message naming the numbers, its limit kept
+    /// for the product's `details`.
+    pub(crate) fn from_capacity(refusal: crate::usage::CapacityRefusal) -> Self {
+        let mut e = Self::new(
+            FailureClass::Invalid,
+            AppendCode::PayloadTooLarge,
+            refusal.to_string(),
+        );
+        e.conflict = Some(Box::new(AppendConflict::Capacity(refusal)));
+        e
+    }
+    pub(crate) fn capacity_refusal(&self) -> Option<&crate::usage::CapacityRefusal> {
+        if let Some(AppendConflict::Capacity(refusal)) = self.conflict.as_deref() {
+            Some(refusal)
+        } else {
+            None
         }
     }
     pub(crate) fn retry(mut self, seconds: u64) -> Self {

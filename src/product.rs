@@ -1740,18 +1740,12 @@ async fn product_seal(
             // bytes longer than the value itself, and a value on the
             // boundary would otherwise pass here and be refused there,
             // leaving the intent behind.
-            if let Some(kind) = state
+            if let Some(refusal) = state
                 .runtime
                 .usage
                 .permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
             {
-                return perr(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "payload_too_large",
-                    &format!("the final record exceeds the per-stream ingest {kind} capacity"),
-                    None,
-                    false,
-                );
+                return capacity_refused(&refusal);
             }
             // Only now: enter Sealing. Ordinary appends are refused from
             // here, so nothing can land between the final record and the
@@ -2350,12 +2344,11 @@ fn render_product_append(
         .body(Body::from(json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string())).unwrap()
 }
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "render_product_append_error; a retry-after delay renders as decimal digits, which are always a valid header value; treating the conversion as fallible would drop the retry hint the client is owed"
-)]
 fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {
     use crate::application::append::{AppendCode as C, FailureClass as F};
+    if let Some(refusal) = error.capacity_refusal() {
+        return capacity_refused(refusal);
+    }
     let status = crate::http::append_failure_status(&error);
     let (code, message, details, retryable) = match error.code {
         C::NotOwner => (
@@ -2423,10 +2416,8 @@ fn render_product_append_error(error: crate::application::append::AppendFailure)
     };
     let mut r = perr(status, code, message, details, retryable);
     if let Some(retry) = error.retry_after {
-        r.headers_mut().insert(
-            "retry-after",
-            axum::http::HeaderValue::from_str(&retry.to_string()).unwrap(),
-        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from(retry));
     }
     if let Some(owner) = error.owner
         && let Ok(owner) = axum::http::HeaderValue::from_str(&owner)
@@ -4024,6 +4015,8 @@ pub(crate) async fn product_list(
         .unwrap()
 }
 
+mod append_body;
+use append_body::capacity_refused;
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;

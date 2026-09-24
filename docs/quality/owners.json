@@ -1785,6 +1785,14 @@
       "syntax": "serde_json::json"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::capacity_refused",
+      "path": "src/product/append_body.rs",
+      "reason": "The permanent capacity refusal's details object {dimension, capacity, requested} is rendered with serde_json's literal macro; its wire shape is the product error contract pinned by admission_maintenance, seal_recovery and product::tests, and WIRE-MATRIX §2.5/§2.7/§2.8.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::lb",

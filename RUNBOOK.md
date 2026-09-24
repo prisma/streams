@@ -135,8 +135,10 @@ Transient rejections are 429s with error codes `limit_bytes_per_sec` /
 `limit_requests_per_sec` / `limit_records_per_sec`, a human message naming
 the limit, and a `Retry-After` header the bucket will honour. A request
 larger than a FRESH bucket (body bytes or record count above rate x burst)
-can never be admitted and is a permanent 413 `payload_too_large` (product:
-`body_too_large`) with no `Retry-After`, on every content append. `/v1/debug/usage` (bearer) exposes
+can never be admitted and is a permanent 413 `payload_too_large` with no
+`Retry-After`, on every content append and on both surfaces: the raw message
+names the requested size and the capacity, and the product error adds them
+as `details {dimension, capacity, requested}`. `/v1/debug/usage` (bearer) exposes
 per-stream cumulative requests, records, bytes_in, bytes_out,
 plaintext_bytes, frame_bytes, and the derived compression ratio. The
 billing emitter appends a JSON array per interval to the billing stream —
