@@ -148,10 +148,10 @@ impl UnreadyWindow {
     }
 }
 
-/// The watchdog TASK ADAPTER: samples readiness on the injected clock's
-/// cadence, feeds the pure policy monotonic readings, and — until WP-15
-/// task supervision gives critical tasks a result policy — keeps the
-/// survival `process::exit` when the policy says Expired.
+/// The watchdog TASK ADAPTER: samples shard readiness on the injected
+/// clock's cadence, feeds the pure policy monotonic readings, and keeps the
+/// survival `process::exit` when the policy says Expired. A critical loop's
+/// exit is not its concern: the process root stops for that itself (item 38).
 #[expect(
     clippy::let_underscore_must_use,
     reason = "spawn_unready_watchdog; the supervisor rejects a spawn only while it is stopping, when no exit deadline is owed; a rejected watchdog has nothing left to police"

@@ -194,7 +194,7 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 ## 3. Operator / health / debug / internal routes
 
 ### Health
-- `GET /health`, `GET /readyz` → `health_axum` (`src/http.rs:2066-2124`): **200** body `ok` + headers `x-streams-git`, `x-streams-build-unix`, `x-streams-boot-id`; **503** plain-text when auth feeds unpublished / shard storage unready / billing prerequisites unmet (in `BILLING_MODE=required`). No auth.
+- `GET /health`, `GET /readyz` → `health_axum` (`src/http.rs:1633-1693`): **200** body `ok` + headers `x-streams-git`, `x-streams-build-unix`, `x-streams-boot-id`; **503** plain-text when the task supervisor is not serving (`runtime supervisor unavailable`, `runtime shutting down`, `runtime stopped`, `critical task terminated: <name>`) / auth feeds unpublished / shard storage unready / billing prerequisites unmet (in `BILLING_MODE=required`). No auth. Under the binary's process-root supervisor a critical loop's exit (a `Done` return included) also requests the ordered stop (item 38): the listener closes at once, loops and shards close, and the process exits 1 with an `Error: critical task <name> exited while the runtime was running: <outcome>` line, bounded at 30 s off the executor (a termination signal's stop is bounded the same way). There `critical task terminated: <name>` is transient and may name any exited critical loop, including one that ended because of the stop; only the `Error:` line and the `critical task exited while the runtime was running` log carry the cause. It is persistent only under a rig's supervisor.
 - `GET /livez` → 200 `alive` (`src/http.rs:1572`).
 
 ### Operator (deployment bearer; SR-5)

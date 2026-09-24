@@ -2391,6 +2391,22 @@
       "path": "src/quota/tests.rs",
       "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::arm_stop_deadline",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the process root's bound on the ordered stop a critical exit or a termination signal requested runs on its own named OS thread, so a wedged executor cannot hold it; the thread only sleeps and then ends the process, and is never joined because the process is ending either way.",
+      "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::arm_stop_deadline",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the deadline thread sleeps out the bound off the executor, then ends the process.",
+      "syntax": "std::thread::sleep"
     }
   ]
 }

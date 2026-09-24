@@ -14,7 +14,15 @@
 //! supervisor: the supervisor owns the tasks, the tasks capture the
 //! state, and a strong edge from the state back to the supervisor would
 //! make a runtime that failed to start immortal.
+//!
+//! The process's own supervisor (`TaskSupervisor::process_root`, item 38)
+//! also answers for its critical loops: the first one that ends before any
+//! stop was requested becomes the cause of a stop the supervisor requests
+//! itself, and the process then fails naming it. Every stop it is asked for,
+//! that one or a termination signal's, is bounded off the executor (see
+//! `exits`). Every other supervisor's owner answers for its loops.
 
+mod exits;
 mod refusal;
 mod shutdown;
 /// The runtime's termination input, prepared before any task starts.
@@ -22,16 +30,18 @@ pub(crate) mod signal;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Once, OnceLock, Weak};
+use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
 /// What losing the loop means for the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Policy {
-    /// The runtime is not healthy without it (fleet loop, telemetry
-    /// drain, the watchdogs): an unexpected exit is a critical failure
-    /// (surfaced to readiness by WP-15's remaining slice).
+    /// The runtime cannot serve without it (fleet loop, telemetry drain,
+    /// the unready watchdog): an unexpected exit, `Done` included, fails
+    /// readiness, and under the process root it also stops the runtime and
+    /// fails the process (item 38).
     Critical,
     /// Loss degrades observability or hygiene only.
     Noncritical,
@@ -184,6 +194,15 @@ struct Inner {
     /// here, on the record the health and debug surfaces read, because a
     /// panicked handler's client sees nothing but a closed socket.
     connection_panics: AtomicU64,
+    /// Set once, by `process_root`, on the process's own supervisor only:
+    /// the bound on every ordered stop it is asked for.
+    root: OnceLock<Duration>,
+    /// On a process root: the first critical loop that ended before any stop
+    /// was requested, the cause of the stop it then requested (item 38).
+    stop_cause: OnceLock<exits::CriticalExit>,
+    /// On a process root: the stop's bound is armed once, by whichever asked
+    /// first, the critical exit or a termination signal (item 38, D1).
+    stop_armed: Once,
 }
 
 impl Inner {
@@ -244,8 +263,11 @@ pub(crate) struct ShutdownRequest {
 }
 
 impl ShutdownRequest {
+    /// Requests the ordered stop. On a process root this also arms the
+    /// stop's bound off the executor (item 38, owner decision D1).
     pub(crate) fn request(&self) {
         if let Some(inner) = self.inner.upgrade() {
+            exits::arm_root_deadline(&inner);
             TaskSupervisor { inner }.cancel();
         }
     }
@@ -328,6 +350,9 @@ impl TaskSupervisor {
                 cancel: Cancellation { rx },
                 workers_done: tokio::sync::Notify::new(),
                 connection_panics: AtomicU64::new(0),
+                root: OnceLock::new(),
+                stop_cause: OnceLock::new(),
+                stop_armed: Once::new(),
             }),
         }
     }
@@ -365,12 +390,30 @@ impl TaskSupervisor {
     /// is BUILT with the cancellation it must observe, so no supervised
     /// loop can be written without one. Registration and the phase
     /// check are one atomic step: once shutdown has begun, nothing is
-    /// spawned — a stopped runtime stays stopped.
+    /// spawned — a stopped runtime stays stopped. Every loop ends through
+    /// `exits::ExitWatch`, so a process root answers for a critical one
+    /// (item 38); the handle still carries its own result or panic.
+    pub(crate) fn spawn<F, Fut>(
+        &self,
+        label: &'static str,
+        policy: Policy,
+        build: F,
+    ) -> Result<TaskId, SpawnRejected>
+    where
+        F: FnOnce(Cancellation) -> Fut,
+        Fut: std::future::Future<Output = TaskResult> + Send + 'static,
+    {
+        let watch = exits::ExitWatch::new(&self.inner, label, policy);
+        self.register(label, policy, move |cancel| watch.run(build(cancel)))
+    }
+
+    /// The registration step of `spawn`: the phase check, the identity and
+    /// the retained handle, under one lock.
     #[expect(
         clippy::unwrap_used,
         reason = "Supervisor registration; a poisoned phase may contain an incomplete task insertion, and a task a closing runtime refused is dropped only after the lock is released; recovering and spawning again could leave a task outside the eventual drain"
     )]
-    pub(crate) fn spawn<F, Fut>(
+    fn register<F, Fut>(
         &self,
         label: &'static str,
         policy: Policy,

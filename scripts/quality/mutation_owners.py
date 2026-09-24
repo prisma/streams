@@ -99,6 +99,7 @@ OWNERS = (
     owner('record', 'src/shard/record.rs', 'shard::'),
     owner('lane_rows', 'src/shard/lane_rows.rs', 'shard::'),
     owner('tasks_shutdown', 'src/tasks/shutdown.rs', 'tasks::'),
+    owner('tasks_exits', 'src/tasks/exits.rs', 'tasks::'),
     owner('runtime', 'src/runtime.rs', 'runtime::'),
     owner('runtime_telemetry', 'src/runtime/telemetry.rs', 'runtime::'),
     owner('product_cursor', 'src/product_cursor.rs', 'product_cursor::'),

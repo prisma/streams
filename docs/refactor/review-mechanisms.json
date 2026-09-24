@@ -179,7 +179,7 @@
           "panic"
         ]
       },
-      "limitations": "Process drain/restart policy in live fleet remains pending.",
+      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root, a termination signal's included, is bounded at 30 s off the executor (item 38). The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
       "execution": "requires_final_head_receipt",
       "tests": [
         {
@@ -191,6 +191,48 @@
           "file": "src/tasks/tests.rs",
           "name": "critical_exits_failures_and_panics_are_reported",
           "sha256": "13b4991686073b3e5db3b1e40ef6862bc110617df596f4647eaaedfb1714f90f"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "a_critical_exit_stops_the_process_root_and_names_its_cause",
+          "sha256": "a7c90a245e1a41f2af8b34f69a39cd9f9110787bc6f498beb045e65b3a67e698"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_process_root_bounds_its_stop_off_the_executor",
+          "sha256": "f9f5dd147e4b28c214394129f58f1fa4e5ab51d3f21208aa12f8e8008e43c2b5"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "a_requested_stop_of_the_process_root_is_bounded_off_the_executor",
+          "sha256": "2fb2f3378fc00d4f6105d13f84ef89bccca0f0d0d1e35005748de5763ab06aa4"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "stop_deadline_helper",
+          "sha256": "dd7dc0766f75884ddf54346c9fb398d4485e0b2729ba6f8e2c7d91deb913cde3"
+        }
+      ],
+      "support_functions": [
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "test_root",
+          "sha256": "a3ff3484c0d0e48479f483fc3a5a561356bf56fecd2403a25bb09a992b43d485"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "stop_requested",
+          "sha256": "3537aaa361fd8c65120b8954a74c9cd1bfdfee3716dc4f771fbc341b87ae8ca3"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "helper_exit",
+          "sha256": "5c3b4f302b524e47b5b5a1dcd4ad4f37f8834ea732386b2e37094aabcbd89d4f"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "drained",
+          "sha256": "659160684e8f675bd82f1885bddbb00653b139fbd359612085e43c5597eaa873"
         }
       ]
     },
