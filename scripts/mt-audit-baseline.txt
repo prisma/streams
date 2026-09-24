@@ -28,6 +28,8 @@ stream-hash	src/dst/tests/persistence_faults.rs	&crate::crypto::stream_hash(""),
 stream-hash	src/dst/tests/producer_protocol.rs	key_hash: crate::crypto::stream_hash(&routing_key),
 stream-hash	src/dst/tests/producer_protocol.rs	let kh = crate::crypto::stream_hash("customer-42");
 stream-hash	src/dst/tests/producer_protocol.rs	let kh = crate::crypto::stream_hash("g");
+stream-hash	src/dst/tests/reads_applied_history.rs	&crate::crypto::stream_hash(rk),
+stream-hash	src/dst/tests/reads_applied_history.rs	key_hash: crate::crypto::stream_hash(rk),
 stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("ck"),
 stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("hot"),
 stream-hash	src/dst/tests/reads_history.rs	key_hash: crate::crypto::stream_hash("sp"),
@@ -41,7 +43,8 @@ stream-hash	src/history.rs	let h = crate::crypto::stream_hash(prefix);
 stream-hash	src/history/controller_tests.rs	key_hash: crate::crypto::stream_hash(""),
 stream-hash	src/history/worker.rs	let h = crate::crypto::stream_hash(&absorber.shard.prefix);
 stream-hash	src/product.rs	key_hash: crate::crypto::stream_hash(routing_key),
-stream-hash	src/product.rs	let kh = crate::crypto::stream_hash(&rk);
+stream-hash	src/product/read_cursor.rs	key_hash: crate::crypto::stream_hash(self.routing_key),
+stream-hash	src/product/read_cursor.rs	let key_hash = crate::crypto::stream_hash(self.routing_key);
 stream-hash	src/registry.rs	/// is an ordinary key at stream_hash("")'s position.
 stream-hash	src/registry.rs	crate::crypto::stream_hash(&seg.shard_prefix)
 stream-hash	src/registry.rs	let h = crate::crypto::stream_hash(routing_key);
