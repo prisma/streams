@@ -15,7 +15,7 @@ committer is a negative control.
 |---|---|---|---|
 | TLA-005 | Commit groups, dependency barriers, and observable replies | `CommitGroups.tla` | pass-with-recorded-scope. The TLA-005-F5 schedules are in the small and refusal-retry baselines and pass. `nc-write-error-keeps-staging` reproduces them on the pre-fix committer |
 | TLA-006 | Commit handoff, retirement, and already-durable completion | `HandoffRetirement.tla` | pass-with-recorded-scope |
-| TLA-011 | Serving possession, owner fencing, and shard movement | `ServingOwnership.tla` | pass-with-recorded-scope, as a **conditional design check**. Write authority rests on ASM-SLATEDB-FENCE, which rests on the unestablished ASM-OBJSTORE-CAS |
+| TLA-011 | Serving possession, owner fencing, and shard movement | `ServingOwnership.tla` | pass-with-recorded-scope, conditional on ASM-SLATEDB-FENCE, which rests on the unestablished ASM-OBJSTORE-CAS (a conditional design check, roadmap §7.7) |
 
 `pass-with-recorded-scope` means:
 - Every baseline completed a full TLC search, with no states left and no
@@ -402,8 +402,10 @@ to be violated:
 
 ## 6. TLA-011 -- Serving possession, owner fencing, and shard movement
 
-**Status: conditional design check.** Durable write authority is the storage
-fence (ASM-SLATEDB-FENCE). That fence is conditional on the object store's
+**Status: pass-with-recorded-scope, conditional on ASM-SLATEDB-FENCE and the
+unestablished ASM-OBJSTORE-CAS** (a conditional design check in the sense of
+roadmap §7.7). Durable write authority is the storage fence
+(ASM-SLATEDB-FENCE). That fence is conditional on the object store's
 conditional create (ASM-OBJSTORE-CAS). No provider evidence is held for
 ASM-OBJSTORE-CAS, so every claim below is conditional on it (roadmap §7.7).
 
@@ -433,7 +435,7 @@ Under those conditions, the claim has these parts:
   Internal, timeout) is non-definitive in the product mapping
   (`definitively_rejected`, contract.rs:285-297).
 
-**Requirement anchors.** T11, in the refined sense of TLA-011-F3; T12, D1, D7,
+**Requirement anchors.** T11 (reconciled wording, `docs/dst/DST-EXPANSION-SPEC.md` §9.12.1, pending the spec owner's confirmation); T12, D1, D7,
 P4 and R1; T10, only in the sense that a stale router cannot make a producer
 operation lost or duplicated. Per-key reordering is TLA-012's subject.
 
@@ -699,7 +701,8 @@ The six baselines explored their complete state spaces with no violation or
 deadlock. Every shape includes the pinned post-apply read window. Each of the
 eight controls violated exactly its target, and all 15 witnesses were reached.
 
-Disposition: result. Mapped real-code tests are listed below.
+Disposition: no finding; TLA-005 is pass-with-recorded-scope. Mapped
+real-code tests are listed below.
 
 **TLA-005-F2 -- `db.write` can return `Err` after the batch was applied** (classification: unjustified-assumption, in the first model draft)
 
@@ -849,7 +852,7 @@ these is necessary: the terminal publication guard, `retire()` owning only
 unclaimed groups, `attach` honouring terminal, `take_durable` honouring
 terminal, and the retirement after a write error.
 
-Disposition: result.
+Disposition: no finding; TLA-006 is pass-with-recorded-scope.
 
 **TLA-006-F2 -- Settlement liveness depends on WAL progress** (classification: none; recorded dependency)
 
@@ -866,7 +869,7 @@ Disposition: recorded. The existing held-WAL tests already hold the WAL.
 Code: `src/shard.rs:1940-1981`, `src/application/append/submit.rs:69-93`.
 Trace: `evidence/TLA-006_nc-no-storage-progress.trace.txt`.
 
-**TLA-006-F3 -- The first version's `LateSuccessWasClaimedLive` was vacuous** (classification: specification-defect, in the model; fixed)
+**TLA-006-F3 -- The first version's `LateSuccessWasClaimedLive` was vacuous** (classification: model defect; fixed in the model)
 
 In the first version, the ghost behind `LateSuccessWasClaimedLive` was set by
 the same two steps that produce every "ok", and neither read `terminal`. The
@@ -895,8 +898,8 @@ each of these breaks a named property: acknowledging without durability
 evidence, letting ring preference replace the manifest refresh, letting ring
 preference stand in for WAL put-if-absent, and serving before the fence WAL.
 
-Disposition: result, conditional on ASM-SLATEDB-FENCE and the unestablished
-ASM-OBJSTORE-CAS.
+Disposition: no finding; TLA-011 is pass-with-recorded-scope, conditional on
+ASM-SLATEDB-FENCE and the unestablished ASM-OBJSTORE-CAS.
 
 **TLA-011-F2 -- Bootstrapping and no-ring serving rest entirely on SlateDB fencing** (classification: none; recorded dependency)
 
@@ -924,10 +927,17 @@ retirement. DST T11 ("exactly one owner epoch may acknowledge") forbids it.
 The model checks the refined property instead (`HigherEpochCoversAcks` and
 `AckedDurable`).
 
-Disposition: open, owner decision. Proposed rewording for T11 in
-`docs/dst/DST-EXPANSION-SPEC.md`: "At most one owner epoch may acknowledge
-newly authorized writes; a retired epoch may complete responses for writes it
-claimed durable before a newer epoch fenced it."
+Disposition: reconciled in `docs/dst/DST-EXPANSION-SPEC.md` (the T11 row and
+§9.12.1) by "The invariant docs state what the models showed and what stays
+an owner decision" (`63202168`), pending the spec owner's confirmation. The
+reconciled T11 allows only the fence holder to acknowledge newly authorized
+writes, and an older epoch to send a success only for a write it claimed
+durable before retirement, which is durable at its acknowledged offset under
+its own fence and replayed by every serving higher-epoch owner. It is at
+least as strong as `AckedDurable`, `HigherEpochCoversAcks`,
+`ExactlyOnceAcrossOwners` and `DataUnderWriterAuthority`, and stronger than
+the rewording first proposed here, which did not name the storage fence or
+the higher-epoch replay condition.
 
 Code: `src/shard.rs:3006-3011`, `src/shard/commit_handoff.rs:1-13`.
 

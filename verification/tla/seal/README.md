@@ -11,11 +11,11 @@ The models describe the code after these fixes:
 
 - four fixes the models found: "A seal takeover's fence outlives the engine
   that recorded it" (TLA-002-F1), "A SealSuperseded refusal waits until the
-  fence behind it is durable" (TLA-002-F2), "A raw close that takes over an
+  fence behind it is durable" (TLA-002-F2, a gap in the F1 fix), "A raw close that takes over an
   abandoned final claim writes its own record" (TLA-003-F2) and "A product seal
   refuses an over-ceiling final before it publishes its intent" (TLA-003-F3);
-- the fix of the two open model findings TLA-003-F4 and TLA-003-F5, after they
-  were reproduced on real code: "A seal retry refused by its own instance's
+- the fix of TLA-003-F4 and TLA-003-F5, model counterexamples that stayed
+  open until they were reproduced on real code with two instances: "A seal retry refused by its own instance's
   limits neither renews nor releases the claim";
 - two fixes found outside the models, whose earlier behaviour the models now
   express: "Only a close can resume an owed final" (TLA-003-F6) and "Registry
@@ -231,6 +231,9 @@ least twice the observed time.
 
 ### TLA-002-F2 (fixed): a `SealSuperseded` refusal preceded the durability of its fence
 
+- **Classification.** Fix-introduced defect: a gap in the TLA-002-F1 fix,
+  found by the model and reproduced on the real code. It is not counted as a
+  pre-existing defect.
 - **Defect.** The committer raises the fence cache while it stages the
   fence's group. A stale claim-authorized final refused `SealSuperseded` from
   that cache was answered at once, before the fence row was durable.

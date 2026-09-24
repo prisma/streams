@@ -19,16 +19,17 @@ The obligations, checks, bounds and assumptions are in
 | Obligation | Status | Production defects found | Open |
 |---|---|---|---|
 | TLA-016 | `pass-with-recorded-scope` | TLA-016-F1 (fixed): the absorbed advance retired the chunk's bytes, not the range it moved over. TLA-016-F3 (fixed): the postings warm install claimed coverage over a trimmed head it never read. Overlapping postings pages after a re-gather from a stale boundary (found with F1; fixed by `d16559b3`, readers admit overlapping pages that agree). | — |
-| TLA-018 | `pass-with-recorded-scope` | TLA-018-F1 (fixed): an applied keyed read skipped durable records trimmed by a non-durable advance. TLA-018-F3 (fixed): a stale applied cursor was accepted once the new owner's tail passed it. | TLA-018-F2 (owner decision): H11 holds at the reader only through durability and the cache contract. |
-| TLA-019 | `pass-with-recorded-scope` | TLA-019-F4 (fixed): releasing a fork pin after an interrupted or raced `DELETE` depended on the client repeating `DELETE`; a background reconciler now releases it. TLA-019-F1 was a model abstraction gap: the compactor's checkpoint protects the SSTs a stale writer view still names. | TLA-019-F2: GC convergence needs later write activity. TLA-019-F3: no physical reclamation policy for hard-deleted incarnations' rows. |
+| TLA-018 | `pass-with-recorded-scope` | TLA-018-F1 (fixed): an applied keyed read skipped durable records trimmed by a non-durable advance. TLA-018-F3 (fixed): a stale applied cursor was accepted once the new owner's tail passed it. | TLA-018-F2 (open obligation, owner decision): H11 holds at the reader only through durability and the cache contract; `docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. |
+| TLA-019 | `pass-with-recorded-scope` | TLA-019-F4 (fixed): releasing a fork pin after an interrupted or raced `DELETE` depended on the client repeating `DELETE`; a background reconciler now releases it. TLA-019-F1 was an abstraction mismatch, withdrawn conditionally: the compactor's checkpoint protects the SSTs a stale writer view still names while ASM-SLATEDB-COMPACTION-CHECKPOINT holds. | Open service obligations (`docs/READINESS.md`): TLA-019-F2, GC convergence without further writes (H14); TLA-019-F3, no physical reclamation policy for hard-deleted incarnations' rows. |
 
 No defect in this group is open, so no check has the `known-defect` role.
 Each fixed defect has a passing baseline and a negative control that
-reproduces the pre-fix behaviour. The group also records two specification
-findings (TLA-016-F2, and TLA-018-F2, which needs an owner decision), a
-defect in a fix's comments (TLA-016-F4), one unjustified assumption
-(TLA-019-F2), one scope gap (TLA-019-F3), and two defects found in passing
-by the fixes, both fixed: overlapping postings pages after a re-gather from a
+reproduces the pre-fix behaviour. The group also records two documentation
+defects, both fixed in comments (TLA-016-F2, and TLA-016-F4 in a fix's
+comments), one open obligation that needs an owner decision (TLA-018-F2,
+H11), two open service obligations (TLA-019-F2, H14 without further writes;
+TLA-019-F3, physical reclamation), and two defects found in passing by the
+fixes, both fixed: overlapping postings pages after a re-gather from a
 stale boundary (TLA-016 now models the pages and the reader's admission of
 agreeing overlaps) and a cache bridge over dropped runs (the model cannot
 express it). TLA-019-F4 was first recorded as an unjustified assumption (the
@@ -86,7 +87,7 @@ configuration checks one property.
 
 ### TLA-016 (`pass-with-recorded-scope`)
 
-Receipt `verification/receipts/TLA-016.json`: 33 checks, every verdict as expected, run on `ab73296` with uncommitted changes; TLC 2.19 on Java 17.0.1, 2 workers; 52 min of TLC wall time in total.
+Receipt `verification/receipts/TLA-016.json`: 33 checks, every verdict as expected, run on `ab73296` with uncommitted changes; TLC 2.19 on Java 17.0.1, 2 workers; 52 min of TLC wall time in total. This table predates the model changes of `f1de3dcb`, which bring the manifest to 46 checks; that commit reports all 46 matching in a run without `--record`. The receipt is to be recorded on the frozen source.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
@@ -224,17 +225,17 @@ Not yet recorded as a receipt: the table is from `formal.py run --id TLA-019` (w
 |---|---|---|
 | TLA-016-F1 | production defect | **Fixed** by "An absorption advance retires exactly the bytes of the range it moves the boundary over" (`6371da0`). Baselines `ledger-small`, `ledger-overlap`, `liveness-small` pass; controls `nc-retire-chunk-bytes*` reproduce the pre-fix behaviour. |
 | TLA-016-F3 | production defect (latent) | **Fixed** by "A re-gather warms the postings cache only over the rows it staged": the warm install is named by the rows the gather staged (`src/history/gather.rs`). `baseline-cache` passes; `nc-warm-install-from-plan` reproduces the pre-fix behaviour. |
-| TLA-016-F2 | specification defect (documentation) | Recorded. The `trim_safe_to` comments overstate what the one-advance lag protects. |
-| TLA-016-F4 | specification defect (documentation), found while modelling the receipt fix `d9aeaef` | **Fixed**: the `settle_submissions` and `stored_frame_bytes` comments no longer claim the bound. The fix bounds a recount per refusal, but consecutive refusals that are each settled late leave consecutive holes, so a recount is not bounded by the chunks in flight at any one refusal. `witness-RecountBeyondInFlight`. |
+| TLA-016-F2 | documentation defect | **Fixed in comments** by `63202168` ("The invariant docs state what the models showed and what stays an owner decision"): the `trim_safe_to` comments now say the one-advance lag protects a snapshot at most one advance stale, and that `absorption_race` carries the guarantee for staler readers. |
+| TLA-016-F4 | documentation defect, found while modelling the receipt fix `d9aeaef` | **Fixed**: the `settle_submissions` and `stored_frame_bytes` comments no longer claim the bound. The fix bounds a recount per refusal, but consecutive refusals that are each settled late leave consecutive holes, so a recount is not bounded by the chunks in flight at any one refusal. `witness-RecountBeyondInFlight`. |
 | (overlapping pages) | production defect, recorded with the TLA-016-F1 fix | **Fixed** by "Overlapping postings pages from a re-gather admit when they agree" (`d16559b3`). A re-gather from a stale boundary writes pages that overlap an earlier chunk's, and the reader refused them as corrupt. Readers now admit an overlapping page that lists exactly the admitted offsets over the common span. Modelled (`Pages`, ASM-HISTORY-PAGES): `baseline-pages-regather` checks `PagesAdmit` with the rescan, prune and restart re-gathers; `witness-OverlapAdmitted{Rescan,Prune,NewOwner}` show overlaps that admit; `probe-scan-per-row` shows the admission rests on dense chunks. |
 | (cache bridge) | production defect, found in passing during the TLA-016-F3 fix | **Fixed** by "A postings-cache bridge never crosses a chunk whose runs no slice recorded". Outside what the model can express (admission line, capped and merging loads); covered by real-code regressions. |
 | TLA-018-F1 | production defect | **Fixed** by "An applied read revalidates its tail scan at the level it scanned, so it never skips a durable record" (`9cea1b6`). `baseline-applied-keyed-small` passes; controls `nc-applied-race-remote*` reproduce the pre-fix behaviour. |
 | TLA-018-F3 | production defect | **Fixed** by "A provisional read cursor proves the history it continues, or answers an explicit resync" (`55881d7`). `baseline-applied-unfiltered-expanded` (the former known-defect shape) and `baseline-applied-keyed-expanded` check `ExactDurablePrefix` and pass; `nc-no-continuation-check` reproduces the pre-fix acceptance. Regressions in `dst::dst_tests::reads_applied_history`; `verification/regressions/TLA-018-F3/README.md`. |
-| TLA-018-F2 | specification finding (owner decision) | **Open; needs an owner decision.** H11 is not enforced by the reader; it holds only through durability and the cache contract. The owner either adopts that scope for H11, with its assumptions, or asks for reader-side enforcement. |
-| TLA-019-F1 | abstraction gap (not reproduced) | **Withdrawn as a defect.** The model lacked the compactor's checkpoint. With it, `LiveReadViewProtected` passes under ASM-SLATEDB-COMPACTION-CHECKPOINT; `nc-no-compaction-checkpoint` reproduces the earlier counterexample. |
+| TLA-018-F2 | open obligation (owner decision) | **Open; needs an owner decision.** H11 is adopted as written and only partly enforced: the reader does not detect a page or canonical row lost after durability, which holds only through durability and the cache contract. The owner either keeps H11 and adds a coverage mechanism (option A) or deliberately revises the contract under roadmap §2.10 (option B); `docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. Until then no report counts H11 as met. |
+| TLA-019-F1 | abstraction mismatch (not reproduced) | **Withdrawn as a defect, conditionally.** The model lacked the compactor's checkpoint. With it, `LiveReadViewProtected` passes under ASM-SLATEDB-COMPACTION-CHECKPOINT, a pinned dependency contract (an upstream 900 s constant the code calls interim, a refresh within 300 s, a read within the remaining 600 s), not permanent reader pinning; `baseline-timing-lapse` shows a read beyond it fails rather than completing short. `nc-no-compaction-checkpoint` reproduces the earlier counterexample. |
 | TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. The residual found by the model (pre-index debt overwritten by a recreation of the child's name before the backfill indexes it) is **fixed** too: the recreate CAS indexes the debt it overwrites; `fork-baseline-legacy` and `fork-liveness-backfill-recreated` pass and `nc-recreate-without-index*` reproduce the pre-fix loss. |
-| TLA-019-F2 | unjustified assumption | **Open.** H14 convergence holds only while the partition keeps writing. |
-| TLA-019-F3 | scope gap (owner question) | **Open.** There is no physical reclamation policy for a hard-deleted incarnation's rows. |
+| TLA-019-F2 | open service obligation (H14 without further writes) | **Open.** H14 has been shown only while the partition keeps writing. H14 is kept; acceptance criteria are in `docs/dst/DST-EXPANSION-SPEC.md` §9.12.3 and `docs/READINESS.md`. |
+| TLA-019-F3 | open service obligation (missing policy) | **Open.** There is no physical reclamation policy for a hard-deleted incarnation's rows. Acceptance criteria are in `docs/READINESS.md`, "Service obligations from formal verification (open)". |
 
 ### TLA-016-F1 — the absorbed advance retired the chunk's bytes, not the range it moved over (fixed)
 
@@ -371,7 +372,7 @@ does. The drop path is reachable in the cache shapes, but a scratch run of
 configuration here distinguishes the two and there is no negative control
 for this fix.
 
-### TLA-016-F2 — the `trim_safe_to` comments only hold for one-advance-stale readers (specification defect)
+### TLA-016-F2 — the `trim_safe_to` comments only held for one-advance-stale readers (documentation defect, fixed in comments)
 
 `src/shard.rs:64-67` and the `TailFields::trim_safe_to` comment
 (`src/shard.rs:601-607`) say the one-advance lag means "in-flight readers
@@ -381,11 +382,12 @@ holding a stale absorbed snapshot never lose their range".
 or more advances stale finds part of its tail range trimmed. Reads stay correct
 because every tail page is revalidated against the absorbed boundary at the
 scan's own visibility (TLA-018; the applied path gained that check with the
-TLA-018-F1 fix). The comments should say that the lag is defence in depth and
-that the read's revalidation carries the guarantee. No code regression is
-needed.
+TLA-018-F1 fix). `63202168` corrected both comments: the lag keeps the
+range of a snapshot at most one advance stale, and a staler reader relies on
+`absorption_race`, which revalidates each tail page against the absorbed
+boundary at its scan's visibility. No code regression is needed.
 
-### TLA-016-F4 — the receipt fix bounds a recount per refusal, not across consecutive late refusals (specification defect, comments corrected)
+### TLA-016-F4 — the receipt fix bounds a recount per refusal, not across consecutive late refusals (documentation defect, comments corrected)
 
 `d9aeaef` ("A refused absorption group rolls its lane marks back, so a
 recount covers only chunks in flight") answers each `AbsorbedBatch` receipt
@@ -645,7 +647,7 @@ and V3 continuations, so this migration case is exactly the pre-fix control,
 not a baseline behaviour. Restoring the object store to an older snapshot can
 repeat a writer epoch (ASM-HISTORY-FENCED-VIEW).
 
-### TLA-018-F2 — H11 is not enforced at the reader (owner decision)
+### TLA-018-F2 — H11 is not fully enforced at the reader (open obligation, owner decision)
 
 The keyed reader treats zero postings pages as proof that a range has no
 matches (`docs/ROUTING-V3.md`; `read_history2_keyed`, `src/history.rs:972`).
@@ -662,20 +664,25 @@ TLA-016). For rows or pages lost after durability, and for a slice that
 proves false absence, it holds only through ASM-SLATEDB-DURABLE,
 ASM-SLATEDB-GC and ASM-HISTORY-POSTINGS-CACHE.
 
-This is a decision for the requirement's owner, not a code defect. The two
-options are:
+H11 stays as adopted, and it is only partly enforced. This is an open
+obligation for the requirement's owner, framed in
+`docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. The two options are:
 
-1. Adopt that scope for H11: the reader relies on durable history and on the
-   cache contract, and H11 names those assumptions as its premises. The
-   probes then stay as the evidence of what the premises carry.
-2. Enforce H11 at the reader: the index carries a positive coverage marker
-   (a page or range count the reader verifies), so a lost page or row becomes
-   an error instead of a complete page. That is production work with a
-   format change.
+1. **Option A**, keep H11 and add an evidence mechanism: a per-chunk coverage
+   record with a no-false-negative key filter, checked by the reader, so a
+   lost page or row becomes an honest partial or an error instead of a
+   complete page. That is production work with a format change; the probes
+   would then become baselines.
+2. **Option B**, deliberately revise the contract under roadmap §2.10: H11
+   excludes durable loss and names ASM-SLATEDB-DURABLE, ASM-SLATEDB-GC and
+   ASM-HISTORY-POSTINGS-CACHE as its premises. That weakens a
+   customer-visible guarantee, so it needs the owner's recorded decision and
+   compensating checks.
 
-Until the owner chooses, TLA-018 claims H11 only in the first, scoped sense.
+Until the owner decides, TLA-018 claims H11 only in the scoped sense above,
+and no report may count H11 as met.
 
-### TLA-019-F1 — the writer's stale manifest view and GC (abstraction gap, not reproduced)
+### TLA-019-F1 — the writer's stale manifest view and GC (abstraction mismatch, not reproduced; withdrawn conditionally)
 
 **What the first model found.** History reads use the writer `Db`'s
 in-memory manifest view, which merges the stored manifest only on the
@@ -855,7 +862,7 @@ before installing its reference stays pending until an operator confirms it
 inert, and the `fork_debt_stale` alert is evaluated only in the telemetry
 cadence.
 
-### TLA-019-F2 — H14 convergence holds only under continued write activity (unjustified assumption)
+### TLA-019-F2 — H14 convergence holds only under continued write activity (open service obligation)
 
 `witness-QuietDeadZoneRetains` is reachable. An unreferenced SST that is newer
 than the most recent compaction start, or than the newest compacted L0,
@@ -863,18 +870,23 @@ survives every later collector pass on a partition that receives no further
 flush or compaction. A fenced writer's orphan is an example.
 `EligibleEventuallyReclaimed` therefore includes the upstream eligibility
 premise in its antecedent; under it the liveness checks pass, and
-`nc-stale-inventory` shows that a frozen inventory breaks them. H14 ("cannot
-be suppressed by a … refresh dead zone") should say that the residue is
-bounded but can last indefinitely without later activity.
+`nc-stale-inventory` shows that a frozen inventory breaks them. H14 is
+kept. The DST text now says it was shown only under continued writes, and
+convergence on a partition with no further writes is an open service
+obligation with acceptance criteria (`docs/dst/DST-EXPANSION-SPEC.md`
+§9.12.3, `docs/READINESS.md`). When a mechanism lands,
+`witness-QuietDeadZoneRetains` becomes a control of the old behaviour, and a
+`ReachGC` baseline without the continued-write premise must pass.
 
-### TLA-019-F3 — no physical reclamation policy for hard-deleted incarnations' rows (scope gap)
+### TLA-019-F3 — no physical reclamation policy for hard-deleted incarnations' rows (open service obligation)
 
 Hard deletion only writes a registry tombstone (`deletion.rs:465-479`). No
 code deletes a deleted incarnation's shard-log or history rows; the only row
 deletes are absorbed-boundary trims. The catalog's "eligible unreachable
 objects eventually become reclaimable under the adopted policy" has no
-adopted policy to check for these rows. This is an owner question, not a
-defect claim.
+adopted policy to check for these rows. This is an open service obligation
+for the owner, not a defect claim. Its acceptance criteria are in
+`docs/READINESS.md`, "Service obligations from formal verification (open)".
 
 ---
 
@@ -1287,7 +1299,7 @@ them, and only they produce continuations over a suffix a move can lose. `WLoseP
 | `nc_applied_race_remote` (applied keyed) | `RaceBoundary <- MutRaceBoundaryRemote` (pre-fix F1) | `ExactDurablePrefix` | A durable record trimmed by an applied, not durable advance is skipped. |
 | `nc_applied_race_remote_unfiltered` (applied unfiltered) | `RaceBoundary <- MutRaceBoundaryRemote` (pre-fix F1) | `TailGapExplained` | The page ends as an honest partial with no progress. |
 | `nc_no_continuation_check` (applied unfiltered expanded) | `ContinuationCheck <- MutNoContinuationCheck` (pre-fix F3): only `start > end` guards the entry span | `ExactDurablePrefix` | A continuation over a lost, rewritten suffix is accepted once the new tail passes it. |
-| `probe_lost_postings` (keyed; **probe**) | `AllowLostPostings = TRUE`: a durable postings page disappears after the advance (a dependency-contract mutation) | `ExactDurablePrefix` | The reader cannot detect a lost page; a slice that falsely proves absence (TLA-016-F3) has the same observable. |
+| `probe_lost_postings` (keyed; **probe**) | `AllowLostPostings = TRUE`: a durable postings page disappears after the advance (a dependency-contract mutation) | `ExactDurablePrefix` | The reader cannot detect a lost page (H11 open obligation, DST-EXPANSION-SPEC §9.12.2); a slice that falsely proves absence (TLA-016-F3) has the same observable. |
 | `probe_lost_canonical` (unfiltered; **probe**) | `AllowLostCanonical = TRUE`: a durable canonical row disappears | `ExactDurablePrefix` | Every history source skips a missing row and reports completion (F2). |
 
 ### Witnesses

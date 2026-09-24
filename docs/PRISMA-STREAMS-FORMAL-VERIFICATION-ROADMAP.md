@@ -23,91 +23,207 @@ Place this document at the repository root so the source references remain easy 
 
 ## 0. Implementation record
 
-This section records what has been implemented against the catalog, what each
-check covers, and what it found. It follows the status vocabulary of §2.8. An
-item that is absent from this table is still **planned**.
+This section records what has been implemented against the catalog, what it
+found and what is still open. It describes the source at `3f386070`, which is
+`f1de3dcb` plus `32c0a365`, `8e16bde3` and `3f386070`. Statuses use the §2.8
+vocabulary and nothing else. An item that is absent from §0.3 is **planned**.
+Commits are cited by short hash and subject. Traces, bounds, mappings and
+regressions are in `verification/` (see `verification/README.md`).
 
-**First spike (23 September 2026).** It covers the four highest-value areas: the
-small Rust decisions and encodings (KANI-001–003, 036–039, 042); seal takeover
-and recoverable final-append work (TLA-001/002/003); durable replies and
-ownership changes (TLA-005/006/011); and history publication, read coverage and
-destructive cleanup (TLA-016/018/019). Packet A's tooling was built first so
-those checks have a driver, pins and receipts. The implemented obligations, their
-bounds, assumptions and receipts are in `verification/` (see
-`verification/README.md`), and `scripts/quality/formal.py` runs them. The tools
-are TLC 2.19 (tla2tools 1.7.4) on Java 17, and Kani 0.68.0 with CBMC 6.11.0 on
-its own `nightly-2026-08-21` compiler. Production gates keep Rust 1.98.1.
+Findings are classified as in §2.7. This record also uses four labels, and
+keeps them distinct:
 
-| Item | Status | What was checked | Issues and bugs found |
+- **Fix-introduced defect:** a production defect created by an earlier fix in
+  this campaign. It is not counted as a pre-existing defect.
+- **Specification defect:** the requirement text is wrong about the adopted
+  design.
+- **Documentation defect:** a comment or document is wrong about the code, and
+  the code is right.
+- **Open obligation:** the requirement is right and the code does less. Only
+  the owner can close it, and never by rewording the requirement.
+
+### 0.1 Campaign
+
+| Phase | Commits | Scope |
+|---|---|---|
+| Packet A, tooling | first spike | Pinned tools (`quality-tools.toml` `[formal]`, checksum-verified installer), `verification/manifest.json`, the assumption ledger, receipts, and the driver `scripts/quality/formal.py`. Harnesses are `cfg(kani)`, declared in `build.rs`. Packet A is tooling, not an obligation, so it has no §2.8 status. Its exit condition, a real-tool self-test that rejects a wrong config, a timeout, a deadlock and a zero-discovery harness, was met. |
+| First spike (23 September 2026) | up to `da4e056f` | KANI-001–003, 036–039, 042; TLA-001/002/003 (seal), TLA-005/006/011 (durability), TLA-016/018/019 (history). TLC 2.19 (tla2tools 1.7.4) on Java 17; Kani 0.68.0 with CBMC 6.11.0 on its own `nightly-2026-08-21`. Production gates keep Rust 1.98.1. |
+| Closure, after an independent review | `ffa0c7f4` … `3f386070` | The review's follow-ups: evidence integrity, the open findings, provider qualification, rollout rules, measured costs and the service backlog. No catalog item was added. |
+
+### 0.2 Evidence gate
+
+"Receipts are validated, bound to their inputs, and invalidated by assumption
+and pin changes" (`ffa0c7f4`) reworked the gate after the review reproduced
+these cases:
+
+- Deleting the counterexample receipts went unreported.
+- A receipt with an empty or fabricated check list and the old digest passed.
+- `select` ignored `assumptions.md`, and gave `Cargo.lock` to Kani only.
+- The digest was taken after execution.
+- Concurrent TLC runs shared one `java.io.tmpdir`.
+
+Each case now has a negative test in `scripts/quality/test_formal.py`.
+"The driver's receipt tests hold whatever the obligations' statuses are"
+(`32c0a365`) removed two tests' dependence on the live manifest.
+
+| Level | Runs in | Command | Fails on | Reports only |
+|---|---|---|---|---|
+| Every commit | `scripts/quality.sh`, the `quality` CI job | `formal.py check` | Manifest, file, harness-discovery, config/property and assumption-ID errors. A `pass-with-recorded-scope` or `counterexample` obligation without a receipt. An invalid receipt: unsupported schema, wrong id, incomplete run, a check set that is not exactly the manifest's, a role or expected string that differs, a verdict the driver would not accept, a known defect on a passing obligation, or a counterexample receipt that reproduces none. | A stale receipt, one whose input digest differs from the current inputs. |
+| Every change | the `formal` CI job, 6 shards | `self-test`, then `run --changed-from <base>` for the affected obligations (every obligation on the schedule) | Any verdict that differs from its expected verdict, and any input change during the run. | Nothing. The job runs without `--record`, so it writes no receipt, and it uploads no logs. |
+| Every release | `scripts/release-gate.sh` (run by `scripts/rc-certify.sh`) | `formal.py check --fresh` | Everything `check` fails on, and any stale receipt. | — |
+
+- **Input digest.** One sha256 per file:
+  - the obligation's source owners, proofs or models, configurations and
+    control patches, and the driver;
+  - `Cargo.lock` and `Cargo.toml`, for every obligation;
+  - `build.rs` and `rust-toolchain.toml`, for Kani.
+
+  It also covers the text of each named assumption entry, the obligation's
+  manifest entry, and the `[formal]` and `[slatedb]` pins. `select` applies
+  the same rules.
+- **Execution.** `run` snapshots the inputs before the first check and after
+  each one. Any change fails the run and records nothing. Each TLC run gets
+  its own `java.io.tmpdir`. A timeout, interrupt or SIGTERM kills the check's
+  process group.
+- **Upload hold.** Logs stay local under the raw-evidence upload hold. A
+  schema 2 receipt carries each log's sha256.
+- **State at `f1de3dcb`.** The 17 checked-in receipts are schema 1, recorded
+  with dirty trees on the spike revisions `ab73296`, `821025b` and `0d7dc48`.
+  `check` fails: the receipts of TLA-001, 003, 016, 018 and 019 no longer name
+  the manifest's check sets, and the other 12 are stale. **Every receipt is to
+  be recorded once, on the frozen source**, with `run --record`. Until then no
+  obligation has current receipt evidence, and `check --fresh` fails.
+
+### 0.3 Obligation status
+
+The status column is the manifest's claim. It is backed only once the receipt
+is recorded. "Last matching run" is the most recent complete run that the
+repository records. That is either a receipt, or a run without `--record`
+reported by the named commit (the commit that carries the run's models) or by
+its group README. "Conditional on" names the assumptions that are not
+established, which make the result a conditional design check (§7.7).
+
+| Obligation | Status | Checks (baseline / control / witness) | Scope | Last matching run | Receipt | Conditional on |
+|---|---|---|---|---|---|---|
+| KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every `u32` segment ordinal and `u64` scan index (`src/offsets/proofs.rs`). The `String` wrappers and `-1` stay with the unit tests (ASM-OFFSET-DOMAIN). | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-002 | pass-with-recorded-scope | 1 / 2 / 0 | START, the successor index and exhaustion. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-003 | pass-with-recorded-scope | 1 / 2 / 0 | Token injectivity and order. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-039 | pass-with-recorded-scope | 1 / 2 / 0 | `seal_authorized` over every generation, fence and closing flag. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
+| KANI-042 | pass-with-recorded-scope | 1 / 2 / 0 | Every `AppendErr` variant against the debt-retention table, on the raw and product surfaces (`src/application/lifecycle/claims/proofs.rs`). | spike receipt, `0d7dc48` | to be recorded on the frozen source | — |
+| TLA-001 | pass-with-recorded-scope | 2 / 5 / 9 | `RegistryCas.tla`: the `mutate_incarnation` and `recreate` retry loops against a single-request conditional PUT, at 2 attempts and at the production bound of 5. | 16/16, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished) |
+| TLA-002 | pass-with-recorded-scope | 12 / 11 / 16 | `SealProtocol.tla` (`MC_SealTakeover`): claims, renewal, takeover, the durable fence row, engine replacement, crash failover, and a fence group lost or rejected before it is durable. | 39/39, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
+| TLA-003 | pass-with-recorded-scope | 14 / 16 / 17 | `SealProtocol.tla` (`MC_FinalSeal`): final-record sealing on both surfaces, with validation skew between instances (V4, V5, V5A) and the same-id plain append (OP). No known defect remains. | 47/47, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
+| TLA-005 | pass-with-recorded-scope | 6 / 8 / 15 | `CommitGroups.tla`: commit groups, barriers and replies, with the pinned post-apply read window. | spike receipt, `821025b` | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished) |
+| TLA-006 | pass-with-recorded-scope | 3 / 6 / 9 | `HandoffRetirement.tla`: one terminal owner per batch, and late success only for work decided live. | spike receipt, `0d7dc48` | to be recorded on the frozen source | ASM-DURABILITY-10, for liveness only |
+| TLA-011 | pass-with-recorded-scope | 3 / 4 / 11 | `ServingOwnership.tla`: two nodes, stale views, an override move, crashes and ambiguous WAL PUTs, in fleet and single-node modes. | spike receipt, `ab73296` | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished), through ASM-SLATEDB-FENCE |
+| TLA-016 | pass-with-recorded-scope | 11 / 14 / 21 | `HistoryAbsorb.tla`: absorption, trims and the byte ledger; since `f1de3dcb` also submission receipts, replay-limited lane marks and postings pages with overlap admission. | 46/46, `f1de3dcb` (unrecorded) | to be recorded on the frozen source | — |
+| TLA-018 | pass-with-recorded-scope | 8 / 8 / 13 | `ReadCompose.tla`: durable and applied, keyed and unfiltered reads, with the provisional continuation and explicit resync. H11 is claimed only in the scope of TLA-018-F2. | 29/29, `d93490f5` (unrecorded) | to be recorded on the frozen source | — |
+| TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 (at `3f386070`; 10 / 15 / 20 at `f1de3dcb`) | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | 50/50, `3f386070` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
+
+The manifest holds 317 checks at `3f386070`: 80 baselines, 105 negative
+controls, 132 witnesses and no known defect.
+
+### 0.4 Findings from the models and proofs
+
+| Finding | Classification | Disposition | Commit |
 |---|---|---|---|
-| Packet A — inventory and compatibility | implemented | Pinned tools (`quality-tools.toml` `[formal]`, checksum-verified installer). `verification/manifest.json`, the assumption ledger and receipts. `scripts/quality/formal.py` validates the manifest (harness discovery, one attributable property per control or witness config, known statuses and assumptions), selects obligations from a diff, runs them, reconciles expected against actual verdicts, and records input-digest receipts. `formal.py check` runs in `scripts/quality.sh`. A new `formal` CI job runs the self-test, then the affected obligations (all of them on a schedule). Kani runs the unchanged crate: the whole `streams-slate` graph compiled under Kani in 81 s. | Exit condition met: the real-tool self-test passes, rejecting a wrong config (TLC exit 151), an incomplete search (timeout), a deadlock and a zero-discovery harness, and accepting a complete search and a reachable witness. Two tooling decisions: harnesses need `cfg(kani)`, declared in `build.rs`; that moved the build-identity environment reads into their own function, which narrows the existing exception instead of growing it. The raw-evidence upload hold is respected: logs and receipts stay local, so the CI job uploads nothing. |
-| KANI-001, 002, 003 — offset codec | pass-with-recorded-scope | Round trip, START and the successor index, and injectivity with order, over every `u32` segment ordinal and every `u64` scan index (`src/offsets/proofs.rs`). The harnesses call the digit core that `encode_ep` and `parse_ep` wrap. The `String` wrappers and the `-1` literal stay with the unit and property tests (ASM-OFFSET-DOMAIN). Five negative controls: truncated high epoch bits, a START token that skips entry 0, an exhausted index that wraps to START, swapped sequence halves, and a dropped epoch bit. Covers reach ordinals at or above 2^30 and index `u64::MAX`. The round trip takes 40 to 60 minutes under load, so its checks allow 7200 s. | **Three production defects, fixed** in "Offset tokens carry the whole segment ordinal, and a read position cannot overflow" (`verification/regressions/KANI-001`, `KANI-002`). (1) The §5 seed, confirmed on the real code: a segment ordinal at or above 2^30 wrote the token of the ordinal mod 2^30, and parsing it returned the low ordinal, so a cursor for segment 2^30 resumed in segment 0. (2) `Offset(Some(u64::MAX))` overflowed its successor: a panic in debug, a wrap to START in release. (3) A 26-byte token containing a multi-byte character parsed as START. Every token below ordinal 2^30 is unchanged byte for byte. **Resolved after review:** scan index `u64::MAX` was also the read planner's "now" sentinel, so a crafted token with rawSeq 2^64−1 read the live tail; "A read position of u64::MAX is a position, and now has its own representation" separates them. |
-| KANI-036, 037, 038, 039 — producer admission and the seal fence | pass-with-recorded-scope | `decide_producer` over full-width `u64` epochs, sequences, offsets and tails, symbolic 16-byte hashes (present or absent), both closure flags and all three sealed states. `seal_authorized` over every `Option<u64>` generation, fence and closing flag (`src/shard/commit_plan/proofs.rs`, five harnesses). Nine negative controls: accept a lower epoch, let a new epoch skip sequence 0, check closure before a duplicate, ignore a known hash conflict, let an older duplicate allocate, make the gap test inclusive, name the wrong successor in a gap, refuse the exact fence generation, and admit an untagged close after a fence. | None. Every decision meets its contract over the whole domain. These limits were already documented and are now proven rather than assumed: a legacy all-zero stored hash, or a raw request without a hash, cannot detect a same-sequence conflict; an older duplicate is answered with the tail's last offset, not its own; a lane at sequence `u64::MAX` can only replay. What the committer loads as the remembered producer row is TLA-007's subject (ASM-PRODUCER-ROW). |
-| KANI-042 — final-append error disposition | pass-with-recorded-scope | Every `AppendErr` variant, with symbolic numeric payloads, checked against the debt-retention table of `docs/seal-transitions.md`. The check covers both the raw close's `final_err_disposition` and the product seal's `AppendFailure::definitively_rejected` (`src/application/lifecycle/claims/proofs.rs`). A match with no wildcard stops the harness compiling when a variant is added. Controls: a producer gap that releases debt, and a product surface that drifts from the raw one. | **One design hazard, fixed** in "The final-append disposition names every refusal instead of defaulting". The wildcard arm gave every unlisted variant the retaining verdict. A new refusal would therefore have kept debt it can never deliver, holding a collection Sealing and renewable forever (the catalog's "endlessly renewable" case). The four retaining variants are now named. No existing verdict changed, and the two surfaces agree on every committer error. |
-| TLA-001 — registry CAS, attempt-local outcomes and incarnation fencing | pass-with-recorded-scope | `verification/tla/seal/RegistryCas.tla`. The `mutate_incarnation` and `recreate` retry loops against a conditional-PUT store, with lost replies, failed dispatches, missing ETags and failed reads. Two projects share one name, and stale mutators race a same-name, same-key replacement, at 2 attempts and at the production bound of 5. Checked: no two callers get the same generation, a write is fenced by its incarnation at commit time, and the stored allocator counts the committed writes. 2 baselines, 3 negative controls, 9 witnesses. | None. Conditional on the object store's conditional writes (ASM-OBJSTORE-CAS, unestablished). |
-| TLA-002 — seal claims, renewal and competing takeover reservations | pass-with-recorded-scope | `SealProtocol.tla` (`MC_SealTakeover`). Claims, exact renewal, takeover reservation, fence and install, across crashes, engine replacement, crash failover between two instances, registry faults, cancellation, and a fence group that is staged before it is durable and then made durable, lost or rejected. Semantic properties compare every answer with the durable state: a live claim is never fenced, a queued final is decided before a takeover installs, a 2xx proves its outcome, and debt is released only when undeliverable. 12 baselines including 4 liveness shapes; 11 negative controls, 7 of them the pre-fix F1 and F2 behaviours; 16 witnesses. Conditional on ASM-OBJSTORE-CAS (unestablished). | **TLA-002-F1, production defect, fixed** in "A seal takeover's fence outlives the engine that recorded it". The fence lived only in the engine. After an ownership move or an engine replacement, a stalled, superseded final could close the segment under the takeover's claim, and the takeover's holder could then get 200 `sealed` for a record that was never written. Reproduced on the real code. **TLA-002-F2, production defect, fixed** in "A SealSuperseded refusal waits until the fence behind it is durable". This was a gap in the F1 fix. A `SealSuperseded` refusal was answered from the staged fence before the fence row was durable, and it released the refused attempt's claim. If that fence group was lost, or rejected without the engine retiring, an older generation of the same operation closed the segment with no claim standing. Reproduced end to end on the real code. |
-| TLA-003 — final-record sealing, ambiguous append outcomes and owed debt | counterexample | `SealProtocol.tla` (`MC_FinalSeal`). Final-record sealing on the raw and product surfaces: producer lanes, a shared synthetic lane, renewal, ambiguous and definitive outcomes, and validation skew between instances. 12 baselines, 11 negative controls (the pre-fix F2 and F3 behaviours among them), 16 witnesses, 4 known-defect checks. | **TLA-003-F2, production defect, fixed** in "A raw close that takes over an abandoned final claim writes its own record". A raw close that took over or renewed a claim refused its own final, released the claim, and answered 409 `Stream-Closed` for an open stream. **TLA-003-F3, production defect, fixed** in "A product seal refuses an over-ceiling final before it publishes its intent". **Open, owner decision:** TLA-003-F4, a raw exact retry renews the claim before its ingest-capacity check. TLA-003-F5: under record-ceiling skew between instances, a renewed retry's deferred refusal releases the claim while the original's older generation still commits, leaving a closed segment with no claim (an exact retry heals it). The README lists the three candidate fixes. |
-| TLA-005 — commit groups, dependency barriers and observable replies | pass-with-recorded-scope | `verification/tla/durability/CommitGroups.tla`. One stream and six requests (final append and its retry, plain append, reused producer sequence and its retry, empty close). Six shapes with up to 2 restarts, 1 fatal WAL failure, 1 group failure (a write error before or after apply, or a pre-write reject) and 1 retirement. It follows the pinned SlateDB order, in which reads return a failed batch until `closed_result` is written. D1–D4, D7, D8, D10, durable-mirror publication and ack-after-visibility hold in every complete search. 8 negative controls and 15 witnesses matched. | **TLA-005-F5, production defect, fixed** in "A failed commit write retires its engine before any later group can stage from it". SlateDB can answer a write with an error after applying the batch and making it readable. The committer went on staging, so a later group could read the failed batch's producer row and answer a duplicate success (D2) or a reused-sequence refusal (D4) that nothing durable justified. Reproduced on the real code. Regression `shard::retirement_tests::tla005_f5_a_failed_write_answers_nothing_from_its_batch`. The pre-fix committer is the control `nc-write-error-keeps-staging`. Recorded, not defects: an empty-entry producer Accept is treated as a no-write group (latent), and DST group-failure injection does not exercise the new retirement. |
-| TLA-006 — commit handoff, retirement and already-durable completion | pass-with-recorded-scope | `HandoffRetirement.tla`. One engine with a committer, a completer, a retirer and a supervisor abort, and 3–4 requests. Write errors retire the engine, and the post-apply read window is modelled. Checked: one terminal owner per batch; success only from durable state; late success only for work decided while the engine was live; stranded work never succeeds. Settlement liveness holds under stated fairness. 6 negative controls and 9 witnesses matched. | No production defect. The first draft's late-success invariant was vacuous; that was a model defect, now fixed. Settlement liveness depends on WAL progress (ASM-DURABILITY-10). |
-| TLA-011 — serving possession, owner fencing and shard movement | pass-with-recorded-scope (conditional design check) | `ServingOwnership.tla`. Two nodes, one prefix, stale ownership views, one override move, a crash with no-ring bootstrap, delayed and ambiguous WAL PUTs, in fleet and single-node modes. Acknowledged records stay recoverable, commit exactly once across owners, and are covered by any higher-epoch owner. 4 negative controls and 11 witnesses matched. | No production defect. The result is conditional on SlateDB writer fencing (ASM-SLATEDB-FENCE), which rests on the unestablished object-store conditional-write contract (ASM-OBJSTORE-CAS). **Specification defect, owner decision:** DST invariant T11 ("exactly one owner epoch may acknowledge") contradicts the §1.5 late-durable-response boundary; the README proposes a rewording. |
-| TLA-016 — history absorption, publication and hot-data trimming | pass-with-recorded-scope | `verification/tla/history/HistoryAbsorb.tla`. One stream and 3 records, with crashes, failed flushes, refused groups, rescans and prunes, stale re-plans, ring and snapshot-scan gathers, and the postings warm cache. 33 checks: 7 baselines including liveness (largest 16.6M states), 11 negative controls, 15 witnesses. H3 (absorbed history is durable), the last recoverable copy, the trim guards, an exact byte ledger, no false absence from the cache, and absorption liveness all hold. | **Two production defects, fixed.** TLA-016-F1, fixed in "An absorption advance retires exactly the bytes of the range it moves the boundary over". An advance retired its chunk's bytes, not the bytes of the range it moved the boundary over. That left a phantom backlog, or an accounting divergence that refused whole commit groups, other streams' appends included, on every retry. TLA-016-F3, fixed in "A re-gather warms the postings cache only over the rows it staged". A stale re-gather's warm install claimed coverage over a head a trim had deleted, so a durable keyed read skipped a record and reported a complete page. **Found in passing by those fixes.** A cache bridge could cross a chunk whose runs no slice recorded, again a false absence, fixed in "A postings-cache bridge never crosses a chunk whose runs no slice recorded"; the model has no admission line, so it could not see this. Still open and not modelled: a dirty-index rescan rollback followed by a re-gather can leave overlapping postings pages. **Documentation defect:** the `trim_safe_to` comments claim protection for arbitrarily stale reader snapshots (TLA-016-F2), and the `TailFields.unabsorbed_bytes` comment predates the F1 fix. |
-| TLA-018 — composition of history, hot storage and read visibility | counterexample | `ReadCompose.tla`. Durable and applied, keyed and unfiltered reads, with trims and absorption racing each page, a large first record, corrupt and short postings windows, the durable ring and an ownership move. 26 checks: 7 baselines (largest 19.4M states), 1 known defect, 7 negative controls (2 of them assumption probes), 11 witnesses. | **Fixed:** TLA-018-F1, in "An applied read revalidates its tail scan at the level it scanned, so it never skips a durable record". Two applied-not-durable advances could trim a row that an applied keyed read then skipped, while the Remote tail still said nothing was absorbed. **Open, owner decision:** TLA-018-F3. A stale applied cursor from a crashed owner is refused only while the new owner's tail is below it. Once the tail passes it, a client holding a lost record continues as if it had the durable one. Reproduced on the real code (`verification/regressions/TLA-018-F3`); the fix needs a cursor format that carries the owner incarnation or the durable frontier (the proposed `KIND_KEY_V3`). **Specification defect:** H11's missing-postings clause is not enforced by the reader (TLA-018-F2). |
-| TLA-019 — reachability GC and reader/fork protection | pass-with-recorded-scope | `ReachGC.tla`: history-partition SSTs, SlateDB's collector and compaction checkpoint as an assumed interface, and the writer's poll-refreshed read view. `ForkPin.tla`: fork references across delete and recreate. 33 checks: 7 baselines including 3 liveness (largest 28.0M states), 11 negative controls (3 of them probes), 15 witnesses. | **No production defect.** The model first reported TLA-019-F1: GC could delete SSTs that a quiet partition's stale writer view still names. A real-code attempt did not reproduce it. The pinned SlateDB checkpoints the pre-compaction manifest for 900 s, longer than the 300 s poll. That is now an assumption (ASM-SLATEDB-COMPACTION-CHECKPOINT), pinned by two tests in "A test pins the checkpoint that keeps a stale history view readable". **Unjustified assumptions:** releasing a fork pin after an interrupted or raced `DELETE` needs the client to retry (TLA-019-F4), and GC convergence needs continued writes (TLA-019-F2). **Scope gap:** there is no reclamation policy for hard-deleted incarnations' rows (TLA-019-F3). |
+| KANI-001/003: a segment ordinal at or above 2^30 aliased the ordinal mod 2^30 | production defect (the §5 seed, confirmed on real code) | fixed | `fd8a5fca` "Offset tokens carry the whole segment ordinal, and a read position cannot overflow" |
+| KANI-002: the successor of `Offset(Some(u64::MAX))` overflowed (a panic in debug, a wrap to START in release) | production defect | fixed | `fd8a5fca` |
+| KANI-002: a 26-byte token with a multi-byte character parsed as START | production defect | fixed | `fd8a5fca` |
+| KANI-002: scan index `u64::MAX` was also the planner's "now" (ASM-READ-NOW-SENTINEL) | domain question (§2.7) | resolved; see §0.6 | `ec55262f` |
+| KANI-042: the wildcard arm gave every unlisted refusal the retaining verdict | design hazard | fixed; no existing verdict changed | `241eb282` "The final-append disposition names every refusal instead of defaulting" |
+| TLA-002-F1: the seal fence lived only in the engine | production defect, reproduced | fixed | `234f69ab` "A seal takeover's fence outlives the engine that recorded it" |
+| TLA-002-F2: a `SealSuperseded` refusal was answered before its fence row was durable | **fix-introduced defect**: a gap in the TLA-002-F1 fix, reproduced end to end | fixed | `e953ef28` "A SealSuperseded refusal waits until the fence behind it is durable" |
+| TLA-003-F2: a raw close that took over a claim refused its own final | production defect, reproduced | fixed; its renewal forms have no real-code test | `8e52a8fc` "A raw close that takes over an abandoned final claim writes its own record" |
+| TLA-003-F3: a product seal published its intent before the record-ceiling check | production defect | fixed | `ebf4ed44` "A product seal refuses an over-ceiling final before it publishes its intent" |
+| TLA-003-F4: a raw exact retry renewed the claim before its ingest-capacity check | model counterexample, **reproduced on real code with two instances**; production defect | fixed; the model control is the pre-fix renewal | `56ffc65f` "A seal retry refused by its own instance's limits neither renews nor releases the claim"; model `3917b397` |
+| TLA-003-F5: under record-ceiling skew, a renewed retry released the claim while the original could still commit | model counterexample, **reproduced on real code with two instances**; production defect | fixed. Only the installing attempt releases, and duplicate replay is kept (guard test). | `56ffc65f`; model `3917b397` |
+| TLA-005-F5: after a post-apply write error, the next group staged from the failed batch | production defect, reproduced | fixed | `f574d733` "A failed commit write retires its engine before any later group can stage from it" |
+| TLA-006-F3: the first `LateSuccessWasClaimedLive` was vacuous | model defect | fixed in the model | spike |
+| TLA-011-F3: T11 ("exactly one owner epoch may acknowledge") forbade the §1.5 late durable response | specification defect | reconciled wording in `docs/dst/DST-EXPANSION-SPEC.md` §9.12.1; awaits the spec owner's confirmation | `63202168` "The invariant docs state what the models showed and what stays an owner decision" |
+| TLA-016-F1: an advance retired its chunk's bytes, not the range it moved over | production defect | fixed | `6371da0a` "An absorption advance retires exactly the bytes of the range it moves the boundary over" |
+| TLA-016-F3: a stale re-gather's warm install claimed coverage over a trimmed head | production defect (latent) | fixed | `b47c2d2a` "A re-gather warms the postings cache only over the rows it staged" |
+| Cache bridge over a chunk whose runs no slice recorded (found during the F3 fix) | production defect; outside what the model can express | fixed; covered by real-code regressions | `0b37f3b9` "A postings-cache bridge never crosses a chunk whose runs no slice recorded" |
+| TLA-016-F2: the `trim_safe_to` comments claimed protection for arbitrarily stale readers | documentation defect | fixed in comments | `63202168` |
+| TLA-016-F4: the lane-mark rollback bounds a recount per refusal, not across consecutive late refusals; the comments, and the LAG report's `Cap × MaxChan` bound, claimed more | documentation defect, found while modelling `d9aeaeff` | comments corrected; `witness-RecountBeyondInFlight` | `f1de3dcb` "The history model checks refusal receipts and admitted overlapping pages" |
+| TLA-018-F1: an applied keyed read skipped a durable record trimmed by a non-durable advance | production defect | fixed | `9cea1b69` "An applied read revalidates its tail scan at the level it scanned, so it never skips a durable record" |
+| TLA-018-F3: a stale applied cursor was accepted once the new owner's tail passed it | production defect, reproduced by holding the shard DB's WAL PUT | fixed. A provisional `KIND_KEY_V3` cursor is bound to the history that served it (the writer epoch and a digest), and an incompatible continuation gets 409 `cursor_beyond_tail` with a durable cursor. The regressions are checked in (`dst::dst_tests::reads_applied_history`). Known limits: a V2 session cursor minted before the fix over a lost suffix stays undetectable, and an object-store restore to an older snapshot can repeat a writer epoch. | `55881d7a` "A provisional read cursor proves the history it continues, or answers an explicit resync"; model `d93490f5` |
+| TLA-018-F2: the reader does not detect a postings page or canonical row lost after durability | **open obligation** (H11) | owner decision, §0.7 | — |
+| TLA-019-F1: GC could delete SSTs that a stale writer view names | abstraction mismatch; not reproduced | withdrawn, **conditionally**. It holds only while ASM-SLATEDB-COMPACTION-CHECKPOINT holds: an upstream 900 s checkpoint the code calls interim, a view refreshed within 300 s, and a read that ends within the remaining 600 s. Beyond that, `baseline-timing-lapse` shows a read fails rather than completing short. Two real-code tests pin the checkpoint; no real-code test covers the timing lapse. | `d377a8e7` "A test pins the checkpoint that keeps a stale history view readable" |
+| TLA-019-F4: releasing a fork reference after a raced or interrupted `DELETE` needed the client to repeat a `DELETE` that had succeeded | unjustified assumption (a client retry), then service work | fixed. A write-ahead debt marker, a supervised reconciler, a one-time backfill with a `fork_debt_stale` alert, and indexing of the debt a recreated name overwrites. Excluded by name: debt that the old binary overwrote before the rollout (`LostByOldBinary`), which is unrecoverable. Known limits: a marker whose creator died before installing stays until an operator confirms it inert, and the alert is evaluated in the telemetry cadence. | `0d40dc2a` "A background reconciler releases fork references that deleted children still owe"; `8a03e0d5` "Fork-reference debt from before the index is backfilled, and stale debt raises an alert"; `3f386070` "A recreated name indexes the fork debt of the tombstone it overwrites"; models `d93490f5`, `3f386070` |
+| TLA-019-F2: an unreferenced SST newer than a quiet partition's last compaction or newest L0 is never collected | **open obligation**, service (H14) | §0.7 | — |
+| TLA-019-F3: no policy reclaims a hard-deleted incarnation's rows | **open obligation**, service | §0.7 | — |
+| TLA-005-F3: an empty-entry producer Accept is treated as a no-write group | recorded observation (latent) | optional hardening, owner | — |
 
-**What the first spike found.** Each fixed defect has a real-code regression
-test that fails on the unfixed code. The pre-fix behaviour of each defect a
-model found is kept as a negative control.
+### 0.5 Defects found during the closure
 
-- *Fixed production defects.*
-  - Offset tokens: a segment ordinal at or above 2^30 aliased a low one
-    (KANI-001/003). A position at `u64::MAX` overflowed (KANI-002), and a token
-    with a multi-byte character parsed as START (KANI-002).
-  - A post-apply write error let the next commit group answer from the failed
-    batch (TLA-005-F5).
-  - A seal takeover's fence was lost with its engine (TLA-002-F1), and a
-    `SealSuperseded` refusal could precede its fence's durability (TLA-002-F2,
-    a gap in the F1 fix).
-  - A raw close that took over a claim refused its own final (TLA-003-F2). A
-    product seal published its intent before checking the record ceiling
-    (TLA-003-F3).
-  - Absorption retired the wrong byte range (TLA-016-F1). A stale re-gather,
-    and separately a cache bridge over dropped runs, proved false absence in
-    the postings cache (TLA-016-F3 and a find in passing).
-  - An applied keyed read skipped a durable record (TLA-018-F1).
-- *Fixed design hazard.* The final-append disposition defaulted every unlisted
-  refusal to retained debt (KANI-042).
-- *Open, needing an owner decision.*
-  - TLA-018-F3: a stale applied cursor needs a cursor format that carries the
-    owner incarnation or the durable frontier.
-  - TLA-003-F4 and F5: renewal and release of a claim under configuration skew
-    between instances.
-  - DST invariant T11's wording (TLA-011).
-  - The object store's conditional-write contract (ASM-OBJSTORE-CAS) is
-    unestablished, and TLA-001/002/003/005/011/019 depend on it.
-- *Recorded, not fixed.*
-  - Overlapping postings pages after a rescan rollback.
-  - Stale comments: `trim_safe_to` (TLA-016-F2) and
-    `TailFields.unabsorbed_bytes`.
-  - H11's reader clause is not enforced (TLA-018-F2).
-  - Fork-pin release needs a client retry (TLA-019-F4), and GC convergence
-    needs continued writes (TLA-019-F2).
-  - There is no reclamation policy for hard-deleted rows (TLA-019-F3).
-  - An empty-entry producer Accept counts as a no-write group (latent).
-  - A JSON collection stores some floats with different digits than the
-    client sent, because serde_json's `float_roundtrip` feature is off (found
-    during the TLA-003-F3 fix).
-- *Evidence gate (after review).* A review found the receipt check was not
-  fail-closed: it compared digests only, ignored counterexample obligations,
-  accepted empty or fabricated check lists, did not invalidate on assumption
-  or dependency-pin changes, took the digest after execution, and let
-  concurrent TLC runs race on one temporary directory. "Receipts are
-  validated, bound to their inputs, and invalidated by assumption and pin
-  changes" fixes each case with a negative test. `formal.py check` (run by
-  `quality.sh`) fails on a missing or invalid receipt and reports stale ones;
-  the CI `formal` job runs what a change affects; `release-gate.sh` requires
-  `check --fresh`.
-- *Withdrawn.* TLA-019-F1 was a model gap: SlateDB's compaction checkpoint
-  protects a stale writer view, and two tests now pin that protection.
+These were found outside the models, while implementing the closure.
+
+| Defect | Commit(s) | Evidence |
+|---|---|---|
+| **Op-id close gating** (TLA-003-F6). A raw append's operation id does not cover `Stream-Closed`, so a plain append with an owed final's bytes passed as its exact retry. It renewed the claim and landed twice, and the close answered 503 with the stream unsealed. | `a92aa9a1` "Only a close can resume an owed final"; model `3917b397` | `dst::dst_tests::seal_cancellation::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing`; control `nc-plain-append-resumes-owed-final` |
+| **Conditional-write client retry** (TLA-001-F1). object_store 0.14.1 re-sent a conditional PUT with its original precondition after a 5xx, 429, 408 (an update also after 409) or a transport error. A caller then saw `Precondition` or `AlreadyExists` for its own committed write: `mutate_incarnation` applied a non-idempotent change twice, `recreate` left a stream Initializing, and `create` answered 200 with the quota one low. Conditional requests now use a client with `max_retries: 0`. Cost: a transient 5xx on a conditional write reaches the client as a retryable error. | found by `e15ebef6` "A provider contract suite runs the conditional-write clauses through the production client"; fixed by `6e09a36c` "Registry conditional writes never mistake their own committed write for a refusal"; model `3917b397` | `http_cases.rs` on s3lite through the production client; controls `nc-client-retry*` |
+| **JSON drift, DLQ and watch keys.** Every JSON ingest path re-encoded records with a parser that is not correctly rounded, so about 10% of `Math.random()`-style values were stored 1–2 ulp off, and repeated stores walked or oscillated. The ceiling and billing measured the re-encoded bytes (up to 4.6×). The seal id and the DLQ hash covered a re-serialisation. A DLQ copy committed just before a crash blocked its message forever (reproduced). Integral floats at or above 2^63 collapsed to `i64::MAX` in watch keys (reproduced). Contract A now stores the client's validated text, minified. | `1eaf5a5b` "A JSON collection stores each record as the client's validated text" | `dst::dst_tests::json_fidelity`; `consumer_dlq::a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass`; corpus, proptest and golden tests; rollout in `SPEC.md` |
+| **Seal refusal 500 → 409.** `AlreadySealed` and `OtherOperation` answered 500 `internal` with `retryable: true`, which no retry can satisfy. They are now 409 `sealed`, not retryable. | `fcbd8bd5` "A seal refused by another operation's terminal seal is a definitive 409" | `dst::dst_tests::seal_coordination::another_operation_on_a_sealed_collection_is_refused_definitively` |
+| **Process-exit hang.** The intermittent livefeed hang was a test that never shut its rig down, plus a foyer-memory 0.22.3 self-deadlock: a runtime that drops a fetch it spawned under the in-flight mutex. The same deadlock could hold production process exit after a shutdown timeout, an early error or a panic. The runtime now stops with a 5 s bound. | `2c850d11` "The reopened-sealed-span livefeed test shuts its rig down, and every wait names its stall"; `af0e2f04` "The service runtime stops with a bound, so a stuck cache fetch cannot hold process exit" | 0 hangs in 2,500 solo release runs, as the commit reports; `bootstrap::service_runtime::a_scan_on_a_cache_miss_cannot_hold_process_exit`, with a canary for an upstream fix |
+| **Scan-option regression and recount lag.** `da4e056f` "The absorbed-byte recount reads with default scan options" removed the read-ahead because mutants survived. A cold recount then stalled the shard's commit path for 57.5 s (2 chunks) to 491 s (17 chunks). The read-ahead is restored. The "at most one gather chunk" comment was false: every consecutive refused group added a chunk. Refused groups now roll their lane marks back and replay. | `21c5e618` "The absorbed-byte recount reads ahead again: the default scan stalls the shard for minutes"; `d9aeaeff` "A refused absorption group rolls its lane marks back, so a recount covers only chunks in flight" | `history_absorption::mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing`; `refused_absorbed_groups_do_not_widen_the_next_recount`. The remaining bound is TLA-016-F4. |
+| **Overlapping postings pages.** A rescan rollback, or a new owner's re-gather, cut the same rows into different chunks. The cold index load then refused the overlapping pages as corrupt, and the key went to the envelope scan for good. A reader now admits an overlap that lists exactly the offsets already admitted. | `d16559b3` "Overlapping postings pages from a re-gather admit when they agree"; model `f1de3dcb` | two regressions through the real absorber, committer, rescan and reopen; `baseline-pages-regather` |
+| **DST timing.** After `d9aeaeff` a refused group replays on the next absorber tick, so the atomic-retirement test's 20 ms tick let the retry land before its check. It failed 10 of 12 runs. The tick is now one second. | `29fcacf1` "The atomic-retirement DST test checks the refused group before its replay"; inventory hash `8e16bde3` | 12 of 12 runs pass, as the commit reports |
+
+**Measured costs, not yet accepted.** Workload acceptance is separate from
+correctness (`docs/OPS-RELEASE.md` §6).
+
+- **Recount.** Measured with a harness kept outside the tree, at 20 ms per
+  request with a cold cache:
+  - read-ahead cuts the stall to 0.13–0.55 s, at a transient heap roughly
+    equal to the recount range (9–74 MiB), outside every budget;
+  - after 16 refusals the lane-mark rollback recounts 0 chunks, not 17;
+  - a refusal learned after the next chunk planned still recounts 2 chunks,
+    about 0.15 s.
+
+  Not measured: a group that carries many mis-started streams, compacted
+  layouts, and a real object store.
+- **Postings cache.** `0b37f3b9` measured the same way:
+  - below the admission line it costs nothing;
+  - above it, in the measured workload, index loads rose from 0.5% to 37% of
+    reads, and mean read latency rose by about 65 ms with a warm block cache
+    and about 245 ms with a cold one.
+
+  Recording the dropped keys would recover the bridging. That is not
+  implemented.
+
+### 0.6 The `u64::MAX` read position
+
+Since `fd8a5fca` every `u64` is a valid scan index. `u64::MAX` was still the
+read planner's in-band "now", so a crafted token with rawSeq 2^64−1 read the
+live tail. "A read position of u64::MAX is a position, and now has its own
+representation" (`ec55262f`) carries "now" as `ScanStart::Now` through the
+planner and the peer relay. A numeric index follows the ordinary past-the-tail
+rule: an applied read gets `CursorBeyondTail`, and a durable replay gets an
+empty page. The wire is unchanged, because the relay always sent `now`
+literally. ASM-READ-NOW-SENTINEL is retired. During a mixed-version rollout,
+an owner that is not yet upgraded still treats a forwarded 2^64−1 as its tail
+(`docs/OPS-RELEASE.md` §6). The regressions are in
+`dst::dst_tests::read_application`.
+
+### 0.7 Open items
+
+| Item | Kind | Next step |
+|---|---|---|
+| Receipts for all 17 obligations | evidence | Record once on the frozen source (`formal.py run --record`); then `check` and `check --fresh` must pass. |
+| **Service obligations**: the `docs/READINESS.md` section "Service obligations from formal verification (open)" holds their acceptance criteria. | open obligations | **Physical reclamation (TLA-019-F3):** a written policy (rows, delay, prerequisites); every row of a hard-deleted incarnation deleted within the stated delay; a recreate, a live fork child or an unsettled billing close blocks it, with a DST scenario for each; deletes under the trim or GC budget; a gauge and an alert. **GC without further writes (H14, TLA-019-F2):** an unreferenced SST on a quiet partition is deleted within an owner-stated bound, with no new periodic LIST, checked by a DST scenario and a `ReachGC` baseline (`docs/dst/DST-EXPANSION-SPEC.md` §9.12.3). **H11 (TLA-018-F2):** not met until the owner decides (below). The campaign does not replace the other readiness work: independent restore, real Compute failover, authorization integration, external incident visibility and workload acceptance. |
+| **Owner decisions** | decisions | **T11:** confirm the reconciled wording (DST-EXPANSION-SPEC §9.12.1). **H11:** option A keeps H11 and adds a per-chunk coverage record; option B deliberately revises the contract under §2.10 (§9.12.2). This is not a weakening by default. **H14 bound:** state the convergence bound (candidate `min_age + 2 × gc_interval`, §9.12.3). **Reclamation policy:** adopt one (READINESS criterion 1). Smaller, already recorded: D5 met only error-for-error (TLA-005-F4); a readiness gate on the first ring view (TLA-011-F2); the three limit-reduction obligations in `docs/seal-transitions.md` "Limit reductions and accepted finals". |
+| Real-provider qualification | qualification, not run | The provider contract suite (`docs/PROVIDER-CONTRACT.md`) has not been run against the production provider. That needs owner credentials: `STREAMS_PROVIDER_CONTRACT=1` with an endpoint, bucket and prefix. Until a logged run, ASM-OBJSTORE-CAS is unestablished, and TLA-001/002/003/005/011/019 are conditional on it. |
+| Mixed-version rollout | operational | No rule in `docs/OPS-RELEASE.md` §6 has been qualified with an actual old/new binary pair. Use each rule's coordinated form. |
+| SDK rewind on 400 `invalid_cursor` | client follow-up | An older server answers a V3 cursor with 400 `invalid_cursor`, and today's SDK throws. The SDK should rewind to its durable cursor in applied mode. |
+| `SealError` variants still mapped to 500 | follow-up | `Missing`, `ChangedIncarnation`, `OwedFinal` and `InvalidClaim` still answer 500 `internal`, retryable (`seal_error_response`, `src/product.rs`). |
+| `src/bin/verify.rs` | follow-up | This diagnostic still builds its own retrying S3 client for conditional writes, and it still drops its runtime unbounded. |
+| foyer-memory 0.22.3 deadlock | dependency exposure | Process exit is contained by `af0e2f04`. About 324 multi-thread `#[tokio::test]`s that end with live engines, and `verify`, remain exposed. The upstream issue is not yet filed. The exit condition is in `docs/OPS-RELEASE.md` §1. |
+| Expired, never-deleted fork child whose name is recreated | under investigation | A suspected leak: the child's reference may stay on its source. This is not a finding. |
+| TLA-019-F1 timing lapse | evidence gap | The model covers the lapse; no real-code test does. |
 
 ## 1. Purpose, value, and verification boundaries
 
@@ -365,7 +481,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P0 · **Requirement anchors:** L1–L4, L11–L12, L15, D6–D7  
 **Source owners:** [`src/application/append/close.rs`](src/application/append/close.rs); [`src/application/lifecycle.rs`](src/application/lifecycle.rs); [`src/application/lifecycle/raw_close.rs`](src/application/lifecycle/raw_close.rs); [`src/application/lifecycle/claims.rs`](src/application/lifecycle/claims.rs)
 
-**Status:** counterexample: two open defects needing an owner decision, TLA-003-F4 and TLA-003-F5 (first spike; see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope, since the closure fixed TLA-003-F4 and TLA-003-F5; the receipt is to be recorded on the frozen source (see [§0](#0-implementation-record)).
 
 **Validate.** Deterministic validation precedes intent installation. Final intent names the complete operation. Cancellation, timeout, ownership movement, and transient ordering refusals preserve recoverable debt. Only a definitive refusal may release the exact incarnation/operation/generation. A duplicate of an earlier non-closing append cannot satisfy a final-close promise. Terminal success must identify the operation actually completed.
 
@@ -615,7 +731,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P0 · **Requirement anchors:** H1–H2, H9–H11, D8–D9  
 **Source owners:** [`src/application/read_batch.rs`](src/application/read_batch.rs); [`src/application/read_scan.rs`](src/application/read_scan.rs); [`src/application/read_keys.rs`](src/application/read_keys.rs); [`src/history/postings_read.rs`](src/history/postings_read.rs); [`src/shard/record.rs`](src/shard/record.rs)
 
-**Status:** counterexample: one open defect, TLA-018-F3 (first spike; see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope, since the closure fixed TLA-018-F3; the receipt is to be recorded on the frozen source. H11 is claimed only in the scope of the open obligation TLA-018-F2 (see [§0](#0-implementation-record)).
 
 **Validate.** A permitted read view combines the history prefix and hot suffix with exact coverage: no fabricated records, missing eligible offsets, or duplicate delivery caused by a moving boundary. Data corruption or missing required postings cannot become a false complete page. Visibility must be modeled per API: distinguish any permitted applied-state read from a durability promise.
 
