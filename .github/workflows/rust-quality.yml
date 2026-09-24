@@ -95,12 +95,12 @@ jobs:
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-latest
-    # The first-spike receipts took about 2.4 h of Kani and 5.5 h of TLC on
+    # The first-spike receipts took about 1.7 h of Kani and 5.7 h of TLC on
     # a heavily loaded 8-core laptop; the longest check (the KANI-001 round
     # trip) took an hour. The obligations are split over the shards by their
     # position in the sorted manifest, so a new obligation always lands in
-    # one; each shard measured under 2 h. A push or pull request runs only
-    # what its diff affects.
+    # one; the slowest shard measured about 3 h. A push or pull request runs
+    # only what its diff affects.
     timeout-minutes: 360
     strategy:
       fail-fast: false
