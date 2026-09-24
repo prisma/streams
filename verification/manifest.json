@@ -2801,6 +2801,7 @@
         "dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart",
         "dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released",
         "dst::dst_tests::fork_debt::a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced",
+        "dst::dst_tests::fork_debt::a_recreated_name_releases_the_reference_its_expired_fork_held",
         "dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart",
         "dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert",
         "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",

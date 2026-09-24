@@ -881,6 +881,17 @@
     "scenarios": []
   },
   {
+    "name": "a_recreated_name_releases_the_reference_its_expired_fork_held",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "166e5043475fb3f93a37c4046153f715cf4b0f1aeadcf273471323f6a89f5c4c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_refused_oversized_chunk_defers_and_sizes_the_next_reservation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

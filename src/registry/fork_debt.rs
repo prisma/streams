@@ -19,8 +19,8 @@
 //! debt-bearing tombstone it finds, and records its progress and completion
 //! in one conditionally written object, so it resumes after a restart and
 //! runs once per deployment. A recreation that would overwrite such a
-//! tombstone before the backfill reaches it indexes the debt first
-//! (`Registry::recreate`).
+//! tombstone before the backfill reaches it, or a fork child that expired
+//! without a delete, indexes the release first (`Registry::recreate`).
 use super::*;
 
 /// Outside `PROJECTS_ROOT`: the catalog scans fail closed on any key under
@@ -176,18 +176,25 @@ impl Registry {
     }
 
     /// Index the debt a recreation is about to overwrite (TLA-019-F4). The
-    /// replacement writes over the dead incarnation's descriptor, and a
-    /// tombstone that still owes its fork source a release is the debt's
-    /// only record unless it has a marker: one older than the index has
-    /// none, and the one-time backfill finds only descriptors still there.
+    /// replacement writes over the dead incarnation's descriptor, which is
+    /// then the only record of a release its fork source may still be owed
+    /// unless a marker names it:
+    /// - a tombstone that still owes the release; one older than the index
+    ///   has no marker, and the one-time backfill finds only descriptors
+    ///   still there;
+    /// - an incarnation that died without a delete (it expired), whose
+    ///   reference nothing ever released: a delete of an expired name
+    ///   answers gone, and expiry writes nothing.
+    ///
     /// With the marker written first, the reconciler pays the release from
-    /// it, as for any recreated name. A failed write fails the recreation
-    /// before anything changed. Idempotent, like `record_fork_debt`.
+    /// it, as for any recreated name; a stream that was not forked owes
+    /// nothing. A failed write fails the recreation before anything changed.
+    /// Idempotent, like `record_fork_debt`.
     pub(crate) async fn index_overwritten_debt(
         &self,
         current: &StreamDesc,
     ) -> Result<(), object_store::Error> {
-        if current.deleted && current.parent_ref_pending {
+        if current.parent_ref_pending || !current.deleted {
             self.record_fork_debt(current).await?;
         }
         Ok(())

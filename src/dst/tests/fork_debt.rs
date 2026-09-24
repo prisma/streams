@@ -164,6 +164,64 @@ async fn a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced(
     rig.shutdown().await;
 }
 
+/// A fork child that expires is never deleted, so its reference on the
+/// source is never released and no marker names it: a DELETE of the
+/// expired name answers gone without touching the reference. Recreating the
+/// name overwrites that incarnation. The recreation must index the release
+/// it still owes, so the reconciler pays it and the source it pinned is
+/// tombstoned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recreated_name_releases_the_reference_its_expired_fork_held() {
+    let _serial = gap_lock().lock().await;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let (state, addr) = (rig.state.clone(), rig.addr);
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk34src", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201, "source: {st}");
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/frk34src", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let fork = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "frk34src"),
+        ("stream-fork-offset", boundary.as_str()),
+        ("stream-ttl", "1"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk34kid", &fork, b"").await;
+    assert!(st == 200 || st == 201, "fork: {st}");
+    let (src_ref, kid_ref) = (
+        state.deployment.raw_adapter_sref("frk34src"),
+        state.deployment.raw_adapter_sref("frk34kid"),
+    );
+    let expired = desc(&state, &kid_ref).await;
+    tokio::time::sleep(Duration::from_millis(
+        u64::try_from(expired.expires_at_ms.unwrap() - crate::shard::now_ms()).unwrap_or(0) + 50,
+    ))
+    .await;
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk34kid", &[], b"").await;
+    assert!(!(200..300).contains(&st), "an expired name is gone: {st}");
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk34src", &[], b"").await;
+    assert!(st == 204 || st == 200, "source delete: {st}");
+    let src = desc(&state, &src_ref).await;
+    assert!(
+        src.soft_deleted && src.fork_children.len() == 1,
+        "the expired fork still pins its source: {src:?}"
+    );
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk34kid", &ct, b"").await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    assert_ne!(
+        desc(&state, &kid_ref).await.stream_epoch,
+        expired.stream_epoch
+    );
+
+    crate::application::creation::spawn_fork_debt_reconciler(
+        state.creation_service(),
+        &rig.tasks,
+        Duration::from_millis(50),
+    );
+    released(&state, &src_ref).await;
+    rig.shutdown().await;
+}
+
 /// The backfill resumes from its durable progress after a restart: the next
 /// process indexes only what the first had not yet walked, then completes,
 /// and its reconciler releases both sources.

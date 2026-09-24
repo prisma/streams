@@ -233,7 +233,7 @@ Not yet recorded as a receipt: the table is from `formal.py run --id TLA-019` (w
 | TLA-018-F3 | production defect | **Fixed** by "A provisional read cursor proves the history it continues, or answers an explicit resync" (`55881d7`). `baseline-applied-unfiltered-expanded` (the former known-defect shape) and `baseline-applied-keyed-expanded` check `ExactDurablePrefix` and pass; `nc-no-continuation-check` reproduces the pre-fix acceptance. Regressions in `dst::dst_tests::reads_applied_history`; `verification/regressions/TLA-018-F3/README.md`. |
 | TLA-018-F2 | open obligation (owner decision) | **Open; needs an owner decision.** H11 is adopted as written and only partly enforced: the reader does not detect a page or canonical row lost after durability, which holds only through durability and the cache contract. The owner either keeps H11 and adds a coverage mechanism (option A) or deliberately revises the contract under roadmap §2.10 (option B); `docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. Until then no report counts H11 as met. |
 | TLA-019-F1 | abstraction mismatch (not reproduced) | **Withdrawn as a defect, conditionally.** The model lacked the compactor's checkpoint. With it, `LiveReadViewProtected` passes under ASM-SLATEDB-COMPACTION-CHECKPOINT, a pinned dependency contract (an upstream 900 s constant the code calls interim, a refresh within 300 s, a read within the remaining 600 s), not permanent reader pinning; `baseline-timing-lapse` shows a read beyond it fails rather than completing short. `nc-no-compaction-checkpoint` reproduces the earlier counterexample. |
-| TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. The residual found by the model (pre-index debt overwritten by a recreation of the child's name before the backfill indexes it) is **fixed** too: the recreate CAS indexes the debt it overwrites; `fork-baseline-legacy` and `fork-liveness-backfill-recreated` pass and `nc-recreate-without-index*` reproduce the pre-fix loss. |
+| TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. A recreation over an expired fork child now indexes its release too (real-code regression only; expiry is not modelled); expiry alone still never releases a fork's reference (open, owner decision). The residual found by the model (pre-index debt overwritten by a recreation of the child's name before the backfill indexes it) is **fixed** too: the recreate CAS indexes the debt it overwrites; `fork-baseline-legacy` and `fork-liveness-backfill-recreated` pass and `nc-recreate-without-index*` reproduce the pre-fix loss. |
 | TLA-019-F2 | open service obligation (H14 without further writes) | **Open.** H14 has been shown only while the partition keeps writing. H14 is kept; acceptance criteria are in `docs/dst/DST-EXPANSION-SPEC.md` §9.12.3 and `docs/READINESS.md`. |
 | TLA-019-F3 | open service obligation (missing policy) | **Open.** There is no physical reclamation policy for a hard-deleted incarnation's rows. Acceptance criteria are in `docs/READINESS.md`, "Service obligations from formal verification (open)". |
 
@@ -798,7 +798,7 @@ the states the reconciler now repairs.
   it. `Registry::recreate`, the one recreate CAS every create surface uses,
   now indexes a debt the stored tombstone still carries before it writes the
   replacement (`src/registry.rs:1034`; `Registry::index_overwritten_debt`,
-  `src/registry/fork_debt.rs:186-194`); a failed marker write fails the
+  `src/registry/fork_debt.rs:193-202`); a failed marker write fails the
   recreation before anything changed. This closes the residual the model
   found in the first version of this fix (below). In the model `ForkBegin`
   of a child that recreates a name marks the overwritten debt when the new
@@ -856,7 +856,37 @@ reproduced it on the real code. The recreate CAS now indexes the debt first
 (above). What remains is outside any repair: a debt the old binary itself
 overwrote before the rollout has no record left. The properties exclude it
 explicitly (`LostByOldBinary`, the ghost `lostOld`), and
-`witness-fork-OldBinaryOverwroteDebt` shows it is reachable. The commit's own
+`witness-fork-OldBinaryOverwroteDebt` shows it is reachable.
+
+**Found in passing, fixed: an expired fork child's reference.** A fork child
+that expires is never deleted: expiry writes nothing, and a `DELETE` of an
+expired name answers gone without reaching `delete_lifecycle`
+(`src/application/creation/deletion.rs:15-21`). Its reference on the source
+is therefore never released and no marker names it. Recreating the name
+(`recreatable` accepts an expired descriptor without children,
+`src/application/creation.rs:160-162`) overwrote that incarnation, so the
+reference pinned the source for good. Reproduced on the real code by
+`dst::dst_tests::fork_debt::a_recreated_name_releases_the_reference_its_expired_fork_held`:
+a fork with `Stream-TTL: 1` expires, its `DELETE` is refused, the source's
+`DELETE` soft-deletes it, the name is recreated, and before the fix the
+reconciler and the backfill ran for 10 s while the source stayed
+soft-deleted with the expired child's reference. `index_overwritten_debt`
+now also indexes the release of an overwritten incarnation that died without
+a delete; the reconciler pays it from the marker as for any recreated name.
+The model has no expiry (see the exclusions), so this fix has no model
+check; the regression is its evidence.
+
+**Open, found in passing: expiry alone never releases a fork's reference.**
+Without a recreation of its name, an expired fork child keeps its reference
+forever: nothing deletes an expired stream, a client `DELETE` is refused as
+gone, and no marker exists for the reconciler. A source soft-deleted while
+such a reference exists stays retained (its name cannot be recreated, F5,
+and its data is kept) until someone recreates the child's name. This is not
+fixed here; it needs an owner decision on whether expiry releases fork
+references (for example, the reconciler or a TTL sweep indexing expired fork
+children).
+
+The commit's own
 known limits also stand: a marker whose creator died
 before installing its reference stays pending until an operator confirms it
 inert, and the `fork_debt_stale` alert is evaluated only in the telemetry
@@ -1451,7 +1481,7 @@ child name (`Prev`), and whether the binary with the index is deployed.
 | `CkCreate` / `CkRelease` | Upstream user-checkpoint API. **The repository never creates one** | Models the upstream contract only (`UseCheckpoint`). The compactor's checkpoint is `CompactCommit`'s. |
 | `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:719`; `read_history2*`, `src/history.rs:900-1103`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
 | `GcReadCompactions` → `GcReadManifest` → `GcList` → `GcDelete`* → `GcFinish` | Upstream `GarbageCollector::run_gc_task` → `remove_expired_checkpoints`, then `CompactedGcTask::collect` (SlateDB `0717cc1`, `garbage_collector.rs`, `garbage_collector/compacted_gc.rs`) | Compactions are read before the manifest; the manifest read includes the manifests of unexpired checkpoints (`CheckpointRefs`; expiry is checked at that step, which can only make deletion earlier); then the list, then per-object deletes. At most one pass per tick. |
-| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:1003-1061`), which indexes the debt of the stored tombstone first (`:1034`; `fork_debt.rs:186-194`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
+| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:1003-1061`), which indexes the debt of the stored tombstone first (`:1034`; `fork_debt.rs:193-202`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
 | `ForkInstall` | `anchor::install`: `mutate_incarnation(source, forked epoch)` (`src/application/creation/anchor.rs:78`) | One CAS bound to the forked incarnation (ASM-OBJSTORE-CAS). Idempotent when already installed; declines on a soft, tombstoned or recreated source. Mutation point `InstallFence`. |
 | `ForkPostCheck` | `anchor.rs:134-182`: if the child incarnation vanished (lookup by name, bound to its epoch), release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The source presence check is by name, with no epoch check. |
 | `CreatorCrash` | The create request dies before its post-check | Bounded fault. |
@@ -1592,6 +1622,9 @@ rollout) is retired: with the fix it is unreachable, and
 - Topology parent/child retention (H13) is out of scope: there is no physical
   range split or clone today. Multi-level fork ancestry, recursive cascade
   debt, `expires_at` expiry and creator resumption are TLA-013 and TLA-014.
+  In particular ForkPin has no expiry: a child dies only by `ChildDelete`.
+  The recreation of an expired fork child's name (fixed) is covered by a
+  real-code regression only, and the open expiry leak above is not modelled.
 - Reclamation of hard-deleted incarnations' rows is not claimed (F3).
 - The reconciler's paging (64 markers a pass, a circle every
   `FORK_DEBT_SWEEP_SECS`), the backfill's page walk and progress object, the

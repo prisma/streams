@@ -222,7 +222,7 @@ an owner that is not yet upgraded still treats a forwarded 2^64−1 as its tail
 | `SealError` variants still mapped to 500 | follow-up | `Missing`, `ChangedIncarnation`, `OwedFinal` and `InvalidClaim` still answer 500 `internal`, retryable (`seal_error_response`, `src/product.rs`). |
 | `src/bin/verify.rs` | follow-up | This diagnostic still builds its own retrying S3 client for conditional writes, and it still drops its runtime unbounded. |
 | foyer-memory 0.22.3 deadlock | dependency exposure | Process exit is contained by `af0e2f04`. About 324 multi-thread `#[tokio::test]`s that end with live engines, and `verify`, remain exposed. The upstream issue is not yet filed. The exit condition is in `docs/OPS-RELEASE.md` §1. |
-| Expired, never-deleted fork child whose name is recreated | under investigation | A suspected leak: the child's reference may stay on its source. This is not a finding. |
+| Expired, never-deleted fork child | open obligation (owner decision) | Expiry releases nothing: `DELETE` of an expired fork answers gone and there is no expiry sweep, so a source soft-deleted while an expired fork holds its reference stays retained. A recreation of the fork's name now indexes the reference it overwrites ("A recreation over an expired fork child indexes the reference it held"); whether expiry itself should release fork references needs the owner's decision. Real-code regression only; expiry is not modelled. |
 | TLA-019-F1 timing lapse | evidence gap | The model covers the lapse; no real-code test does. |
 
 ## 1. Purpose, value, and verification boundaries
