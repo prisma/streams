@@ -774,6 +774,16 @@ pub(super) async fn http_rig_owner_at(
     instance: &str,
     runtime: RigRuntime,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_owner_whole(store, instance, runtime).await.parts()
+}
+
+/// The owner rig with its supervisor, for a test that ends through
+/// `HttpRig::shutdown` before its runtime is dropped.
+pub(super) async fn http_rig_owner_whole(
+    store: Arc<dyn ObjectStore>,
+    instance: &str,
+    runtime: RigRuntime,
+) -> HttpRig {
     http_rig_build(
         store,
         runtime,
@@ -787,5 +797,4 @@ pub(super) async fn http_rig_owner_at(
         },
     )
     .await
-    .parts()
 }

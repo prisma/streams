@@ -847,6 +847,25 @@ impl OpenGate {
             self.inner.c_coalesced.load(Ordering::Relaxed),
         )
     }
+
+    /// Tests only: one prefix's gate and resident for a stall report,
+    /// read without blocking; a held lock reads as `held`.
+    #[cfg(test)]
+    pub(crate) fn describe_for_test(&self, prefix: &str) -> String {
+        let gate = self.inner.st.try_lock().map_or("gate=held".into(), |st| {
+            st.get(prefix).map_or("gate=none".into(), |g| {
+                let closing = g.closing.as_ref().map(|c| (c.terminated(), c.failure()));
+                let holdoff = g.holdoff_until.map(|t| t.saturating_duration_since(Instant::now()));
+                format!("closing(terminated,failure)={closing:?} reaping={} inflight={} holdoff={holdoff:?} strikes={}", g.reaping, g.inflight.is_some(), g.strikes)
+            })
+        });
+        let resident = self.inner.shards.try_read().map_or("held".into(), |m| {
+            m.get(prefix).map_or("none".into(), |r| {
+                format!("{:?} closed={}", r.incarnation, r.engine.is_closed())
+            })
+        });
+        format!("{prefix}: {gate} resident={resident}")
+    }
 }
 
 /// Canonical shard-DB path for a topology prefix. ONE definition — the

@@ -1,10 +1,10 @@
 //! Livefeed ownership.
 
 use super::fixture_failpoints::{FailpointGuard, gap_lock};
-use super::fixture_http::{http_rig, http_rig_owner, http_rig_owner_at};
+use super::fixture_http::{http_rig, http_rig_owner, http_rig_owner_at, http_rig_owner_whole};
 use super::fixture_livefeed::{
-    hub_append_lf, hub_sse_collect, lf_connect, lf_record_and_status, seal_ok, split_and_await,
-    wait_parked,
+    StallSteps, hub_append_lf, hub_sse_collect, lf_connect, lf_record_and_status, seal_ok,
+    split_and_await, wait_parked, watched_test,
 };
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
@@ -381,28 +381,78 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
 /// retried it every 100 ms without end. A sealed page now resolves the
 /// directory's resident engine on every read, so the reopened engine
 /// serves the next page.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn livefeed_reopened_sealed_span_serves_catch_up() {
-    let store = mem();
-    let (state, addr) = http_rig_owner(store, "inst-b").await;
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/xreopen",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
+///
+/// Every step is named and bounded (`watched_test`): an intermittent
+/// full-suite hang of this test was never located, so a recurrence
+/// fails in the step that stalled, with the parent prefix's gate,
+/// holdoff and resident and every feed's state.
+#[test]
+fn livefeed_reopened_sealed_span_serves_catch_up() {
+    watched_test(
+        "livefeed_reopened_sealed_span_serves_catch_up",
+        reopened_sealed_span_serves_catch_up,
+    );
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "livefeed reopen regression; the split, the retirement and both subscribers' catch-ups must share one stream lineage and one feed, and each step carries its stall name; separate helpers would hide which step a stall report names"
+)]
+async fn reopened_sealed_span_serves_catch_up(steps: StallSteps) {
+    let rig = steps
+        .run(
+            "rig boot",
+            http_rig_owner_whole(mem(), "inst-b", RigRuntime::first()),
+        )
+        .await;
+    let (state, addr) = (rig.state.clone(), rig.addr);
+    let weak = std::sync::Arc::downgrade(&state);
+    steps.probe(move || {
+        weak.upgrade().map_or("rig dropped".to_string(), |state| {
+            let gates: Vec<String> = state
+                .shards
+                .prefixes()
+                .iter()
+                .map(|p| state.shards.describe_for_test(p))
+                .collect();
+            format!(
+                "gates: {gates:#?}\nfeeds: {:#?}",
+                state.livefeed.registry().describe_for_test()
+            )
+        })
+    });
+    let (st, _, _) = steps
+        .run(
+            "create stream",
+            preq(
+                addr,
+                "PUT",
+                "/v1/streams/xreopen",
+                &[("prisma-encryption-key", PRISMA_KEY)],
+                br#"{"format":{"kind":"json"}}"#,
+            ),
+        )
+        .await;
     assert_eq!(st, 201);
-    hub_append_lf(addr, "xreopen", r#"{"r":0}"#).await;
-    hub_append_lf(addr, "xreopen", r#"{"r":1}"#).await;
+    steps
+        .run("append r0", hub_append_lf(addr, "xreopen", r#"{"r":0}"#))
+        .await;
+    steps
+        .run("append r1", hub_append_lf(addr, "xreopen", r#"{"r":1}"#))
+        .await;
     // Seg 0 seals at cap 2; the "" lane continues in the high child,
     // whose route is salted onto a DIFFERENT prefix than the parent
     // (topology.rs split), so the sealed span has an engine of its own.
-    split_and_await(&state, "xreopen", 0).await;
+    steps
+        .run("split", split_and_await(&state, "xreopen", 0))
+        .await;
     let sref = state.deployment.raw_adapter_sref("xreopen");
     state.registry.invalidate(&sref);
-    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let desc = steps
+        .run("descriptor after split", state.registry.get(&sref))
+        .await
+        .unwrap()
+        .unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
     let p_parent = state
         .shards
@@ -414,12 +464,24 @@ async fn livefeed_reopened_sealed_span_serves_catch_up() {
         p_parent, p_child,
         "the sealed span must have its own engine"
     );
-    hub_append_lf(addr, "xreopen", r#"{"r":2}"#).await;
+    steps
+        .run("append r2", hub_append_lf(addr, "xreopen", r#"{"r":2}"#))
+        .await;
 
     // sub1 establishes the feed; its catch-up serves the sealed span
     // LOCALLY (this is where the old code filled its cache).
-    let mut sub1 = lf_connect(addr, "xreopen", "?cursor=beginning").await;
-    let (a1, eof1) = hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"r\":2")).await;
+    let mut sub1 = steps
+        .run(
+            "sub1 connect",
+            lf_connect(addr, "xreopen", "?cursor=beginning"),
+        )
+        .await;
+    let (a1, eof1) = steps
+        .run(
+            "sub1 catch-up",
+            hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"r\":2")),
+        )
+        .await;
     assert!(
         !eof1 && a1.contains("\"r\":0") && a1.contains("\"r\":2"),
         "sub1 established through the sealed span:\n{a1}"
@@ -433,6 +495,7 @@ async fn livefeed_reopened_sealed_span_serves_catch_up() {
         state.shards.is_open(&p_parent),
         "the sealed span's engine is resident"
     );
+    steps.enter("retire the sealed span's engine");
     let retired = match state.shards.retire(
         &p_parent,
         crate::shard_directory::RetirementReason::Shutdown,
@@ -445,12 +508,15 @@ async fn livefeed_reopened_sealed_span_serves_catch_up() {
         retired.is_closed(),
         "retirement closes the sealed span's engine"
     );
-    for _ in 0..500 {
-        if retired.termination_complete() {
-            break;
+    let terminated = async {
+        for _ in 0..500 {
+            if retired.termination_complete() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    };
+    steps.run("retired engine termination", terminated).await;
     assert!(
         retired.termination_complete(),
         "the retired engine must close cleanly so the prefix can reopen"
@@ -461,8 +527,18 @@ async fn livefeed_reopened_sealed_span_serves_catch_up() {
     // sub2 joins the SAME feed (sub1 keeps it alive, so the SAME lineage
     // source serves) and catches up from the beginning: the sealed page
     // must come from the REOPENED engine, not spin on the closed one.
-    let mut sub2 = lf_connect(addr, "xreopen", "?cursor=beginning").await;
-    let (a2, eof2) = hub_sse_collect(&mut sub2, 15, |t| lf_record_and_status(t, "\"r\":2")).await;
+    let mut sub2 = steps
+        .run(
+            "sub2 connect",
+            lf_connect(addr, "xreopen", "?cursor=beginning"),
+        )
+        .await;
+    let (a2, eof2) = steps
+        .run(
+            "sub2 catch-up through the reopened span",
+            hub_sse_collect(&mut sub2, 15, |t| lf_record_and_status(t, "\"r\":2")),
+        )
+        .await;
     assert!(
         a2.contains("\"r\":0") && a2.contains("\"r\":1") && a2.contains("\"r\":2"),
         "a catch-up through a reopened sealed span must serve, not retry a closed engine forever:\n{a2}"
@@ -474,7 +550,19 @@ async fn livefeed_reopened_sealed_span_serves_catch_up() {
     );
     drop(sub1);
     drop(sub2);
-    wait_for_feed_teardown(&state, 300).await;
+    steps
+        .run("feed teardown", wait_for_feed_teardown(&state, 300))
+        .await;
+    // The rig ends through the production shutdown, joining every
+    // engine's workers, before the runtime is dropped. A runtime dropped
+    // under a live engine can wedge its own teardown: a history absorber
+    // polled mid-scan while the runtime closes its task list misses the
+    // block cache, and foyer-memory 0.22.3 spawns the fetch while holding
+    // its in-flight lock; the closed runtime drops that fetch inline, and
+    // the fetch's drop takes the same lock, so the worker deadlocks and
+    // the runtime's drop waits on it forever.
+    steps.run("rig shutdown", rig.shutdown()).await;
+    steps.enter("test body return");
 }
 
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
@@ -726,7 +814,12 @@ async fn wait_for_feed_teardown(state: &crate::http::AppState, attempts: usize) 
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(state.livefeed.registry().len(), 0, "feed teardown stalled");
+    assert_eq!(
+        state.livefeed.registry().len(),
+        0,
+        "feed teardown stalled: {:#?}",
+        state.livefeed.registry().describe_for_test()
+    );
 }
 
 /// One task owns the listener and every accepted socket; the caller aborts and joins it.

@@ -3410,9 +3410,9 @@
   {
     "name": "livefeed_reopened_sealed_span_serves_catch_up",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      "#[test]"
     ],
-    "function_sha256": "1c5ac2848c78f04607dfb70940d28785a1ffe23ba558c2d3611425ec9254aeec",
+    "function_sha256": "e970902001396b0cbbbe4152c114de660491e67bf1b469a8b54f4607507d1bd6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",

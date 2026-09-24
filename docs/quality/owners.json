@@ -531,6 +531,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::watched_test",
+      "path": "src/dst/tests/fixture_livefeed.rs",
+      "reason": "Test-only located-stall watchdog; the OS thread holds only the current step and a non-blocking state probe, is woken by the test's completion and joined before the test returns, and aborts the process only after reporting a step that outlived every runtime bound. A runtime task cannot report a runtime whose workers are blocked or whose teardown never ends.",
+      "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::the_gather_window_waits_for_ack_dispatch",
       "path": "src/dst/tests/durability_gather.rs",
       "reason": "ack-dispatch regression; the concurrent request is joined after the held dispatcher releases; sequential execution could not observe its blocked acknowledgement",
