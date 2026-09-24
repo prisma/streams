@@ -1,0 +1,719 @@
+{
+ "items": [
+  {
+   "item": "#1",
+   "title": "PostingsCache: cold load over-claims to bucket end and stale publish overwrites newer install (silent keyed-read skips)",
+   "status": "done",
+   "detail": "d2e87129: load_runs is the single owner of the coverage claim (.min(target) on both arms, runs clipped by ValidatedRuns::clipped_to); Inner::publish_load decides against the entry resident at publish time. Six reds plus two 1,024-case properties. 3dfb970f adds a byte-capped-arm test that kills the 2 surviving mutants. CI, rust-quality and workflow-lint all green at pushed head 3dfb970f. Known trade-off: a cold load that stops short of a chunk-only entry now publishes nothing, so those reads use direct loads until the seam. Still open: the review wanted rank 75 (PostingsCache dedupe) to land BEFORE this fix. It is still unlanded (plans16), so 75 will touch this code again. An unverified hole was recorded, and bugs/plan-1.md recommends it as the next bug: the demand bridge can lift load-published entries that the warm window never tracked.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-1.md"
+  },
+  {
+   "item": "#2",
+   "title": "Non-ASCII routing key silently lands on the default key (seal final and plain append)",
+   "status": "done",
+   "detail": "b0a6ba65: one predicate, parse_routing_key, for both writers: at most 1,024 bytes of header-text class. A key outside it is 400 invalid_routing_key. The seal path no longer round-trips the key through a HeaderMap, which also removed product_seal's expect_used exception. The predicate is checked against the http crate's from_bytes+to_str for 1,024 cases. CI all green at b0a6ba65. Parts of the review's Change deferred by the plan: the SDK client-side guard (sdk/src/index.ts:698,720,757; seal at :1004; needs an npm build and dist) and the dead seal plumbing (seal_after/seal_auth, the product_append pass-through, is_seal_final). Read-side ?routingKey= still accepts any UTF-8 key of at most 1,024 bytes.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-2.md"
+  },
+  {
+   "item": "#3",
+   "title": "Watch long-poll never proves shard ownership: non-owner answers 200 invalidated:false forever",
+   "status": "done",
+   "detail": "6faf4757: WatchService holds the ShardDirectory. wait() resolves the route shard (Adoption::External) before keys.put and touch.journal. A non-owner answers 409 with a replay to the ring owner, rendered through the existing resolve_error_response. Two-instance reds (200 vs 409). CI all green at 6faf4757. Recorded as separate work (bugs/plan-3.md): watches are correct only for unsplit streams, and split-stream touch routing needs a product decision; a non-owner append still mints an orphan touch journal and its 25 ms flusher before answering 409; pilot name_hash vs RouteHash is a router change.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-3.md"
+  },
+  {
+   "item": "#4",
+   "title": "Consumer pull spins forever and burns healthy leases when a poisoned record's DLQ handoff is blocked",
+   "status": "done",
+   "detail": "1994fc25: the handoff result is a #[must_use] DeadLetterPass{settled, blocked}. Pull loops back only when settled>0, and the leases a Receive granted are always delivered (a third defect the design review found). The target decision is hoisted, which deletes an expect_used exception. Reds: Elapsed wedge at waitMs deadline; dropped lease 0 vs 1. CI all green at 1994fc25. Out of scope (bugs/plan-4.md): settle swallows its poison read; nothing guards against deleting a configured DLQ target; Receive writes cursor_key every 50 ms on an idle long-poll; serial DLQ appends have no per-pass cap.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-4.md"
+  },
+  {
+   "item": "#5",
+   "title": "Tombstone walk pages only the deployment tenant; other projects' lost/expired closures bill storage forever",
+   "status": "done",
+   "detail": "84f80b75: Registry::reconciliation_page is rooted at registry/v4/projects/ and includes terminal descriptors. project_page is private, and sref_of_key is the exact inverse of desc_path, pinned by two 1,024-case properties. The pinned r09 test is re-pinned (the cursor is now the descriptor key). CI all green at 84f80b75. OPEN, recorded in bugs/plan-5.md as the next bug (confirmed by reading only, no test): walk_engine_budgeted (src/billing.rs:1871) does engine_for_quiet(route).await.ok()?, so a foreign-owned route (NotOwner) is treated as deferred and ends the pass. On a multi-instance cell this can stall the walk. submit_billing_closes also swallows resolve failures.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-5.md"
+  },
+  {
+   "item": "#6",
+   "title": "Feed retry task can win a Solo drive and drop the records (spurious lag cut or silent wire gap)",
+   "status": "done",
+   "detail": "d902a85b is a verbatim move of the permit-held drive and retry task into sse/feed/drive.rs. 5292e3e3 means the retry tick can never read: the Tail enum has no record-bearing variant, and retire/bump_version each have one owner. Nine tests. 5c306651 bounds the three driver-lifecycle test rendezvous at 10 s, so hangs no longer become mutant TIMEOUTs. CI all green at 5c306651. As the review synthesis advised, no density assert was added (item 59 deleted the lever). Out of scope (bugs/plan-6.md): the CAS window between the retry task's final break and retry_scheduled.store(false), and a reached_live-aware FEED_LAG_DISCONNECTS.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-6.md"
+  },
+  {
+   "item": "#7",
+   "title": "Month-boundary account re-stamp orphans the old SegmentState; carry bills both accounts every month",
+   "status": "held-for-decision",
+   "detail": "HELD on Soren, Decision 1 in status-2026-09-23b.md. No code is on slate. The designed fix re-keys persisted rollup state from segment/{account}/{project}/.. to segment/{project}/{stream_id}/{seg}, keeping the account as an attribute, with an on-open migration (new src/rollup/rekey.rs). Once it runs, older binaries fail carry closed. Three options: (a) land; (b) land behind a rehearsal on a copy of a real rollup DB (the session's lean); (c) defer. Red tests are drafted (bugs/b7-test-0.rs, b7-test-1.rs). The over-billing is inside Streams' own rollup; invoice export is not built, so nothing has been invoiced or charged. There is also a customer-visible effect today (plan-7.md 'Secondary effect' and 'Reach'): stream_segment_states scans the old account's prefix, so the provisional usage view (the fallback in src/product/usage.rs:100-118) shows the old account phantom storage from month M+1 on, repeating every month, even after the stream is deleted. Plan-noted residue: phantom rows and artifacts already finalized by existing orphans need UsageCorrection records and an operator decision. Separately, zero-gauge deleted streams still synthesize an empty month row every month.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-7.md"
+  },
+  {
+   "item": "#8",
+   "title": "AbsorbReservation::grow is hold-and-wait on the shared pool: two fat gathers deadlock all absorption",
+   "status": "done",
+   "detail": "c19cc2f0: grow() and its expect are deleted. A sync #[must_use] try_grow replaces it, refused bytes go to the existing deferred_budget outcome, and stage_chunk is no longer async. The invariant (never wait for pool bytes while holding some) is stated on AbsorbBudget. Two reds, both Elapsed after 20 s. CI all green at c19cc2f0. Exposure is narrower than the review said: it needs at least 2 shard absorbers AND ABSORB_GLOBAL_GATHERS>=2. The certified compute-1g profile sets 1, but binary defaults were exposed; bc43a2bb later makes tests run the shipped 2-gather default. Follow-ups (bugs/plan-8.md): move the budget types to src/history/budget.rs (= item 76 step B); read_wave materializes up to gather_read_par x 4 MiB before funding; MEMPROFILE_CERT does not pin ABSORB_GLOBAL_GATHERS.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/bugs/plan-8.md"
+  },
+  {
+   "item": "9",
+   "title": "Raw PUT recreate CAS omits the fork_children guard: expired fork source overwritten, fork prefix permanently unreadable",
+   "status": "done",
+   "detail": "f499d590: creation::retained_for_forks and recreatable, judged at one instant. The raw recreate CAS uses recreatable on the stored descriptor, and a declined winner is either retained (409 gone) or live (idempotent comparison). bbd23d13: append and delete call the owner instead of restating it. e7c7ad87: a product create that loses to a live forked incarnation is idempotent. First pushed in head 9b2f53bc; CI all green. Deviation: the owner lives in application::creation, not the review's proposed src/registry/lifecycle.rs (item 72 builds on it). Edge changes 1-2 in the memo: in the stale-snapshot window, 201 becomes 409 gone, and a PUT over a soft-deleted name goes from 200 to 409 gone. FRK-019 mapped partial.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans6/recreate-fork-guard.md"
+  },
+  {
+   "item": "10",
+   "title": "Stream-TTL -> expires_at_ms wraps: huge TTL creates an already-expired stream that is swept",
+   "status": "done",
+   "detail": "efe12b2e: src/application/creation/ttl.rs owns MAX_TTL_SECS = 2^32-1, admit_ttl, and saturating window_ms/expiry_after/expiry_from_now. Both parsers refuse past the ceiling through their existing 400 arms. Fork inheritance and renewal saturate to \"never\". Conformance: 332/0/6. CI all green at efe12b2e. Open under Decision 13: the ceiling value, and Stream-TTL: 0 stays admitted on the raw surface (the product surface refuses 0).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans/ttl-overflow.md"
+  },
+  {
+   "item": "11",
+   "title": "One unreadable routers/*.json freezes ownership publication, yield and rebalance cell-wide",
+   "status": "done",
+   "detail": "4bb51c0d: inspect_err instead of continue. Reports fold through fresh_edge_p50, a pure predicate with its 10 s boundary as a test input. An unreadable snapshot skips only the desired publication; view, peers, yield, return-home and the rebalancer all run. DST red after the 20 s bound. fleet.rs stays line-neutral. CI all green at 4bb51c0d. Deliberate deviation: the read and need/need_shrink are not moved, which would have put the cores division and the 60 s window in mutation scope with no killer. Consequence: a slow router GET can still delay the view by up to the 10 s population deadline.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans3/fleet-router-report.md"
+  },
+  {
+   "item": "12",
+   "title": "Billing sweep's routine open-probe-close earns anti-flap strikes; cold shards drift to a 60s shard_moving holdoff",
+   "status": "done",
+   "detail": "eb52b970: sharddir/holdoff.rs owns Departure{Died, Retired(reason)}, one exhaustive is_evidence, and a pure ledger_after. SweepEviction and Shutdown arm the base 3 s holdoff with no strike; the ledger is never reset. Red in unit and DST tests. Mutation owner sharddir_holdoff. No wire change. CI all green at eb52b970.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans3/sweep-anti-flap-strikes.md"
+  },
+  {
+   "item": "13",
+   "title": "Shared RAW keyed feed: match-free batch clears need_status without sending upToDate; serve() emit protocol copied 3-4x",
+   "status": "partially-done",
+   "detail": "Landing 1 (the bug) is 4247421f: the RAW status clear now rides an at_head record the session actually sent, line- and fact-neutral in the ratcheted serve. DST red: left 0, right 1. CI all green at 4247421f. 905d6656 also pins multi-record RAW pairing. Scope correction: there is no keyed RAW SSE; the bug is raw and product sessions sharing one default-lane feed. Landing 2 (the M dedupe) is NOT STARTED: a private status owner for need_status/last_reported/reached_live, one live emit for Batch and both Solo arms, delete sealed_of, one product_token on SessionCtx. sealed_of is still at src/sse/session.rs:136, and need_status is still mutated at about 10 sites. The plan deferred it (§2b).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans2/raw-batch-uptodate.md"
+  },
+  {
+   "item": "14",
+   "title": "SSE feed sources pin one ShardEngine incarnation; same-owner engine replacement stalls sessions on keep-alives",
+   "status": "done",
+   "detail": "d93b421b: one predicate, live_tail_cutoff(owned, engine), checks ownership first, then the engine's is_closed(). It yields the new SourceCutoff::EngineRetired in both cut_off impls and both read_batch guards. Counted as FEED_CUTOFF_ENGINE_RETIRED and exposed on /v1/debug/load. Three DST reds in the new livefeed_engine_retired.rs. CI all green at d93b421b. Scope correction: SweepEviction cannot reach a feed's engine.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans2/feed-source-engine-retired.md"
+  },
+  {
+   "item": "15",
+   "title": "Single-flight owners leak their in-flight marker when the detached loader panics (OpenGate wedges a shard; PostingsCache bypasses forever)",
+   "status": "done",
+   "detail": "fd810688: sharddir/unwind.rs::unwind_proof wraps every opener, so a panic becomes a failed open (strike, holdoff, health, marker cleared). postings_cache/owned_load.rs runs the owned scan under the same boundary. Both files are new mutation owners. CI all green at fd810688. get_or_open's now-redundant reaper catch_unwind stays, because it is fingerprinted whole under unwrap_used.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans2/single-flight-panic-leak.md"
+  },
+  {
+   "item": "16",
+   "title": "Sealed-span local reader: tokio Mutex held across the whole page read and a closed cached engine is never evicted",
+   "status": "done",
+   "detail": "ac9ab99e: the reader cache is deleted, and each local page resolves the resident engine and handle. No Mutex remains in src/sse/source.rs; the serialization half is proven structurally. DST red: 15 s of keep-alives. CI all green at ac9ab99e.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans2/sealed-span-reader-cache.md"
+  },
+  {
+   "item": "17",
+   "title": "serve_h1 sets no hyper Timer, so the 30s header-read timeout is silently off",
+   "status": "done",
+   "detail": "71345c03: http::serve::h1_builder sets timer, header_read_timeout and max_buf_size together. New knob HttpConfig::h1_header_timeout / SSE_H1_HEADER_TIMEOUT_MS, default 120 s. Bench client pools were moved from 120 s to 60 s. Reds: two 'still open after 4s'. CI all green at 71345c03. serve_h1 later moved to http/serve.rs (f0c072b3). Open: the 120 s default (not hyper's 30 s) is a field-posture number (Decision 13, followups F-E). The edge's upstream pool idle has to be measured in a staging soak.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans/h1-header-timeout.md"
+  },
+  {
+   "item": "18",
+   "title": "Filtered cargo test gate legs pass with 0 tests; capacity gate and 1,000-project cert can vanish on a rename",
+   "status": "done",
+   "detail": "00ff0e7e: scripts/quality/tests_ran.py checks that every result line is ok, the passed count reaches the leg's floor, and each --exact name has its own ok line. scripts/test-leg.sh runs one leg through it; gate.sh, release-gate.sh, quality.sh, ci.yml and rust-quality.yml use it. Red: a canned renamed-leg log is refused. CI all green at 00ff0e7e. Optional sub-proposal not taken: test-inventory.py --check resolving every --exact selector (the runtime check already covers named legs).",
+   "plan_file": null
+  },
+  {
+   "item": "19",
+   "title": "No workflow has timeout-minutes or a concurrency group",
+   "status": "done",
+   "detail": "af9ba1fc: every job's timeout-minutes is at least 2x the observed green maximum over the last 40 runs (rust 60, invariant-tools 240, quality 30, most others 30). Concurrency groups cancel only superseded PR runs; slate pushes and schedules always complete. CI all green at af9ba1fc. The 60-min rust deadline is what later cut off the F-G hangs. Residual: individual fetches in scripts/platform-e2e.mjs have no per-request bound; only the job deadline limits them.",
+   "plan_file": null
+  },
+  {
+   "item": "20",
+   "title": "Durability-barrier tests prove 'still pending' with sleep + !is_finished() and no entered-proof",
+   "status": "done",
+   "detail": "82095942: held(engine, entered, task, what) polls appends_enqueued up to the named count before the grace sleep, at all 8 sites. Proven live: a count never reached fails in 5.9 s. CI at pushed head 82095942 was CANCELLED at the 60-min deadline by the F-G hang (rust-quality and workflow-lint green); all three workflows green at the next head, eb52b970.",
+   "plan_file": null
+  },
+  {
+   "item": "21",
+   "title": "system_append decides create/relay by sniffing Responses; ownership relay for system-stream create is dead (non-owner ledger appends fail until the owner writes)",
+   "status": "done",
+   "detail": "aa445217 moves system_append verbatim to billing/system_append.rs. 8dabca7f makes append_local typed (append_typed, then CreationService::create on NotFound) with LocalFailure{Key,Append,Create}, relaying once on an owner-bearing refusal. The receiver internal_telemetry_append answers 409 not_ring_owner with Streams-Replay-To, and 400 missing_key/invalid_name/invalid_key. Three reds plus two mutant-killer tests. CI all green at 8dabca7f. The review's optional M follow-up (a create_stream parse/render split) is not done. Wire change not in the memo's 'Changes I made at the edge' list (fleet-internal route): a skewed non-owner receiver now answers 409 not_ring_owner + Streams-Replay-To where it answered a masked 404 not_found, and a __ds root name is 400 invalid_name where it was 400 reserved.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans3/system-append-relay.md"
+  },
+  {
+   "item": "22",
+   "title": "remote_read_page rebuilds ReadFailure from peer status: relayed cursor_beyond_tail becomes target_mismatch",
+   "status": "partially-done",
+   "detail": "Landed in 74391f9c: WireReadRefusal {cursor_beyond_tail, changed_incarnation, missing, gone} is a typed body on the streams-internal-read-page route. The coordinator decodes it whatever the status, so the SDK rewind contract holds on relayed deliver=applied replays. The try_clone().expect exception was deleted. CI all green at 74391f9c. HELD, Decision 2: the review's 'delete the bare 409 arm'. An untyped 409 still maps to ChangedIncarnation. Retiring that mapping would make a genuine recreate's stale_target a retryable 503 at the product edge until the registry cache turns over. Recommendation: type stale_target first, then retire the mapping. Wire change not in the memo's edge list (fleet-internal route): relayed read refusals now travel as the typed WireReadRefusal body and are decoded whatever the status, so a relayed cursor_beyond_tail is no longer reported as target_mismatch.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans4/remote-read-reply.md"
+  },
+  {
+   "item": "23",
+   "title": "Queue ops reply Result<_, String>; callers prefix-match and a shard move becomes 500 internal",
+   "status": "held-for-decision",
+   "detail": "Decision 6 covers chain 46/47/48 -> 23. No code on slate. It carries seven wire decisions: 429/500 -> 503 shard_moving for a retiring engine, and a new 409 consumer_lifecycle_conflict. There is also an engineering blocker: the committer's blank-body mutants (CommitTransaction::stage and neighbours) cannot be bounded by today's harness (recorded in 4f522b0f and 32b843f6), so CI's mutation leg would time out. Recommendation: first a preparatory commit that bounds those tests, then the chain.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/queue-refusal-typed.md"
+  },
+  {
+   "item": "24",
+   "title": "Queue settle: client delayMs/visibilityMs reach now + x as i64 unclamped",
+   "status": "done",
+   "detail": "2374751d: src/queue.rs owns MAX_LEASE_WINDOW_MS (12 h), visibility_window_ms, retry_delay_ms and configured_visibility_ms. The QueueOp window fields narrow to u32, so the committer arithmetic is total by type. Values are clamped, not refused. Four DST reds plus a 1,024-case property. CI all green at 2374751d. One wire change is under Decision 13: an extend with visibilityMs 0 is now held to the pull's 1 s floor. Residue: lease rows written unbounded by older binaries are not healed; an ack or a consumer delete clears them.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans/queue-settle-clamp.md"
+  },
+  {
+   "item": "25",
+   "title": "Record count over bucket capacity returns 429 + Retry-After forever; limit config unvalidated",
+   "status": "done",
+   "detail": "33d10a7c re-grounds the limiter test on a drained bucket. a8c99c23: a request larger than a fresh bucket (bytes or records) is 413 on every content append, with no retry-after. config/admission_limits.rs refuses at boot any posture that cannot admit one unit (finite knobs, burst>0, at least 1 token), and the file is a registered mutation owner (27/27). The dead bytes-413 arm of admit_usage and the per-append 'requests' arm are gone. Four reds plus a 1,024-case property. First pushed in head 0afa2597; CI all green. src/usage.rs deliberately stays unregistered (Decision 16). Wire change not in the memo's edge list: a request larger than a fresh bucket is 413 (was 429 + Retry-After forever), and a limit posture that cannot admit one unit now refuses boot.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans4/record-count-413.md"
+  },
+  {
+   "item": "26",
+   "title": "Graceful shutdown never seals or drains read usage, contradicting the documented accuracy contract",
+   "status": "done",
+   "detail": "fc18a704 moves the telemetry loops verbatim to billing/telemetry_loop.rs. In ee99975d, cancellation breaks the cadence and runs one terminal round (seal whatever its age, then one drain_once), bounded by one TELEMETRY_DRAIN_SECS. r09's grace goes from 300 ms to 5 s and is re-pinned. CI all green at ee99975d. Constraints: TELEMETRY_DRAIN_SECS must stay below the 10 s supervisor grace, and telemetry_loop.rs is not a registered mutation owner.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans4/shutdown-drains-reads.md"
+  },
+  {
+   "item": "27",
+   "title": "u128 byte-ms as String with a name-sniffing validator: 14 parse().unwrap_or(0) sites and bypassed decode paths",
+   "status": "partially-done",
+   "detail": "Landed: 0ddfebc4 pins the byte-time wire's two zeros (\"\" unwritten vs \"0\" computed). 31fd9096: a late byte-time difference above i128::MAX fails its page instead of committing an unreadable row. 5d9d517f: an undecodable pending artifact is logged on every scan and stays in the outbox. CI all green at 5d9d517f. HELD, Decision 20: C3, the typed ByteTime<T>(Option<T>). The plan corrects the reviewer's ByteMs(u128), which would re-encode unwritten zeros. C3 makes /v1/debug/usage-reconcile answer ok:false for a malformed row and changes the customer 503 message text. D1: count undecodable pending artifacts on /operator/billing.json. Until C3 lands, the parse().unwrap_or(0) sites and the decode_json name-sniffing walk remain.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans13/byte-ms-typed.md"
+  },
+  {
+   "item": "28",
+   "title": ":scan bypasses the read-byte quota; read/op accounting reconstructed from finished Responses",
+   "status": "partially-done",
+   "detail": "Review step A: 0eb8a38d is a verbatim move to product/scan.rs; in 527d3d3a, :scan checks at entry and debits the framed bytes, and debit_read_response is deleted. The session added df9ff212 + f1c9e77e: consumer :pull also admits and debits the read-byte quota. Both commit messages label this 'review rank 28, step B', but it is NOT the review's step B. CI all green at 527d3d3a and at f1c9e77e. The review's step B is NOT STARTED: append/settle metering onto typed results, deleting meter_op_if_ok/OpKind. Both are still in src/product.rs (:1027-1044, called at :1129, :1144, :1253). SDK consequence (plans3/scan-read-quota.md C5): the shipped scan() iterator (sdk/src/index.ts:864-882) throws on a 429 before yielding the page and never exposes its cursor, so a caller hit by a 429 mid-export must restart the whole scan from the beginning. The fix is an SDK follow-up with no server change: expose the page cursor, or retry on 429 / retry-after inside scan(). Wire change not in the memo's edge list: :scan and :pull can now answer 429 project_rate_limit. Open remainder: review step B (typed append/settle metering) and the SDK follow-up.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans3/scan-read-quota.md"
+  },
+  {
+   "item": "29",
+   "title": "Read core returns Result<_, String>: fork reads and fork creation answer 500 for Opening/NotOwner; registry error reported as 'gone'",
+   "status": "held-for-decision",
+   "detail": "Decision 5 covers chain 45 -> 29. No code on slate. Eight wire decisions, mostly 500 -> 503 + Retry-After for transient shard states on fork reads and fork creation, plus D3: 409 + Streams-Replay-To for a foreign own shard. Non-fork reads relay rather than answering 409, so D3 would make forks behave differently. Recommendation: approve the 503s (D2, D5); decide D3 against 'relay like non-fork reads'.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/fork-read-typed.md"
+  },
+  {
+   "item": "30",
+   "title": "Internal receivers answer 404 for a registry storage error; SSE sender treats 404 as incarnation gone",
+   "status": "partially-done",
+   "detail": "Landed in 5c0e62d6: src/product/internal.rs internal_desc serves the three product receivers (sweep-segment, queue-cursor, segment-scan). A registry Err is 503 temporarily_unavailable; 404 means only 'no descriptor'. The DST red was 404 vs 503 for all three. CI success is recorded for head 5c0e62d6; session notes say one F-H flake rerun on that head. Remaining from the review's Change: the http.rs twins (internal segment-read and segment-close, err_resp envelope) still collapse the two cases. The follow-up waits on http.rs budget. The typed live_descriptor owner that was to replace the five public prelude copies is not done. Wire change not in the memo's edge list (fleet-internal receivers): a registry storage error on sweep-segment, queue-cursor and segment-scan is now 503 temporarily_unavailable where it was 404. Open remainder: the http.rs twins and the typed live_descriptor owner.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans4/internal-desc-503.md"
+  },
+  {
+   "item": "31",
+   "title": "QueuedBytesGuard is owned by the handler future, not the queued AppendReq",
+   "status": "held-for-decision",
+   "detail": "Decision 4. No code on slate. Moving the charge onto the queued request fixes the under-report during stalls. The cost: one wedged shard would pin its whole project's queued-bytes budget until its committer drains. Recommendation: hold, or pair it with a per-shard cap. Item 74 was sequenced after this item.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/queued-bytes-custody.md"
+  },
+  {
+   "item": "32",
+   "title": "Five env names parsed twice (clap + overlay); consumers split across copies, two compactor flags dead",
+   "status": "partially-done",
+   "detail": "Landed: fdc31b07, where --compactor-poll-ms on argv reaches the compactor (it was silently ignored). 46d4b7df: BILLING_MODE/ROLLUP have one reader, CliArgs::billing_required()/runs_rollup(), used by /health, /operator/billing.json and the drain; the env copies and billing::billing_required are deleted. Reds are in the dst billing_readiness module. CI all green at 5d9d517f. HELD, Decision 19: D-32a (an unknown BILLING_MODE/ROLLUP word refuses boot; decide with 41 D1); D-32b (read spool nests under the clap PATH_PREFIX, which moves the spool root for argv-only deployments, so drain first); D-32c (honour --compactor-max-concurrent on argv, which conflicts with MEMPROFILE_CERT). Follow-up: bootstrap::run keeps three direct comparisons of the clap fields.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans13/env-parsed-twice.md"
+  },
+  {
+   "item": "33",
+   "title": "SourceFailed/NoProgress park relies on a deleted producer heartbeat; durable records stall until next append",
+   "status": "done",
+   "detail": "7c4f8606: sse/session/read_retry.rs ReadRetry. A session whose own drive read nothing re-parks on min(delay, lease nap), 250 ms doubling to a 5 s cap, reset on progress. The stale heartbeat comments are fixed. DST reds: 5 s with only the head status, then green in 0.26 s. New mutation owner. CI all green at 7c4f8606. Edge change 4: a sealed-span peer's 429/503 is re-read on this backoff, and its Retry-After is not consulted.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans6/sse-read-backoff.md"
+  },
+  {
+   "item": "34",
+   "title": "Rebalancer target and eager open ignore the active ring set",
+   "status": "done",
+   "detail": "6515a15d: pick_move_target takes the tick's active ring. The eager open admits exactly effective_owner == me, and return-home reuses the ring the tick just published. Three DST reds. fleet::start's function-budget exception is deleted. First pushed in head 2f2c3015; CI all green. Edge change 7 (fleet policy): the ring's assignee of an overridden shard now opens it at its next tick.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans10/rebalancer-active-ring.md"
+  },
+  {
+   "item": "35",
+   "title": "One stream's unreadable row fails the whole gather and backs off every stream in the lane",
+   "status": "done",
+   "detail": "b5365880 (GatherOutcome move), 4ab5cfda (RangeReadError{Corrupt,Store}), ea75231f (settle_gather/back_off extraction; nesting exception gone), e19c80c5 (StreamGatherFailure{Corrupt, PostingsSelfDecode, PostingsOverlap}; a failed stream backs off alone with a named warn; pages are checked before staging). CI all green at 5d9d517f. The plan corrected the review: isolating ErrorKind::Data would blame a stream for store faults (NotFound, checksum). Optional, Decision 18: expose a count of streams left out.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans13/gather-row-isolation.md"
+  },
+  {
+   "item": "36",
+   "title": "Registry::get can re-insert a pre-mutation descriptor after invalidate (stale fill race)",
+   "status": "done",
+   "detail": "ca36a7f4 moves the cache verbatim to registry/cache.rs. 063a674d: per-slot generations, and DescriptorCache::fill claims and settles; an invalidate empties a slot under a fresh generation and never removes it. Four deterministic reds; 42 mutants, 0 missed; mutation owner registry_cache. CI all green at 063a674d. This was the root cause of the append-after-merge '409 sealed' flake class. Out of scope, recorded: create's own post-PUT insert can still race; closing it needs a generation captured before the PUT inside an expect_used-ratcheted function.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans/registry-cache-generation.md"
+  },
+  {
+   "item": "37",
+   "title": "Handler panics reaped without tracing/counter; poisoned process-wide locks invisible to readiness",
+   "status": "partially-done",
+   "detail": "Step A landed: f0c072b3 is a verbatim move of serve_h1 to http/serve.rs. a0185c3b: reap() logs a panic at ERROR and counts it on the runtime's task record, tasks.connection_panics on /v1/debug/load; the shutdown's own aborts are not counted. CI all green at 4c51ebfd. Step B is HELD, Decision 10: a poisoned process-wide lock makes requests panic while /health stays 200. Options: (1) is_poisoned() -> /health 503 (risk: one poison pill takes the fleet out of rotation); (2) request shutdown; (3) no readiness change, alert on connection_panics growth. Recommendation: (3) now, decide (1)/(2) with WP-15.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans11/handler-panic-visibility.md"
+  },
+  {
+   "item": "38",
+   "title": "Dead critical task leaves a permanent 503 zombie; exit watchdog watches a narrower predicate than /health",
+   "status": "held-for-decision",
+   "detail": "Decision 3. Planned and ready, no code on slate. It changes process policy: a Critical loop that ends would stop the binary with exit 1. Behind deploy/app-server/supervise.ts an exit becomes a held 500, not a restart. Recommendation: land item 39 first, then 38.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans6/critical-task-exit.md"
+  },
+  {
+   "item": "39",
+   "title": "deploy supervise.ts converts every process death into a held unauthenticated 500",
+   "status": "not-started",
+   "detail": "No plan and no commits. deploy/app-server, app-lb and app-gen supervise.ts are still three byte-identical copies (same md5 at HEAD). The review requires cloud validation. It is the recommended prerequisite for item 38 (Decision 3).",
+   "plan_file": null
+  },
+  {
+   "item": "40",
+   "title": "Heartbeat cadence is coupled to the serial fleet tick",
+   "status": "held-for-decision",
+   "detail": "Decision 23. A plan exists, no code. A heartbeat on its own supervised cadence survives a store brownout that stalls the serial tick; today every instance drops every peer and fences. The trade-off: a fresh heartbeat no longer proves the tick progresses, so a stuck tick keeps its ring membership. Soren needs to decide what liveness a heartbeat should mean.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans15/heartbeat-cadence.md"
+  },
+  {
+   "item": "41",
+   "title": "Environment-overlay knobs silently default on a typo; scaler cooldown multiply wraps",
+   "status": "partially-done",
+   "detail": "C1 landed in 07db91a7: cooldown_ms() and merge_patience() saturate, so SCALE_COOLDOWN_SECS=inf means never re-scale (it wrapped to always in release and panicked in debug), and SCALE_HOT_EVALS=inf no longer wraps. C2 landed in a342ab6f: TOKIO_WORKERS is a RuntimeConfig knob, and main no longer reads the environment. CI all green at 77c13d74. C3 is HELD, Decision 14: 54 numeric knobs silently take their default on an unparseable value. D1: refuse boot (recommended) vs warn for one release. D2: trim whitespace and refuse an empty value. D3: keep accepting NaN/inf/negative scaler floats.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans12/env-overlay-typos.md"
+  },
+  {
+   "item": "42",
+   "title": "HistoryConfig::default() switches on cfg!(test); shipped absorber defaults pinned by no test",
+   "status": "done",
+   "detail": "bc43a2bb: the default is 64 MiB / 2 gathers in every build. The floored runtime budget (100,859,904 bytes, effective concurrency 1) is pinned. The whole lib suite (1,204 tests) is green under the shipped posture. First pushed in head 2f2c3015; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans10/history-config-cfg-test.md"
+  },
+  {
+   "item": "43",
+   "title": "Multitenancy audit scans only top-level src/*.rs; moves count as progress",
+   "status": "done",
+   "detail": "The review's interim fix landed: 09fd911d scans every src/**/*.rs, uses a TAB-safe normaliser, fails on a grep error and fails on GONE rows. fba5af56 uses a [ \\t] class for mawk. Baseline 67 -> 77 rows (78 after e19c80c5), with a Python fixture test. CI all green at fba5af56. The review's PREFERRED version is not done: port the categories into src/mt_lint.rs as syn visitors with per-site allow markers, and delete the script and baseline. This unblocks item 85 step C.",
+   "plan_file": null
+  },
+  {
+   "item": "44",
+   "title": "/v1/debug gate is 12 hand-copied if-blocks; make it one gated nested sub-router",
+   "status": "partially-done",
+   "detail": "Main change landed in 33fbd10e: src/http/debug.rs puts a layer with its own fallback on the nested /v1/debug router; the 12 copies are gone, with new red and pin tests, and mutation owner http_debug. CI at pushed head 33fbd10e was CANCELLED by the F-G hang (rust-quality green); all three green at the next head, 4c51ebfd. Edge change 9: without the token, unrouted paths and wrong methods answer 401 instead of 404/405. Not done: the review's separate commit making fleet_operation_authorized = fleet_operation_authorization(..).is_some(). src/http.rs:444 and :506 still duplicate the static/JWT logic.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans10/debug-gate-subrouter.md"
+  },
+  {
+   "item": "45",
+   "title": "ResolveError has two divergent transport mappings",
+   "status": "held-for-decision",
+   "detail": "The first commit of chain 45 -> 29, held under Decision 5. The review left the 500/503 registry-fault split for a deliberate wire decision. The private resolve_response in http/read.rs ('shard_open_failed') still sits beside http.rs resolve_error_response ('shard_open').",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/fork-read-typed.md"
+  },
+  {
+   "item": "46",
+   "title": "EnqueueError::Closed discarded: a closing engine answers 429 'append queue full'",
+   "status": "held-for-decision",
+   "detail": "Part of chain 46/47/48 -> 23, held under Decision 6: a wire change from 429 to 503 shard_moving, plus the unboundable committer-mutant blocker. No code.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/queue-refusal-typed.md"
+  },
+  {
+   "item": "47",
+   "title": "A fenced/closed DB write is reported as AppendErr::Internal (500) instead of Moved",
+   "status": "held-for-decision",
+   "detail": "Part of chain 46/47/48 -> 23, held under Decision 6. No code. This is the leading suspect for the unreproduced 500 in the capacity leg's split (see open observations).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/queue-refusal-typed.md"
+  },
+  {
+   "item": "48",
+   "title": "Committer queue drain is hand-duplicated and never closes the receiver; never-staged ops get 408 outcome unknown",
+   "status": "held-for-decision",
+   "detail": "Part of chain 46/47/48 -> 23, held under Decision 6. No code. It is a retirement/synchronization change, so it needs a Loom or held-commit test. It is also blocked by the committer blank-body mutants that today's harness cannot bound (4f522b0f, 32b843f6).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans5/queue-refusal-typed.md"
+  },
+  {
+   "item": "49",
+   "title": "Rollup cursors fail open: ops_cursor swallows read errors; missing next-offset defaults to \"\"",
+   "status": "done",
+   "detail": "06fb8d51: rollup.rs has one read_text repository read, and cursor/ops_cursor are twins, Ok(None) or Err. billing.rs page_position refuses a page with no position. The dead header maps are deleted. DST and unit reds. No wire change. CI all green at 06fb8d51.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans4/rollup-cursor-typed.md"
+  },
+  {
+   "item": "50",
+   "title": "Tracker eviction orphans a zero-debt StreamPressureBinding",
+   "status": "held-for-decision",
+   "detail": "Decision 7. No code. The direct fix (never evict an entry anything still holds) is correct but changes capacity. A resident binding would hold its project about 905 s after its last append, so sustained first-seen churn above about 18 projects/s would get 503 project_tracker_capacity (about 54/s today). HANDLE_IDLE_EVICT_SECS=0 would let the tracker fill permanently. Options: (a) the fix, plus MAX_TRACKED_PROJECTS 16,384 -> 32,768 (about 16 MiB), plus refusing HANDLE_IDLE_EVICT_SECS=0 at boot (recommended); (b) the fix at today's cap; (c) re-point the binding to the live entry (a shard.rs synchronization change). The bug itself is low impact.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans7/pressure-binding-eviction.md"
+  },
+  {
+   "item": "51",
+   "title": "Raw close-with-final installs the durable Sealing intent before transient admission",
+   "status": "held-for-decision",
+   "detail": "Decision 8. No code. Admitting before installing the intent narrows a behaviour RELEASE-PRODUCT-SURFACE round 7 documents as deliberate: intent retention across transient refusals. Also, a close that hits both the limiter and a refusing intent CAS would answer 429 instead of 409. Recommendation: approve.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans7/close-final-admission-order.md"
+  },
+  {
+   "item": "52",
+   "title": "telemetry-append buffers the body pre-auth under axum's implicit 2 MiB cap",
+   "status": "done",
+   "detail": "d3c63675 moves the receiver verbatim to http/telemetry_append.rs (new mutation owner). In 2f2c3015 the receiver takes Body and reads it with to_bytes under MAX_REQUEST_BODY_BYTES, only after authentication and the header checks. Over the limit it answers 413 too_large. Reds: unauthenticated 3 MiB went from (413, 2162688 bytes read) to (401, 0); an authorized 2.7 MB relay went from 413 to 204. CI all green at 2f2c3015. Edge change 8 (fleet-internal route only): a relay may carry up to 32 MiB, so a receiver can briefly hold about 2x that per concurrent relay.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans10/telemetry-append-preauth-body.md"
+  },
+  {
+   "item": "53",
+   "title": "encode_tail seq.len() as u16 is bounded only by hyper's buffer default; SSE_H1_MAX_BUF unvalidated",
+   "status": "done",
+   "detail": "8f590ec5: HttpConfig::MIN_H1_MAX_BUF (8 KiB, pinned against hyper's own assert from both sides) is refused at validate(), where it used to boot and then panic. d148e1a4: a Stream-Seq longer than u16::MAX is written with seq_len 0 and no copy; rows that fit are byte-identical and the cast's expectation is gone. First pushed in head fb18840d; CI all green. Deviation from the review: no named maximum Stream-Seq length, because the tail copy has had no reader since routing v3. Follow-ups: delete the tail-row copy outright (changes the encode golden and needs a layout note). A Producer-Id of 65,503+ bytes panics the committer and needs a named limit (Decision 9).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans7/stream-seq-length.md"
+  },
+  {
+   "item": "54",
+   "title": "canonical_arg saturates f as i64 and diverges from the SDK for numbers beyond 2^53",
+   "status": "not-started",
+   "detail": "No plan and no commits. canonical_arg (src/application/watch.rs:388) still formats whole floats with `f as i64`. The review's fix is SDK plus server: Option-returning within +/-(2^53-1), an SDK throw for unsafe integers, and a shared value-encoding vector.",
+   "plan_file": null
+  },
+  {
+   "item": "55",
+   "title": "Producer/Stream-Seq row decoders treat malformed rows as absent",
+   "status": "done",
+   "detail": "517f4fa1: src/shard/lane_rows.rs accepts exactly 16/24/40-byte producer rows and refuses any other width; decode_seq_row refuses non-UTF-8; the loaders are decided by the nearest identity whose row exists. An unwrap_used exception with 6 unwraps is gone, two 1,024-case properties added, and lane_rows is a mutation owner. First pushed in head 7c4f8606; CI all green. Session notes say the rust-quality mutation leg took 2h04m on this change. Edge change 3: a corrupt row refuses with 500 internal / append_failed instead of silently accepting a duplicate.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans6/strict-row-decoders.md"
+  },
+  {
+   "item": "56",
+   "title": "Product DELETE answers with the raw-surface error shape; CreationFailure status table duplicated",
+   "status": "not-started",
+   "detail": "No plan and no commits. Product DELETE still dispatches to crate::http::product_delete (src/product.rs:1350 -> src/http.rs:2269) with the raw err_resp shape, and the CreationFailure status table is still duplicated. The fix is a deliberate additive wire change (retryable, cache-control).",
+   "plan_file": null
+  },
+  {
+   "item": "57",
+   "title": "Fleet outbox drain hides append failures; dead unwrap_or_default fallback",
+   "status": "done",
+   "detail": "12ad5134: append and encode failures propagate as the drain's error, and the clear reuses the decoded document. This exposed a vacuous assertion: runtime_isolation's emitted_a == 0 only held because A's own appends were silently failing. 9b2f53bc makes that test assert the isolation facts directly. First pushed in head 9b2f53bc; CI all green.",
+   "plan_file": null
+  },
+  {
+   "item": "58",
+   "title": "fail_next_list failpoint compiled into production list_page under a copy-pasted expect reason",
+   "status": "done",
+   "detail": "e578402d: the field and check are cfg(test), in registry/failpoints.rs, and list_page carries no exception. First pushed in head 9b2f53bc; CI all green.",
+   "plan_file": null
+  },
+  {
+   "item": "59",
+   "title": "TEST_ASSERT_KEYED_DENSE is a process-global bisect lever no test arms: delete it and its three audit blocks",
+   "status": "done",
+   "detail": "905d6656 first pins RAW multi-record pairing, so the serve predicates that enter the mutation diff are killed. fb18840d deletes the lever, its audit blocks, task_rk_dbg/bisect_last_off and floor_for_test; serve's budget exception is retired. CI all green at fb18840d.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans7/delete-keyed-dense-lever.md"
+  },
+  {
+   "item": "60",
+   "title": "LiveFeed keeps production state only tests read (retained_charge, source_reads, unused _key)",
+   "status": "done",
+   "detail": "83e57067 (tests read the ring's own charge), e6550142 (verbatim move out of the poisoned-state exception, plus a read_cap pin), 44cd0df8 (retained_charge gauge deleted), fba7b844 (_key parameter gone). CI all green at fba7b844. Deliberately re-decided: the source_reads counter stays in production (8 bytes per feed), because gating it behind cfg(test) would grow two impl-wide exceptions.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans8/livefeed-test-only-state.md"
+  },
+  {
+   "item": "61",
+   "title": "Cursor decode failures are &'static str and product_scan branches on the literals",
+   "status": "done",
+   "detail": "eca3f12a pins all three scan-cursor answers by status, code and message. b9f3cd7c: ScanCursorError{Invalid,WrongKind,Expired} and TokenError{Invalid,WrongKind}, and product_scan matches them exhaustively. No wire change. First pushed in head fba7b844; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans8/cursor-decode-errors.md"
+  },
+  {
+   "item": "62",
+   "title": "StreamDesc::epoch_bytes is a fake Option forcing dead error branches",
+   "status": "done",
+   "detail": "796211d7: both StreamDesc's and PersistedDescriptor's epoch_bytes are gone, along with KeyCheck::BadDescriptor and the dead branches. SweepTarget.epoch is [u8;16]. fresh_desc returns the epoch it minted. First pushed in head fba7b844; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans8/epoch-bytes-fake-option.md"
+  },
+  {
+   "item": "63",
+   "title": "Sweep custody Dekker handshake uses Relaxed; scheduler state split across two files",
+   "status": "partially-done",
+   "detail": "Step A landed: 69d8bc95 is a verbatim move behind billing/sweep_custody.rs SweepCustody<W: CustodyWord>. In aaf2baa5 every custody write is a SeqCst RMW, with a Loom model over the same methods (quality_loom_external_stamp_never_coexists_with_custody). CI all green at aaf2baa5. Step B is NOT STARTED: SweepScheduler in src/billing/sweep.rs with one record per prefix, deleting the 11 BillingService sweep accessors and deriving the resident gauge from custody flags. The stale R28 wording in close_scheduler_engine's doc is also left for step B.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans11/sweep-custody-seqcst.md"
+  },
+  {
+   "item": "64",
+   "title": "Topology phase-B swallows MapError as 'already done'; split/merge duplicate both phases",
+   "status": "partially-done",
+   "detail": "Step 1 landed: abadfce6 (pure refactor: intent read once, forwarder and dead block gone, topology.rs has no exceptions), 85017d84 (a refused MapError declines and stays pending, logged typed; checked child id), 729c52ac (merge allocates its child id before either parent seals). Three DST reds plus a segmap red. CI all green at 729c52ac. Edge change 5 applies to latent state only. Step 2 is NOT STARTED: a Transition enum parsed once and shared with PendingTransition::validate, one begin/publish, deleting the identical tails (deferred from step 1), and a typed publish verdict replacing phase-B's .unwrap_or(false) that swallows MutationError. Also open: refusing an unnumberable transition at phase A (plan D2, recommended in step 2), and whether topology.rs should be a mutation owner.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans9/topology-phase-b-maperror.md"
+  },
+  {
+   "item": "65",
+   "title": "'Is this authority still current' hand-copied with drift (four small fixes; defer the full merge)",
+   "status": "partially-done",
+   "detail": "Landed: 91da8f7c (verbatim move to src/auth/lease.rs), d704c1ea (pins: 27 AuthError responses, lease slots and statuses), 1ec80593 (counter slot = discriminant, compile-time proof), 535152bc (src/auth/refusal.rs, one exhaustive table each, no catch-all arms), a73b7b79 (one freshness boundary, feed_fresh_until/feed_stale; /v1/debug/auth now agrees with enforcement), 1791207a (a lease re-proves placement on this cell -> project_missing). CI all green at 5d9d517f. Of the review's four fixes, the move of CredentialInactive from 401 to 403 on the lease path is not on slate. HELD, Decision 17: D1 (that 401 -> 403), D2 (lease checks ownership before status), D3 (lease project not served: 403 project_missing vs 421 wrong_cell), D4 (status_and_quotas has the same placement gap as the lease had). The session's recommendation (memo Decision 17): keep D1-D3 as they are, so leaving CredentialInactive at 401 on the lease path is the recommended outcome rather than an unfinished gap, and choose D4 = 421 unjournaled. Open remainder: Soren's answer to Decision 17, and, if D4 is approved, the status_and_quotas placement check (no code yet).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans13/authority-currency.md"
+  },
+  {
+   "item": "66",
+   "title": "Tests assert on process-global history counters (one vacuous, one can fail from a neighbour)",
+   "status": "done",
+   "detail": "0aaa1ef1: both tests judge their own engine, one by reading back its own partition's postings pages and one by its own postings_cache hits. This is a different mechanism from the review's GatherOutcome.postings_bytes, and test-only. First pushed in head 729c52ac; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans9/history-counter-tests.md"
+  },
+  {
+   "item": "67",
+   "title": "OpenGate writes every counter twice (static + cfg(test) mirror); tests never verify operator metrics",
+   "status": "done",
+   "detail": "a1cf29f3: one OpenCounters field per gate; OpenGate::stats_json and ShardDirectory::open_stats. The statics, mirrors, reset hook and gate_lock are gone. A red two-rig test showed one runtime reporting another's opens. First pushed in head 729c52ac; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans9/opengate-counter-mirrors.md"
+  },
+  {
+   "item": "68",
+   "title": "A clippy failure prints no diagnostics",
+   "status": "done",
+   "detail": "0a8ed40a: quality.sh keeps clippy's status and always runs the ratchet; diagnostics.py prints the rendered finding with file:line, once per finding. Python red test. CI all green at 0a8ed40a.",
+   "plan_file": null
+  },
+  {
+   "item": "69",
+   "title": "gate.sh, release-gate.sh and ci.yml keep separate suite copies; local gate weaker; push-event ratchet vacuous in ci.yml",
+   "status": "partially-done",
+   "detail": "Part B landed in 24c4c77a: merge_base() refuses a push without QUALITY_BEFORE_SHA, and architecture-report sets the event, the previous revision and the base ref. It had been comparing HEAD with HEAD on every push. CI all green at 24c4c77a (HEAD). Part A is HELD, Decision 22: one scripts/suite.sh would run all targets in release, adding 66 bin/integration tests the local gates skip, but it would remove the RC path's only full-suite debug_assertions/overflow-checks run (9 debug_assert sites). Recommendation: keep a named dev leg in suite.sh that CI also runs. This commit and a7f3167d were pushed together as batch 12 after the batch-12 local gate's capacity leg failed once (see the unreproduced-500 observation).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans15/suite-single-owner.md"
+  },
+  {
+   "item": "70",
+   "title": "architecture-policy.json budget exceptions are stale; the gate never detects an obsolete exception",
+   "status": "done",
+   "detail": "47799eb3: the gate refuses an 'obsolete budget exception' (the default already covers it, or it names no current file or function). 12 entries were deleted, with self-test controls. CI all green at 47799eb3.",
+   "plan_file": null
+  },
+  {
+   "item": "71",
+   "title": "crypto.rs carries 10 redundant per-item allow(dead_code) for the by-path includers",
+   "status": "done",
+   "detail": "58569eb7: the ten redundant allowances are gone; only decrypt_frame keeps one, with a corrected reason. Checked: a dead secret_eq is now reported. First pushed in head fba7b844; CI all green.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans8/crypto-dead-code-allows.md"
+  },
+  {
+   "item": "72",
+   "title": "Descriptor lifecycle/liveness has no owner; reads regressed to 404 for expired-with-forks",
+   "status": "not-started",
+   "detail": "No plan and no commits. Prerequisites that did land: item 9's owner predicates (application::creation retained_for_forks/recreatable/desc_alive, not the proposed src/registry/lifecycle.rs), item 36, and item 77 stage 1. Remaining: a liveness enum matched wildcard-free at the read/append/create/delete sites; reads of an expired source with forks answering 410 instead of 404 (the R06 regression vs FRK-019, which f499d590 mapped only partially; this is a read wire change); validate_transition inside mutate_incarnation; a tombstone shape owner and terminal_close_ms.",
+   "plan_file": null
+  },
+  {
+   "item": "73",
+   "title": "Route x verb x method decided twice (scope matrix vs dispatch) with permissive scope defaults",
+   "status": "partially-done",
+   "detail": "Pins landed in a7f3167d (new dst security_operations): each of the 19 dispatched operations demands exactly its §6.1 scope, and a request naming no operation is authenticated before its 404/405. Non-vacuity controls bite. CI all green at 24c4c77a. Step 1 is HELD, Decision 21: a typed ProductOperation replacing required_scope deletes the permissive fallback arms. A request naming no operation from a principal without the fallback scope would then get 404/405 instead of a journaled 403 missing_scope. Such a request would also newly pass project admission, the POST memory gate, the reserved-name guard and body buffering (up to max_request_body_bytes) before its 404/405, where today it is refused 403 before any of that (plan skeptic C6; memo: 'body-buffered before refusal'). The only status-preserving alternative is keeping a third copy of the scope table, which the session does not recommend. MULTITENANCY.md §6.1's HEAD-records and create/delete-watch rows are enforced only by those fallbacks today. Step 2 (the gate returns the operation, the second classify and Preflight are deleted) is NOT STARTED. a7f3167d was pushed with 24c4c77a as batch 12 after the batch-12 local gate's capacity leg failed once (see the unreproduced-500 observation).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans15/product-operation.md"
+  },
+  {
+   "item": "74",
+   "title": "Per-request quota operations re-look-up the project with three different 'untracked' policies",
+   "status": "not-started",
+   "detail": "No plan and no commits. The review sequences it after ranks 28 and 31: 28 step A has landed, but 31 is held (Decision 4).",
+   "plan_file": null
+  },
+  {
+   "item": "75",
+   "title": "PostingsCache repeats removal/eviction/coverage/fallback logic 2-4x; eviction is O(n) per victim under the process-wide lock",
+   "status": "planned-not-implemented",
+   "detail": "Planned in plans16/postings-cache-dedup.md (base 24c4c77a; three commits: C1 pins only, C2 Inner::remove + Inner::evict_to_budget red-first on a scan-count witness, C3 Inner::effective_to + one fallback as a pure refactor). Skeptic pass done, verdict ready-with-corrections (C1..C11). Nothing is implemented: HEAD = origin/slate = 24c4c77a, clean. The plan notes that the review's 'land before rank 1' no longer applies, because #1 (d2e87129 + 3dfb970f) is already in, so this work re-touches that code. It needs no contract changes. The PostingsCache admission/bridge hole (bugs/plan-1.md) is left for a separate item. Notable skeptic finding (C1, must be settled before C2 lands): the new eviction heap is an unbudgeted per-publish transient under the process-wide lock; collected without a capacity hint it can peak near 42 MB at the 64 MiB default, so it must be built with Vec::with_capacity (peak about 1x, roughly 32% of cache_bytes). That transient is outside bootstrap's fixed memory bound, so the plan's §9 'no decisions' becomes a memory-posture note for Soren. Other corrections fix killer attributions, add a missing non-vacuity control and restate the expected mutant count (30-34).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans16/postings-cache-dedup.md"
+  },
+  {
+   "item": "76",
+   "title": "history.rs is at its 1,744-line ceiling and hosts four owners, stale docs and dead Absorber fields",
+   "status": "partially-done",
+   "detail": "Step A landed in b392aaf1 (orphaned doc fragments and headers). Step D landed in ed9238da: the Absorber loses data_store/keys, across 35 constructor calls, plus the dead_code and too_many_arguments exceptions. CI all green at c397e9e5. history.rs went from 1,744 to 1,656 lines over the program. Steps B (budget types into src/history/budget.rs) and C (wedge tests into durability_frontier_tests.rs) were NOT done; the plan judged them unnecessary for headroom, so budget, KeyCache and the wedge tests still share the file. Plan §8 residue: start_owned could take &Arc; identical fixture wrappers open_engine_with_absorber/_layout; stale v1 docs (history.rs module doc, postings_scan_opts_pub, worker.rs v1 lanes comment); HistoryResources::paused is undocumented.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans14/history-dead-fields.md"
+  },
+  {
+   "item": "77",
+   "title": "~170 lines of cfg(test) CAS APIs in registry.rs make DST tests prove the adapter, not production",
+   "status": "partially-done",
+   "detail": "Stage 1 landed in 200d5ad8: both incarnation ABA tests replay through mutate_incarnation, and cas_update_incarnation_outcome/IncarnationCas are deleted. Non-vacuity controls 0/A/B: with the production fence deleted, the old tests passed and the new ones fail. CI all green at c397e9e5. Correction to the review: Registry::update and r08_only_precondition_conflicts_are_retried still have callers, so they moved to stage 2. Stage 2 is NOT STARTED: port the 37 cas_update/cas_update_retry arrange sites to one fixture helper, delete cas_update, cas_update_retry, retryable_cas_error and the r08 test, settle Registry::update and its 3 callers, and resolve the diverging retry semantics.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans14/registry-cas-test-apis.md"
+  },
+  {
+   "item": "78",
+   "title": "Engine open sequence copy-pasted ~33x in DST; restart boundary is begin_close()+sleep",
+   "status": "planned-not-implemented",
+   "detail": "Planned in plans16/dst-open-sequence.md (base 24c4c77a; test harness only, three test-only commits: C1 fixture substitution removing 29 of the 37 open-sequence copies in src/dst (the review said about 33) and folding open_engine_with_absorber_layout into open_engine_with_absorber; C2 the 7 begin_close()+sleep pairs become await_terminated(30 s); C3 append_sized and append_n share one request builder). Skeptic pass done, verdict ready-with-corrections (C1..C7). Nothing is implemented. Notable skeptic finding (C3): await_terminated(..).expect(..) adds a new termination assertion to all 7 tests (every supervised role must finish and the storage close must return Ok/Clean/Fenced), so C2 is not assertion-neutral; a red there is a finding, not something to relax. Other corrections: the 5/50 Settings literal occurs 39 times in src/dst, not 53, and C2's commit must be described as removing a timing bet, not as a flake fix.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans16/dst-open-sequence.md"
+  },
+  {
+   "item": "79",
+   "title": "Ops and audit journals are the same gap-debt batch owner written twice",
+   "status": "planned-not-implemented",
+   "detail": "Planned in plans16/gap-journal.md (base 24c4c77a; one GapJournal owner for _ops_events and _audit_events, three commits). The plan finds a pure refactor with no live bug. Skeptic pass done, verdict ready-with-corrections (C1..C8). Nothing is implemented. One precondition the review bundled with this item has landed: src/telemetry_batch.rs has been a registered mutation owner since 77c13d74. The ops mutation owner must gain a DST filter, because drain_ops_once's body changes and no ops:: test calls it. Notable skeptic finding (C7): that makes the nightly mutation run of the ops bucket more expensive, since every whole-file ops.rs mutant then also runs three rig tests; it stays inside rust-quality's 240-minute deadline and cannot hang. Other corrections: T1/T6 must be written to kill the accessor and guard mutants, the expected ops tally is 13 caught + 2 unviable, and three expected non-vacuity failure texts are wrong.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans16/gap-journal.md"
+  },
+  {
+   "item": "80",
+   "title": "Test-only submit_absorbed drives the deleted v1 lane",
+   "status": "partially-done",
+   "detail": "Landed: 6bf64c62 (nine fixture sites use the absorb_through helper on the shared-partition lane), eb23b56d (the layout-seal test plants a legacy per-stream-lane tail; ShardEngine::submit_absorbed and its two exceptions are deleted), ea1c3a1e (four test-only engine witnesses are #[cfg(test)]). CI all green at c397e9e5. Remaining from the review's Change: deleting the now always-true CommitOp::Absorbed v2 bool. That edit touches CommitTransaction::stage, whose whole-body mutants cannot be bounded today (the same blocker as Decision 6).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans14/test-only-v1-lane.md"
+  },
+  {
+   "item": "81",
+   "title": "Fleet tick is a 680-line closure over 12 loop-carried variables; hysteresis untestable; file at its ceiling",
+   "status": "not-started",
+   "detail": "No plan and no commits. src/process_stats.rs (slice B) does not exist, and there is no src/fleet/scaling.rs ScalePolicy (slice A). fleet.rs is at 1,142 lines, one under the 1,143 it had before item 34 (6515a15d, +18/-19); item 11 (4bb51c0d, +18/-18) was line-neutral. Effort L; this is the WP-14 target.",
+   "plan_file": null
+  },
+  {
+   "item": "82",
+   "title": "Version bump fires while the driver permit is held; terminal lifecycle visible only through the permit",
+   "status": "not-started",
+   "detail": "No plan and no commits. take_visible still exposes no Take::Closed/Take::Gone. The review's prerequisites (6, then 13) have landed, apart from 13's landing 2. PR2 needs a Loom model over an extracted permit/version unit. Effort L.",
+   "plan_file": null
+  },
+  {
+   "item": "83",
+   "title": "Every state-protocol stream owns an unsupervised 40 Hz flusher task never retired until shard close",
+   "status": "held-for-decision",
+   "detail": "Decision 24. A plan exists, no code. D1: one supervised flusher adds a /v1/debug tasks.loops entry and a new /readyz 503 cause if it dies; Critical vs Noncritical? D2: PROFILES.md §6 (the contract of record) promises a GLOBAL 2M-key history budget, but the code enforces it per journal; amend the contract or implement the global bound?",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans15/touch-flusher.md"
+  },
+  {
+   "item": "84",
+   "title": "ShardEngine::start inlines the 200-line pump + ticker; rustfmt silently skips the pump",
+   "status": "planned-not-implemented",
+   "detail": "Planned in plans16/shard-pump-move.md (base 24c4c77a; C0 pins, C1 verbatim move into src/shard/pump.rs, C2 cargo fmt only, C3 restructure, C4 delete commit_group behind a boundedness gate; C0-C3 or C4 pushed as one push, never C1 or C2 alone). Skeptic pass done, verdict ready-with-corrections (C1..C9). Nothing is implemented (src/shard/pump.rs does not exist). Notable skeptic finding (C2): committer_loop's blank-body mutant is already recorded as unboundable (32b843f6; the expect reason at src/shard/commit_plan.rs:63-66), and C4 edits that body, so the commit_group deletion should be planned as 'expected to be dropped' and will likely need its fallback, unless the nightly shard mutation evidence or the local gate shows CAUGHT; any outcome other than CAUGHT triggers the fallback. Also (C1): the C2 rustfmt diff grows pump_loop to about 204 lines, over the 200-line function budget at C2 (the head is unaffected). shard.rs is at 3,139 lines (3,232 before items 55, 53, 63A and 80).",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans16/shard-pump-move.md"
+  },
+  {
+   "item": "85",
+   "title": "registry.rs (1,679 lines) fuses three owners",
+   "status": "not-started",
+   "detail": "No plan, and none of steps A-C has been done. A: the unsupported_storage_layout message is still duplicated (src/registry.rs:489 and :598). B: hash_bits/shard_for_hash/shard_prefix_matches are still in registry.rs (:1420-1441). C: registry/descriptor.rs; its co-requisite, item 43's audit glob fix, has now landed. Incidental relief from other items: registry.rs is down from 1,679 to 1,452 lines (84f80b75, ca36a7f4, 063a674d, e578402d, 200d5ad8, 796211d7).",
+   "plan_file": null
+  },
+  {
+   "item": "86",
+   "title": "Catch-up treats a no-progress page as 'source exhausted' and re-enters the handoff with no backoff",
+   "status": "done",
+   "detail": "557e8ba6 extracts sse/session/catch_up.rs stalled() -> Stall{Cutoff,Failed,NoProgress} (behaviour-preserving, new mutation owner). In 2fb92fb9 an empty catch-up page counts FEED_NO_PROGRESS and waits 100 ms before going to the live loop. Red: 1,686,963 reads in 503 ms. CI all green at 2fb92fb9. This deliberately deviates from the review's variant, which re-read without reaching the live loop and would stall ring-servable sessions behind a durable hole. Edge change 6: catchup_retries and no_progress counter semantics.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans9/catchup-no-progress.md"
+  },
+  {
+   "item": "87",
+   "title": "SSE source signals fatal-vs-retry through anyhow downcast and drops the retryable error unlogged",
+   "status": "done",
+   "detail": "eb742c42 pins the drive's fatal-cutoff path first. 6ef3bc64: SourceReadError{Fatal(SourceCutoff), Retryable(anyhow)}, with no From<anyhow>; both consumers match exhaustively; retried reads log their cause; spans::remote_span_verdict is pinned arm by arm; FatalSpanCutoff is gone. CI all green at 714abcc2 and at 6ef3bc64. Logs are debug-level only.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans11/sse-source-read-error.md"
+  },
+  {
+   "item": "88",
+   "title": "Offset codec: Offset(Option<u64>) is round-trip overhead; duplicated lax decoders accept non-canonical tokens",
+   "status": "partially-done",
+   "detail": "Step 1 landed: 2ced74c7 pins tokens, SSE controls, fork refusals and the four lax readings byte for byte. 33d8d3dd gives one codec (encode(epoch,next), parse, parse_scalar, typed OffsetError) with two 1,024-case properties; no wire change. CI all green at aaf2baa5. Step 2 is HELD, Decision 11: refuse four non-canonical token kinds (first digit above '7', a multibyte char, nonzero pad bits, nonzero in_block bits). That is a 400 on raw reads, SSE, internal segment-read and forks. Recommendation: refuse only those four, keep Crockford aliases and lowercase. Related, Decision 12: the encoder drops epoch bits 30-31, so segment 2^30+k collides with segment k. Recommendation: cap segment-id allocation at 2^30 in segmap.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans11/offset-codec-one.md"
+  },
+  {
+   "item": "89",
+   "title": "Verification selection tables omit small codec/admission owners; dead `loom` plan key",
+   "status": "done",
+   "detail": "5151a692 (pins that kill the survivors), 61d03e34 (four equivalent mutants restructured away, tokens byte-identical), 6669d3b5 (the loom AND compiler plan keys deleted, with a planner test refusing any check no workflow step gates), 77c13d74 (offsets 37/37, telemetry_batch 25 caught + 1 unviable, segmap 87 caught + 3 unviable after one extra pin are mutation owners). CI all green at 77c13d74. Follow-up, Decision 16: src/usage.rs is still unregistered (about 180 mutants; admit_on's float arithmetic needs an equivalence audit; the file is 7 lines under its ceiling). Suggested: move admit_on/Limits/LimitHit into src/usage/admission.rs and register that.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans12/verification-selection-tables.md"
+  },
+  {
+   "item": "90",
+   "title": "gap_lock serialises ~100 sites for a reason the failpoint registry no longer has",
+   "status": "partially-done",
+   "detail": "Step 1 landed: a4de4f51 pins the per-name failpoint isolation, with negative controls. 29ff93c4 names the two owners gap_lock still serves (the LEASE_TERMINATIONS exact-delta test and the capacity measurement) and deletes the stale comments. CI all green at 77c13d74. Step 2 is NOT STARTED: a dedicated lock for the four LEASE_TERMINATIONS expiry tests. It is not trivially safe (4-5 s token windows, timing-sensitive) and needs loop runs. Step 3 is NOT STARTED: drop gap_lock from registry-only modules one at a time, starting with reads_raw.rs, loop-tested. All 65 acquisitions remain. Plan §8 also lists stale docs: the duplicated failpoints.rs module doc, 'three surface legs' in security_subscription.rs, the fixture_failpoints R27-2 header, and fork_failpoints mentions in docs/DST.md.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans12/gap-lock-rationale.md"
+  },
+  {
+   "item": "91",
+   "title": "DST descriptor refresh idiom hand-expanded; HTTP test client duplicated with lenient chunk decoding",
+   "status": "not-started",
+   "detail": "No plan. hreq and preq in src/dst/tests/fixture_requests.rs still each carry their own chunked decoder (:81 and :253); d8689572 only shared a bounded 60 s read helper, for the F-G hang. No descriptor() fixture was promoted, and there is no strict decode_chunked.",
+   "plan_file": null
+  },
+  {
+   "item": "92",
+   "title": "platform-e2e fault legs pass if fault injection never happened; readiness relies on fixed sleeps",
+   "status": "partially-done",
+   "detail": "Step A landed: 034d809d makes fault() require the emulator's 200, and the regression leg checks replayed_gen < gen. c397e9e5 makes the probes require the exact pre-fault 403, and the drift restores the pre-revocation grant_version, so an accepted drift is observable. The battery has 62 checks. Controls: a renamed emulator case, a sabotaged cell, a killed cell. CI all green at c397e9e5. Steps B (a per-feed refused counter on /v1/debug/auth in place of sleep(2500); 8 fixed 2.5 s sleeps remain in scripts/platform-e2e.mjs) and C (a bounded /readyz poll at boot) are NOT STARTED. Skeptic follow-ups: the drift leg cannot isolate the digest layer (that needs an entry ADDED under the published generation, via the emulator's freeze fault), and resurrect-kid's gen is not asserted.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans14/platform-e2e-fault-legs.md"
+  },
+  {
+   "item": "93",
+   "title": "File feed freshness means 'file read now', not publisher liveness: document it and stamp once",
+   "status": "done",
+   "detail": "75fc66c5 pins the contract: a failed read refreshes nothing, and re-reading the same generation counts as fresh. In 4cb6263c, parsers return the never-fetched stamp 0 and refresh_source stamps at the instant it asked, only for a snapshot published inside the deadline. Red: a source-stamped future time. No wire change. CI all green at 77c13d74. Optional additive D1, Decision 15: add feedVersion to feeds.jwks on /v1/debug/auth.",
+   "plan_file": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/plans12/feed-freshness-contract.md"
+  },
+  {
+   "item": "94",
+   "title": "Billing time is a process-global test override guarded by an opt-in RwLock that fails open",
+   "status": "not-started",
+   "detail": "No plan and no commits. billing_now_ms (src/billing.rs:96-104) still has the cfg(test) BILLING_CLOCK_OVERRIDE branch. Effort L, test determinism only; the review lists it among the lowest-value items.",
+   "plan_file": null
+  }
+ ],
+ "open_observations": [
+  "Status tally over the 94 items: 47 done, 20 partially-done, 13 held-for-decision (#7, 23, 29, 31, 38, 40, 45, 46, 47, 48, 50, 51, 83), 4 planned-not-implemented (75, 78, 79, 84: batch 13, fully planned in plans16/ with a skeptic pass each, verdict ready-with-corrections, and not implemented), 10 not-started with no plan (39, 54, 56, 72, 74, 81, 82, 85, 91, 94), and 0 refuted. 'Decision N' refers to 'Decisions waiting on you' 1-24 in /private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/status-2026-09-23b.md. No held item or held part has code on slate. Every held and every planned-not-implemented item has a plan with a skeptic pass, in the scratchpad plans*/ directories or bugs/plan-7.md.",
+  "CI record for the program (51 pushed heads, all directly on slate, no PRs; HEAD = origin/slate = 24c4c77a). Three heads were not fully green. At 7a6ecd23, rust-quality failed: 2 MISSED fleet mutants, from a mutation scope that matched no DST test. dd220be8 fixed it, and all three workflows were green at b0a6ba65. At 82095942 (item 20) and 33fbd10e (item 44), the CI workflow was CANCELLED at the 60-min deadline by the F-G hang, while rust-quality and workflow-lint were green. The next heads, eb52b970 and 4c51ebfd, were green on all three workflows. The other 48 heads were green on all three, through 24c4c77a.",
+  "Unreproduced 500 (open): during the batch-12 local gate, the capacity leg post_split_throughput_scales had one append answered 500 right after the split, at about 8.6 s. No production code had changed since the previous green gate. Batch 12 (a7f3167d + 24c4c77a) was pushed after that failure, once three isolated re-runs of the leg had passed; CI was green at 24c4c77a. The later reproduction attempts never produced a 500: 60/60 isolated runs, plus 40+ runs under 8 and 16 busy cores with the harness instrumented to print a 500's body. Under load the only failure was a different, benign one: the single-shot split declined when the parent's seal missed its deadline (2 of 40). Suspects: review item 47 (a write racing a closing store reported as 500 internal instead of 503 shard_moving; held in Decision 6) and a child-shard open failure (ResolveError::OpenFailed also maps to 500). If it recurs, the instrumented harness is a 10-line change in topology_scaling.rs KeyedAppender::post.",
+  "F-G CI hang, likely root cause fixed: livefeed_owner_movement_one_redirect_and_typed_cutoffs hung on CI twice (82095942; run 35870075157 on 33fbd10e). It was never reproduced locally in its CI form. The deterministic reproduction is in 714abcc2: TaskSupervisor::spawn called tokio::spawn under its registration lock. A shutting-down runtime drops the refused future inside that call, and RequiredExit's drop closes the engine, which re-takes the same lock: a same-thread deadlock, after which Runtime drop never returns. The fix is tasks/refusal.rs. Before 714abcc2 the same deadlock shape could hang a production process shutdown. 4c51ebfd adds scripts/quality/hang_dump.sh, which gdb-dumps and kills a lib test binary alive after 15 minutes. Evidence of the fix is only the absence of a recurrence: CI is green at all 7 pushed heads after the fix (714abcc2, 6ef3bc64, aaf2baa5, 77c13d74, 5d9d517f, c397e9e5, 24c4c77a); 4c51ebfd was also green but predates the fix. Status: likely fixed, not proven, because the CI form was never reproduced. The memory index still lists 'F-G CI hang open'.",
+  "F-H CI flake is closed. Run 35792791523 on 5c0e62d6 failed read_spool restart_preserves_spool_sequence because the manifest version had not advanced after the flush. SlateDB's manifest publication is not a consequence of flush, so 0afa2597 asserts the durable L0 table instead.",
+  "Mutation-harness constraint that blocks held work: CI's mutation leg fails on ANY missed mutant (there is no disposition ledger). The committer's blank-body mutants (CommitTransaction::stage and neighbours; recorded in 4f522b0f and 32b843f6) cannot be bounded by today's harness. That blocks chain 46/47/48 -> 23 (Decision 6) and the removal of item 80's CommitOp::v2 bool. Cost data point from the session notes: rust-quality on item 55's 20 shard mutants took 2h04m; the invariant-tools job deadline is 240 min.",
+  "Two unverified candidate bugs, recorded while planning, are the most severe open leads. (1) bugs/plan-1.md, 'recommended as the next bug': the PostingsCache demand bridge (the runs_for warm-window lift) trusts load-published entries the warm window never tracked. It is deterministic for a byte-capped or 64-bucket-capped load with load_to < warm.to and is otherwise a narrow race; it is a possible silent keyed-read skip. It was not verified by the panel, and a guard plus a red test are designed. (2) bugs/plan-5.md: the billing tombstone walk treats a foreign-owned route (NotOwner via engine_for_quiet(..).ok()?, src/billing.rs:1884) as 'deferred' and ends the pass, so on multi-instance cells it can stall behind a foreign prefix. This was confirmed by reading only; there is no two-instance test yet.",
+  "No review item was refuted outright, but the session corrected several. #8's exposure needs ABSORB_GLOBAL_GATHERS>=2 (compute-1g is safe). 13: there is no keyed RAW SSE; raw and product sessions share one default-lane feed. 14: SweepEviction cannot reach a feed's engine. 16: the serialisation half is proven structurally. 27: the reviewer's ByteMs(u128) would re-encode unwritten zeros. 35: isolating ErrorKind::Data would blame streams for store faults. 53: the claim that it 'panics every connection task' is wrong in detail (it panics bootstrap). 60: gating source_reads was rejected. 76: steps B/C were judged unnecessary. 77: update/r08 could not be deleted in stage 1. 86: a different fix variant was chosen. 11: the read was not moved, to avoid unkillable mutants. #5: the plan's control was unbuildable in enforce mode.",
+  "Edge and wire changes ALREADY on slate that a reviewer may want to sign off (memo 'Changes I made at the edge' 1-9 plus earlier ones). Item 9: raw PUT answers 409 gone in the stale-snapshot window (was 201), and a PUT over a soft-deleted name answers 409 gone (was 200); a product create that loses to a live forked winner gets the idempotent comparison. Item 55: a corrupt producer or Stream-Seq row gives 500 internal / append_failed. Item 33: a sealed-span peer's Retry-After is not consulted. Item 64: latent pending state. Item 86: counter semantics. Item 34: the ring assignee opens an overridden shard at its tick. Item 52: fleet-internal relays accept up to 32 MiB, and an unauthenticated upload is 401 unread. Item 44: an anonymous unrouted or wrong-method /v1/debug request gets 401. Not in the memo's edge list 1-9 and worth flagging to a reviewer: item 25: 413 (not 429) for a request larger than a fresh bucket, with bad limit postures refused at boot. Item 28: :scan and :pull gain 429 project_rate_limit. Item 21: a skewed non-owner relay receiver answers 409 not_ring_owner where it answered a masked 404, plus 400 missing_key/invalid_name/invalid_key. Item 30: the three product internal receivers answer 503 where they answered 404 for a registry fault. Item 22: relayed read refusals are typed (WireReadRefusal), so a relayed cursor_beyond_tail keeps its meaning. Item 10: Stream-TTL above 2^32-1 is 400. Item 24: extend visibilityMs 0 is floored to 1 s. Item 17: a 120 s h1 head/idle deadline. Item 2: 400 invalid_routing_key. Item 3: a watch on a non-owner gets 409 replay.",
+  "Non-review work that landed in the same window. 7a6ecd23 merged the rustls 0.23.45 / aws-lc-rs 1.18.1 bump for RUSTSEC-2026-0285, the three open external-review items (f1304d08), rustdoc 61 -> 0 warnings (ae1efcbe) and a rustdoc gate in quality.sh (0ac4002e). dd220be8 fixed the fleet mutation scope. 668bc80c + 5d60dc63 (called 'bug #9' in the first memo and the memory record; it is NOT review item 9, the raw PUT recreate fork guard): an append whose descriptor predated a split or merge answered a terminal 409 sealed for a live collection; now a topology transition never reaches a writer as closure. Found through a 1-in-7 suite flake; pushed in head 668bc80c, CI green. Review item 36 later fixed its root cause (the descriptor cache's stale fill). d8689572 bounds the DST hreq/preq at 60 s. 5c306651 bounds the feed-drive test rendezvous. 9b2f53bc fixes a vacuous runtime_isolation assertion. 0afa2597 is the F-H fix, 714abcc2 the F-G fix and 4c51ebfd the hang watchdog.",
+  "Deployed-data residue that code fixes do not heal. Consumer lease rows written unbounded by older binaries stay until an ack or a consumer delete (2374751d). Bug #7's orphaned SegmentStates keep billing, and fixing that needs UsageCorrection records plus an operator decision; no invoice export exists yet, so nothing has been charged. Retroactive credit for storage gauges the old tombstone walk leaked (#5) is an ops decision.",
+  "followups.md status: F-A open (stale route + idempotent producer). F-B fixed by 063a674d; its create-side post-PUT insert race remains. F-C open (retried appends re-debit the ingest bucket). F-D open (raw Stream-Expires-At with no future check). F-E open (h1 120 s field measurement). F-F closed by 4bb51c0d and eb52b970. F-G likely fixed (714abcc2), not proven, with a watchdog (4c51ebfd). F-H closed by 0afa2597.",
+  "Order deviations from the review's recommended sequencing. #1 landed before rank 75, so the PostingsCache dedupe (plans16) will re-touch that code. #8 landed without rank 76 step B, by shrinking history.rs instead. Rank 74 stays blocked behind held item 31. Rank 85 step C is now unblocked, because rank 43's glob fix has landed.",
+  "Two unfixed pre-auth / budget leads from plans10/telemetry-append-preauth-body.md §8, untouched by the program at 24c4c77a. (1) §8.1: internal_sweep_segment (src/product.rs:3332-3344) still takes body: Bytes before fleet_operation_authorized(.., InternalOperation::ConsumerSweep), so an unauthenticated caller can make the server buffer up to 2 MiB before its 401. Item 52's receiver fix (d3c63675 + 2f2c3015) is the pattern to copy; product.rs is at its ceiling, so it needs a verbatim move too. (2) §8.3: billing::drain_once step 1 (src/billing.rs:787-788) calls spool_sealed_reads(64) and pending_spooled(64) with no byte cap; DRAIN_MAX_BYTES = 1_000_000 (:832) applies only from step 2 on. Read batches are estimated at about 1 MiB each, so one round can exceed MAX_REQUEST_BODY_BYTES and wedge _usage with 413 too_large. It needs measurement and its own item."
+ ],
+ "followups": [
+  "Decisions 1-24 in status-2026-09-23b.md need Soren's answer, above all #7 (the rollup re-key options) and the three held chains (45 -> 29, 46/47/48 -> 23, item 31).",
+  "Before chain 46/47/48 -> 23 and item 80's CommitOp::v2 removal: a preparatory commit that makes the committer's blank-body mutants (CommitTransaction::stage; see 4f522b0f, 32b843f6) boundable, so CI's mutation leg does not time out.",
+  "Verify, red-first, the PostingsCache demand-bridge hole recorded in bugs/plan-1.md (a warm-window lift over a capped load). Design A's guard in Inner::publish_load and the red test load_publish_is_refused_under_a_warm_window_that_skipped_the_key are already specified. Best done with item 75 (plans16).",
+  "Tombstone walk (bugs/plan-5.md): make walk_engine_budgeted tri-state (engine / deferred / foreign) so a NotOwner prefix is skipped instead of ending the pass, with a two-instance red (http_rig_owner). Separately, submit_billing_closes (src/application/creation/deletion.rs) swallows resolve failures.",
+  "F-A (followups.md, 668bc80c): a stale route plus an idempotent producer with history gets a terminal producer_gap, or a duplicate ack with closed:true, for up to the 5 s descriptor TTL after a split, because decide_producer runs before the closed check. Needs a design.",
+  "Descriptor cache (063a674d, followups.md): create's own post-PUT insert can still race a GET+PUT+invalidate within one reply. It needs a generation captured before the PUT (settle_or_invalidate); claim-then-plain-settle is unsound.",
+  "F-C: retried append attempts re-debit the per-stream ingest bucket and re-count requests/records/bytes_in (src/application/append/admission.rs). There is no double bill.",
+  "F-D: the raw surface's Stream-Expires-At accepts a past instant (201 for a dead-on-arrival stream). Refuse it with 400 as product expiry.at does; create_stream is unwrap_used-ratcheted.",
+  "F-E / Decision 13: measure the platform edge's upstream pool idle in a staging soak, and lower SSE_H1_HEADER_TIMEOUT_MS from 120 s if needed (bench/sse-probes/ka-slope.sh parks sockets 40 s).",
+  "Item 22 (74391f9c, Decision 2): type stale_target, then retire the untyped 409 -> ChangedIncarnation mapping on the relayed read path.",
+  "Item 53 (d148e1a4): delete the tail row's Stream-Seq copy outright (encode golden plus a layout note). Decision 9: a named Producer-Id length limit; a 65,503+ byte id makes the producer key longer than slatedb accepts and panics the committer.",
+  "Item 88 / Decision 12: the offset encoder drops epoch bits 30-31. Recommended: cap segment-id allocation at 2^30 in segmap.",
+  "Item 30 remainder (5c0e62d6): http.rs internal segment-read and segment-close still answer 404 for a registry fault (err_resp envelope). Do it when http.rs has budget; http.rs is now 3,153 lines.",
+  "Item 28 review step B (still open; the :pull quota commits df9ff212/f1c9e77e are labelled 'step B' but are not it): move append/settle metering onto typed results and delete meter_op_if_ok/OpKind (src/product.rs:1027-1044, called at :1129, :1144, :1253). SDK: the scan() iterator (sdk/src/index.ts:864-882; plans3 C5) never exposes its cursor, so after a mid-export 429 the caller must restart from the beginning; expose the page cursor or retry on 429 inside scan().",
+  "Item 13 landing 2: a status owner for need_status/last_reported/reached_live and one live emit for Batch and both Solo arms in sse/session.rs serve; delete sealed_of.",
+  "usage.rs mutation owner (77c13d74 body, Decision 16): move admit_on/Limits/LimitHit into src/usage/admission.rs, audit admit_on's float arithmetic for equivalent mutants, then register it in scripts/quality/mutation_owners.py.",
+  "Item 90 steps 2 and 3 (plans12/gap-lock-rationale.md §8): a dedicated lock for the four LEASE_TERMINATIONS expiry tests (needs loop runs; 4-5 s token windows), then drop gap_lock per registry-only module starting with reads_raw.rs. Also the stale docs: the duplicate failpoints.rs module doc, security_subscription 'three surface legs', the fixture_failpoints R27-2 header, and docs/DST.md fork_failpoints.",
+  "Item 77 stage 2 (plans14/registry-cas-test-apis.md §8): port the 37 cas_update/cas_update_retry arrange sites to one fixture helper; delete cas_update, cas_update_retry, retryable_cas_error and r08_only_precondition_conflicts_are_retried; settle Registry::update. Also fix the a_parked_delete overclaim and the fork-stamp test doc ('ABA of the SOURCE'), and consider registering registry.rs as a mutation owner.",
+  "Bootstrap run comparisons (46d4b7df): bootstrap::run keeps three direct comparisons of the clap fields (== \"required\" / == \"1\") instead of CliArgs::billing_required()/runs_rollup(); routing them through the accessors would grow six reasoned exceptions. Decide together with D-32a.",
+  "Item 43 preferred version (09fd911d): port the multitenancy audit into src/mt_lint.rs as syn visitors with per-site allow markers, and delete scripts/multitenancy-audit.sh and its baseline.",
+  "Item 63 step B: a SweepScheduler in src/billing/sweep.rs (one record per prefix; delete the 11 BillingService sweep accessors; derive the resident gauge from custody flags), plus the stale R28 wording in close_scheduler_engine's doc.",
+  "Item 64 step 2 (plans9 §8): a Transition enum shared with PendingTransition::validate, one begin/publish, delete the identical tails, a typed publish verdict for phase-B's .unwrap_or(false) that swallows MutationError, phase-A refusal of an unnumberable transition (D2), and the topology.rs mutation-owner decision.",
+  "Item 92 steps B and C, plus skeptic follow-ups: a per-feed refused counter on /v1/debug/auth replacing the 8 sleep(2500) calls in scripts/platform-e2e.mjs; a bounded /readyz poll at boot; a drift leg that isolates the digest layer (an entry ADDED under the published generation, using the emulator's freeze fault); assert resurrect-kid's gen.",
+  "Item 76 residue (plans14/history-dead-fields.md §8): optional budget.rs and wedge-test moves (steps B/C; also bugs/plan-8.md); start_owned taking &Arc; the identical open_engine_with_absorber/_layout wrappers (fold into item 78); stale v1 docs in the history.rs module doc, postings_scan_opts_pub and worker.rs:227-242; the undocumented HistoryResources::paused.",
+  "Item 2 residue (bugs/plan-2.md): an SDK client-side routingKey guard (sdk/src/index.ts:698,720,757; seal at 1004; needs an npm build and dist); delete the dead seal plumbing (seal_after/seal_auth, the product_append pass-through, is_seal_final); decide whether read-side ?routingKey= should share the writers' predicate; from_utf8_lossy percent-decoding on reads.",
+  "Item 3 residue (bugs/plan-3.md): split-stream watch touch routing (product decision: refuse splits on watched streams, or relay touches to the base-route owner); a non-owner append mints an orphan touch journal and 25 ms flusher before its 409 (relates to item 83); pilot name_hash vs RouteHash; deduct resolve time from the 25 s park.",
+  "Item #4 residue (bugs/plan-4.md): settle swallows its poison read (delivery.rs read_merged error -> poisoned leases silently skipped); no guard against deleting, sealing or recreating a configured DLQ target; Receive writes cursor_key every 50 ms on an idle long-poll; no per-pass cap on serial DLQ appends.",
+  "Item #6 residue (bugs/plan-6.md): the CAS window between the retry task's final break and retry_scheduled.store(false); a reached_live-aware FEED_LAG_DISCONNECTS.",
+  "Item #7 residue (bugs/plan-7.md): UsageCorrection plus an operator decision for phantom rows already finalized; zero-gauge deleted streams still synthesize empty month rows; delete src/rollup/rekey.rs once every rollup has migrated; an optional unpinned segment/p/s/not-a-number test; drop the account parameter from stream_segment_states (product decision).",
+  "Item #8 residue (bugs/plan-8.md): read_wave materializes up to gather_read_par x 4 MiB before stage_chunk funds it (memory model); MEMPROFILE_CERT does not pin ABSORB_GLOBAL_GATHERS; effective_gather_concurrency is a reporting inaccuracy.",
+  "Item 44 residue: the review's separate commit, fleet_operation_authorized = fleet_operation_authorization(..).is_some() (src/http.rs:444, :506).",
+  "Item 26 / ee99975d: billing/telemetry_loop.rs is not a registered mutation owner (its metrics-interval predicate has no bounded killer). TELEMETRY_DRAIN_SECS must stay below the 10 s supervisor grace.",
+  "Optional, additive: item 35 D1 (a count of streams a gather left out), item 93 D1 (feedVersion on feeds.jwks), item 27 D1 (count undecodable pending artifacts on /operator/billing.json), item 18's test-inventory --exact selector resolution, and item 21's create_stream parse/render split.",
+  "Batch 13 (items 75, 78, 79, 84) is fully planned in plans16/ and each plan has a skeptic section with verdict ready-with-corrections; none is implemented. Apply each skeptic's corrections to its plan first (notably 75 C1: build the eviction heap with Vec::with_capacity and add the memory-posture note for Soren; 84 C2: plan the commit_group deletion as likely falling back; 78 C3: state the added termination assertion in 7 tests; 79 C7: the ops bucket's nightly mutation cost grows), then implement red-first, running CI's own mutation selection before each push.",
+  "Not started and unplanned: 39 (the prerequisite for held 38; needs cloud validation), 54, 56, 72 (includes a read wire change, 404 -> 410 for expired-with-forks), 74 (after 31), 81, 82, 85 (step C now unblocked), 91, 94.",
+  "internal_sweep_segment pre-auth body buffering (plans10/telemetry-append-preauth-body.md §8.1): read the body only after fleet_operation_authorized, as item 52 did for telemetry-append (d3c63675 + 2f2c3015). product.rs is at its ceiling, so pair it with a verbatim move.",
+  "_usage drain step-1 byte budget (plans10 §8.3): cap spool_sealed_reads/pending_spooled in billing::drain_once (src/billing.rs:787-788) by bytes, not only 64 batches, so one round cannot exceed MAX_REQUEST_BODY_BYTES; measure first.",
+  "Lower-value plans10 §8 leads, none addressed: §8.2 append_typed double-buffers the in-process body; §8.4 the telemetry receiver buffers before check_memory; §8.5 no drain before the receiver's over-limit 413.",
+  "Where plans for unimplemented work live (all under /private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad): batch 13 = plans16/postings-cache-dedup.md (75), plans16/dst-open-sequence.md (78), plans16/gap-journal.md (79), plans16/shard-pump-move.md (84); held items = bugs/plan-7.md (#7), plans4/remote-read-reply.md (22 remainder), plans5/queue-refusal-typed.md (23, 46, 47, 48), plans13/byte-ms-typed.md (27 C3), plans5/fork-read-typed.md (29, 45), plans5/queued-bytes-custody.md (31), plans13/env-parsed-twice.md (32 remainder), plans11/handler-panic-visibility.md (37 step B), plans6/critical-task-exit.md (38), plans15/heartbeat-cadence.md (40), plans12/env-overlay-typos.md (41 C3), plans7/pressure-binding-eviction.md (50), plans7/close-final-admission-order.md (51), plans13/authority-currency.md (65 D1-D4), plans15/suite-single-owner.md (69 part A), plans15/product-operation.md (73 steps 1-2), plans15/touch-flusher.md (83), plans11/offset-codec-one.md (88 step 2); unfinished steps of partially-done items = plans2/raw-batch-uptodate.md (13 landing 2), plans3/scan-read-quota.md (28 step B), plans4/internal-desc-503.md (30), plans10/debug-gate-subrouter.md (44), plans11/sweep-custody-seqcst.md (63 step B), plans9/topology-phase-b-maperror.md (64 step 2), plans14/history-dead-fields.md (76), plans14/registry-cas-test-apis.md (77 stage 2), plans14/test-only-v1-lane.md (80), plans12/gap-lock-rationale.md (90 steps 2-3), plans14/platform-e2e-fault-legs.md (92 steps B-C); bug residue = bugs/plan-1.md .. bugs/plan-8.md; open follow-ups F-A..F-H = followups.md. Items 39, 54, 56, 72, 74, 81, 82, 85, 91 and 94 have no plan."
+ ]
+}

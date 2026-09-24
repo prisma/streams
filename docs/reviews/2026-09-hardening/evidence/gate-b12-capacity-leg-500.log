@@ -1,0 +1,24 @@
+    Finished `release` profile [optimized] target(s) in 0.29s
+     Running unittests src/lib.rs (target/release/deps/streams_slate-45370f970f8ae291)
+
+running 1 test
+test dst::dst_tests::topology_scaling::post_split_throughput_scales ... FAILED
+
+failures:
+
+---- dst::dst_tests::topology_scaling::post_split_throughput_scales stdout ----
+
+thread 'tokio-rt-worker' (145380801) panicked at src/dst/tests/topology_scaling.rs:71:9:
+append during capacity run: 500
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'dst::dst_tests::topology_scaling::post_split_throughput_scales' (145380797) panicked at src/dst/tests/topology_scaling.rs:45:17:
+called `Result::unwrap()` on an `Err` value: JoinError::Panic(Id(356), "append during capacity run: 500", ...)
+
+
+failures:
+    dst::dst_tests::topology_scaling::post_split_throughput_scales
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1263 filtered out; finished in 8.63s
+
+error: test failed, to rerun pass `--lib`
