@@ -62,9 +62,9 @@ pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 /// hash), trim_safe_to and unabsorbed_bytes are backward-compatible
 /// extensions: v3 decoders read exactly `seq_len` seq bytes and ignore
 /// trailing bytes. `trim_safe_to` is the highest offset physical
-/// trimming may reach (the absorbed boundary as of the PREVIOUS
-/// advance — one advance of lag so in-flight readers holding a stale
-/// absorbed snapshot never lose their range); `unabsorbed_bytes` is the
+/// trimming may reach (the absorbed boundary before the latest advance:
+/// a snapshot at most one advance stale keeps its range; see
+/// `TailFields::trim_safe_to`); `unabsorbed_bytes` is the
 /// exact stored frame bytes in [absorbed, next), maintained by the
 /// committer so restart rediscovery sizes pending work truthfully
 /// instead of estimating (a single 32 MiB record used to estimate as
@@ -599,18 +599,18 @@ pub(crate) struct TailFields {
     /// written by callers without a name identity or by older binaries.
     pub route: [u8; 16],
     /// Highest offset physical trimming may reach: the absorbed boundary
-    /// as of the PREVIOUS advance (one advance of lag, so in-flight
-    /// readers holding a stale absorbed snapshot never lose their
-    /// range). Trim maintenance moves `trimmed` toward this under a
-    /// GLOBAL per-commit delete budget — boundary publication and
-    /// physical trimming are decoupled so a 1,024-stream second
-    /// absorption wave can never build one multi-gigabyte delete batch.
+    /// before the latest advance. That lag keeps the range of a reader at
+    /// most one advance stale; a staler reader relies on `absorption_race`,
+    /// which revalidates each tail page against the absorbed boundary at
+    /// its scan's visibility (TLA-016-F2). `TrimTick` moves `trimmed` here
+    /// under a GLOBAL per-commit delete budget, so no absorption wave
+    /// builds one multi-gigabyte delete batch.
     pub trim_safe_to: u64,
-    /// Exact stored frame bytes in [absorbed, next), maintained by the
-    /// committer (appends add frame lengths; absorb advances subtract
-    /// the bytes the absorber actually copied). Restart rediscovery
-    /// reads this instead of estimating records × 1 KiB, so the default
-    /// absorption policy's byte thresholds see the truth.
+    /// Exact stored frame bytes in [absorbed, next), kept by the committer:
+    /// appends add frame lengths; an advance subtracts the stored bytes of
+    /// the range it moves over (the chunk's count when it starts at the
+    /// boundary, else a recount); a refused group retires nothing (TLA-016-F1).
+    /// Restart rediscovery reads this rather than estimating records × 1 KiB.
     pub unabsorbed_bytes: u64,
 }
 
@@ -950,7 +950,7 @@ pub(crate) enum CommitOp {
     TrimTick,
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
-    /// (deferred one round so in-flight readers never lose their range).
+    /// (one advance behind; `TailFields::trim_safe_to` says what that covers).
     /// `v2` marks the range as living in the SHARED per-shard partition
     /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
     /// history_v2 flag, which gates the read path's history source.

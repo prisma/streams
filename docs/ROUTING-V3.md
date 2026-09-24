@@ -158,6 +158,14 @@ bucket into further pages (fresh page_first) at the cap. The byte
 fields let the read planner choose between scanning exact runs,
 combining nearby runs, or reading one envelope and filtering.
 
+Zero pages for a key over an absorbed range are read as "no matches".
+A corrupt page is detected. A page or canonical row lost after it was
+durable is not: the reader cannot tell it from an absent key.
+Completeness against that loss rests on storage assumptions today. DST
+invariant H11 promises more, and the choice between a coverage mechanism
+and a revised contract is an open owner decision
+(docs/dst/DST-EXPANSION-SPEC.md §9.12.2).
+
 Postings pages enter the SAME history WriteBatch and flush as their
 canonical rows. Therefore postings add **no** additional Class A
 request, manifest update, database, object namespace, or LIST/GC

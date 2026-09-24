@@ -625,7 +625,7 @@ The following invariant families are mandatory. Detailed scenarios are in `SCENA
 | **T8** | Stale scaler heat or decisions cannot mutate a recreated incarnation. |
 | **T9** | Producer and sequence state remain exact through split and merge lineage. |
 | **T10** | A stale router may add a replay but cannot lose, duplicate, or reorder a key’s records. |
-| **T11** | Exactly one owner epoch may acknowledge for a shard. |
+| **T11** | At most one owner epoch, the one holding the shard's storage fence, may acknowledge newly authorized writes for a shard. An engine of an older epoch MAY still send a success after a newer epoch fenced it, but only for a write it claimed durable before its retirement; that record MUST already be durable at its acknowledged offset, written under the older epoch's own fence, and replayed by every higher-epoch owner that serves. No other response from an older epoch may be a success, and no operation commits under two epochs. *Reconciled wording, pending spec-owner confirmation: §9.12.1.* |
 | **T12** | Serving possession, not ring preference alone, determines whether a node may act. |
 
 ## 9.7 History, postings, trim, and GC
@@ -642,10 +642,10 @@ The following invariant families are mandatory. Detailed scenarios are in `SCENA
 | **H8** | A failed dirty scan is retried until convergence. |
 | **H9** | Large records always make cursor progress. |
 | **H10** | Postings reads issue bounded canonical spans and bounded read amplification; never one GET per record. |
-| **H11** | Corrupt/missing postings cannot produce a false complete result. |
+| **H11** | Corrupt/missing postings cannot produce a false complete result. *Adopted as written and only partly enforced by the reader: open obligation, §9.12.2.* |
 | **H12** | Reader/postings caches are single-flight, cancellation-proof, store-scoped, and process-budgeted. |
 | **H13** | Nothing reachable from a live manifest, topology parent/child, fork, reader checkpoint, or history boundary is deleted. |
-| **H14** | GC converges without periodic LIST storms and cannot be suppressed by a stale inventory or refresh dead zone. |
+| **H14** | GC converges without periodic LIST storms and cannot be suppressed by a stale inventory or refresh dead zone. *Shown only while the partition keeps writing; convergence on a partition with no further writes is an open service obligation, §9.12.3.* |
 | **H15** | Pending summaries and lag gauges clear on ownership loss and never produce phantom fleet backlog. |
 
 ## 9.8 Consumer groups
@@ -698,6 +698,185 @@ The following invariant families are mandatory. Detailed scenarios are in `SCENA
 | **R6** | Usage tracking never silently fails open after its tracked-stream bound. |
 | **R7** | Billing checkpoints never advance past un-emitted deltas. |
 | **R8** | History/request cost is bounded by bytes/work, not stream or routing-key cardinality. |
+
+## 9.12 Reconciliation with the formal-verification findings
+
+The first formal-verification spike
+(`docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md` §0) checked T11, H11
+and H14 against models of the production code. This section records where each
+requirement stands. An obligation stays open until its owner closes it. A
+requirement is not narrowed to match what the implementation does today.
+
+### 9.12.1 T11 and the late durable response
+
+**Finding.** TLA-011-F3 (`verification/tla/durability/README.md`). The
+earlier text, "Exactly one owner epoch may acknowledge for a shard",
+forbade a designed behaviour. After an override move, or after a crash and
+bootstrap, an engine of a lower writer epoch can send a success while an
+engine of a higher epoch already serves. Roadmap §1.5 and TLA-006 permit
+this: an older engine may finish responding for work it claimed durable
+before retirement (`src/shard/commit_handoff.rs`,
+`src/shard/transaction/finalize.rs`).
+
+**Reconciled requirement.** The T11 row above. It forbids:
+
+- an acknowledgement of a newly authorized write by any epoch other than the
+  one holding the storage fence;
+- a success from an older epoch for work it had not claimed durable before
+  retirement;
+- a success for a record that is not durable at its acknowledged offset, or
+  that a serving higher-epoch owner did not replay;
+- a data batch written without the writer's own fence, or with a newer fence
+  in between;
+- an operation committing under two epochs.
+
+**Relation to the model.** The reconciled text is at least as strong as
+what TLA-011 checks: `AckedDurable`, `HigherEpochCoversAcks`,
+`ExactlyOnceAcrossOwners` and `DataUnderWriterAuthority` in
+`verification/tla/durability/ServingOwnership.tla`. TLA-006 adds the
+restriction to work claimed while the engine was live. "At most one"
+replaces "exactly one" because a shard may have no acknowledging owner
+during a move. That changes no safety content.
+
+**Standing.** TLA-011 is conditional on ASM-SLATEDB-FENCE and the
+unestablished ASM-OBJSTORE-CAS. **The spec owner must confirm this
+wording.** Until then, the requirement is the reconciled text.
+
+### 9.12.2 H11: missing postings and completeness (open obligation)
+
+**Requirement as adopted.** Corrupt or missing postings cannot produce a
+false complete result. HIS-019 exercises the same scope: "corrupt/missing
+page; canonical envelope scan, exact frames, honest incomplete/error".
+
+**What the reader enforces today.**
+
+- *Corrupt pages.* A page that fails to decode, that disagrees with its
+  key, or whose runs fail `ValidatedRuns::new` is not used to claim
+  completeness. `read_history2_keyed` (`src/history.rs`) counts it in
+  `POSTINGS_CORRUPT` and serves one bounded canonical envelope scan,
+  filtered by exact key bytes (`read_history2_keyed_envelope`).
+- *Unproven cache windows.* A load window that cannot reach the requested
+  end gives an honest partial result. `execute_postings_plan`
+  (`src/history/postings_read.rs`) reports completion only when
+  `plan.complete && provable_to >= upto`.
+- *Postings never made durable.* H3 prevents this: `absorbed` advances only
+  after the chunk's canonical rows and postings pages are flushed together.
+  TLA-016 checks it.
+- *Tail and trim races.* `absorption_race` (`src/application/read.rs`)
+  revalidates each tail page against the absorbed boundary at the scan's
+  own visibility.
+
+**What the reader does not enforce.** TLA-018-F2
+(`verification/tla/history/README.md`) covers these cases:
+
+- A keyed read takes zero postings pages over an absorbed range as proof
+  that the range holds no matches (`read_history2_keyed`).
+- A span whose canonical rows are missing still counts as consumed
+  (`execute_postings_plan`: "The span is fully consumed even if nothing
+  matched").
+- The unfiltered history scan (`read_history2_scan`) and the corruption
+  envelope (`read_history2_keyed_envelope`) also complete over a missing
+  canonical row.
+
+The model probes `probe_lost_postings` and `probe_lost_canonical`
+(`verification/tla/history/MC_ReadCompose_probe_lost_*.cfg`) each produce a
+false complete page. The existing HIS-019 test,
+`corrupt_postings_fall_back_to_the_envelope`, exercises only a corrupt page.
+
+**What the remaining completeness rests on.** A page or row that was durable
+and later disappeared is ruled out only by assumptions
+(`verification/assumptions.md`):
+
+- ASM-SLATEDB-DURABLE (i): durable data never rolls back.
+- ASM-SLATEDB-GC (i) and (iii): the collector deletes only SSTs no manifest
+  or checkpoint references, and a read of a deleted SST fails rather than
+  returning a short success.
+- H13 and TLA-019: nothing reachable is deleted.
+- ASM-HISTORY-POSTINGS-CACHE: a warm window proves absence only over chunks
+  that recorded every key.
+
+Before their fixes, TLA-016-F3 and the cache-bridge defect were production
+paths to the same observable. The observable is therefore not hypothetical.
+
+**Open obligation: the owner must choose one option.** This document does
+not choose.
+
+- **Option A: keep H11 as adopted and add an evidence mechanism.**
+  - Write a per-chunk coverage record in the same history `WriteBatch` as
+    the chunk's canonical rows and postings pages. It works as a chunk
+    manifest. Key it by `(route, segment, from)`. It holds:
+    - `upto` and the canonical row count;
+    - for each postings bucket, a key-membership filter with no false
+      negatives (an exact sorted `rk_hash` prefix set, or an xor/Bloom
+      filter).
+  - The reader makes one bounded range scan of these records, and caches
+    it with the postings slice. The records must tile `[from, upto)`
+    contiguously, or the result is an honest partial or an error.
+  - Zero pages count as absence only where the filter says the key is
+    absent. A "maybe present" with no page is a detected loss, served
+    through the envelope scan and counted.
+  - Every offset a postings run names must return a row. A missing row
+    ends the page as partial or an error, not consumed.
+  - The unfiltered scan checks density against the record's row count, as
+    `absorption_race` does for the tail.
+  - Evidence: `probe_lost_postings` and `probe_lost_canonical` become
+    baselines that must pass, with lost data answered honestly. HIS-019
+    gains durable-page-loss and durable-row-loss failpoints. H10 and R8
+    budgets are re-measured for the extra record, since it adds bytes to
+    every absorbed chunk and one scan to every cold keyed read.
+- **Option B: deliberately revise the contract.**
+  - Narrow H11 to: corrupt pages, unproven load windows and postings never
+    made durable cannot produce a false complete result. Loss of durable
+    postings pages or canonical rows is excluded, and depends on the
+    assumptions above.
+  - Roadmap §2.10 treats this as weakening a customer-visible guarantee. It
+    needs the owner's recorded decision, with:
+    - a rationale;
+    - the conditional boundary stated in the product documentation
+      (`docs/ROUTING-V3.md`);
+    - compensating checks, such as a background canonical and postings
+      scrub, an alert on `POSTINGS_CORRUPT`, and continued evidence for
+      H13.
+
+Until the owner decides, H11 stands as written, and its status is "adopted,
+partly enforced". No gate or report may count it as met.
+
+### 9.12.3 H14: convergence without further writes (open service obligation)
+
+**Finding.** TLA-019-F2 (`verification/tla/history/README.md`,
+`witness-QuietDeadZoneRetains`). The pinned SlateDB collector deletes an
+SST only if it is unreferenced and its id time is below
+`min(now − min_age, compaction low watermark, newest L0)` (ASM-SLATEDB-GC
+(i)). An unreferenced SST newer than the most recent compaction start or the
+newest L0 therefore survives every later collector pass if the partition
+receives no further flush or compaction. A fenced writer's orphan is an
+example.
+
+**Condition.** H14 has been shown only while the partition keeps writing.
+`EligibleEventuallyReclaimed` includes that eligibility premise, and under
+it the liveness checks pass. `nc-stale-inventory` shows that a frozen
+inventory breaks them. The residue on a quiet partition is bounded, since
+it is what existed at the last activity. It can still last indefinitely.
+
+**Open service obligation.** H14 is not narrowed. A partition that receives
+no writes still has to converge. Acceptance criteria:
+
+1. Create an unreferenced SST on a history partition, for example by
+   fencing a writer mid-flush. Then send no further writes. Repeat on a
+   shard database, which uses the same collector. The SST is deleted
+   within a bound the owner
+   states in terms of `min_age`, the GC interval
+   (`HISTORY_GC_INTERVAL_SECS`, default 600 s) and the manifest poll
+   interval. A candidate is `min_age + 2 × gc_interval`.
+2. The mechanism adds no periodic LIST beyond the existing GC cadence. It
+   must not break COST-002 or the HISTORY-V2 Class A scorecard.
+3. A DST scenario and a `ReachGC` baseline without the continued-write
+   premise check it. `witness-QuietDeadZoneRetains` then becomes a control
+   of the old behaviour.
+
+One possible mechanism is an idle-partition compaction or flush nudge when
+the collector sees unreferenced SSTs above its watermark. It is not chosen
+here. The obligation is tracked in `docs/READINESS.md`.
 
 ---
 

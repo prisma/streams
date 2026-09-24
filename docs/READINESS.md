@@ -71,6 +71,36 @@ acceptance, ops-history/SLO work, documented terminal-closure residual.
   reconciler circle older than 3 × FORK_DEBT_SWEEP_SECS),
   digest mismatch, platform-origin 5xx/404, billing readiness.
 
+## Service obligations from formal verification (open)
+Recorded by the first formal-verification spike
+(docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md §0). Each stays open
+until its acceptance criteria are met. None of them is a model result.
+- **Physical reclamation of hard-deleted incarnations (TLA-019-F3).** Hard
+  deletion writes only a registry tombstone
+  (`src/application/creation/deletion.rs`). No code deletes a deleted or
+  expired incarnation's shard-log rows (`record_key`), tail and producer
+  rows, or history-partition rows. The only row deletes are
+  absorbed-boundary trims. The owner has to adopt a policy. Acceptance:
+  (1) a written policy naming which rows are reclaimed, after what delay,
+  and what fork references, checkpoints and billing closes must be
+  released first; (2) after a hard delete, or a TTL expiry that reaches
+  hard deletion, with no fork child left, every row keyed by that
+  incarnation's hash is deleted within the stated delay, and SlateDB GC
+  then reclaims the SSTs; (3) a same-name recreate, a live fork child and
+  an unsettled billing close each block reclamation, with a DST scenario
+  for each; (4) reclamation deletes run under the global trim or GC
+  budget, never as one unbounded batch (H5, R8); (5) a gauge of
+  unreclaimed deleted incarnations and their oldest age, with an alert.
+- **GC convergence without further writes (H14, TLA-019-F2).** An
+  unreferenced SST newer than a quiet partition's last compaction or newest
+  L0 is never collected. Acceptance is in
+  docs/dst/DST-EXPANSION-SPEC.md §9.12.3: the SST is deleted within a
+  stated bound on a partition with no writes, with no new periodic LIST.
+- **H11 completeness against lost durable postings or rows (TLA-018-F2).**
+  This is an owner decision between a coverage mechanism and a revised
+  contract (docs/dst/DST-EXPANSION-SPEC.md §9.12.2). Until it is made,
+  H11 is not met.
+
 ## Deliberately NOT on the GA path
 Generic Compute autoscaling, the full deterministic simulator (#108),
 SlateDB ReadIoMetrics (#197), warm-scan optimization.
