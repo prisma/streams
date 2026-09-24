@@ -1,7 +1,12 @@
 //! History absorption.
 
-use super::fixture_storage::{drain_filtered, mem, open_engine, open_engine_with_absorber, skey};
-use crate::dst::{FaultPlan, FaultStore, OpLog, Outcome, Workload, drain_observed, mech};
+use super::fixture_storage::{
+    append_n, drain_filtered, mem, open_engine, open_engine_with_absorber, skey,
+};
+use crate::dst::{
+    FaultPlan, FaultProfile, FaultStore, ObjClass, OpLog, Outcome, StoreOp, Workload,
+    drain_observed, mech,
+};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -634,5 +639,104 @@ async fn misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group() {
     )
     .unwrap();
     assert_eq!(row_after, row_before, "durable row must not move");
+    engine.begin_close();
+}
+
+/// TLA-016-F1 cost: a mis-started advance recounts every chunk refused
+/// groups carried, inside the committer, so its scan must read ahead like
+/// the gather did. Over 6,144 stored records (~1,600 blocks) with no block
+/// cache and 10 ms per SST read, it issues a handful of requests, several
+/// in flight at once, where one block per request would be ~1,600 reads in
+/// series. An aligned advance reads nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() {
+    let slow_sst_reads = FaultPlan {
+        latency_pct: 100,
+        latency_ms: (10, 10),
+        ..FaultPlan::CLEAN
+    };
+    let profile = FaultProfile::clean().with_op_class(StoreOp::Get, ObjClass::Sst, slow_sst_reads);
+    let store = FaultStore::new(mem(), 1, profile);
+    let db = slatedb::Db::builder("dst-f1ahead/shard", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            compactor_options: None,
+            ..Default::default()
+        })
+        .with_db_cache_disabled()
+        .build()
+        .await
+        .unwrap();
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-f1ahead".into(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        maintenance,
+    );
+    let key = skey();
+    let (lagging, aligned) = ([31u8; 16], [32u8; 16]);
+    for _ in 0..24 {
+        append_n(&engine, lagging, &key, 256, 1024).await;
+    }
+    append_n(&engine, aligned, &key, 4, 1024).await;
+    engine
+        .db
+        .flush_with_options(slatedb::config::FlushOptions {
+            flush_type: slatedb::config::FlushType::MemTable,
+        })
+        .await
+        .unwrap();
+    // Tails are read from the resident handles: a stored-tail read would
+    // itself be an SST read.
+    let sst_reads = || store.count(StoreOp::Get, ObjClass::Sst);
+    let owed = durable_tail(&engine, aligned, 1, |_| true)
+        .await
+        .unwrap()
+        .unabsorbed_bytes;
+
+    let before = sst_reads();
+    engine
+        .submit_absorbed_batch_v2(vec![(aligned, 0, 4, owed)])
+        .await;
+    let tail = durable_tail(&engine, aligned, 400, |t| t.absorbed == 4)
+        .await
+        .unwrap();
+    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (4, 0));
+    assert_eq!(
+        sst_reads(),
+        before,
+        "an aligned advance read stored records"
+    );
+
+    // The last record's chunk at boundary 0: the committer recounts all of
+    // [0, 6144) at its read level.
+    let next = 24 * 256;
+    let before = sst_reads();
+    engine
+        .submit_absorbed_batch_v2(vec![(lagging, next - 1, next, 1)])
+        .await;
+    let tail = durable_tail(&engine, lagging, 400, |t| t.absorbed == next)
+        .await
+        .unwrap();
+    let reads = sst_reads() - before;
+    assert_eq!(
+        (tail.absorbed, tail.unabsorbed_bytes),
+        (next, 0),
+        "the recount did not retire the whole range within 10 s ({reads} SST reads)"
+    );
+    assert!(
+        reads <= 32,
+        "the recount read one block per request: {reads} SST reads"
+    );
+    assert!(
+        store.peak_gets_in_flight(ObjClass::Sst) >= 2,
+        "the recount fetched its read-ahead windows one at a time"
+    );
     engine.begin_close();
 }

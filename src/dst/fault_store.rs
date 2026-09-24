@@ -160,6 +160,9 @@ struct FaultState {
     /// Budgets like "a reopen may cost at most one WAL replay" are
     /// assertions over these.
     op_counts: Mutex<HashMap<(StoreOp, ObjClass), u64>>,
+    /// Per-class GETs (in flight now, most ever in flight at once): how a
+    /// scenario proves a reader fetches concurrently.
+    gets_in_flight: Mutex<HashMap<ObjClass, (u64, u64)>>,
     hold: Mutex<Option<Hold>>,
     coverage: Arc<Coverage>,
     injected_latency: AtomicU64,
@@ -285,6 +288,31 @@ fn lost_response_error() -> object_store::Error {
     }
 }
 
+/// One GET from its gate until it returns or is cancelled.
+struct GetInFlight<'a> {
+    st: &'a FaultState,
+    class: ObjClass,
+}
+
+impl<'a> GetInFlight<'a> {
+    fn enter(st: &'a FaultState, class: ObjClass) -> Self {
+        let mut flights = st.gets_in_flight.lock().unwrap();
+        let (now, peak) = flights.entry(class).or_insert((0, 0));
+        *now += 1;
+        *peak = (*peak).max(*now);
+        drop(flights);
+        GetInFlight { st, class }
+    }
+}
+
+impl Drop for GetInFlight<'_> {
+    fn drop(&mut self) {
+        if let Some((now, _)) = self.st.gets_in_flight.lock().unwrap().get_mut(&self.class) {
+            *now -= 1;
+        }
+    }
+}
+
 /// Deterministic fault-injecting `ObjectStore` decorator.
 #[derive(Debug)]
 pub(crate) struct FaultStore {
@@ -307,6 +335,7 @@ impl FaultStore {
                 profile,
                 occurrences: Mutex::new(HashMap::new()),
                 op_counts: Mutex::new(HashMap::new()),
+                gets_in_flight: Mutex::new(HashMap::new()),
                 hold: Mutex::new(None),
                 coverage: Arc::new(Coverage::default()),
                 injected_latency: AtomicU64::new(0),
@@ -336,6 +365,16 @@ impl FaultStore {
     }
     pub(crate) fn ops(&self) -> u64 {
         self.st.ops.load(Ordering::Relaxed)
+    }
+
+    /// The most GETs of one class that were ever in flight at once.
+    pub(crate) fn peak_gets_in_flight(&self, class: ObjClass) -> u64 {
+        self.st
+            .gets_in_flight
+            .lock()
+            .unwrap()
+            .get(&class)
+            .map_or(0, |flight| flight.1)
     }
 
     /// Operations of one (verb, class) so far — the protocol-cost ledger.
@@ -417,6 +456,7 @@ impl ObjectStore for FaultStore {
         // content. A store that returns wrong bytes is outside the
         // object-store contract, and simulating one would test a system we
         // do not have and cannot ship against.
+        let _flight = GetInFlight::enter(&self.st, ObjClass::of(location.as_ref()));
         let lose = self.st.gate(StoreOp::Get, location.as_ref()).await?;
         let res = self.inner.get_opts(location, options).await;
         if lose && res.is_ok() {

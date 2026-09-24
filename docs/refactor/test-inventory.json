@@ -3719,6 +3719,19 @@
     ]
   },
   {
+    "name": "mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "8a3ddb6a5af682a4578cbd309aaa05f084d670aad02af52b1756fb9cee6b5e62",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/history_absorption.rs",
+    "scenarios": []
+  },
+  {
     "name": "misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"

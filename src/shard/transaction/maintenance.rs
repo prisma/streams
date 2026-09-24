@@ -335,9 +335,18 @@ impl CommitTransaction<'_> {
                 crate::crypto::hex(&hash[..4]),
             )
         };
-        // At most one gather chunk, read once on a mis-started advance: the
-        // default scan needs no read-ahead tuning.
-        let options = slatedb::config::ScanOptions::default();
+        // Not one chunk: a mis-started advance recounts every chunk that
+        // refused groups carried since its lane mark last healed, one per
+        // consecutive refusal until the dirty-index rescan rolls the mark
+        // back; only the stream's unabsorbed backlog bounds the range. The
+        // committer waits on this scan, so it reads ahead like the gather
+        // that copied the rows: the default fetches one block per request,
+        // a round trip per 4 KiB of a range the block cache no longer holds.
+        let options = slatedb::config::ScanOptions {
+            read_ahead_bytes: 2 * 1024 * 1024,
+            max_fetch_tasks: 4,
+            ..Default::default()
+        };
         let range = record_key(hash, from)..record_key(hash, to);
         let mut rows = self
             .engine
