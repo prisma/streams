@@ -200,6 +200,70 @@ async fn r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final() {
     engine_shutdown(&state).await;
 }
 
+/// F3: the re-preparation after a waited-out transition is the retry
+/// loop's second refresh. A registry it cannot read proves nothing, as
+/// the closure check's cannot: the append, refused as closed by every
+/// attempt and so uncommitted, answers the same retryable 503, never a
+/// 500, and its retry lands once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal() {
+    use super::fixture_livefeed::wait_parked;
+    use crate::application::append::FailureClass;
+    use crate::failpoints::Fp::ScalerBeforePublish;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "typed-reprepare";
+    let create = br#"{"format":{"kind":"json"}}"#;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    let (status, _, _) = preq(addr, "PUT", "/v1/streams/typed-reprepare", &headers, create).await;
+    assert_eq!(status, 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let app = state.append_service();
+    crate::failpoints::arm_scaler_before_publish(name);
+    let held = super::fixture_failpoints::FailpointGuard(name.to_string());
+    let split = crate::scaler3::execute_split(&state, &sref, 0, 0x8000_0000_0000_0000);
+    let append = async {
+        wait_parked(ScalerBeforePublish, name, 1).await;
+        app.execute(command(&desc, "reprepare", br#"{"n":1}"#))
+            .await
+    };
+    let release = async {
+        wait_parked(ScalerBeforePublish, name, 2).await;
+        state.registry.fail_next_get(name);
+        drop(held);
+    };
+    let (_, answer, ()) = futures_util::future::join3(split, append, release).await;
+    let error = answer.unwrap_err();
+    assert!(
+        error.message.contains("injected registry get failure"),
+        "{error:?}"
+    );
+    assert_eq!(
+        (error.class, error.code, error.retry_after),
+        (
+            FailureClass::Unavailable,
+            AppendCode::SegmentTransition,
+            Some(1)
+        ),
+        "{error:?}"
+    );
+    state.registry.invalidate(&sref);
+    let published = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(
+        published
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none())
+    );
+    let landed = app
+        .execute(command(&desc, "reprepare", br#"{"n":1}"#))
+        .await
+        .unwrap();
+    assert!(!landed.duplicate, "the refused append committed nothing");
+    assert_ne!(landed.seg_id, 0, "the retry lands on a child");
+    engine_shutdown(&state).await;
+}
+
 /// A sealed descriptor's closure is final by itself: `sealed` never
 /// resets within an incarnation and freezes the map, so its route cannot
 /// be stale. The engine's refusal must cost no descriptor refresh (a

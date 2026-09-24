@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 3 | 1 | 2 | 0 | 0 | 0 | 6 |
 | medium | 5 | 0 | 6 | 0 | 0 | 0 | 11 |
-| low | 5 | 2 | 6 | 9 | 10 | 4 | 36 |
-| **Total** | **13** | **3** | **14** | **9** | **10** | **4** | **53** |
+| low | 5 | 2 | 7 | 9 | 10 | 4 | 37 |
+| **Total** | **13** | **3** | **15** | **9** | **10** | **4** | **54** |
 
-53 records in total; 51 matched their commit and 1 is flagged. #53 is a security fix recorded by its implementer for owner ratification; it has not been checked against its commit.
+54 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix) and #54 (a release-hold fix) were recorded by their implementers for owner ratification; they have not been checked against their commits.
 
 ### Index
 
@@ -78,6 +78,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 51 | 5d9d517f | Undecodable pending billing artifact is logged | operator-debug | low | matches |
 | 52 | 31fd9096 | Late byte-time beyond a correction fails its rollup page | fleet-internal | low | matches |
 | 53 | this record's commit | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | recorded for ratification |
+| 54 | this record's commit | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | recorded for ratification |
 
 ## High risk (6)
 
@@ -402,7 +403,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** This changes the lifetime of successful live product subscriptions: they now end on re-placement. It also introduces a 403 project_missing at establishment (race-only) for a condition the request path answers 421, which clients may branch on as a permanent denial instead of re-resolving. The previous behaviour was incorrect (serving from a cell that no longer owns the project), and reconnect semantics are unchanged. No end-to-end SSE test pins the live termination on re-placement; only the unit lease_check test does.
 - **Check against commit:** None in behaviour. Precision: '403 at establishment' is reachable only when the republish lands between request verification (already 421 wrong_cell for a foreign placement) and LeaseWatch::new_checked. The common visible effect is a clean EOF on a live stream. Cosmetic defect: served_policy was inserted between status_and_quotas's doc comment and its fn, so at HEAD (src/auth.rs \~726-741) status_and_quotas's doc comment is attached to served_policy and status_and_quotas has no doc.
 
-## Low risk (36)
+## Low risk (37)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1049,6 +1050,22 @@ None of these changes alters a status, code or header on a path that worked befo
   - rollup::tests::rollup_applies_deltas_and_closes_months (pre-existing late-snapshot delta "0" pin)
 - **Risk reason:** Only a corrupt ledger envelope can trigger this, and that request could not succeed before either: it persisted an unreadable row. No client status or code changes on a normal path. Caveat for the reviewer: the blast radius shifts from one unreadable stream-month to a rollup-wide halt at the offending page (no skip or quarantine), which is visible only as growing lastApplyAgeSecs and a repeating warn.
 - **Check against commit:** None in the code. Clarification: after the change the rollup still wedges, now at the offending page itself and with no persisted corruption, and it needs operator action to proceed.
+
+### #54 (this record's commit) — The transition retry's re-preparation answers an unreadable registry as retryable
+
+- **Program item:** release hold (split-boundary outcomes), skeptic finding F3. Recorded by its implementer for owner ratification.
+- **Surface:** both
+- **Endpoint:** Raw POST /v1/stream/{name} (append/close). Product POST /v1/streams/{name}/records and POST /v1/streams/{name}/records:batch, plus the final-record append inside POST /v1/streams/{name}:seal. Also internal AppendService appends (consumer DLQ delivery, system and telemetry appends).
+- **Condition:** An attempt was refused by an engine closure on an unsealed descriptor (the retry loop of record #8). `closure_is_current` then found the route stale, waited out a pending split or merge, or found the descriptor gone, and the loop's re-preparation could not read the registry: a store error, or a descriptor that does not decode. The typical case is an append that waited out a split or merge: the publication invalidated the cached descriptor, so the re-preparation is a real store GET, and that GET fails once.
+- **Before:** Raw 500 {"error":{"code":"internal","message":"\<store error>"}} with no Retry-After. Product 500 {"error":{"code":"append_failed","message":"append failed","retryable":false}} with no Retry-After. The request had committed nothing: every attempt was refused as closed, before any write.
+- **After:** Raw 503 {"error":{"code":"segment_transition","message":"\<store error>"}} with Retry-After: 1. Product 503 {"error":{"code":"temporarily_unavailable","message":"retry shortly","retryable":true}} with Retry-After: 1. This is the answer record #8 gives the closure check's own read of the same round. Unchanged: an append's first descriptor read (raw 500 internal, product 500 append_failed), the gone path (404 not_found or 410 gone), 503 creating, admission's 429, and the incarnation fence (409 target_incarnation_changed). A descriptor that does not decode answers the same 503 inside the loop, as the closure check already did for the same read; the client's retry then meets it at its first read, which answers 500 internal as before.
+- **Retry semantics:** A non-retryable 500 becomes a retryable 503. The TS SDK retries a 503 with retryable:true automatically (up to 3 times), so the append lands. The seal final-record disposition (AmbiguousOrTransient) and DLQ blocking are unchanged, because neither Internal nor Unavailable is a definitive rejection.
+- **Who is affected:** Writers to a collection mid split or merge whose descriptor read fails once at the retry's re-preparation, and writers whose descriptor stops decoding in the middle of that retry.
+- **Pinning tests:**
+  - src/dst/tests/append_application.rs::r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal (red at 7549e28a with (Internal, Internal, None); the retry lands once, not as a duplicate)
+  - src/dst/tests/append_application.rs::r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final (the closure check's read, unchanged)
+- **Risk reason:** Low: the answer to a request that committed nothing moves from a non-retryable 500 to the retryable 503 that the same loop already gives the neighbouring read. No status, code or header is new to either surface, and the message text (the store error) is the same.
+- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 500 → 503 edge change.
 
 ## Discrepancies
 

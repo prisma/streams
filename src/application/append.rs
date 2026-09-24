@@ -44,8 +44,25 @@ impl AppendService {
         sref: &crate::tenant::TenantStreamRef,
         key: AppendKey,
     ) -> Result<AuthorizedAppend, AppendFailure> {
-        let descriptor = match self.registry.get(sref).await {
-            Ok(Some(desc))
+        let fetched = self.registry.get(sref).await.map_err(|error| {
+            AppendFailure::new(
+                FailureClass::Internal,
+                AppendCode::Internal,
+                error.to_string(),
+            )
+        })?;
+        self.authorize(fetched, key).await
+    }
+    /// Everything preparation decides from a descriptor it could read:
+    /// liveness, the key, instance admission. What an unreadable registry
+    /// means belongs to the caller's point in the protocol.
+    async fn authorize(
+        &self,
+        fetched: Option<crate::registry::StreamDesc>,
+        key: AppendKey,
+    ) -> Result<AuthorizedAppend, AppendFailure> {
+        let descriptor = match fetched {
+            Some(desc)
                 if crate::application::creation::desc_alive(&desc) && desc.init.is_some() =>
             {
                 return Err(AppendFailure::new(
@@ -55,8 +72,8 @@ impl AppendService {
                 )
                 .retry(1));
             }
-            Ok(Some(desc)) if crate::application::creation::desc_alive(&desc) => desc,
-            Ok(desc) => {
+            Some(desc) if crate::application::creation::desc_alive(&desc) => desc,
+            desc => {
                 let gone = desc
                     .as_ref()
                     .is_some_and(|d| crate::application::creation::retained_for_forks(d, now_ms()));
@@ -76,13 +93,6 @@ impl AppendService {
                     } else {
                         "stream not found"
                     },
-                ));
-            }
-            Err(error) => {
-                return Err(AppendFailure::new(
-                    FailureClass::Internal,
-                    AppendCode::Internal,
-                    error.to_string(),
                 ));
             }
         };
@@ -141,6 +151,8 @@ impl AppendService {
         self.check_memory().await?;
         self.execute_prepared(prepared, command).await
     }
+    /// Every refresh of the bounded topology retry, the closure check and
+    /// the re-preparation, answers an unreadable registry retryably.
     pub(crate) async fn execute_prepared(
         &self,
         prepared: AuthorizedAppend,
@@ -177,8 +189,13 @@ impl AppendService {
                 break;
             };
             tokio::time::sleep(wait).await;
+            // The round's second refresh: a registry it cannot read proves
+            // nothing, and no attempt of this request committed (each was
+            // refused closed).
+            let fresh = self.registry.get(&command.sref).await;
+            let fresh = fresh.map_err(|error| unproven(error.to_string()))?;
             let key = AppendKey::Provided(command.key.clone());
-            prepared = self.prepare(&command.sref, key).await?;
+            prepared = self.authorize(fresh, key).await?;
         }
         fail(
             FailureClass::Unavailable,
@@ -201,14 +218,6 @@ impl AppendService {
         attempted: u32,
     ) -> Result<bool, AppendFailure> {
         use crate::application::read::TopologyResume;
-        let unproven = |error: String| {
-            AppendFailure::new(
-                FailureClass::Unavailable,
-                AppendCode::SegmentTransition,
-                error,
-            )
-            .retry(1)
-        };
         self.registry.invalidate(&command.sref);
         let fresh = self.registry.get(&command.sref).await;
         let Some(desc) = fresh.map_err(|error| unproven(error.to_string()))? else {
@@ -237,6 +246,17 @@ impl AppendService {
         let seg = desc.resolve_segment(&command.routing_key);
         Ok(seg.seg_id == attempted && !seg.sealed)
     }
+}
+
+/// A transition refresh that could not be read proves nothing: the
+/// writer, whose attempts were all refused as closed, is told to retry.
+fn unproven(error: String) -> AppendFailure {
+    AppendFailure::new(
+        FailureClass::Unavailable,
+        AppendCode::SegmentTransition,
+        error,
+    )
+    .retry(1)
 }
 
 #[expect(

@@ -4868,6 +4868,21 @@
     "scenarios": []
   },
   {
+    "name": "r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3870c3402cc803795c21884863e42b0887781d6080738cf74cf9ca259876a972",
+    "mechanisms": [],
+    "configuration": [
+      "use crate::failpoints::Fp::ScalerBeforePublish;",
+      "crate::failpoints::arm_scaler_before_publish(name);",
+      "let held = super::fixture_failpoints::FailpointGuard(name.to_string());"
+    ],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "r02_a_sealed_descriptors_closure_costs_no_refresh",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"

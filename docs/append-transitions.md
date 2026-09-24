@@ -2,7 +2,9 @@
 
 The raw Durable Streams adapter and product adapter independently decode requests and render `AppendOutcome` or `AppendFailure`. Neither adapter reconstructs a successful application result from response headers or JSON. The owner requires a committed offset range and explicit duplicate/closed/producer metadata.
 
-`AppendService::prepare` binds the stream incarnation and verifies its key before mutation body collection. `execute_prepared` verifies that preparation matches the command, preserves the initial incarnation across bounded topology retries, and calls the following phases:
+`AppendService::prepare` binds the stream incarnation and verifies its key before mutation body collection. `execute_prepared` verifies that preparation matches the command and preserves the initial incarnation across bounded topology retries. Each round of the bounded topology retry refreshes the descriptor twice, the closure check and the re-preparation; an unreadable registry at either is the retryable 503 `segment_transition`, never an internal failure: the request's attempts were all refused as closed, so it committed nothing.
+
+Each attempt calls the following phases:
 
 1. `close::prepare_close` validates any trusted final-record claim and recognizes an exact owed-final operation; it writes nothing. Synthetic producer identities make ordinary raw final-close retries recoverable after durable commit.
 2. `content::parse_content` validates media type, entries and permanent record/ingest ceilings. Producer errors remain deferred until duplicate detection. The product adapter decides the same ingest-capacity refusal for a non-producer request before project admission (`src/product/append_body.rs`), measuring the same wire body and record count, so a refused request never charges the project's append-volume quota. `close::install_intent` runs only after deterministic validation and TTL renewal, so an impossible final record cannot strand a collection in Sealing: it publishes a fresh intent, or renews the claim of the exact owed-final operation it resumes, and a refused retry of an owed final leaves that claim untouched.
