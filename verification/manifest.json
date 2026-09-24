@@ -2457,7 +2457,8 @@
       "owner": "stream registry: Registry::mutate_incarnation and Registry::recreate",
       "source_paths": [
         "src/registry.rs",
-        "src/application/creation/claim.rs"
+        "src/application/creation/claim.rs",
+        "src/bootstrap/s3_store.rs"
       ],
       "verification_paths": [
         "verification/tla/seal/RegistryCas.tla",
@@ -2465,7 +2466,8 @@
         "verification/tla/seal/MC_RegistryCas3.tla",
         "verification/tla/seal/MC_RegistryCas_NcLeak.tla",
         "verification/tla/seal/MC_RegistryCas_NcEpoch.tla",
-        "verification/tla/seal/MC_RegistryCas_NcEtag.tla"
+        "verification/tla/seal/MC_RegistryCas_NcEtag.tla",
+        "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla"
       ],
       "requirements": [
         "C4",
@@ -2490,7 +2492,7 @@
         "ASM-SEAL-PATH",
         "ASM-SEAL-NODELETE"
       ],
-      "input_scope": "Two projects share one stream name (two descriptor paths). Small: M1 and M2 race generation allocations on (P1, n) incarnation E1 while D tombstones E1 and recreates the same name and key as E2; M5, validated against E2, races them on the replacement; M3 allocates on (P2, n) at E3; every E1 mutator may start before, during or after the delete and recreate; 2 attempts per call; generations <= 3; one lost PUT reply, one failed dispatch, one missing ETag, one failed GET, one client retry of an ambiguous recreate. Expanded: three E1 racers (M1, M2, M4) and two E2 racers (M5, M6) on one name, the production bound of 5 attempts, two lost replies, two failed dispatches, two missing ETags, one failed GET, one recreate retry. Evidence properties: UniqueAllocation, IncarnationFenced, AllocatorCountsWrites. AttemptLocalResult and NegativeOutcomesWroteNothing hold by construction (ASM-SEAL-DECIDE-FN).",
+      "input_scope": "Two projects share one stream name (two descriptor paths). Small: M1 and M2 race generation allocations on (P1, n) incarnation E1 while D tombstones E1 and recreates the same name and key as E2; M5, validated against E2, races them on the replacement; M3 allocates on (P2, n) at E3; every E1 mutator may start before, during or after the delete and recreate; 2 attempts per call; generations <= 3; one lost PUT reply, one failed dispatch, one missing ETag, one failed GET, one client retry of an ambiguous recreate. Expanded: three E1 racers (M1, M2, M4) and two E2 racers (M5, M6) on one name, the production bound of 5 attempts, two lost replies, two failed dispatches, two missing ETags, one failed GET, one recreate retry. A conditional PUT is one request (src/bootstrap/s3_store.rs sends conditional requests with max_retries 0), so a committed PUT is never answered Precondition. Evidence properties: UniqueAllocation, IncarnationFenced, AllocatorCountsWrites, RecreateAnswerTruthful. AttemptLocalResult and NegativeOutcomesWroteNothing hold by construction (ASM-SEAL-DECIDE-FN).",
       "checks": [
         {
           "id": "TLA-001/baseline-small",
@@ -2508,7 +2510,8 @@
           "config": "verification/tla/seal/MC_RegistryCas_expanded.cfg",
           "expect": {
             "result": "pass"
-          }
+          },
+          "timeout_seconds": 3000
         },
         {
           "id": "TLA-001/nc-leaked-outcome",
@@ -2538,6 +2541,26 @@
           "expect": {
             "result": "violation",
             "property": "AllocatorCountsWrites"
+          }
+        },
+        {
+          "id": "TLA-001/nc-client-retry",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_client_retry.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AllocatorCountsWrites"
+          }
+        },
+        {
+          "id": "TLA-001/nc-client-retry-recreate",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_client_retry_recreate.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RecreateAnswerTruthful"
           }
         },
         {
@@ -2638,9 +2661,12 @@
         "registry::tests::r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion",
         "registry::tests::recreate_race_has_one_winner",
         "dst::dst_tests::seal_incarnation::a_product_seal_never_binds_to_a_recreated_incarnation",
+        "bootstrap::tests::provider_contract::s3lite_through_the_production_client_meets_the_provider_contract",
         "verification/tla/seal/evidence/TLA-001_nc-leaked-outcome.txt",
         "verification/tla/seal/evidence/TLA-001_nc-dropped-incarnation-check.txt",
-        "verification/tla/seal/evidence/TLA-001_nc-missing-etag-overwrite.txt"
+        "verification/tla/seal/evidence/TLA-001_nc-missing-etag-overwrite.txt",
+        "verification/tla/seal/evidence/TLA-001-F1_pre-fix_mutation-applied-twice.txt",
+        "verification/tla/seal/evidence/TLA-001-F1_pre-fix_recreate-declines-own-write.txt"
       ]
     },
     {
@@ -2725,7 +2751,7 @@
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 2400
+          "timeout_seconds": 3600
         },
         {
           "id": "TLA-002/baseline-expanded",
@@ -3112,7 +3138,7 @@
       "id": "TLA-003",
       "kind": "tla",
       "title": "Final-record sealing, ambiguous append outcomes, and owed debt",
-      "status": "counterexample",
+      "status": "pass-with-recorded-scope",
       "owner": "seal coordinator final-record path: raw close-with-content and product seal-with-final",
       "source_paths": [
         "src/application/lifecycle.rs",
@@ -3136,7 +3162,11 @@
         "verification/tla/seal/MC_FinalSeal_NcReleaseByOp.tla",
         "verification/tla/seal/MC_FinalSeal_NcDupCompletes.tla",
         "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
-        "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla"
+        "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+        "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+        "verification/tla/seal/MC_FinalSeal_NcRenewBeforeValidation.tla",
+        "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+        "verification/tla/seal/MC_FinalSeal_NcPlainResumesOwed.tla"
       ],
       "requirements": [
         "L1",
@@ -3174,7 +3204,7 @@
         "ASM-SEAL-NODELETE",
         "ASM-SEAL-OPID"
       ],
-      "input_scope": "One incarnation, one segment; operation ids, producer lanes and request hashes derived from (surface, content, coordination); validity is a function of the request and the handling instance's record ceiling and ingest capacity; generations <= 5 (CONSTRAINT); MaxClaimLoop = 0. A: raw close-with-content X on client producer (L, 1), two requests; raw appends N0 = (L, 0) and N1 = (L, 1) with X's bytes; plain S; 1 crash, 1 cancellation, 1 timeout (expanded: also 1 registry fault, 1 enqueue failure). A2: X on two concurrent slots, the retry on instance B; 1 engine replacement, 1 enqueue failure; plus HandlersProgress. B: raw X (two concurrent slots) and product Y with the same bytes and different coordination, plain S. C: B with X on the product surface. P: product final X on client (L, 0), product append N1 and raw append N2 on the same tuple and bytes, plain S. SL: raw X and product Y without producer headers and with the same bytes (one synthetic lane), plain S. PW: product final X on (L, 0), product append N1 on the same tuple, raw close-with-content W admitted while X's claim stands (X's claim can be released without a lapse). V: one instance; raw X, two requests; product Y over the record ceiling; product Z refused before intent. V4: X's retry on B over B's ingest capacity. V5: X's retry on B over B's record ceiling, B owns the shard at start, 1 engine replacement, three X requests, plain S. VP: V5 for product Y. Exact retries at every persisted boundary. No TLA-003 liveness (renewal generations are unbounded).",
+      "input_scope": "One incarnation, one segment; operation ids, producer lanes and request hashes derived from (surface, content, coordination); validity is a function of the request and the handling instance's record ceiling and ingest capacity; generations <= 5 (CONSTRAINT); MaxClaimLoop = 0. A: raw close-with-content X on client producer (L, 1), two requests; raw appends N0 = (L, 0) and N1 = (L, 1) with X's bytes; plain S; 1 crash, 1 cancellation, 1 timeout (expanded: also 1 registry fault, 1 enqueue failure). A2: X on two concurrent slots, the retry on instance B; 1 engine replacement, 1 enqueue failure; plus HandlersProgress. B: raw X (two concurrent slots) and product Y with the same bytes and different coordination, plain S. C: B with X on the product surface. P: product final X on client (L, 0), product append N1 and raw append N2 on the same tuple and bytes, plain S. SL: raw X and product Y without producer headers and with the same bytes (one synthetic lane), plain S. PW: product final X on (L, 0), product append N1 on the same tuple, raw close-with-content W admitted while X's claim stands (X's claim can be released without a lapse). V: one instance; raw X, two requests; product Y over the record ceiling; product Z refused before intent. V4: X's retry on B over B's ingest capacity. V5: X's retry on B over B's record ceiling, B owns the shard at start, 1 engine replacement, three X requests, plain S. V5A: V5 with A owning the shard at start (the original commits before the retry reaches a committer). VP: V5 for product Y. OP: raw close-with-content X and a raw append N1 without Stream-Closed, both without producer headers and with the same bytes (N1 has X's semantic operation id), plain S, 1 crash, 1 cancellation. Exact retries at every persisted boundary. Every baseline checks SealingRefusesNewAppends (L4). No TLA-003 liveness (renewal generations are unbounded).",
       "checks": [
         {
           "id": "TLA-003/baseline-lanes",
@@ -3289,6 +3319,24 @@
           }
         },
         {
+          "id": "TLA-003/baseline-validation-ceiling-dup",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_ceiling_dup.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-op-id",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_op_id.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "TLA-003/nc-gap-definitive",
           "role": "negative-control",
           "spec": "verification/tla/seal/MC_FinalSeal_NcGapDefinitive.tla",
@@ -3349,20 +3397,20 @@
           }
         },
         {
-          "id": "TLA-003/nc-admission-refusal-orphaned",
+          "id": "TLA-003/nc-admission-refusal-any-release-orphaned",
           "role": "negative-control",
-          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_orphaned.cfg",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_any_release_orphaned.cfg",
           "expect": {
             "result": "violation",
             "property": "ClosureAuthorized"
           }
         },
         {
-          "id": "TLA-003/nc-admission-refusal-plain-over-final",
+          "id": "TLA-003/nc-admission-refusal-any-release-plain-over-final",
           "role": "negative-control",
-          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_plain_over_final.cfg",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_any_release_plain_over_final.cfg",
           "expect": {
             "result": "violation",
             "property": "PlainCannotCompleteOwedFinal"
@@ -3529,16 +3577,6 @@
           }
         },
         {
-          "id": "TLA-003/witness-OrphanedCloseHealed",
-          "role": "witness",
-          "spec": "verification/tla/seal/MC_FinalSeal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_w_OrphanedCloseHealed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_OrphanedCloseHealed"
-          }
-        },
-        {
           "id": "TLA-003/nc-ceiling-after-intent-intent",
           "role": "negative-control",
           "spec": "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
@@ -3559,49 +3597,83 @@
           }
         },
         {
-          "id": "TLA-003/known-defect-F4-invalid-retry-renews",
-          "role": "known-defect",
-          "spec": "verification/tla/seal/MC_FinalSeal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_kd_f4_intent.cfg",
+          "id": "TLA-003/nc-renew-before-validation-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcRenewBeforeValidation.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_renew_before_validation_intent.cfg",
           "expect": {
             "result": "violation",
             "property": "IntentOnlyAfterValidation"
           }
         },
         {
-          "id": "TLA-003/known-defect-F5-release-while-deliverable",
-          "role": "known-defect",
-          "spec": "verification/tla/seal/MC_FinalSeal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_release.cfg",
+          "id": "TLA-003/nc-any-attempt-releases-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_release.cfg",
           "expect": {
             "result": "violation",
             "property": "ReleaseOnlyWhenUndeliverable"
           }
         },
         {
-          "id": "TLA-003/known-defect-F5-closed-without-claim",
-          "role": "known-defect",
-          "spec": "verification/tla/seal/MC_FinalSeal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_closure.cfg",
+          "id": "TLA-003/nc-any-attempt-releases-closed-without-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_closure.cfg",
           "expect": {
             "result": "violation",
             "property": "ClosureAuthorized"
           }
         },
         {
-          "id": "TLA-003/known-defect-F5-plain-over-final",
-          "role": "known-defect",
-          "spec": "verification/tla/seal/MC_FinalSeal.tla",
-          "config": "verification/tla/seal/MC_FinalSeal_kd_f5_plain_over_final.cfg",
+          "id": "TLA-003/nc-any-attempt-releases-plain-over-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_plain_over_final.cfg",
           "expect": {
             "result": "violation",
             "property": "PlainCannotCompleteOwedFinal"
+          }
+        },
+        {
+          "id": "TLA-003/nc-plain-append-resumes-owed-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcPlainResumesOwed.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_plain_resumes_owed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SealingRefusesNewAppends"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SameIdPlainAppendRefused",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SameIdPlainAppendRefused.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SameIdPlainAppendRefused"
+          }
+        },
+        {
+          "id": "TLA-003/witness-CeilingRetryCompletesCommittedFinal",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_CeilingRetryCompletesCommittedFinal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CeilingRetryCompletesCommittedFinal"
           }
         }
       ],
       "regressions": [
         "dst::dst_tests::seal_fencing::a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
         "dst::dst_tests::seal_cancellation::an_over_ceiling_product_final_is_refused_before_its_seal_intent",
+        "dst::dst_tests::seal_cancellation::an_ingest_refused_exact_retry_leaves_the_claim_to_its_original",
+        "dst::dst_tests::seal_cancellation::a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original",
+        "dst::dst_tests::seal_cancellation::a_ceiling_limited_exact_retry_still_completes_a_committed_final",
+        "dst::dst_tests::seal_cancellation::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
         "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_raw-takeover-releases-deliverable-debt.txt",
         "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_false-closed-answer.txt",
         "verification/tla/seal/evidence/TLA-003-F2b_pre-fix_committed-final-orphaned.txt",
@@ -3609,10 +3681,11 @@
         "verification/tla/seal/evidence/TLA-003-F2d_pre-fix_without-lapse.txt",
         "verification/tla/seal/evidence/TLA-003-F3_pre-fix_intent-before-record-ceiling.txt",
         "verification/tla/seal/evidence/TLA-003-F3_pre-fix_closed-without-claim.txt",
-        "verification/tla/seal/evidence/TLA-003-F4_invalid-retry-renews.txt",
-        "verification/tla/seal/evidence/TLA-003-F5_release-while-deliverable.txt",
-        "verification/tla/seal/evidence/TLA-003-F5_closed-without-claim.txt",
-        "verification/tla/seal/evidence/TLA-003-F5_plain-over-final.txt",
+        "verification/tla/seal/evidence/TLA-003-F4_pre-fix_renew-before-validation.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_release-while-deliverable.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_closed-without-claim.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_plain-over-final.txt",
+        "verification/tla/seal/evidence/TLA-003-F6_pre-fix_plain-append-resumes-owed-final.txt",
         "verification/tla/seal/evidence/TLA-003-M2_dupack-after-foreign-close.txt"
       ]
     }

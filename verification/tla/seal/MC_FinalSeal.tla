@@ -42,6 +42,11 @@
 (* Shape SL ("shared lane"): raw close-with-content X and product            *)
 (* seal-with-final Y, both without producer headers and with the same bytes: *)
 (* one synthetic lane, two operation ids.                                    *)
+(*                                                                           *)
+(* Shape OP ("operation id"): raw close-with-content X and a raw append N1   *)
+(* WITHOUT Stream-Closed, both without producer headers and with the same    *)
+(* bytes, so N1 has X's semantic operation id; S a plain seal.  X may retry  *)
+(* once.                                                                     *)
 EXTENDS SealProtocol
 
 CONSTANTS X, Y, Z, S, W, N0, N1, N2, L, LX, LY, A, B, CX, CY, CN
@@ -148,4 +153,15 @@ SLProducer == [o \in {X, Y} |-> NONE]
 SLSeqOf == [o \in {X, Y} |-> 0]
 SLSlots == [o \in {X, Y, S} |-> {1}]
 SLBudget == [o \in {X, Y, S} |-> IF o = S THEN 1 ELSE 2]
+
+\* ---- shape OP ----
+OPFinalOps == {X}
+OPPlainOps == {S}
+OPAppendOps == {N1}
+OPSurface == [o \in {X, N1} |-> "raw"]
+OPContent == [o \in {X, N1} |-> CX]
+OPProducer == [o \in {X, N1} |-> NONE]
+OPSeqOf == [o \in {X, N1} |-> 0]
+OPSlots == [o \in {X, S, N1} |-> {1}]
+OPBudget == [o \in {X, S, N1} |-> IF o = X THEN 2 ELSE 1]
 =============================================================================

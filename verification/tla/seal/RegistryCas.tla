@@ -90,6 +90,18 @@ UnconditionalOnMissingToken == FALSE
 \* of THIS (winning) attempt's decide -- a local of the loop body.
 ReturnedResult(a) == act[a].prop.result
 
+\* Every conditional request (PutMode::Create, PutMode::Update,
+\* CopyMode::Create) goes through the client with max_retries 0
+\* (src/bootstrap/s3_store.rs), so a conditional PUT is ONE request:
+\* Precondition (and AlreadyExists) is the provider's answer to the only
+\* request that carried the precondition, and a committed PUT is never
+\* answered with it.  TRUE is the behaviour before "Registry conditional
+\* writes never mistake their own committed write for a refusal":
+\* object_store re-sent a conditional PUT after a 5xx, 429 or 408 with the
+\* original precondition, so a PUT whose first request committed came back
+\* Precondition -- to the registry, "another writer won".
+CommittedAnsweredPrecondition == FALSE
+
 (***************************************************************************)
 (* Pure decisions (the `decide` closures).                                 *)
 (***************************************************************************)
@@ -118,7 +130,8 @@ Init ==
                  recreate |-> MaxRecreateRetry]
     /\ hist = [wrote |-> [a \in Actors |-> NONE],     \* gen the store holds after this call's committed PUT
                cross |-> FALSE,                       \* a PUT landed on a foreign incarnation
-               recreateRetried |-> FALSE]             \* an ambiguous recreate was retried
+               recreateRetried |-> FALSE,             \* an ambiguous recreate was retried
+               recreateWrote |-> FALSE]               \* the CURRENT recreate call's PUT committed
 
 Finish(a, out, res) ==
     act' = [act EXCEPT ![a].pc = "done", ![a].out = out, ![a].res = res,
@@ -176,8 +189,9 @@ Read(a) ==
                         ELSE Finish(a, "MissingToken", NONE)
                      /\ UNCHANGED <<obj, hist>>
 
-\* The conditional PUT.  Atomic compare-and-write under ASM-OBJSTORE-CAS;
-\* the reply is a separate observable that may be lost.
+\* The conditional PUT: one request (s3_store.rs), an atomic
+\* compare-and-write under ASM-OBJSTORE-CAS; the reply is a separate
+\* observable that may be lost.
 Cas(a) ==
     /\ act[a].pc = "cas"
     /\ LET p == PathOf[a]
@@ -216,6 +230,21 @@ Cas(a) ==
           /\ faults' = [faults EXCEPT !.fail = @ - 1]
           /\ Finish(a, "Ambiguous", NONE)
           /\ UNCHANGED <<obj, hist>>
+       \/ \* Only with a retrying client (never in the unmodified model): the
+          \* first request committed, its reply was a 5xx, and the client's
+          \* re-sent request was refused by that very write -- Precondition,
+          \* so the loop re-reads and re-decides against its own write.
+          /\ CommittedAnsweredPrecondition
+          /\ matches
+          /\ faults.lost > 0
+          /\ faults' = [faults EXCEPT !.lost = @ - 1]
+          /\ obj' = [obj EXCEPT ![p] = written]
+          /\ record
+          /\ IF act[a].att + 1 < MaxAttempts
+             THEN act' = [act EXCEPT ![a].pc = "read", ![a].att = @ + 1,
+                                     ![a].snap = NONE, ![a].prop = NONE,
+                                     ![a].uncond = FALSE]
+             ELSE Finish(a, "Conflict", NONE)
 
 \* The deleter's tombstone call finished; it now recreates the same name
 \* with the same key (fresh epoch): creation/claim.rs resolve -> Registry::
@@ -229,8 +258,8 @@ BeginRecreate ==
     /\ faults' = IF act[Deleter].out = "RecreateAmbiguous"
                  THEN [faults EXCEPT !.recreate = @ - 1] ELSE faults
     /\ act' = [act EXCEPT ![Deleter] = [Idle EXCEPT !.pc = "rread"]]
-    /\ hist' = IF act[Deleter].out = "RecreateAmbiguous"
-               THEN [hist EXCEPT !.recreateRetried = TRUE] ELSE hist
+    /\ hist' = [hist EXCEPT !.recreateRetried = @ \/ act[Deleter].out = "RecreateAmbiguous",
+                            !.recreateWrote = FALSE]
     /\ UNCHANGED obj
 
 \* Registry::recreate: GET, `still_dead` judged on the STORED descriptor.
@@ -273,14 +302,28 @@ RecreateCas ==
        \/ /\ o.ver = s.ver
           /\ obj' = [obj EXCEPT ![p] = fresh]
           /\ Finish(Deleter, "Recreated", NONE)
-          /\ UNCHANGED <<faults, hist>>
+          /\ hist' = [hist EXCEPT !.recreateWrote = TRUE]
+          /\ UNCHANGED faults
        \/ \* committed, reply lost
           /\ o.ver = s.ver
           /\ faults.lost > 0
           /\ faults' = [faults EXCEPT !.lost = @ - 1]
           /\ obj' = [obj EXCEPT ![p] = fresh]
           /\ Finish(Deleter, "RecreateAmbiguous", NONE)
-          /\ UNCHANGED hist
+          /\ hist' = [hist EXCEPT !.recreateWrote = TRUE]
+       \/ \* Only with a retrying client: committed, answered Precondition by
+          \* the client's own re-sent request, so recreate re-reads and finds
+          \* the replacement it wrote itself live.
+          /\ CommittedAnsweredPrecondition
+          /\ o.ver = s.ver
+          /\ faults.lost > 0
+          /\ faults' = [faults EXCEPT !.lost = @ - 1]
+          /\ obj' = [obj EXCEPT ![p] = fresh]
+          /\ hist' = [hist EXCEPT !.recreateWrote = TRUE]
+          /\ IF act[Deleter].att + 1 < MaxAttempts
+             THEN act' = [act EXCEPT ![Deleter].pc = "rread", ![Deleter].att = @ + 1,
+                                     ![Deleter].snap = NONE]
+             ELSE Finish(Deleter, "Conflict", NONE)
        \/ \* failed before dispatch
           /\ faults.fail > 0
           /\ faults' = [faults EXCEPT !.fail = @ - 1]
@@ -348,6 +391,15 @@ AllocatorCountsWrites ==
                                     /\ PathOf[a] = p
                                     /\ Expected[a] = obj[p].epoch
                                     /\ hist.wrote[a] # NONE})
+
+\* A recreate call is never answered as declined -- "a live descriptor this
+\* call did not write" -- after its own conditional PUT committed.  (A NEW
+\* request after an ambiguous answer may legitimately resolve against the
+\* replacement it created: Witness_AmbiguousRecreateRetried.)  A declined
+\* recreate skips the creation work (body, Ready publication), leaving the
+\* stream Initializing.
+RecreateAnswerTruthful ==
+    ~(act[Deleter].out = "RecreateDeclined" /\ hist.recreateWrote)
 
 (***************************************************************************)
 (* Structural sanity (holds by construction of the model; README)           *)

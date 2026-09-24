@@ -7,21 +7,30 @@ The manifest entries, checks and bounds are in
 [`verification/assumptions.md`](../../assumptions.md), and the last complete
 runs in `verification/receipts/TLA-00N.json`.
 
-The models describe the code after four fixes that the models found:
-"A seal takeover's fence outlives the engine that recorded it" (TLA-002-F1),
-"A SealSuperseded refusal waits until the fence behind it is durable"
-(TLA-002-F2), "A raw close that takes over an abandoned final claim writes its
-own record" (TLA-003-F2) and "A product seal refuses an over-ceiling final
-before it publishes its intent" (TLA-003-F3). Each fix's earlier behaviour is
-now a negative control.
+The models describe the code after these fixes:
+
+- four fixes the models found: "A seal takeover's fence outlives the engine
+  that recorded it" (TLA-002-F1), "A SealSuperseded refusal waits until the
+  fence behind it is durable" (TLA-002-F2), "A raw close that takes over an
+  abandoned final claim writes its own record" (TLA-003-F2) and "A product seal
+  refuses an over-ceiling final before it publishes its intent" (TLA-003-F3);
+- the fix of the two open model findings TLA-003-F4 and TLA-003-F5, after they
+  were reproduced on real code: "A seal retry refused by its own instance's
+  limits neither renews nor releases the claim";
+- two fixes found outside the models, whose earlier behaviour the models now
+  express: "Only a close can resume an owed final" (TLA-003-F6) and "Registry
+  conditional writes never mistake their own committed write for a refusal"
+  (TLA-001-F1).
+
+Each fix's earlier behaviour is a negative control.
 
 ## Status
 
 | ID | Title | Status | Result |
 |---|---|---|---|
-| TLA-001 | Registry CAS, attempt-local outcomes, and incarnation fencing | pass-with-recorded-scope | Both baselines pass. Each negative control fails on its property. Every witness is reached. |
+| TLA-001 | Registry CAS, attempt-local outcomes, and incarnation fencing | pass-with-recorded-scope | Both baselines pass, now also checking `RecreateAnswerTruthful`. Each negative control fails on its property, including the pre-fix client retry (F1). Every witness is reached. |
 | TLA-002 | Seal claims, renewal, and competing takeover reservations | pass-with-recorded-scope | Every baseline passes, including engine replacement, crash failover, a fence group lost or rejected before its durability, and the liveness shapes. F1 and F2 are fixed; each fix's earlier behaviour is a negative control. |
-| TLA-003 | Final-record sealing, ambiguous append outcomes, and owed debt | counterexample | Every baseline passes. The two shapes with configuration skew between instances exclude the properties F4 or F5 violate. F2 and F3 are fixed. **F4** and **F5** are open and need an owner decision. |
+| TLA-003 | Final-record sealing, ambiguous append outcomes, and owed debt | pass-with-recorded-scope | Every baseline passes every safety property, including the three shapes with configuration skew between instances (V4, V5, V5A) and the plain append with a final's operation id (OP). F2 to F6 are fixed; each fix's earlier behaviour is a negative control. No known defect remains. |
 
 ## How to run
 
@@ -42,128 +51,145 @@ still violates its named property.
 
 ## Results
 
-The receipts were recorded on `ab73296` with uncommitted changes: the Kani
-proof modules committed ahead of this work, the TLA-003-F3 and TLA-002-F2
-fixes, and these verification files. Line numbers in this README refer to
-that tree. TLA-001's receipt predates the TLA-002-F2 fix, which touches none
-of its inputs.
+The tables below are from runs on `55881d7` plus the uncommitted changes
+described here, with TLC 2.19 and Java 17.0.1. They were run **without
+`--record`**, so no receipt was written:
+
+- TLA-001 and TLA-002: `formal.py run --id TLA-001 --id TLA-002 --id TLA-003`.
+  Every TLA-001 and TLA-002 check matched. That invocation was stopped
+  deliberately at its first TLA-003 check: it had loaded the manifest while
+  the F2 controls still had their previous form (see TLA-003-F2).
+- TLA-003: `formal.py run --id TLA-003` on the final manifest. All 47 checks
+  matched.
+
+The committed receipts `verification/receipts/TLA-00N.json` predate these
+changes. TLA-001's and TLA-003's no longer name the manifest's check sets, so
+`check` reports them invalid until the obligations are re-recorded.
+Seconds are wall time on a shared machine whose load varied widely (load
+average 40 to 70 during TLA-001 and TLA-002). Violation searches use two
+workers, so their state counts vary slightly between runs. The TLA-002
+baseline counts equal those of the previous receipt: the changes add only raw
+and producer-less paths, which the product-only TLA-002 shapes never take.
+After the run, the timeouts of `TLA-001/baseline-expanded` (1210.8 s) and
+`TLA-002/baseline-faults` (1628.9 s) were raised to 3000 s and 3600 s, at
+least twice the observed time.
 
 ### TLA-001
 
-Receipt `verification/receipts/TLA-001.json`: run on `ab73296773bc` plus uncommitted changes, TLC 2.19, Java 17.0.1. Seconds are wall time on a shared machine whose load varied.
-
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-small` | baseline | pass | pass | 104,025 | 5.4 |
-| `baseline-expanded` | baseline | pass | pass | 7,153,286 | 315.9 |
-| `nc-leaked-outcome` | negative-control | violation:UniqueAllocation | violation:UniqueAllocation | 2,678 | 1.4 |
-| `nc-dropped-incarnation-check` | negative-control | violation:IncarnationFenced | violation:IncarnationFenced | 5,404 | 1.4 |
-| `nc-missing-etag-overwrite` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 977 | 1.2 |
-| `witness-LoserRetriesThenApplies` | witness | violation:Witness_LoserRetriesThenApplies | violation:Witness_LoserRetriesThenApplies | 2,690 | 1.4 |
-| `witness-AmbiguousAfterWrite` | witness | violation:Witness_AmbiguousAfterWrite | violation:Witness_AmbiguousAfterWrite | 71 | 1.0 |
-| `witness-StaleMutatorFenced` | witness | violation:Witness_StaleMutatorFenced | violation:Witness_StaleMutatorFenced | 3,109 | 1.3 |
-| `witness-MissingTokenRefused` | witness | violation:Witness_MissingTokenRefused | violation:Witness_MissingTokenRefused | 16 | 1.1 |
-| `witness-Recreated` | witness | violation:Witness_Recreated | violation:Witness_Recreated | 937 | 1.2 |
-| `witness-ConflictExhausted` | witness | violation:Witness_ConflictExhausted | violation:Witness_ConflictExhausted | 11,977 | 1.6 |
-| `witness-DeclinedOnTombstone` | witness | violation:Witness_DeclinedOnTombstone | violation:Witness_DeclinedOnTombstone | 390 | 1.2 |
-| `witness-ReplacementAllocatesWhileStaleFenced` | witness | violation:Witness_ReplacementAllocatesWhileStaleFenced | violation:Witness_ReplacementAllocatesWhileStaleFenced | 13,538 | 2.0 |
-| `witness-AmbiguousRecreateRetried` | witness | violation:Witness_AmbiguousRecreateRetried | violation:Witness_AmbiguousRecreateRetried | 3,128 | 1.3 |
+| `baseline-small` | baseline | pass | pass | 108,329 | 12.4 |
+| `baseline-expanded` | baseline | pass | pass | 7,643,540 | 1210.8 |
+| `nc-leaked-outcome` | negative-control | violation:UniqueAllocation | violation:UniqueAllocation | 2,893 | 9.4 |
+| `nc-dropped-incarnation-check` | negative-control | violation:IncarnationFenced | violation:IncarnationFenced | 5,396 | 9.1 |
+| `nc-missing-etag-overwrite` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 1,156 | 8.2 |
+| `nc-client-retry` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 607 | 6.8 |
+| `nc-client-retry-recreate` | negative-control | violation:RecreateAnswerTruthful | violation:RecreateAnswerTruthful | 4,919 | 6.7 |
+| `witness-LoserRetriesThenApplies` | witness | violation:Witness_LoserRetriesThenApplies | violation:Witness_LoserRetriesThenApplies | 2,689 | 7.5 |
+| `witness-AmbiguousAfterWrite` | witness | violation:Witness_AmbiguousAfterWrite | violation:Witness_AmbiguousAfterWrite | 67 | 5.2 |
+| `witness-StaleMutatorFenced` | witness | violation:Witness_StaleMutatorFenced | violation:Witness_StaleMutatorFenced | 3,170 | 12.6 |
+| `witness-MissingTokenRefused` | witness | violation:Witness_MissingTokenRefused | violation:Witness_MissingTokenRefused | 16 | 6.0 |
+| `witness-Recreated` | witness | violation:Witness_Recreated | violation:Witness_Recreated | 1,584 | 5.8 |
+| `witness-ConflictExhausted` | witness | violation:Witness_ConflictExhausted | violation:Witness_ConflictExhausted | 11,444 | 8.2 |
+| `witness-DeclinedOnTombstone` | witness | violation:Witness_DeclinedOnTombstone | violation:Witness_DeclinedOnTombstone | 402 | 4.7 |
+| `witness-ReplacementAllocatesWhileStaleFenced` | witness | violation:Witness_ReplacementAllocatesWhileStaleFenced | violation:Witness_ReplacementAllocatesWhileStaleFenced | 14,038 | 10.4 |
+| `witness-AmbiguousRecreateRetried` | witness | violation:Witness_AmbiguousRecreateRetried | violation:Witness_AmbiguousRecreateRetried | 3,031 | 6.4 |
 
 ### TLA-002
 
-Receipt `verification/receipts/TLA-002.json`: run on `ab73296773bc` plus uncommitted changes, TLC 2.19, Java 17.0.1. Seconds are wall time on a shared machine whose load varied.
-
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-small` | baseline | pass | pass | 895,724 | 150.0 |
-| `baseline-faults` | baseline | pass | pass | 3,875,480 | 564.2 |
-| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 381.0 |
-| `baseline-xproc` | baseline | pass | pass | 523,650 | 123.9 |
-| `baseline-retire` | baseline | pass | pass | 5,811,402 | 1237.4 |
-| `baseline-engine` | baseline | pass | pass | 3,773,720 | 933.4 |
-| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 3.9 |
-| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 508.4 |
-| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 7.9 |
-| `baseline-xproc-held` | baseline | pass | pass | 1,210,271 | 181.5 |
-| `baseline-retire-held` | baseline | pass | pass | 7,770,035 | 1228.5 |
-| `baseline-liveness-held` | baseline | pass | pass | 8,791 | 5.5 |
-| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 18,049 | 4.2 |
-| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,316 | 5.7 |
-| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,141 | 2.8 |
-| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,237 | 2.4 |
-| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 21,911 | 4.9 |
-| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,927 | 5.0 |
-| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 399,899 | 46.6 |
-| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,859,595 | 360.8 |
-| `nc-refusal-at-staging-closure` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 141,164 | 16.8 |
-| `nc-refusal-at-staging-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 311,674 | 30.9 |
-| `nc-cache-survives-rejected-group` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 186,069 | 22.5 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,453 | 2.5 |
-| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,214 | 2.3 |
-| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,001 | 3.2 |
-| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 35,000 | 5.9 |
-| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,277 | 2.9 |
-| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,388 | 2.3 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,406 | 2.5 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 575 | 1.7 |
-| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,066 | 2.0 |
-| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 513 | 1.7 |
-| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.6 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 286 | 1.6 |
-| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,466 | 4.0 |
-| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 530 | 1.8 |
-| `witness-SupersededAfterFenceDurable` | witness | violation:Witness_SupersededAfterFenceDurable | violation:Witness_SupersededAfterFenceDurable | 15,062 | 4.1 |
-| `witness-FenceGroupRejected` | witness | violation:Witness_FenceGroupRejected | violation:Witness_FenceGroupRejected | 4,346 | 2.9 |
+| `baseline-small` | baseline | pass | pass | 895,724 | 413.9 |
+| `baseline-faults` | baseline | pass | pass | 3,875,480 | 1628.9 |
+| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 707.5 |
+| `baseline-xproc` | baseline | pass | pass | 523,650 | 121.3 |
+| `baseline-retire` | baseline | pass | pass | 5,811,402 | 775.8 |
+| `baseline-engine` | baseline | pass | pass | 3,773,720 | 762.0 |
+| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 3.7 |
+| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 610.7 |
+| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 16.5 |
+| `baseline-xproc-held` | baseline | pass | pass | 1,210,271 | 261.9 |
+| `baseline-retire-held` | baseline | pass | pass | 7,770,035 | 883.5 |
+| `baseline-liveness-held` | baseline | pass | pass | 8,791 | 4.9 |
+| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 17,690 | 3.0 |
+| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,563 | 4.1 |
+| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,090 | 2.1 |
+| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,304 | 2.0 |
+| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 21,963 | 3.7 |
+| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,913 | 3.9 |
+| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 398,596 | 29.6 |
+| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,859,504 | 209.0 |
+| `nc-refusal-at-staging-closure` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 141,112 | 10.1 |
+| `nc-refusal-at-staging-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 308,202 | 17.7 |
+| `nc-cache-survives-rejected-group` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 186,078 | 13.1 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,803 | 2.1 |
+| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,609 | 1.7 |
+| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,568 | 2.4 |
+| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 35,290 | 4.1 |
+| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,455 | 1.9 |
+| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,325 | 1.5 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,386 | 2.0 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 417 | 1.4 |
+| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,066 | 1.5 |
+| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 426 | 1.3 |
+| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.2 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 289 | 1.3 |
+| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,427 | 2.8 |
+| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 509 | 1.3 |
+| `witness-SupersededAfterFenceDurable` | witness | violation:Witness_SupersededAfterFenceDurable | violation:Witness_SupersededAfterFenceDurable | 15,145 | 3.0 |
+| `witness-FenceGroupRejected` | witness | violation:Witness_FenceGroupRejected | violation:Witness_FenceGroupRejected | 4,320 | 2.1 |
 
 ### TLA-003
 
-Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommitted changes, TLC 2.19, Java 17.0.1. Seconds are wall time on a shared machine whose load varied.
-
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-lanes` | baseline | pass | pass | 661,936 | 93.5 |
-| `baseline-expanded` | baseline | pass | pass | 1,631,963 | 234.5 |
-| `baseline-lanes-engine` | baseline | pass | pass | 1,694,525 | 339.6 |
-| `baseline-renewal` | baseline | pass | pass | 4,966,567 | 683.8 |
-| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 485.7 |
-| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 94.5 |
-| `baseline-product-release` | baseline | pass | pass | 17,197 | 5.0 |
-| `baseline-shared-lane` | baseline | pass | pass | 3,676,695 | 275.3 |
-| `baseline-validation` | baseline | pass | pass | 10,676 | 1.9 |
-| `baseline-validation-capacity` | baseline | pass | pass | 1,603 | 1.4 |
-| `baseline-validation-ceiling` | baseline | pass | pass | 64,862 | 3.7 |
-| `baseline-validation-product` | baseline | pass | pass | 13,166 | 1.9 |
-| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 580 | 1.1 |
-| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 673 | 1.1 |
-| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,556 | 1.4 |
-| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 212,545 | 9.5 |
-| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 36,149 | 2.8 |
-| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 35,056 | 3.0 |
-| `nc-admission-refusal-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 268,957 | 11.2 |
-| `nc-admission-refusal-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,402,305 | 56.4 |
-| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,568 | 1.5 |
-| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 21 | 0.9 |
-| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 11,208 | 1.8 |
-| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 322,197 | 16.4 |
-| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 571 | 1.1 |
-| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 77,469 | 4.7 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,639 | 4.6 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 434 | 1.1 |
-| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 21,669 | 2.3 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,936 | 1.8 |
-| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 14,783 | 1.9 |
-| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 49,763 | 3.3 |
-| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 98 | 1.0 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 235 | 1.2 |
-| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 159,404 | 8.2 |
-| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 164,021 | 8.6 |
-| `witness-OrphanedCloseHealed` | witness | violation:Witness_OrphanedCloseHealed | violation:Witness_OrphanedCloseHealed | 91,527 | 4.8 |
-| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 19 | 1.0 |
-| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,969 | 1.8 |
-| `known-defect-F4-invalid-retry-renews` | known-defect | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 257 | 1.1 |
-| `known-defect-F5-release-while-deliverable` | known-defect | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 2,074 | 1.2 |
-| `known-defect-F5-closed-without-claim` | known-defect | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,342 | 1.8 |
-| `known-defect-F5-plain-over-final` | known-defect | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 24,297 | 2.2 |
+| `baseline-lanes` | baseline | pass | pass | 676,449 | 46.3 |
+| `baseline-expanded` | baseline | pass | pass | 1,650,041 | 111.5 |
+| `baseline-lanes-engine` | baseline | pass | pass | 1,716,205 | 128.8 |
+| `baseline-renewal` | baseline | pass | pass | 4,994,511 | 322.4 |
+| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 226.8 |
+| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 40.5 |
+| `baseline-product-release` | baseline | pass | pass | 17,197 | 2.4 |
+| `baseline-shared-lane` | baseline | pass | pass | 3,745,651 | 189.8 |
+| `baseline-validation` | baseline | pass | pass | 10,676 | 2.8 |
+| `baseline-validation-capacity` | baseline | pass | pass | 1,276 | 2.0 |
+| `baseline-validation-ceiling` | baseline | pass | pass | 43,081 | 5.7 |
+| `baseline-validation-product` | baseline | pass | pass | 13,166 | 3.0 |
+| `baseline-validation-ceiling-dup` | baseline | pass | pass | 150,973 | 12.5 |
+| `baseline-op-id` | baseline | pass | pass | 23,913 | 3.8 |
+| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 602 | 1.5 |
+| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 505 | 1.6 |
+| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,394 | 2.1 |
+| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 206,137 | 17.2 |
+| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 36,179 | 5.0 |
+| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 36,630 | 2.9 |
+| `nc-admission-refusal-any-release-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 270,966 | 31.2 |
+| `nc-admission-refusal-any-release-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,407,815 | 162.0 |
+| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,561 | 2.7 |
+| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 21 | 1.8 |
+| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 10,812 | 3.7 |
+| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 320,698 | 34.7 |
+| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 478 | 1.6 |
+| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 73,232 | 8.1 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,943 | 8.1 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 587 | 1.6 |
+| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 17,427 | 3.8 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,895 | 2.8 |
+| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 13,873 | 3.7 |
+| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 50,114 | 5.6 |
+| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 77 | 1.5 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 237 | 1.5 |
+| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 159,010 | 16.7 |
+| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 164,363 | 16.9 |
+| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 27 | 1.5 |
+| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,878 | 2.5 |
+| `nc-renew-before-validation-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 254 | 1.5 |
+| `nc-any-attempt-releases-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 1,288 | 1.7 |
+| `nc-any-attempt-releases-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 4,918 | 2.2 |
+| `nc-any-attempt-releases-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 17,283 | 3.5 |
+| `nc-plain-append-resumes-owed-final` | negative-control | violation:SealingRefusesNewAppends | violation:SealingRefusesNewAppends | 531 | 1.6 |
+| `witness-SameIdPlainAppendRefused` | witness | violation:Witness_SameIdPlainAppendRefused | violation:Witness_SameIdPlainAppendRefused | 145 | 1.4 |
+| `witness-CeilingRetryCompletesCommittedFinal` | witness | violation:Witness_CeilingRetryCompletesCommittedFinal | violation:Witness_CeilingRetryCompletesCommittedFinal | 3,796 | 2.5 |
 
 ## Findings
 
@@ -266,7 +292,7 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
 - **Fix.** Commit "A raw close that takes over an abandoned final claim writes
   its own record". When `begin_sealing_for_close` returns this operation's
   generation for a Final intent, the plan owes that final and the Sealing
-  refusal is cleared (`close.rs` 200-211).
+  refusal is cleared (`close.rs` 204-207 today).
 - **Model.** `ClaimedFinalPlan` applies that update after a raw final's claim
   CAS, in `FClaim` and in `TInstall`.
 - **Checks.** `baseline-renewal`, `baseline-shared-lane`,
@@ -276,12 +302,27 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
   `RetryAfterMarkRunsItsSeal` are reached.
 - **Pre-fix behaviour.** The negative controls `nc-admission-refusal-*` keep
   the admission values. On the renewal shape they fail on
-  `ReleaseOnlyWhenUndeliverable`, `FinalClosedTruthful`, `ClosureAuthorized`
-  and `PlainCannotCompleteOwedFinal`. On shape PW, restricted to behaviours
-  with no lease lapse, they fail on `FinalClosedTruthful`: X's claim is
-  released by its own `ProducerSeqReused` refusal after W's admission saw it.
-  (The first revision's no-lapse trace used F3's release, which the F3 fix
-  removed.)
+  `ReleaseOnlyWhenUndeliverable` and `FinalClosedTruthful`. On shape PW,
+  restricted to behaviours with no lease lapse, they fail on
+  `FinalClosedTruthful`: X's claim is released by its own `ProducerSeqReused`
+  refusal after W's admission saw it. (The first revision's no-lapse trace
+  used F3's release, which the F3 fix removed.)
+- **The orphaned-final and plain-over-final forms need two pre-fix
+  behaviours.** In their traces (`evidence/TLA-003-F2b_*`, `F2c_*`) the exact
+  retry that RENEWED the claim is refused `Closed` by its kept Sealing refusal
+  and releases the claim; the takeover attempt's final then commits with no
+  claim standing. Since the F5 fix a renewing attempt releases nothing. On
+  the current model the F2-only substitution no longer reaches
+  `ClosureAuthorized` or `PlainCannotCompleteOwedFinal`: both searches
+  complete on shape B with 9,009,123 distinct states and no violation. Either
+  fix alone blocks these forms. The controls
+  `nc-admission-refusal-any-release-orphaned` and `-plain-over-final`
+  (`MC_FinalSeal_NcAdmissionRefusalAnyRelease`) therefore restore the code as
+  it stood before the F2 fix, which also predates the F5 fix:
+  `ClaimedFinalPlan <- AdmissionPlanKept` and
+  `RefusalReleases <- AnyAttemptReleases`. They fail on `ClosureAuthorized`
+  and `PlainCannotCompleteOwedFinal`. They are the only controls that
+  substitute two operators.
 - **Regression.** `dst::dst_tests::seal_fencing::a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record`.
   The renewal forms (a concurrent exact retry) have no real-code test. The
   pre-fix traces are `evidence/TLA-003-F2*_pre-fix_*`.
@@ -314,74 +355,185 @@ Receipt `verification/receipts/TLA-003.json`: run on `ab73296773bc` plus uncommi
 - **Regression.** `dst::dst_tests::seal_cancellation::an_over_ceiling_product_final_is_refused_before_its_seal_intent`.
 - **Raw surface.** A fresh raw close has no such gap: `parse_content` runs
   before `install_intent`, which runs only when nothing was deferred. Only the
-  exact-retry renewal touches a claim before content is validated (F4, F5).
+  exact-retry renewal touched a claim before content was validated (F4, F5,
+  both since fixed).
 
-### TLA-003-F4 (open, owner decision): a raw exact retry renews the owed claim before its content is validated
+### TLA-003-F4 (fixed): a raw exact retry renewed the owed claim before its content was validated
 
-- **Scope, narrowed.** A raw close with content always has a producer (its own
-  or the synthetic `rawseal` lane, `close.rs` 101-112). `parse_content`
-  therefore defers every content refusal (`content.rs` 30-73). The only early
-  refusal it can give an exact retry is `permanently_unadmittable`
-  (`content.rs` 81-89; `usage.rs` 327-340). That depends on the instance's
-  ingest limits (`LIMIT_BYTES_PER_SEC`, `LIMIT_RECS_PER_SEC`,
-  `LIMIT_BURST_SECS`), fixed at boot. F4 needs ingest-capacity skew between
-  instances, for example during a rolling configuration change.
-- **Schedule.** The original on A installs (op, g0) and stalls before its
-  enqueue. The exact retry on B renews to g1 (`close.rs` 74-99), then
-  `parse_content` answers 413 with no release. A's original commits under g0
-  (the renewal raised no fence). Its `mark_final_committed(op, g0)` declines
-  `InvalidClaim`, so the client gets 503 `SealIncomplete` with its record
-  durable. The claim stays owed under a fresh lease until an exact retry lands
-  on a capable instance, or a takeover completes it.
-- **Check.** `known-defect-F4-invalid-retry-renews` (shape V4) violates
-  `IntentOnlyAfterValidation` in 7 states. `baseline-validation-capacity`
-  shows no other property fails in that shape.
-- **Proposed regression.** Two rigs over one store with different ingest
-  limits. Park the original on rig A at `Fp::CloseBeforeEnqueue`, send the
-  exact retry to rig B, and assert that the refusal left the claim's
-  generation and `claimed_ms` unchanged.
+- **Defect.** An owed exact retry renewed the claim in `prepare_close`, before
+  `parse_content`. A raw close with content always has a producer, so the only
+  early refusal `parse_content` gives it is ingest capacity
+  (`permanently_unadmittable`), which depends on the instance's `LIMIT_*`
+  settings. With ingest-capacity skew between instances (a rolling
+  configuration change): the original on A installs (op, g0) and stalls before
+  its enqueue; the exact retry on B renews to g1, then answers 413 with no
+  release; A's original commits under g0 (the renewal raised no fence) and its
+  mark declines, so the client gets 503 `SealIncomplete` with its record
+  durable, and the claim stays owed under a fresh lease.
+- **Reproduced on real code** with two instances over one store (generation 1
+  to 2, then 503 with the record durable).
+- **Fix.** Commit "A seal retry refused by its own instance's limits neither
+  renews nor releases the claim", option (a) of the earlier decision.
+  `prepare_close` only finds the owed claim (now only for a close, F6) and
+  keeps the generation it observed (`close.rs` 71-85); `install_intent` renews
+  only when nothing was refused or deferred (`close.rs` 174-176,
+  `renew_owed_final` 225-252). An ingest 413 is answered before the claim is
+  touched. An over-ceiling record stays a deferred refusal: the retry carries
+  the observed generation without renewing, so the committer still answers a
+  committed final as its duplicate, and the retry marks and seals it.
+- **Model.** `OwedRetryValidatedFirst(v) == v \in {"capacity", "ceiling"}`:
+  `FValidate` answers a capacity-refused owed retry at once and sends a
+  deferred one to the queue at the observed generation; only a valid one
+  reaches the renewal in `FClaim`.
+- **Checks.** `baseline-validation-capacity` (shape V4) and
+  `baseline-validation-ceiling` (V5) now check every safety property and pass.
+  `baseline-validation-ceiling-dup` (V5A: the original commits before the
+  retry reaches B's committer) passes, and its witness
+  `CeilingRetryCompletesCommittedFinal` shows the deferred retry answered the
+  duplicate and marking the committed final under the observed generation.
+- **Pre-fix behaviour.** `nc-renew-before-validation-intent`
+  (`OwedRetryValidatedFirst <- NothingValidatedFirst`, shape V4) fails on
+  `IntentOnlyAfterValidation`. Trace:
+  `evidence/TLA-003-F4_pre-fix_renew-before-validation.txt`.
+- **Regressions.**
+  `dst::dst_tests::seal_cancellation::an_ingest_refused_exact_retry_leaves_the_claim_to_its_original`
+  (fails on the unfixed code) and the guard
+  `dst::dst_tests::seal_cancellation::a_ceiling_limited_exact_retry_still_completes_a_committed_final`.
 
-### TLA-003-F5 (open, owner decision): a renewed exact retry refused by its instance's record ceiling releases the claim while the original can still commit
+### TLA-003-F5 (fixed): a retry refused by its instance's record ceiling released the claim while the original could still commit
 
-- **Schedule.** B owns the shard. The original on A installs (op, g0) and
-  stalls before its enqueue. The exact retry on B, whose
-  `MAX_RECORD_PAYLOAD_BYTES` is lower, renews to g1. Its record becomes a
-  deferred `BadBody`; the committer refuses it definitively (the original has
-  not committed, so the producer lane accepts). `complete_raw_close` calls
-  `abandon_seal_intent(op, g1)` and clears the claim (`raw_close.rs` 37-47,
-  `lifecycle.rs` 486-517). The ring moves the shard to A. The original's g0
-  final commits and closes the segment with no claim standing, and its mark
-  declines (503).
-- **Checks** (shape V5): `known-defect-F5-release-while-deliverable`
-  (`ReleaseOnlyWhenUndeliverable`, 10 states),
-  `known-defect-F5-closed-without-claim` (`ClosureAuthorized`, 13 states) and
-  `known-defect-F5-plain-over-final` (`PlainCannotCompleteOwedFinal`: a plain
-  `:seal` then publishes over the record). `baseline-validation-ceiling` shows
-  that every other property holds in that shape.
-- **Healing.** An exact retry on a capable instance repairs the state: it
-  installs a fresh claim, which with the F2 fix owes its final. The committer
-  answers the duplicate of the closed tail, and the retry marks and seals
-  under its own operation. The witness `OrphanedCloseHealed` reaches this. It
-  shows the repair is possible, not that it always happens. Before the F2 fix
-  that retry joined as a plain close, which its own live claim refused as a
-  conflict.
-- **Proposed regression.** Two rigs over one store, rig B with a lower record
-  ceiling and owning the shard. Park the original on rig A at
-  `Fp::CloseBeforeEnqueue`, send the exact retry to rig B, move ownership to A,
-  release the original, and assert that the claim still stands when the
-  segment closes.
+- **Defect.** B owns the shard. The original on A installs (op, g0) and stalls
+  before its enqueue. The exact retry on B, whose `MAX_RECORD_PAYLOAD_BYTES`
+  is lower, renewed to g1; its record became a deferred `BadBody`, which the
+  committer refused definitively (the original had not committed), and
+  `complete_raw_close` abandoned the claim. The ring moves the shard to A; the
+  original's g0 final commits and closes the segment with no claim standing;
+  its mark declines (503), and a plain `:seal` can then publish over the
+  record.
+- **Reproduced on real code** with two instances over one store (the segment
+  closed with `sealed=false`, `sealing=None`, and A answered 503).
+- **Fix.** The same commit, option (c): `begin_sealing_for_close` reports
+  whether this attempt installed the claim (`lifecycle.rs` 431-432,
+  `ClosePlan::installed_claim`, `close.rs` 196-198), and `complete_raw_close`
+  releases on a definitive refusal only for the installing attempt
+  (`raw_close.rs` 45-55). Its content was valid where the claim was taken, so
+  its refusal rests on committer state every attempt shares. A joined or
+  renewed retry releases nothing. With (a) alone F5 still fails: the deferred
+  retry would release the original's own generation.
+- **Model.** `RefusalReleases(hr) == hr.inst`; `inst` is set by `FClaim` when
+  `decide_claim` installed (not renewed) the claim and by `TInstall` for a raw
+  final's takeover (`EnterSeal::Installed`). The product surface is unchanged:
+  its checks run before the claim (F3).
+- **Checks.** `baseline-validation-ceiling` and
+  `baseline-validation-ceiling-dup` pass every safety property.
+- **Pre-fix behaviour.** `nc-any-attempt-releases-*`
+  (`RefusalReleases <- AnyAttemptReleases`, shape V5) fail on
+  `ReleaseOnlyWhenUndeliverable`, `ClosureAuthorized` and
+  `PlainCannotCompleteOwedFinal`. With fix (a) in place, the retry releases
+  the generation it observed, which is the original's. Traces:
+  `evidence/TLA-003-F5_pre-fix_*`.
+- **Regression.**
+  `dst::dst_tests::seal_cancellation::a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original`
+  (fails on the unfixed code).
+- **The healing witness is retired.** `OrphanedCloseHealed` showed that an
+  exact retry on a capable instance could repair F5's closed-without-claim
+  state. That state is no longer reachable in V5, so the witness check was
+  removed (a TLC run of it on the fixed model completed without reaching it).
 
-### Decision needed for F4 and F5
+### TLA-003-F6 (fixed, found outside the models): a plain append with an owed final's bytes passed as its exact retry
 
-Each option fixes a different part:
+- **Defect.** A raw append's semantic operation id covers the body, content
+  type, routing key and coordination headers but not `Stream-Closed` (the
+  request hash's close argument is a constant). `prepare_close` treated any
+  append with an owed final's exact bytes as that final's exact retry,
+  including a plain append without `Stream-Closed`: it skipped the Sealing
+  refusal, renewed the claim and was admitted at that generation. The parked
+  final then committed too, so the records landed twice, and the close
+  answered 503 with the stream left unsealed.
+- **Found** while fixing F4/F5 and reproduced on real code.
+- **Fix.** Commit "Only a close can resume an owed final": the owed-claim
+  filter requires a close (`close.rs` 71-80). Operation ids are unchanged.
+- **Model.** Shape OP has a raw append N1 without producer headers and with
+  X's bytes, so `SemanticOpId(N1) = OpId(X)`. Producer-less raw appends have
+  no lane and are refused at admission while Sealing (`close.rs` 100-112).
+  `ResumesOwedFinal(close, sameOp) == close /\ sameOp` gates both `FValidate`
+  and `APrep`. The new property `SealingRefusesNewAppends` (L4, with L2)
+  states that an ordinary append admitted from a Sealing or Sealed snapshot
+  never commits. No earlier property caught the defect: the final's own record
+  still closes the segment under X's claim, so `SealedFinalHasItsRecord`,
+  `ClosureAuthorized` and the release properties hold; what breaks is the
+  Sealing refusal, and the double landing follows from it.
+- **Checks.** `baseline-op-id` passes every safety property; every TLA-003
+  baseline now checks `SealingRefusesNewAppends`. The witness
+  `SameIdPlainAppendRefused` reaches the refusal.
+- **Pre-fix behaviour.** `nc-plain-append-resumes-owed-final`
+  (`ResumesOwedFinal <- AnyRequestResumes`) fails on
+  `SealingRefusesNewAppends`: N1 renews X's claim and lands its record under
+  the renewed generation while X's final is still owed. Trace:
+  `evidence/TLA-003-F6_pre-fix_plain-append-resumes-owed-final.txt`.
+- **Regression.**
+  `dst::dst_tests::seal_cancellation::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing`.
 
-- (a) Validate configuration-dependent content before renewing. This fixes F4
-  only.
-- (b) Make a renewal raise the shard fence, so an older generation of the same
-  operation can no longer commit. This removes F5's closed-without-claim form;
-  its release of deliverable debt remains.
-- (c) Do not abandon a claim on a definitive refusal of a renewed exact retry
-  while an older attempt may be in flight. This fixes F5 at the release.
+### TLA-001-F1 (fixed, found by the provider contract suite): a committed conditional PUT could be answered `Precondition`
+
+- **Defect.** object_store 0.14.1 re-sent a conditional PUT after a 5xx, 429
+  or 408 (an update also after 409) with the original precondition. If the
+  first request committed, the retry was refused, so the caller saw
+  `Precondition` or `AlreadyExists` for its own write. `mutate_incarnation`
+  then re-read and applied a non-idempotent decision twice (reproduced: a
+  counter went from 1 to 3), and `recreate` found its own replacement live
+  and declined, answering a create as a lost race without writing its body or
+  publishing Ready. TLA-001's `Cas` step assumed a single request
+  (ASM-OBJSTORE-CAS clause (b)), which the client layer did not provide.
+- **Fix.** Commit "Registry conditional writes never mistake their own
+  committed write for a refusal": `S3Store` (`src/bootstrap/s3_store.rs`)
+  sends `PutMode::Create`, `PutMode::Update` and `CopyMode::Create` through a
+  client with `max_retries: 0`, so `Precondition` and `AlreadyExists` answer
+  the only request; any other failure reaches the caller as a possibly
+  committed error (`AmbiguousCompletion`).
+- **Model.** `Cas` and `RecreateCas` stay single-request atomic steps
+  (`CommittedAnsweredPrecondition == FALSE`). The new property
+  `RecreateAnswerTruthful` states that a recreate call is never answered as
+  declined after its own PUT committed; the baselines check it.
+- **Pre-fix behaviour.** `nc-client-retry` and `nc-client-retry-recreate`
+  (`CommittedAnsweredPrecondition <- ClientRetriesConditional`: a committed
+  PUT whose reply was lost comes back `Precondition`) fail on
+  `AllocatorCountsWrites` (the mutator re-reads its own write and allocates
+  again) and `RecreateAnswerTruthful`. Traces: `evidence/TLA-001-F1_pre-fix_*`.
+- **Regression.**
+  `bootstrap::tests::provider_contract::s3lite_through_the_production_client_meets_the_provider_contract`
+  (its HTTP cases `mutate_incarnation_applies_once` and
+  `recreate_never_declines_against_itself` fail with the default retries).
+
+### Response classes (no model change)
+
+Commit "A seal refused by another operation's terminal seal is a definitive
+409" maps `AlreadySealed` and `OtherOperation` on the product surface to 409
+`sealed`, not retryable. The models answer these as `error`, and a client's
+next request is never conditioned on the answer's class (`Issue`), so the
+change does not alter any reachable state. `SuccessProvesOutcome` constrains
+only 2xx answers.
+
+### What remains open
+
+- docs/seal-transitions.md "Limit reductions and accepted finals" records
+  three open obligations. The models check the first and third as they stand
+  and do not decide the second:
+  (1) under a reduced ingest capacity, an exact retry of a final that already
+  committed is refused 413 rather than acknowledged as a duplicate. In shape
+  V4 this is an `invalid` answer that touches no claim; every property holds.
+  (2) If every instance's limits fall below an accepted final, nothing
+  delivers the record, and no attempt tells the original client. The models
+  have no property about telling the client; `ReleaseOnlyWhenUndeliverable`
+  treats such a record as undeliverable, and the takeover replaces its claim.
+  (3) The product seal's release rule depends on its checks running before the
+  claim; shapes C, VP and the TLA-002 shapes check the product surface only
+  with those checks in place.
+- `ASM-OBJSTORE-CAS` stays unestablished until the provider contract suite
+  passes against the production provider.
+- The receipts `verification/receipts/TLA-001.json` and `TLA-003.json` were
+  recorded for the earlier check sets, so `formal.py check` reports them
+  invalid until the three obligations are re-recorded with `run --record`.
 
 ### Model corrections and observations
 
@@ -443,30 +595,30 @@ Each option fixes a different part:
 |---|---|---|
 | `Start`, `StartDelete` | callers of `Registry::mutate_incarnation` (claim, reservation, install, renew, release, mark, publish; deletion) | local |
 | `Read` | `registry.rs` `mutate_incarnation` 1166-1197: `invalidate`, `store.get` (failure: `ReadUnavailable`), `decode_desc`, epoch check (1178), `decide` (1181), identity re-check (1186), `ConditionalUpdateToken::from_etag` (1195) | one GET (ASM-OBJSTORE-CAS); the rest is local and pure (ASM-SEAL-DECIDE-FN) |
-| `Cas` | `mutate_incarnation` 1198-1233: `put_opts(PutMode::Update)`; `Ok` is `Applied`, `Precondition` re-reads and re-decides, other errors are `AmbiguousCompletion`, five attempts end in `Conflict` (1235) | atomic compare-and-write; the reply is separate |
-| `BeginRecreate`, `RecreateRead`, `RecreateCas` | `creation/claim.rs` `resolve` recreate arm (44-83) → `Registry::recreate` (1009-1062); the client's retry resolves against its own replacement | same contract, with read-failure, lost-reply and failed-dispatch branches |
+| `Cas` | `mutate_incarnation` 1198-1233: `put_opts(PutMode::Update)`; `Ok` is `Applied`, `Precondition` re-reads and re-decides, other errors are `AmbiguousCompletion`, five attempts end in `Conflict` (1235). The server's store sends every conditional request once (`src/bootstrap/s3_store.rs` 90-101, 138-144: `S3Store::put_opts` and `copy_opts` route `PutMode::Create`, `PutMode::Update` and `CopyMode::Create` to the client built with `max_retries: 0`, 50-67), so `Precondition` answers the only request | one request: atomic compare-and-write; the reply is separate |
+| `BeginRecreate`, `RecreateRead`, `RecreateCas` | `creation/claim.rs` `resolve` recreate arm (44-83) → `Registry::recreate` (1009-1062), its PUT through the same single-request client; the client's retry resolves against its own replacement | same contract, with read-failure, lost-reply and failed-dispatch branches |
 
 ### TLA-002 and TLA-003 mapping
 
 | Action | Production | Atomicity |
 |---|---|---|
 | `Issue` | a product `:seal` or seal-with-final (`product.rs`), or a raw POST with `stream-closed` | local |
-| `FValidate` | product: the pre-intent checks (`product.rs` 1661-1767: capacity 1744-1756, record ceiling 1757-1767), reached only by a request they refuse. Raw: `close::prepare_close` (`append/close.rs` 19-135: `is_owed_final` 68-72, owed renewal 74-99, `sealed_reject_new` 114-123) → `content::parse_content` (`content.rs` 14-91: deferred refusals 30-73 through `stored_records` 99-127, capacity 81-89) → `install_intent`, skipped when sealed, owed or deferred (`close.rs` 181) | a read of a possibly cached descriptor; staleness is an earlier read plus delay |
-| `FClaim` | product: `seal_final` → `enter_sealing` (`lifecycle.rs` 383) → `claim_seal` (193) → `enter_sealing_cas` (168) → `decide_claim` (`claims.rs` 68-126). Raw, fresh: `install_intent` (`close.rs` 166-226) → `begin_sealing_for_close` (`lifecycle.rs` 414); the plan then owes the final (`close.rs` 200-211). Raw, owed: `renew_owed_claim` (`lifecycle.rs` 449), then `parse_content` | one `mutate_incarnation`; the local verdict after a renewal is merged |
+| `FValidate` | product: the pre-intent checks (`product.rs` 1661-1767: capacity 1744-1756, record ceiling 1757-1767), reached only by a request they refuse. Raw: `close::prepare_close` (`append/close.rs` 19-122: the owed claim, only for a close, 71-81; the observed generation 82-85; `sealed_reject_new` 100-112) → `content::parse_content` (`content.rs` 14-91: deferred refusals 30-73 through `stored_records` 99-127, capacity 81-89) → `install_intent` (152-223): an owed retry renews only when nothing was refused or deferred (174-176); a fresh close installs, skipped when sealed, owed or deferred (177) | a read of a possibly cached descriptor; staleness is an earlier read plus delay |
+| `FClaim` | product: `seal_final` → `enter_sealing` (`lifecycle.rs` 383) → `claim_seal` (193) → `enter_sealing_cas` (168) → `decide_claim` (`claims.rs` 68-126). Raw, fresh: `install_intent` → `begin_sealing_for_close` (`lifecycle.rs` 416-441, answering whether it installed, 431-432); the plan records `installed_claim` and owes the final (`close.rs` 196-207). Raw, owed: `renew_owed_final` (`close.rs` 225-252) → `renew_owed_claim` (`lifecycle.rs` 450), after `parse_content` | one `mutate_incarnation`; the local verdict after a renewal is merged |
 | `TReserve` | `take_over_abandoned` reservation CAS (`lifecycle.rs` 272-289); a decline returns to `claim_seal`'s loop (200) | one CAS |
 | `TFence` | `fence_segment_for_key` (856-893): `resolve(Adoption::Internal)` (874-879; a non-owner answers Resumable) → `try_seal_fence` (`shard.rs` 1829) | enqueue at the owner |
 | `ProcessFence` | `CommitTransaction::fence` (`maintenance.rs` 155-186): `seal_fence` (89-108: the cache, else the durable row; a read error answers `Internal`), raise the cache, write the row in the group, acknowledge in `effects.acks` | one queue element; the reply after the group's durability |
 | `FenceGroupDurable`, `FenceGroupRejected` | the staged fence group becomes durable and its replies are released (`DurableEffects`), or it is rejected without an engine retirement: `CommitTransaction::reject` (`transaction/mod.rs` 191-207) answers `Internal` and drops the cached fences (only with `MaxHeldFence = 1`) | separate steps for a staged fence group |
 | `TFenceLost` | a fence answered `Moved` or `Internal` ("fence refused") or dropped → Resumable (`lifecycle.rs` 888-892) | local |
-| `TInstall` | `install_reserved_claim` (349-381) with the newest-reservation check (365); a raw final's plan then owes its final (`close.rs` 200-211) | one CAS |
+| `TInstall` | `install_reserved_claim` (349-381) with the newest-reservation check (365); take_over_abandoned answers `Installed` (328), so a raw final's plan has `installed_claim` and owes its final (`close.rs` 196-207) | one CAS |
 | `TBehalfMark` | a closed fence: `mark_final_committed(old)` (526) then `run_seal(old)` (`lifecycle.rs` 297-313) | the reply is local; one CAS |
-| `FCheck` | product `prepare_close` `seal_auth` check (`close.rs` 55-67); a failure is `SealSuperseded` and `seal_final` releases exactly (`lifecycle.rs` 126-135) | a read, then the release CAS |
+| `FCheck` | product `prepare_close` `seal_auth` check (`close.rs` 58-70); a failure is `SealSuperseded` and `seal_final` releases exactly (`lifecycle.rs` 126-135) | a read, then the release CAS |
 | `Enqueue` | `execute_once` (`append.rs` 246-395) → `submit` (`submit.rs` 18-25: `NotOwner` for a non-owner) → sheds → `try_enqueue` (79-85) | enqueue at the owner; unbounded pre-queue window |
 | `ProcessAppend` | `CommitTransaction::append` (`transaction/append.rs` 19-142): `decide_producer` (`commit_plan.rs` 88-143), closed tail (71-95), deferred content error (96-102), `seal_authorizes` (139-141; `maintenance.rs` 109-146: `SealSuperseded` joins the group's replies; `seal_authorized` `commit_plan.rs` 145-150) | one queue element; a refusal other than `BadBody` or `Internal` waits for the group's durability |
 | `ProcessClose` | `CommitTransaction::close` (`maintenance.rs` 191-223): the fence is consulted only for an open segment; `SealSuperseded` joins the group's replies | one queue element |
-| `FAnswer`, `FRelease`, `FMark`, `FRawDup` | `seal_final` (`lifecycle.rs` 84-161) and `complete_raw_close` (`raw_close.rs` 15-87): `final_err_disposition` (`claims.rs` 226-245), `definitively_rejected` (`contract.rs` 285-297, via `product.rs` 1813), `abandon_seal_intent` (486-517), `mark_final_committed` (526-566) | local classification merged with its CAS |
+| `FAnswer`, `FRelease`, `FMark`, `FRawDup` | `seal_final` (`lifecycle.rs` 84-161) and `complete_raw_close` (`raw_close.rs` 23-96: a definitive refusal releases only for the installing attempt, 45-55): `final_err_disposition` (`claims.rs` 241-260), `definitively_rejected` (`contract.rs` 285-297, via `product.rs` 1813), `abandon_seal_intent` (`lifecycle.rs` 487-518), `mark_final_committed` (527-567) | local classification merged with its CAS |
 | `RsPrep`, `RsClose`, `RsCloseFailed`, `RsPublish` | `run_seal` (576) → `prepare_execution` (593-701) → `close_claimed_segments` (705-770) → `topology::seal_segment_identity` (`topology.rs` 43-91) → `close_segment_on_engine` (99) or `relay_segment_close` (143) → `publish_sealed` (774-848) | read and CAS merged; enqueue at the owner; CAS and proof read merged |
-| `APrep`, `AReceive` | product `refuse_if_sealed` (`product.rs` 1937); raw `sealed_reject_new` | a read; local |
+| `APrep`, `AReceive` | product `refuse_if_sealed` (`product.rs` 1937); raw `prepare_close`: the owed-claim filter requires a close (`close.rs` 71-80), `sealed_reject_new`, and without a producer the closed-tail refusal at once (100-112) | a read; local (the pre-fix renewal branch merges its CAS) |
 | `Lapse` | `decide_claim` `abandoned` (`claims.rs` 95) | environment |
 | `Cancel`, `Timeout` | a dropped handler; `APPEND_TIMEOUT` (`submit.rs` 86-93) | the handler vanishes; queued work stays |
 | `Crash` | a process crash | erases that process's handlers, and the engine if it owned the shard |
@@ -476,8 +628,9 @@ Each option fixes a different part:
 
 - TLA-001: `UniqueAllocation` (no two callers are told they allocated the same
   generation), `IncarnationFenced` (a mutation validated against incarnation E
-  stores only into E) and `AllocatorCountsWrites` (the stored allocator equals
-  the committed allocations). `AttemptLocalResult` and
+  stores only into E), `AllocatorCountsWrites` (the stored allocator equals
+  the committed allocations) and `RecreateAnswerTruthful` (a recreate call is
+  never answered as declined after its own PUT committed; TLA-001-F1). `AttemptLocalResult` and
   `NegativeOutcomesWroteNothing` hold by construction (ASM-SEAL-DECIDE-FN).
 - `ClosureAuthorized`: a closed segment belongs to the claim holder or to the
   sealed operation (L5, L6, L15).
@@ -498,6 +651,8 @@ Each option fixes a different part:
   true.
 - `IntentOnlyAfterValidation`: no claim is written by a request that fails
   validation on its instance (L1).
+- `SealingRefusesNewAppends`: an ordinary append admitted from a Sealing or
+  Sealed snapshot never commits (L4, with L2's operation identity; F6).
 - `InstallOnlyOverOwedClaim`: a takeover never installs over a marked claim
   (F1(e)).
 - `Structural` holds by construction; `HandlersProgress` rules out a stuck
@@ -532,21 +687,26 @@ the committer, each handler's own step, lease time and T2's issue.
 | `held_retire` | 1 | 1 crash, 1 engine replacement, 1 staged fence group |
 | `live_held` | 1 | as `live_small`, plus 1 staged fence group |
 
-**TLA-003** (`MC_FinalSeal`): shapes A, A2, B, C, P, PW, SL, V, V4, V5 and VP are
-described in `MC_FinalSeal.tla` and the manifest's `input_scope`. Generations
+**TLA-003** (`MC_FinalSeal`): shapes A, A2, B, C, P, PW, SL, V, V4, V5, V5A, VP
+and OP are described in `MC_FinalSeal.tla` and the manifest's `input_scope`.
+V5A is V5 with A owning the shard at start (its configurations set
+`InitOwner = A`), so the original can commit before the retry reaches a
+committer. Generations
 are bounded at 5. There is no TLA-003 liveness check: an exact retry that
 renews forever makes the generation space unbounded.
 
 ### Negative controls
 
 Each control is an `MC_*` module that extends the unmodified instance and
-substitutes one operator; its configuration checks only the target property.
+substitutes one operator (two for `nc-admission-refusal-any-release-*`, see
+TLA-003-F2); its configuration checks only the target property.
 
 | Control | Substitution | Violates |
 |---|---|---|
 | TLA-001 `nc-leaked-outcome` | `ReturnedResult <- LeakedReturnedResult` | `UniqueAllocation` |
 | TLA-001 `nc-dropped-incarnation-check` | `IncarnationMatches <- AnyIncarnation` | `IncarnationFenced` |
 | TLA-001 `nc-missing-etag-overwrite` | `UnconditionalOnMissingToken <- OverwriteOnMissingToken` | `AllocatorCountsWrites` |
+| TLA-001 `nc-client-retry`, `-recreate` (F1 pre-fix) | `CommittedAnsweredPrecondition <- ClientRetriesConditional` | `AllocatorCountsWrites`, `RecreateAnswerTruthful` |
 | TLA-002 `nc-no-newest-reservation`, `-live-fenced` | `InstallAllowed <- InstallWithoutNewest` | `NewestInstall`, `LiveClaimNeverFenced` |
 | TLA-002 `nc-install-before-fence-durable`, `-inqueue` | `FenceAcknowledged <- FenceNotAwaited` | `ClosureAuthorized`, `QueuedFinalDecidedBeforeReplacement` |
 | TLA-002 `nc-engine-resident-fence-*` (F1 pre-fix) | `OpenedEngineFence <- EngineResidentFence` | `ClosureAuthorized` (xproc, retire), `ReleaseOnlyWhenUndeliverable`, `SuccessProvesOutcome` (engine) |
@@ -556,8 +716,12 @@ substitutes one operator; its configuration checks only the target property.
 | TLA-003 `nc-moved-definitive` | `RawDisposition <- MovedIsDefinitive` | `ReleaseOnlyWhenUndeliverable` |
 | TLA-003 `nc-release-by-operation-only` | `ReleaseMatches <- ReleaseByOpOnly` | `ClosureAuthorized` |
 | TLA-003 `nc-duplicate-completes-final` | `AckCompletesFinal <- AnyDuplicateCompletes` | `SealedFinalHasItsRecord` |
-| TLA-003 `nc-admission-refusal-*` (F2 pre-fix) | `ClaimedFinalPlan <- AdmissionPlanKept` | `ReleaseOnlyWhenUndeliverable`, `FinalClosedTruthful`, `ClosureAuthorized`, `PlainCannotCompleteOwedFinal` (shape B); `FinalClosedTruthful` with no lease lapse (shape PW, `CONSTRAINT LeaseNeverLapses`) |
+| TLA-003 `nc-admission-refusal-release`, `-false-closed`, `-without-lapse` (F2 pre-fix) | `ClaimedFinalPlan <- AdmissionPlanKept` | `ReleaseOnlyWhenUndeliverable`, `FinalClosedTruthful` (shape B); `FinalClosedTruthful` with no lease lapse (shape PW, `CONSTRAINT LeaseNeverLapses`) |
+| TLA-003 `nc-admission-refusal-any-release-*` (the code before the F2 fix, which also predates F5's) | `ClaimedFinalPlan <- AdmissionPlanKept` and `RefusalReleases <- AnyAttemptReleases` | `ClosureAuthorized`, `PlainCannotCompleteOwedFinal` (shape B) |
 | TLA-003 `nc-ceiling-after-intent-*` (F3 pre-fix) | `ProductPreIntentRefuses <- CeilingAfterIntent` | `IntentOnlyAfterValidation`, `ClosureAuthorized` (shape VP) |
+| TLA-003 `nc-renew-before-validation-intent` (F4 pre-fix) | `OwedRetryValidatedFirst <- NothingValidatedFirst` | `IntentOnlyAfterValidation` (shape V4) |
+| TLA-003 `nc-any-attempt-releases-*` (F5 pre-fix) | `RefusalReleases <- AnyAttemptReleases` | `ReleaseOnlyWhenUndeliverable`, `ClosureAuthorized`, `PlainCannotCompleteOwedFinal` (shape V5) |
+| TLA-003 `nc-plain-append-resumes-owed-final` (F6 pre-fix) | `ResumesOwedFinal <- AnyRequestResumes` | `SealingRefusesNewAppends` (shape OP) |
 
 ### Excluded, and not claimed
 
@@ -565,11 +729,22 @@ substitutes one operator; its configuration checks only the target property.
   (ASM-SEAL-NODELETE); the contents of the real `decide` closures; the
   descriptor cache; provider conformance for conditional writes; at most three
   stale and two replacement racers on one name and one delete/recreate cycle.
+  The single-request client is an input to the model (a constant operator),
+  not something TLC checks: that `S3Store` routes every conditional request to
+  the no-retry client is shown by source inspection and the provider contract
+  suite. Creation's `PutMode::Create` path (`Registry::create`) is not
+  modelled, so its lost-race-to-itself form of F1 has only the real-code
+  regression.
 - TLA-002 and TLA-003: topology interaction (TLA-004); multi-segment closes;
   relay transport failures beyond an enqueue failure; producer epochs and
   `Stream-Seq`; multi-record finals; operation-id hash construction
   (KANI-043); generation exhaustion (KANI-041); HTTP rendering beyond the
-  response class; liveness across instances.
+  response class; liveness across instances. Configuration skew is fixed per
+  handler slot (`Validity`); an instance whose limits change while a request
+  is in flight is not modelled. A plain append with a final's semantic id is
+  modelled without producer headers (shape OP, as in the reproduction); with a
+  producer it would share the final's producer tuple, so the committer would
+  deduplicate one of the two.
 - The fence-row read failure may happen at any fence consult (production:
   only on a cache miss). This over-approximates.
 - The staged-fence window (`MaxHeldFence`) stages one fence group at a time
@@ -580,20 +755,66 @@ substitutes one operator; its configuration checks only the target property.
 
 ## Coverage
 
-Coverage runs used TLC's `-coverage 1` directly, outside the driver, on the
-20 safety baselines of `SealProtocol.tla` (the liveness shapes are excluded).
-Each run passed. An action counts as covered when some run generated a state
-with it; an expression counts as evaluated when some run evaluated it. The runs
-are diagnostic; every verdict above comes from the receipts.
+Coverage runs use TLC's `-coverage 1` directly, outside the driver. They are
+diagnostic: every verdict above comes from the driver runs. An action counts as
+covered when some run generated a state with it. An expression counts as
+evaluated when some run evaluated it or an expression containing it.
 
-The TLA-002-F2 fix changed only the staged-fence steps: `ImmediateRefusal`,
-`FenceGroupDurable` and the new `FenceGroupRejected`. The 18 runs with
-`MaxHeldFence = 0` never reach them, so their reachable graph is unchanged;
-those runs were made on the model just before that fix, and their line
-numbers are mapped onto the current file. The two staged-fence baselines were
-rerun on the current model.
+### TLA-003 (`SealProtocol.tla`, current model)
+
+All 14 TLA-003 safety baselines were rerun on the current model, and each
+passed:
 
 | Coverage run | Verdict | Distinct states | Actions with no generated state (of 32) |
+|---|---|---|---|
+| `TLA-003/baseline-lanes` | pass | 676,449 | FCheck, FRawDup, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-expanded` | pass | 1,650,041 | FCheck, FRawDup, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-lanes-engine` | pass | 1,716,205 | Cancel, Crash, FCheck, FRawDup, FenceGroupDurable, FenceGroupRejected, Quiescent, TBehalfMark, Timeout |
+| `TLA-003/baseline-renewal` | pass | 4,994,511 | APrep, AReceive, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-renewal-product` | pass | 3,483,721 | APrep, AReceive, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-product-lanes` | pass | 702,029 | FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-product-release` | pass | 17,197 | FRawDup, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-shared-lane` | pass | 3,745,651 | APrep, AReceive, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
+| `TLA-003/baseline-validation` | pass | 10,676 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
+| `TLA-003/baseline-validation-capacity` | pass | 1,276 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
+| `TLA-003/baseline-validation-ceiling` | pass | 43,081 | APrep, AReceive, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
+| `TLA-003/baseline-validation-product` | pass | 13,166 | APrep, AReceive, Crash, FAnswer, FRawDup, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
+| `TLA-003/baseline-validation-ceiling-dup` | pass | 150,973 | APrep, AReceive, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, Timeout |
+| `TLA-003/baseline-op-id` | pass | 23,913 | FCheck, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
+
+Union of the 14 runs:
+
+```
+module SealProtocol: 1657 expressions, 23 never evaluated, 23 maximal
+actions with zero generated distinct states: ['FenceGroupDurable', 'FenceGroupRejected'] (of 32)
+```
+
+The 23 unevaluated expressions fall into four groups:
+
+- `RsPrep`'s `OwedFinal` refusal (`prepare_execution`, `lifecycle.rs`
+  633-638), unreached as in the previous revision. `InstallOnlyOverOwedClaim`
+  holds, and the production guard stays as defence in depth.
+- `APrep`'s pre-fix branch, where a plain append resumes an owed final and
+  renews the claim. It is reachable only under the F6 control's substitution.
+- The fence-row read failure (`MaxFenceReadFail`) and the staged fence group
+  (`MaxHeldFence`, `FenceGroupDurable`, `FenceGroupRejected`). Every TLA-003
+  shape sets both bounds to 0. TLA-002's `retire`, `engine` and `*-held`
+  shapes reach them.
+- `FClaim`'s pre-fix "capacity after renewal" answer is unreachable in the
+  unmodified model: `FValidate` answers an owed retry over capacity before it
+  reaches the renewal. TLC reports that `RespondH` call at the operator's
+  definition, so the coverage union cannot show it separately. The F4 control
+  reaches it.
+
+### TLA-002 (not rerun)
+
+TLA-002's eight safety baselines were not rerun with `-coverage`. Their
+driver-run state counts equal those of the previous receipt, so their
+reachable graphs are unchanged; the previous revision's per-run table
+(action names unchanged) still describes them. Line numbers in
+`SealProtocol.tla` moved.
+
+| Coverage run (previous revision) | Verdict | Distinct states | Actions with no generated state (of 32) |
 |---|---|---|---|
 | `TLA-002/baseline-small` | pass | 895,724 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
 | `TLA-002/baseline-faults` | pass | 3,875,480 | APrep, AReceive, Crash, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost, Timeout |
@@ -603,44 +824,20 @@ rerun on the current model.
 | `TLA-002/baseline-engine` | pass | 3,773,720 | APrep, AReceive, Cancel, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Timeout |
 | `TLA-002/baseline-xproc-held` | pass | 1,210,271 | APrep, AReceive, Cancel, FAnswer, FRawDup, FValidate, Replace, RsCloseFailed, Timeout |
 | `TLA-002/baseline-retire-held` | pass | 7,770,035 | APrep, AReceive, Cancel, FRawDup, FValidate, Timeout |
-| `TLA-003/baseline-lanes` | pass | 661,936 | FCheck, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-expanded` | pass | 1,631,963 | FCheck, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-lanes-engine` | pass | 1,694,525 | Cancel, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, Timeout |
-| `TLA-003/baseline-renewal` | pass | 4,966,567 | APrep, AReceive, FAnswer, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-renewal-product` | pass | 3,483,721 | APrep, AReceive, FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-product-lanes` | pass | 702,029 | FAnswer, FRawDup, FValidate, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-product-release` | pass | 17,197 | FAnswer, FRawDup, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-shared-lane` | pass | 3,676,695 | APrep, AReceive, FAnswer, FenceGroupDurable, FenceGroupRejected, Replace, RsCloseFailed, TFenceLost |
-| `TLA-003/baseline-validation` | pass | 10,676 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
-| `TLA-003/baseline-validation-capacity` | pass | 1,603 | APrep, AReceive, FAnswer, FCheck, FRelease, FenceGroupDurable, FenceGroupRejected, ProcessFence, Replace, RsCloseFailed, TBehalfMark, TFence, TFenceLost, TInstall, TReserve, Timeout |
-| `TLA-003/baseline-validation-ceiling` | pass | 64,862 | APrep, AReceive, Crash, FCheck, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
-| `TLA-003/baseline-validation-product` | pass | 13,166 | APrep, AReceive, Crash, FAnswer, FRawDup, FenceGroupDurable, FenceGroupRejected, TFenceLost, Timeout |
 
-Union of the 20 runs:
+### TLA-001 (`RegistryCas.tla`, current model)
 
-```
-module SealProtocol: 1550 expressions, 2 never evaluated, 2 maximal
-actions with zero generated states: none (of 32)
-  917:14-917:25  desc' = desc
-  919:14-919:29  UNCHANGED faults
-```
+`baseline-small` (108,329 distinct states) and `baseline-expanded`
+(7,643,540) were rerun with `-coverage 1`; both passed, and every action
+generated states. The union leaves 10 expressions unevaluated:
 
-Both unevaluated expressions belong to `RsPrep`'s `OwedFinal` refusal
-(`prepare_execution`, `lifecycle.rs` 633-638). A final-bearing operation
-enters `run_seal` under its own id only after its record is marked (`FMark`,
-`TBehalfMark`); raw duplicates and plain seals run it as `PLAIN`. The previous
-revision reached this branch only through F1(e), in the engine shape. No run
-of the fixed model reaches it, which agrees with `InstallOnlyOverOwedClaim`
-holding. The production guard stays as defence in depth.
-
-`RegistryCas.tla` has not changed since the previous revision, so its coverage
-was not rerun. Those runs (`baseline-small`, `baseline-expanded`) left five
-expressions unevaluated: the missing-ETag overwrite branch, reachable only in
-`nc-missing-etag-overwrite` (production refuses a missing ETag, `registry.rs`
-1195); a recreate that loses its CAS, with the conflict it returns (no
-concurrent creator is in the instance; `Registry::create` racing is excluded);
-and the body of the LET-bound `record` action, which TLC counts at its
-references.
+- the missing-ETag overwrite branch (reachable only in
+  `nc-missing-etag-overwrite`; production refuses a missing ETag,
+  `registry.rs` 1195);
+- a recreate that loses its CAS, with the conflict it returns (the instance
+  has no concurrent creator);
+- the two client-retry branches of `Cas` and `RecreateCas` (reachable only
+  in `nc-client-retry*`: `CommittedAnsweredPrecondition` is `FALSE`).
 
 ## Files
 
@@ -648,11 +845,11 @@ references.
 |---|---|
 | `RegistryCas.tla` | TLA-001 specification |
 | `MC_RegistryCas.tla`, `MC_RegistryCas3.tla` | TLA-001 instances (small, expanded) |
-| `MC_RegistryCas_Nc*.tla` | TLA-001 negative controls |
+| `MC_RegistryCas_Nc*.tla` | TLA-001 negative controls (`NcClientRetry`: F1 pre-fix) |
 | `SealProtocol.tla` | TLA-002 and TLA-003 specification |
 | `MC_SealTakeover.tla` | TLA-002 instances |
 | `MC_SealTakeover_Nc*.tla` | TLA-002 negative controls (`NcEngineFence`: F1 pre-fix; `NcRefusalAtStaging`, `NcCacheSurvivesReject`: F2 pre-fix) |
 | `MC_FinalSeal.tla` | TLA-003 instances |
-| `MC_FinalSeal_Nc*.tla` | TLA-003 negative controls (`NcAdmissionRefusal`: F2 pre-fix; `NcCeilingAfterIntent`: F3 pre-fix) |
-| `*.cfg` | one configuration per check; `_nc_` controls, `_w_` witnesses, `_kd_` known defects |
+| `MC_FinalSeal_Nc*.tla` | TLA-003 negative controls (`NcAdmissionRefusal`: F2 pre-fix; `NcAdmissionRefusalAnyRelease`: the code before the F2 fix, with its pre-F5 release; `NcCeilingAfterIntent`: F3 pre-fix; `NcRenewBeforeValidation`: F4 pre-fix; `NcAnyAttemptReleases`: F5 pre-fix; `NcPlainResumesOwed`: F6 pre-fix) |
+| `*.cfg` | one configuration per check; `_nc_` controls, `_w_` witnesses (no known defect is open) |
 | `evidence/` | TLC counterexample traces (`*.txt`) and per-step views (`*.summary.txt`); `pre-fix` in a name marks behaviour a later commit fixed |

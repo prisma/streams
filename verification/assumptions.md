@@ -197,7 +197,11 @@ actions to these contracts.
   and the DST fork suites cover the repository's use of these writes. The
   durability models include both ambiguous outcomes: TLA-005 `Restart`
   recovers an unreported prefix after `WalFail`, and TLA-011 `Land` has the
-  `AmbiguousPut` outcome.
+  `AmbiguousPut` outcome. TLA-001 models the conditional PUT as one request
+  (`CommittedAnsweredPrecondition == FALSE`); its negative control
+  `nc-client-retry` answers a committed PUT `Precondition`, as the retrying
+  client did, and fails on `AllocatorCountsWrites` and
+  `RecreateAnswerTruthful`.
 - **Client layer:** object_store 0.14 re-sends a conditional PUT after a 5xx,
   429, 408 or (for an update) 409 with the original precondition, so a caller
   could see `Precondition` or `AlreadyExists` for its own committed write (the
@@ -697,11 +701,23 @@ actions to these contracts.
   another, for example during a rolling configuration change. A raw close with
   content always has a producer (its own or the synthetic `rawseal` lane), so
   every content refusal except ingest capacity is deferred to the committer.
+  Since "A seal retry refused by its own instance's limits neither renews nor
+  releases the claim", a raw exact retry of an owed final is validated before
+  it renews (an ingest refusal leaves the claim untouched; a deferred refusal
+  carries the observed generation without renewing), and only the attempt
+  that installed a claim releases it on a definitive refusal. The model's
+  shapes V4, V5 and V5A place an exact retry on an instance with lower limits.
 - **Origin:** `src/application/append/content.rs` 14-127 (`parse_content`,
-  `stored_records`); `src/application/append/close.rs` 101-112;
-  `src/usage.rs` 327-340; `src/product.rs` 1661-1767.
+  `stored_records`); `src/application/append/close.rs` 71-121 and 159-223
+  (the owed claim, the synthetic lane, `install_intent`);
+  `src/application/lifecycle/raw_close.rs` 45-55; `src/usage.rs` 327-340;
+  `src/product.rs` 1661-1767; docs/seal-transitions.md "Limit reductions and
+  accepted finals".
 - **Enforcement / evidence:** source inspection, confirmed by two independent
-  refutation attempts of TLA-003-F4.
+  refutation attempts of TLA-003-F4; TLA-003-F4 and F5 were reproduced on real
+  code with two instances over one store
+  (`dst::dst_tests::seal_cancellation::an_ingest_refused_exact_retry_leaves_the_claim_to_its_original`,
+  `a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original`).
 - **Invalidation:** one validation configuration for the whole fleet;
   validation that no longer depends on process settings.
 - **Standing:** established (source).
@@ -769,10 +785,16 @@ actions to these contracts.
 - **Scope:** TLA-002, TLA-003.
 - **Statement:** operation ids and synthetic lanes are functions of (surface,
   content, coordination): the model treats the hashes as injective on their
-  inputs, and an exact retry gets the same id.
+  inputs, and an exact retry gets the same id. The raw semantic id does not
+  cover `Stream-Closed` (the request hash's close argument is a constant), so
+  a raw append without it that carries a final's bytes and coordination has
+  that final's id. Since "Only a close can resume an owed final", only a
+  close is treated as the final's exact retry; the model's shape OP has such
+  an append.
 - **Origin:** `src/application/lifecycle/claims.rs` `seal_op_id_full` and
-  `seal_op_id_semantic`; `src/application/append/close.rs` 29-54 and
-  101-112. Since `prisma-seal-v3` the product id's record preimage is the
+  `seal_op_id_semantic`; `src/application/append/close.rs` 32-57 (the raw
+  id), 71-80 (only a close resumes an owed final) and 87-98 (the synthetic
+  lane). Since `prisma-seal-v3` the product id's record preimage is the
   final's stored client text (golden: `claims::tests`), not a serde
   re-serialisation, so no parser or formatter change can move it.
 - **Enforcement / evidence:** KANI-043 (planned) for the preimages; hash

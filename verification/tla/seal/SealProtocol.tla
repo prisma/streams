@@ -37,7 +37,7 @@ EXTENDS Naturals, Integers, Sequences, FiniteSets, TLC
 CONSTANTS
     FinalOps,    \* final-bearing seals (product seal-with-final / raw close-with-content)
     PlainOps,    \* plain seals (product :seal, raw close-only): operation id ""
-    AppendOps,   \* ordinary non-closing producer appends
+    AppendOps,   \* ordinary non-closing appends (with a producer, or raw without one)
     Surface,     \* [FinalOps \cup AppendOps -> {"product", "raw"}]
     Content,     \* [FinalOps \cup AppendOps -> symbolic record bytes]
     Producer,    \* [FinalOps \cup AppendOps -> client producer lane, or NONE]
@@ -79,24 +79,31 @@ Max(a, b) == IF a > b THEN a ELSE b
 
 \* The claim operation id: product seal_op_id_full(record, key, producer) and
 \* raw seal_op_id_semantic(request hash, key, coordination) are
-\* domain-separated hashes of these components (claims.rs 132-176).
-OpId(o) == IF o \in FinalOps THEN <<Surface[o], Content[o], Producer[o], SeqOf[o]>> ELSE PLAIN
+\* domain-separated hashes of these components (claims.rs 132-176).  The raw
+\* request hash's close argument is a constant (close.rs 32-57), so a raw
+\* append WITHOUT Stream-Closed carrying a final's bytes and coordination has
+\* that final's semantic id too.
+SemanticOpId(o) == <<Surface[o], Content[o], Producer[o], SeqOf[o]>>
+OpId(o) == IF o \in FinalOps THEN SemanticOpId(o) ELSE PLAIN
 \* The producer lane: the client's, or the synthetic `rawseal.{semantic id}`
 \* lane (close.rs 101-112) whose id depends only on the bytes when the
 \* request carries no coordination -- for a product final too
 \* (close_identity None, product.rs submit_product_append).
 LaneOf(o) == IF Producer[o] # NONE THEN Producer[o] ELSE <<"rawseal", Content[o]>>
+\* A raw append without producer headers has no producer lane: no
+\* deduplication, no sequence (only a close with content gets the synthetic one).
+HasLane(o) == o \in FinalOps \/ Producer[o] # NONE
 \* The product request hash covers the seal flag (product_request_hash); a
 \* product request without producer headers, and every raw request, has none.
 ReqHash(o) == IF Surface[o] = "product" /\ Producer[o] # NONE
               THEN <<Content[o], o \in FinalOps>> ELSE NONE
-Lanes == {LaneOf(o) : o \in LaneOps}
+Lanes == {LaneOf(o) : o \in {x \in LaneOps : HasLane(x)}}
 
 ASSUME /\ FinalOps \cap PlainOps = {} /\ FinalOps \cap AppendOps = {}
        /\ PlainOps \cap AppendOps = {}
        /\ PLAIN \notin Ops /\ NONE \notin Ops
-       /\ \A o \in AppendOps : Producer[o] # NONE
-       /\ \A o \in FinalOps : Producer[o] = NONE => SeqOf[o] = 0
+       /\ \A o \in AppendOps : Producer[o] = NONE => Surface[o] = "raw"
+       /\ \A o \in LaneOps : Producer[o] = NONE => SeqOf[o] = 0
        /\ \A o1, o2 \in FinalOps : o1 # o2 => OpId(o1) # OpId(o2)
        /\ \A hid \in HandlerIds : Validity[hid] \in {"ok", "pre", "capacity", "ceiling"}
        /\ \A hid \in HandlerIds : HOp(hid) \notin FinalOps => Validity[hid] = "ok"
@@ -186,6 +193,30 @@ ClaimedFinalPlan(hr) == [hr EXCEPT !.resumed = TRUE, !.rej = FALSE]
 \* record afterwards.
 ProductPreIntentRefuses(v) == v \in {"pre", "capacity", "ceiling"}
 
+\* Raw owed exact retry: the validity verdicts it learns BEFORE it renews
+\* the owed claim.  prepare_close only finds the owed claim and keeps the
+\* generation it observed; parse_content answers ingest capacity (413) and
+\* defers a record-ceiling refusal; install_intent renews only when nothing
+\* was refused or deferred (close.rs 71-85, 174-176; TLA-003-F4 fix).  The
+\* pre-fix control (MC_FinalSeal_NcRenewBeforeValidation) renews in
+\* prepare_close, before parse_content.
+OwedRetryValidatedFirst(v) == v \in {"capacity", "ceiling"}
+
+\* complete_raw_close (raw_close.rs 45-55): a definitive committer refusal
+\* releases the claim only for the attempt that INSTALLED it
+\* (begin_sealing_for_close answered Installed, fresh or by takeover).  An
+\* exact retry that renewed or joined the claim releases nothing: its
+\* refusal may rest on its own instance's lower limits (TLA-003-F5 fix).
+\* The pre-fix control (MC_FinalSeal_NcAnyAttemptReleases) releases for
+\* every attempt.
+RefusalReleases(hr) == hr.inst
+
+\* prepare_close's owed-claim filter (close.rs 71-80): only a close resumes
+\* an owed final ("Only a close can resume an owed final").  The pre-fix
+\* control (MC_FinalSeal_NcPlainResumesOwed) lets any raw request with the
+\* final's semantic id resume it: it skips the Sealing refusal and renews.
+ResumesOwedFinal(close, sameOp) == close /\ sameOp
+
 \* lifecycle::claims::final_err_disposition (raw surface), restricted to
 \* the committer errors this model produces.
 RawDisposition(err) ==
@@ -254,17 +285,23 @@ DecideMark(d, opid, g) ==
 (***************************************************************************)
 (* Records                                                                  *)
 (***************************************************************************)
+\* `inst`: this raw final attempt installed the claim it carries
+\* (ClosePlan::installed_claim).  `adm`: an ordinary append's admission
+\* snapshot showed the collection Sealing or Sealed (history only).
 IdleH == [pc |-> "idle", gen |-> NONE, res |-> NONE, old |-> NONE, rep |-> NONE,
           resumed |-> FALSE, rej |-> FALSE, rop |-> NONE, orop |-> NONE,
-          behalf |-> FALSE, rawdup |-> FALSE, org |-> NONE, iter |-> 0]
+          behalf |-> FALSE, rawdup |-> FALSE, org |-> NONE, iter |-> 0,
+          inst |-> FALSE, adm |-> FALSE]
 
 Rep(err, dup, closed) == [err |-> err, dup |-> dup, closed |-> closed]
 MovedRep == Rep("Moved", FALSE, FALSE)
 
-\* `ahead`: the takeovers whose fence was enqueued behind this element
+\* `ahead`: the takeovers whose fence was enqueued behind this element;
+\* `adm`: an ordinary append admitted from a Sealing or Sealed snapshot
 \* (history only; never read by the committer).
 Req(kind, hid, op, g, rej, dfr) ==
-    [kind |-> kind, hid |-> hid, op |-> op, gen |-> g, rej |-> rej, dfr |-> dfr, ahead |-> {}]
+    [kind |-> kind, hid |-> hid, op |-> op, gen |-> g, rej |-> rej, dfr |-> dfr, ahead |-> {},
+     adm |-> FALSE]
 
 StartPc(hid) ==
     LET o == HOp(hid) IN
@@ -320,17 +357,12 @@ RawTookW(hid, kind, d) ==
     IF kind = "success" /\ hid \in wset.rawTook /\ d.sealed /\ d.sealOp = OpId(HOp(hid))
     THEN {"rawTookOwn"} ELSE {}
 
-\* A final whose record closed the segment while no claim of its own stood
-\* is later answered success.
-HealW(o, kind) == IF kind = "success" /\ o \in wset.orphanClosed THEN {"healed"} ELSE {}
-
 \* Answer the client and free the slot.  `d` is the descriptor after this
 \* step, `hs` the history to extend, `fs` witness flags.
 RespondH(hid, kind, d, hs, fs) ==
     /\ h' = [h EXCEPT ![hid] = IdleH]
     /\ hist' = RespHistOn(hs, HOp(hid), kind, d)
-    /\ wit' = WitUpd(fs \cup LostReplyW(HOp(hid), kind) \cup RawTookW(hid, kind, d)
-                     \cup HealW(HOp(hid), kind))
+    /\ wit' = WitUpd(fs \cup LostReplyW(HOp(hid), kind) \cup RawTookW(hid, kind, d))
 
 RespondW(hid, kind, d, fs) == RespondH(hid, kind, d, hist, fs)
 Respond(hid, kind) == RespondW(hid, kind, desc, {})
@@ -364,7 +396,7 @@ Init ==
     /\ hist = [fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE,
                liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE,
                badClosed |-> FALSE, badSuccess |-> FALSE, invalidIntent |-> FALSE,
-               installOverMarked |-> FALSE]
+               installOverMarked |-> FALSE, sealingAdmitted |-> FALSE]
     /\ wit = [install |-> FALSE, lower |-> FALSE, behalfSealed |-> FALSE,
               superseded |-> FALSE, renewAfterRes |-> FALSE, moved |-> FALSE,
               invalidRefused |-> FALSE, gap |-> FALSE, defRelease |-> FALSE,
@@ -372,10 +404,9 @@ Init ==
               rawRetained |-> FALSE, notOwner |-> FALSE, appliedMoved |-> FALSE,
               sharedLaneDup |-> FALSE, crossOwner |-> FALSE, refusedByRow |-> FALSE,
               fenceUnverified |-> FALSE, rawTookOwn |-> FALSE, markedRetry |-> FALSE,
-              healed |-> FALSE, heldDurable |-> FALSE, supersededAfterDurable |-> FALSE,
-              groupRejected |-> FALSE]
-    /\ wset = [resv |-> {}, orphan |-> {}, openFence |-> 0, rawTook |-> {},
-               orphanClosed |-> {}]
+              heldDurable |-> FALSE, supersededAfterDurable |-> FALSE,
+              groupRejected |-> FALSE, sameIdRefused |-> FALSE, deferredRetryMarked |-> FALSE]
+    /\ wset = [resv |-> {}, orphan |-> {}, openFence |-> 0, rawTook |-> {}]
 
 (***************************************************************************)
 (* Client                                                                   *)
@@ -401,23 +432,35 @@ Issue(hid) ==
 \* headers, ingest capacity, record ceiling) -- reached only by a request
 \* that fails them.
 \* Raw: append::execute_once -> close::prepare_close (admission snapshot:
-\* is_owed_final, sealed_reject_new; an owed exact retry is RENEWED here)
-\* -> content::parse_content (with a producer, which a close with content
-\* always has, every content refusal is deferred; only ingest capacity is
-\* refused here) -> install_intent (skipped when sealed, owed or deferred).
+\* the owed claim this close resumes, with the generation it observed;
+\* sealed_reject_new) -> content::parse_content (with a producer, which a
+\* close with content always has, every content refusal is deferred; only
+\* ingest capacity is refused here) -> install_intent (an owed exact retry
+\* renews there once nothing was refused or deferred; a fresh close installs,
+\* skipped when sealed, owed or deferred).
 FValidate(hid) ==
     LET o == HOp(hid)
         c == desc.claim
         raw == Surface[o] = "raw"
-        owedByMe == c # NONE /\ c.op = OpId(o) /\ Owes(c)
+        owedByMe == c # NONE /\ ResumesOwedFinal(TRUE, c.op = OpId(o) /\ Owes(c))
     IN
     /\ h[hid].pc = "validate"
     /\ IF ~raw
        THEN RespondW(hid, "invalid", desc, {"invalidRefused"})
        ELSE IF owedByMe
-       THEN \* renew_owed_claim first; parse_content runs after the renewal
-            /\ h' = [h EXCEPT ![hid].pc = "claim", ![hid].resumed = TRUE, ![hid].rej = FALSE]
-            /\ UNCHANGED <<hist, wit>>
+       THEN IF ~OwedRetryValidatedFirst(Validity[hid])
+            THEN \* install_intent renews the owed claim (FClaim)
+                 /\ h' = [h EXCEPT ![hid].pc = "claim", ![hid].resumed = TRUE, ![hid].rej = FALSE]
+                 /\ UNCHANGED <<hist, wit>>
+            ELSE IF Validity[hid] = "capacity"
+            THEN \* parse_content 413 before the claim is touched
+                 RespondW(hid, "invalid", desc, {"invalidRefused"})
+            ELSE \* a deferred refusal: no renewal; the retry carries the generation
+                 \* it observed, so the committer still answers a committed final
+                 \* as its duplicate (which this retry then marks and seals)
+                 /\ h' = [h EXCEPT ![hid].pc = "enqueue", ![hid].gen = c.gen,
+                                   ![hid].resumed = TRUE, ![hid].rej = FALSE]
+                 /\ UNCHANGED <<hist, wit>>
        ELSE IF Validity[hid] = "capacity"
        THEN RespondW(hid, "invalid", desc, {"invalidRefused"})
        ELSE IF desc.sealed \/ Validity[hid] = "ceiling"
@@ -438,7 +481,9 @@ RawClaimed(o, hr) == IF Surface[o] = "raw" THEN ClaimedFinalPlan(hr) ELSE hr
 
 \* enter_sealing -> claim_seal -> enter_sealing_cas(decide_claim)  (product)
 \* install_intent -> begin_sealing_for_close -> claim_seal           (raw, fresh)
-\* prepare_close -> renew_owed_claim, then parse_content            (raw, owed)
+\* install_intent -> renew_owed_final -> renew_owed_claim            (raw, owed)
+\* (the owed renewal comes after parse_content since the TLA-003-F4 fix; its
+\* "capacity" branch below is reachable only in the pre-fix control)
 FClaim(hid) ==
     LET o == HOp(hid)
         oid == OpId(o)
@@ -456,7 +501,7 @@ FClaim(hid) ==
              THEN IF rn.ok
                   THEN /\ desc' = rn.next
                        /\ IF Validity[hid] = "capacity"
-                          THEN \* parse_content refuses AFTER the renewal; no release
+                          THEN \* pre-fix: parse_content refused AFTER the renewal
                                RespondH(hid, "invalid", rn.next, hsW, renewW)
                           ELSE /\ h' = [h EXCEPT ![hid].gen = rn.gen, ![hid].pc = "enqueue"]
                                /\ hist' = hsW
@@ -466,8 +511,10 @@ FClaim(hid) ==
                        /\ RespondW(hid, "conflict", desc, {})
              ELSE IF dc.kind \in {"installed", "ours"}
              THEN /\ desc' = dc.next
+                  \* begin_sealing_for_close answers whether this call installed it
                   /\ h' = [h EXCEPT ![hid] = RawClaimed(o, [@ EXCEPT !.gen = dc.gen,
-                                                                     !.pc = FinalNext(o)])]
+                                                                     !.pc = FinalNext(o),
+                                                                     !.inst = raw /\ dc.kind = "installed"])]
                   /\ hist' = hsW
                   /\ wit' = WitUpd(IF dc.kind = "ours" THEN renewW ELSE {})
              ELSE IF dc.kind = "abandoned"
@@ -608,7 +655,11 @@ TInstall(hid) ==
                                !.org = NONE,
                                !.rop = IF h[hid].org = "rs" THEN h[hid].orop ELSE h[hid].rop,
                                !.orop = NONE]
-        ext == [h EXCEPT ![hid] = IF h[hid].org = "claim" THEN RawClaimed(o, ext0) ELSE ext0]
+        \* take_over_abandoned answers Installed: a raw final that took the
+        \* claim over installed it
+        ext == [h EXCEPT ![hid] = IF h[hid].org = "claim"
+                                  THEN RawClaimed(o, [ext0 EXCEPT !.inst = Surface[o] = "raw"])
+                                  ELSE ext0]
         \* an element queued ahead of this takeover's fence is still undecided
         early == \E i \in DOMAIN eng.q : hid \in eng.q[i].ahead
         seen == IF h[hid].rep # NONE THEN h[hid].res ELSE 0
@@ -763,8 +814,9 @@ Enqueue(hid) ==
     IN
     /\ h[hid].pc = "enqueue"
     /\ \/ /\ HomeOf[hid] = owner
-          /\ eng' = [eng EXCEPT !.q = Append(@, Req("append", hid, o, h[hid].gen, h[hid].rej,
-                                                    Validity[hid] = "ceiling"))]
+          /\ eng' = [eng EXCEPT !.q = Append(@, [Req("append", hid, o, h[hid].gen, h[hid].rej,
+                                                     Validity[hid] = "ceiling")
+                                                 EXCEPT !.adm = h[hid].adm])]
           /\ h' = [h EXCEPT ![hid].pc = "await"]
           /\ UNCHANGED <<faults, hist, wit>>
        \/ /\ HomeOf[hid] # owner
@@ -782,7 +834,9 @@ Enqueue(hid) ==
 Verdict(hid, r) ==
     LET o == HOp(hid) IN
     IF r.err # NONE
-    THEN IF Disposition(o, r.err) = "definitive" THEN "release" ELSE "answer"
+    THEN IF /\ Disposition(o, r.err) = "definitive"
+            /\ Surface[o] = "product" \/ RefusalReleases(h[hid])
+         THEN "release" ELSE "answer"
     ELSE IF ~AckCompletesFinal(r)
     THEN IF Surface[o] = "product" \/ r.dup THEN "release" ELSE "answer"
     ELSE IF Surface[o] = "product" \/ OwnsFinal(h[hid].resumed, r) THEN "mark"
@@ -851,7 +905,8 @@ FMark(hid) ==
     /\ \/ /\ dm.ok
           /\ desc' = dm.next
           /\ h' = [h EXCEPT ![hid].pc = "rs_prep", ![hid].rop = OpId(o), ![hid].rep = NONE]
-          /\ wit' = WitUpd(SharedLaneW(hid) \cup MarkedRetryW(hid))
+          /\ wit' = WitUpd(SharedLaneW(hid) \cup MarkedRetryW(hid)
+                           \cup (IF Validity[hid] = "ceiling" THEN {"deferredRetryMarked"} ELSE {}))
           /\ UNCHANGED <<faults, hist>>
        \/ /\ ~dm.ok
           /\ desc' = desc
@@ -1002,17 +1057,37 @@ RsPublish(hid) ==
 
 \* Product: product.rs refuse_if_sealed answers 409 while the admission
 \* descriptor is Sealing or Sealed.  Raw: prepare_close computes
-\* sealed_reject_new (duplicates still resolve at the committer).
+\* sealed_reject_new (duplicates still resolve at the committer); without a
+\* producer there is nothing to deduplicate, so it answers the closed tail
+\* at once (close.rs 100-112).  A plain append never resumes an owed final
+\* (ResumesOwedFinal).  In the pre-fix control one with the final's semantic
+\* id passed as its exact retry: no Sealing refusal, and install_intent
+\* renewed the claim (that read and CAS are merged here; the branch is
+\* unreachable in the unmodified model).
 APrep(hid) ==
     LET o == HOp(hid)
-        busy == desc.sealed \/ desc.claim # NONE
+        c == desc.claim
+        busy == desc.sealed \/ c # NONE
+        resumes == /\ Surface[o] = "raw" /\ ~desc.sealed /\ c # NONE
+                   /\ ResumesOwedFinal(FALSE, c.op = SemanticOpId(o) /\ Owes(c))
+        rn == DecideRenewOwed(desc, SemanticOpId(o))
     IN
     /\ h[hid].pc = "a_prep"
     /\ IF Surface[o] = "product" /\ busy
-       THEN RespondW(hid, "closed", desc, {})
-       ELSE /\ h' = [h EXCEPT ![hid].pc = "enqueue", ![hid].rej = busy]
+       THEN /\ RespondW(hid, "closed", desc, {})
+            /\ UNCHANGED desc
+       ELSE IF resumes
+       THEN /\ desc' = rn.next
+            /\ h' = [h EXCEPT ![hid].pc = "enqueue", ![hid].rej = FALSE, ![hid].gen = rn.gen,
+                              ![hid].adm = TRUE]
             /\ UNCHANGED <<hist, wit>>
-    /\ UNCHANGED <<desc, seg, lanes, eng, owner, bud, faults, wset>>
+       ELSE IF busy /\ ~HasLane(o)
+       THEN /\ RespondW(hid, "closed", desc,
+                       IF c # NONE /\ c.op = SemanticOpId(o) THEN {"sameIdRefused"} ELSE {})
+            /\ UNCHANGED desc
+       ELSE /\ h' = [h EXCEPT ![hid].pc = "enqueue", ![hid].rej = busy, ![hid].adm = busy]
+            /\ UNCHANGED <<desc, hist, wit>>
+    /\ UNCHANGED <<seg, lanes, eng, owner, bud, faults, wset>>
 
 AReceive(hid) ==
     LET r == h[hid].rep IN
@@ -1072,7 +1147,7 @@ CloseHist(r, d) ==
 \* fence (seal_authorizes), then acceptance.
 AppendDecision(r) ==
     LET o == r.op
-        cur == lanes[LaneOf(o)]
+        cur == IF HasLane(o) THEN lanes[LaneOf(o)] ELSE [seq |-> -1, hash |-> NONE]
         s == SeqOf[o]
         closing == o \in FinalOps
         dup == cur.seq >= 0 /\ s <= cur.seq
@@ -1095,22 +1170,22 @@ ReachesFence(r) ==
     LET d == AppendDecision(r) IN
     (r.gen # NONE \/ r.op \in FinalOps) /\ (d.commit \/ d.rep.err = "SealSuperseded")
 
-AppendLanes(r) == [lanes EXCEPT ![LaneOf(r.op)] = [seq |-> SeqOf[r.op], hash |-> ReqHash(r.op)]]
+AppendLanes(r) ==
+    IF HasLane(r.op)
+    THEN [lanes EXCEPT ![LaneOf(r.op)] = [seq |-> SeqOf[r.op], hash |-> ReqHash(r.op)]]
+    ELSE lanes
 AppendSeg(r) ==
     IF r.op \in FinalOps
     THEN [seg EXCEPT !.closed = TRUE, !.closer = OpId(r.op), !.finalRec = r.op] ELSE seg
 AppendHist(r, d) ==
     [hist EXCEPT !.staleEffect = @ \/ (d.commit /\ r.op \in FinalOps /\ Stale(r.gen)),
-                 !.liveFenced = @ \/ (d.rep.err = "SealSuperseded" /\ LiveAt(r.gen))]
+                 !.liveFenced = @ \/ (d.rep.err = "SealSuperseded" /\ LiveAt(r.gen)),
+                 !.sealingAdmitted = @ \/ (d.commit /\ r.op \in AppendOps /\ r.adm)]
 
-\* Witness-only: a final whose record closes the segment while no claim of
-\* its own stands, and a stale final refused by a fence an earlier engine wrote.
+\* Witness-only: a final whose record commits after its handler went away.
 AppendWset(r, d) ==
-    IF WitnessMode /\ d.commit /\ r.op \in FinalOps
-    THEN [wset EXCEPT
-            !.orphan = IF r.hid = NONE THEN @ \cup {r.op} ELSE @,
-            !.orphanClosed = IF ~desc.sealed /\ (desc.claim = NONE \/ desc.claim.op # OpId(r.op))
-                             THEN @ \cup {r.op} ELSE @]
+    IF WitnessMode /\ d.commit /\ r.op \in FinalOps /\ r.hid = NONE
+    THEN [wset EXCEPT !.orphan = @ \cup {r.op}]
     ELSE wset
 AppendW(r, d) ==
     (IF d.rep.err = "SealSuperseded" THEN {"superseded"} ELSE {})
@@ -1434,6 +1509,14 @@ FinalClosedTruthful == ~hist.badClosed
 \* that fails deterministic validation on the instance that handles it.
 IntentOnlyAfterValidation == ~hist.invalidIntent
 
+\* L4 (new writes are rejected during Sealing/Sealed; exact duplicates may
+\* resolve), with L2 (the semantic operation identity): an ordinary append
+\* whose admission snapshot showed the collection Sealing or Sealed never
+\* lands.  Only the sealing operation's own close may pass a published seal
+\* intent, and a duplicate writes nothing; an append admitted before the
+\* intent may still land (a race, not a refusal).  Measured at the commit.
+SealingRefusesNewAppends == ~hist.sealingAdmitted
+
 \* A takeover never installs over a claim whose final is already marked
 \* committed (install_reserved_claim does not re-check owes_final, README
 \* F1(e); the durable fence makes the situation unreachable).
@@ -1500,7 +1583,12 @@ Witness_FenceGroupRejected == ~wit.groupRejected
 Witness_RawTakeoverWritesItsRecord == ~wit.rawTookOwn
 \* TLA-003-F2 fix: a raw exact retry after the mark completes under its op.
 Witness_RetryAfterMarkRunsItsSeal == ~wit.markedRetry
-\* TLA-003-F5: a segment closed by a final whose claim was released is
-\* healed by a later exact retry (sealed under that operation).
-Witness_OrphanedCloseHealed == ~wit.healed
+\* TLA-003-F4/F5 fix: an exact retry whose record is over its own instance's
+\* ceiling (a deferred refusal, no renewal) is answered the duplicate of the
+\* committed final, and marks it under the generation it observed.
+Witness_CeilingRetryCompletesCommittedFinal == ~wit.deferredRetryMarked
+\* "Only a close can resume an owed final": a raw append without
+\* Stream-Closed carrying the owed final's bytes (its semantic id) is
+\* refused as Sealing.
+Witness_SameIdPlainAppendRefused == ~wit.sameIdRefused
 =============================================================================

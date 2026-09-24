@@ -1,4 +1,4 @@
-Per-step view of evidence/TLA-003-F4_invalid-retry-renews.txt (action, then the variables it changed; handlers: changed slots only).
+Per-step view of evidence/TLA-003-F4_pre-fix_renew-before-validation.txt (action, then the variables it changed; handlers: changed slots only).
 
  1 Initial predicate
       lanes = ( <<"rawseal", CX>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", CN>> :> [seq |-> -1, hash |-> NONE] )
@@ -8,19 +8,21 @@ Per-step view of evidence/TLA-003-F4_invalid-retry-renews.txt (action, then the 
       faults = [ held |-> 0, crash |-> 1, retire |-> 0, cancel |-> 1, timeout |-> 0, reg |-> 0, enq |-> 0, fread |-> 0 ]
       bud = (X :> 2 @@ Z :> 1)
       owner = A
-      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE, sealingAdmitted |-> FALSE ]
  2 Issue
+      bud = (X :> 1 @@ Z :> 1)
       h[X/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
  3 FValidate
       h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
  4 FClaim
-      h[X/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE
       desc = [ counter |-> 1, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, NONE, 0>>, gen |-> 1 ], sealed |-> FALSE, sealOp |-> NONE ]
+      h[X/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE inst=TRUE
  5 Issue
+      bud = (X :> 0 @@ Z :> 1)
       h[X/2]: pc="validate" gen=NONE rep=NONE rej=FALSE
  6 FValidate
       h[X/2]: pc="claim" gen=NONE rep=NONE rej=FALSE
  7 FClaim
-      h[X/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
       desc = [ counter |-> 2, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, NONE, 0>>, gen |-> 2 ], sealed |-> FALSE, sealOp |-> NONE ]
-      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> TRUE, installOverMarked |-> FALSE ]
+      h[X/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> TRUE, installOverMarked |-> FALSE, sealingAdmitted |-> FALSE ] 622 states generated, 247 distinct states found, 128 states left on queue. The depth of the complete state graph search is 7.

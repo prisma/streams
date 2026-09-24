@@ -1,0 +1,444 @@
+Check: TLA-001/nc-client-retry-recreate (negative-control, expects violation of RecreateAnswerTruthful)
+Tool: TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Spec: verification/tla/seal/MC_RegistryCas_NcClientRetry.tla
+Config: verification/tla/seal/MC_RegistryCas_nc_client_retry_recreate.cfg
+Command: python3 scripts/quality/formal.py run --id TLA-001
+Error: Invariant RecreateAnswerTruthful is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> NONE),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> FALSE, gen |-> 0, ver |-> 1] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 2: <StartDelete line 155, col 5 to line 157, col 38 of module RegistryCas>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> NONE),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "read",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> FALSE, gen |-> 0, ver |-> 1] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 3: <Read line 162, col 5 to line 190, col 47 of module RegistryCas>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> NONE),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |->
+            [ result |-> NONE,
+              write |-> TRUE,
+              next |-> [epoch |-> E1, deleted |-> TRUE, gen |-> 0, ver |-> 1] ],
+        pc |-> "cas",
+        att |-> 0,
+        snap |-> [epoch |-> E1, deleted |-> FALSE, gen |-> 0, ver |-> 1],
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> FALSE, gen |-> 0, ver |-> 1] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 4: <Cas line 196, col 5 to line 247, col 45 of module RegistryCas>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> 0),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "done",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> "Applied",
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> TRUE, gen |-> 0, ver |-> 2] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 5: <BeginRecreate line 254, col 5 to line 263, col 20 of module RegistryCas>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> 0),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "rread",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> TRUE, gen |-> 0, ver |-> 2] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 6: <RecreateRead line 269, col 5 to line 285, col 36 of module RegistryCas>
+/\ faults = [lost |-> 1, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> 0),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> FALSE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "rcas",
+        att |-> 0,
+        snap |-> [epoch |-> E1, deleted |-> TRUE, gen |-> 0, ver |-> 2],
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E1, deleted |-> TRUE, gen |-> 0, ver |-> 2] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 7: <RecreateCas line 290, col 5 to line 331, col 36 of module RegistryCas>
+/\ faults = [lost |-> 0, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> 0),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> TRUE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "rread",
+        att |-> 1,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E2, deleted |-> FALSE, gen |-> 0, ver |-> 3] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+State 8: <RecreateRead line 269, col 5 to line 285, col 36 of module RegistryCas>
+/\ faults = [lost |-> 0, fail |-> 1, etag |-> 1, read |-> 1, recreate |-> 1]
+/\ hist = [ wrote |-> (M1 :> NONE @@ M2 :> NONE @@ M3 :> NONE @@ M5 :> NONE @@ D :> 0),
+  cross |-> FALSE,
+  recreateRetried |-> FALSE,
+  recreateWrote |-> TRUE ]
+/\ act = ( M1 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M2 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M3 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  M5 :>
+      [ prop |-> NONE,
+        pc |-> "idle",
+        att |-> 0,
+        snap |-> NONE,
+        out |-> NONE,
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] @@
+  D :>
+      [ prop |-> NONE,
+        pc |-> "done",
+        att |-> 1,
+        snap |-> NONE,
+        out |-> "RecreateDeclined",
+        res |-> NONE,
+        first |-> NONE,
+        uncond |-> FALSE ] )
+/\ obj = ( P1 :> [epoch |-> E2, deleted |-> FALSE, gen |-> 0, ver |-> 3] @@
+  P2 :> [epoch |-> E3, deleted |-> FALSE, gen |-> 0, ver |-> 1] )
+
+12512 states generated, 5033 distinct states found, 2585 states left on queue.
+The depth of the complete state graph search is 9.
