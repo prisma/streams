@@ -87,41 +87,41 @@ Each case now has a negative test in `scripts/quality/test_formal.py`.
   process group.
 - **Upload hold.** Logs stay local under the raw-evidence upload hold. A
   schema 2 receipt carries each log's sha256.
-- **State at `f1de3dcb`.** The 17 checked-in receipts are schema 1, recorded
-  with dirty trees on the spike revisions `ab73296`, `821025b` and `0d7dc48`.
-  `check` fails: the receipts of TLA-001, 003, 016, 018 and 019 no longer name
-  the manifest's check sets, and the other 12 are stale. **Every receipt is to
-  be recorded once, on the frozen source**, with `run --record`. Until then no
-  obligation has current receipt evidence, and `check --fresh` fails.
+- **Receipts.** All 17 receipts were recorded once on the frozen source, with
+  `run --record` on clean trees: TLA-001 and TLA-019 on `1d20f76f` (which adds
+  the expired-fork-child fix of §0.7 to `3f386070`), the other 15 on
+  `3f386070`. All 317 checks matched their expected verdicts. The inputs of
+  all 17 are unchanged at `74294069` ("Every obligation's receipt is recorded
+  once on the frozen source"), where `check --fresh` reports no problem and no
+  stale receipt.
 
 ### 0.3 Obligation status
 
-The status column is the manifest's claim. It is backed only once the receipt
-is recorded. "Last matching run" is the most recent complete run that the
-repository records. That is either a receipt, or a run without `--record`
-reported by the named commit (the commit that carries the run's models) or by
-its group README. "Conditional on" names the assumptions that are not
-established, which make the result a conditional design check (§7.7).
+The status column is the manifest's claim, backed by the obligation's receipt
+(§0.2). The receipt column gives the commit the receipt was recorded on and
+its matched checks out of the obligation's total. "Conditional on" names the
+assumptions that are not established, which make the result a conditional
+design check (§7.7).
 
-| Obligation | Status | Checks (baseline / control / witness) | Scope | Last matching run | Receipt | Conditional on |
-|---|---|---|---|---|---|---|
-| KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every `u32` segment ordinal and `u64` scan index (`src/offsets/proofs.rs`). The `String` wrappers and `-1` stay with the unit tests (ASM-OFFSET-DOMAIN). | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-002 | pass-with-recorded-scope | 1 / 2 / 0 | START, the successor index and exhaustion. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-003 | pass-with-recorded-scope | 1 / 2 / 0 | Token injectivity and order. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-039 | pass-with-recorded-scope | 1 / 2 / 0 | `seal_authorized` over every generation, fence and closing flag. | spike receipt, `ab73296` | to be recorded on the frozen source | — |
-| KANI-042 | pass-with-recorded-scope | 1 / 2 / 0 | Every `AppendErr` variant against the debt-retention table, on the raw and product surfaces (`src/application/lifecycle/claims/proofs.rs`). | spike receipt, `0d7dc48` | to be recorded on the frozen source | — |
-| TLA-001 | pass-with-recorded-scope | 2 / 5 / 9 | `RegistryCas.tla`: the `mutate_incarnation` and `recreate` retry loops against a single-request conditional PUT, at 2 attempts and at the production bound of 5. | 16/16, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished) |
-| TLA-002 | pass-with-recorded-scope | 12 / 11 / 16 | `SealProtocol.tla` (`MC_SealTakeover`): claims, renewal, takeover, the durable fence row, engine replacement, crash failover, and a fence group lost or rejected before it is durable. | 39/39, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
-| TLA-003 | pass-with-recorded-scope | 14 / 16 / 17 | `SealProtocol.tla` (`MC_FinalSeal`): final-record sealing on both surfaces, with validation skew between instances (V4, V5, V5A) and the same-id plain append (OP). No known defect remains. | 47/47, `3917b397` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
-| TLA-005 | pass-with-recorded-scope | 6 / 8 / 15 | `CommitGroups.tla`: commit groups, barriers and replies, with the pinned post-apply read window. | spike receipt, `821025b` | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished) |
-| TLA-006 | pass-with-recorded-scope | 3 / 6 / 9 | `HandoffRetirement.tla`: one terminal owner per batch, and late success only for work decided live. | spike receipt, `0d7dc48` | to be recorded on the frozen source | ASM-DURABILITY-10, for liveness only |
-| TLA-011 | pass-with-recorded-scope | 3 / 4 / 11 | `ServingOwnership.tla`: two nodes, stale views, an override move, crashes and ambiguous WAL PUTs, in fleet and single-node modes. | spike receipt, `ab73296` | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished), through ASM-SLATEDB-FENCE |
-| TLA-016 | pass-with-recorded-scope | 11 / 14 / 21 | `HistoryAbsorb.tla`: absorption, trims and the byte ledger; since `f1de3dcb` also submission receipts, replay-limited lane marks and postings pages with overlap admission. | 46/46, `f1de3dcb` (unrecorded) | to be recorded on the frozen source | — |
-| TLA-018 | pass-with-recorded-scope | 8 / 8 / 13 | `ReadCompose.tla`: durable and applied, keyed and unfiltered reads, with the provisional continuation and explicit resync. H11 is claimed only in the scope of TLA-018-F2. | 29/29, `d93490f5` (unrecorded) | to be recorded on the frozen source | — |
-| TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 (at `3f386070`; 10 / 15 / 20 at `f1de3dcb`) | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | 50/50, `3f386070` (unrecorded) | to be recorded on the frozen source | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
+| Obligation | Status | Checks (baseline / control / witness) | Scope | Receipt | Conditional on |
+|---|---|---|---|---|---|
+| KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every `u32` segment ordinal and `u64` scan index (`src/offsets/proofs.rs`). The `String` wrappers and `-1` stay with the unit tests (ASM-OFFSET-DOMAIN). | `3f386070`, 2/2 | — |
+| KANI-002 | pass-with-recorded-scope | 1 / 2 / 0 | START, the successor index and exhaustion. | `3f386070`, 3/3 | — |
+| KANI-003 | pass-with-recorded-scope | 1 / 2 / 0 | Token injectivity and order. | `3f386070`, 3/3 | — |
+| KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | `3f386070`, 3/3 | — |
+| KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | `3f386070`, 4/4 | — |
+| KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | `3f386070`, 4/4 | — |
+| KANI-039 | pass-with-recorded-scope | 1 / 2 / 0 | `seal_authorized` over every generation, fence and closing flag. | `3f386070`, 3/3 | — |
+| KANI-042 | pass-with-recorded-scope | 1 / 2 / 0 | Every `AppendErr` variant against the debt-retention table, on the raw and product surfaces (`src/application/lifecycle/claims/proofs.rs`). | `3f386070`, 3/3 | — |
+| TLA-001 | pass-with-recorded-scope | 2 / 5 / 9 | `RegistryCas.tla`: the `mutate_incarnation` and `recreate` retry loops against a single-request conditional PUT, at 2 attempts and at the production bound of 5. | `1d20f76f`, 16/16 | ASM-OBJSTORE-CAS (unestablished) |
+| TLA-002 | pass-with-recorded-scope | 12 / 11 / 16 | `SealProtocol.tla` (`MC_SealTakeover`): claims, renewal, takeover, the durable fence row, engine replacement, crash failover, and a fence group lost or rejected before it is durable. | `3f386070`, 39/39 | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
+| TLA-003 | pass-with-recorded-scope | 14 / 16 / 17 | `SealProtocol.tla` (`MC_FinalSeal`): final-record sealing on both surfaces, with validation skew between instances (V4, V5, V5A) and the same-id plain append (OP). No known defect remains. | `3f386070`, 47/47 | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
+| TLA-005 | pass-with-recorded-scope | 6 / 8 / 15 | `CommitGroups.tla`: commit groups, barriers and replies, with the pinned post-apply read window. | `3f386070`, 29/29 | ASM-OBJSTORE-CAS (unestablished) |
+| TLA-006 | pass-with-recorded-scope | 3 / 6 / 9 | `HandoffRetirement.tla`: one terminal owner per batch, and late success only for work decided live. | `3f386070`, 18/18 | ASM-DURABILITY-10, for liveness only |
+| TLA-011 | pass-with-recorded-scope | 3 / 4 / 11 | `ServingOwnership.tla`: two nodes, stale views, an override move, crashes and ambiguous WAL PUTs, in fleet and single-node modes. | `3f386070`, 18/18 | ASM-OBJSTORE-CAS (unestablished), through ASM-SLATEDB-FENCE |
+| TLA-016 | pass-with-recorded-scope | 11 / 14 / 21 | `HistoryAbsorb.tla`: absorption, trims and the byte ledger; since `f1de3dcb` also submission receipts, replay-limited lane marks and postings pages with overlap admission. | `3f386070`, 46/46 | — |
+| TLA-018 | pass-with-recorded-scope | 8 / 8 / 13 | `ReadCompose.tla`: durable and applied, keyed and unfiltered reads, with the provisional continuation and explicit resync. H11 is claimed only in the scope of TLA-018-F2. | `3f386070`, 29/29 | — |
+| TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 (at `3f386070`; 10 / 15 / 20 at `f1de3dcb`) | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | `1d20f76f`, 50/50 | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
 
 The manifest holds 317 checks at `3f386070`: 80 baselines, 105 negative
 controls, 132 witnesses and no known defect.
@@ -213,7 +213,6 @@ an owner that is not yet upgraded still treats a forwarded 2^64−1 as its tail
 
 | Item | Kind | Next step |
 |---|---|---|
-| Receipts for all 17 obligations | evidence | Record once on the frozen source (`formal.py run --record`); then `check` and `check --fresh` must pass. |
 | **Service obligations**: the `docs/READINESS.md` section "Service obligations from formal verification (open)" holds their acceptance criteria. | open obligations | **Physical reclamation (TLA-019-F3):** a written policy (rows, delay, prerequisites); every row of a hard-deleted incarnation deleted within the stated delay; a recreate, a live fork child or an unsettled billing close blocks it, with a DST scenario for each; deletes under the trim or GC budget; a gauge and an alert. **GC without further writes (H14, TLA-019-F2):** an unreferenced SST on a quiet partition is deleted within an owner-stated bound, with no new periodic LIST, checked by a DST scenario and a `ReachGC` baseline (`docs/dst/DST-EXPANSION-SPEC.md` §9.12.3). **H11 (TLA-018-F2):** not met until the owner decides (below). The campaign does not replace the other readiness work: independent restore, real Compute failover, authorization integration, external incident visibility and workload acceptance. |
 | **Owner decisions** | decisions | **T11:** confirm the reconciled wording (DST-EXPANSION-SPEC §9.12.1). **H11:** option A keeps H11 and adds a per-chunk coverage record; option B deliberately revises the contract under §2.10 (§9.12.2). This is not a weakening by default. **H14 bound:** state the convergence bound (candidate `min_age + 2 × gc_interval`, §9.12.3). **Reclamation policy:** adopt one (READINESS criterion 1). Smaller, already recorded: D5 met only error-for-error (TLA-005-F4); a readiness gate on the first ring view (TLA-011-F2); the three limit-reduction obligations in `docs/seal-transitions.md` "Limit reductions and accepted finals". |
 | Real-provider qualification | qualification, not run | The provider contract suite (`docs/PROVIDER-CONTRACT.md`) has not been run against the production provider. That needs owner credentials: `STREAMS_PROVIDER_CONTRACT=1` with an endpoint, bucket and prefix. Until a logged run, ASM-OBJSTORE-CAS is unestablished, and TLA-001/002/003/005/011/019 are conditional on it. |
@@ -481,7 +480,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P0 · **Requirement anchors:** L1–L4, L11–L12, L15, D6–D7  
 **Source owners:** [`src/application/append/close.rs`](src/application/append/close.rs); [`src/application/lifecycle.rs`](src/application/lifecycle.rs); [`src/application/lifecycle/raw_close.rs`](src/application/lifecycle/raw_close.rs); [`src/application/lifecycle/claims.rs`](src/application/lifecycle/claims.rs)
 
-**Status:** pass-with-recorded-scope, since the closure fixed TLA-003-F4 and TLA-003-F5; the receipt is to be recorded on the frozen source (see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope, since the closure fixed TLA-003-F4 and TLA-003-F5; its receipt was recorded on `3f386070` (see [§0](#0-implementation-record)).
 
 **Validate.** Deterministic validation precedes intent installation. Final intent names the complete operation. Cancellation, timeout, ownership movement, and transient ordering refusals preserve recoverable debt. Only a definitive refusal may release the exact incarnation/operation/generation. A duplicate of an earlier non-closing append cannot satisfy a final-close promise. Terminal success must identify the operation actually completed.
 
@@ -731,7 +730,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P0 · **Requirement anchors:** H1–H2, H9–H11, D8–D9  
 **Source owners:** [`src/application/read_batch.rs`](src/application/read_batch.rs); [`src/application/read_scan.rs`](src/application/read_scan.rs); [`src/application/read_keys.rs`](src/application/read_keys.rs); [`src/history/postings_read.rs`](src/history/postings_read.rs); [`src/shard/record.rs`](src/shard/record.rs)
 
-**Status:** pass-with-recorded-scope, since the closure fixed TLA-018-F3; the receipt is to be recorded on the frozen source. H11 is claimed only in the scope of the open obligation TLA-018-F2 (see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope, since the closure fixed TLA-018-F3; its receipt was recorded on `3f386070`. H11 is claimed only in the scope of the open obligation TLA-018-F2 (see [§0](#0-implementation-record)).
 
 **Validate.** A permitted read view combines the history prefix and hot suffix with exact coverage: no fabricated records, missing eligible offsets, or duplicate delivery caused by a moving boundary. Data corruption or missing required postings cannot become a false complete page. Visibility must be modeled per API: distinguish any permitted applied-state read from a durability promise.
 

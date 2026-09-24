@@ -78,145 +78,162 @@ Configuration names say what a check is:
 <!-- RESULTS -->
 ## Results
 
-Each table is rendered from the obligation's receipt. The driver ran every
-check with 2 workers while other TLC and Kani jobs shared the 8-core machine,
-so the seconds are wall time under load. For a violation, the distinct states
-are those explored until TLC found it. `(temporal)` marks a liveness
+Each table is rendered from the obligation's receipt. Each receipt was
+recorded once, with `formal.py run --record` on a clean tree: TLA-016 and
+TLA-018 on `3f386070`, TLA-019 on `1d20f76f`. Their inputs are unchanged at
+`74294069`, where `formal.py check --fresh` reports them current. Tools: TLC
+2.19 (tla2tools 1.7.4) on Java 17.0.1, aarch64-apple-darwin. The driver ran
+every check with 2 workers while up to five driver processes shared an 8-core
+laptop, so the seconds are wall time under load. For a violation, the
+distinct states are those explored until TLC found it. `(temporal)` marks a liveness
 violation, which TLC reports without the property name; each such
 configuration checks one property.
 
 ### TLA-016 (`pass-with-recorded-scope`)
 
-Receipt `verification/receipts/TLA-016.json`: 33 checks, every verdict as expected, run on `ab73296` with uncommitted changes; TLC 2.19 on Java 17.0.1, 2 workers; 52 min of TLC wall time in total. This table predates the model changes of `f1de3dcb`, which bring the manifest to 46 checks; that commit reports all 46 matching in a run without `--record`. The receipt is to be recorded on the frozen source.
+Receipt `verification/receipts/TLA-016.json`, recorded on `3f386070`: 46 checks, every verdict as expected; 108 min of TLC wall time in total.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-small` | `HistoryAbsorb` / `small` | baseline | pass | pass | 8,380,652 | 691 |
-| `baseline-expanded` | `HistoryAbsorb` / `expanded` | baseline | pass | pass | 16,566,674 | 1525 |
-| `ledger-small` | `HistoryAbsorb` / `ledger_small` | baseline | pass | pass | 8,380,652 | 429 |
-| `ledger-overlap` | `HistoryAbsorb` / `ledger_overlap` | baseline | pass | pass | 579,554 | 22 |
-| `liveness-small` | `HistoryAbsorb` / `liveness` | baseline | pass | pass | 134,989 | 62 |
-| `baseline-cache` | `HistoryAbsorb` / `cache` | baseline | pass | pass | 2,338,359 | 98 |
-| `baseline-cache-cap2` | `HistoryAbsorb` / `cache_cap2` | baseline | pass | pass | 4,234,784 | 166 |
-| `nc-publish-before-flush` | `HistoryAbsorb` / `nc_publish_before_flush` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 466 | 1 |
-| `nc-canonical-only` | `HistoryAbsorb` / `nc_canonical_only` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 629 | 1 |
-| `nc-trim-to-proposed` | `HistoryAbsorb` / `nc_trim_to_proposed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,084 | 2 |
-| `nc-duplicate-collapse` | `HistoryAbsorb` / `nc_duplicate_collapse` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 17,863 | 2 |
-| `nc-tick-trim-to-absorbed` | `HistoryAbsorb` / `nc_tick_trim_to_absorbed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,748 | 2 |
-| `nc-lastcopy-publish-before-flush` | `HistoryAbsorb` / `nc_lastcopy_publish_before_flush` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 18,465 | 2 |
-| `nc-lastcopy-trim-past-absorbed` | `HistoryAbsorb` / `nc_lastcopy_trim_past_absorbed` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 11 | 1 |
-| `nc-retire-chunk-bytes` | `HistoryAbsorb` / `nc_retire_chunk_bytes` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 17,286 | 2 |
-| `nc-retire-chunk-bytes-overlap` | `HistoryAbsorb` / `nc_retire_chunk_bytes_overlap` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 9,391 | 2 |
-| `nc-retire-chunk-bytes-liveness` | `HistoryAbsorb` / `nc_retire_chunk_bytes_liveness` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 150,281 | 62 |
-| `nc-warm-install-from-plan` | `HistoryAbsorb` / `nc_warm_install_from_plan` | negative-control | violation `CacheNeverProvesFalseAbsence` | violation `CacheNeverProvesFalseAbsence` | 94,714 | 5 |
-| `witness-TrimDurable` | `HistoryAbsorb` / `w_TrimDurable` | witness | violation `Witness_TrimDurable` | violation `Witness_TrimDurable` | 27,236 | 3 |
-| `witness-FullyAbsorbedDurable` | `HistoryAbsorb` / `w_FullyAbsorbedDurable` | witness | violation `Witness_FullyAbsorbedDurable` | violation `Witness_FullyAbsorbedDurable` | 40,777 | 3 |
-| `witness-LostPublicationRecovered` | `HistoryAbsorb` / `w_LostPublicationRecovered` | witness | violation `Witness_LostPublicationRecovered` | violation `Witness_LostPublicationRecovered` | 260,308 | 8 |
-| `witness-FlushFailRecovered` | `HistoryAbsorb` / `w_FlushFailRecovered` | witness | violation `Witness_FlushFailRecovered` | violation `Witness_FlushFailRecovered` | 141,440 | 6 |
-| `witness-StaleDuplicateIgnored` | `HistoryAbsorb` / `w_StaleDuplicateIgnored` | witness | violation `Witness_StaleDuplicateIgnored` | violation `Witness_StaleDuplicateIgnored` | 308,748 | 10 |
-| `witness-CrashRecovered` | `HistoryAbsorb` / `w_CrashRecovered` | witness | violation `Witness_CrashRecovered` | violation `Witness_CrashRecovered` | 53,357 | 3 |
-| `witness-GatherOverTrimmedPrefix` | `HistoryAbsorb` / `w_GatherOverTrimmedPrefix` | witness | violation `Witness_GatherOverTrimmedPrefix` | violation `Witness_GatherOverTrimmedPrefix` | 97,824 | 5 |
-| `witness-StaleSnapshotLosesTail` | `HistoryAbsorb` / `w_StaleSnapshotLosesTail` | witness | violation `Witness_StaleSnapshotLosesTail` | violation `Witness_StaleSnapshotLosesTail` | 36,490 | 3 |
-| `witness-TwoAdvancesNotDurable` | `HistoryAbsorb` / `w_TwoAdvancesNotDurable` | witness | violation `Witness_TwoAdvancesNotDurable` | violation `Witness_TwoAdvancesNotDurable` | 16,461 | 2 |
-| `witness-MarkRolledBackInFlight` | `HistoryAbsorb` / `w_MarkRolledBackInFlight` | witness | violation `Witness_MarkRolledBackInFlight` | violation `Witness_MarkRolledBackInFlight` | 692 | 1 |
-| `witness-EvictedMarkPrunedInFlight` | `HistoryAbsorb` / `w_EvictedMarkPrunedInFlight` | witness | violation `Witness_EvictedMarkPrunedInFlight` | violation `Witness_EvictedMarkPrunedInFlight` | 700 | 1 |
-| `witness-RingGatherBelowTrim` | `HistoryAbsorb` / `w_RingGatherBelowTrim` | witness | violation `Witness_RingGatherBelowTrim` | violation `Witness_RingGatherBelowTrim` | 155,100 | 8 |
-| `witness-WarmBridgeCovers` | `HistoryAbsorb` / `w_WarmBridgeCovers` | witness | violation `Witness_WarmBridgeCovers` | violation `Witness_WarmBridgeCovers` | 10,867 | 2 |
-| `witness-MisStartedAdvanceCompletes` | `HistoryAbsorb` / `w_MisStartedAdvanceCompletes` | witness | violation `Witness_MisStartedAdvanceCompletes` | violation `Witness_MisStartedAdvanceCompletes` | 40,536 | 3 |
-| `witness-InstallStartsAbovePlan` | `HistoryAbsorb` / `w_InstallStartsAbovePlan` | witness | violation `Witness_InstallStartsAbovePlan` | violation `Witness_InstallStartsAbovePlan` | 77,829 | 5 |
+| `baseline-small` | `HistoryAbsorb` / `small` | baseline | pass | pass | 31,506,682 | 1659.4 |
+| `baseline-expanded` | `HistoryAbsorb` / `expanded` | baseline | pass | pass | 58,418,430 | 2667.0 |
+| `ledger-small` | `HistoryAbsorb` / `ledger_small` | baseline | pass | pass | 31,506,682 | 808.6 |
+| `ledger-overlap` | `HistoryAbsorb` / `ledger_overlap` | baseline | pass | pass | 579,554 | 9.2 |
+| `liveness-small` | `HistoryAbsorb` / `liveness` | baseline | pass | pass | 134,989 | 58.1 |
+| `liveness-refusal` | `HistoryAbsorb` / `liveness_refusal` | baseline | pass | pass | 132,525 | 57.7 |
+| `baseline-cache` | `HistoryAbsorb` / `cache` | baseline | pass | pass | 2,338,359 | 51.5 |
+| `baseline-cache-cap2` | `HistoryAbsorb` / `cache_cap2` | baseline | pass | pass | 4,234,784 | 97.0 |
+| `baseline-pages` | `HistoryAbsorb` / `pages` | baseline | pass | pass | 168,654 | 5.7 |
+| `baseline-pages-regather` | `HistoryAbsorb` / `pages_regather` | baseline | pass | pass | 1,103,474 | 28.9 |
+| `baseline-recount` | `HistoryAbsorb` / `recount` | baseline | pass | pass | 4,836,946 | 78.0 |
+| `nc-publish-before-flush` | `HistoryAbsorb` / `nc_publish_before_flush` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 504 | 0.9 |
+| `nc-canonical-only` | `HistoryAbsorb` / `nc_canonical_only` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 624 | 0.9 |
+| `nc-trim-to-proposed` | `HistoryAbsorb` / `nc_trim_to_proposed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,122 | 0.9 |
+| `nc-duplicate-collapse` | `HistoryAbsorb` / `nc_duplicate_collapse` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 24,867 | 1.6 |
+| `nc-tick-trim-to-absorbed` | `HistoryAbsorb` / `nc_tick_trim_to_absorbed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,486 | 0.9 |
+| `nc-lastcopy-publish-before-flush` | `HistoryAbsorb` / `nc_lastcopy_publish_before_flush` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 28,068 | 1.6 |
+| `nc-lastcopy-trim-past-absorbed` | `HistoryAbsorb` / `nc_lastcopy_trim_past_absorbed` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 11 | 0.8 |
+| `nc-retire-chunk-bytes` | `HistoryAbsorb` / `nc_retire_chunk_bytes` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 24,347 | 1.6 |
+| `nc-retire-chunk-bytes-overlap` | `HistoryAbsorb` / `nc_retire_chunk_bytes_overlap` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 9,441 | 1.3 |
+| `nc-retire-chunk-bytes-liveness` | `HistoryAbsorb` / `nc_retire_chunk_bytes_liveness` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 1,614,897 | 890.3 |
+| `nc-warm-install-from-plan` | `HistoryAbsorb` / `nc_warm_install_from_plan` | negative-control | violation `CacheNeverProvesFalseAbsence` | violation `CacheNeverProvesFalseAbsence` | 94,838 | 2.3 |
+| `nc-no-settle` | `HistoryAbsorb` / `nc_no_settle` | negative-control | violation `SettledMarkAtBoundary` | violation `SettledMarkAtBoundary` | 1,088 | 0.8 |
+| `nc-replay-unbounded` | `HistoryAbsorb` / `nc_replay_unbounded` | negative-control | violation `NoStraddledChunk` | violation `NoStraddledChunk` | 3,893 | 1.0 |
+| `probe-scan-per-row` | `HistoryAbsorb` / `probe_scan_per_row` | negative-control | violation `PagesAdmit` | violation `PagesAdmit` | 29,572 | 1.5 |
+| `witness-TrimDurable` | `HistoryAbsorb` / `w_TrimDurable` | witness | violation `Witness_TrimDurable` | violation `Witness_TrimDurable` | 39,467 | 1.6 |
+| `witness-FullyAbsorbedDurable` | `HistoryAbsorb` / `w_FullyAbsorbedDurable` | witness | violation `Witness_FullyAbsorbedDurable` | violation `Witness_FullyAbsorbedDurable` | 59,319 | 1.8 |
+| `witness-LostPublicationRecovered` | `HistoryAbsorb` / `w_LostPublicationRecovered` | witness | violation `Witness_LostPublicationRecovered` | violation `Witness_LostPublicationRecovered` | 445,753 | 6.5 |
+| `witness-FlushFailRecovered` | `HistoryAbsorb` / `w_FlushFailRecovered` | witness | violation `Witness_FlushFailRecovered` | violation `Witness_FlushFailRecovered` | 223,120 | 3.9 |
+| `witness-StaleDuplicateIgnored` | `HistoryAbsorb` / `w_StaleDuplicateIgnored` | witness | violation `Witness_StaleDuplicateIgnored` | violation `Witness_StaleDuplicateIgnored` | 555,945 | 7.7 |
+| `witness-CrashRecovered` | `HistoryAbsorb` / `w_CrashRecovered` | witness | violation `Witness_CrashRecovered` | violation `Witness_CrashRecovered` | 82,866 | 2.2 |
+| `witness-GatherOverTrimmedPrefix` | `HistoryAbsorb` / `w_GatherOverTrimmedPrefix` | witness | violation `Witness_GatherOverTrimmedPrefix` | violation `Witness_GatherOverTrimmedPrefix` | 166,041 | 3.2 |
+| `witness-StaleSnapshotLosesTail` | `HistoryAbsorb` / `w_StaleSnapshotLosesTail` | witness | violation `Witness_StaleSnapshotLosesTail` | violation `Witness_StaleSnapshotLosesTail` | 51,667 | 1.7 |
+| `witness-TwoAdvancesNotDurable` | `HistoryAbsorb` / `w_TwoAdvancesNotDurable` | witness | violation `Witness_TwoAdvancesNotDurable` | violation `Witness_TwoAdvancesNotDurable` | 22,758 | 1.3 |
+| `witness-MarkRolledBackInFlight` | `HistoryAbsorb` / `w_MarkRolledBackInFlight` | witness | violation `Witness_MarkRolledBackInFlight` | violation `Witness_MarkRolledBackInFlight` | 698 | 0.8 |
+| `witness-EvictedMarkPrunedInFlight` | `HistoryAbsorb` / `w_EvictedMarkPrunedInFlight` | witness | violation `Witness_EvictedMarkPrunedInFlight` | violation `Witness_EvictedMarkPrunedInFlight` | 731 | 0.8 |
+| `witness-RingGatherBelowTrim` | `HistoryAbsorb` / `w_RingGatherBelowTrim` | witness | violation `Witness_RingGatherBelowTrim` | violation `Witness_RingGatherBelowTrim` | 244,257 | 4.1 |
+| `witness-WarmBridgeCovers` | `HistoryAbsorb` / `w_WarmBridgeCovers` | witness | violation `Witness_WarmBridgeCovers` | violation `Witness_WarmBridgeCovers` | 12,067 | 1.3 |
+| `witness-MisStartedAdvanceCompletes` | `HistoryAbsorb` / `w_MisStartedAdvanceCompletes` | witness | violation `Witness_MisStartedAdvanceCompletes` | violation `Witness_MisStartedAdvanceCompletes` | 59,309 | 1.9 |
+| `witness-InstallStartsAbovePlan` | `HistoryAbsorb` / `w_InstallStartsAbovePlan` | witness | violation `Witness_InstallStartsAbovePlan` | violation `Witness_InstallStartsAbovePlan` | 75,921 | 2.1 |
+| `witness-RefusalReplayed` | `HistoryAbsorb` / `w_RefusalReplayed` | witness | violation `Witness_RefusalReplayed` | violation `Witness_RefusalReplayed` | 539,450 | 7.1 |
+| `witness-LateRefusalRecount` | `HistoryAbsorb` / `w_LateRefusalRecount` | witness | violation `Witness_LateRefusalRecount` | violation `Witness_LateRefusalRecount` | 32,539 | 1.5 |
+| `witness-RecountBeyondInFlight` | `HistoryAbsorb` / `w_RecountBeyondInFlight` | witness | violation `Witness_RecountBeyondInFlight` | violation `Witness_RecountBeyondInFlight` | 30,797 | 1.4 |
+| `witness-OverlapAdmittedRescan` | `HistoryAbsorb` / `w_OverlapAdmittedRescan` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 8,274 | 1.1 |
+| `witness-OverlapAdmittedPrune` | `HistoryAbsorb` / `w_OverlapAdmittedPrune` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 6,276 | 1.1 |
+| `witness-OverlapAdmittedNewOwner` | `HistoryAbsorb` / `w_OverlapAdmittedNewOwner` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 3,092 | 1.0 |
 
 ### TLA-018 (`pass-with-recorded-scope`)
 
-Not yet recorded as a receipt: the table is from `formal.py run --id TLA-018 --id TLA-019` (without `--record`) on `55881d7` with the uncommitted model changes, which `verification/receipts/TLA-018.json` does not yet reflect (it still records the pre-fix run on `ab73296`). 29 checks, every verdict as expected; TLC 2.19 on Java 17.0.1, 2 workers, on a machine with a load average of 25 to 60 from other jobs; 107 min of TLC wall time in total.
+Receipt `verification/receipts/TLA-018.json`, recorded on `3f386070`: 29 checks, every verdict as expected; 70 min of TLC wall time in total.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-durable-keyed-small` | `ReadCompose` / `durable_keyed_small` | baseline | pass | pass | 12,482,967 | 1660 |
-| `baseline-durable-unfiltered-small` | `ReadCompose` / `durable_unfiltered_small` | baseline | pass | pass | 3,777,005 | 475 |
-| `baseline-applied-keyed-small` | `ReadCompose` / `applied_keyed_small` | baseline | pass | pass | 11,351,025 | 522 |
-| `baseline-applied-unfiltered-small` | `ReadCompose` / `applied_unfiltered_small` | baseline | pass | pass | 3,045,185 | 102 |
-| `baseline-durable-keyed-expanded` | `ReadCompose` / `durable_keyed_expanded` | baseline | pass | pass | 19,356,657 | 737 |
-| `baseline-durable-unfiltered-expanded` | `ReadCompose` / `durable_unfiltered_expanded` | baseline | pass | pass | 6,582,468 | 344 |
-| `baseline-applied-unfiltered-expanded` | `ReadCompose` / `applied_unfiltered_expanded` | baseline | pass | pass | 19,384,259 | 889 |
-| `baseline-applied-keyed-expanded` | `ReadCompose` / `applied_keyed_expanded` | baseline | pass | pass | 53,598,423 | 1618 |
-| `nc-old-history-view` | `ReadCompose` / `nc_old_history_view` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 567,556 | 11 |
-| `nc-filtered-race-never` | `ReadCompose` / `nc_filtered_race_never` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 205,787 | 5 |
-| `nc-short-index-accepted` | `ReadCompose` / `nc_short_index_accepted` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 6,946 | 2 |
-| `nc-applied-race-remote` | `ReadCompose` / `nc_applied_race_remote` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 55,998 | 2 |
-| `nc-applied-race-remote-unfiltered` | `ReadCompose` / `nc_applied_race_remote_unfiltered` | negative-control | violation `TailGapExplained` | violation `TailGapExplained` | 43,188 | 2 |
-| `nc-no-continuation-check` | `ReadCompose` / `nc_no_continuation_check` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 2,540,301 | 41 |
-| `probe-lost-durable-postings` | `ReadCompose` / `probe_lost_postings` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 7,447 | 2 |
-| `probe-lost-durable-canonical` | `ReadCompose` / `probe_lost_canonical` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 10,842 | 2 |
-| `witness-BoundaryRaceAdopted` | `ReadCompose` / `w_BoundaryRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 8,799 | 2 |
-| `witness-UnfilteredRaceAdopted` | `ReadCompose` / `w_UnfilteredRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 161,672 | 4 |
-| `witness-AppliedRaceAdopted` | `ReadCompose` / `w_AppliedRaceAdopted` | witness | violation `Witness_AppliedRaceAdopted` | violation `Witness_AppliedRaceAdopted` | 4,099 | 1 |
-| `witness-LargeFirstRecordDelivered` | `ReadCompose` / `w_LargeFirstRecordDelivered` | witness | violation `Witness_LargeFirstRecordDelivered` | violation `Witness_LargeFirstRecordDelivered` | 137 | 1 |
-| `witness-EnvelopeServed` | `ReadCompose` / `w_EnvelopeServed` | witness | violation `Witness_EnvelopeServed` | violation `Witness_EnvelopeServed` | 1,148 | 1 |
-| `witness-ShortIndexPartial` | `ReadCompose` / `w_ShortIndexPartial` | witness | violation `Witness_ShortIndexPartial` | violation `Witness_ShortIndexPartial` | 1,768 | 1 |
-| `witness-ReadFromFencedEngine` | `ReadCompose` / `w_ReadFromFencedEngine` | witness | violation `Witness_ReadFromFencedEngine` | violation `Witness_ReadFromFencedEngine` | 495 | 1 |
-| `witness-RingServed` | `ReadCompose` / `w_RingServed` | witness | violation `Witness_RingServed` | violation `Witness_RingServed` | 150 | 1 |
-| `witness-ReaderCompletes` | `ReadCompose` / `w_ReaderCompletes` | witness | violation `Witness_ReaderCompletes` | violation `Witness_ReaderCompletes` | 4,297 | 1 |
-| `witness-TrimBelowReaderCursor` | `ReadCompose` / `w_TrimBelowReaderCursor` | witness | violation `Witness_TrimBelowReaderCursor` | violation `Witness_TrimBelowReaderCursor` | 10,577 | 2 |
-| `witness-ReadErrorCurrentEngine` | `ReadCompose` / `w_ReadErrorCurrentEngine` | witness | violation `Witness_ReadErrorCurrentEngine` | violation `Witness_ReadErrorCurrentEngine` | 46 | 1 |
-| `witness-ContinuedAcrossMove` | `ReadCompose` / `w_ContinuedAcrossMove` | witness | violation `Witness_ContinuedAcrossMove` | violation `Witness_ContinuedAcrossMove` | 355,396 | 6 |
-| `witness-StaleContinuationResynced` | `ReadCompose` / `w_StaleContinuationResynced` | witness | violation `Witness_StaleContinuationResynced` | violation `Witness_StaleContinuationResynced` | 463,670 | 8 |
+| `baseline-durable-keyed-small` | `ReadCompose` / `durable_keyed_small` | baseline | pass | pass | 12,482,967 | 587.6 |
+| `baseline-durable-unfiltered-small` | `ReadCompose` / `durable_unfiltered_small` | baseline | pass | pass | 3,777,005 | 172.4 |
+| `baseline-applied-keyed-small` | `ReadCompose` / `applied_keyed_small` | baseline | pass | pass | 11,351,025 | 440.3 |
+| `baseline-applied-unfiltered-small` | `ReadCompose` / `applied_unfiltered_small` | baseline | pass | pass | 3,045,185 | 85.6 |
+| `baseline-durable-keyed-expanded` | `ReadCompose` / `durable_keyed_expanded` | baseline | pass | pass | 19,356,657 | 553.2 |
+| `baseline-durable-unfiltered-expanded` | `ReadCompose` / `durable_unfiltered_expanded` | baseline | pass | pass | 6,582,468 | 188.7 |
+| `baseline-applied-unfiltered-expanded` | `ReadCompose` / `applied_unfiltered_expanded` | baseline | pass | pass | 19,384,259 | 518.8 |
+| `baseline-applied-keyed-expanded` | `ReadCompose` / `applied_keyed_expanded` | baseline | pass | pass | 53,598,423 | 1580.4 |
+| `nc-old-history-view` | `ReadCompose` / `nc_old_history_view` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 567,654 | 11.8 |
+| `nc-filtered-race-never` | `ReadCompose` / `nc_filtered_race_never` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 215,711 | 5.0 |
+| `nc-short-index-accepted` | `ReadCompose` / `nc_short_index_accepted` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 6,561 | 1.6 |
+| `nc-applied-race-remote` | `ReadCompose` / `nc_applied_race_remote` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 48,277 | 2.3 |
+| `nc-applied-race-remote-unfiltered` | `ReadCompose` / `nc_applied_race_remote_unfiltered` | negative-control | violation `TailGapExplained` | violation `TailGapExplained` | 43,677 | 2.3 |
+| `nc-no-continuation-check` | `ReadCompose` / `nc_no_continuation_check` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 2,520,251 | 40.8 |
+| `probe-lost-durable-postings` | `ReadCompose` / `probe_lost_postings` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 9,225 | 1.4 |
+| `probe-lost-durable-canonical` | `ReadCompose` / `probe_lost_canonical` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 9,108 | 1.5 |
+| `witness-BoundaryRaceAdopted` | `ReadCompose` / `w_BoundaryRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 9,695 | 1.5 |
+| `witness-UnfilteredRaceAdopted` | `ReadCompose` / `w_UnfilteredRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 165,387 | 3.7 |
+| `witness-AppliedRaceAdopted` | `ReadCompose` / `w_AppliedRaceAdopted` | witness | violation `Witness_AppliedRaceAdopted` | violation `Witness_AppliedRaceAdopted` | 3,965 | 1.2 |
+| `witness-LargeFirstRecordDelivered` | `ReadCompose` / `w_LargeFirstRecordDelivered` | witness | violation `Witness_LargeFirstRecordDelivered` | violation `Witness_LargeFirstRecordDelivered` | 164 | 0.9 |
+| `witness-EnvelopeServed` | `ReadCompose` / `w_EnvelopeServed` | witness | violation `Witness_EnvelopeServed` | violation `Witness_EnvelopeServed` | 1,005 | 1.1 |
+| `witness-ShortIndexPartial` | `ReadCompose` / `w_ShortIndexPartial` | witness | violation `Witness_ShortIndexPartial` | violation `Witness_ShortIndexPartial` | 1,427 | 1.1 |
+| `witness-ReadFromFencedEngine` | `ReadCompose` / `w_ReadFromFencedEngine` | witness | violation `Witness_ReadFromFencedEngine` | violation `Witness_ReadFromFencedEngine` | 444 | 1.0 |
+| `witness-RingServed` | `ReadCompose` / `w_RingServed` | witness | violation `Witness_RingServed` | violation `Witness_RingServed` | 120 | 1.0 |
+| `witness-ReaderCompletes` | `ReadCompose` / `w_ReaderCompletes` | witness | violation `Witness_ReaderCompletes` | violation `Witness_ReaderCompletes` | 3,869 | 1.2 |
+| `witness-TrimBelowReaderCursor` | `ReadCompose` / `w_TrimBelowReaderCursor` | witness | violation `Witness_TrimBelowReaderCursor` | violation `Witness_TrimBelowReaderCursor` | 11,247 | 1.5 |
+| `witness-ReadErrorCurrentEngine` | `ReadCompose` / `w_ReadErrorCurrentEngine` | witness | violation `Witness_ReadErrorCurrentEngine` | violation `Witness_ReadErrorCurrentEngine` | 46 | 0.9 |
+| `witness-ContinuedAcrossMove` | `ReadCompose` / `w_ContinuedAcrossMove` | witness | violation `Witness_ContinuedAcrossMove` | violation `Witness_ContinuedAcrossMove` | 368,778 | 6.0 |
+| `witness-StaleContinuationResynced` | `ReadCompose` / `w_StaleContinuationResynced` | witness | violation `Witness_StaleContinuationResynced` | violation `Witness_StaleContinuationResynced` | 455,127 | 6.8 |
 
 ### TLA-019 (`pass-with-recorded-scope`)
 
-Not yet recorded as a receipt: the table is from `formal.py run --id TLA-019` (without `--record`) on `d93490f` with the uncommitted fork-debt recreation fix and model changes, which `verification/receipts/TLA-019.json` does not yet reflect. 50 checks, every verdict as expected; TLC 2.19 on Java 17.0.1, 2 workers; 43 min of TLC wall time in total.
+Receipt `verification/receipts/TLA-019.json`, recorded on `1d20f76f`: 50 checks, every verdict as expected; 79 min of TLC wall time in total.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-small` | `ReachGC` / `small` | baseline | pass | pass | 3,938,288 | 53 |
-| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 368 |
-| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 36 |
-| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 69 |
-| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 732 |
-| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 234,706 | 3 |
-| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 162 | 1 |
-| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 463,603 | 4 |
-| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 508,278 | 5 |
-| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 29,992 | 1 |
-| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,123,210 | 8 |
-| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 566,760 | 58 |
-| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 460,934 | 4 |
-| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 202,160 | 2 |
-| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,253,118 | 10 |
-| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 625,102 | 5 |
-| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 701 | 1 |
-| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 22,804 | 1 |
-| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 1,924 | 1 |
-| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 118,239 | 2 |
-| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 3,374,329 | 64 |
-| `fork-baseline-legacy` | `ForkPin` / `baseline_legacy` | baseline | pass | pass | 41,723,978 | 895 |
-| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 72,328 | 8 |
-| `fork-liveness-reconciler` | `ForkPin` / `liveness_reconciler` | baseline | pass | pass | 72,328 | 10 |
-| `fork-liveness-reconciler-recreated` | `ForkPin` / `liveness_reconciler_recreated` | baseline | pass | pass | 49,238 | 8 |
-| `fork-liveness-backfill` | `ForkPin` / `liveness_backfill` | baseline | pass | pass | 564,266 | 107 |
-| `fork-liveness-backfill-recreated` | `ForkPin` / `liveness_backfill_recreated` | baseline | pass | pass | 367,371 | 68 |
-| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 53 | 1 |
-| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 348 | 1 |
-| `nc-no-reconciler` | `ForkPin` / `nc_no_reconciler` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 63,987 | 4 |
-| `nc-settle-inconclusive` | `ForkPin` / `nc_settle_inconclusive` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 51,288 | 4 |
-| `nc-no-backfill` | `ForkPin` / `nc_no_backfill` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 55,550 | 4 |
-| `nc-recreate-without-index` | `ForkPin` / `nc_recreate_without_index` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 299 | 1 |
-| `nc-recreate-without-index-liveness` | `ForkPin` / `nc_recreate_without_index_liveness` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 45,896 | 4 |
-| `nc-reconcile-live-child` | `ForkPin` / `nc_reconcile_live_child` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 115 | 1 |
-| `nc-release-current-name-id` | `ForkPin` / `nc_release_current_name_id` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 1,395 | 1 |
-| `nc-no-write-ahead-marker` | `ForkPin` / `nc_no_write_ahead_marker` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 47 | 1 |
-| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 116 | 1 |
-| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 4,469 | 1 |
-| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 382 | 1 |
-| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 77 | 1 |
-| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 122 | 1 |
-| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 583 | 1 |
-| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 742 | 1 |
-| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 582 | 1 |
-| `witness-fork-ReconcilerReleasesLatePin` | `ForkPin` / `w_ReconcilerReleasesLatePin` | witness | violation `Witness_ReconcilerReleasesLatePin` | violation `Witness_ReconcilerReleasesLatePin` | 1,053 | 1 |
-| `witness-fork-ReconcilerReleasesReplacedName` | `ForkPin` / `w_ReconcilerReleasesReplacedName` | witness | violation `Witness_ReconcilerReleasesReplacedName` | violation `Witness_ReconcilerReleasesReplacedName` | 451 | 1 |
-| `witness-fork-BackfillReleased` | `ForkPin` / `w_BackfillReleased` | witness | violation `Witness_BackfillReleased` | violation `Witness_BackfillReleased` | 859 | 1 |
-| `witness-fork-RecreationIndexesDebt` | `ForkPin` / `w_RecreationIndexesDebt` | witness | violation `Witness_RecreationIndexesDebt` | violation `Witness_RecreationIndexesDebt` | 140 | 1 |
-| `witness-fork-OldBinaryOverwroteDebt` | `ForkPin` / `w_OldBinaryOverwroteDebt` | witness | violation `Witness_OldBinaryOverwroteDebt` | violation `Witness_OldBinaryOverwroteDebt` | 39 | 1 |
+| `baseline-small` | `ReachGC` / `small` | baseline | pass | pass | 3,938,288 | 70.1 |
+| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 520.6 |
+| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 65.1 |
+| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 135.3 |
+| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 1446.9 |
+| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 234,329 | 4.3 |
+| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 162 | 1.2 |
+| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 559,136 | 8.1 |
+| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 557,407 | 8.2 |
+| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 25,510 | 2.3 |
+| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,120,994 | 13.6 |
+| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 528,296 | 81.7 |
+| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 573,183 | 8.0 |
+| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 207,691 | 3.9 |
+| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,145,809 | 15.7 |
+| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 445,802 | 6.9 |
+| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 716 | 1.2 |
+| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 22,590 | 1.8 |
+| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 1,680 | 1.3 |
+| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 127,118 | 3.0 |
+| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 3,374,329 | 117.0 |
+| `fork-baseline-legacy` | `ForkPin` / `baseline_legacy` | baseline | pass | pass | 41,723,978 | 1697.2 |
+| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 72,328 | 16.1 |
+| `fork-liveness-reconciler` | `ForkPin` / `liveness_reconciler` | baseline | pass | pass | 72,328 | 20.4 |
+| `fork-liveness-reconciler-recreated` | `ForkPin` / `liveness_reconciler_recreated` | baseline | pass | pass | 49,238 | 14.7 |
+| `fork-liveness-backfill` | `ForkPin` / `liveness_backfill` | baseline | pass | pass | 564,266 | 219.1 |
+| `fork-liveness-backfill-recreated` | `ForkPin` / `liveness_backfill_recreated` | baseline | pass | pass | 367,371 | 133.4 |
+| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 53 | 1.1 |
+| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 283 | 1.3 |
+| `nc-no-reconciler` | `ForkPin` / `nc_no_reconciler` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 33,861 | 4.3 |
+| `nc-settle-inconclusive` | `ForkPin` / `nc_settle_inconclusive` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 25,263 | 4.2 |
+| `nc-no-backfill` | `ForkPin` / `nc_no_backfill` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 26,427 | 4.2 |
+| `nc-recreate-without-index` | `ForkPin` / `nc_recreate_without_index` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 256 | 1.1 |
+| `nc-recreate-without-index-liveness` | `ForkPin` / `nc_recreate_without_index_liveness` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 296,005 | 70.2 |
+| `nc-reconcile-live-child` | `ForkPin` / `nc_reconcile_live_child` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 124 | 1.1 |
+| `nc-release-current-name-id` | `ForkPin` / `nc_release_current_name_id` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 1,765 | 1.6 |
+| `nc-no-write-ahead-marker` | `ForkPin` / `nc_no_write_ahead_marker` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 47 | 1.0 |
+| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 90 | 1.1 |
+| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 3,491 | 1.4 |
+| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 421 | 1.3 |
+| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 75 | 1.0 |
+| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 110 | 1.3 |
+| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 666 | 1.1 |
+| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 924 | 1.2 |
+| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 537 | 1.2 |
+| `witness-fork-ReconcilerReleasesLatePin` | `ForkPin` / `w_ReconcilerReleasesLatePin` | witness | violation `Witness_ReconcilerReleasesLatePin` | violation `Witness_ReconcilerReleasesLatePin` | 448 | 1.3 |
+| `witness-fork-ReconcilerReleasesReplacedName` | `ForkPin` / `w_ReconcilerReleasesReplacedName` | witness | violation `Witness_ReconcilerReleasesReplacedName` | violation `Witness_ReconcilerReleasesReplacedName` | 680 | 1.1 |
+| `witness-fork-BackfillReleased` | `ForkPin` / `w_BackfillReleased` | witness | violation `Witness_BackfillReleased` | violation `Witness_BackfillReleased` | 792 | 1.1 |
+| `witness-fork-RecreationIndexesDebt` | `ForkPin` / `w_RecreationIndexesDebt` | witness | violation `Witness_RecreationIndexesDebt` | violation `Witness_RecreationIndexesDebt` | 125 | 1.0 |
+| `witness-fork-OldBinaryOverwroteDebt` | `ForkPin` / `w_OldBinaryOverwroteDebt` | witness | violation `Witness_OldBinaryOverwroteDebt` | violation `Witness_OldBinaryOverwroteDebt` | 41 | 1.0 |
 <!-- /RESULTS -->
 
 ## Findings

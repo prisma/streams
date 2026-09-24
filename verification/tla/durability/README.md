@@ -42,9 +42,10 @@ python3 scripts/quality/formal.py run --id TLA-005 --id TLA-006 --id TLA-011 \
 python3 scripts/quality/formal.py run --id TLA-006 --role witness   # one role of one obligation
 ```
 
-`TLA-011/baseline-expanded` took 2,491 s on a loaded host; its timeout is
-10,800 s. It belongs in the scheduled lane (roadmap §7.4). Every other check
-finished within about 6 minutes under the same load.
+`TLA-011/baseline-expanded` took 1131.6 s in the recorded run, on a loaded
+host; its timeout is 10,800 s. It belongs in the scheduled lane (roadmap
+§7.4). Every other check finished within 2.5 minutes under the same load
+(section 7).
 
 The driver has no coverage option. Coverage runs call TLC directly from this
 directory, for example:
@@ -527,116 +528,106 @@ to be violated:
 
 ## 7. Results
 
-TLA-005 and TLA-011 come from one run of
+Each table is rendered from the obligation's receipt. The three receipts
+were recorded once, with `formal.py run --record`, on `3f386070` with a clean
+tree (`dirty_tree: false`). Every check matched
+its expected verdict: TLA-005 29 of 29, TLA-006 18 of 18, TLA-011 18 of 18.
+Their inputs are unchanged at `74294069`, where `formal.py check --fresh`
+reports all three current.
 
-```sh
-python3 scripts/quality/formal.py run --id TLA-005 --id TLA-006 --id TLA-011 --record --out target/formal/durability
-```
-
-on commit ab73296 with this group's files uncommitted (the receipts record
-`dirty_tree: true`). It reported `FORMAL_OK: 65 check(s) across 3
-obligation(s)`. Afterwards a stale assumption ID was fixed in a comment of
-`MC_HandoffRetirement_nc_no_storage_progress.tla`, which changed TLA-006's
-inputs, so TLA-006 was run again with `run --id TLA-006 --record`
-(`FORMAL_OK: 18 check(s) across 1 obligation(s)`). The TLA-006 rows are from
-that run. `formal.py check --fresh` then reported all three receipts current.
-Two earlier starts of the combined command were stopped by hand before they
-finished (to fix the TLA-005 `input_scope` text and to raise timeouts); their
-partial results are not reported.
-
-Tools: TLC 2.19 (tla2tools 1.7.4, the `[formal]` pin) on Java 17.0.1, 2
-workers per check. The host was shared with other verification jobs (load
-average 25 to 105), so the seconds are wall-clock time under load, not
-performance data. For a violation, the state counts are where the
+Tools: TLC 2.19 (tla2tools 1.7.4, the `[formal]` pin) on Java 17.0.1,
+aarch64-apple-darwin, 2 workers per check. Up to five driver processes ran in
+parallel on an 8-core laptop, so the seconds are wall-clock time under load,
+not performance data. For a violation, the state counts are where the
 breadth-first search stopped and the depth is the counterexample length. The
 temporal control reports "Temporal properties were violated"; its cfg checks
 exactly one property, so the violation is attributable to it.
 
 ### TLA-005
 
-Receipt `verification/receipts/TLA-005.json`, run on ab73296 (dirty tree: true).
+Receipt `verification/receipts/TLA-005.json`, recorded on `3f386070` (dirty tree: false).
 
 | Check | Role | Expected | Verdict | Distinct states | Generated | Depth | Seconds |
 |---|---|---|---|---|---|---|---|
-| `TLA-005/baseline-small` (`MC_CommitGroups_small.cfg`) | baseline | pass | pass | 1,510,380 | 4,210,724 | 30 | 93.9 |
-| `TLA-005/baseline-expanded-requests` (`MC_CommitGroups_expanded.cfg`) | baseline | pass | pass | 4,250,335 | 12,718,338 | 33 | 322.8 |
-| `TLA-005/baseline-expanded-requests-faults` (`MC_CommitGroups_requests_faults.cfg`) | baseline | pass | pass | 4,083,910 | 13,523,135 | 30 | 320.1 |
-| `TLA-005/baseline-expanded-faults` (`MC_CommitGroups_faults.cfg`) | baseline | pass | pass | 5,760,039 | 16,708,415 | 31 | 275.2 |
-| `TLA-005/baseline-close` (`MC_CommitGroups_close.cfg`) | baseline | pass | pass | 1,085,300 | 2,987,953 | 24 | 37.1 |
-| `TLA-005/baseline-refusal-retry` (`MC_CommitGroups_refusal_retry.cfg`) | baseline | pass | pass | 1,031,436 | 2,840,636 | 24 | 37.4 |
-| `TLA-005/nc-write-error-keeps-staging` (`MC_CommitGroups_nc_write_error_keeps_staging.cfg`) | negative-control | violation D2_DuplicateAckDurable | violation D2_DuplicateAckDurable | 2,906 | 4,994 | 8 | 1.9 |
-| `TLA-005/nc-write-error-keeps-staging-refusal` (`MC_CommitGroups_nc_write_error_keeps_staging_refusal.cfg`) | negative-control | violation D4_RefusalDurable | violation D4_RefusalDurable | 1,702 | 2,748 | 7 | 1.6 |
-| `TLA-005/nc-skip-barrier` (`MC_CommitGroups_nc_skip_barrier.cfg`) | negative-control | violation D2_DuplicateAckDurable | violation D2_DuplicateAckDurable | 10,871 | 19,040 | 9 | 1.9 |
-| `TLA-005/nc-publish-early` (`MC_CommitGroups_nc_publish_early.cfg`) | negative-control | violation PubVisibleDurable | violation PubVisibleDurable | 197 | 252 | 5 | 1.3 |
-| `TLA-005/nc-failed-release` (`MC_CommitGroups_nc_failed_release.cfg`) | negative-control | violation D4_RefusalDurable | violation D4_RefusalDurable | 1,967 | 3,058 | 7 | 1.4 |
-| `TLA-005/nc-failed-release-d10` (`MC_CommitGroups_nc_failed_release_d10.cfg`) | negative-control | violation D10_RefusedNeverAppears | violation D10_RefusedNeverAppears | 234,700 | 484,524 | 13 | 5.9 |
-| `TLA-005/nc-idem-close-unbarriered` (`MC_CommitGroups_nc_idem_close_unbarriered.cfg`) | negative-control | violation D3_CloseAckDurable | violation D3_CloseAckDurable | 5,696 | 9,392 | 8 | 1.6 |
-| `TLA-005/nc-reply-before-visible` (`MC_CommitGroups_nc_reply_before_visible.cfg`) | negative-control | violation AckAfterVisibility | violation AckAfterVisibility | 17,692 | 31,306 | 9 | 2.4 |
-| `TLA-005/witness-duplicate-ack-received` (`MC_CommitGroups_witness_duplicate_ack_received.cfg`) | witness | violation Witness_DuplicateAckReceived | violation Witness_DuplicateAckReceived | 30,749 | 57,004 | 10 | 2.7 |
-| `TLA-005/witness-closed-refusal-received` (`MC_CommitGroups_witness_closed_refusal_received.cfg`) | witness | violation Witness_ClosedRefusalReceived | violation Witness_ClosedRefusalReceived | 19,055 | 33,922 | 9 | 2.0 |
-| `TLA-005/witness-lost-ack-then-retry-resolved` (`MC_CommitGroups_witness_lost_ack_then_retry_resolved.cfg`) | witness | violation Witness_LostAckThenRetryResolved | violation Witness_LostAckThenRetryResolved | 584,540 | 1,380,416 | 15 | 14.3 |
-| `TLA-005/witness-attached-reply-released` (`MC_CommitGroups_witness_attached_reply_released.cfg`) | witness | violation Witness_AttachedReplyReleased | violation Witness_AttachedReplyReleased | 463,981 | 1,061,940 | 15 | 13.2 |
-| `TLA-005/witness-dependent-rejected-with-group` (`MC_CommitGroups_witness_dependent_rejected_with_group.cfg`) | witness | violation Witness_DependentRejectedWithGroup | violation Witness_DependentRejectedWithGroup | 2,071 | 3,193 | 7 | 1.5 |
-| `TLA-005/witness-unreported-batch-recovered` (`MC_CommitGroups_witness_unreported_batch_recovered.cfg`) | witness | violation Witness_UnreportedBatchRecovered | violation Witness_UnreportedBatchRecovered | 201 | 256 | 5 | 1.2 |
-| `TLA-005/witness-wal-failure-retires` (`MC_CommitGroups_witness_wal_failure_retires.cfg`) | witness | violation Witness_WalFailureRetires | violation Witness_WalFailureRetires | 39 | 42 | 4 | 1.1 |
-| `TLA-005/witness-failed-write-recovered` (`MC_CommitGroups_witness_failed_write_recovered.cfg`) | witness | violation Witness_FailedWriteRecovered | violation Witness_FailedWriteRecovered | 233 | 310 | 5 | 1.3 |
-| `TLA-005/witness-producer-load-fails-internal` (`MC_CommitGroups_witness_producer_load_fails_internal.cfg`) | witness | violation Witness_ProducerLoadFailsInternal | violation Witness_ProducerLoadFailsInternal | 71 | 84 | 5 | 1.3 |
-| `TLA-005/witness-seq-reused-refusal` (`MC_CommitGroups_witness_seq_reused_refusal.cfg`) | witness | violation Witness_SeqReusedRefusal | violation Witness_SeqReusedRefusal | 7,672 | 14,722 | 8 | 2.5 |
-| `TLA-005/witness-idempotent-close-after-attach` (`MC_CommitGroups_witness_idempotent_close_after_attach.cfg`) | witness | violation Witness_IdempotentCloseAfterAttach | violation Witness_IdempotentCloseAfterAttach | 365,256 | 813,602 | 14 | 9.7 |
-| `TLA-005/witness-close-by-write-refuses-final-append` (`MC_CommitGroups_witness_close_by_write_refuses_final_append.cfg`) | witness | violation Witness_CloseByWriteRefusesFinalAppend | violation Witness_CloseByWriteRefusesFinalAppend | 103,768 | 203,542 | 11 | 4.1 |
-| `TLA-005/witness-refused-retry-resolved` (`MC_CommitGroups_witness_refused_retry_resolved.cfg`) | witness | violation Witness_RefusedRetryResolved | violation Witness_RefusedRetryResolved | 294,682 | 637,539 | 13 | 7.9 |
-| `TLA-005/witness-write-error-strands-group` (`MC_CommitGroups_witness_write_error_strands_group.cfg`) | witness | violation Witness_WriteErrorStrandsGroup | violation Witness_WriteErrorStrandsGroup | 8,860 | 15,326 | 8 | 1.6 |
-| `TLA-005/witness-read-window-group-moved` (`MC_CommitGroups_witness_read_window_group_moved.cfg`) | witness | violation Witness_ReadWindowGroupMoved | violation Witness_ReadWindowGroupMoved | 1,183 | 1,787 | 7 | 1.3 |
+| `TLA-005/baseline-small` (`MC_CommitGroups_small.cfg`) | baseline | pass | pass | 1,510,380 | 4,210,724 | 30 | 75.0 |
+| `TLA-005/baseline-expanded-requests` (`MC_CommitGroups_expanded.cfg`) | baseline | pass | pass | 4,250,335 | 12,718,338 | 33 | 142.6 |
+| `TLA-005/baseline-expanded-requests-faults` (`MC_CommitGroups_requests_faults.cfg`) | baseline | pass | pass | 4,083,910 | 13,523,135 | 30 | 115.6 |
+| `TLA-005/baseline-expanded-faults` (`MC_CommitGroups_faults.cfg`) | baseline | pass | pass | 5,760,039 | 16,708,415 | 31 | 143.9 |
+| `TLA-005/baseline-close` (`MC_CommitGroups_close.cfg`) | baseline | pass | pass | 1,085,300 | 2,987,953 | 24 | 25.2 |
+| `TLA-005/baseline-refusal-retry` (`MC_CommitGroups_refusal_retry.cfg`) | baseline | pass | pass | 1,031,436 | 2,840,636 | 24 | 25.4 |
+| `TLA-005/nc-write-error-keeps-staging` (`MC_CommitGroups_nc_write_error_keeps_staging.cfg`) | negative-control | violation D2_DuplicateAckDurable | violation D2_DuplicateAckDurable | 3,137 | 5,400 | 8 | 1.5 |
+| `TLA-005/nc-write-error-keeps-staging-refusal` (`MC_CommitGroups_nc_write_error_keeps_staging_refusal.cfg`) | negative-control | violation D4_RefusalDurable | violation D4_RefusalDurable | 1,481 | 2,406 | 7 | 1.3 |
+| `TLA-005/nc-skip-barrier` (`MC_CommitGroups_nc_skip_barrier.cfg`) | negative-control | violation D2_DuplicateAckDurable | violation D2_DuplicateAckDurable | 10,019 | 17,374 | 9 | 1.9 |
+| `TLA-005/nc-publish-early` (`MC_CommitGroups_nc_publish_early.cfg`) | negative-control | violation PubVisibleDurable | violation PubVisibleDurable | 234 | 316 | 5 | 1.3 |
+| `TLA-005/nc-failed-release` (`MC_CommitGroups_nc_failed_release.cfg`) | negative-control | violation D4_RefusalDurable | violation D4_RefusalDurable | 2,577 | 4,090 | 7 | 1.3 |
+| `TLA-005/nc-failed-release-d10` (`MC_CommitGroups_nc_failed_release_d10.cfg`) | negative-control | violation D10_RefusedNeverAppears | violation D10_RefusedNeverAppears | 232,277 | 480,605 | 13 | 6.2 |
+| `TLA-005/nc-idem-close-unbarriered` (`MC_CommitGroups_nc_idem_close_unbarriered.cfg`) | negative-control | violation D3_CloseAckDurable | violation D3_CloseAckDurable | 5,776 | 9,551 | 8 | 1.4 |
+| `TLA-005/nc-reply-before-visible` (`MC_CommitGroups_nc_reply_before_visible.cfg`) | negative-control | violation AckAfterVisibility | violation AckAfterVisibility | 17,324 | 30,647 | 9 | 2.1 |
+| `TLA-005/witness-duplicate-ack-received` (`MC_CommitGroups_witness_duplicate_ack_received.cfg`) | witness | violation Witness_DuplicateAckReceived | violation Witness_DuplicateAckReceived | 32,755 | 60,496 | 10 | 2.4 |
+| `TLA-005/witness-closed-refusal-received` (`MC_CommitGroups_witness_closed_refusal_received.cfg`) | witness | violation Witness_ClosedRefusalReceived | violation Witness_ClosedRefusalReceived | 17,815 | 31,642 | 9 | 1.8 |
+| `TLA-005/witness-lost-ack-then-retry-resolved` (`MC_CommitGroups_witness_lost_ack_then_retry_resolved.cfg`) | witness | violation Witness_LostAckThenRetryResolved | violation Witness_LostAckThenRetryResolved | 552,114 | 1,295,805 | 15 | 15.0 |
+| `TLA-005/witness-attached-reply-released` (`MC_CommitGroups_witness_attached_reply_released.cfg`) | witness | violation Witness_AttachedReplyReleased | violation Witness_AttachedReplyReleased | 466,248 | 1,068,311 | 15 | 11.0 |
+| `TLA-005/witness-dependent-rejected-with-group` (`MC_CommitGroups_witness_dependent_rejected_with_group.cfg`) | witness | violation Witness_DependentRejectedWithGroup | violation Witness_DependentRejectedWithGroup | 1,779 | 2,784 | 7 | 1.3 |
+| `TLA-005/witness-unreported-batch-recovered` (`MC_CommitGroups_witness_unreported_batch_recovered.cfg`) | witness | violation Witness_UnreportedBatchRecovered | violation Witness_UnreportedBatchRecovered | 207 | 264 | 5 | 1.3 |
+| `TLA-005/witness-wal-failure-retires` (`MC_CommitGroups_witness_wal_failure_retires.cfg`) | witness | violation Witness_WalFailureRetires | violation Witness_WalFailureRetires | 51 | 58 | 4 | 1.2 |
+| `TLA-005/witness-failed-write-recovered` (`MC_CommitGroups_witness_failed_write_recovered.cfg`) | witness | violation Witness_FailedWriteRecovered | violation Witness_FailedWriteRecovered | 260 | 348 | 5 | 1.3 |
+| `TLA-005/witness-producer-load-fails-internal` (`MC_CommitGroups_witness_producer_load_fails_internal.cfg`) | witness | violation Witness_ProducerLoadFailsInternal | violation Witness_ProducerLoadFailsInternal | 69 | 88 | 4 | 1.3 |
+| `TLA-005/witness-seq-reused-refusal` (`MC_CommitGroups_witness_seq_reused_refusal.cfg`) | witness | violation Witness_SeqReusedRefusal | violation Witness_SeqReusedRefusal | 7,501 | 14,432 | 8 | 1.7 |
+| `TLA-005/witness-idempotent-close-after-attach` (`MC_CommitGroups_witness_idempotent_close_after_attach.cfg`) | witness | violation Witness_IdempotentCloseAfterAttach | violation Witness_IdempotentCloseAfterAttach | 371,330 | 830,546 | 14 | 9.3 |
+| `TLA-005/witness-close-by-write-refuses-final-append` (`MC_CommitGroups_witness_close_by_write_refuses_final_append.cfg`) | witness | violation Witness_CloseByWriteRefusesFinalAppend | violation Witness_CloseByWriteRefusesFinalAppend | 100,765 | 197,970 | 11 | 3.5 |
+| `TLA-005/witness-refused-retry-resolved` (`MC_CommitGroups_witness_refused_retry_resolved.cfg`) | witness | violation Witness_RefusedRetryResolved | violation Witness_RefusedRetryResolved | 257,784 | 546,741 | 13 | 5.8 |
+| `TLA-005/witness-write-error-strands-group` (`MC_CommitGroups_witness_write_error_strands_group.cfg`) | witness | violation Witness_WriteErrorStrandsGroup | violation Witness_WriteErrorStrandsGroup | 8,884 | 15,428 | 8 | 1.5 |
+| `TLA-005/witness-read-window-group-moved` (`MC_CommitGroups_witness_read_window_group_moved.cfg`) | witness | violation Witness_ReadWindowGroupMoved | violation Witness_ReadWindowGroupMoved | 1,387 | 2,130 | 7 | 1.3 |
 
 ### TLA-006
 
-Receipt `verification/receipts/TLA-006.json`, run on ab73296 (dirty tree: true).
+Receipt `verification/receipts/TLA-006.json`, recorded on `3f386070` (dirty tree: false).
 
 | Check | Role | Expected | Verdict | Distinct states | Generated | Depth | Seconds |
 |---|---|---|---|---|---|---|---|
-| `TLA-006/baseline-small` (`MC_HandoffRetirement_small.cfg`) | baseline | pass | pass | 139,982 | 418,916 | 26 | 11.2 |
-| `TLA-006/baseline-expanded` (`MC_HandoffRetirement_expanded.cfg`) | baseline | pass | pass | 1,811,810 | 5,907,626 | 32 | 128.2 |
-| `TLA-006/liveness-small` (`MC_HandoffRetirement_liveness.cfg`) | baseline | pass | pass | 139,982 | 418,916 | 26 | 139.5 |
-| `TLA-006/nc-write-error-keeps-staging` (`MC_HandoffRetirement_nc_write_error_keeps_staging.cfg`) | negative-control | violation SuccessIsDurable | violation SuccessIsDurable | 8,940 | 18,410 | 9 | 2.5 |
-| `TLA-006/nc-reclaim-claimed` (`MC_HandoffRetirement_nc_reclaim_claimed.cfg`) | negative-control | violation SettledAtMostOnce | violation SettledAtMostOnce | 20,074 | 49,046 | 11 | 3.6 |
-| `TLA-006/nc-admit-after-close` (`MC_HandoffRetirement_nc_admit_after_close.cfg`) | negative-control | violation RetiredEngineFrozen | violation RetiredEngineFrozen | 730 | 1,188 | 6 | 1.7 |
-| `TLA-006/nc-admit-after-close-acked` (`MC_HandoffRetirement_nc_admit_after_close_acked.cfg`) | negative-control | violation LateSuccessWasClaimedLive | violation LateSuccessWasClaimedLive | 16,038 | 38,321 | 11 | 3.3 |
-| `TLA-006/nc-attach-ignore-terminal` (`MC_HandoffRetirement_nc_attach_ignore_terminal.cfg`) | negative-control | violation LateSuccessWasClaimedLive | violation LateSuccessWasClaimedLive | 2,708 | 5,175 | 7 | 2.3 |
-| `TLA-006/nc-no-storage-progress` (`MC_HandoffRetirement_nc_no_storage_progress.cfg`) | negative-control | violation AllIssuedSettle | violation (temporal) | 4,127 | 8,014 |  | 4.7 |
-| `TLA-006/witness-late-durable-reply` (`MC_HandoffRetirement_witness_late_durable_reply.cfg`) | witness | violation Witness_LateDurableReply | violation Witness_LateDurableReply | 2,874 | 5,326 | 8 | 2.1 |
-| `TLA-006/witness-late-durable-attach-reply` (`MC_HandoffRetirement_witness_late_durable_attach_reply.cfg`) | witness | violation Witness_LateDurableAttachReply | violation Witness_LateDurableAttachReply | 2,975 | 5,544 | 8 | 2.2 |
-| `TLA-006/witness-unclaimed-durable-rejected` (`MC_HandoffRetirement_witness_unclaimed_durable_rejected.cfg`) | witness | violation Witness_UnclaimedDurableRejected | violation Witness_UnclaimedDurableRejected | 8,346 | 18,127 | 9 | 2.6 |
-| `TLA-006/witness-non-durable-rejected` (`MC_HandoffRetirement_witness_non_durable_rejected.cfg`) | witness | violation Witness_NonDurableRejected | violation Witness_NonDurableRejected | 2,100 | 3,842 | 7 | 2.1 |
-| `TLA-006/witness-cancelled-requester-settled` (`MC_HandoffRetirement_witness_cancelled_requester_settled.cfg`) | witness | violation Witness_CancelledRequesterSettled | violation Witness_CancelledRequesterSettled | 2,657 | 4,865 | 8 | 2.3 |
-| `TLA-006/witness-late-write-lands` (`MC_HandoffRetirement_witness_late_write_lands.cfg`) | witness | violation Witness_LateWriteLands | violation Witness_LateWriteLands | 734 | 1,201 | 6 | 1.9 |
-| `TLA-006/witness-abort-drops-replies` (`MC_HandoffRetirement_witness_abort_drops_replies.cfg`) | witness | violation Witness_AbortDropsReplies | violation Witness_AbortDropsReplies | 316 | 471 | 6 | 1.8 |
-| `TLA-006/witness-pre-write-reject-then-success` (`MC_HandoffRetirement_witness_pre_write_reject_then_success.cfg`) | witness | violation Witness_PreWriteRejectThenSuccess | violation Witness_PreWriteRejectThenSuccess | 28,484 | 71,532 | 12 | 4.6 |
-| `TLA-006/witness-write-error-strands-group` (`MC_HandoffRetirement_witness_write_error_strands_group.cfg`) | witness | violation Witness_WriteErrorStrandsGroup | violation Witness_WriteErrorStrandsGroup | 8,148 | 17,526 | 9 | 3.0 |
+| `TLA-006/baseline-small` (`MC_HandoffRetirement_small.cfg`) | baseline | pass | pass | 139,982 | 418,916 | 26 | 8.4 |
+| `TLA-006/baseline-expanded` (`MC_HandoffRetirement_expanded.cfg`) | baseline | pass | pass | 1,811,810 | 5,907,626 | 32 | 84.4 |
+| `TLA-006/liveness-small` (`MC_HandoffRetirement_liveness.cfg`) | baseline | pass | pass | 139,982 | 418,916 | 26 | 42.5 |
+| `TLA-006/nc-write-error-keeps-staging` (`MC_HandoffRetirement_nc_write_error_keeps_staging.cfg`) | negative-control | violation SuccessIsDurable | violation SuccessIsDurable | 9,050 | 18,758 | 9 | 1.6 |
+| `TLA-006/nc-reclaim-claimed` (`MC_HandoffRetirement_nc_reclaim_claimed.cfg`) | negative-control | violation SettledAtMostOnce | violation SettledAtMostOnce | 20,071 | 49,038 | 11 | 1.8 |
+| `TLA-006/nc-admit-after-close` (`MC_HandoffRetirement_nc_admit_after_close.cfg`) | negative-control | violation RetiredEngineFrozen | violation RetiredEngineFrozen | 730 | 1,189 | 6 | 1.1 |
+| `TLA-006/nc-admit-after-close-acked` (`MC_HandoffRetirement_nc_admit_after_close_acked.cfg`) | negative-control | violation LateSuccessWasClaimedLive | violation LateSuccessWasClaimedLive | 13,536 | 31,972 | 10 | 1.9 |
+| `TLA-006/nc-attach-ignore-terminal` (`MC_HandoffRetirement_nc_attach_ignore_terminal.cfg`) | negative-control | violation LateSuccessWasClaimedLive | violation LateSuccessWasClaimedLive | 2,534 | 4,707 | 8 | 1.3 |
+| `TLA-006/nc-no-storage-progress` (`MC_HandoffRetirement_nc_no_storage_progress.cfg`) | negative-control | violation AllIssuedSettle | violation (temporal) | 15,530 | 36,621 |  | 4.2 |
+| `TLA-006/witness-late-durable-reply` (`MC_HandoffRetirement_witness_late_durable_reply.cfg`) | witness | violation Witness_LateDurableReply | violation Witness_LateDurableReply | 2,760 | 5,282 | 7 | 1.2 |
+| `TLA-006/witness-late-durable-attach-reply` (`MC_HandoffRetirement_witness_late_durable_attach_reply.cfg`) | witness | violation Witness_LateDurableAttachReply | violation Witness_LateDurableAttachReply | 4,009 | 7,776 | 8 | 1.3 |
+| `TLA-006/witness-unclaimed-durable-rejected` (`MC_HandoffRetirement_witness_unclaimed_durable_rejected.cfg`) | witness | violation Witness_UnclaimedDurableRejected | violation Witness_UnclaimedDurableRejected | 8,598 | 18,769 | 10 | 1.7 |
+| `TLA-006/witness-non-durable-rejected` (`MC_HandoffRetirement_witness_non_durable_rejected.cfg`) | witness | violation Witness_NonDurableRejected | violation Witness_NonDurableRejected | 2,113 | 3,881 | 7 | 1.2 |
+| `TLA-006/witness-cancelled-requester-settled` (`MC_HandoffRetirement_witness_cancelled_requester_settled.cfg`) | witness | violation Witness_CancelledRequesterSettled | violation Witness_CancelledRequesterSettled | 2,130 | 3,903 | 7 | 1.2 |
+| `TLA-006/witness-late-write-lands` (`MC_HandoffRetirement_witness_late_write_lands.cfg`) | witness | violation Witness_LateWriteLands | violation Witness_LateWriteLands | 743 | 1,221 | 6 | 1.1 |
+| `TLA-006/witness-abort-drops-replies` (`MC_HandoffRetirement_witness_abort_drops_replies.cfg`) | witness | violation Witness_AbortDropsReplies | violation Witness_AbortDropsReplies | 350 | 530 | 6 | 1.1 |
+| `TLA-006/witness-pre-write-reject-then-success` (`MC_HandoffRetirement_witness_pre_write_reject_then_success.cfg`) | witness | violation Witness_PreWriteRejectThenSuccess | violation Witness_PreWriteRejectThenSuccess | 28,505 | 71,619 | 12 | 2.0 |
+| `TLA-006/witness-write-error-strands-group` (`MC_HandoffRetirement_witness_write_error_strands_group.cfg`) | witness | violation Witness_WriteErrorStrandsGroup | violation Witness_WriteErrorStrandsGroup | 8,148 | 17,526 | 9 | 1.5 |
 
 ### TLA-011
 
-Receipt `verification/receipts/TLA-011.json`, run on ab73296 (dirty tree: true).
+Receipt `verification/receipts/TLA-011.json`, recorded on `3f386070` (dirty tree: false).
 
 | Check | Role | Expected | Verdict | Distinct states | Generated | Depth | Seconds |
 |---|---|---|---|---|---|---|---|
-| `TLA-011/baseline-small` (`MC_ServingOwnership_small.cfg`) | baseline | pass | pass | 228,406 | 854,392 | 30 | 13.5 |
-| `TLA-011/baseline-expanded` (`MC_ServingOwnership_expanded.cfg`) | baseline | pass | pass | 21,322,712 | 108,036,075 | 37 | 2490.8 |
-| `TLA-011/baseline-single` (`MC_ServingOwnership_single.cfg`) | baseline | pass | pass | 915,472 | 3,819,021 | 27 | 92.1 |
-| `TLA-011/nc-ring-authorizes` (`MC_ServingOwnership_nc_ring_authorizes.cfg`) | negative-control | violation AckedDurable | violation AckedDurable | 1,171 | 3,801 | 9 | 1.8 |
-| `TLA-011/nc-ring-grants-storage` (`MC_ServingOwnership_nc_ring_grants_storage.cfg`) | negative-control | violation AckedDurable | violation AckedDurable | 572,864 | 2,267,456 | 17 | 35.8 |
-| `TLA-011/nc-serve-before-fence` (`MC_ServingOwnership_nc_serve_before_fence.cfg`) | negative-control | violation HigherEpochCoversAcks | violation HigherEpochCoversAcks | 22,356 | 65,236 | 12 | 3.3 |
-| `TLA-011/nc-ring-skips-refresh` (`MC_ServingOwnership_nc_ring_skips_refresh.cfg`) | negative-control | violation HigherEpochCoversAcks | violation HigherEpochCoversAcks | 18,556 | 57,113 | 14 | 3.2 |
-| `TLA-011/witness-takeover-installs` (`MC_ServingOwnership_witness_takeover_installs.cfg`) | witness | violation Witness_TakeoverInstalls | violation Witness_TakeoverInstalls | 1,045 | 3,371 | 9 | 2.0 |
-| `TLA-011/witness-stale-write-fenced` (`MC_ServingOwnership_witness_stale_write_fenced.cfg`) | witness | violation Witness_StaleWriteFenced | violation Witness_StaleWriteFenced | 3,734 | 11,595 | 11 | 2.2 |
-| `TLA-011/witness-late-durable-reply-after-takeover` (`MC_ServingOwnership_witness_late_durable_reply_after_takeover.cfg`) | witness | violation Witness_LateDurableReplyAfterTakeover | violation Witness_LateDurableReplyAfterTakeover | 22,344 | 71,118 | 14 | 3.1 |
-| `TLA-011/witness-late-reply-after-override-move` (`MC_ServingOwnership_witness_late_reply_after_override_move.cfg`) | witness | violation Witness_LateDurableReplyAfterTakeover | violation Witness_LateDurableReplyAfterTakeover | 2,660 | 6,607 | 14 | 2.0 |
-| `TLA-011/witness-duplicate-resolved-by-new-owner` (`MC_ServingOwnership_witness_duplicate_resolved_by_new_owner.cfg`) | witness | violation Witness_DuplicateResolvedByNewOwner | violation Witness_DuplicateResolvedByNewOwner | 30,312 | 97,276 | 14 | 4.0 |
-| `TLA-011/witness-zombie-write-lands` (`MC_ServingOwnership_witness_zombie_write_lands.cfg`) | witness | violation Witness_ZombieWriteLands | violation Witness_ZombieWriteLands | 1,236 | 3,986 | 9 | 1.8 |
-| `TLA-011/witness-abandoned-close-write-lands` (`MC_ServingOwnership_witness_abandoned_close_write_lands.cfg`) | witness | violation Witness_AbandonedCloseWriteLands | violation Witness_AbandonedCloseWriteLands | 6,061 | 18,913 | 11 | 2.1 |
-| `TLA-011/witness-ambiguous-put-recovered` (`MC_ServingOwnership_witness_ambiguous_put_recovered.cfg`) | witness | violation Witness_AmbiguousPutRecovered | violation Witness_AmbiguousPutRecovered | 7,243 | 22,362 | 12 | 2.2 |
-| `TLA-011/witness-crash-between-fence-and-serve` (`MC_ServingOwnership_witness_crash_between_fence_and_serve.cfg`) | witness | violation Witness_CrashBetweenFenceAndServe | violation Witness_CrashBetweenFenceAndServe | 81 | 235 | 5 | 1.5 |
-| `TLA-011/witness-superseded-open-fails` (`MC_ServingOwnership_witness_superseded_open_fails.cfg`) | witness | violation Witness_SupersededOpenFails | violation Witness_SupersededOpenFails | 299 | 1,035 | 7 | 1.3 |
-| `TLA-011/witness-single-both-nodes-serve` (`MC_ServingOwnership_witness_single_both_nodes_serve.cfg`) | witness | violation Witness_TakeoverInstalls | violation Witness_TakeoverInstalls | 695 | 2,606 | 8 | 1.6 |
+| `TLA-011/baseline-small` (`MC_ServingOwnership_small.cfg`) | baseline | pass | pass | 228,406 | 854,392 | 30 | 11.9 |
+| `TLA-011/baseline-expanded` (`MC_ServingOwnership_expanded.cfg`) | baseline | pass | pass | 21,322,712 | 108,036,075 | 37 | 1131.6 |
+| `TLA-011/baseline-single` (`MC_ServingOwnership_single.cfg`) | baseline | pass | pass | 915,472 | 3,819,021 | 27 | 45.3 |
+| `TLA-011/nc-ring-authorizes` (`MC_ServingOwnership_nc_ring_authorizes.cfg`) | negative-control | violation AckedDurable | violation AckedDurable | 1,388 | 4,430 | 9 | 1.4 |
+| `TLA-011/nc-ring-grants-storage` (`MC_ServingOwnership_nc_ring_grants_storage.cfg`) | negative-control | violation AckedDurable | violation AckedDurable | 573,149 | 2,265,741 | 17 | 19.9 |
+| `TLA-011/nc-serve-before-fence` (`MC_ServingOwnership_nc_serve_before_fence.cfg`) | negative-control | violation HigherEpochCoversAcks | violation HigherEpochCoversAcks | 22,299 | 64,974 | 12 | 2.3 |
+| `TLA-011/nc-ring-skips-refresh` (`MC_ServingOwnership_nc_ring_skips_refresh.cfg`) | negative-control | violation HigherEpochCoversAcks | violation HigherEpochCoversAcks | 18,596 | 57,253 | 14 | 2.3 |
+| `TLA-011/witness-takeover-installs` (`MC_ServingOwnership_witness_takeover_installs.cfg`) | witness | violation Witness_TakeoverInstalls | violation Witness_TakeoverInstalls | 1,093 | 3,543 | 9 | 1.3 |
+| `TLA-011/witness-stale-write-fenced` (`MC_ServingOwnership_witness_stale_write_fenced.cfg`) | witness | violation Witness_StaleWriteFenced | violation Witness_StaleWriteFenced | 3,706 | 11,486 | 11 | 1.5 |
+| `TLA-011/witness-late-durable-reply-after-takeover` (`MC_ServingOwnership_witness_late_durable_reply_after_takeover.cfg`) | witness | violation Witness_LateDurableReplyAfterTakeover | violation Witness_LateDurableReplyAfterTakeover | 19,636 | 62,410 | 14 | 2.4 |
+| `TLA-011/witness-late-reply-after-override-move` (`MC_ServingOwnership_witness_late_reply_after_override_move.cfg`) | witness | violation Witness_LateDurableReplyAfterTakeover | violation Witness_LateDurableReplyAfterTakeover | 2,925 | 7,305 | 14 | 1.6 |
+| `TLA-011/witness-duplicate-resolved-by-new-owner` (`MC_ServingOwnership_witness_duplicate_resolved_by_new_owner.cfg`) | witness | violation Witness_DuplicateResolvedByNewOwner | violation Witness_DuplicateResolvedByNewOwner | 30,453 | 97,838 | 14 | 2.6 |
+| `TLA-011/witness-zombie-write-lands` (`MC_ServingOwnership_witness_zombie_write_lands.cfg`) | witness | violation Witness_ZombieWriteLands | violation Witness_ZombieWriteLands | 1,292 | 4,195 | 9 | 1.4 |
+| `TLA-011/witness-abandoned-close-write-lands` (`MC_ServingOwnership_witness_abandoned_close_write_lands.cfg`) | witness | violation Witness_AbandonedCloseWriteLands | violation Witness_AbandonedCloseWriteLands | 5,721 | 17,887 | 11 | 1.6 |
+| `TLA-011/witness-ambiguous-put-recovered` (`MC_ServingOwnership_witness_ambiguous_put_recovered.cfg`) | witness | violation Witness_AmbiguousPutRecovered | violation Witness_AmbiguousPutRecovered | 6,919 | 21,507 | 12 | 1.7 |
+| `TLA-011/witness-crash-between-fence-and-serve` (`MC_ServingOwnership_witness_crash_between_fence_and_serve.cfg`) | witness | violation Witness_CrashBetweenFenceAndServe | violation Witness_CrashBetweenFenceAndServe | 85 | 246 | 5 | 1.1 |
+| `TLA-011/witness-superseded-open-fails` (`MC_ServingOwnership_witness_superseded_open_fails.cfg`) | witness | violation Witness_SupersededOpenFails | violation Witness_SupersededOpenFails | 355 | 1,227 | 7 | 1.2 |
+| `TLA-011/witness-single-both-nodes-serve` (`MC_ServingOwnership_witness_single_both_nodes_serve.cfg`) | witness | violation Witness_TakeoverInstalls | violation Witness_TakeoverInstalls | 740 | 2,702 | 8 | 1.5 |
 
 ## 8. Coverage
 

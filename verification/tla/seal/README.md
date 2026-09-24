@@ -51,145 +51,140 @@ still violates its named property.
 
 ## Results
 
-The tables below are from runs on `55881d7` plus the uncommitted changes
-described here, with TLC 2.19 and Java 17.0.1. They were run **without
-`--record`**, so no receipt was written:
+The tables below are rendered from the receipts
+`verification/receipts/TLA-001.json`, `TLA-002.json` and `TLA-003.json`. Each
+was recorded once, with `formal.py run --record` on a clean tree: TLA-001 on
+`1d20f76f` (16 of 16 checks matched), TLA-002 and TLA-003 on `3f386070` (39 of
+39 and 47 of 47). Their inputs are unchanged at `74294069`, where
+`formal.py check --fresh` reports them current. Tools: TLC 2.19 (tla2tools
+1.7.4) on Java 17.0.1, aarch64-apple-darwin, 2 workers per check.
 
-- TLA-001 and TLA-002: `formal.py run --id TLA-001 --id TLA-002 --id TLA-003`.
-  Every TLA-001 and TLA-002 check matched. That invocation was stopped
-  deliberately at its first TLA-003 check: it had loaded the manifest while
-  the F2 controls still had their previous form (see TLA-003-F2).
-- TLA-003: `formal.py run --id TLA-003` on the final manifest. All 47 checks
-  matched.
-
-The committed receipts `verification/receipts/TLA-00N.json` predate these
-changes. TLA-001's and TLA-003's no longer name the manifest's check sets, so
-`check` reports them invalid until the obligations are re-recorded.
-Seconds are wall time on a shared machine whose load varied widely (load
-average 40 to 70 during TLA-001 and TLA-002). Violation searches use two
-workers, so their state counts vary slightly between runs. The TLA-002
-baseline counts equal those of the previous receipt: the changes add only raw
-and producer-less paths, which the product-only TLA-002 shapes never take.
-After the run, the timeouts of `TLA-001/baseline-expanded` (1210.8 s) and
-`TLA-002/baseline-faults` (1628.9 s) were raised to 3000 s and 3600 s, at
-least twice the observed time.
+Seconds are wall time under load: up to five driver processes ran in parallel
+on an 8-core laptop. Violation searches use two workers, so their state
+counts vary slightly between runs. The TLA-002 baseline counts equal those of
+the schema 1 receipt recorded before the closure's model changes: the changes
+add only raw and producer-less paths, which the product-only TLA-002 shapes
+never take. The timeouts of `TLA-001/baseline-expanded` (3000 s) and
+`TLA-002/baseline-faults` (3600 s) are at least twice the times an earlier,
+more heavily loaded run observed (1210.8 s and 1628.9 s); the recorded times
+are in the tables.
 
 ### TLA-001
 
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-small` | baseline | pass | pass | 108,329 | 12.4 |
-| `baseline-expanded` | baseline | pass | pass | 7,643,540 | 1210.8 |
-| `nc-leaked-outcome` | negative-control | violation:UniqueAllocation | violation:UniqueAllocation | 2,893 | 9.4 |
-| `nc-dropped-incarnation-check` | negative-control | violation:IncarnationFenced | violation:IncarnationFenced | 5,396 | 9.1 |
-| `nc-missing-etag-overwrite` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 1,156 | 8.2 |
-| `nc-client-retry` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 607 | 6.8 |
-| `nc-client-retry-recreate` | negative-control | violation:RecreateAnswerTruthful | violation:RecreateAnswerTruthful | 4,919 | 6.7 |
-| `witness-LoserRetriesThenApplies` | witness | violation:Witness_LoserRetriesThenApplies | violation:Witness_LoserRetriesThenApplies | 2,689 | 7.5 |
-| `witness-AmbiguousAfterWrite` | witness | violation:Witness_AmbiguousAfterWrite | violation:Witness_AmbiguousAfterWrite | 67 | 5.2 |
-| `witness-StaleMutatorFenced` | witness | violation:Witness_StaleMutatorFenced | violation:Witness_StaleMutatorFenced | 3,170 | 12.6 |
-| `witness-MissingTokenRefused` | witness | violation:Witness_MissingTokenRefused | violation:Witness_MissingTokenRefused | 16 | 6.0 |
-| `witness-Recreated` | witness | violation:Witness_Recreated | violation:Witness_Recreated | 1,584 | 5.8 |
-| `witness-ConflictExhausted` | witness | violation:Witness_ConflictExhausted | violation:Witness_ConflictExhausted | 11,444 | 8.2 |
-| `witness-DeclinedOnTombstone` | witness | violation:Witness_DeclinedOnTombstone | violation:Witness_DeclinedOnTombstone | 402 | 4.7 |
-| `witness-ReplacementAllocatesWhileStaleFenced` | witness | violation:Witness_ReplacementAllocatesWhileStaleFenced | violation:Witness_ReplacementAllocatesWhileStaleFenced | 14,038 | 10.4 |
-| `witness-AmbiguousRecreateRetried` | witness | violation:Witness_AmbiguousRecreateRetried | violation:Witness_AmbiguousRecreateRetried | 3,031 | 6.4 |
+| `baseline-small` | baseline | pass | pass | 108,329 | 4.2 |
+| `baseline-expanded` | baseline | pass | pass | 7,643,540 | 198.6 |
+| `nc-leaked-outcome` | negative-control | violation:UniqueAllocation | violation:UniqueAllocation | 2,658 | 1.3 |
+| `nc-dropped-incarnation-check` | negative-control | violation:IncarnationFenced | violation:IncarnationFenced | 5,149 | 1.2 |
+| `nc-missing-etag-overwrite` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 980 | 1.3 |
+| `nc-client-retry` | negative-control | violation:AllocatorCountsWrites | violation:AllocatorCountsWrites | 692 | 1.1 |
+| `nc-client-retry-recreate` | negative-control | violation:RecreateAnswerTruthful | violation:RecreateAnswerTruthful | 5,130 | 1.4 |
+| `witness-LoserRetriesThenApplies` | witness | violation:Witness_LoserRetriesThenApplies | violation:Witness_LoserRetriesThenApplies | 2,690 | 1.3 |
+| `witness-AmbiguousAfterWrite` | witness | violation:Witness_AmbiguousAfterWrite | violation:Witness_AmbiguousAfterWrite | 61 | 1.0 |
+| `witness-StaleMutatorFenced` | witness | violation:Witness_StaleMutatorFenced | violation:Witness_StaleMutatorFenced | 3,154 | 1.3 |
+| `witness-MissingTokenRefused` | witness | violation:Witness_MissingTokenRefused | violation:Witness_MissingTokenRefused | 16 | 1.0 |
+| `witness-Recreated` | witness | violation:Witness_Recreated | violation:Witness_Recreated | 1,572 | 1.2 |
+| `witness-ConflictExhausted` | witness | violation:Witness_ConflictExhausted | violation:Witness_ConflictExhausted | 12,110 | 1.6 |
+| `witness-DeclinedOnTombstone` | witness | violation:Witness_DeclinedOnTombstone | violation:Witness_DeclinedOnTombstone | 399 | 1.2 |
+| `witness-ReplacementAllocatesWhileStaleFenced` | witness | violation:Witness_ReplacementAllocatesWhileStaleFenced | violation:Witness_ReplacementAllocatesWhileStaleFenced | 14,231 | 1.8 |
+| `witness-AmbiguousRecreateRetried` | witness | violation:Witness_AmbiguousRecreateRetried | violation:Witness_AmbiguousRecreateRetried | 3,055 | 1.3 |
 
 ### TLA-002
 
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-small` | baseline | pass | pass | 895,724 | 413.9 |
-| `baseline-faults` | baseline | pass | pass | 3,875,480 | 1628.9 |
-| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 707.5 |
-| `baseline-xproc` | baseline | pass | pass | 523,650 | 121.3 |
-| `baseline-retire` | baseline | pass | pass | 5,811,402 | 775.8 |
-| `baseline-engine` | baseline | pass | pass | 3,773,720 | 762.0 |
-| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 3.7 |
-| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 610.7 |
-| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 16.5 |
-| `baseline-xproc-held` | baseline | pass | pass | 1,210,271 | 261.9 |
-| `baseline-retire-held` | baseline | pass | pass | 7,770,035 | 883.5 |
-| `baseline-liveness-held` | baseline | pass | pass | 8,791 | 4.9 |
-| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 17,690 | 3.0 |
-| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,563 | 4.1 |
-| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,090 | 2.1 |
-| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,304 | 2.0 |
-| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 21,963 | 3.7 |
-| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,913 | 3.9 |
-| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 398,596 | 29.6 |
-| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,859,504 | 209.0 |
-| `nc-refusal-at-staging-closure` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 141,112 | 10.1 |
-| `nc-refusal-at-staging-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 308,202 | 17.7 |
-| `nc-cache-survives-rejected-group` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 186,078 | 13.1 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,803 | 2.1 |
-| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,609 | 1.7 |
-| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,568 | 2.4 |
-| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 35,290 | 4.1 |
-| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,455 | 1.9 |
-| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,325 | 1.5 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,386 | 2.0 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 417 | 1.4 |
-| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,066 | 1.5 |
-| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 426 | 1.3 |
-| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.2 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 289 | 1.3 |
-| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,427 | 2.8 |
-| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 509 | 1.3 |
-| `witness-SupersededAfterFenceDurable` | witness | violation:Witness_SupersededAfterFenceDurable | violation:Witness_SupersededAfterFenceDurable | 15,145 | 3.0 |
-| `witness-FenceGroupRejected` | witness | violation:Witness_FenceGroupRejected | violation:Witness_FenceGroupRejected | 4,320 | 2.1 |
+| `baseline-small` | baseline | pass | pass | 895,724 | 122.7 |
+| `baseline-faults` | baseline | pass | pass | 3,875,480 | 275.6 |
+| `baseline-expanded` | baseline | pass | pass | 2,306,562 | 199.8 |
+| `baseline-xproc` | baseline | pass | pass | 523,650 | 50.0 |
+| `baseline-retire` | baseline | pass | pass | 5,811,402 | 563.4 |
+| `baseline-engine` | baseline | pass | pass | 3,773,720 | 629.8 |
+| `baseline-liveness-small` | baseline | pass | pass | 3,394 | 3.4 |
+| `baseline-liveness-contenders` | baseline | pass | pass | 1,125,110 | 587.5 |
+| `baseline-liveness-faults` | baseline | pass | pass | 15,713 | 5.5 |
+| `baseline-xproc-held` | baseline | pass | pass | 1,210,271 | 120.8 |
+| `baseline-retire-held` | baseline | pass | pass | 7,770,035 | 749.2 |
+| `baseline-liveness-held` | baseline | pass | pass | 8,791 | 4.2 |
+| `nc-no-newest-reservation` | negative-control | violation:NewestInstall | violation:NewestInstall | 17,981 | 3.1 |
+| `nc-no-newest-reservation-live-fenced` | negative-control | violation:LiveClaimNeverFenced | violation:LiveClaimNeverFenced | 37,587 | 4.5 |
+| `nc-install-before-fence-durable` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 5,035 | 2.0 |
+| `nc-install-before-fence-inqueue` | negative-control | violation:QueuedFinalDecidedBeforeReplacement | violation:QueuedFinalDecidedBeforeReplacement | 3,310 | 1.9 |
+| `nc-engine-resident-fence-xproc` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 22,007 | 3.6 |
+| `nc-engine-resident-fence-retire` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 26,596 | 3.7 |
+| `nc-engine-resident-fence-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 400,101 | 30.5 |
+| `nc-engine-resident-fence-false-success` | negative-control | violation:SuccessProvesOutcome | violation:SuccessProvesOutcome | 2,856,586 | 235.1 |
+| `nc-refusal-at-staging-closure` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 141,175 | 11.5 |
+| `nc-refusal-at-staging-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 309,657 | 19.6 |
+| `nc-cache-survives-rejected-group` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 185,994 | 14.4 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 2,412 | 1.8 |
+| `witness-CompetingReservations` | witness | violation:Witness_CompetingReservations | violation:Witness_CompetingReservations | 2,322 | 1.9 |
+| `witness-LowerReservationRestarts` | witness | violation:Witness_LowerReservationRestarts | violation:Witness_LowerReservationRestarts | 8,160 | 2.6 |
+| `witness-OldFinalSealedOnBehalf` | witness | violation:Witness_OldFinalSealedOnBehalf | violation:Witness_OldFinalSealedOnBehalf | 34,893 | 4.5 |
+| `witness-StaleClaimSuperseded` | witness | violation:Witness_StaleClaimSuperseded | violation:Witness_StaleClaimSuperseded | 5,350 | 2.4 |
+| `witness-ExactRenewalAfterReservation` | witness | violation:Witness_ExactRenewalAfterReservation | violation:Witness_ExactRenewalAfterReservation | 1,414 | 1.7 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 3,484 | 2.0 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 568 | 1.4 |
+| `witness-EngineRetiredMidFlight` | witness | violation:Witness_EngineRetiredMidFlight | violation:Witness_EngineRetiredMidFlight | 1,218 | 1.6 |
+| `witness-CommittedButAnsweredMoved` | witness | violation:Witness_CommittedButAnsweredMoved | violation:Witness_CommittedButAnsweredMoved | 498 | 1.4 |
+| `witness-OwnershipMovedToOtherProcess` | witness | violation:Witness_OwnershipMovedToOtherProcess | violation:Witness_OwnershipMovedToOtherProcess | 16 | 1.3 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 335 | 1.4 |
+| `witness-StaleFinalRefusedAfterReplacement` | witness | violation:Witness_StaleFinalRefusedAfterReplacement | violation:Witness_StaleFinalRefusedAfterReplacement | 13,464 | 3.0 |
+| `witness-FenceUnverifiedRetainsClaim` | witness | violation:Witness_FenceUnverifiedRetainsClaim | violation:Witness_FenceUnverifiedRetainsClaim | 805 | 1.4 |
+| `witness-SupersededAfterFenceDurable` | witness | violation:Witness_SupersededAfterFenceDurable | violation:Witness_SupersededAfterFenceDurable | 15,011 | 3.0 |
+| `witness-FenceGroupRejected` | witness | violation:Witness_FenceGroupRejected | violation:Witness_FenceGroupRejected | 4,342 | 2.2 |
 
 ### TLA-003
 
 | Check | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|
-| `baseline-lanes` | baseline | pass | pass | 676,449 | 46.3 |
-| `baseline-expanded` | baseline | pass | pass | 1,650,041 | 111.5 |
-| `baseline-lanes-engine` | baseline | pass | pass | 1,716,205 | 128.8 |
-| `baseline-renewal` | baseline | pass | pass | 4,994,511 | 322.4 |
-| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 226.8 |
-| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 40.5 |
-| `baseline-product-release` | baseline | pass | pass | 17,197 | 2.4 |
-| `baseline-shared-lane` | baseline | pass | pass | 3,745,651 | 189.8 |
+| `baseline-lanes` | baseline | pass | pass | 676,449 | 50.5 |
+| `baseline-expanded` | baseline | pass | pass | 1,650,041 | 129.7 |
+| `baseline-lanes-engine` | baseline | pass | pass | 1,716,205 | 206.0 |
+| `baseline-renewal` | baseline | pass | pass | 4,994,511 | 419.7 |
+| `baseline-renewal-product` | baseline | pass | pass | 3,483,721 | 297.5 |
+| `baseline-product-lanes` | baseline | pass | pass | 702,029 | 52.9 |
+| `baseline-product-release` | baseline | pass | pass | 17,197 | 3.1 |
+| `baseline-shared-lane` | baseline | pass | pass | 3,745,651 | 244.9 |
 | `baseline-validation` | baseline | pass | pass | 10,676 | 2.8 |
-| `baseline-validation-capacity` | baseline | pass | pass | 1,276 | 2.0 |
-| `baseline-validation-ceiling` | baseline | pass | pass | 43,081 | 5.7 |
-| `baseline-validation-product` | baseline | pass | pass | 13,166 | 3.0 |
-| `baseline-validation-ceiling-dup` | baseline | pass | pass | 150,973 | 12.5 |
-| `baseline-op-id` | baseline | pass | pass | 23,913 | 3.8 |
-| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 602 | 1.5 |
-| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 505 | 1.6 |
-| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,394 | 2.1 |
-| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 206,137 | 17.2 |
-| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 36,179 | 5.0 |
-| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 36,630 | 2.9 |
-| `nc-admission-refusal-any-release-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 270,966 | 31.2 |
-| `nc-admission-refusal-any-release-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,407,815 | 162.0 |
-| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,561 | 2.7 |
-| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 21 | 1.8 |
-| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 10,812 | 3.7 |
-| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 320,698 | 34.7 |
-| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 478 | 1.6 |
-| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 73,232 | 8.1 |
-| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,943 | 8.1 |
-| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 587 | 1.6 |
-| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 17,427 | 3.8 |
-| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,895 | 2.8 |
-| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 13,873 | 3.7 |
-| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 50,114 | 5.6 |
-| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 77 | 1.5 |
-| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 237 | 1.5 |
-| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 159,010 | 16.7 |
-| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 164,363 | 16.9 |
-| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 27 | 1.5 |
-| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,878 | 2.5 |
-| `nc-renew-before-validation-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 254 | 1.5 |
-| `nc-any-attempt-releases-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 1,288 | 1.7 |
-| `nc-any-attempt-releases-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 4,918 | 2.2 |
-| `nc-any-attempt-releases-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 17,283 | 3.5 |
-| `nc-plain-append-resumes-owed-final` | negative-control | violation:SealingRefusesNewAppends | violation:SealingRefusesNewAppends | 531 | 1.6 |
-| `witness-SameIdPlainAppendRefused` | witness | violation:Witness_SameIdPlainAppendRefused | violation:Witness_SameIdPlainAppendRefused | 145 | 1.4 |
-| `witness-CeilingRetryCompletesCommittedFinal` | witness | violation:Witness_CeilingRetryCompletesCommittedFinal | violation:Witness_CeilingRetryCompletesCommittedFinal | 3,796 | 2.5 |
+| `baseline-validation-capacity` | baseline | pass | pass | 1,276 | 1.8 |
+| `baseline-validation-ceiling` | baseline | pass | pass | 43,081 | 4.4 |
+| `baseline-validation-product` | baseline | pass | pass | 13,166 | 3.3 |
+| `baseline-validation-ceiling-dup` | baseline | pass | pass | 150,973 | 10.2 |
+| `baseline-op-id` | baseline | pass | pass | 23,913 | 3.3 |
+| `nc-gap-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 510 | 1.4 |
+| `nc-moved-definitive` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 560 | 1.4 |
+| `nc-release-by-operation-only` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 2,313 | 1.6 |
+| `nc-duplicate-completes-final` | negative-control | violation:SealedFinalHasItsRecord | violation:SealedFinalHasItsRecord | 201,985 | 14.0 |
+| `nc-admission-refusal-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 36,773 | 4.3 |
+| `nc-admission-refusal-false-closed` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 36,080 | 4.2 |
+| `nc-admission-refusal-any-release-orphaned` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 270,979 | 17.5 |
+| `nc-admission-refusal-any-release-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 1,408,757 | 92.2 |
+| `nc-admission-refusal-without-lapse` | negative-control | violation:FinalClosedTruthful | violation:FinalClosedTruthful | 2,539 | 1.8 |
+| `witness-InvalidRefusedBeforeIntent` | witness | violation:Witness_InvalidRefusedBeforeIntent | violation:Witness_InvalidRefusedBeforeIntent | 17 | 1.3 |
+| `witness-CommitAfterCancel` | witness | violation:Witness_CommitAfterCancel | violation:Witness_CommitAfterCancel | 10,380 | 2.3 |
+| `witness-LostReplyThenRetrySucceeds` | witness | violation:Witness_LostReplyThenRetrySucceeds | violation:Witness_LostReplyThenRetrySucceeds | 322,323 | 27.4 |
+| `witness-GapRetainsClaim` | witness | violation:Witness_GapRetainsClaim | violation:Witness_GapRetainsClaim | 553 | 1.5 |
+| `witness-NonClosingDuplicateReleased` | witness | violation:Witness_NonClosingDuplicateReleased | violation:Witness_NonClosingDuplicateReleased | 72,938 | 6.9 |
+| `witness-FinalSealCompletes` | witness | violation:Witness_FinalSealCompletes | violation:Witness_FinalSealCompletes | 72,699 | 6.5 |
+| `witness-PlainSealCompletes` | witness | violation:Witness_PlainSealCompletes | violation:Witness_PlainSealCompletes | 584 | 1.4 |
+| `witness-DefinitiveRelease` | witness | violation:Witness_DefinitiveRelease | violation:Witness_DefinitiveRelease | 18,204 | 3.2 |
+| `witness-TakeoverInstalls` | witness | violation:Witness_TakeoverInstalls | violation:Witness_TakeoverInstalls | 6,952 | 2.4 |
+| `witness-SeqReusedReleased` | witness | violation:Witness_SeqReusedReleased | violation:Witness_SeqReusedReleased | 13,766 | 2.7 |
+| `witness-SharedLaneDuplicate` | witness | violation:Witness_SharedLaneDuplicate | violation:Witness_SharedLaneDuplicate | 50,382 | 4.7 |
+| `witness-RawMovedRetainsClaim` | witness | violation:Witness_RawMovedRetainsClaim | violation:Witness_RawMovedRetainsClaim | 77 | 1.3 |
+| `witness-NotOwnerRedirect` | witness | violation:Witness_NotOwnerRedirect | violation:Witness_NotOwnerRedirect | 245 | 1.4 |
+| `witness-RawTakeoverWritesItsRecord` | witness | violation:Witness_RawTakeoverWritesItsRecord | violation:Witness_RawTakeoverWritesItsRecord | 155,490 | 12.6 |
+| `witness-RetryAfterMarkRunsItsSeal` | witness | violation:Witness_RetryAfterMarkRunsItsSeal | violation:Witness_RetryAfterMarkRunsItsSeal | 169,928 | 14.0 |
+| `nc-ceiling-after-intent-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 27 | 1.1 |
+| `nc-ceiling-after-intent-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 7,867 | 2.3 |
+| `nc-renew-before-validation-intent` | negative-control | violation:IntentOnlyAfterValidation | violation:IntentOnlyAfterValidation | 272 | 1.3 |
+| `nc-any-attempt-releases-release` | negative-control | violation:ReleaseOnlyWhenUndeliverable | violation:ReleaseOnlyWhenUndeliverable | 1,192 | 1.4 |
+| `nc-any-attempt-releases-closed-without-claim` | negative-control | violation:ClosureAuthorized | violation:ClosureAuthorized | 4,919 | 1.8 |
+| `nc-any-attempt-releases-plain-over-final` | negative-control | violation:PlainCannotCompleteOwedFinal | violation:PlainCannotCompleteOwedFinal | 17,278 | 2.6 |
+| `nc-plain-append-resumes-owed-final` | negative-control | violation:SealingRefusesNewAppends | violation:SealingRefusesNewAppends | 522 | 1.4 |
+| `witness-SameIdPlainAppendRefused` | witness | violation:Witness_SameIdPlainAppendRefused | violation:Witness_SameIdPlainAppendRefused | 129 | 1.2 |
+| `witness-CeilingRetryCompletesCommittedFinal` | witness | violation:Witness_CeilingRetryCompletesCommittedFinal | violation:Witness_CeilingRetryCompletesCommittedFinal | 3,730 | 2.1 |
 
 ## Findings
 
@@ -534,9 +529,6 @@ only 2xx answers.
   with those checks in place.
 - `ASM-OBJSTORE-CAS` stays unestablished until the provider contract suite
   passes against the production provider.
-- The receipts `verification/receipts/TLA-001.json` and `TLA-003.json` were
-  recorded for the earlier check sets, so `formal.py check` reports them
-  invalid until the three obligations are re-recorded with `run --record`.
 
 ### Model corrections and observations
 
@@ -811,8 +803,8 @@ The 23 unevaluated expressions fall into four groups:
 
 ### TLA-002 (not rerun)
 
-TLA-002's eight safety baselines were not rerun with `-coverage`. Their
-driver-run state counts equal those of the previous receipt, so their
+TLA-002's eight safety baselines were not rerun with `-coverage`. Their state
+counts in the recorded receipt equal the previous revision's, so their
 reachable graphs are unchanged; the previous revision's per-run table
 (action names unchanged) still describes them. Line numbers in
 `SealProtocol.tla` moved.
