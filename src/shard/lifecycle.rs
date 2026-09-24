@@ -114,27 +114,33 @@ impl EngineShutdown {
     pub(crate) fn terminated(&self) -> bool {
         self.0.monitor().phase() == Some(crate::tasks::Phase::Stopped)
     }
-    /// Its close is over: termination proved, or the close failed for good.
-    /// A failed close is final (item 38): its owner keeps the replacement
-    /// fence and the readiness failure, and no wait turns it into a close.
-    pub(crate) fn settled(&self) -> bool {
-        self.terminated() || self.failure().is_some()
-    }
     pub(crate) async fn wait(&self, timeout: Duration) -> Result<(), String> {
+        self.settle(timeout).await.unwrap_or_else(|| {
+            Err("engine shutdown still running; join authority retained".to_string())
+        })
+    }
+    /// The close's joined report within `timeout`, or `None` while it is
+    /// still closing. A report means the close is over: termination proved
+    /// (`Ok`), or a close that failed for good (`Err` naming the roles). A
+    /// failed close is final (item 38): its owner keeps the replacement fence
+    /// and the readiness failure, and no later wait turns it into a close.
+    /// Whether it settled and what it reported come from this one
+    /// observation, never from two readings that a close can fall between.
+    pub(crate) async fn settle(&self, timeout: Duration) -> Option<Result<(), String>> {
         let report = tokio::time::timeout(timeout, self.0.observe_shutdown())
             .await
-            .map_err(|_| "engine shutdown still running; join authority retained".to_string())?;
+            .ok()?;
         let failures: Vec<_> = report
             .outcomes
             .iter()
             .filter(|(_, outcome)| !matches!(outcome, TaskOutcome::Finished))
             .map(|(role, outcome)| format!("{role}: {outcome:?}"))
             .collect();
-        if failures.is_empty() {
+        Some(if failures.is_empty() {
             Ok(())
         } else {
             Err(failures.join("; "))
-        }
+        })
     }
 }
 struct RequiredExit {

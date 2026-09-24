@@ -384,6 +384,7 @@ impl ShardDirectory {
     /// that failed is settled, not pending (item 38): its owner keeps the fence
     /// and the readiness failure, no wait turns it into a close, and the stop
     /// answers with the joined reports that name it, also at the deadline.
+    /// Pending engines and reports come from one observation (`settle_engines`).
     #[expect(
         clippy::excessive_nesting,
         reason = "ShardDirectory::shutdown; the drain nests the joined-report verdict inside the no-pending branch of the wait loop; flattening it would separate the verdict from the drain it concludes"
@@ -396,12 +397,7 @@ impl ShardDirectory {
         let deadline = tokio::time::Instant::now() + grace;
         loop {
             let (engines, opens) = self.inner.gate.shutdown_pending();
-            let reports = futures_util::future::join_all(engines.iter().map(|engine| {
-                engine.wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
-            }))
-            .await;
-            let pending = engines.iter().filter(|engine| !engine.settled()).count();
-            let failures: Vec<_> = reports.into_iter().filter_map(Result::err).collect();
+            let (pending, failures) = settle_engines(&engines, deadline).await;
             if opens == 0 && pending == 0 {
                 return if failures.is_empty() {
                     Ok(())
@@ -463,6 +459,24 @@ impl ShardDirectory {
         engine.begin_close();
         RetireOutcome::Retired(engine)
     }
+}
+
+/// Observes each retiring engine once, until it settles or `deadline`
+/// passes: how many are still closing, and the failures the settled ones
+/// reported. Both come from that one observation per engine, so a close that
+/// ends just after its observation timed out still counts as closing, never
+/// as settled with a report taken before it ended (item 38).
+async fn settle_engines(
+    engines: &[crate::shard::EngineShutdown],
+    deadline: tokio::time::Instant,
+) -> (usize, Vec<String>) {
+    let reports = futures_util::future::join_all(engines.iter().map(|engine| {
+        engine.settle(deadline.saturating_duration_since(tokio::time::Instant::now()))
+    }))
+    .await;
+    let pending = reports.iter().filter(|report| report.is_none()).count();
+    let failures = reports.into_iter().flatten().filter_map(Result::err);
+    (pending, failures.collect())
 }
 
 #[cfg(test)]

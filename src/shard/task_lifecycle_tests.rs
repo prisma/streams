@@ -352,8 +352,10 @@ async fn a_failed_storage_close_ends_the_directory_stop_at_once() {
     drop(engine.db.close().await);
 }
 
-/// Item 38: a directory stop that reaches its deadline still names what it
-/// joined, so a failed close is never dropped beside a pending one.
+/// Item 38: a directory stop that reaches its deadline counts the engine
+/// still closing as pending, and its joined reports hold only closes that
+/// settled (a failed one is never dropped beside a pending one): an engine
+/// whose close is still running has no report yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
     let (engine, store) = held_wal().await;
@@ -372,7 +374,7 @@ async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
     .expect("the stop is bounded by its grace");
     assert_eq!(
         stopped.unwrap_err(),
-        "shutdown ongoing or failed: 0 opens, 1 engines; owners retained; joined reports: [\"engine shutdown still running; join authority retained\"]"
+        "shutdown ongoing or failed: 0 opens, 1 engines; owners retained; joined reports: []"
     );
     store.release_hold();
     tokio::time::timeout(
