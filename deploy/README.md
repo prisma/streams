@@ -55,6 +55,18 @@ start, rather than silently holding every death. `bun test
 (0, 1 and 137), the wrapper's log line, and that the three copies stay
 byte-identical.
 
+**Deploy only the repo's wrapper (plan decision D11).** A streams-slate
+with item 38 behind an older wrapper turns a critical exit into a 500 that
+is never replaced, where the old binary at least kept serving. The
+campaign scripts deploy from copies of these directories under
+`$SOAK_HOME` (they carry `node_modules`), and a copy staged before item 39
+still holds every death. `bench/stage-app.sh <app> <dir>` re-stages a copy
+from here, every file except `node_modules`, installs dependencies when
+they are missing or changed, and fails if any file still differs;
+`bench/soak/deploy-region.sh`, `mt-tenants.sh`, `wc-ladder.sh`,
+`bench/fleet/setup-fleet.sh` and `deploy-fleet.sh` run it before every
+deploy. Run it yourself before deploying any other copy.
+
 Known gap (predates item 39): the wrapper does not forward SIGTERM or
 SIGINT to the binary. A signal sent to the wrapper never reaches the
 binary: it ends the wrapper at once and orphans the still-serving binary,
@@ -99,6 +111,7 @@ it rather than redeploying into it.
 
 **Fresh app directories need `bun install` before `deploy`.** A copied
 wrapper app without `node_modules` deploys and then fails at import.
+`bench/stage-app.sh` installs when it stages one.
 
 **Do not run parallel `bunx @prisma/compute-cli` invocations.** They race
 on the shared package cache and fail with `EEXIST`. Fan out across regions

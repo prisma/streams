@@ -103,6 +103,9 @@ svc_id() { # role -> cached+REVALIDATED service id or empty
 deploy() { # role, then --env args...
   local ROLE=$1; shift
   local DIR="$S/app-$ROLE-$R"
+  # Re-stage from deploy/ and refuse a copy that still differs: a copy
+  # staged before item 39 holds every death (bench/stage-app.sh).
+  "$HERE/../stage-app.sh" "app-$ROLE" "$DIR"
   local SVC=$(svc_id "$ROLE"); local SVCARG=()
   [ -n "$SVC" ] && SVCARG=(--service "$SVC")
   ( cd "$DIR"

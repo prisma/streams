@@ -420,7 +420,15 @@ process.exit(await proc.exited);
 The deployed wrapper is `deploy/app-server/{index,supervise}.ts`
 (deploy/README.md); a binary that dies after it was ready (it accepted on
 `$PORT` and had been up for 60 s) ends it with its exit code, and Compute
-replaces the instance (item 39).
+replaces the instance (item 39). Never deploy a streams-slate that has
+item 38 behind an older wrapper (plan decision D11): the old one holds
+every death, so a critical exit would leave a 500 that is never replaced.
+The campaign scripts deploy from copies of `deploy/<app>` under
+`$SOAK_HOME`; `bench/stage-app.sh` re-stages each copy from the repo before
+every deploy (`bench/soak/deploy-region.sh`, `mt-tenants.sh`,
+`wc-ladder.sh`, `bench/fleet/setup-fleet.sh`, `deploy-fleet.sh`) and
+refuses one that still differs. Any other deploy from a copied app
+directory must run it first.
 
 Once a stop is requested — a critical loop's exit, or a SIGTERM/SIGINT the
 binary has observed — streams-slate bounds it at 30 s on a thread of its
