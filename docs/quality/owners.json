@@ -1793,6 +1793,14 @@
       "syntax": "serde_json::json"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/product/tests.rs",
+      "reason": "Product capacity-verdict property (external review §5); the pinned macro generates 1,024 JSON values, JSON batches and byte bodies against buckets straddling each request and runs each through the production parse_append_body, comparing its verdict with the append core's measure; it produces test cases, not service state.",
+      "syntax": "proptest::proptest"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::lb",

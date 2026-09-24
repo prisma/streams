@@ -474,3 +474,89 @@ async fn a_core_capacity_refusal_renders_the_stable_413() {
         "{body}"
     );
 }
+
+/// Generated JSON values: every scalar kind, strings that need escaping and
+/// nested arrays and objects.
+fn json_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+    use proptest::strategy::{Just, Strategy, Union};
+    let leaf = Union::new([
+        Just(serde_json::Value::Null).boxed(),
+        proptest::arbitrary::any::<bool>()
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+        proptest::arbitrary::any::<i64>()
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+        (-1.0e9f64..1.0e9).prop_map(serde_json::Value::from).boxed(),
+        "[a-z\"\\\\\u{e9} ]{0,12}"
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+    ]);
+    leaf.prop_recursive(3, 24, 4, |inner| {
+        let array = proptest::collection::vec(inner.clone(), 0..4);
+        let object = proptest::collection::btree_map("[a-z]{1,3}", inner, 0..4);
+        Union::new([
+            array.prop_map(serde_json::Value::Array).boxed(),
+            object
+                .prop_map(|m| serde_json::Value::Object(m.into_iter().collect()))
+                .boxed(),
+        ])
+    })
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 1024, ..proptest::prelude::ProptestConfig::default() })]
+    /// External review §5: the product handler's capacity verdict, decided
+    /// before the project's volume debit, is exactly the append core's,
+    /// because it measures what the core measures: the wire body the handler
+    /// hands on (a single value travels as `[value]`) and the records the
+    /// core's own parser counts in it. Single values, batches and opaque
+    /// bytes, compact or pretty, against buckets a few units either side of
+    /// the request.
+    #[test]
+    fn the_product_capacity_verdict_is_the_cores(
+        kind in 0u8..3,
+        value in json_value(),
+        values in proptest::collection::vec(json_value(), 1..6),
+        raw in proptest::collection::vec(proptest::arbitrary::any::<u8>(), 1..48),
+        pretty in proptest::arbitrary::any::<bool>(),
+        bytes_slack in 0u64..8,
+        recs_slack in 0u64..4,
+    ) {
+        let render = |v: &serde_json::Value| {
+            if pretty { serde_json::to_vec_pretty(v) } else { serde_json::to_vec(v) }.unwrap()
+        };
+        let mut desc = desc_with("cap", &"11".repeat(16));
+        let (body, batch, records) = match kind {
+            0 => (render(&value), false, 1),
+            1 => (render(&serde_json::Value::Array(values.clone())), true, values.len()),
+            _ => {
+                let mut bytes = desc.to_persisted();
+                bytes.content_type = "application/octet-stream".to_string();
+                desc = bytes.try_into().unwrap();
+                (raw, false, 1)
+            }
+        };
+        // Bucket capacities straddle the request: the `[value]` wrapping and
+        // the record count decide the verdict at the boundary.
+        let limits = crate::config::AdmissionConfig {
+            limit_bytes_per_sec: (body.len() as u64 + bytes_slack).saturating_sub(4).max(1) as f64,
+            limit_recs_per_sec: (records as u64 + recs_slack).saturating_sub(2).max(1) as f64,
+            limit_burst_secs: 1.0,
+            ..Default::default()
+        };
+        let usage = crate::usage::UsageService::new(&limits, Arc::new(crate::runtime::ManualClock::at(0)));
+        let Ok(parsed) = parse_append_body(&usage, &desc, &Bytes::from(body), batch) else {
+            panic!("a generated body is well formed");
+        };
+        // content.rs::parse_content: the core counts entries in the wire body.
+        let entries = if desc.is_json() {
+            crate::application::creation::json_entries(&parsed.wire, false).unwrap().len()
+        } else {
+            1
+        };
+        proptest::prop_assert_eq!(parsed.count, entries);
+        let core = usage.permanently_unadmittable(parsed.wire.len() as u64, entries as u64);
+        proptest::prop_assert_eq!(parsed.over_capacity, core);
+    }
+}

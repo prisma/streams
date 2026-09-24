@@ -10,8 +10,9 @@ first runtime's tokens, inherit its counters or overwrite its backlog rows.
 
 Typed append admission returns the owner's exact counter Arc and carries it
 through commit. Close preflight reads the same immutable limits before durable
-intent publication. Raw reads, SSE, creation initialization and the product
-final-record capacity check use that runtime handle. Refill and idle eviction
+intent publication. Raw reads, SSE, creation initialization, the product
+final-record capacity check and the product append body contract use that
+runtime handle. Refill and idle eviction
 use the owned monotonic clock; persisted event timestamps remain wall-clock
 values. Counter-generation identifiers remain process-unique integers; they
 select no capacity and retain no stream state.

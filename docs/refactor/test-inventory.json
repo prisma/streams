@@ -1581,6 +1581,17 @@
     ]
   },
   {
+    "name": "an_unadmittable_append_leaves_the_project_volume_quota_untouched",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8d860fd867030384fcd33ee48a7c1ac604a6fee1d624cabd26ebea2428c4ea7f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_ledger",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6285,6 +6296,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_product_capacity_413_precedes_the_key_but_not_a_producer_verdict",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "d4fc8de5e508d1f35b1fa6f413d9c1e2ea242926c6534b35056d69d7ac3f2e4a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/admission_maintenance.rs",
     "scenarios": []
   },
   {

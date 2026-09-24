@@ -942,3 +942,58 @@ async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
     assert_eq!(st, 400, "the deferred verdict answers first: {body}");
     assert!(body.contains("invalid_body"), "{body}");
 }
+
+/// External review §5 on the product surface: the handler refuses a body no
+/// fresh bucket admits before the key is checked (413, not 403), except a
+/// producer request, whose duplicate is recognized before any later
+/// validation refusal (Stage 4 §5): the core decides it, and its deferred
+/// verdict outranks the 413 there as on the raw surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_product_capacity_413_precedes_the_key_but_not_a_producer_verdict() {
+    let usage = Arc::new(crate::usage::UsageService::new(
+        &crate::config::AdmissionConfig {
+            limit_bytes_per_sec: 50.0, // x LIMIT_BURST_SECS 2 = 100 bytes
+            ..Default::default()
+        },
+        Arc::new(crate::runtime::ManualClock::at(0)),
+    ));
+    let shard = crate::shard::ShardConfig {
+        shared_usage: Some(usage),
+        ..Default::default()
+    };
+    let options = HttpRigOptions {
+        shard,
+        ..Default::default()
+    };
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    let key = ("prisma-encryption-key", PRISMA_KEY);
+    let json = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(
+        preq(rig.addr, "PUT", "/v1/streams/cap-order", &[key], json)
+            .await
+            .0,
+        201
+    );
+    // `1e400` is JSON syntax the handler accepts and the core's parser refuses.
+    let body = format!("[1e400,\"{}\"]", "x".repeat(100));
+    let path = "/v1/streams/cap-order/records:batch";
+    let wrong = (
+        "prisma-encryption-key",
+        "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+    );
+    let (st, _, b) = preq(rig.addr, "POST", path, &[wrong], body.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    assert_eq!(st, 413, "the handler's 413 comes before the key: {b}");
+    let producer = [
+        key,
+        ("producer-id", "p"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(rig.addr, "POST", path, &producer, body.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    assert_eq!(
+        st, 400,
+        "a producer's deferred verdict outranks the 413: {b}"
+    );
+}

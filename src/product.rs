@@ -1893,7 +1893,6 @@ pub(crate) fn seal_error_response(
 
 // ---- Stage 4: append and appendMany ---------------------------------
 
-const MAX_BATCH_RECORDS: usize = 10_000;
 const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 
 /// The ONE routing-key rule both writers share: at most 1,024 bytes of the
@@ -2103,89 +2102,30 @@ async fn product_append_inner(
     if let Some(r) = refuse_if_sealed(&desc, seal_after) {
         return r;
     }
-    let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
-    if batch && !is_json {
-        // Spec Stage 4 §2.3: no framed byte-batch format is standardized.
-        return perr(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "batch_unsupported_format",
-            "records:batch requires a JSON stream",
-            None,
-            false,
-        );
-    }
-    // Validation order (Stage 4 §5): JSON syntax and batch shape are
-    // checked BEFORE enqueue; the shared path handles producer
-    // duplicate recognition ahead of later-validation rejections.
-    let (wire_body, count): (Bytes, usize) = if is_json {
-        if batch {
-            let elems: Vec<&serde_json::value::RawValue> = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return perr(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_body",
-                        &format!("batch must be a JSON array: {e}"),
-                        None,
-                        false,
-                    );
-                }
-            };
-            if elems.is_empty() {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "empty_batch",
-                    "appendMany requires at least one record",
-                    None,
-                    false,
-                );
-            }
-            if elems.len() > MAX_BATCH_RECORDS {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "batch_too_large",
-                    "appendMany accepts at most 10,000 records",
-                    None,
-                    false,
-                );
-            }
-            (body.clone(), elems.len())
-        } else {
-            if serde_json::from_slice::<&serde_json::value::RawValue>(&body).is_err() {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_body",
-                    "append requires one JSON value",
-                    None,
-                    false,
-                );
-            }
-            // [value]: one-level flattening stores exactly one message,
-            // preserving array-valued records (retains a body slice; no
-            // DOM reserialization).
-            let mut w = Vec::with_capacity(body.len() + 2);
-            w.push(b'[');
-            w.extend_from_slice(&body);
-            w.push(b']');
-            (Bytes::from(w), 1)
-        }
-    } else {
-        if body.is_empty() {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "empty_body",
-                "append requires a non-empty body",
-                None,
-                false,
-            );
-        }
-        (body.clone(), 1)
+    // The body contract and its capacity verdict are decided BEFORE the
+    // §17.2 debit below (external review §5), so a refusal leaves no quota
+    // debt. A producer request over capacity is the core's to refuse after
+    // its duplicate check, and it is never charged: it can only end as that
+    // duplicate or that refusal.
+    let AppendBody {
+        wire: wire_body,
+        count,
+        over_capacity,
+    } = match parse_append_body(&state.runtime.usage, &desc, &body, batch) {
+        Ok(parsed) => parsed,
+        Err(refused) => return *refused,
     };
+    if let Some(refusal) = &over_capacity
+        && !names_a_producer(&headers)
+    {
+        return capacity_refused(refusal);
+    }
     // §17.2 append-volume backstop, with the EXACT parsed shape: the
     // request payload size and the true record count (batch-aware).
     // Internal writers (DLQ delivery, the seal's final record) carry
     // no principal and are bounded by their own mechanisms.
     if let Some(p) = principal
+        && over_capacity.is_none()
         && let Err(refusal) = state.quotas.admit_append(
             &p.project_id,
             &p.quotas,
@@ -4016,7 +3956,7 @@ pub(crate) async fn product_list(
 }
 
 mod append_body;
-use append_body::capacity_refused;
+use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_body};
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
