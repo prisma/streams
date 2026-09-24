@@ -343,11 +343,12 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     db2.close().await.unwrap();
 }
 
-/// TLA-016-F1 (under-retirement): the first advancing group is refused,
-/// and the next gather starts from the lane mark that refused chunk raised.
-/// Its advance must not move the boundary over the refused chunk while
-/// retiring only its own bytes: once the boundary reaches the end, the tail
-/// gauge and the durable shard row must both be zero.
+/// TLA-016-F1 (under-retirement): the first advancing group is refused.
+/// The next gather replays the refused chunk once the refusal is settled,
+/// or, if it planned first, starts from the lane mark that chunk raised; that
+/// advance must not move the boundary over the refused chunk while retiring
+/// only its own bytes. Once the boundary reaches the end, the tail gauge and
+/// the durable shard row must both be zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_absorbed_chunk_leaves_no_phantom_backlog() {
     let store = mem();

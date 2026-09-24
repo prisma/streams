@@ -545,3 +545,71 @@ async fn r53_a_stream_seq_past_the_tail_rows_u16_leaves_the_stream_openable() {
         .await
         .unwrap();
 }
+
+/// An absorbed batch's receipt reports whether its group landed, which is
+/// how the absorber learns to roll a refused batch's lane marks back. A
+/// group refused at the billing-row pre-read, before anything is staged,
+/// drops it unanswered; a written group and a group with nothing to write
+/// answer it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_absorbed_batch_receipt_is_answered_only_when_its_group_lands() {
+    const PREFIX: &str = "absorb-receipt";
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(Db::builder(PREFIX, store.clone()).build().await.unwrap());
+    let (tx, _signals) = mpsc::channel(16);
+    let cfg = ShardConfig::default();
+    let engine = ShardEngine::start(
+        PREFIX.into(),
+        db,
+        store,
+        cfg.clone(),
+        tx,
+        None,
+        Default::default(),
+    );
+    let commit = |ops: Vec<CommitOp>| {
+        let group = engine.commit_group(ops, &cfg);
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), group)
+                .await
+                .expect("the group never finished");
+        }
+    };
+    let batch = || {
+        let (landed, receipt) = oneshot::channel();
+        let streams = vec![(HASH, 0, 0, 0)];
+        let op = CommitOp::AbsorbedBatch {
+            streams,
+            v2: true,
+            landed,
+        };
+        (op, receipt)
+    };
+    // A usage ack reads the billing row first and deletes a key, so its
+    // group writes unless that read fails.
+    let usage = || CommitOp::UsageAck {
+        hash: HASH,
+        scope: UsageAckScope::ThroughVersion(0),
+        month_final_keys: vec![b"absorb-receipt-final".to_vec()],
+    };
+    billing_read_faults()
+        .lock()
+        .unwrap()
+        .insert(PREFIX.into(), ());
+    let (absorbed, refused) = batch();
+    commit(vec![usage(), absorbed]).await;
+    assert!(
+        refused.await.is_err(),
+        "a refused group answered its receipt"
+    );
+    let (absorbed, written) = batch();
+    commit(vec![usage(), absorbed]).await;
+    assert!(written.await.is_ok(), "a written group dropped its receipt");
+    let (absorbed, idle) = batch();
+    commit(vec![absorbed]).await;
+    assert!(
+        idle.await.is_ok(),
+        "a group with nothing to write dropped its receipt"
+    );
+    engine.begin_close();
+}

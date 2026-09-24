@@ -1,7 +1,9 @@
 //! R09: dirty-index discovery pages progress without exceeding the pending capacity,
 //! and its mark rollback cannot make a re-gather over-retire (TLA-016-F1) or
 //! warm the slice cache over a head it never read (TLA-016-F3); a warm bridge
-//! never crosses a chunk the cache declined to admit.
+//! never crosses a chunk the cache declined to admit. A refused group's lane
+//! marks roll back to replay its chunks, keeping the ledger exact and the
+//! postings pages disjoint, and a gather never waits on the committer.
 #![cfg(test)]
 use super::*;
 use slatedb::WriteBatch;
@@ -256,10 +258,7 @@ async fn rolled_back_mark_regather_keeps_the_ledger_exact() {
     let commit = engine.test_hold_commit().await;
     let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
     assert_eq!((g1.advanced.len(), g1.partial.len()), (1, 0));
-    assert_eq!(
-        absorber.submitted.lock().unwrap().get(&hash),
-        Some(&(1, true))
-    );
+    assert_eq!(lane_mark(&absorber, hash).map(|mark| mark.from), Some(1));
     drop(dispatch);
     for rider in riders {
         assert!(rider.await.unwrap());
@@ -267,7 +266,7 @@ async fn rolled_back_mark_regather_keeps_the_ledger_exact() {
     // The rescan reads absorbed 0 under mark 1 and rolls the mark back.
     let mut pending = HashMap::new();
     absorber.seed_from_dirty_index(&mut pending).await.unwrap();
-    assert!(!absorber.submitted.lock().unwrap().contains_key(&hash));
+    assert_eq!(lane_mark(&absorber, hash), None);
     // G2 re-plans [0, 2) from the published boundary and queues behind G1.
     let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
     assert_eq!(g2.partial, vec![(hash, 1)]);
@@ -383,7 +382,7 @@ async fn stale_regather_never_warms_a_trimmed_head_as_absent() {
     // The rescan reads absorbed 0 under mark 2 and rolls the mark back.
     let mut pending = HashMap::new();
     absorber.seed_from_dirty_index(&mut pending).await.unwrap();
-    assert!(!absorber.submitted.lock().unwrap().contains_key(&hash));
+    assert_eq!(lane_mark(&absorber, hash), None);
     let dispatch = engine.test_hold_dispatch().await;
     drop(commit);
     until_row0_trimmed_durably(&engine, hash, 2).await;
@@ -569,6 +568,259 @@ async fn a_warm_bridge_never_crosses_an_unadmitted_install() {
         page.completed,
         engine.postings_cache.debug_slice(&inc, &kh),
     );
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// The absorber's lane mark for `hash`, if it holds one.
+fn lane_mark(absorber: &Absorber, hash: [u8; 16]) -> Option<gather::LaneMark> {
+    absorber.submitted.lock().unwrap().marks.get(&hash).copied()
+}
+
+/// A shard engine and an absorber whose gather copies at most `cap` bytes
+/// per stream, over one in-memory store.
+async fn refusal_rig(prefix: &str, cap: usize) -> (Arc<Db>, Arc<ShardEngine>, Absorber) {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(Db::builder(prefix, store.clone()).build().await.unwrap());
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let engine = ShardEngine::start(
+        prefix.into(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        tx,
+        None,
+        Default::default(),
+    );
+    let absorber = Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(KeyCache::default()),
+        AbsorberConfig {
+            gather_max_bytes: cap,
+            ..Default::default()
+        },
+    );
+    (db, engine, absorber)
+}
+
+/// Appends one acknowledged record per body under routing key "k" and
+/// returns each record's stored frame bytes.
+async fn append_records(engine: &Arc<ShardEngine>, hash: [u8; 16], bodies: &[&str]) -> Vec<u64> {
+    let coverage = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        1,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    )
+    .coverage();
+    let writer = crate::dst::Workload::new(coverage);
+    let key = crate::crypto::StreamKey([7u8; 32]);
+    let mut frames = Vec::new();
+    for body in bodies {
+        let out = writer
+            .attempt_with_deadline(engine, hash, &key, "k", body, None, None)
+            .await;
+        let crate::dst::Outcome::Acked { last_offset, .. } = out else {
+            panic!("append {body} was not acknowledged: {out:?}");
+        };
+        let row = engine
+            .db
+            .get(crate::shard::record_key(&hash, last_offset))
+            .await
+            .unwrap();
+        frames.push(row.unwrap().len() as u64);
+    }
+    frames
+}
+
+/// Waits until `refused` absorbed groups were refused, then until an append
+/// on another stream is acknowledged: the committer runs groups in order, so
+/// the refused group is finished and its receipt dropped.
+async fn until_refused(engine: &Arc<ShardEngine>, refused: usize) {
+    for _ in 0..1000 {
+        if engine.group_failures_tripped() >= refused {
+            append_records(engine, [99; 16], &["barrier"]).await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the committer never refused group {refused}");
+}
+
+/// A gather that plans before the committer's answers are settled, as a
+/// pump tick does when the committer lags behind the previous tick.
+async fn gather_unsettled(absorber: &Absorber, hash: [u8; 16]) -> GatherOutcome {
+    let budget = &absorber.shard.history_resources.budget;
+    let mut reservation = budget.reserve(absorber.adaptive_gather_est()).await;
+    absorber
+        .absorb_gather_v2_with(&[hash], &mut reservation)
+        .await
+        .unwrap()
+}
+
+/// The (chunk start, new upto) of each advance a gather submitted.
+fn chunks(gather: &GatherOutcome) -> Vec<(u64, u64)> {
+    gather.advanced.iter().map(|a| (a.1, a.2)).collect()
+}
+
+/// Waits until the committed boundary reaches `absorbed`, then checks the
+/// tail gauge holds exactly the frame bytes of `[absorbed, next)`.
+async fn until_exact(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    frames: &[u64],
+    absorbed: u64,
+) -> crate::shard::TailFields {
+    let tail = tail_until(engine, hash, |t| t.absorbed == absorbed).await;
+    let owed: u64 = frames.iter().skip(usize::try_from(absorbed).unwrap()).sum();
+    assert_eq!(
+        tail.unabsorbed_bytes, owed,
+        "the tail gauge must hold exactly [absorbed={absorbed}, next={}) of {frames:?}",
+        tail.next
+    );
+    tail
+}
+
+/// A refusal learned while a later chunk of the same stream is already in
+/// flight leaves the mark on that later chunk: its advance recounts the
+/// refused chunk too, and no recount spans more than the chunks in flight
+/// when the refusal happened. Two chunks refused in one group roll the mark
+/// back to the second, whose replay recounts both; a refused chunk whose
+/// successor planned before the refusal was settled is recounted by that
+/// successor. The ledger stays exact and every postings page stays disjoint.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_refusal_behind_an_in_flight_chunk_recounts_only_the_chunks_in_flight; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_behind_an_in_flight_chunk_recounts_only_the_chunks_in_flight() {
+    let (db, engine, absorber) = refusal_rig("lag-inflight", 1).await;
+    let hash = [41u8; 16];
+    let frames = append_records(&engine, hash, &["r0", "r1", "r2", "r3"]).await;
+    // Chunks [0, 1) and [1, 2) queue behind the held committer and share
+    // one refused group.
+    engine.fail_next_absorbed_group();
+    let commit = engine.test_hold_commit().await;
+    for chunk in [(0, 1), (1, 2)] {
+        let gather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+        assert_eq!(chunks(&gather), [chunk]);
+    }
+    drop(commit);
+    until_refused(&engine, 1).await;
+    // The mark rests on [1, 2)'s end: it rolls back to replay [1, 2), whose
+    // advance at boundary 0 recounts both refused chunks.
+    let replay = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&replay), [(1, 2)]);
+    assert_eq!(replay.partial, [(hash, 2)]);
+    until_exact(&engine, hash, &frames, 2).await;
+    // [2, 3) is refused, and [3, 4) plans from its raised mark before the
+    // refusal is settled: [3, 4)'s advance recounts [2, 4), and the settled
+    // refusal finds the mark already past its chunk.
+    engine.fail_next_absorbed_group();
+    let refused = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&refused), [(2, 3)]);
+    until_refused(&engine, 2).await;
+    let successor = gather_unsettled(&absorber, hash).await;
+    assert_eq!(chunks(&successor), [(3, 4)]);
+    let tail = until_exact(&engine, hash, &frames, 4).await;
+    let settled = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert!(settled.advanced.is_empty(), "nothing is left to replay");
+    assert_eq!(tail.next, 4);
+    assert_postings_admit(&engine, hash, &tail, "k").await;
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// A rolled-back mark replays exactly the refused chunk even after the
+/// stream grew: the refused chunk [0, 1) stopped at the durable end, and the
+/// replay stops there too instead of re-gathering [0, 3) over pages a chunk
+/// above it may have flushed. The rolled-back stream is due again at once,
+/// though its pending entry went with the refused gather's outcome, and it
+/// stays pending past the replay.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_rolled_back_mark_replays_exactly_the_refused_chunk; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rolled_back_mark_replays_exactly_the_refused_chunk() {
+    let (db, engine, absorber) = refusal_rig("lag-replay", GATHER_PER_STREAM_CAP).await;
+    let hash = [42u8; 16];
+    let mut frames = append_records(&engine, hash, &["r0"]).await;
+    engine.fail_next_absorbed_group();
+    let refused = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&refused), [(0, 1)]);
+    until_refused(&engine, 1).await;
+    frames.extend(append_records(&engine, hash, &["r1", "r2"]).await);
+    let mut pending = HashMap::new();
+    absorber.settle_submissions(&mut pending);
+    assert!(
+        pending.contains_key(&hash),
+        "the refused stream is due again"
+    );
+    assert_eq!(
+        lane_mark(&absorber, hash),
+        Some(gather::LaneMark {
+            from: 0,
+            v2: true,
+            replay_to: Some(1)
+        })
+    );
+    let replay = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(
+        chunks(&replay),
+        [(0, 1)],
+        "the replay re-read past its chunk"
+    );
+    assert_eq!(replay.partial, [(hash, 2)]);
+    until_exact(&engine, hash, &frames, 1).await;
+    let rest = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&rest), [(1, 3)]);
+    let tail = until_exact(&engine, hash, &frames, 3).await;
+    assert_postings_admit(&engine, hash, &tail, "k").await;
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Gathers never wait on the committer: with the committer held, four
+/// gathers each submit and return, and settling finds nothing answered.
+/// Once released, the four batches share one refused group; the mark rolls
+/// back to replay the last, whose advance recounts the four chunks that were
+/// in flight, and absorption then completes with an exact ledger.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "absorber_gathers_never_wait_on_a_stalled_committer; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absorber_gathers_never_wait_on_a_stalled_committer() {
+    let (db, engine, absorber) = refusal_rig("lag-stalled", 1).await;
+    let hash = [43u8; 16];
+    let frames = append_records(&engine, hash, &["r0", "r1", "r2", "r3", "r4", "r5"]).await;
+    engine.fail_next_absorbed_group();
+    let commit = engine.test_hold_commit().await;
+    for upto in 1..=4 {
+        let gather =
+            tokio::time::timeout(Duration::from_secs(10), absorber.absorb_gather_v2(&[hash]))
+                .await
+                .expect("a gather waited on the stalled committer")
+                .unwrap();
+        assert_eq!(chunks(&gather), [(upto - 1, upto)]);
+    }
+    let mut pending = HashMap::new();
+    absorber.settle_submissions(&mut pending);
+    assert!(pending.is_empty(), "no receipt is answered while held");
+    drop(commit);
+    until_refused(&engine, 1).await;
+    let replay = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&replay), [(3, 4)]);
+    until_exact(&engine, hash, &frames, 4).await;
+    for upto in [5, 6] {
+        let gather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+        assert_eq!(chunks(&gather), [(upto - 1, upto)]);
+        until_exact(&engine, hash, &frames, upto).await;
+    }
+    let tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!((tail.absorbed, tail.next, tail.unabsorbed_bytes), (6, 6, 0));
+    assert_postings_admit(&engine, hash, &tail, "k").await;
     engine.begin_close();
     let _ = db.close().await;
 }

@@ -33,6 +33,9 @@ pub(super) struct CommitTransaction<'a> {
     extra_writes: bool,
     changed: bool,
     accounting_diverged: Option<String>,
+    /// Receipts of the absorbed batches this group carries: answered once
+    /// its batch is written, dropped unanswered by every refusal.
+    landed: Vec<oneshot::Sender<()>>,
     maintenance_added: u64,
     maintenance_retired: u64,
     started: std::time::Instant,
@@ -46,10 +49,12 @@ pub(super) struct CommitTransaction<'a> {
 impl<'a> CommitTransaction<'a> {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained; checked conversions would only restate those bounds"
+        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained, absorbed-batch receipts included; checked conversions would only restate those bounds"
     )]
     pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>, cfg: &'a ShardConfig) {
-        let ops = Self::expand(engine, ops);
+        // A group refused before it is staged drops `landed` unanswered.
+        let mut landed = Vec::new();
+        let ops = Self::expand(engine, ops, &mut landed);
         if engine.is_closed() {
             for op in ops {
                 Self::reject_op(op, AppendErr::Moved);
@@ -89,6 +94,7 @@ impl<'a> CommitTransaction<'a> {
             extra_writes: false,
             changed: false,
             accounting_diverged: None,
+            landed,
             maintenance_added: 0,
             maintenance_retired: 0,
             started,

@@ -5403,6 +5403,17 @@
     "scenarios": []
   },
   {
+    "name": "refused_absorbed_groups_do_not_widen_the_next_recount",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "54eba242eb3c1aa130fde0f123b3278efb8e7297292e8c2cf235bd4caf301996",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_absorption.rs",
+    "scenarios": []
+  },
+  {
     "name": "relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

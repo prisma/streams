@@ -14,6 +14,8 @@ impl CommitTransaction<'_> {
             self.engine
                 .completion_checkpoint(retirement_tests::CompletionPhase::NoWrite)
                 .await;
+            // Every absorbed advance here already sat at or below its boundary.
+            self.answer_landed();
             self.join_prior_barrier().await;
             return;
         }
@@ -31,6 +33,18 @@ impl CommitTransaction<'_> {
             }
         };
         self.write(maintenance).await;
+    }
+    /// The group's absorbed advances are written (or needed no write): the
+    /// absorber keeps the lane marks their batches raised. A refused group
+    /// never gets here and drops the receipts unanswered instead.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::answer_landed; a receipt's send fails only when the absorber that awaited it already went away; a handled result would only restate that nobody waits"
+    )]
+    fn answer_landed(&mut self) {
+        for landed in self.landed.drain(..) {
+            let _ = landed.send(());
+        }
     }
     fn has_writes(&self) -> bool {
         self.changed
@@ -165,7 +179,7 @@ impl CommitTransaction<'_> {
     }
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "CommitTransaction::write; the elapsed microseconds are clamped to u32::MAX before the cast; a checked conversion would only restate the clamp"
+        reason = "CommitTransaction::write; the elapsed microseconds are clamped to u32::MAX before the cast, and a written group answers its absorbed-batch receipts before it publishes; a checked conversion would only restate the clamp"
     )]
     async fn write(mut self, maintenance: Option<ShardMaintenance>) {
         let encode_us = self.started.elapsed().as_micros().min(u32::MAX as u128) as u32;
@@ -191,6 +205,7 @@ impl CommitTransaction<'_> {
                 self.engine
                     .completion_checkpoint(retirement_tests::CompletionPhase::Written)
                     .await;
+                self.answer_landed();
                 self.publish(handle.seqnum(), maintenance, encode_us, write_us);
             }
             Err(error) => self.write_failed(&error),

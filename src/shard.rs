@@ -884,7 +884,7 @@ type ConsumerFences = Mutex<HashMap<([u8; 16], String), u64>>;
 
 #[expect(
     clippy::large_enum_variant,
-    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op, and the absorbed chunk start is one more scalar far below it; boxing it would add a heap hop to the hottest path"
+    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op, and the absorbed chunk start and batch receipt sit far below it; boxing it would add a heap hop to the hottest path"
 )]
 pub(crate) enum CommitOp {
     Append(AppendReq),
@@ -930,17 +930,16 @@ pub(crate) enum CommitOp {
         op: crate::queue::QueueOp,
         resp: oneshot::Sender<Result<crate::queue::QueueOut, String>>,
     },
-    /// One gather's worth of absorber confirmations, carried as a SINGLE
-    /// committer message so every covered boundary lands in the same
-    /// write batch deterministically (the per-stream sends only
-    /// coalesced opportunistically — the committer could run between
-    /// them). Each entry is (hash, chunk start, new upto, frame bytes the
-    /// absorber copied for that chunk — the committer retires the exact
-    /// bytes of the range it advances over). Expanded into per-stream
-    /// `Absorbed` ops at commit_group entry.
+    /// One gather's absorber confirmations as ONE committer message, so every
+    /// covered boundary lands in the same write batch. Entries are (hash, chunk
+    /// start, new upto, frame bytes copied; the committer retires the exact
+    /// bytes of the range it advances over), expanded into `Absorbed` ops at
+    /// commit_group entry. `landed` is answered once the group is written; a
+    /// refusal drops it unanswered, and the absorber rolls its lane marks back.
     AbsorbedBatch {
         streams: Vec<([u8; 16], u64, u64, u64)>,
         v2: bool,
+        landed: oneshot::Sender<()>,
     },
     /// Trim maintenance pulse (flush ticker, whenever the trim-debt set
     /// is non-empty): round-robins streams with `trimmed <
@@ -2004,22 +2003,23 @@ impl ShardEngine {
             .await;
     }
 
-    /// One gather's boundary advances as a SINGLE committer message:
-    /// every covered stream lands in the same write batch by
-    /// construction (per-stream sends only coalesced opportunistically).
-    /// Entries are (hash, chunk start, new upto, frame bytes copied).
+    /// Submits one gather's `CommitOp::AbsorbedBatch`; returns its receipt.
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed_batch_v2; a batch of chunk advances the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+        reason = "ShardEngine::submit_absorbed_batch_v2; a batch the closed committer queue refuses drops its receipt unanswered, which the absorber reads as a refused group; a handled send would only restate that refusal"
     )]
-    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64, u64)>) {
-        if streams.is_empty() {
-            return;
-        }
-        let _ = self
-            .tx
-            .send(CommitOp::AbsorbedBatch { streams, v2: true })
-            .await;
+    pub(crate) async fn submit_absorbed_batch_v2(
+        &self,
+        streams: Vec<([u8; 16], u64, u64, u64)>,
+    ) -> oneshot::Receiver<()> {
+        let (landed, receipt) = oneshot::channel();
+        let batch = CommitOp::AbsorbedBatch {
+            streams,
+            v2: true,
+            landed,
+        };
+        let _ = self.tx.send(batch).await;
+        receipt
     }
 
     /// The history partition ONLY IF already open — the metrics path

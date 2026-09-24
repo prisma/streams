@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot::{self, error::TryRecvError};
 
 /// Rough WriteBatch bookkeeping cost per entry, on top of key+value.
 const ENTRY_OVERHEAD: usize = 64;
@@ -38,8 +39,73 @@ struct ReadPlan {
     hash: [u8; 16],
     handle: Arc<StreamHandle>,
     from: u64,
+    /// The read's end: the durable end, or a refused chunk's end (`LaneMark`).
     upto: u64,
+    /// The durable end: a chunk that stops below it leaves the stream pending.
+    next: u64,
     route: RouteHash,
+}
+
+/// One chunk advance as submitted: (hash, chunk start, new upto, frame bytes).
+type Advance = ([u8; 16], u64, u64, u64);
+
+/// Where a stream's next chunk on one lane starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LaneMark {
+    /// The highest `upto` the lane submitted, or the start of the refused
+    /// chunk it was rolled back to.
+    pub(super) from: u64,
+    /// True for the v2 shared partition; a lane trusts only its own mark.
+    pub(super) v2: bool,
+    /// Set by a rollback: the next chunk reads no further than the refused
+    /// chunk's end, so it replays that chunk row for row.
+    pub(super) replay_to: Option<u64>,
+}
+
+/// One submitted batch: its chunks, and the receipt its committer group
+/// answers once written or drops unanswered when refused.
+struct Submission {
+    receipt: oneshot::Receiver<()>,
+    chunks: Vec<Advance>,
+}
+
+/// The absorber's lane: every stream's mark, and the submissions the
+/// committer has not answered yet, oldest first.
+///
+/// A mark rests on flushed history: it only rises to the end of a chunk
+/// whose rows and postings pages the gather flushed before submitting. A
+/// refused group lands nothing, so a mark it raised must come back down, or
+/// every later chunk starts above the durable boundary and the first
+/// accepted advance recounts every refused chunk inside the committer. It
+/// comes down only to the refused chunk's start, and only while it still
+/// rests on that chunk's end, and the next chunk replays exactly that chunk:
+/// the same rows, so the same postings pages, overwritten in place. Flushed
+/// pages above the chunk's end (a later chunk still in flight, or a flush
+/// that failed after writing) are never straddled by a wider re-gather,
+/// whose pages would overlap them.
+#[derive(Default)]
+pub(super) struct Lane {
+    pub(super) marks: HashMap<[u8; 16], LaneMark>,
+    in_flight: Vec<Submission>,
+}
+
+impl Lane {
+    /// Roll `hash`'s v2 mark back to replay the refused chunk `[from, upto)`
+    /// if the mark still rests on that chunk's end; true when it did.
+    fn replay(&mut self, hash: [u8; 16], from: u64, upto: u64) -> bool {
+        let Some(mark) = self.marks.get_mut(&hash) else {
+            return false;
+        };
+        let rests_on_chunk = mark.v2 && mark.from == upto;
+        if rests_on_chunk {
+            *mark = LaneMark {
+                from,
+                v2: true,
+                replay_to: Some(upto),
+            };
+        }
+        rests_on_chunk
+    }
 }
 
 /// One chunk's postings runs per routing-key hash.
@@ -256,44 +322,107 @@ impl Absorber {
     }
 
     /// R25-D: heal a stranded submitted-watermark. The gather records
-    /// what it SUBMITTED (fire-and-forget) so an advance in flight to
-    /// handle state is not re-sent — but if the committer group carrying
-    /// that advance FAILED, the durable boundary never moved and the mark
-    /// now fences the range off from every future gather: `from =
-    /// max(mark, absorbed) >= upto` reads as no_work forever, and the
-    /// backlog is stranded until a restart. The durable tail is the
-    /// source of truth: a mark ahead of it at rescan time describes a
-    /// submission that did not land, so roll it back. A genuine in-flight
+    /// what it SUBMITTED so an advance in flight to handle state is not
+    /// re-sent. A refused group's receipt rolls its marks back
+    /// (`settle_submissions`), but a landed group can still drop one
+    /// stream's advance alone (a stream handle the committer cannot load,
+    /// a layout-sealed lane). The durable boundary never moved and the mark
+    /// fences the range off: `from = max(mark, absorbed) >= upto` reads as
+    /// no_work forever. The durable tail is the source of truth: a mark
+    /// ahead of it at rescan time describes a submission that did not
+    /// land, so roll it back. A genuine in-flight
     /// advance re-submitted after this is harmless — the committer
     /// ignores non-advancing boundaries, retires exactly the range it
     /// advances over (TLA-016-F1), and the history write is idempotent.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::roll_back_stranded_mark; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
+        reason = "Absorber::roll_back_stranded_mark; a poisoned lane may hold a partially raised or rolled-back lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
     )]
     fn roll_back_stranded_mark(&self, h: [u8; 16], absorbed: u64) {
-        let mut submitted = self.submitted.lock().unwrap();
-        if let Some((mark, _v2)) = submitted.get(&h)
-            && *mark > absorbed
+        let mut lane = self.submitted.lock().unwrap();
+        if let Some(mark) = lane.marks.get(&h)
+            && mark.from > absorbed
         {
             tracing::warn!(
                 "rolling back stranded absorb mark for {}: submitted={} durable absorbed={}",
                 crate::crypto::hex(&h[..4]),
-                mark,
+                mark.from,
                 absorbed,
             );
-            submitted.remove(&h);
+            lane.marks.remove(&h);
         }
     }
 
-    /// Test-facing wrapper: reserve adaptively, then gather. The pump
-    /// loop calls absorb_gather_v2_with directly because its
-    /// reservation must precede the post-budget fence re-check.
+    /// Settle every submission the committer has answered, oldest first,
+    /// before the next gather plans (see `Lane`). A refused group's streams
+    /// whose marks still rest on its chunks roll back to replay them and are
+    /// due again: their pending entries went with the refused gather's
+    /// outcome. A mark a later chunk already raised stays; that chunk's
+    /// advance recounts the refused one, so no recount spans more than the
+    /// chunks in flight when the refusal happened. Never waits on the
+    /// committer.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Absorber::settle_submissions; a poisoned lane may hold a partially raised or rolled-back mark; recovering it could plan a chunk past a refused one or re-read over flushed postings pages"
+    )]
+    pub(super) fn settle_submissions(&self, pending: &mut HashMap<[u8; 16], PendingAbsorb>) {
+        let mut lane = self.submitted.lock().unwrap();
+        let mut refused = Vec::new();
+        lane.in_flight
+            .retain_mut(|submission| match submission.receipt.try_recv() {
+                Err(TryRecvError::Empty) => true,
+                Ok(()) => false,
+                Err(TryRecvError::Closed) => {
+                    refused.append(&mut submission.chunks);
+                    false
+                }
+            });
+        for (hash, from, upto, bytes) in refused {
+            if !lane.replay(hash, from, upto) {
+                continue;
+            }
+            let since = Instant::now()
+                .checked_sub(self.cfg.threshold_age)
+                .unwrap_or_else(Instant::now);
+            pending.entry(hash).or_insert(PendingAbsorb {
+                bytes,
+                since,
+                failures: 0,
+                retry_after: None,
+            });
+        }
+    }
+
+    /// Prune lane marks (the map otherwise grows with every stream ever
+    /// absorbed): a mark is only load-bearing while a re-gather could still
+    /// observe a stale durable boundary, i.e. while the stream is pending or
+    /// its resident absorbed boundary trails the mark. Frames are
+    /// deterministic and boundary submits are guarded, so over-pruning
+    /// merely costs an idempotent rewrite.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Absorber::prune_lane_marks; a poisoned lane may hold a partially raised or rolled-back mark; recovering it could keep trusting a mark whose submission never landed"
+    )]
+    pub(super) fn prune_lane_marks(&self, pending: &HashMap<[u8; 16], PendingAbsorb>) {
+        self.submitted.lock().unwrap().marks.retain(|h, mark| {
+            pending.contains_key(h)
+                || self
+                    .shard
+                    .resident_absorbed(h)
+                    .is_some_and(|a| a < mark.from)
+        });
+    }
+
+    /// Test-facing wrapper: settle answered submissions, reserve
+    /// adaptively, then gather, as a pump tick does. The pump loop calls
+    /// absorb_gather_v2_with directly because its reservation must precede
+    /// the post-budget fence re-check.
     #[cfg(test)]
     pub(crate) async fn absorb_gather_v2(
         &self,
         streams: &[[u8; 16]],
     ) -> anyhow::Result<GatherOutcome> {
+        self.settle_submissions(&mut HashMap::new());
         let mut reservation = self
             .shard
             .history_resources
@@ -388,16 +517,17 @@ impl Absorber {
     }
 
     /// The stream's read window: from its durable absorbed boundary —
-    /// floored at OUR lane's submitted mark — up to its durable end. Lane-
+    /// floored at OUR lane's submitted mark — up to its durable end, or up
+    /// to the end of the refused chunk a rolled-back mark replays. Lane-
     /// scoped floor: a v1 mark here may describe an advance the layout
     /// seal dropped, and skipping past it would hide that range from the
     /// partition.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::plan_read; a poisoned handle state or submitted-mark map may hold a partially advanced boundary or lane mark; recovering it could plan a read from a boundary that was never committed"
+        reason = "Absorber::plan_read; a poisoned handle state or lane may hold a partially advanced boundary, lane mark or replay end; recovering it could plan a read from a boundary that was never committed or past a refused chunk"
     )]
     fn plan_read(&self, hash: [u8; 16], handle: Arc<StreamHandle>) -> Option<ReadPlan> {
-        let (from, upto, route) = {
+        let (from, next, route) = {
             let st = handle.state.lock().unwrap();
             (
                 st.durable.absorbed,
@@ -405,19 +535,19 @@ impl Absorber {
                 RouteHash(st.durable.route),
             )
         };
-        let from = self
-            .submitted
-            .lock()
-            .unwrap()
-            .get(&hash)
-            .and_then(|(u, v2)| (*v2).then_some(*u))
-            .unwrap_or(0)
-            .max(from);
+        let mark = self.submitted.lock().unwrap().marks.get(&hash).copied();
+        let mark = mark.filter(|mark| mark.v2);
+        let from = mark.map_or(0, |mark| mark.from).max(from);
+        let upto = match mark.and_then(|mark| mark.replay_to) {
+            Some(end) if end > from => end.min(next),
+            _ => next,
+        };
         (from < upto).then(|| ReadPlan {
             hash,
             handle,
             from,
             upto,
+            next,
             route,
         })
     }
@@ -508,10 +638,10 @@ impl Absorber {
             .out
             .advanced
             .push((plan.hash, plan.from, rows.end, chunk_raw));
-        // Truncated by the per-stream cap: more durable data sits
-        // below `upto`. The caller must keep this stream pending.
-        if rows.end < plan.upto {
-            staged.out.partial.push((plan.hash, plan.upto - rows.end));
+        // Truncated by the per-stream cap or a replay's end: more durable
+        // data sits below `next`. The caller must keep this stream pending.
+        if rows.end < plan.next {
+            staged.out.partial.push((plan.hash, plan.next - rows.end));
         }
         Ok(())
     }
@@ -576,10 +706,11 @@ impl Absorber {
                 .postings_cache
                 .install_chunk(inc, chunk_from, chunk_to, per_key);
         }
-        self.shard
+        let receipt = self
+            .shard
             .submit_absorbed_batch_v2(out.advanced.clone())
             .await;
-        self.raise_lane_marks(&out.advanced);
+        self.raise_lane_marks(&out.advanced, receipt);
         tracing::info!(
             "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",
             out.advanced.len(),
@@ -591,20 +722,34 @@ impl Absorber {
 
     /// Raise each advanced stream's v2 lane mark to what this gather
     /// submitted, so pacing off the published boundary alone cannot
-    /// re-absorb a range whose committer batch has not dispatched yet.
+    /// re-absorb a range whose committer batch has not dispatched yet, and
+    /// keep the batch's receipt until the committer answers it.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::raise_lane_marks; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could re-absorb or fence off a range whose chunk advance is still in flight"
+        reason = "Absorber::raise_lane_marks; a poisoned lane may hold a partially raised lane mark or an unrecorded submission; recovering it could re-absorb or fence off a range whose chunk advance is still in flight, or never roll back a refused one"
     )]
-    fn raise_lane_marks(&self, advanced: &[([u8; 16], u64, u64, u64)]) {
-        let mut submitted = self.submitted.lock().unwrap();
+    fn raise_lane_marks(&self, advanced: &[Advance], receipt: oneshot::Receiver<()>) {
+        let mut lane = self.submitted.lock().unwrap();
         for (hash, _, upto, _) in advanced {
-            let e = submitted.entry(*hash).or_insert((0, true));
-            if e.1 {
-                e.0 = e.0.max(*upto);
+            let mark = lane.marks.entry(*hash).or_insert(LaneMark {
+                from: 0,
+                v2: true,
+                replay_to: None,
+            });
+            if mark.v2 {
+                mark.from = mark.from.max(*upto);
             } else {
-                *e = (*upto, true);
+                *mark = LaneMark {
+                    from: *upto,
+                    v2: true,
+                    replay_to: None,
+                };
             }
+            mark.replay_to = mark.replay_to.filter(|end| *end > mark.from);
         }
+        lane.in_flight.push(Submission {
+            receipt,
+            chunks: advanced.to_vec(),
+        });
     }
 }

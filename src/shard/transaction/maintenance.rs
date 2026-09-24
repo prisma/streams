@@ -335,13 +335,13 @@ impl CommitTransaction<'_> {
                 crate::crypto::hex(&hash[..4]),
             )
         };
-        // Not one chunk: a mis-started advance recounts every chunk that
-        // refused groups carried since its lane mark last healed, one per
-        // consecutive refusal until the dirty-index rescan rolls the mark
-        // back; only the stream's unabsorbed backlog bounds the range. The
-        // committer waits on this scan, so it reads ahead like the gather
-        // that copied the rows: the default fetches one block per request,
-        // a round trip per 4 KiB of a range the block cache no longer holds.
+        // The absorber rolls a refused batch's lane marks back before its
+        // next gather (`gather::Lane`), so an advance mis-starts only behind
+        // a refusal learned after it planned, and recounts just the chunks
+        // in flight then: two, while the committer answers within a tick.
+        // The committer waits on this scan, so it reads ahead like the
+        // gather that copied the rows: the default fetches one block per
+        // request, a round trip per 4 KiB of a range no cache holds.
         let options = slatedb::config::ScanOptions {
             read_ahead_bytes: 2 * 1024 * 1024,
             max_fetch_tasks: 4,

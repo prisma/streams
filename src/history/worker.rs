@@ -15,7 +15,7 @@ impl Absorber {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::run; the eight-byte phase prefix of a sixteen-byte hash always fits a u64, and a poisoned discovery cursor or lane-mark map may hold a half-advanced position; recovering the latter could rescan a page forever or trust a mark the layout seal dropped"
+        reason = "Absorber::run; the eight-byte phase prefix of a sixteen-byte hash always fits a u64, and a poisoned discovery cursor may hold a half-advanced position; recovering it could rescan a page forever"
     )]
     pub(super) async fn run(self, mut rx: mpsc::Receiver<AbsorbSignal>) {
         let absorber = self;
@@ -122,23 +122,7 @@ impl Absorber {
                     // than anything evicted: 2.3 GB RSS in seven
                     // minutes). Fat backlogs enter due-now and big.
                     if tick_n.is_multiple_of(absorber.cfg.sweep_every.max(1)) {
-                        // Prune the submitted high-water map (it
-                        // otherwise grows with every stream ever
-                        // absorbed): an entry is only load-bearing
-                        // while a re-gather could still observe a
-                        // stale durable boundary — i.e. while the
-                        // stream is pending or its resident absorbed
-                        // boundary trails the submitted mark. Frames
-                        // are deterministic and boundary submits are
-                        // guarded, so over-pruning merely costs an
-                        // idempotent rewrite.
-                        absorber.submitted.lock().unwrap().retain(|h, v| {
-                            pending.contains_key(h)
-                                || absorber
-                                    .shard
-                                    .resident_absorbed(h)
-                                    .is_some_and(|a| a < v.0)
-                        });
+                        absorber.prune_lane_marks(&pending);
                     }
                     // Publish absorption lag (scale-out signal).
                     // Every pending stream is eligible: the interim
@@ -177,6 +161,7 @@ impl Absorber {
                     if absorber.shard.history_resources.paused.load(std::sync::atomic::Ordering::Relaxed) {
                         continue;
                     }
+                    absorber.settle_submissions(&mut pending);
                     let v2_lane = absorber.classify_due(&mut pending, now, &mut classify_after).await;
                     absorber.gather_due(&mut pending, now, &v2_lane).await;
 

@@ -747,13 +747,12 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
     })
 }
 
-/// The highest `upto` each lane submitted per stream, with the lane that
-/// submitted it (true = the v2 shared partition).
-type LaneMarks = std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>;
+/// Each stream's lane mark and the submissions the committer has not answered.
+type LaneMarks = std::sync::Mutex<gather::Lane>;
 
 #[expect(
     dead_code,
-    reason = "Absorber; the store and key cache it was started with are kept for the gather planner, which reaches them through the engine today; dropping them would touch boot's mutation-gated wiring for no behaviour change"
+    reason = "Absorber; the store and key cache it was started with are kept for the gather planner, which reaches them through the engine today, while the lane beside them holds marks and unanswered submissions; dropping them would touch boot's mutation-gated wiring for no behaviour change"
 )]
 pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
@@ -777,11 +776,12 @@ pub(crate) struct Absorber {
     /// Small LRU (4) + idle eviction keeps V4's idle-per-DB-overhead
     /// concern bounded; entries are dropped on fence-class errors and on
     /// absorber exit.
-    /// Highest `upto` this absorber has submitted per stream, WITH the
-    /// lane that submitted it (true = v2 shared partition). The
-    /// published handle state only reflects a submit after the committer
-    /// batch it landed in is durable AND dispatched, so pacing passes off
-    /// the published value alone re-absorbs the same range whenever
+    /// Where this absorber's next chunk starts per stream, WITH the lane
+    /// that submitted it (true = v2 shared partition): the highest `upto`
+    /// it submitted, rolled back when the committer refuses the group
+    /// (`gather::Lane`). The published handle state only reflects a
+    /// submit after its committer batch is durable AND dispatched, so
+    /// pacing off the published value alone re-absorbs the same range when
     /// dispatch lags a tick — wasted decrypt/write work, and the duplicate
     /// `Absorbed` op it produces used to collapse the deferred-trim lag
     /// (2026-07-27 boundary-race DST failure). LANE-SCOPED (round 4):
@@ -815,7 +815,7 @@ impl Absorber {
             shard,
             keys,
             cfg,
-            submitted: std::sync::Mutex::new(HashMap::new()),
+            submitted: Default::default(),
             discovery_after: Default::default(),
             // Seeded at the worst-case est: boot-time gathers (restart
             // rediscovery drains the whole backlog) reserve like the

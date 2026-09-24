@@ -740,3 +740,101 @@ async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() 
     );
     engine.begin_close();
 }
+
+/// A refused absorption group rolls its lane marks back, so refusals do not
+/// stack chunks onto the next accepted advance's recount. With one record
+/// per chunk, eight consecutive groups carrying the stream's advance are
+/// refused; each gather settles the committer's answer first and replays
+/// the refused chunk. The first accepted advance then starts at the boundary
+/// and the committer reads no stored record for it. Before the rollback the
+/// absorber planned each chunk from the mark the refused one raised, and the
+/// first accepted advance recounted all nine chunks inside the committer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_absorbed_groups_do_not_widen_the_next_recount() {
+    const REFUSALS: usize = 8;
+    let store = FaultStore::new(mem(), 1, FaultProfile::clean());
+    let db = slatedb::Db::builder("dst-lagmark/shard", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            compactor_options: None,
+            ..Default::default()
+        })
+        .with_db_cache_disabled()
+        .build()
+        .await
+        .unwrap();
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-lagmark".into(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        maintenance,
+    );
+    let key = skey();
+    let (hash, rider) = ([33u8; 16], [34u8; 16]);
+    append_n(&engine, hash, &key, REFUSALS + 4, 1024).await;
+    engine
+        .db
+        .flush_with_options(slatedb::config::FlushOptions {
+            flush_type: slatedb::config::FlushType::MemTable,
+        })
+        .await
+        .unwrap();
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes: 1,
+            ..Default::default()
+        },
+    );
+    for refused in 1..=REFUSALS {
+        engine.fail_next_absorbed_group();
+        let gather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+        assert_eq!(gather.advanced.len(), 1);
+        let mut polls = 0;
+        while engine.group_failures_tripped() < refused && polls < 400 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            polls += 1;
+        }
+        assert_eq!(
+            engine.group_failures_tripped(),
+            refused,
+            "refusal {refused}"
+        );
+        // The committer runs groups in order: the rider's ack proves the
+        // refused group is finished and its receipt answered.
+        append_n(&engine, rider, &key, 1, 16).await;
+    }
+    // The accepted gather runs before its group, so every SST read after it
+    // is the committer's.
+    let sst_reads = || store.count(StoreOp::Get, ObjClass::Sst);
+    let hold = engine.test_hold_commit().await;
+    let accepted = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    let before = sst_reads();
+    drop(hold);
+    let (_, from, upto, _) = accepted.advanced[0];
+    let tail = durable_tail(&engine, hash, 400, |t| t.absorbed >= upto)
+        .await
+        .unwrap();
+    let recount_reads = sst_reads() - before;
+    assert_eq!(tail.absorbed, upto, "the accepted advance never landed");
+    assert!(
+        upto <= 2,
+        "after {REFUSALS} refused groups the first accepted advance (chunk [{from}, {upto})) \
+         moved the boundary over {upto} one-record chunks, all recounted in the committer \
+         ({recount_reads} SST reads)"
+    );
+    assert_eq!(
+        (from, recount_reads),
+        (0, 0),
+        "a settled refusal replays its chunk from the boundary, which the committer trusts unread"
+    );
+    engine.begin_close();
+}
