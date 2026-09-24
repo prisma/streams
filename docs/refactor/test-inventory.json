@@ -801,6 +801,22 @@
     "scenarios": []
   },
   {
+    "name": "a_refused_owed_final_retry_leaves_its_claim_unrenewed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "de10a21d37caebc46053a2f13974c06a3f7800b585f009f749c30373c1156b8f",
+    "mechanisms": [],
+    "configuration": [
+      "// The failpoint is keyed by this test's own stream name.",
+      "crate::failpoints::stop_after_seal_intent(\"owedcap\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"owedcap\");",
+      "assert_eq!(st, 503, \"the failpoint did not stop the close\");"
+    ],
+    "file": "src/dst/tests/seal_coordination.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_refused_raw_close_does_not_strand_the_collection",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

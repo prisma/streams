@@ -11,11 +11,8 @@ pub(super) struct ClosePlan {
     pub(super) sealed_reject_new: Option<SealedReject>,
 }
 
-/// Authenticate a final's execution token and renew only its own persisted claim.
-#[expect(
-    clippy::too_many_lines,
-    reason = "prepare_close; closing authenticates the token, renews the claim and prepares the final in one sequence whose refusal depends on which step failed; splitting it would separate the steps from the refusal they order"
-)]
+/// Authenticate a final's execution token and plan the close. An owed
+/// final's claim is renewed by `install_intent`, after validation.
 pub(super) async fn prepare_close(
     state: &AppendService,
     desc: &StreamDesc,
@@ -70,33 +67,7 @@ pub(super) async fn prepare_close(
             && (sl.operation_id == this_close_op
                 || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|a| a.op_id.as_str()))
     });
-    let mut raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|a| a.generation);
-    if is_owed_final && seal_auth.is_none() {
-        match crate::application::lifecycle::renew_owed_claim(
-            &state.lifecycle,
-            &desc.sref(),
-            &this_close_op,
-            &desc.stream_epoch,
-        )
-        .await
-        {
-            Ok(Some(g)) => raw_seal_gen = Some(g),
-            Ok(None) => {
-                return fail(
-                    FailureClass::Conflict,
-                    AppendCode::Sealed,
-                    "the seal this close was resuming has been superseded",
-                );
-            }
-            Err(e) => {
-                return fail(
-                    FailureClass::Unavailable,
-                    AppendCode::Internal,
-                    &e.to_string(),
-                );
-            }
-        }
-    }
+    let raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|a| a.generation);
 
     let synthetic_producer = close && !body.is_empty() && producer.is_none();
     if synthetic_producer {
@@ -162,7 +133,9 @@ async fn closed_tail_failure(state: &AppendService, desc: &StreamDesc) -> Append
     AppendFailure::declared_closed(seg.seg_id, desc.segments.is_some(), next)
 }
 
-/// Publish intent only after deterministic validation; malformed closes leave no debt.
+/// Publish the close's lifecycle write, a fresh intent or the renewal of the
+/// owed final it resumes, only after deterministic validation: malformed or
+/// refused closes leave no debt and renew nothing.
 pub(super) async fn install_intent(
     state: &AppendService,
     desc: &StreamDesc,
@@ -178,6 +151,35 @@ pub(super) async fn install_intent(
     let this_close_op = &plan.operation;
     #[cfg(test)]
     let name = desc.sref().name().as_str().to_string();
+    if is_owed_final && seal_auth.is_none() {
+        // Resuming an owed final renews only its own claim, and only now,
+        // after deterministic validation (external review §5): a retry the
+        // content owner refused has written nothing.
+        match crate::application::lifecycle::renew_owed_claim(
+            &state.lifecycle,
+            &desc.sref(),
+            this_close_op,
+            &desc.stream_epoch,
+        )
+        .await
+        {
+            Ok(Some(g)) => plan.generation = Some(g),
+            Ok(None) => {
+                return fail(
+                    FailureClass::Conflict,
+                    AppendCode::Sealed,
+                    "the seal this close was resuming has been superseded",
+                );
+            }
+            Err(e) => {
+                return fail(
+                    FailureClass::Unavailable,
+                    AppendCode::Internal,
+                    &e.to_string(),
+                );
+            }
+        }
+    }
     if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
         let intent = if entries.is_empty() {
             crate::registry::SealIntent::Empty
