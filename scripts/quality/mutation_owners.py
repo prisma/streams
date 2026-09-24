@@ -82,6 +82,7 @@ OWNERS = (
     owner('shard', 'src/shard.rs', 'shard::'),
     owner('bootstrap', 'src/bootstrap.rs', 'bootstrap::'),
     owner('bootstrap_rss', 'src/bootstrap/rss.rs', 'bootstrap::'),
+    owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
     owner('read_request', 'src/application/read_request.rs', 'application::read_request::'),
     owner('http_serve', 'src/http/serve.rs', 'http::serve::'),

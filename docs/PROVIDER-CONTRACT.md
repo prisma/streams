@@ -17,14 +17,15 @@ and SlateDB do with the answers.
 | `store_cases.rs` | the raw contract: competing creates and updates, stale, fabricated and missing-object preconditions, ETag presence and stability, user metadata |
 | `registry_cases.rs` | `Registry::create`, `recreate` and `mutate_incarnation` through the store under test: missing ETags, lost replies, failed dispatches, a changed incarnation, racing registries |
 | `slatedb_cases.rs` | SlateDB writer fencing with the server's own settings, and ambiguous WAL PUTs |
-| `http_cases.rs` | s3lite only: 5xx answers before and after the emulator applied a conditional PUT, which the S3 client itself retries |
+| `http_cases.rs` | s3lite only: 5xx answers before and after the emulator applied a PUT, below the S3 client: conditional PUTs are sent once and reach the registry and SlateDB as errors, unconditional PUTs are still retried |
 | `faults.rs` | a one-shot fault wrapper above the client: a lost reply (the PUT is applied, the caller gets an error) or a failed dispatch (the PUT never reaches the store), and ETag stripping on reads |
 | `s3lite_harness.rs` | the s3lite emulator served in-process on a loopback port, compiled from the binary's own `src/bin/s3lite/emulator.rs`, with an HTTP fault layer in front of it |
 
 Every runner builds its stores the way the server does:
 `ServerConfig::store_for` in `src/bootstrap.rs` (the `AmazonS3Builder`
 with `S3ConditionalPut::ETagMatch`, the timing connector and store wrapper,
-the pool settings and `PATH_PREFIX`). The registry cases use the ops-bucket
+the pool settings and `PATH_PREFIX`, and `src/bootstrap/s3_store.rs`, which
+sends conditional PUTs through a client that never retries). The registry cases use the ops-bucket
 store and the SlateDB cases the shard-bucket store, as in production. SlateDB
 opens with `shard_settings`, the settings the server gives shard logs.
 
@@ -101,7 +102,9 @@ ASM-OBJSTORE-CAS (b), conditional update:
 
 - 4 concurrent `PutMode::Update` with one ETag, in 3 rounds: exactly one
   commits and 3 answer `Precondition`. The stale ETag is then refused
-  and changes nothing.
+  and changes nothing. Any other answer (on S3 a 409 for concurrent
+  `If-Match` writes arrives as `AlreadyExists`) may have committed and
+  makes the round inconclusive.
 - An update of a missing object answers `Precondition` and creates
   nothing. An ETag the store never issued answers `Precondition`.
 - A GET and a HEAD of an existing object carry a non-empty ETag, and
@@ -123,10 +126,8 @@ ASM-OBJSTORE-CAS (b), conditional update:
 - 4 registries with separate caches (as separate processes) race
   non-idempotent `mutate_incarnation` calls on one descriptor for 3
   rounds. Every applied value is distinct, and the stored counter equals
-  the number applied. On a real provider only, transport errors count as
-  ambiguous and widen that bound by their number. A provider 5xx after a
-  committed update (finding F1) makes the counter exceed that bound; the
-  run then fails, and the failure is F1 observed on the provider.
+  the number applied. On a real provider only, transport errors and
+  provider 5xx count as ambiguous and widen that bound by their number.
 - 4 registries race `recreate` of one dead incarnation: exactly one
   installs its epoch, and the others observe the winner.
 
@@ -178,33 +179,63 @@ providers. Only a real run exercises those branches.
 
 ## Findings
 
-**F1: the S3 client turns a committed conditional PUT into a refusal.**
-`object_store` 0.14.1 retries a conditional PUT answered 5xx, 429 or 408,
-and an update also on 409 (`retry_on_conflict`). The retry carries the
+**F1 (fixed): the S3 client turned a committed conditional PUT into a
+refusal.** `object_store` 0.14.1 re-sends a failed request inside one
+call (`client/retry.rs`). A conditional PUT is re-sent after a 5xx, 429 or
+408, after a connection that closed before the whole reply arrived
+(`HttpErrorKind::Request`), and, for an update, after a 409
+(`retry_on_conflict`, set only for `If-Match`). The retry carries the
 original `If-None-Match: *` or `If-Match`. If the first attempt was
-applied before the error, the retry is refused, and the caller receives
-`AlreadyExists` or `Precondition` for its own committed write. The server
-uses the default retry configuration (10 retries, 3 minutes), since
-`raw_store` sets none. So ASM-OBJSTORE-CAS (b) can hold for every HTTP
-request at the provider while, at the client API, `Precondition` does not
-mean "not committed". The registry reads it as "not committed"
-(`MutationError` documents that only an explicit conflict is retried).
-`http_cases.rs` reproduces this on s3lite and pins the result:
+applied, the retry is refused, and the caller receives `AlreadyExists` or
+`Precondition` for its own committed write. The budget is the client's
+`RetryConfig` (default 10 retries within 3 minutes); the `idempotent` and
+`retry_on_conflict` flags are crate-private, and no per-request option
+turns retries off. So ASM-OBJSTORE-CAS (b) could hold for every HTTP
+request at the provider while, at the client API, `Precondition` did not
+mean "not committed". On e15ebef, through the production client on
+s3lite:
 
-- One `mutate_incarnation` call applies a non-idempotent decision twice.
-  The counter moves 1 to 3, and the call reports `Applied(3)`.
-- `create` reports `(false, own descriptor)`, a lost race to itself.
-- `recreate` reports `(false, own incarnation)`, a decline against its
+- One `mutate_incarnation` call applied a non-idempotent decision twice
+  (the counter moved 1 to 3, and the call reported `Applied(3)`).
+- `create` reported `(false, own descriptor)`, a lost race to itself.
+- `recreate` reported `(false, own incarnation)`, a decline against its
   own write.
-- SlateDB's WAL PUT reports `Fenced` on s3lite, where no put-id metadata
-  exists. The batch is durable.
 
-How much this matters for each production `decide` closure depends on
-whether re-deciding against its own committed write is harmless. The
-suite does not analyse that. TLA-001 models a lost reply as an error,
-not as a refusal, so its outcomes do not include this one. The pinned
-assertions fail if the client stops retrying or starts verifying, which
-forces a review of this finding.
+The caller audit found the worst production consequence in stream
+creation: a recreate with a body, `close` or fork that "declined" against
+its own new incarnation answered success without writing the body and left
+the stream initializing. Other callers re-decided harmlessly, reported a
+wrong outcome (200 for 201, a skipped quota release, a seal claim reported
+as not installed) or skipped a follow-up the reconciler repairs.
+
+The fix is in `src/bootstrap/s3_store.rs`. The server's store holds two
+`AmazonS3` clients over one HTTP client (one connection pool, the same
+timing connector). Every conditional PUT (`PutMode::Create`,
+`PutMode::Update`) and every `CopyMode::Create` goes through the client
+with `max_retries: 0`. Reads, lists, deletes, unconditional PUTs and
+multipart uploads keep the default retries, because repeating them cannot
+turn a success into a refusal. So `AlreadyExists` and `Precondition` are
+the provider's answer to the one request that carried the precondition,
+and mean "not written" exactly as ASM-OBJSTORE-CAS states. Every other
+failure reaches the caller as an ordinary error, which each caller
+already treats as possibly committed: the registry answers
+`AmbiguousCompletion` (`create` and `recreate` an error), and SlateDB's
+retrying store retries the WAL or manifest PUT itself and checks its put
+id (F2). `http_cases.rs` asserts the fixed outcomes on s3lite: a 5xx
+before or after the PUT landed is an error, never a refusal;
+`mutate_incarnation` applies once and reports `AmbiguousCompletion`;
+`create` and `recreate` report an error, not a race with themselves; an
+unconditional PUT answered 5xx is still retried. Each of these assertions
+fails if the conditional client is given the default retries.
+
+The cost is availability, not safety. A transient 5xx or 429 on a
+conditional PUT is no longer absorbed: the registry caller answers an
+error (usually a retryable 500 or 503), the startup canary and the
+topology create fail boot, and the fleet document write converges on the
+next tick. SlateDB is unaffected, because it retries. A caller's own retry
+after such an error sees its landed write as a lost race or a decline,
+exactly as after a lost reply; that is the ambiguity every caller already
+had to handle, now reported instead of hidden.
 
 **F2: SlateDB recognises its own landed PUT when metadata round-trips.**
 The pinned SlateDB's retrying store attaches a `slatedbputid` metadata

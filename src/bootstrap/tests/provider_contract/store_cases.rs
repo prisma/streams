@@ -178,7 +178,13 @@ async fn update_race(b: &Backend, name: String) -> Option<(String, Bytes)> {
     }))
     .await;
     let outcomes: Vec<Outcome> = results.iter().map(outcome).collect();
-    if outcomes.contains(&Outcome::Other) {
+    // An update answered anything but success or `Precondition` (S3's 409
+    // for concurrent `If-Match` writes arrives as `AlreadyExists`, and the
+    // client no longer retries it) may have committed.
+    if outcomes
+        .iter()
+        .any(|o| !matches!(o, Outcome::Written | Outcome::Precondition))
+    {
         return None;
     }
     let winners: Vec<usize> = (0..WRITERS)

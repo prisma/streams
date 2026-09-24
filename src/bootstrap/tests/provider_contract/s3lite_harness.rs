@@ -1,9 +1,8 @@
 //! The s3lite emulator served in-process on a loopback port, compiled from
 //! the binary's own source, with an HTTP fault layer in front of it. The
 //! layer answers 500 either instead of forwarding a PUT or after the
-//! emulator applied it, so the production client's own retry of a
-//! conditional PUT is exercised, which a wrapper above the client cannot
-//! reach.
+//! emulator applied it, so the production client's own retry decisions are
+//! exercised, which a wrapper above the client cannot reach.
 #![cfg(test)]
 
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
@@ -29,7 +28,7 @@ pub(super) enum HttpFault {
 #[derive(Debug)]
 struct Armed {
     fault: HttpFault,
-    precondition: HeaderName,
+    precondition: Option<HeaderName>,
     path_contains: String,
 }
 
@@ -40,9 +39,14 @@ pub(super) struct HttpFaults {
 
 impl HttpFaults {
     /// Apply `fault` to the next PUT carrying `precondition` (`If-Match`
-    /// for updates, `If-None-Match` for creates) whose path contains
-    /// `path_contains`.
-    pub(super) fn arm(&self, fault: HttpFault, precondition: HeaderName, path_contains: &str) {
+    /// for updates, `If-None-Match` for creates; `None` for any PUT) whose
+    /// path contains `path_contains`.
+    pub(super) fn arm(
+        &self,
+        fault: HttpFault,
+        precondition: Option<HeaderName>,
+        path_contains: &str,
+    ) {
         *self.armed.lock().unwrap() = Some(Armed {
             fault,
             precondition,
@@ -58,7 +62,9 @@ impl HttpFaults {
         let mut armed = self.armed.lock().unwrap();
         let hit = armed.as_ref().is_some_and(|a| {
             request.method() == Method::PUT
-                && request.headers().contains_key(&a.precondition)
+                && a.precondition
+                    .as_ref()
+                    .is_none_or(|header| request.headers().contains_key(header))
                 && request.uri().path().contains(&a.path_contains)
         });
         if !hit {

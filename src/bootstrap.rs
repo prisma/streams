@@ -4,12 +4,13 @@
 //! entry point: [`run`].
 
 mod rss;
+mod s3_store;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::Db;
 
@@ -19,38 +20,32 @@ use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
+use s3_store::S3Store;
 
 impl crate::config::ServerConfig {
-    fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<AmazonS3> {
+    fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<S3Store> {
         let bucket = bucket.as_deref().unwrap_or(&self.cli.bucket);
-        AmazonS3Builder::new()
+        let builder = AmazonS3Builder::new()
             .with_endpoint(&self.cli.s3_endpoint)
             .with_bucket_name(bucket)
             .with_region(&self.cli.region)
             .with_access_key_id(&self.cli.access_key_id)
             .with_secret_access_key(&self.cli.secret_access_key)
             .with_allow_http(true)
-            .with_conditional_put(S3ConditionalPut::ETagMatch)
-            // Idle pooled connections die silently across scale-to-zero
-            // snapshot/restore; expiring them just under the platform's 5 s
-            // idle threshold means a restored image wakes with an empty
-            // pool instead of dead sockets (EXPERIMENT-PILOT.md). The pool
-            // is shared by every shard/stream on the instance, and manifest
-            // polling keeps it warm whenever any shard is open — the cold
-            // path only bites fully-idle instances. POOL_IDLE_SECS exists
-            // so production fleets can lift this once the platform stops
-            // killing idle flows (2026-07 plan); until then keep <5.
-            .with_client_options(
-                object_store::ClientOptions::new()
-                    .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
-                    .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs)),
-            )
-            // Records Tigris's Server-Timing (their internal ms) and
-            // x-tigris-served-from per response → sp50/sp99 + served_from
-            // in /v1/debug/store. wall − server = network path.
-            .with_http_connector(crate::store_timing::SniffConnector)
-            .build()
-            .context("build s3 object store")
+            .with_conditional_put(S3ConditionalPut::ETagMatch);
+        // Idle pooled connections die silently across scale-to-zero
+        // snapshot/restore; expiring them just under the platform's 5 s
+        // idle threshold means a restored image wakes with an empty
+        // pool instead of dead sockets (EXPERIMENT-PILOT.md). The pool
+        // is shared by every shard/stream on the instance, and manifest
+        // polling keeps it warm whenever any shard is open — the cold
+        // path only bites fully-idle instances. POOL_IDLE_SECS exists
+        // so production fleets can lift this once the platform stops
+        // killing idle flows (2026-07 plan); until then keep <5.
+        let options = object_store::ClientOptions::new()
+            .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
+            .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs));
+        S3Store::build(builder, options).context("build s3 object store")
     }
 
     // All stores share this runtime's admission handle. Physical-process

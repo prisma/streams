@@ -179,8 +179,10 @@ actions to these contracts.
   one conditional update of a stream descriptor, bound to the incarnation it
   observed; a changed incarnation is reported (`IncarnationChanged`) and
   writes nothing.
-- **Origin:** the `object_store` crate (`PutMode::Create`, `PutMode::Update`)
-  and the provider's conditional-write support; `src/registry.rs`
+- **Origin:** the `object_store` crate (`PutMode::Create`, `PutMode::Update`;
+  `client/retry.rs` for its retry rules), `src/bootstrap/s3_store.rs` (the
+  no-retry client for conditional requests), and the provider's
+  conditional-write support; `src/registry.rs`
   `ConditionalUpdateToken`, `mutate_incarnation` and `recreate`;
   `src/application/creation/anchor.rs` (`anchor::install`) and
   `src/application/creation/deletion.rs` (`delete_transition`,
@@ -196,13 +198,19 @@ actions to these contracts.
   durability models include both ambiguous outcomes: TLA-005 `Restart`
   recovers an unreported prefix after `WalFail`, and TLA-011 `Land` has the
   `AmbiguousPut` outcome.
-- **Client-layer caveat (found by the suite):** object_store 0.14 re-sends a
-  conditional PUT after a 5xx, 429 or 408 with the original precondition. If
-  the first attempt committed, the retry is refused, so the caller sees
-  `Precondition` or `AlreadyExists` for its own write. Clause (b)'s "otherwise
-  it answers `Precondition`" can therefore hold at the provider and fail at the
-  client; see "Registry conditional writes never mistake their own committed
-  write for a refusal".
+- **Client layer:** object_store 0.14 re-sends a conditional PUT after a 5xx,
+  429, 408 or (for an update) 409 with the original precondition, so a caller
+  could see `Precondition` or `AlreadyExists` for its own committed write (the
+  provider contract suite reproduced a double-applied registry mutation and a
+  create answered as a lost race to itself). Since "Registry conditional
+  writes never mistake their own committed write for a refusal", every
+  conditional request (`PutMode::Create`, `PutMode::Update`, `CopyMode::Create`)
+  goes through a client with `max_retries: 0` (`src/bootstrap/s3_store.rs`),
+  so `Precondition` and `AlreadyExists` are the provider's answer to the only
+  request that carried the precondition; every other failure reaches the
+  caller as an ordinary, possibly committed, error. On real S3 a 409 on an
+  update arrives as `AlreadyExists` and counts as possibly committed.
+  Unconditional requests keep object_store's retries.
 - **Invalidation:** an object-store client or provider change; a registry CAS
   change; a retry layer that turns `AlreadyExists` or `Precondition` into
   success; a registry write that is not conditional on the observed
