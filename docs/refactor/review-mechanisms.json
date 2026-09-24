@@ -906,6 +906,73 @@
           "sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a"
         }
       ]
+    },
+    {
+      "id": "absorb-retirement-settlement",
+      "obligations": [
+        "HOLD-SPLIT-500"
+      ],
+      "owner": "ShardEngine committer absorbed-boundary retirement",
+      "mechanism": "Held commit gate with a queued gathered advance, a held WAL put under applied records, and the dirty-index rescan; direct commit groups carrying overlapping and gapped advances beside an append",
+      "entered_proof": "WAL hold engaged with applied.next == 8; G1 gathered before the gate releases; the overlapping and gapped advances staged in the same group as the append",
+      "oracle": "Co-grouped append Ok; boundary and stream ledger equal the exact stored bytes of [absorbed, next) and the shard ledger agrees; an advance that does not start at the boundary moves nothing; a duplicate raises no trim target; the next advance from the boundary retires and trims one advance behind",
+      "configuration": {
+        "records": 8,
+        "payload_bytes": 100,
+        "flush_interval_ms": 5,
+        "worker_threads": 4
+      },
+      "limitations": "In-memory FaultStore engines driven by manual gathers and direct commit groups; the capacity-rate race is covered by the post_split_throughput_scales acceptance loop, not by these tests.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "a_rescan_during_an_inflight_advance_never_fails_an_append",
+          "sha256": "e8f4ca4ffb700b4d080dbd18db845e6f0cff91b01dbd7905659b3f1afe4214cc"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
+          "sha256": "94a57bccbcce40ea332a33541633a101aa654263d68392877b9b8e01ca03f668"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "an_advance_that_skips_offsets_is_dropped_whole",
+          "sha256": "0a0bd93cc3bd237e55356e4d43bfe450c7f6e302bd1a88300db84c7812053fb4"
+        }
+      ],
+      "support_functions": [
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "append_behind_a_regather",
+          "sha256": "2dd8fa57b61c25dfea458f98140db721fabf724f3d7524befe374eaca896c442"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "assert_ledger_is_exact",
+          "sha256": "62be4252416f5d051bd63ecf161f150bb8de2214038f155b9d3ec89810ba787b"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "exact_ledger",
+          "sha256": "49d497807f9d146e5c3c332899217ccf0464b3997d3198b05e34ed196f5299ed"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "rig",
+          "sha256": "c6c43b11751fb52d6ed1609b705fdd23b813afa36384a037a77efd6cde9197b2"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "advance",
+          "sha256": "d1f0a0e7e04a260d863a65e6a9c85e7f65badffa162f7ffb6522538f15ee92ec"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "submit_advance",
+          "sha256": "139b8f295606af48a4636d06f31815c13e9d86f3eee5b1925c6feb34d37dcdcc"
+        }
+      ]
     }
   ],
   "external_legs": [

@@ -1,4 +1,5 @@
-//! Maintenance rows: load-or-rebuild across present, missing and corrupt state.
+//! Maintenance rows: load-or-rebuild across present, missing and corrupt
+//! state, and the absorbed-boundary retirement that keeps the ledger exact.
 #![cfg(test)]
 use super::*;
 use std::sync::Arc;
@@ -219,4 +220,225 @@ async fn load_or_rebuild_covers_present_missing_and_corrupt() {
         "corrupt maintenance row must fail the open"
     );
     db.close().await.unwrap();
+}
+
+// ---- absorbed-boundary retirement (release hold: the capacity run's
+// one-off 500). An absorbed advance that re-covers bytes an earlier
+// advance retired used to retire them again; once the stream ledger was
+// smaller than the double count, the whole commit group was refused as
+// "maintenance accounting diverged" and every append in it answered 500.
+
+type Answer = oneshot::Receiver<Result<AppendAck, AppendErr>>;
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An engine over a fault store whose WAL puts a test can hold.
+async fn rig(name: &str) -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
+    let store = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        0x52,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    );
+    let db = Db::builder(name, store.clone() as Arc<dyn object_store::ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap();
+    let (tx, _signals) = mpsc::channel(1);
+    let engine = ShardEngine::start(
+        name.into(),
+        Arc::new(db),
+        store.clone(),
+        ShardConfig::default(),
+        tx,
+        None,
+        Default::default(),
+    );
+    (engine, store)
+}
+
+/// One 100-byte record for `hash`; the receiver is its answer.
+fn append_op(hash: [u8; 16]) -> (AppendReq, Answer) {
+    let key = crate::crypto::StreamKey([7; 32]);
+    let (resp, answer) = oneshot::channel();
+    let req = AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash,
+        route: hash,
+        entries: vec![Bytes::from(vec![0x5a; 100])],
+        usage: crate::usage::counters(&hash),
+        routing_key: String::new(),
+        key_hash: [7; 16],
+        producer_lineage: Vec::new(),
+        key_version: 0,
+        subkey: crate::crypto::derive_subkey(&key, &hash, "", 0),
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 100,
+        finish: AppendFinish::Open,
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        seal_gen: None,
+        billing: None,
+        resp,
+    };
+    (req, answer)
+}
+
+/// Append one record through the committer queue and wait for its answer.
+async fn append(engine: &ShardEngine, hash: [u8; 16]) -> Result<AppendAck, AppendErr> {
+    let (req, answer) = append_op(hash);
+    assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+    tokio::time::timeout(ANSWER_WITHIN, answer)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// Stored frame bytes of the stream's records [from, upto).
+async fn stored_bytes(engine: &ShardEngine, hash: &[u8; 16], from: u64, upto: u64) -> u64 {
+    let mut total = 0;
+    for offset in from..upto {
+        let row = engine.db.get(record_key(hash, offset)).await.unwrap();
+        total += row.unwrap().len() as u64;
+    }
+    total
+}
+
+async fn applied(engine: &ShardEngine, hash: [u8; 16]) -> TailFields {
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let state = handle.state.lock().unwrap();
+    state.applied.clone()
+}
+
+/// The advance under test as the committer stages it: `len` bytes copied
+/// from offset `from`, up to `upto`.
+fn advance(hash: [u8; 16], from: u64, upto: u64, len: u64) -> CommitOp {
+    CommitOp::Absorbed {
+        hash,
+        upto,
+        bytes: CopiedBytes::new(from, len),
+        v2: true,
+    }
+}
+
+/// The same advance through the committer queue, as one gather's batch.
+async fn submit_advance(engine: &ShardEngine, hash: [u8; 16], from: u64, upto: u64, len: u64) {
+    let copied = CopiedBytes::new(from, len);
+    engine
+        .submit_absorbed_batch_v2(vec![(hash, upto, copied)])
+        .await;
+}
+
+/// Committer layer: in one group, an advance over [0, 4) and a second
+/// over [0, 8) that re-covers it. The first retires exactly, the second
+/// is dropped whole, and the append beside them commits; the ledger then
+/// holds exactly the bytes of [absorbed, next). The stream's next advance
+/// from the boundary retires the rest and trims one advance behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append() {
+    let (engine, _store) = rig("overlap-advance").await;
+    let cfg = ShardConfig::default();
+    let h = [0x2a; 16];
+    for _ in 0..8 {
+        append(&engine, h).await.unwrap();
+    }
+    let (b04, b48) = (
+        stored_bytes(&engine, &h, 0, 4).await,
+        stored_bytes(&engine, &h, 4, 8).await,
+    );
+    let (req, reply) = append_op(h);
+    let group = vec![
+        advance(h, 0, 4, b04),
+        advance(h, 0, 8, b04 + b48),
+        CommitOp::Append(req),
+    ];
+    engine.commit_group(group, &cfg).await;
+    let answer = tokio::time::timeout(ANSWER_WITHIN, reply)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        answer.is_ok(),
+        "an append co-grouped with an overlapping advance was refused: {answer:?}"
+    );
+    let b8 = stored_bytes(&engine, &h, 8, 9).await;
+    let tail = applied(&engine, h).await;
+    assert_eq!((tail.absorbed, tail.history_v2, tail.trimmed), (4, true, 0));
+    assert_eq!(
+        tail.unabsorbed_bytes,
+        b48 + b8,
+        "the stream ledger is not [4, 9)"
+    );
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert_eq!(ledger, b48 + b8, "the shard ledger is not the stream's");
+    // A duplicate at the boundary raises no trim target.
+    engine.commit_group(vec![advance(h, 4, 4, 0)], &cfg).await;
+    let tail = applied(&engine, h).await;
+    assert_eq!(
+        (tail.absorbed, tail.trim_safe_to),
+        (4, 0),
+        "a duplicate moved the tail"
+    );
+    submit_advance(&engine, h, 4, 8, b48).await;
+    append(&engine, h).await.unwrap();
+    let b9 = stored_bytes(&engine, &h, 9, 10).await;
+    let tail = applied(&engine, h).await;
+    assert_eq!(
+        tail.absorbed, 8,
+        "the advance from the boundary did not retire"
+    );
+    assert_eq!((tail.trim_safe_to, tail.trimmed), (4, 4));
+    assert!(engine.db.get(record_key(&h, 0)).await.unwrap().is_none());
+    assert_eq!(engine.trim_deletes_total.load(Ordering::Relaxed), 4);
+    assert_eq!(
+        tail.unabsorbed_bytes,
+        b8 + b9,
+        "the stream ledger is not [8, 10)"
+    );
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert_eq!(ledger, b8 + b9, "the shard ledger is not the stream's");
+    engine.begin_close();
+}
+
+/// Committer layer: an advance that starts past the boundary would leave
+/// [0, 1) unretired forever (a phantom backlog); it is dropped whole, the
+/// layout stays unsealed and the append beside it commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_that_skips_offsets_is_dropped_whole() {
+    let (engine, _store) = rig("skip-advance").await;
+    let h2 = [0x2b; 16];
+    for _ in 0..2 {
+        append(&engine, h2).await.unwrap();
+    }
+    let b1 = stored_bytes(&engine, &h2, 1, 2).await;
+    let (req, reply) = append_op(h2);
+    let group = vec![advance(h2, 1, 2, b1), CommitOp::Append(req)];
+    engine.commit_group(group, &ShardConfig::default()).await;
+    let answer = tokio::time::timeout(ANSWER_WITHIN, reply)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        answer.is_ok(),
+        "an append beside a skipping advance was refused: {answer:?}"
+    );
+    let tail = applied(&engine, h2).await;
+    assert_eq!(
+        (tail.absorbed, tail.history_v2),
+        (0, false),
+        "an advance that skips offsets moved the boundary"
+    );
+    let all = stored_bytes(&engine, &h2, 0, 3).await;
+    assert_eq!(
+        tail.unabsorbed_bytes, all,
+        "the stream ledger is not [0, 3)"
+    );
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert_eq!(ledger, all, "the shard ledger is not the stream's");
+    engine.begin_close();
 }

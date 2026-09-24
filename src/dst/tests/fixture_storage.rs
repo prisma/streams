@@ -189,15 +189,20 @@ pub(super) async fn drain_filtered(
 /// sends tiny JSON bodies; the gather-budget tests need real volume).
 /// Stages one stream's absorbed-boundary advance the way one gather
 /// confirms it, so a fixture can put a stream into a maintenance state
-/// without running the absorber.
+/// without running the absorber. The copy starts at the stream's applied
+/// boundary as of this call, not as of staging: a caller must let any
+/// earlier advance apply first, or the committer drops this one whole.
 pub(super) async fn absorb_through(
     engine: &crate::shard::ShardEngine,
     hash: [u8; 16],
     upto: u64,
     retired_bytes: u64,
 ) {
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let from = handle.state.lock().unwrap().applied.absorbed;
+    let copied = crate::shard::CopiedBytes::new(from, retired_bytes);
     engine
-        .submit_absorbed_batch_v2(vec![(hash, upto, retired_bytes)])
+        .submit_absorbed_batch_v2(vec![(hash, upto, copied)])
         .await;
 }
 

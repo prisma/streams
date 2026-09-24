@@ -149,9 +149,90 @@ pub(super) fn seal_authorized(generation: Option<u64>, closing: bool, fence: u64
     }
 }
 
+/// What one absorbed advance copied: `len` stored frame bytes of the
+/// stream's records, starting at offset `from` (the gather's `chunk_cost`
+/// over the same rows the append path counted). The committer retires
+/// them only from the stream's absorbed boundary, so every byte of
+/// `[absorbed, next)` leaves the ledger once, provided `len` is the
+/// stored size of `[from, upto)`.
+#[derive(Clone, Copy)]
+pub(crate) struct CopiedBytes {
+    pub(super) from: u64,
+    pub(super) len: u64,
+}
+
+impl CopiedBytes {
+    pub(crate) fn new(from: u64, len: u64) -> Self {
+        Self { from, len }
+    }
+}
+
+/// One stream's entry in a gather's batch: its hash, its new absorbed
+/// boundary and the bytes the gather copied to reach it.
+pub(crate) type AbsorbedAdvance = ([u8; 16], u64, CopiedBytes);
+
+/// What retiring one advancing absorbed op did to the stream's tail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AbsorbRetirement {
+    /// It started at the boundary: the boundary moved to its `upto` and
+    /// the ledger lost exactly its bytes.
+    Exact,
+    /// It started elsewhere, so part of it is retired already or a gap
+    /// lies before it: nothing moved.
+    Detached,
+    /// It started at the boundary but claims more bytes than the ledger
+    /// holds, which only a corrupt ledger can do: nothing moved.
+    Diverged,
+}
+
+/// Retire an advancing absorbed op against the stream's tail. Only a copy
+/// that starts exactly at the absorbed boundary moves it; the ledger is
+/// checked, never clamped.
+pub(super) fn retire_absorbed(
+    tail: &mut TailFields,
+    upto: u64,
+    copied: &CopiedBytes,
+) -> AbsorbRetirement {
+    if copied.from != tail.absorbed {
+        return AbsorbRetirement::Detached;
+    }
+    let Some(remaining) = tail.unabsorbed_bytes.checked_sub(copied.len) else {
+        return AbsorbRetirement::Diverged;
+    };
+    tail.absorbed = upto.min(tail.next);
+    tail.unabsorbed_bytes = remaining;
+    AbsorbRetirement::Exact
+}
+
+#[cfg(test)]
+mod loom_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Release hold (the capacity run's one-off 500): an advance retires
+    /// only when it starts at the boundary, and a claim larger than the
+    /// ledger moves nothing.
+    #[test]
+    fn retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary() {
+        let start = TailFields {
+            absorbed: 4,
+            next: 8,
+            unabsorbed_bytes: 100,
+            ..Default::default()
+        };
+        let retire = |from, upto, len| {
+            let mut tail = start.clone();
+            let outcome = retire_absorbed(&mut tail, upto, &CopiedBytes::new(from, len));
+            (outcome, tail.absorbed, tail.unabsorbed_bytes)
+        };
+        assert_eq!(retire(4, 6, 60), (AbsorbRetirement::Exact, 6, 40));
+        assert_eq!(retire(2, 6, 60), (AbsorbRetirement::Detached, 4, 100));
+        assert_eq!(retire(6, 8, 60), (AbsorbRetirement::Detached, 4, 100));
+        assert_eq!(retire(4, 6, 101), (AbsorbRetirement::Diverged, 4, 100));
+        assert_eq!(retire(4, 9, 100), (AbsorbRetirement::Exact, 8, 0));
+    }
 
     #[test]
     fn r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence() {

@@ -4,7 +4,7 @@ use super::fixture_storage::{
     append_n, append_sized, drain_filtered, mem, open_engine_with_absorber, skey, wait_all_absorbed,
 };
 use crate::dst::{FaultPlan, FaultStore};
-use crate::shard::{TailFields, encode_tail_for_tests, tail_key};
+use crate::shard::{CopiedBytes, TailFields, encode_tail_for_tests, tail_key};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -90,16 +90,22 @@ async fn the_first_advance_seals_the_history_layout() {
     for _ in 0..5 {
         append_sized(&engine, a, &key, "", 512).await;
     }
-    engine.submit_absorbed_batch_v2(vec![(a, 3, 0)]).await;
+    engine
+        .submit_absorbed_batch_v2(vec![(a, 3, CopiedBytes::new(0, 0))])
+        .await;
     let (abs, flag) = wait_absorbed(&engine, a, 3).await;
     assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
-    engine.submit_absorbed_batch_v2(vec![(a, 5, 0)]).await;
+    engine
+        .submit_absorbed_batch_v2(vec![(a, 5, CopiedBytes::new(3, 0))])
+        .await;
     let (abs, flag) = wait_absorbed(&engine, a, 5).await;
     assert_eq!((abs, flag), (5, true), "sealed v2 keeps advancing");
 
     // Stream B: the advance over the legacy tail is dropped whole. The
     // committer queue is FIFO, so the sentinel's ack proves it was staged.
-    engine.submit_absorbed_batch_v2(vec![(b, 5, 0)]).await;
+    engine
+        .submit_absorbed_batch_v2(vec![(b, 5, CopiedBytes::new(3, 0))])
+        .await;
     let sentinel = append_sized(&engine, b, &key, "", 64).await;
     assert_eq!(sentinel, 5, "the sentinel lands after the planted tail");
     let h = engine.stream_handle(b).await.unwrap();

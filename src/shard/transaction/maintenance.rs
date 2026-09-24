@@ -1,4 +1,5 @@
 use super::*;
+use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed};
 impl CommitTransaction<'_> {
     pub(super) fn usage_ack(
         &mut self,
@@ -150,7 +151,7 @@ impl CommitTransaction<'_> {
         local: &mut StreamOverlay,
         hash: [u8; 16],
         upto: u64,
-        bytes: u64,
+        bytes: CopiedBytes,
         v2: bool,
     ) {
         // The first advancing boundary seals the history layout. Duplicates
@@ -184,37 +185,67 @@ impl CommitTransaction<'_> {
             );
         }
         if lane_ok && upto > prev_absorbed {
-            let Some(remaining) = local.fields.unabsorbed_bytes.checked_sub(bytes) else {
-                self.accounting_diverged = Some(format!(
-                    "absorbed-boundary retirement exceeds the stream ledger: \
-             stream={} upto={upto} retire_bytes={bytes} ledger={}",
-                    crate::crypto::hex(&hash[..4]),
-                    local.fields.unabsorbed_bytes,
-                ));
-                return;
-            };
-            #[cfg(test)]
-            {
-                self.group_has_absorbed = true;
-            }
-            local.fields.absorbed = upto.min(local.fields.next);
-            local.fields.unabsorbed_bytes = remaining;
-            local.frames.retired_bytes += bytes;
-            if v2 {
+            let moved = self.advance_boundary(local, hash, upto, bytes);
+            if moved && v2 {
                 local.fields.history_v2 = true;
             }
-            local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
-            let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-            let trim_to = local
-                .fields
-                .trim_safe_to
-                .min(local.fields.trimmed + allowed);
-            for off in local.fields.trimmed..trim_to {
-                self.batch.delete(record_key(&hash, off));
-            }
-            self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
-            local.fields.trimmed = local.fields.trimmed.max(trim_to);
         }
+    }
+    /// Retire an advancing absorbed op. Only a copy that starts at the
+    /// stream's boundary moves it: the ledger loses exactly the copied
+    /// bytes and the previous boundary becomes trimmable (one advance of
+    /// lag for in-flight readers). A copy that starts elsewhere re-covers
+    /// retired bytes or leaves a gap, so it is dropped whole; one the
+    /// ledger cannot cover fails the group closed. True when it moved.
+    fn advance_boundary(
+        &mut self,
+        local: &mut StreamOverlay,
+        hash: [u8; 16],
+        upto: u64,
+        bytes: CopiedBytes,
+    ) -> bool {
+        let prev_absorbed = local.fields.absorbed;
+        match retire_absorbed(&mut local.fields, upto, &bytes) {
+            AbsorbRetirement::Exact => {}
+            AbsorbRetirement::Detached => {
+                tracing::warn!(
+                    shard = %self.engine.prefix,
+                    stream = %crate::crypto::hex(&hash[..4]),
+                    from = bytes.from,
+                    upto,
+                    prev = prev_absorbed,
+                    "dropped an absorb advance that does not start at the boundary"
+                );
+                return false;
+            }
+            AbsorbRetirement::Diverged => {
+                self.accounting_diverged = Some(format!(
+                    "absorbed-boundary retirement exceeds the stream ledger: \
+             stream={} upto={upto} retire_bytes={} ledger={}",
+                    crate::crypto::hex(&hash[..4]),
+                    bytes.len,
+                    local.fields.unabsorbed_bytes,
+                ));
+                return false;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.group_has_absorbed = true;
+        }
+        local.frames.retired_bytes += bytes.len;
+        local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
+        let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
+        let trim_to = local
+            .fields
+            .trim_safe_to
+            .min(local.fields.trimmed + allowed);
+        for off in local.fields.trimmed..trim_to {
+            self.batch.delete(record_key(&hash, off));
+        }
+        self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
+        local.fields.trimmed = local.fields.trimmed.max(trim_to);
+        true
     }
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {
         let target = local.fields.trim_safe_to.min(local.fields.absorbed);

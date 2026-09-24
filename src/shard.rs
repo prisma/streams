@@ -30,10 +30,12 @@ mod lane_rows;
 mod lifecycle;
 mod tail_ring;
 mod transaction;
-pub(crate) use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
-    BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
-    decide_consumer_generation, decide_producer, seal_authorized,
+    AbsorbedAdvance, BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision,
+    decide_billing_ack, decide_consumer_generation, decide_producer, seal_authorized,
+};
+pub(crate) use commit_plan::{
+    AppendFinish, CloseReq, CopiedBytes, EnqueueError, SealFenceReq, UsageAckScope,
 };
 use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;
@@ -919,13 +921,11 @@ pub(crate) enum CommitOp {
     /// One gather's worth of absorber confirmations, carried as a SINGLE
     /// committer message so every covered boundary lands in the same
     /// write batch deterministically (the per-stream sends only
-    /// coalesced opportunistically — the committer could run between
-    /// them). Each entry is (hash, new upto, frame bytes the absorber
-    /// copied for that stream — decremented from the tail's
-    /// unabsorbed_bytes gauge). Expanded into per-stream `Absorbed` ops
-    /// at commit_group entry.
+    /// coalesced opportunistically). Each entry names the stream, its new
+    /// upto and the bytes copied to reach it, retired from the tail's
+    /// ledger only from its boundary. Expanded into `Absorbed` ops.
     AbsorbedBatch {
-        streams: Vec<([u8; 16], u64, u64)>,
+        streams: Vec<AbsorbedAdvance>,
         v2: bool,
     },
     /// Trim maintenance pulse (flush ticker, whenever the trim-debt set
@@ -947,8 +947,8 @@ pub(crate) enum CommitOp {
     Absorbed {
         hash: [u8; 16],
         upto: u64,
-        /// Stored frame bytes the absorber copied for this advance.
-        bytes: u64,
+        /// Copied bytes; retired only when they start at the absorbed boundary.
+        bytes: CopiedBytes,
         v2: bool,
     },
     /// TrimTick expansion product (commit_group entry): one stream's
@@ -1962,12 +1962,12 @@ impl ShardEngine {
     /// One gather's boundary advances as a SINGLE committer message:
     /// every covered stream lands in the same write batch by
     /// construction (per-stream sends only coalesced opportunistically).
-    /// Entries are (hash, new upto, frame bytes copied).
+    /// Entries are (hash, new upto, copied bytes).
     #[expect(
         clippy::let_underscore_must_use,
         reason = "ShardEngine::submit_absorbed_batch_v2; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
-    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
+    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<AbsorbedAdvance>) {
         if streams.is_empty() {
             return;
         }

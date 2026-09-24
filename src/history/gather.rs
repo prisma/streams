@@ -15,7 +15,7 @@ use super::{
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
 use crate::shard::record::{RangeReadError, RecordCorruption};
-use crate::shard::{FrameReadResult, StreamHandle, read_frames_range};
+use crate::shard::{CopiedBytes, FrameReadResult, StreamHandle, read_frames_range};
 use bytes::Bytes;
 use slatedb::config::WriteOptions;
 use slatedb::{Db, WriteBatch};
@@ -114,6 +114,9 @@ struct Staged {
     refused: usize,
     warm_installs: Vec<WarmChunk>,
     out: GatherOutcome,
+    /// The committer's view of `out.advanced`: each advance with the
+    /// offset its copy starts at, which is where it may retire from.
+    copies: Vec<([u8; 16], u64, CopiedBytes)>,
 }
 
 /// #266: optional duty cycle between read waves — see the
@@ -329,9 +332,10 @@ impl Absorber {
     /// backlog is stranded until a restart. The durable tail is the
     /// source of truth: a mark ahead of it at rescan time describes a
     /// submission that did not land, so roll it back. A genuine in-flight
-    /// advance re-submitted after this is harmless — the committer
-    /// ignores non-advancing boundaries and the history write is
-    /// idempotent.
+    /// advance is NOT harmless to regather under: the regather starts
+    /// below it, and the committer drops an advance that does not start
+    /// at its boundary, so that gather's copy is wasted and its postings
+    /// pages overlap the ones the stream's next gather writes.
     #[expect(
         clippy::unwrap_used,
         reason = "Absorber::roll_back_stranded_mark; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
@@ -394,6 +398,7 @@ impl Absorber {
             refused: 0,
             warm_installs: Vec::new(),
             out: GatherOutcome::default(),
+            copies: Vec::new(),
         };
         let mut pacing = Pacing {
             paced: Duration::ZERO,
@@ -590,6 +595,9 @@ impl Absorber {
             .warm_installs
             .push((SegmentHash(plan.hash), plan.from, last + 1, runs));
         staged.out.advanced.push((plan.hash, last + 1, chunk_raw));
+        staged
+            .copies
+            .push((plan.hash, last + 1, CopiedBytes::new(plan.from, chunk_raw)));
         // Truncated by the per-stream cap: more durable data sits
         // below `upto`. The caller must keep this stream pending.
         if last + 1 < plan.upto {
@@ -623,6 +631,7 @@ impl Absorber {
             wb,
             warm_installs,
             out,
+            copies,
             ..
         } = staged;
         let ord = Ordering::Relaxed;
@@ -657,9 +666,7 @@ impl Absorber {
                 .postings_cache
                 .install_chunk(inc, chunk_from, chunk_to, per_key);
         }
-        self.shard
-            .submit_absorbed_batch_v2(out.advanced.clone())
-            .await;
+        self.shard.submit_absorbed_batch_v2(copies).await;
         self.raise_lane_marks(&out.advanced);
         tracing::info!(
             "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",

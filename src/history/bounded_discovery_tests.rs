@@ -145,7 +145,7 @@ fn enqueue_record(
         entries: vec![bytes::Bytes::from(vec![0x5a; 100])],
         usage: crate::usage::counters(&hash),
         routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
+        key_hash: [7; 16],
         producer_lineage: Vec::new(),
         key_version: 0,
         subkey: crate::crypto::derive_subkey(&key, &hash, "", 0),
@@ -173,17 +173,58 @@ async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-/// Four records durable and gathered by G1, whose advance waits in the held
-/// committer queue; four more records made durable meanwhile; with
-/// `rescan`, a discovery pass before G2 gathers. The answer is that of an
-/// append queued behind G2's advance, in the one group that applies both.
-async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
+/// What a regather left behind: the answer of the append queued behind it,
+/// the stream's applied tail and the shard ledger once that append
+/// answered, and the stored bytes of each record by offset (all nine when
+/// the append committed).
+struct Regather {
+    answer: AppendAnswer,
+    tail: crate::shard::TailFields,
+    ledger: u64,
+    stored: Vec<u64>,
+}
+
+/// The stored bytes of [absorbed, next), given each record's stored bytes
+/// by offset.
+fn exact_ledger(tail: &crate::shard::TailFields, stored: &[u64]) -> u64 {
+    (0u64..)
+        .zip(stored)
+        .filter(|(offset, _)| (tail.absorbed..tail.next).contains(offset))
+        .map(|(_, bytes)| bytes)
+        .sum()
+}
+
+/// The stream ledger holds exactly the stored bytes of [absorbed, next),
+/// and the shard's maintenance ledger agrees with it.
+fn assert_ledger_is_exact(regather: &Regather) {
+    let tail = &regather.tail;
+    let exact = exact_ledger(tail, &regather.stored);
+    assert_eq!(
+        tail.unabsorbed_bytes, exact,
+        "the stream ledger is not the stored bytes of [{}, {})",
+        tail.absorbed, tail.next
+    );
+    assert_eq!(
+        regather.ledger, exact,
+        "the shard ledger is not the stream's"
+    );
+}
+
+/// Stored frame bytes of one record, if it is stored.
+async fn stored_len(engine: &ShardEngine, hash: &[u8; 16], offset: u64) -> Option<u64> {
+    let row = engine.db.get(crate::shard::record_key(hash, offset)).await;
+    row.unwrap().map(|value| value.len() as u64)
+}
+
+/// An engine over a fault store whose WAL puts a test can hold, with an
+/// absorber whose gathers the test drives.
+async fn rig(name: &str) -> (Arc<ShardEngine>, Absorber, Arc<crate::dst::FaultStore>) {
     let store = crate::dst::FaultStore::uniform(
         Arc::new(object_store::memory::InMemory::new()),
         0x47,
         crate::dst::FaultPlan::new(0, 0, 0),
     );
-    let db = Db::builder("regather", store.clone() as Arc<dyn ObjectStore>)
+    let db = Db::builder(name, store.clone() as Arc<dyn ObjectStore>)
         .with_settings(Settings {
             flush_interval: Some(Duration::from_millis(5)),
             manifest_poll_interval: Duration::from_millis(50),
@@ -197,7 +238,7 @@ async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
         .unwrap();
     let (tx, _signals) = mpsc::channel(1);
     let engine = ShardEngine::start(
-        "regather".into(),
+        name.into(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
@@ -206,6 +247,15 @@ async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
         maintenance,
     );
     let absorber = Absorber::new(engine.clone(), AbsorberConfig::default());
+    (engine, absorber, store)
+}
+
+/// Four records durable and gathered by G1, whose advance waits in the held
+/// committer queue; four more records made durable meanwhile; with
+/// `rescan`, a discovery pass before G2 gathers. The answer is that of an
+/// append queued behind G2's advance, in the one group that applies both.
+async fn append_behind_a_regather(rescan: bool) -> Regather {
+    let (engine, absorber, store) = rig("regather").await;
     let hash = [0x47; 16];
     let handle = engine.stream_handle(hash).await.unwrap();
     for _ in 0..4 {
@@ -229,6 +279,10 @@ async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
     for answer in held {
         answer.await.unwrap().unwrap();
     }
+    let mut stored = Vec::new();
+    for offset in 0..8 {
+        stored.push(stored_len(&engine, &hash, offset).await.unwrap());
+    }
     if rescan {
         absorber
             .seed_from_dirty_index(&mut HashMap::new())
@@ -240,27 +294,38 @@ async fn append_behind_a_regather(rescan: bool) -> AppendAnswer {
     let queued = enqueue_record(&engine, hash);
     drop(gate);
     let answer = queued.await.unwrap();
+    stored.extend(stored_len(&engine, &hash, 8).await);
+    let tail = handle.state.lock().unwrap().applied.clone();
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
     engine.begin_close();
-    answer
+    Regather {
+        answer,
+        tail,
+        ledger,
+        stored,
+    }
 }
 
 /// The control: without the rescan, G2 starts at G1's submitted mark and
 /// the group applies both advances and the append.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_regather_from_the_submitted_mark_retires_each_byte_once() {
-    let answer = append_behind_a_regather(false).await;
-    assert!(answer.is_ok(), "{answer:?}");
+    let regather = append_behind_a_regather(false).await;
+    assert!(regather.answer.is_ok(), "{:?}", regather.answer);
+    assert_ledger_is_exact(&regather);
 }
 
-/// Red: the rescan rolls G1's in-flight mark back, G2 re-reads [0, 4), and
-/// the co-grouped append is refused as Internal (today:
-/// `Internal("maintenance accounting diverged")`).
+/// The rescan used to roll G1's in-flight mark back, so G2 re-read [0, 4)
+/// and the committer retired those bytes twice: the co-grouped append was
+/// refused as `Internal("maintenance accounting diverged")`. Whatever G2
+/// covers, the append commits and each byte leaves the ledger once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red regression: the capacity run's one-off 500 (a rescan rolls back an in-flight absorb mark and the regather retires its bytes twice); un-ignore with the fix"]
 async fn a_rescan_during_an_inflight_advance_never_fails_an_append() {
-    let answer = append_behind_a_regather(true).await;
+    let regather = append_behind_a_regather(true).await;
     assert!(
-        answer.is_ok(),
-        "an append co-grouped with a re-gathered advance was refused: {answer:?}"
+        regather.answer.is_ok(),
+        "an append co-grouped with a re-gathered advance was refused: {:?}",
+        regather.answer
     );
+    assert_ledger_is_exact(&regather);
 }
