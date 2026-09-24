@@ -316,9 +316,13 @@ check("fault-probe token serves", (await readRecords(bBase, "e2e/orders", tokF.b
 // replay, status 0 unreachable) leaves the accepted snapshot in place,
 // and the leg's probe then reads exactly what a refusing cell serves:
 // the leg would pass with the fault never injected.
+// Negative control (scripts/platform-e2e-negative.mjs): the named kinds are
+// sent under a name the emulator refuses, so their legs must fail.
+const REFUSED = new Set((process.env.PLATFORM_E2E_REFUSE_FAULTS ?? "").split(",").filter(Boolean));
 const fault = async (body) => {
+  const sent = REFUSED.has(body.kind) ? { ...body, kind: `${body.kind}.refused` } : body;
   const r = await j(await sfetch(`${emuBase}/admin/faults`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cell: "cell-b", ...body }),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cell: "cell-b", ...sent }),
   }));
   check(`fault ${body.kind} injected`, r.status === 200, `status ${r.status} body ${JSON.stringify(r.body)}`);
   return r.body;

@@ -178,6 +178,10 @@ jobs:
         run: cd sdk && npm ci && npm run build
       - name: Platform end-to-end battery
         run: node scripts/platform-e2e.mjs
+      # The battery again with two fault injections refused by the emulator:
+      # it must fail exactly the checks that prove a fault was applied.
+      - name: Platform end-to-end negative control
+        run: node scripts/platform-e2e-negative.mjs
 
   # Job: the REAL three-process LiveFeed fleet certification (round
   # 11.4). Three streams-slate processes over one shared s3lite store,
