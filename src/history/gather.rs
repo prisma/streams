@@ -359,9 +359,9 @@ impl Absorber {
     /// whose marks still rest on its chunks roll back to replay them and are
     /// due again: their pending entries went with the refused gather's
     /// outcome. A mark a later chunk already raised stays; that chunk's
-    /// advance recounts the refused one, so no recount spans more than the
-    /// chunks in flight when the refusal happened. Never waits on the
-    /// committer.
+    /// advance recounts the refused one. Consecutive refusals each settled
+    /// late leave consecutive holes, so a recount can span more than the
+    /// chunks in flight at any one refusal. Never waits on the committer.
     #[expect(
         clippy::unwrap_used,
         reason = "Absorber::settle_submissions; a poisoned lane may hold a partially raised or rolled-back mark; recovering it could plan a chunk past a refused one or re-read over flushed postings pages"

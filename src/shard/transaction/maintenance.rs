@@ -337,8 +337,8 @@ impl CommitTransaction<'_> {
         };
         // The absorber rolls a refused batch's lane marks back before its
         // next gather (`gather::Lane`), so an advance mis-starts only behind
-        // a refusal learned after it planned, and recounts just the chunks
-        // in flight then: two, while the committer answers within a tick.
+        // a refusal learned after it planned: two chunks while the committer
+        // answers within a tick, more only when refusals keep arriving late.
         // The committer waits on this scan, so it reads ahead like the
         // gather that copied the rows: the default fetches one block per
         // request, a round trip per 4 KiB of a range no cache holds.

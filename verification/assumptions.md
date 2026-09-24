@@ -608,6 +608,33 @@ actions to these contracts.
 - **Standing:** established by code reading; that dispatch holds a clone
   until publication rests on the function's documentation.
 
+### ASM-HISTORY-PAGES
+
+- **Scope:** TLA-016 (`Pages`: `NoStraddledChunk`, `PagesAdmit`,
+  `Witness_OverlapAdmitted`).
+- **Statement:** A gathered chunk writes one postings page per routing key
+  it carries, listing that key's offsets among the rows it staged. The page
+  is keyed by (route, incarnation, key hash, bucket, first offset)
+  (`stage_postings`, `postings_key`), so a later page with the same key and
+  first offset replaces it, and pages of different first offsets coexist.
+  The model abstracts a page to (key, first offset, offsets); page encoding,
+  buckets and the 32 KiB page split are not modelled. The page's span runs
+  from its first offset to its last offset + 1, and it lists every offset
+  of its key that the chunk staged in that span. A cold index load
+  (`append_page_runs` with `keep_past`) takes a key's pages in key order
+  and admits a page that starts below the accumulated end only if it lists
+  exactly the accumulated offsets over the common span. It keeps only the
+  part past that end; any disagreement refuses the key's whole index
+  (POSTINGS_CORRUPT).
+- **Origin:** `stage_rows` and `stage_postings` (`src/history/gather.rs`);
+  `append_page_runs` and `keep_past` (`src/postings.rs`, d16559b3).
+- **Invalidation:** a page key or split that depends on anything but the
+  key, bucket and first offset; a page that omits a staged offset of its key
+  inside its span; a change to the reader's admission of overlapping pages.
+- **Standing:** established by code reading of d16559b3. The model checks
+  the admission over the store's pages at every state. It does not model
+  the load's own read of those pages, its caps, or buckets.
+
 ### ASM-SEAL-REPLY-ORDER
 
 - **Scope:** TLA-002, TLA-003.
