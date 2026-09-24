@@ -8,6 +8,88 @@ use super::fixture_storage::mem;
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The absorber events release hold HOLD-SPLIT-500 is judged by, counted
+/// from their logs: commit groups refused for diverged maintenance
+/// accounting, absorbed advances dropped for not starting at their
+/// boundary, and stranded lane marks rolled back. The counting subscriber
+/// is the process default, so the counts are the capacity rig's only when
+/// its test runs alone, as its gate legs run it (`--exact`). The counts
+/// print when the capture drops, so a failed run reports them too.
+#[derive(Default)]
+struct AbsorbEvents {
+    diverged: AtomicU64,
+    detached: AtomicU64,
+    rolled_back: AtomicU64,
+}
+
+impl AbsorbEvents {
+    /// Install the counting subscriber; once per test process.
+    fn capture() -> AbsorbEventLog {
+        use tracing_subscriber::layer::{Layer, SubscriberExt};
+        let events = Arc::new(Self::default());
+        let warnings = CountAbsorbEvents(events.clone())
+            .with_filter(tracing_subscriber::filter::LevelFilter::WARN);
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(warnings))
+            .expect("the capacity test installs the only process subscriber");
+        AbsorbEventLog(events)
+    }
+}
+
+/// Prints the counts when the run ends, passed or failed.
+struct AbsorbEventLog(Arc<AbsorbEvents>);
+
+impl Drop for AbsorbEventLog {
+    fn drop(&mut self) {
+        eprintln!("{}", self.0);
+    }
+}
+
+impl std::fmt::Display for AbsorbEvents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "absorber hold events: diverged={} detached_drops={} rollbacks={}",
+            self.diverged.load(Ordering::Relaxed),
+            self.detached.load(Ordering::Relaxed),
+            self.rolled_back.load(Ordering::Relaxed)
+        )
+    }
+}
+
+struct CountAbsorbEvents(Arc<AbsorbEvents>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountAbsorbEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut message = MessageField(String::new());
+        event.record(&mut message);
+        let events = &self.0;
+        let counter = if message.0.starts_with("maintenance accounting diverged") {
+            &events.diverged
+        } else if message
+            .0
+            .starts_with("dropped an absorb advance that does not start")
+        {
+            &events.detached
+        } else if message.0.starts_with("rolling back stranded absorb mark") {
+            &events.rolled_back
+        } else {
+            return;
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct MessageField(String);
+
+impl tracing::field::Visit for MessageField {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
 
 // ---- physical scaling (review blocker 1: a split must ADD capacity —
 // children on real routes, distinct engines, ≥1.8x throughput) --------
@@ -300,6 +382,7 @@ async fn post_split_throughput_scales() {
     // measured 1.77). This serializes the measurement; it does not
     // relax the gate.
     let _l = gap_lock().lock().await;
+    let _absorb_events = AbsorbEvents::capture();
     let inner = mem();
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(
         inner,
