@@ -26,11 +26,20 @@
 (*   Mode = "applied": the tail may include applied-but-not-durable        *)
 (*     records (Prisma-Pending-From); only the durable resume cursor       *)
 (*     `dpos` = min(scanned, handle.durable.next) carries the promise.     *)
+(*     A page that ends past the durable frontier returns a provisional    *)
+(*     continuation (KIND_KEY_V3, TLA-018-F3 fix): the engine that served  *)
+(*     it (`peng`, standing for the writer epoch), the digest start        *)
+(*     (`pfrom`) and the observation digest (`pdig`, what the client saw   *)
+(*     in [pfrom, pos)).  The next page continues it only on the same      *)
+(*     engine, or after a re-read on the current engine matches the       *)
+(*     digest; otherwise the server answers resync with the durable        *)
+(*     recovery cursor.  A position with no identity (V2) is a durable     *)
+(*     position and starts an applied read only at or below the frontier. *)
 (*   Filter = "none" is the unfiltered replay path; Filter = a routing key *)
 (*   is the keyed path (product reads always pass Some(routing_key)).      *)
 (*                                                                         *)
 (* Mutation points: HistView, FilteredRace, ShortIndexAccepted,            *)
-(* RaceBoundary.                                                            *)
+(* RaceBoundary, ContinuationCheck.                                         *)
 (* Assumption probes (dependency contract, not production): AllowLost*.    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -90,15 +99,23 @@ VARIABLES
     lostCanon,  \* assumption probe only: canonical rows lost after durability
     \* reader / client
     rd, pos, dpos, dgen, pages,
+    \* the client's provisional continuation (meaningful iff pos > dpos)
+    peng,       \* the engine (writer epoch) that served the provisional suffix
+    pfrom,      \* the digest start: the first offset the digest covers
+    pdig,       \* the observation digest: [o |-> content seen at o in [pfrom, pos), 0 if none]
     \* ghosts
     dupSeen, underClaim, ceilBreach, raceAdopted, unexplainedGap,
     envelopeUsed, shortPartial, bigDelivered, readOld, ringUsed,
-    readErr     \* ghost: a page on the CURRENT engine failed in its history leg
+    readErr,    \* ghost: a page on the CURRENT engine failed in its history leg
+    contVerified, \* ghost: another engine's continuation was proven by a re-read
+    refusedStale  \* ghost: a continuation the tail had passed was refused (resync)
 
 wvars == <<A, pend, D, P, hF, gen, eng, old, moves, lostPost, lostCanon>>
-cvars == <<rd, pos, dpos, dgen, pages>>
+kvars == <<peng, pfrom, pdig>>
+cvars == <<rd, pos, dpos, dgen, pages, kvars>>
 gvars == <<dupSeen, underClaim, ceilBreach, raceAdopted, unexplainedGap,
-           envelopeUsed, shortPartial, bigDelivered, readOld, ringUsed, readErr>>
+           envelopeUsed, shortPartial, bigDelivered, readOld, ringUsed, readErr,
+           contVerified, refusedStale>>
 vars == <<wvars, cvars, gvars>>
 
 -----------------------------------------------------------------------------
@@ -122,6 +139,11 @@ ShortIndexAccepted == FALSE
 \* ShardEngine::visible_absorbed): Remote for a durable read, Memory for an
 \* applied read, which sees applied trims before they are durable.
 RaceBoundary == IF Mode = "durable" THEN VD.abs ELSE VA.abs
+\* check_entry_start (read_request.rs): a continuation must prove its
+\* history, and a V2 position past the durable frontier is refused in
+\* applied mode (TLA-018-F3 fix).  FALSE is the pre-fix read, which only
+\* refused a start beyond the current owner's tail.
+ContinuationCheck == TRUE
 
 -----------------------------------------------------------------------------
 (* PageBudget contract (src/application/read_budget.rs): the first record  *)
@@ -163,16 +185,37 @@ TailVisible(o) ==
 ReadEndNow == IF Mode = "durable" THEN P.next ELSE Max(A.next, P.next)
 DurCursor == IF Mode = "durable" THEN pos ELSE dpos
 
+(* Provisional continuation (src/application/read_continuation.rs).        *)
+NoDigest == [o \in Offs |-> 0]
+\* The client holds a continuation: its position is past the durable cursor.
+HasCont == Mode = "applied" /\ pos > dpos
+\* Continuation::observed_in over verify_continuation's re-read of
+\* [pfrom, pos) on the CURRENT engine at the command's (applied) visibility:
+\* the digest must reach down to the recovery position, the read must cover
+\* the whole range, and it must hold exactly the observed records.
+ObservedIn ==
+    /\ pfrom <= dpos
+    /\ pos <= Max(A.next, P.next)
+    /\ \A o \in pfrom..(pos - 1) : pdig[o] = IF Eligible(o) THEN gen[o] ELSE 0
+\* Whether the entry span may start at pos.
+StartAllowed ==
+    \/ ~ContinuationCheck
+    \/ Mode = "durable"
+    \/ IF pos > dpos THEN peng = eng \/ ObservedIn   \* ReadStart::Continue
+                     ELSE pos <= P.next             \* ReadStart::Position (V2)
+
 -----------------------------------------------------------------------------
 Init ==
     /\ A = InitTail /\ D = InitTail /\ P = InitTail /\ pend = <<>>
     /\ hF = 0 /\ gen = InitGen /\ eng = 1 /\ moves = 0 /\ lostPost = {} /\ lostCanon = {}
     /\ old = [A |-> InitTail, D |-> InitTail, P |-> InitTail, hF |-> 0, gen |-> InitGen]
     /\ rd = IdleRd /\ pos = 0 /\ dpos = 0 /\ dgen = [o \in Offs |-> 0] /\ pages = 0
+    /\ peng = 0 /\ pfrom = 0 /\ pdig = NoDigest
     /\ dupSeen = FALSE /\ underClaim = FALSE /\ ceilBreach = FALSE
     /\ raceAdopted = FALSE /\ unexplainedGap = FALSE /\ envelopeUsed = FALSE
     /\ shortPartial = FALSE /\ bigDelivered = FALSE /\ readOld = FALSE
     /\ ringUsed = FALSE /\ readErr = FALSE
+    /\ contVerified = FALSE /\ refusedStale = FALSE
 
 NewGroup(T) == Len(pend) < MaxPend /\ A' = T /\ pend' = Append(pend, T)
 
@@ -240,10 +283,30 @@ WLoseCanonical ==  \* assumption probe: a durable canonical row disappears
 (* Reader / client                                                          *)
 
 \* The durable cursor is min(consumed, handle.durable.next) read when the
-\* page ENDS: ReadService::execute_read overwrites page_progress's
-\* page-start clamp with `next.after.min(floor)`, `floor` read after the
-\* page (src/application/read_request.rs:576-579).
+\* page ENDS: ResolvedRead::execute overwrites page_progress's page-start
+\* clamp with `next.after.min(floor)`, `floor` read after the page
+\* (src/application/read_request.rs:642-652).  A page ending past it also
+\* returns a continuation (Continuation::after_page, read_continuation.rs:
+\* 120-151, called at read_request.rs:655-666): recover = the durable
+\* cursor; the digest restarts at it when it reached the page start,
+\* otherwise carries the continuation the page began at, otherwise starts
+\* at the page start; it folds the page's records from there.
 EndPage(cnF, pgF) ==
+    LET start    == pos                 \* the page began at the client's position
+        nd       == IF Mode = "applied" THEN Min(cnF, VP.next) ELSE cnF
+        cont     == cnF > nd
+        incoming == pos > dpos          \* the page began at a continuation
+        from     == IF nd >= start THEN nd ELSE IF incoming THEN pfrom ELSE start
+    IN
+    /\ peng' = IF cont THEN rd.eng ELSE 0
+    /\ pfrom' = IF cont THEN from ELSE 0
+    /\ pdig' = IF cont
+               THEN [o \in Offs |-> IF o >= from /\ o < cnF
+                                    THEN IF o \in pgF THEN VGen(o)
+                                         ELSE IF o < start THEN pdig[o] ELSE 0
+                                    ELSE 0]
+               ELSE NoDigest
+    /\ contVerified' = contVerified /\ refusedStale' = refusedStale
     /\ dupSeen' = (dupSeen \/ \E o \in pgF : dgen[o] # 0 /\ (Mode = "durable" \/ o < dpos))
     /\ underClaim' = (underClaim \/ \E o \in pgF : o >= cnF)
     /\ ceilBreach' = (ceilBreach \/ (SumSize(pgF) > Req /\ Cardinality(pgF) > 1))
@@ -251,26 +314,53 @@ EndPage(cnF, pgF) ==
     /\ readOld' = (readOld \/ (~Cur /\ pgF # {}))
     /\ dgen' = [o \in Offs |-> IF o \in pgF THEN VGen(o) ELSE dgen[o]]
     /\ pos' = cnF
-    /\ dpos' = IF Mode = "applied" THEN Min(cnF, VP.next) ELSE cnF
+    /\ dpos' = nd
     /\ rd' = IdleRd
     /\ readErr' = readErr
 
+\* execute_read resolves the engine, reads the tail state, and checks the
+\* entry span's start (check_entry_start, read_request.rs:350-352 and
+\* :693-751) before the `start > end` guard (:353-355).  The continuation is
+\* carried, not replaced: the page's EndPage mints the next one.
 RStart ==
     /\ rd.ph = "idle"
     /\ pages < MaxPages
     /\ pos < ReadEndNow
+    /\ StartAllowed
     /\ rd' = [ph |-> "hist", eng |-> eng, B |-> P.abs, E |-> ReadEndNow,
               cur |-> pos, cn |-> pos, pg |-> {}, tcur |-> pos, tseen |-> {},
               maxb |-> 0, loops |-> 0, hsnap |-> hF]
     /\ pages' = pages + 1
-    /\ UNCHANGED <<wvars, pos, dpos, dgen, gvars>>
+    /\ contVerified' = (contVerified \/ (ContinuationCheck /\ HasCont /\ peng # eng))
+    /\ UNCHANGED <<wvars, pos, dpos, dgen, kvars, dupSeen, underClaim, ceilBreach,
+                   raceAdopted, unexplainedGap, envelopeUsed, shortPartial,
+                   bigDelivered, readOld, ringUsed, readErr, refusedStale>>
 
-RReconnect ==      \* applied mode: resume from the durable cursor
+RReconnect ==      \* applied mode: resume from the durable cursor (a V2 position)
     /\ Mode = "applied"
     /\ rd.ph = "idle"
     /\ pos > dpos
-    /\ pos' = dpos
+    /\ pos' = dpos /\ peng' = 0 /\ pfrom' = 0 /\ pdig' = NoDigest
     /\ UNCHANGED <<wvars, rd, dpos, dgen, pages, gvars>>
+
+\* verify_continuation refuses: another engine serves, and its re-read of
+\* [pfrom, pos) did not prove the observation (a mismatch, a short or
+\* partial re-read).  The read answers 409 cursor_beyond_tail with reason
+\* history_replaced and the recovery cursor (ReadFailure::HistoryReplaced,
+\* read_request.rs:747-750); the client resumes there.  Redelivery at and
+\* after dpos then overwrites dgen.  A re-read that proves the observation
+\* can still come back partial, so the refusal is enabled whenever the
+\* engine differs.
+RResync ==
+    /\ ContinuationCheck
+    /\ rd.ph = "idle"
+    /\ HasCont
+    /\ peng # eng
+    /\ pos' = dpos /\ peng' = 0 /\ pfrom' = 0 /\ pdig' = NoDigest
+    /\ refusedStale' = (refusedStale \/ (~ObservedIn /\ pos < ReadEndNow))
+    /\ UNCHANGED <<wvars, rd, dpos, dgen, pages, dupSeen, underClaim, ceilBreach,
+                   raceAdopted, unexplainedGap, envelopeUsed, shortPartial,
+                   bigDelivered, readOld, ringUsed, readErr, contVerified>>
 
 \* The page fails: its engine was fenced or closed, or (history leg) the
 \* engine's history read fails with a storage error (a transient
@@ -281,16 +371,16 @@ RError ==
     /\ ~Cur \/ (AllowReadError /\ rd.ph = "hist")
     /\ rd' = IdleRd
     /\ readErr' = (readErr \/ Cur)
-    /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, dupSeen, underClaim, ceilBreach,
+    /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, dupSeen, underClaim, ceilBreach,
                    raceAdopted, unexplainedGap, envelopeUsed, shortPartial,
-                   bigDelivered, readOld, ringUsed>>
+                   bigDelivered, readOld, ringUsed, contVerified, refusedStale>>
 
 RHist ==           \* decode_history_range over [cur, min(boundary, end))
     /\ rd.ph = "hist"
     /\ LET hup == Min(rd.B, rd.E) IN
        IF rd.cur >= hup \/ Full(rd.pg)
          THEN /\ rd' = [rd EXCEPT !.ph = "tailstart"]
-              /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, gvars>>
+              /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, gvars>>
          ELSE
            \/ \E src \in HistSources :
                 \E res \in Walk(rd.pg, SeqOf(Cands(src, rd.cur, hup)), hup, TRUE) :
@@ -298,10 +388,11 @@ RHist ==           \* decode_history_range over [cur, min(boundary, end))
                   /\ IF res.complete
                        THEN /\ rd' = [rd EXCEPT !.pg = res.pg, !.cn = Max(rd.cn, hup),
                                                 !.cur = hup, !.ph = "tailstart"]
-                            /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, dupSeen,
+                            /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, dupSeen,
                                            underClaim, ceilBreach, raceAdopted,
                                            unexplainedGap, shortPartial,
-                                           bigDelivered, readOld, ringUsed, readErr>>
+                                           bigDelivered, readOld, ringUsed, readErr,
+                                           contVerified, refusedStale>>
                        ELSE /\ EndPage(Max(rd.cn, res.cn), res.pg)
                             /\ UNCHANGED <<wvars, pages, raceAdopted, unexplainedGap,
                                            shortPartial, ringUsed>>
@@ -312,10 +403,11 @@ RHist ==           \* decode_history_range over [cur, min(boundary, end))
                      /\ IF res.complete /\ ShortIndexAccepted
                           THEN /\ rd' = [rd EXCEPT !.pg = res.pg, !.cn = Max(rd.cn, hup),
                                                    !.cur = hup, !.ph = "tailstart"]
-                               /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, dupSeen,
+                               /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, dupSeen,
                                               underClaim, ceilBreach, raceAdopted,
                                               unexplainedGap, envelopeUsed,
-                                              bigDelivered, readOld, ringUsed, readErr>>
+                                              bigDelivered, readOld, ringUsed, readErr,
+                                              contVerified, refusedStale>>
                           ELSE /\ EndPage(Max(rd.cn, IF res.complete THEN pt ELSE res.cn),
                                           res.pg)
                                /\ UNCHANGED <<wvars, pages, raceAdopted, unexplainedGap,
@@ -330,7 +422,7 @@ RTailStart ==
          ELSE
            \/ /\ rd' = [rd EXCEPT !.ph = "tail", !.tcur = rd.cur, !.tseen = {},
                                   !.maxb = Remaining(rd.pg)]
-              /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, gvars>>
+              /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, gvars>>
            \/ /\ AllowRing /\ Mode = "durable"      \* ring_read + proves_durable_ring
               /\ \E e \in (rd.cur + 1)..Min(rd.E, VP.next) :
                    \E res \in Walk(rd.pg, SeqOf({o \in rd.cur..(e-1) : Eligible(o)}), e, FALSE) :
@@ -346,7 +438,7 @@ RTailStep ==       \* read_frames_until: one row of the Remote/Memory scan
     /\ rd' = [rd EXCEPT !.tcur = rd.tcur + 1,
                         !.tseen = IF TailVisible(rd.tcur) THEN rd.tseen \cup {rd.tcur}
                                   ELSE rd.tseen]
-    /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, gvars>>
+    /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, gvars>>
 
 RTailCheck ==      \* absorption_race, then decode or re-serve from history
     /\ rd.ph = "tail"
@@ -362,10 +454,11 @@ RTailCheck ==      \* absorption_race, then decode or re-serve from history
                           THEN /\ rd' = [rd EXCEPT !.B = d, !.loops = rd.loops + 1,
                                                    !.ph = "hist", !.tseen = {}]
                                /\ raceAdopted' = TRUE
-                               /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, dupSeen,
+                               /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, dupSeen,
                                               underClaim, ceilBreach, unexplainedGap,
                                               envelopeUsed, shortPartial,
-                                              bigDelivered, readOld, ringUsed, readErr>>
+                                              bigDelivered, readOld, ringUsed, readErr,
+                                              contVerified, refusedStale>>
                           ELSE /\ EndPage(rd.cn, rd.pg)
                                /\ UNCHANGED <<wvars, pages, raceAdopted, unexplainedGap,
                                               envelopeUsed, shortPartial, ringUsed>>
@@ -393,7 +486,8 @@ Terminated == Settled /\ UNCHANGED vars
 Next ==
     \/ WAppend \/ WDurable \/ WDispatch \/ WHistFlush \/ WAdvance \/ WTrim
     \/ WMove \/ WLosePostings \/ WLoseCanonical
-    \/ RStart \/ RReconnect \/ RError \/ RHist \/ RTailStart \/ RTailStep \/ RTailCheck
+    \/ RStart \/ RReconnect \/ RResync \/ RError \/ RHist \/ RTailStart \/ RTailStep
+    \/ RTailCheck
     \/ Terminated
 
 Spec == Init /\ [][Next]_vars
@@ -408,6 +502,14 @@ TypeOK ==
     /\ rd.ph \in {"idle", "hist", "tailstart", "tail"}
     /\ rd.pg \subseteq Offs /\ rd.tseen \subseteq Offs
     /\ pos \in 0..N /\ dpos \in 0..N /\ dpos <= pos
+    /\ peng \in 0..(MaxMoves + 1) /\ pfrom \in 0..N /\ pdig \in [Offs -> Nat]
+
+\* Continuation::fits (read_continuation.rs:154-156): a continuation the
+\* client holds belongs to its position, and no position past the durable
+\* cursor lacks one.
+ContinuationFits ==
+    IF HasCont THEN dpos < pos /\ pfrom <= pos /\ peng # 0
+               ELSE peng = 0 /\ pfrom = 0 /\ pdig = NoDigest
 
 \* Writer-side dependency from TLA-016 (sanity: the coarse writer keeps it).
 HistoryCoversBoundary ==
@@ -452,6 +554,12 @@ Witness_ReaderCompletes ==
     ~(pos = N /\ \A o \in Offs : Eligible(o) => dgen[o] # 0)
 Witness_TrimBelowReaderCursor == ~(rd.ph = "tail" /\ VD.trimmed > rd.cur)
 Witness_ReadErrorCurrentEngine == ~readErr
+\* A continuation served by another (fenced) engine was proven by the
+\* current engine's re-read, and the read continued without resync.
+Witness_ContinuedAcrossMove == ~contVerified
+\* A continuation whose suffix was lost and rewritten was refused although
+\* the replacement tail had passed it (the pre-fix acceptance, F3).
+Witness_StaleContinuationResynced == ~refusedStale
 \* An applied read adopts an absorbed boundary that is applied but not yet
 \* Remote-durable, and re-serves the trimmed prefix from history.
 Witness_AppliedRaceAdopted ==

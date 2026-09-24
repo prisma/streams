@@ -478,7 +478,10 @@ actions to these contracts.
 - **Enforcement / evidence:** upstream contract, exercised by the DST
   ownership and fencing suites (`src/dst/tests/durability_fences.rs`).
 - **Invalidation:** a SlateDB pin change; production reads through a
-  `DbReader` or a snapshot that refreshes.
+  `DbReader` or a snapshot that refreshes; restoring the object store to an
+  older snapshot, which can repeat a writer epoch (the TLA-018-F3 fix binds a
+  provisional continuation to `ShardEngine.writer_epoch`, claimed at open,
+  and treats an equal epoch as the same, unreplaced history).
 - **Standing:** established as an upstream contract; not verified here.
 
 ### ASM-HISTORY-GC-CLOCK
@@ -501,21 +504,34 @@ actions to these contracts.
 - **Statement:** The retrying in-process actors are the absorber task (a
   5 s tick that gathers pending streams every tick, with a dirty-index
   rescan every 120 ticks or every tick while paging), the committer, the WAL
-  flusher, the acker and dispatch loop, and the collector's interval
-  scheduler. Their attempts are fairly scheduled in the liveness checks. No
-  background actor repays a fork-reference debt: a debt on a child
-  tombstone is repaid only when a client issues `DELETE` for that child
-  again (`delete_lifecycle` → `repair_tombstone`, its only caller). Only
-  `LiveSpecClientRetries` assumes that client retry, and it says so.
+  flusher, the acker and dispatch loop, the collector's interval scheduler,
+  and the fork-debt reconciler (`fork-debt-reconcile`, a supervised Critical
+  task that pages the fork-debt index, 64 markers a pass, one circle every
+  `FORK_DEBT_SWEEP_SECS`, 300 s by default, and runs one backfill step per
+  round until the one-time backfill records completion). Their attempts are
+  fairly scheduled in the liveness checks; for the reconciler that is weak
+  fairness per marker and per backfill step (`ReconcilerFairness`). A
+  fork-reference debt on a child tombstone is repaid by the reconciler
+  (`repair_tombstone`, or a release from the marker when the child's name
+  was recreated), or when a client issues `DELETE` for that child again.
+  `LiveSpecClientRetries` assumes the client retry instead of the
+  reconciler, and it says so.
 - **Origin:** `src/history/worker.rs`, `ShardEngine::spawn_required`
-  (`src/shard.rs`), `src/application/creation/deletion.rs`.
+  (`src/shard.rs`), `src/application/creation/deletion.rs`,
+  `src/application/creation/reconcile.rs`, `src/registry/fork_debt.rs`,
+  `src/bootstrap.rs` (`spawn_fork_debt_reconciler`).
 - **Enforcement / evidence:** required-task supervision for the in-process
-  actors. The client retry is not enforced: after a `DELETE` that returned
-  success the client has no signal to retry (TLA-019-F4).
-- **Invalidation:** a change to task ownership or the rescan cadence; adding
-  a sweeper for tombstone debts.
-- **Standing:** established for the in-process actors; unestablished for
-  client `DELETE` retries.
+  actors, the reconciler included; the `fork_debt_stale` alert when the
+  oldest pending marker or the last completed circle is older than three
+  circle periods. The client retry is not enforced: after a `DELETE` that
+  returned success the client has no signal to retry.
+- **Invalidation:** a change to task ownership, the rescan cadence or the
+  reconciler's pass bound; a reconciler that stops before a circle completes
+  (a marker it cannot parse is skipped, not retried); a recreation of a child
+  name over a debt-bearing tombstone that the backfill has not indexed
+  (the debt is then lost, see TLA-019-F4).
+- **Standing:** established for the in-process actors and the reconciler;
+  unestablished for client `DELETE` retries.
 
 ### ASM-HISTORY-WRITER
 

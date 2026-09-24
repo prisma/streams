@@ -19,16 +19,25 @@ The obligations, checks, bounds and assumptions are in
 | Obligation | Status | Production defects found | Open |
 |---|---|---|---|
 | TLA-016 | `pass-with-recorded-scope` | TLA-016-F1 (fixed): the absorbed advance retired the chunk's bytes, not the range it moved over. TLA-016-F3 (fixed): the postings warm install claimed coverage over a trimmed head it never read. | — |
-| TLA-018 | `counterexample` | TLA-018-F1 (fixed): an applied keyed read skipped durable records trimmed by a non-durable advance. TLA-018-F3 (open). | TLA-018-F3: a stale applied cursor is accepted once the new owner's tail passes it. It needs a cursor-format decision. |
-| TLA-019 | `pass-with-recorded-scope` | None. TLA-019-F1 was a model abstraction gap: the compactor's checkpoint protects the SSTs a stale writer view still names. | — |
+| TLA-018 | `pass-with-recorded-scope` | TLA-018-F1 (fixed): an applied keyed read skipped durable records trimmed by a non-durable advance. TLA-018-F3 (fixed): a stale applied cursor was accepted once the new owner's tail passed it. | TLA-018-F2 (owner decision): H11 holds at the reader only through durability and the cache contract. |
+| TLA-019 | `pass-with-recorded-scope` | TLA-019-F4 (fixed): releasing a fork pin after an interrupted or raced `DELETE` depended on the client repeating `DELETE`; a background reconciler now releases it. TLA-019-F1 was a model abstraction gap: the compactor's checkpoint protects the SSTs a stale writer view still names. | TLA-019-F2: GC convergence needs later write activity. TLA-019-F3: no physical reclamation policy for hard-deleted incarnations' rows. |
 
-The open defect has a `known-defect` check that must keep violating its
-property. Each fixed defect has a passing baseline and a negative control that
+No defect in this group is open, so no check has the `known-defect` role.
+Each fixed defect has a passing baseline and a negative control that
 reproduces the pre-fix behaviour. The group also records two specification
-defects (TLA-016-F2, TLA-018-F2), two unjustified assumptions (TLA-019-F2,
-TLA-019-F4), one scope gap (TLA-019-F3), and two defects found in passing by
-the fixes that the model cannot express: overlapping postings pages after a
-rescan rollback (open) and a cache bridge over dropped runs (fixed).
+findings (TLA-016-F2, and TLA-018-F2, which needs an owner decision), one
+unjustified assumption (TLA-019-F2), one scope gap (TLA-019-F3), and two
+defects found in passing by the fixes that the model cannot express:
+overlapping postings pages after a rescan rollback (open) and a cache bridge
+over dropped runs (fixed). TLA-019-F4 was first recorded as an unjustified
+assumption (the client retry); the fix made it production work, and it is
+listed as fixed.
+
+File and line references in the TLA-018 and TLA-019 findings and mapping
+tables are at `d9aeaef` (the fixes landed in `55881d7`, `0d40dc2` and
+`8a03e0d`; between `55881d7` and `d9aeaef` only `src/shard.rs` and
+`src/history.rs` moved among the cited files, and the cited `src/history.rs`
+lines did not).
 
 ## How to run
 
@@ -114,78 +123,93 @@ Receipt `verification/receipts/TLA-016.json`: 33 checks, every verdict as expect
 | `witness-MisStartedAdvanceCompletes` | `HistoryAbsorb` / `w_MisStartedAdvanceCompletes` | witness | violation `Witness_MisStartedAdvanceCompletes` | violation `Witness_MisStartedAdvanceCompletes` | 40,536 | 3 |
 | `witness-InstallStartsAbovePlan` | `HistoryAbsorb` / `w_InstallStartsAbovePlan` | witness | violation `Witness_InstallStartsAbovePlan` | violation `Witness_InstallStartsAbovePlan` | 77,829 | 5 |
 
-### TLA-018 (`counterexample`)
+### TLA-018 (`pass-with-recorded-scope`)
 
-Receipt `verification/receipts/TLA-018.json`: 26 checks, every verdict as expected, run on `ab73296` with uncommitted changes; TLC 2.19 on Java 17.0.1, 2 workers; 77 min of TLC wall time in total.
+Not yet recorded as a receipt: the table is from `formal.py run --id TLA-018 --id TLA-019` (without `--record`) on `55881d7` with the uncommitted model changes, which `verification/receipts/TLA-018.json` does not yet reflect (it still records the pre-fix run on `ab73296`). 29 checks, every verdict as expected; TLC 2.19 on Java 17.0.1, 2 workers, on a machine with a load average of 25 to 60 from other jobs; 107 min of TLC wall time in total.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-durable-keyed-small` | `ReadCompose` / `durable_keyed_small` | baseline | pass | pass | 12,482,967 | 1294 |
-| `baseline-durable-unfiltered-small` | `ReadCompose` / `durable_unfiltered_small` | baseline | pass | pass | 3,777,005 | 294 |
-| `baseline-applied-keyed-small` | `ReadCompose` / `applied_keyed_small` | baseline | pass | pass | 11,351,025 | 541 |
-| `baseline-applied-unfiltered-small` | `ReadCompose` / `applied_unfiltered_small` | baseline | pass | pass | 3,045,185 | 101 |
-| `baseline-durable-keyed-expanded` | `ReadCompose` / `durable_keyed_expanded` | baseline | pass | pass | 19,356,657 | 668 |
-| `baseline-durable-unfiltered-expanded` | `ReadCompose` / `durable_unfiltered_expanded` | baseline | pass | pass | 6,582,468 | 519 |
-| `baseline-applied-unfiltered-expanded` | `ReadCompose` / `applied_unfiltered_expanded` | baseline | pass | pass | 18,856,204 | 1009 |
-| `known-defect-stale-applied-cursor` | `ReadCompose` / `kd_stale_applied_cursor` | known-defect | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 2,386,543 | 100 |
-| `nc-old-history-view` | `ReadCompose` / `nc_old_history_view` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 565,256 | 30 |
-| `nc-filtered-race-never` | `ReadCompose` / `nc_filtered_race_never` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 197,406 | 10 |
-| `nc-short-index-accepted` | `ReadCompose` / `nc_short_index_accepted` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 8,231 | 3 |
-| `nc-applied-race-remote` | `ReadCompose` / `nc_applied_race_remote` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 48,792 | 5 |
-| `nc-applied-race-remote-unfiltered` | `ReadCompose` / `nc_applied_race_remote_unfiltered` | negative-control | violation `TailGapExplained` | violation `TailGapExplained` | 43,613 | 4 |
-| `probe-lost-durable-postings` | `ReadCompose` / `probe_lost_postings` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 7,256 | 2 |
-| `probe-lost-durable-canonical` | `ReadCompose` / `probe_lost_canonical` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 9,098 | 2 |
-| `witness-BoundaryRaceAdopted` | `ReadCompose` / `w_BoundaryRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 9,627 | 3 |
-| `witness-UnfilteredRaceAdopted` | `ReadCompose` / `w_UnfilteredRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 155,709 | 10 |
-| `witness-AppliedRaceAdopted` | `ReadCompose` / `w_AppliedRaceAdopted` | witness | violation `Witness_AppliedRaceAdopted` | violation `Witness_AppliedRaceAdopted` | 4,113 | 2 |
-| `witness-LargeFirstRecordDelivered` | `ReadCompose` / `w_LargeFirstRecordDelivered` | witness | violation `Witness_LargeFirstRecordDelivered` | violation `Witness_LargeFirstRecordDelivered` | 134 | 1 |
-| `witness-EnvelopeServed` | `ReadCompose` / `w_EnvelopeServed` | witness | violation `Witness_EnvelopeServed` | violation `Witness_EnvelopeServed` | 1,230 | 2 |
-| `witness-ShortIndexPartial` | `ReadCompose` / `w_ShortIndexPartial` | witness | violation `Witness_ShortIndexPartial` | violation `Witness_ShortIndexPartial` | 1,445 | 2 |
-| `witness-ReadFromFencedEngine` | `ReadCompose` / `w_ReadFromFencedEngine` | witness | violation `Witness_ReadFromFencedEngine` | violation `Witness_ReadFromFencedEngine` | 369 | 2 |
-| `witness-RingServed` | `ReadCompose` / `w_RingServed` | witness | violation `Witness_RingServed` | violation `Witness_RingServed` | 113 | 2 |
-| `witness-ReaderCompletes` | `ReadCompose` / `w_ReaderCompletes` | witness | violation `Witness_ReaderCompletes` | violation `Witness_ReaderCompletes` | 3,720 | 2 |
-| `witness-TrimBelowReaderCursor` | `ReadCompose` / `w_TrimBelowReaderCursor` | witness | violation `Witness_TrimBelowReaderCursor` | violation `Witness_TrimBelowReaderCursor` | 10,489 | 3 |
-| `witness-ReadErrorCurrentEngine` | `ReadCompose` / `w_ReadErrorCurrentEngine` | witness | violation `Witness_ReadErrorCurrentEngine` | violation `Witness_ReadErrorCurrentEngine` | 43 | 2 |
+| `baseline-durable-keyed-small` | `ReadCompose` / `durable_keyed_small` | baseline | pass | pass | 12,482,967 | 1660 |
+| `baseline-durable-unfiltered-small` | `ReadCompose` / `durable_unfiltered_small` | baseline | pass | pass | 3,777,005 | 475 |
+| `baseline-applied-keyed-small` | `ReadCompose` / `applied_keyed_small` | baseline | pass | pass | 11,351,025 | 522 |
+| `baseline-applied-unfiltered-small` | `ReadCompose` / `applied_unfiltered_small` | baseline | pass | pass | 3,045,185 | 102 |
+| `baseline-durable-keyed-expanded` | `ReadCompose` / `durable_keyed_expanded` | baseline | pass | pass | 19,356,657 | 737 |
+| `baseline-durable-unfiltered-expanded` | `ReadCompose` / `durable_unfiltered_expanded` | baseline | pass | pass | 6,582,468 | 344 |
+| `baseline-applied-unfiltered-expanded` | `ReadCompose` / `applied_unfiltered_expanded` | baseline | pass | pass | 19,384,259 | 889 |
+| `baseline-applied-keyed-expanded` | `ReadCompose` / `applied_keyed_expanded` | baseline | pass | pass | 53,598,423 | 1618 |
+| `nc-old-history-view` | `ReadCompose` / `nc_old_history_view` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 567,556 | 11 |
+| `nc-filtered-race-never` | `ReadCompose` / `nc_filtered_race_never` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 205,787 | 5 |
+| `nc-short-index-accepted` | `ReadCompose` / `nc_short_index_accepted` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 6,946 | 2 |
+| `nc-applied-race-remote` | `ReadCompose` / `nc_applied_race_remote` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 55,998 | 2 |
+| `nc-applied-race-remote-unfiltered` | `ReadCompose` / `nc_applied_race_remote_unfiltered` | negative-control | violation `TailGapExplained` | violation `TailGapExplained` | 43,188 | 2 |
+| `nc-no-continuation-check` | `ReadCompose` / `nc_no_continuation_check` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 2,540,301 | 41 |
+| `probe-lost-durable-postings` | `ReadCompose` / `probe_lost_postings` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 7,447 | 2 |
+| `probe-lost-durable-canonical` | `ReadCompose` / `probe_lost_canonical` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 10,842 | 2 |
+| `witness-BoundaryRaceAdopted` | `ReadCompose` / `w_BoundaryRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 8,799 | 2 |
+| `witness-UnfilteredRaceAdopted` | `ReadCompose` / `w_UnfilteredRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 161,672 | 4 |
+| `witness-AppliedRaceAdopted` | `ReadCompose` / `w_AppliedRaceAdopted` | witness | violation `Witness_AppliedRaceAdopted` | violation `Witness_AppliedRaceAdopted` | 4,099 | 1 |
+| `witness-LargeFirstRecordDelivered` | `ReadCompose` / `w_LargeFirstRecordDelivered` | witness | violation `Witness_LargeFirstRecordDelivered` | violation `Witness_LargeFirstRecordDelivered` | 137 | 1 |
+| `witness-EnvelopeServed` | `ReadCompose` / `w_EnvelopeServed` | witness | violation `Witness_EnvelopeServed` | violation `Witness_EnvelopeServed` | 1,148 | 1 |
+| `witness-ShortIndexPartial` | `ReadCompose` / `w_ShortIndexPartial` | witness | violation `Witness_ShortIndexPartial` | violation `Witness_ShortIndexPartial` | 1,768 | 1 |
+| `witness-ReadFromFencedEngine` | `ReadCompose` / `w_ReadFromFencedEngine` | witness | violation `Witness_ReadFromFencedEngine` | violation `Witness_ReadFromFencedEngine` | 495 | 1 |
+| `witness-RingServed` | `ReadCompose` / `w_RingServed` | witness | violation `Witness_RingServed` | violation `Witness_RingServed` | 150 | 1 |
+| `witness-ReaderCompletes` | `ReadCompose` / `w_ReaderCompletes` | witness | violation `Witness_ReaderCompletes` | violation `Witness_ReaderCompletes` | 4,297 | 1 |
+| `witness-TrimBelowReaderCursor` | `ReadCompose` / `w_TrimBelowReaderCursor` | witness | violation `Witness_TrimBelowReaderCursor` | violation `Witness_TrimBelowReaderCursor` | 10,577 | 2 |
+| `witness-ReadErrorCurrentEngine` | `ReadCompose` / `w_ReadErrorCurrentEngine` | witness | violation `Witness_ReadErrorCurrentEngine` | violation `Witness_ReadErrorCurrentEngine` | 46 | 1 |
+| `witness-ContinuedAcrossMove` | `ReadCompose` / `w_ContinuedAcrossMove` | witness | violation `Witness_ContinuedAcrossMove` | violation `Witness_ContinuedAcrossMove` | 355,396 | 6 |
+| `witness-StaleContinuationResynced` | `ReadCompose` / `w_StaleContinuationResynced` | witness | violation `Witness_StaleContinuationResynced` | violation `Witness_StaleContinuationResynced` | 463,670 | 8 |
 
 ### TLA-019 (`pass-with-recorded-scope`)
 
-Receipt `verification/receipts/TLA-019.json`: 33 checks, every verdict as expected, run on `ab73296` with uncommitted changes; TLC 2.19 on Java 17.0.1, 2 workers; 32 min of TLC wall time in total.
+Not yet recorded as a receipt: the table is from the same unrecorded driver run. 45 checks, every verdict as expected; 50 min of TLC wall time in total. In that run `nc-ignore-fork-pin` and `nc-install-ignores-incarnation` first failed with a configuration error (their configurations lacked the new `Prev` and `Legacy` constants); after the fix they were rerun with `--id TLA-019 --role negative-control`, where all 15 controls matched, and the two rows below are from that rerun.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-small` | `ReachGC` / `small` | baseline | pass | pass | 3,938,288 | 96 |
-| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 616 |
-| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 86 |
-| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 119 |
-| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 822 |
-| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 257,708 | 4 |
-| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 148 | 1 |
-| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 451,553 | 6 |
-| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 482,475 | 6 |
-| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 24,456 | 2 |
-| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,119,614 | 12 |
-| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 566,760 | 72 |
-| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 573,358 | 7 |
-| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 180,308 | 3 |
-| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,190,546 | 13 |
-| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 526,801 | 6 |
-| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 668 | 1 |
-| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 22,535 | 2 |
-| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 2,030 | 1 |
-| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 125,897 | 2 |
-| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 16,900 | 1 |
-| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 16,900 | 3 |
-| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 67 | 1 |
-| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 279 | 1 |
-| `probe-no-client-retry` | `ForkPin` / `probe_no_client_retry` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 16,900 | 2 |
-| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 152 | 1 |
-| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 3,116 | 1 |
-| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 157 | 1 |
-| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 54 | 1 |
-| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 134 | 1 |
-| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 280 | 1 |
-| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 333 | 1 |
-| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 244 | 1 |
+| `baseline-small` | `ReachGC` / `small` | baseline | pass | pass | 3,938,288 | 53 |
+| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 399 |
+| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 52 |
+| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 105 |
+| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 1792 |
+| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 247,997 | 5 |
+| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 161 | 1 |
+| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 446,545 | 7 |
+| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 445,895 | 8 |
+| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 23,177 | 2 |
+| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,182,834 | 16 |
+| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 566,760 | 126 |
+| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 524,423 | 8 |
+| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 200,038 | 4 |
+| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,308,058 | 20 |
+| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 447,745 | 8 |
+| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 684 | 1 |
+| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 25,032 | 2 |
+| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 1,673 | 1 |
+| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 126,423 | 3 |
+| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 3,374,329 | 117 |
+| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 72,328 | 14 |
+| `fork-liveness-reconciler` | `ForkPin` / `liveness_reconciler` | baseline | pass | pass | 72,328 | 16 |
+| `fork-liveness-reconciler-recreated` | `ForkPin` / `liveness_reconciler_recreated` | baseline | pass | pass | 49,238 | 11 |
+| `fork-liveness-backfill` | `ForkPin` / `liveness_backfill` | baseline | pass | pass | 564,266 | 174 |
+| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 48 | 1 |
+| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 451 | 1 |
+| `nc-no-reconciler` | `ForkPin` / `nc_no_reconciler` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 45,231 | 4 |
+| `nc-settle-inconclusive` | `ForkPin` / `nc_settle_inconclusive` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 31,147 | 4 |
+| `nc-no-backfill` | `ForkPin` / `nc_no_backfill` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 39,156 | 4 |
+| `nc-reconcile-live-child` | `ForkPin` / `nc_reconcile_live_child` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 102 | 1 |
+| `nc-release-current-name-id` | `ForkPin` / `nc_release_current_name_id` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 1,646 | 1 |
+| `nc-no-write-ahead-marker` | `ForkPin` / `nc_no_write_ahead_marker` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 45 | 1 |
+| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 105 | 1 |
+| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 3,233 | 1 |
+| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 455 | 1 |
+| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 84 | 1 |
+| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 127 | 1 |
+| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 876 | 1 |
+| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 784 | 1 |
+| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 526 | 1 |
+| `witness-fork-ReconcilerReleasesLatePin` | `ForkPin` / `w_ReconcilerReleasesLatePin` | witness | violation `Witness_ReconcilerReleasesLatePin` | violation `Witness_ReconcilerReleasesLatePin` | 537 | 1 |
+| `witness-fork-ReconcilerReleasesReplacedName` | `ForkPin` / `w_ReconcilerReleasesReplacedName` | witness | violation `Witness_ReconcilerReleasesReplacedName` | violation `Witness_ReconcilerReleasesReplacedName` | 420 | 1 |
+| `witness-fork-BackfillReleased` | `ForkPin` / `w_BackfillReleased` | witness | violation `Witness_BackfillReleased` | violation `Witness_BackfillReleased` | 828 | 1 |
+| `witness-fork-UnindexedDebtOverwritten` | `ForkPin` / `w_UnindexedDebtOverwritten` | witness | violation `Witness_UnindexedDebtOverwritten` | violation `Witness_UnindexedDebtOverwritten` | 214 | 1 |
 <!-- /RESULTS -->
 
 ## Findings
@@ -197,12 +221,12 @@ Receipt `verification/receipts/TLA-019.json`: 33 checks, every verdict as expect
 | TLA-016-F2 | specification defect (documentation) | Recorded. The `trim_safe_to` comments overstate what the one-advance lag protects. |
 | (cache bridge) | production defect, found in passing during the TLA-016-F3 fix | **Fixed** by "A postings-cache bridge never crosses a chunk whose runs no slice recorded". Outside what the model can express (admission line, capped and merging loads); covered by real-code regressions. |
 | TLA-018-F1 | production defect | **Fixed** by "An applied read revalidates its tail scan at the level it scanned, so it never skips a durable record" (`9cea1b6`). `baseline-applied-keyed-small` passes; controls `nc-applied-race-remote*` reproduce the pre-fix behaviour. |
-| TLA-018-F3 | production defect | **Open; needs an owner decision** on the cursor format. `known-defect-stale-applied-cursor` violates `ExactDurablePrefix`. Real-code reproduction: `verification/regressions/TLA-018-F3/README.md`. |
-| TLA-018-F2 | specification defect | Recorded. H11 is not enforced by the reader; it holds only through durability and the cache contract. |
+| TLA-018-F3 | production defect | **Fixed** by "A provisional read cursor proves the history it continues, or answers an explicit resync" (`55881d7`). `baseline-applied-unfiltered-expanded` (the former known-defect shape) and `baseline-applied-keyed-expanded` check `ExactDurablePrefix` and pass; `nc-no-continuation-check` reproduces the pre-fix acceptance. Regressions in `dst::dst_tests::reads_applied_history`; `verification/regressions/TLA-018-F3/README.md`. |
+| TLA-018-F2 | specification finding (owner decision) | **Open; needs an owner decision.** H11 is not enforced by the reader; it holds only through durability and the cache contract. The owner either adopts that scope for H11, with its assumptions, or asks for reader-side enforcement. |
 | TLA-019-F1 | abstraction gap (not reproduced) | **Withdrawn as a defect.** The model lacked the compactor's checkpoint. With it, `LiveReadViewProtected` passes under ASM-SLATEDB-COMPACTION-CHECKPOINT; `nc-no-compaction-checkpoint` reproduces the earlier counterexample. |
-| TLA-019-F4 | unjustified assumption | Recorded. Releasing a fork pin after an interrupted or raced `DELETE` depends on the client repeating `DELETE`. |
-| TLA-019-F2 | unjustified assumption | Recorded. H14 convergence holds only while the partition keeps writing. |
-| TLA-019-F3 | scope gap (owner question) | Recorded. There is no physical reclamation policy for a hard-deleted incarnation's rows. |
+| TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. Residual: pre-index debt overwritten by a recreation of the child's name before the backfill indexes it. |
+| TLA-019-F2 | unjustified assumption | **Open.** H14 convergence holds only while the partition keeps writing. |
+| TLA-019-F3 | scope gap (owner question) | **Open.** There is no physical reclamation policy for a hard-deleted incarnation's rows. |
 
 ### TLA-016-F1 — the absorbed advance retired the chunk's bytes, not the range it moved over (fixed)
 
@@ -386,39 +410,84 @@ is replaced by `TailGapExplained` and the unfiltered control.
 **Pre-fix evidence.** `evidence/TLA-018_applied_keyed_skip.trace.txt`,
 recorded on the pre-fix model.
 
-### TLA-018-F3 — a stale applied cursor is refused only while the new tail is below it (open, needs a decision)
+### TLA-018-F3 — a stale applied cursor was accepted once the new tail passed it (fixed)
 
-**Check.** `known-defect-stale-applied-cursor`
-(`MC_ReadCompose_kd_stale_applied_cursor.cfg`) violates `ExactDurablePrefix`
-(`evidence/TLA-018_applied_stale_cursor.trace.txt`). The old owner has record
-0 durable and record 1 applied only. An applied read delivers record 1 as
-pending and returns a session cursor past it. Ownership moves, and record 1
-is lost with the old memtable. The new owner appends a different record 1 and
-a record 2. The client continues from its session cursor, which the new
-owner accepts because its tail is no longer below it. The next page delivers
-record 2 and moves the durable cursor past offset 1, whose durable record the
-client never received.
+**Defect.** The old owner has record 0 durable and record 1 applied only. An
+applied read delivers record 1 as pending and returns a session cursor past
+it. Ownership moves, and record 1 is lost with the old memtable. The new owner
+appends a different record 1 and a record 2. The client continues from its
+session cursor, which the new owner accepted because its tail was no longer
+below it: the only guard was `start > end` against the current owner's end,
+and a `KIND_KEY_V2` cursor carried no owner identity and no durable frontier.
+The next page delivered record 2 and moved the durable cursor past offset 1,
+whose durable record the client never received. On the real code the
+restarted server answered `200` with `[{"n":20}]` and a durable cursor of 3
+(`evidence/TLA-018_applied_stale_cursor.trace.txt`, recorded on the pre-fix
+model; `verification/regressions/TLA-018-F3/README.md`).
 
-**Code path.** The only guard is
-`if command.visibility == Deliver::Applied && start > end { return Err(CursorBeyondTail) }`
-in `ReadService::execute_read` (`src/application/read_request.rs:291-293`),
-where `end` is the current owner's end. A `KIND_KEY_V2` cursor carries no
-owner incarnation and no durable frontier.
-`a_stale_applied_cursor_is_refused_after_crash_restart`
-(`src/dst/tests/reads_applied.rs`) presents the cursor before any new append,
-so it never reaches the race.
+**Fix, as modelled.** The owner decided to tell provisional continuation
+apart from durable replay, and to answer an incompatible continuation with
+explicit resynchronisation instead of moving the durable cursor past unseen
+records:
 
-**Real-code reproduction and decision.**
-`verification/regressions/TLA-018-F3/README.md` quotes a test that appends two
-records on the restarted server before presenting the stale cursor. It gets
-`200` with `[{"n":20}]` and a durable cursor of 3 instead of
-`409 cursor_beyond_tail`. The proposed design is a `KIND_KEY_V3` cursor that
-binds an applied session cursor to the minting owner incarnation or the
-durable frontier. It changes a persisted, client-visible format, so the owner
-must decide what it carries, whether a stale cursor is refused or rewound, and
-how existing `KIND_KEY_V2` cursors are treated.
+- A page that ends past the durable frontier returns a `Continuation`
+  (`src/application/read_continuation.rs:104-109`): the writer history that
+  served it (the shard prefix and `ShardEngine.writer_epoch`,
+  `src/shard.rs:1135`, `:1374`), the recovery offset (the durable resume
+  cursor), a digest start and a keyed, chained digest of the records the
+  client observed from the digest start (`Continuation::after_page`,
+  `read_continuation.rs:120-151`, called at `read_request.rs:655-666`).
+  Product reads mint it as a `KIND_KEY_V3` cursor.
+- `check_entry_start` (`read_request.rs:693-707`, called at `:350-352`)
+  verifies it before the read: the same writer history continues; another
+  writer continues only if its re-read of `[from, at)` holds exactly the
+  observed records and the digest reaches down to the recovery offset
+  (`verify_continuation`, `:716-751`; `Continuation::observed_in`,
+  `read_continuation.rs:176-186`). Otherwise the read fails with
+  `ReadFailure::HistoryReplaced` (`:747-750`): `409 cursor_beyond_tail` with
+  reason `history_replaced` and the durable recovery cursor.
+- A V2 token is a durable position; with `deliver=applied`, one beyond the
+  durable frontier is refused (`read_request.rs:704-706`).
 
-### TLA-018-F2 — H11 is not enforced at the reader (specification defect)
+In the model the client holds `peng` (the engine that served the provisional
+suffix; the engine number stands for the writer epoch, which every ownership
+move changes), `pfrom` (the digest start) and `pdig` (the observed content per
+offset of `[pfrom, pos)`, standing for the digest). `EndPage` computes them as
+`after_page` does; `StartAllowed` is `check_entry_start`, with `ObservedIn`
+as `observed_in` over the current engine's applied view; `RResync` is the
+refusal followed by the client's resume from the recovery cursor.
+
+**Checks.** `baseline-applied-unfiltered-expanded`, the shape of the former
+known-defect check, now checks `ExactDurablePrefix` with every other property
+and passes; `baseline-applied-keyed-expanded` checks the keyed read in the
+same shape. `ContinuationFits` (every baseline) checks that a client past its
+durable cursor always holds a continuation that fits its position. The
+pre-fix behaviour is `MutNoContinuationCheck`: `nc-no-continuation-check`
+violates `ExactDurablePrefix`. `witness-StaleContinuationResynced` shows a
+lost, rewritten suffix refused although the replacement tail has passed the
+cursor; `witness-ContinuedAcrossMove` shows a continuation that another
+engine served being proven by the re-read and continuing without resync.
+
+**Regressions.**
+`dst::dst_tests::reads_applied_history::a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it`,
+`dst::dst_tests::reads_applied_history::a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it`
+and
+`dst::dst_tests::reads_applied_history::an_owner_change_that_loses_nothing_keeps_the_continuation`
+drive the real server through a held shard WAL `PUT` and an ownership
+replacement (product read, durable mode, SSE, both raw renderings and the
+relay); the stale-cursor tests fail on the unfixed code.
+`application::read_continuation::tests` pins the continuation algebra.
+
+**What remains.** A V2 session cursor minted before the fix over a suffix
+that was later lost cannot be detected once the durable frontier passes it:
+the fix treats a V2 token at or below the frontier as a durable position
+(pinned in `stale_continuation_after_replacement` and documented in
+`docs/GUIDE-COMPOSER.md`). The model's clients mint only V2 durable positions
+and V3 continuations, so this migration case is exactly the pre-fix control,
+not a baseline behaviour. Restoring the object store to an older snapshot can
+repeat a writer epoch (ASM-HISTORY-FENCED-VIEW).
+
+### TLA-018-F2 — H11 is not enforced at the reader (owner decision)
 
 The keyed reader treats zero postings pages as proof that a range has no
 matches (`docs/ROUTING-V3.md`; `read_history2_keyed`, `src/history.rs:972`).
@@ -426,13 +495,27 @@ The unfiltered scan, the corruption envelope and `execute_postings_plan` all
 skip a missing canonical row and still complete. The probes show the
 consequence: `probe-lost-durable-postings` and `probe-lost-durable-canonical`
 each produce a false complete page. Before their fixes, TLA-016-F3 and the
-cache-bridge defect were production paths to the same observable. H11 ("missing postings cannot produce a false complete
-result") therefore holds for corrupt pages (served through the envelope),
+cache-bridge defect were production paths to the same observable.
+
+H11 ("missing postings cannot produce a false complete result") therefore
+holds, as checked here, for corrupt pages (served through the envelope),
 unproven load windows (honest partials) and postings never made durable (H3,
-TLA-016). It does not hold for rows or pages lost after durability or for a
-slice that proves false absence; those rest on ASM-SLATEDB-DURABLE,
-ASM-SLATEDB-GC and ASM-HISTORY-POSTINGS-CACHE. The DST text of H11 should be
-narrowed, or the index should carry a positive coverage marker.
+TLA-016). For rows or pages lost after durability, and for a slice that
+proves false absence, it holds only through ASM-SLATEDB-DURABLE,
+ASM-SLATEDB-GC and ASM-HISTORY-POSTINGS-CACHE.
+
+This is a decision for the requirement's owner, not a code defect. The two
+options are:
+
+1. Adopt that scope for H11: the reader relies on durable history and on the
+   cache contract, and H11 names those assumptions as its premises. The
+   probes then stay as the evidence of what the premises carry.
+2. Enforce H11 at the reader: the index carries a positive coverage marker
+   (a page or range count the reader verifies), so a lost page or row becomes
+   an error instead of a complete page. That is production work with a
+   format change.
+
+Until the owner chooses, TLA-018 claims H11 only in the first, scoped sense.
 
 ### TLA-019-F1 — the writer's stale manifest view and GC (abstraction gap, not reproduced)
 
@@ -493,38 +576,100 @@ read returns every record. As a control, deleting that checkpoint and
 collecting again makes the same read fail with the object store's
 `NotFound`, and `refresh_manifest` restores it.
 
-### TLA-019-F4 — releasing a fork pin depends on a client repeating `DELETE` (unjustified assumption)
+### TLA-019-F4 — releasing a fork pin depended on a client repeating `DELETE` (fixed)
 
-`fork-liveness-client-retries` passes only because `RetryDelete`, the
-client, is weakly fair (the F8 premise). `probe-no-client-retry` drops that
-premise and violates `RefEventuallyReleased`
-(`evidence/TLA-019_fork_no_retry.trace.txt`, which takes the second path
-below). There are two paths:
+**Finding.** `fork-liveness-client-retries` passed only because `RetryDelete`,
+the client, was weakly fair (the F8 premise); without it `RefEventuallyReleased`
+failed (`evidence/TLA-019_fork_no_retry.trace.txt`, recorded on the pre-fix
+model). There were two paths:
 
 1. The child's `DELETE` dies after its tombstone CAS and before
-   `release_fork_ref` (`witness-fork-PermanentPinWithoutRetry`). The client
-   saw an error, so a retry is plausible.
+   `release_fork_ref` (`witness-fork-PermanentPinWithoutRetry`).
 2. The child's `DELETE` already returned success
    (`witness-fork-PinAfterSuccessfulDelete`,
    `evidence/TLA-019_fork_pin_after_successful_delete.trace.txt`). It ran
-   while the creator was between its pre-check and the install CAS. The
+   while the creator was between its pre-check and the install CAS; the
    in-request release found the reference absent on a live source, which is
    inconclusive, so the tombstone kept its debt and `delete_lifecycle`
    returned `Ok(())`. The creator's install then landed and the creator died
-   before its post-check. Only another `DELETE` of the already deleted child
-   repairs the pin, and the client has no signal to send one.
-   `dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry`
-   pins that repair and calls it "the retry the client already owns".
+   before its post-check. The client had no signal to repeat the `DELETE`,
+   and the source stayed soft-deleted: its name could not be recreated (F5)
+   and its data was retained.
 
-`repair_tombstone` has no other caller (`deletion.rs:273-274`, `:359`), and
-`deletion.rs:355-358` says the only request a client will retry is the
-original delete of the leaf. Until someone deletes the child again, the
-source stays soft-deleted: its name cannot be recreated (F5) and its data is
-retained. F8 ("deletion debt is recoverable by retrying the original public
-operation") is met as written; the catalog's "eventually reclaimable" is not.
-Owner question: add a background sweep of tombstones with
-`parent_ref_pending`, or make the `DELETE` response report an inconclusive
-release.
+The review ranked it service work. Both witnesses stay reachable: they are
+the states the reconciler now repairs.
+
+**Fix, as modelled.**
+
+- A fork-debt index (`src/registry/fork_debt.rs`) holds one marker per child
+  incarnation naming the release it may owe (source name, source epoch, fork
+  id). `delete_lifecycle` writes it before the tombstone
+  (`record_fork_debt`, `deletion.rs:290-294`); a failed write fails the
+  delete before anything changed. In the model this is `IndexDebt`, and
+  `ChildDelete` requires the marker (mutation point `WriteAhead`).
+- A conclusive release in the same request, or a repeated `DELETE`, removes
+  the marker, best effort (`settle_marker`, `deletion.rs:350-352`, `:387-390`,
+  `:451-459`). In the model `InRequestRelease` settles it when conclusive and
+  may fail to (mutation point `SettleMarker`).
+- The supervised `fork-debt-reconcile` task (`reconcile.rs:326-356`) pages
+  the markers. Per marker (`settle`, `:202-261`): a tombstone with debt runs
+  `repair_tombstone`, exactly what a repeated `DELETE` runs, and drops the
+  marker once the debt is paid; a tombstone without debt drops it; a live,
+  initializing, sealing or retained child is deferred; a recreated name or
+  missing descriptor is released from the marker, fenced to the source
+  incarnation. An absent reference on a live source is inconclusive and keeps
+  the marker. In the model this is `Reconcile(c)` (mutation points
+  `MarkerView` and `ReleaseId`), weakly fair per marker
+  (`ReconcilerFairness`, ASM-HISTORY-ACTORS).
+- Tombstones from before the index carry debt with no marker. Each reconciler
+  round first runs one step of the one-time backfill
+  (`Registry::backfill_fork_debt`, `fork_debt.rs:263-321`;
+  `reconcile.rs:275-318`), which walks the catalog and indexes every
+  debt-bearing tombstone, then records completion and never runs again. In
+  the model, with `Legacy`, child deletes before `Rollout` write no marker,
+  `Backfill(c)` indexes such a tombstone and `BackfillFinish` completes the
+  walk (mutation point `BackfillOn`).
+
+**Checks.** `fork-liveness-reconciler` (the former `probe-no-client-retry`
+shape: no client retry) and `fork-liveness-reconciler-recreated` (the child's
+name is recreated, so the debt survives only as a marker) pass
+`RefEventuallyReleased` and `SoftSourceEventuallyTombstoned`;
+`fork-liveness-backfill` passes them for pre-index debt.
+`fork-liveness-client-retries` still passes: a client retry remains a valid
+repair. `fork-baseline` adds `OwedRefIndexed`: a deleted child's reference
+that still pins the incarnation it forked, with no creator left, always has a
+marker. Controls, each a hand mutation the commits name: `nc-no-reconciler`,
+`nc-settle-inconclusive` and `nc-no-backfill` violate
+`RefEventuallyReleased`; `nc-reconcile-live-child` and
+`nc-release-current-name-id` violate `ReadyHoldsRef`;
+`nc-no-write-ahead-marker` violates `OwedRefIndexed`. Witnesses:
+`witness-fork-ReconcilerReleasesLatePin` (the path-2 schedule released with
+no client retry), `witness-fork-ReconcilerReleasesReplacedName`,
+`witness-fork-BackfillReleased`.
+
+**Regressions.**
+`dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry`
+(fails before the fix),
+`dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds`,
+`dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart`,
+`dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released`,
+`dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart` and
+`dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert`.
+`dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry`
+still pins the client-retry repair.
+
+**Residual (recorded, not claimed).** A debt-bearing tombstone that has no
+marker, because an old binary wrote it, is lost if its child's name is
+recreated before the backfill indexes it: the recreation overwrites the
+tombstone and its debt, and nothing else records the release. Before the
+rollout this is the older leak the reconciler commit names; after the
+rollout the window lasts until the backfill passes the name.
+`witness-fork-UnindexedDebtOverwritten` shows the post-rollout case is
+reachable, so `fork-liveness-backfill` uses two children under distinct
+names. The commit's own known limits also stand: a marker whose creator died
+before installing its reference stays pending until an operator confirms it
+inert, and the `fork_debt_stale` alert is evaluated only in the telemetry
+cadence.
 
 ### TLA-019-F2 — H14 convergence holds only under continued write activity (unjustified assumption)
 
@@ -743,10 +888,16 @@ Modules `ReadCompose.tla` and `MC_ReadCompose.tla`.
   tail may include applied, not yet durable records, marked with
   `Prisma-Pending-From`. Only the durable resume cursor carries a promise:
   `min(consumed, handle.durable.next)`, with `handle.durable.next` read after
-  the page (`read_request.rs:576-579`). Records at or beyond it may be
+  the page (`read_request.rs:648-652`). Records at or beyond it may be
   replaced after a crash or ownership move. The code's stated intent is that
   applied reads never see less than a durable reader
-  (`src/shard/record.rs:285-288`).
+  (`src/shard/record.rs:285-288`). A page that ends past the durable resume
+  cursor returns a provisional continuation (`KIND_KEY_V3`, TLA-018-F3 fix)
+  bound to the writer history that served the suffix and a digest of what
+  the client observed; the next read continues it only on that history or
+  after a re-read proves the observation, and otherwise answers
+  `409 cursor_beyond_tail` (`history_replaced`) with the durable recovery
+  cursor. A V2 token is a durable position.
 - **Filter.** Product reads always pass `Some(routing_key)`, including the
   default `""`. `None` (unfiltered) is the engine and replay path.
 - **Retention.** Hot rows below `trimmed` are gone from the shard log. A
@@ -764,8 +915,12 @@ per page:
 
 - `ExactDurablePrefix`: every eligible record below the promising cursor
   (`pos` in durable mode, `dpos` in applied mode) was delivered with its
-  durable content, and no ineligible record was delivered (violated in
-  applied mode by F3);
+  durable content, and no ineligible record was delivered, across an
+  ownership move that loses and rewrites an applied suffix (it failed before
+  the TLA-018-F3 fix);
+- `ContinuationFits`: a client whose position is past its durable cursor
+  holds a continuation that fits it (`Continuation::fits`), and no other
+  client holds one;
 - `NoDuplicateDelivery`: no record in the promised prefix is delivered twice,
   and no page reports a consumed position at or below a record it delivered;
 - `NoFabricatedRecord`: only records of the selected key are delivered;
@@ -777,7 +932,8 @@ per page:
 - `HistoryCoversBoundary`: sanity check that the coarse writer keeps
   TLA-016's H3.
 
-**Requirement anchors:** H1, H2, H9, H10 (abstracted), H11, D8, D9.
+**Requirement anchors:** H1, H2, H9, H10 (abstracted), H11 (in the scoped
+sense of TLA-018-F2), D8, D9.
 
 ### Observation boundary
 
@@ -786,7 +942,9 @@ applied end), the live history partition (`hF`), tail rows one at a time
 (Remote sees `D.trimmed`, Memory sees `A.trimmed`), the durable tail ring,
 and the absorbed boundary at the scan's visibility (`D.abs` for durable,
 `A.abs` for applied). After an ownership move, the old engine's views are
-frozen (ASM-HISTORY-FENCED-VIEW) or the read fails.
+frozen (ASM-HISTORY-FENCED-VIEW) or the read fails. The client keeps its
+position, its durable cursor, the content it last received per offset, and
+its continuation: the serving engine, the digest start and the digest.
 
 ### Atomicity / linearization table
 
@@ -796,18 +954,22 @@ frozen (ASM-HISTORY-FENCED-VIEW) or the read fails.
 | `WHistFlush` | A gather: one `WriteBatch` and `part.flush()` (`absorb_gather_v2_with` through `Absorber::commit`, `src/history/gather.rs:317-590`) | Collapsed into one step that raises the contiguous durable frontier `hF`. Justified by TLA-016's H3 and `LastRecoverableCopy` (ASM-HISTORY-WRITER). |
 | `WMove` | Ownership move: the new engine opens the shard DB, fencing the old writer, and loads the durable tail | ASM-HISTORY-FENCED-VIEW. The old engine keeps frozen, self-consistent views. |
 | `WLosePostings`, `WLoseCanonical` | **Not production.** Probe actions only | They violate ASM-SLATEDB-DURABLE or ASM-SLATEDB-GC. |
-| `RStart` | Snapshot in `execute_segment` (`src/application/read.rs:129`, `:145-164`); page loop in `ReadService::execute_read` (`read_request.rs`) | Taken under the handle mutex. |
+| `RStart` | `ReadService::execute_read` (`read_request.rs:259-452`): `tail_state`, then `check_entry_start` (`:350-352`, `:693-707`) and the `start > end` guard (`:353-355`); snapshot in `execute_segment` (`src/application/read.rs:129`, `:145-164`) | Taken under the handle mutex. `StartAllowed` is `check_entry_start` (mutation point `ContinuationCheck`): the same engine continues; another engine continues only if `ObservedIn`, `verify_continuation`'s re-read of `[pfrom, pos)` (`:716-751`) on the current engine's applied view, matches the digest (`Continuation::observed_in`, `read_continuation.rs:176-186`); a V2 position starts only at or below `handle.durable.next` (`:704-706`). The re-read is one atomic observation of the current engine; it reads the same history and tail rows as a page. |
 | `RHist` | `decode_history_range` (`read.rs:719`) → `read_history2_scan` (`src/history.rs:921`) or `read_history2_keyed_cached` (`history.rs:1031`) → `PostingsCache::runs_for` (`src/postings_cache.rs:508`) → `execute_postings_plan` (`src/history/postings_read.rs:13`), or the corruption envelope; `PageBudget` | One step: rows below the boundary are immutable. A missing canonical row is skipped silently by every source, as in production (`history.rs:921-948`; `postings_read.rs:80-96`). Postings runs are abstracted by ASM-HISTORY-POSTINGS-CACHE. |
 | `RTailStart` | `ring_read` (`src/shard/tail_ring.rs:97`) and `proves_durable_ring` (`src/shard/record.rs:104`), or the start of `read_frames_until` (`record.rs:272`) | The ring returns durable copies with a density proof (ASM-HISTORY-RING); durable mode only (`record.rs:307`). |
 | `RTailStep` | One row of the scan at `deliver.durability()`: Remote for durable, Memory for applied (`record.rs:325`, `:212-217`) | Per row: the iterator is not treated as a snapshot. |
 | `RTailCheck` | `absorption_race` (`read.rs:789`) → `ShardEngine::visible_absorbed(hash, visibility)` (`read.rs:827`, `:837-841`; `record.rs:233-256`), then the loop decision in `execute_segment` | A `get` of the tail row at the scan's own level. The operator `RaceBoundary` is this read (F1 fix). |
-| `EndPage` | `page_progress` (`read.rs:625`), then `durable_resume.after = next.after.min(floor)` with `floor` read after the page (`read_request.rs:576-579`) | One page and one end-of-page handle read. |
-| `RReconnect` | The client resumes from `Prisma-Durable-Cursor` (applied mode) | Client behaviour. |
+| `EndPage` | `page_progress` (`read.rs:625`), then `durable_resume.after = next.after.min(floor)` with `floor` read after the page (`read_request.rs:641-652`), then `Continuation::after_page` (`:655-666`; `read_continuation.rs:120-151`) | One page and one end-of-page handle read. The continuation's history is the page's engine (`WriterHistory::of(&engine)`); the digest restarts at the recovery offset when it reached the page start, else carries the continuation the page began at, else starts at the page start. |
+| `RReconnect` | The client resumes from `Prisma-Durable-Cursor` (applied mode), a V2 position | Client behaviour. |
+| `RResync` | `ReadFailure::HistoryReplaced` (`read_request.rs:747-750`), rendered as `409 cursor_beyond_tail` with `history_replaced` and the recovery cursor; the client resumes there | Enabled when another engine serves: a failing or partial re-read also refuses. Redelivery from the recovery cursor overwrites the client's content at and after it. |
 | `RError` | The page fails: the old engine is closed, or (history leg, current engine too when `AllowReadError`) a storage read fails, for example a transient object-store error | ASM-SLATEDB-GC (iii): an error, never a short success. The page ends with no delivery. |
 
-There is no action for the cursor guard `start > end` in `execute_read`
-(`read_request.rs:291-293`): the model's `RStart` requires `pos < ReadEndNow`,
-which is the same refusal, and F3 is the case it lets through.
+There is no separate action for the refusals at `RStart`: the model's
+`RStart` requires `pos < ReadEndNow` (the `start > end` guard and the
+empty-page case) and `StartAllowed`; `RResync` is the continuation refusal.
+The V2 refusal past the durable frontier is not reachable in the model: the
+client's V2 positions are durable cursors, which never exceed any later
+`P.next` (a move publishes `P' = D`).
 
 ### Assumptions
 
@@ -831,19 +993,20 @@ offsets 0, 1, 2 (offset 0 exceeds the page), `Req = 2`, `MaxPend = 2`,
 | `applied_unfiltered_small`, `nc_applied_race_remote_unfiltered` | applied | none | 3 | 4 | (n/a) | no | no | yes | — |
 | `durable_keyed_expanded` | durable | K1 | 1 (2 appends during reads) | 5 | yes | yes | yes | no | — |
 | `durable_unfiltered_expanded` | durable | none | 1 (2 appends) | 5 | yes | no | no | no | — |
-| `applied_unfiltered_expanded`, `kd_stale_applied_cursor` | applied | none | 1 (2 appends; applied suffix lost on the move) | 5 | (n/a) | no | no | no | — |
+| `applied_unfiltered_expanded`, `nc_no_continuation_check`, `w_ContinuedAcrossMove`, `w_StaleContinuationResynced` | applied | none | 1 (2 appends; applied suffix lost on the move) | 5 | (n/a) | no | no | no | — |
+| `applied_keyed_expanded` | applied | K1 | 1 (2 appends; applied suffix lost on the move) | 5 | (n/a) | yes | yes | no | — |
 | `probe_lost_postings` | durable | K1 | 3 | 4 | yes | yes | yes | yes | postings |
 | `probe_lost_canonical` | durable | none | 3 | 4 | yes | no | no | yes | canonical |
 
-`applied_unfiltered_expanded` checks every property except
-`ExactDurablePrefix`, which `kd_stale_applied_cursor` checks alone while F3 is
-open. History read errors are off in the expanded shapes to keep them within
+Every baseline checks every property, `ExactDurablePrefix` included; before
+the TLA-018-F3 fix `applied_unfiltered_expanded` left it to a known-defect
+check. History read errors are off in the expanded shapes to keep them within
 the time budget. An `RError` only ends a page before any delivery, so it adds
 prefixes of existing behaviours and cannot create a violation of these
 properties; the small shapes and `witness-ReadErrorCurrentEngine` exercise
 it. `WAppend` and `RReconnect` are disabled by construction in the small
-shapes (no appends, no pending records); the expanded applied shape exercises
-them. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
+shapes (no appends, no pending records); the expanded applied shapes exercise
+them, and only they produce continuations over a suffix a move can lose. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
 
 ### Negative controls and probes
 
@@ -854,6 +1017,7 @@ them. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
 | `nc_short_index_accepted` (keyed) | `ShortIndexAccepted <- MutShortIndexAccepted`: `provable_to < upto` is treated as complete | `ExactDurablePrefix` | Unproven postings become an empty success. |
 | `nc_applied_race_remote` (applied keyed) | `RaceBoundary <- MutRaceBoundaryRemote` (pre-fix F1) | `ExactDurablePrefix` | A durable record trimmed by an applied, not durable advance is skipped. |
 | `nc_applied_race_remote_unfiltered` (applied unfiltered) | `RaceBoundary <- MutRaceBoundaryRemote` (pre-fix F1) | `TailGapExplained` | The page ends as an honest partial with no progress. |
+| `nc_no_continuation_check` (applied unfiltered expanded) | `ContinuationCheck <- MutNoContinuationCheck` (pre-fix F3): only `start > end` guards the entry span | `ExactDurablePrefix` | A continuation over a lost, rewritten suffix is accepted once the new tail passes it. |
 | `probe_lost_postings` (keyed; **probe**) | `AllowLostPostings = TRUE`: a durable postings page disappears after the advance (a dependency-contract mutation) | `ExactDurablePrefix` | The reader cannot detect a lost page; a slice that falsely proves absence (TLA-016-F3) has the same observable. |
 | `probe_lost_canonical` (unfiltered; **probe**) | `AllowLostCanonical = TRUE`: a durable canonical row disappears | `ExactDurablePrefix` | Every history source skips a missing row and reports completion (F2). |
 
@@ -871,6 +1035,8 @@ them. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
 | `ReaderCompletes` | The client reaches the end with every eligible record delivered. |
 | `TrimBelowReaderCursor` | A durable trim lands at or above the reader's cursor during its tail scan. |
 | `ReadErrorCurrentEngine` | A page on the current engine fails in its history leg and delivers nothing. |
+| `ContinuedAcrossMove` (applied unfiltered expanded) | A continuation that another engine served is proven by the current engine's re-read, and the read continues without resync (an owner change that lost nothing). |
+| `StaleContinuationResynced` (applied unfiltered expanded) | A continuation whose suffix the move lost and rewrote is refused with the recovery cursor although the replacement tail has passed it (the F3 schedule, fixed). |
 
 ### Exclusions and what is not claimed
 
@@ -888,6 +1054,21 @@ them. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
   a completed page.
 - No liveness: a reader that keeps receiving honest partials is not checked
   for progress. `TailGapExplained` covers the stall that F1 caused.
+- The continuation digest is modelled as the observed content per offset
+  (`pdig`), and the writer history as the engine number. A digest collision,
+  a repeated writer epoch after an object-store restore
+  (ASM-HISTORY-FENCED-VIEW), the 8 MiB bound on the verification re-read
+  (a larger range resyncs) and relays to owners that report no history
+  (`WriterHistory::UNKNOWN`, whose continuation is always re-verified) are not modelled; each
+  only adds a resync or relies on the assumption.
+- Reads start at the beginning, never at `now`; a session started at `now`
+  has a digest start above its recovery offset and always resyncs after an
+  owner change until the frontier passes its start (unit-tested in
+  `read_continuation.rs`). V2 session cursors minted before the fix over a
+  later-lost suffix stay undetectable once the frontier passes them; that
+  pre-fix behaviour is `nc_no_continuation_check`.
+- One ownership move per behaviour; a second move would lose a second suffix
+  and is not explored.
 
 ---
 
@@ -911,7 +1092,10 @@ creates no user checkpoints and no `DbReader`s (the compactor writes its own
 checkpoint before each compaction commit), and history reads go through the
 open writer's in-memory view. Fork retention is registry-level:
 `fork_children` references and the incarnation-bound CAS decisions in
-`delete_transition`, `anchor::install` and `release_fork_ref`.
+`delete_transition`, `anchor::install` and `release_fork_ref`, with the
+fork-debt index (`src/registry/fork_debt.rs`) and the `fork-debt-reconcile`
+task (`src/application/creation/reconcile.rs`) that settles what a deleted
+child still owes.
 
 The repository-owned decisions checked here are: the absorbed boundary
 advances only after the covering flush is in the manifest; history reads use
@@ -943,10 +1127,17 @@ checkpoint on the pre-compaction manifest.
 - ForkPin `ForkPinRespected` / `ReadyHoldsRef`: an anchored or Ready fork
   points at, and is referenced by, the current, not tombstoned incarnation it
   forked, across a source's deletion and recreation under the same name.
+- ForkPin `OwedRefIndexed`: a deleted child's reference that still pins
+  the incarnation it forked, with no creator left to release it, always has a
+  fork-debt marker (no crash or settlement leaves debt the reconciler cannot
+  find).
 - ForkPin `RefEventuallyReleased` / `SoftSourceEventuallyTombstoned`
-  (liveness, under the client-retry premise): once a child is gone, its
-  reference is released, and a soft-deleted source whose children are gone is
-  tombstoned.
+  (liveness, under the reconciler's fairness and with no client retry; also
+  under the client-retry premise alone when no child name is recreated): once
+  a child is gone, its reference is released, and a soft-deleted source whose
+  children are gone is tombstoned. With pre-index debt, this holds after the
+  rollout through the backfill, when no child name is recreated before the
+  backfill indexes it (TLA-019-F4 residual).
 
 **Requirement anchors:** F6, H13, H14, R4; F5, F8 and F10 through ForkPin.
 
@@ -961,7 +1152,9 @@ view, start tick and outcome), and the collector's per-pass snapshot
 (cutoff, observed references, inventory). One tick stands for 300 s. ForkPin: the source name's current
 incarnation and lifecycle, its `fork_children`, each child's lifecycle and
 forked incarnation, each creator's progress, each child tombstone's
-`parent_ref_pending` debt, and whether a `DELETE` is past its tombstone CAS.
+`parent_ref_pending` debt, whether a `DELETE` is past its tombstone CAS,
+each child incarnation's fork-debt marker, which child incarnation holds each
+child name (`Prev`), and whether the binary with the index is deployed.
 
 ### Atomicity / linearization table
 
@@ -976,16 +1169,19 @@ forked incarnation, each creator's progress, each child tombstone's
 | `CkCreate` / `CkRelease` | Upstream user-checkpoint API. **The repository never creates one** | Models the upstream contract only (`UseCheckpoint`). The compactor's checkpoint is `CompactCommit`'s. |
 | `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:719`; `read_history2*`, `src/history.rs:900-1103`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
 | `GcReadCompactions` → `GcReadManifest` → `GcList` → `GcDelete`* → `GcFinish` | Upstream `GarbageCollector::run_gc_task` → `remove_expired_checkpoints`, then `CompactedGcTask::collect` (SlateDB `0717cc1`, `garbage_collector.rs`, `garbage_collector/compacted_gc.rs`) | Compactions are read before the manifest; the manifest read includes the manifests of unexpired checkpoints (`CheckpointRefs`; expiry is checked at that step, which can only make deletion earlier); then the list, then per-object deletes. At most one pass per tick. |
-| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`) | — |
+| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. |
 | `ForkInstall` | `anchor::install`: `mutate_incarnation(source, forked epoch)` (`src/application/creation/anchor.rs:78`) | One CAS bound to the forked incarnation (ASM-OBJSTORE-CAS). Idempotent when already installed; declines on a soft, tombstoned or recreated source. Mutation point `InstallFence`. |
-| `ForkPostCheck` | `anchor.rs:135-182`: if the child vanished, release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The presence check is by name, with no epoch check. |
+| `ForkPostCheck` | `anchor.rs:134-182`: if the child incarnation vanished (lookup by name, bound to its epoch), release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The source presence check is by name, with no epoch check. |
 | `CreatorCrash` | The create request dies before its post-check | Bounded fault. |
-| `SourceDelete` | `delete_lifecycle` → `delete_transition` (`deletion.rs:249`, `:465`) | Soft versus tombstone is decided inside the CAS. Mutation point `DeleteDecision`. |
+| `SourceDelete` | `delete_lifecycle` → `delete_transition` (`deletion.rs:249`, `:492`) | Soft versus tombstone is decided inside the CAS. Mutation point `DeleteDecision`. |
 | `SourceRecreate` | A create under the same name after the tombstone; blocked while soft-deleted (F5) | New incarnation with no children. |
-| `ChildDelete` | `delete_transition` on the child: the tombstone records `parent_ref_pending` in the same write | One CAS. |
-| `InRequestRelease` | The same request's `release_fork_ref(source, fork_id, source_epoch)` and `clear_parent_debt` when conclusive (`deletion.rs:341-342`, `:72`, `:37`) | The epoch check and the CAS are bound to one snapshot; an incarnation change is conclusive. One step. |
-| `RequestAbandon` | A crash or cancellation after the tombstone CAS | Bounded fault. The debt persists on the tombstone. |
-| `RetryDelete` | The **client** re-issues `DELETE` → `delete_lifecycle` → `repair_tombstone` (`deletion.rs:273-274`, `:359`) | There is no background sweeper. Its fairness is the operator `ClientRetryFairness`. |
+| `IndexDebt` | `delete_lifecycle` writes the child incarnation's fork-debt marker before the tombstone write (`record_fork_debt`, `deletion.rs:290-294`; `fork_debt.rs:148-176`) | One PUT. A failed write fails the delete before anything changed; a delete that dies here leaves a marker on a live child, which the reconciler defers. |
+| `ChildDelete` | `delete_transition` on the child: the tombstone records `parent_ref_pending` in the same write | One CAS. After the rollout it requires the marker (mutation point `WriteAhead`); before it (`Legacy`) the old binary writes none. |
+| `InRequestRelease` | The same request's `release_fork_ref(source, fork_id, source_epoch)`, `clear_parent_debt` when conclusive, then `settle_marker` (`deletion.rs:350-352`, `:72`, `:37`, `:451-459`) | The epoch check and the CAS are bound to one snapshot; an incarnation change is conclusive. One step. The marker removal is best effort (it may fail and stay) and only after a conclusive release (mutation point `SettleMarker`). |
+| `RequestAbandon` | A crash or cancellation after the tombstone CAS | Bounded fault. The debt persists on the tombstone and the marker in the index. |
+| `RetryDelete` | The **client** re-issues `DELETE` → `delete_lifecycle` → `repair_tombstone` (`deletion.rs:273-274`, `:372`) | Only while the name still holds the child's tombstone. Its fairness is the operator `ClientRetryFairness`, used only by `LiveSpecClientRetries`. |
+| `Reconcile` | `fork-debt-reconcile` (`reconcile.rs:326-356`), one marker of a page (`settle`, `:202-261`): `repair_tombstone` for a tombstone with debt, marker removal for one without, `release_fork_ref` from the marker for a recreated name, deferral for a live child | One step per marker: each CAS in it is idempotent and a restart re-reads the marker. Mutation points `MarkerView`, `ReleaseId`, `SettleMarker`. Weakly fair per marker (`ReconcilerFairness`, ASM-HISTORY-ACTORS). |
+| `Rollout` / `Backfill` / `BackfillFinish` | Deploying the binary with the index; one backfill step per reconciler round (`Registry::backfill_fork_debt`, `fork_debt.rs:263-321`; `reconcile.rs:275-296`) indexing each debt-bearing tombstone it walks, until the walk records `complete` and never runs again (`fork_debt.rs:279-281`, `:298-303`) | The walk's page order, persisted progress and ETag-conditional write are abstracted: until it completes, the backfill may index any unindexed debt-bearing tombstone that still holds its name, and it completes only when none is left (after the rollout no delete creates one). Without `Legacy` the index predates every delete, so the backfill starts complete. Mutation point `BackfillOn`. |
 
 ### Assumptions
 
@@ -1001,7 +1197,12 @@ ASM-HISTORY-GC-CLOCK, ASM-HISTORY-ACTORS and ASM-OBJSTORE-CAS.
 | ReachGC `expanded`, `nc_ignore_checkpoint_pin` | 2 | 2 | 5 | 3 | yes | yes | yes | `Spec` |
 | ReachGC `liveness`, `nc_stale_inventory` | 1 | 2 | 4 | 3 | no | yes | no\* | `LiveSpec` |
 | ReachGC `liveness_expanded` | 2 | 2 | 5 | 3 | yes | yes | no\* | `LiveSpec` |
-| ForkPin (all) | children `{F1, F2}`, `MaxEpoch = 2`, `MaxCrashes = 1` | | | | | | | `Spec` / `LiveSpecClientRetries` |
+| ForkPin `baseline`, safety controls, witnesses except the legacy ones | children `{F1, F2, F3}`, F3 recreating F1's name; `MaxEpoch = 2`, `MaxCrashes = 1` | | | | | | | `Spec` |
+| ForkPin `liveness_reconciler`, `nc_no_reconciler`, `nc_settle_inconclusive` | children `{F1, F2}` (distinct names) | | | | | | | `LiveSpecReconciler` |
+| ForkPin `liveness_reconciler_recreated` | children `{F1, F3}`, F3 recreating F1's name | | | | | | | `LiveSpecReconciler` |
+| ForkPin `liveness_client_retries` | children `{F1, F2}` | | | | | | | `LiveSpecClientRetries` |
+| ForkPin `liveness_backfill`, `nc_no_backfill`, `w_BackfillReleased` | children `{F1, F2}`, `Legacy` | | | | | | | `LiveSpecReconciler` / `Spec` |
+| ForkPin `w_UnindexedDebtOverwritten` | children `{F1, F2, F3}`, `Legacy` | | | | | | | `Spec` |
 
 Every ReachGC configuration uses `PollInterval = 1` and `ReadSpan = 1`: one
 tick is 300 s, the writer view is refreshed within one tick of going stale,
@@ -1015,12 +1216,18 @@ affect reclamation; it is omitted from the liveness state space.
 
 **Liveness scope.** ReachGC: writer, compactor, orphan and pin activity stop
 at `Horizon`. `WF` on `Tick`, each collector step and `ReadEnd`; no fairness
-on any writer, delete-success or pin step. ForkPin (`LiveSpecClientRetries`):
-creator and delete crashes are bounded, so they cease. `WF` on each child's
-in-process request steps (`ForkInstall ∨ ForkPostCheck ∨ InRequestRelease`)
-and on `RetryDelete`, which is the client re-issuing `DELETE`
-(`ClientRetryFairness`). That is the F8 premise, and it is unestablished
-(F4). No fairness on deletes, forks, recreation or success outcomes.
+on any writer, delete-success or pin step. ForkPin: creator and delete
+crashes are bounded, so they cease. `WF` on each child's in-process request
+steps (`ForkInstall ∨ ForkPostCheck ∨ InRequestRelease`). `LiveSpecReconciler`
+adds `WF` on each marker's `Reconcile` and `Backfill` step, on
+`BackfillFinish` and on `Rollout`,
+and no fairness on the client: nobody repeats `DELETE`. `LiveSpecClientRetries`
+has `WF` on `RetryDelete` (`ClientRetryFairness`, the F8 premise) and none on
+the reconciler. No fairness on deletes, forks, recreation or success
+outcomes. The 3-child shape is used for safety only: a scratch liveness run
+of it was stopped after about 10 minutes with 0.86 million distinct states
+found and the queue still growing, so each liveness property is checked in two 2-child shapes, one with
+distinct names and one with a recreated name.
 
 ### Negative controls and probes
 
@@ -1035,7 +1242,16 @@ and on `RetryDelete`, which is the client re-issuing `DELETE`
 | `nc_stale_inventory` | upstream contract | `GcInventory <- MutInventoryFrozen`: after the first list the collector trusts that inventory forever | `EligibleEventuallyReclaimed` |
 | ForkPin `nc_ignore_fork_pin` | repository | `DeleteDecision <- MutDeleteIgnoresRefs`: the source is tombstoned regardless of fork references | `ForkPinRespected` |
 | ForkPin `nc_install_ignores_incarnation` | repository | `InstallFence <- MutInstallIgnoresIncarnation`: the install CAS is not bound to the forked incarnation | `ForkPinRespected` |
-| ForkPin `probe_no_client_retry` | **probe** (the F8 client premise) | `ClientRetryFairness <- NoClientRetry`: no client repeats `DELETE` | `RefEventuallyReleased` |
+| ForkPin `nc_no_reconciler` | repository (pre-fix F4) | `ReconcilerFairness <- NoReconciler`: the reconciler never runs, and no client repeats `DELETE` | `RefEventuallyReleased` |
+| ForkPin `nc_settle_inconclusive` | repository | `SettleMarker <- MutSettleAlways`: a marker is removed after an inconclusive release | `RefEventuallyReleased` |
+| ForkPin `nc_no_backfill` (legacy shape) | repository (pre-8a03e0d) | `BackfillOn <- MutNoBackfill`: pre-index debt is never indexed | `RefEventuallyReleased` |
+| ForkPin `nc_reconcile_live_child` | repository | `MarkerView <- MutMarkerViewNoDefer`: a live child's marker is paid from the marker | `ReadyHoldsRef` |
+| ForkPin `nc_release_current_name_id` | repository | `ReleaseId <- MutReleaseCurrentNameId`: a recreated name's marker releases the fork id of the incarnation that now holds the name | `ReadyHoldsRef` |
+| ForkPin `nc_no_write_ahead_marker` | repository | `WriteAhead <- MutNoWriteAhead`: the tombstone is written without the marker ahead of it | `OwedRefIndexed` |
+
+The former probe `probe_no_client_retry` (no client retry, no reconciler)
+is retired: with the reconciler the same premise is the passing baseline
+`fork-liveness-reconciler`, and `nc_no_reconciler` is its pre-fix behaviour.
 
 TLC reports a liveness violation as "Temporal properties were violated"
 without naming the property; each temporal control's configuration checks
@@ -1059,8 +1275,12 @@ exactly one property.
 | ForkPin `InstallAfterChildDeleted` | A creator's install lands after its child was deleted. |
 | ForkPin `InstallDeclinedOnRecreatedSource` | An install is declined because the source was deleted and recreated. |
 | ForkPin `DebtClearedOnRecreatedSource` | A child's debt is cleared conclusively because the incarnation it forked is gone. |
-| ForkPin `PermanentPinWithoutRetry` | A child is gone, its reference still pins a soft-deleted source, and only a client retry can release it (F4). |
-| ForkPin `PinAfterSuccessfulDelete` | A child's `DELETE` returned success, then the creator's late install landed and the creator died, so the reference pins the source with no client signal to retry (F4). |
+| ForkPin `PermanentPinWithoutRetry` | A child is gone and its reference still pins a soft-deleted source with no request in flight: before the fix only a client retry released it (F4); now its marker does. |
+| ForkPin `PinAfterSuccessfulDelete` | A child's `DELETE` returned success, then the creator's late install landed and the creator died, so the reference pins the source with no client signal to retry (the F4 schedule). |
+| ForkPin `ReconcilerReleasesLatePin` | The reconciler releases the reference of a child whose `DELETE` had returned success, with no client retry. |
+| ForkPin `ReconcilerReleasesReplacedName` | The reconciler releases, from the marker, the reference of a child incarnation whose name was recreated. |
+| ForkPin `BackfillReleased` (legacy shape) | A pre-index debt is indexed by the backfill and released by the reconciler. |
+| ForkPin `UnindexedDebtOverwritten` (legacy shape, recreated name) | After the rollout, a recreation of a child's name overwrites a debt-bearing tombstone the backfill has not indexed (the F4 residual). |
 
 ### Exclusions and what is not claimed
 
@@ -1083,6 +1303,13 @@ exactly one property.
   range split or clone today. Multi-level fork ancestry, recursive cascade
   debt, `expires_at` expiry and creator resumption are TLA-013 and TLA-014.
 - Reclamation of hard-deleted incarnations' rows is not claimed (F3).
+- The reconciler's paging (64 markers a pass, a circle every
+  `FORK_DEBT_SWEEP_SECS`), the backfill's page walk and progress object, the
+  ancestor walk inside `repair_tombstone`, unparseable markers (skipped and
+  left in place) and the `fork_debt_stale` alert are not modelled; one
+  reconciler step settles one marker, weakly fair per marker. Debt lost to a
+  recreation before the backfill indexes it is the recorded F4 residual, not
+  a claim.
 
 ---
 
@@ -1096,9 +1323,9 @@ adds a state.
 | Model | Configurations | Actions | Actions that added no state |
 |---|---|---|---|
 | HistoryAbsorb | `small` (8,380,652 states), `cache_cap2` (4,234,784) | 22 | none across the two runs; `small` has no cache actions, `cache_cap2` no crash, flush failure, refusal or reader |
-| ReadCompose | `durable_keyed_small` (12,482,967), `applied_unfiltered_expanded` (18,856,204) | 16 | `WLosePostings`, `WLoseCanonical`: probe-only actions, disabled in every baseline; they fire in the probes' counterexamples |
+| ReadCompose | `durable_keyed_small` (12,482,967, before the TLA-018-F3 fix), `applied_unfiltered_expanded` (19,384,259, rerun after the fix) | 17 | `WLosePostings`, `WLoseCanonical`: probe-only actions, disabled in every baseline; they fire in the probes' counterexamples. `RResync` (new) adds 12,884 distinct states in `applied_unfiltered_expanded` |
 | ReachGC | `small` (3,938,288), `expanded` (27,990,301) | 18 | none across the two runs; `small` has no user checkpoint (`CkCreate`, `CkRelease`) |
-| ForkPin | `baseline` (16,900) | 11 | none |
+| ForkPin | `baseline` (3,374,329), `liveness_backfill` (564,266), both after the TLA-019-F4 fix | 16 | none across the two runs; `baseline` has no `Rollout`, `Backfill` or `BackfillFinish` (the index predates every delete), which `liveness_backfill` covers |
 
 The action counts exclude `Init` and `Terminated`.
 
@@ -1111,18 +1338,18 @@ The action counts exclude `Init` and `Terminated`.
 | `ReachGC.tla`, `MC_ReachGC.tla` | TLA-019 physical object graph, the upstream GC contract and the repository's reliance on it, with wrapper |
 | `ForkPin.tla`, `MC_ForkPin.tla` | TLA-019 registry fork pin, with wrapper |
 | `MC_*_<shape>.cfg` | baselines, liveness configurations included |
-| `MC_*_kd_*.cfg` | known-defect checks (one property each; only TLA-018-F3 today) |
+| `MC_*_kd_*.cfg` | known-defect checks (one property each; none today) |
 | `MC_*_nc_*.cfg`, `MC_*_probe_*.cfg` | negative controls and probes (one operator substituted, one property each) |
 | `MC_*_w_*.cfg` | reachability witnesses (one `Witness_*` invariant each) |
 | `evidence/*.trace.txt` | TLC traces of the findings, trimmed to the trace (below) |
 | `../../manifest.json`, `../../assumptions.md`, `../../receipts/TLA-01{6,8,9}.json` | obligations and checks, assumption entries, receipts of the recorded runs |
-| `../../regressions/TLA-018-F3/README.md` | the open cursor defect's real-code reproduction and the decision needed |
+| `../../regressions/TLA-018-F3/README.md` | the cursor defect's real-code reproduction, its fix and the regressions that pin it |
 
 | Evidence trace | Finding | Recorded on |
 |---|---|---|
 | `TLA-016_ledger_under_retire.trace.txt`, `TLA-016_ledger_over_retire.trace.txt`, `TLA-016_liveness_stall.trace.txt` | TLA-016-F1 | the pre-fix model (labelled) |
 | `TLA-016_cache_false_absence.trace.txt` | TLA-016-F3 | the pre-fix model (labelled) |
 | `TLA-018_applied_keyed_skip.trace.txt` | TLA-018-F1 | the pre-fix model (labelled) |
-| `TLA-018_applied_stale_cursor.trace.txt` | TLA-018-F3 (open) | the current model: the driver log of `known-defect-stale-applied-cursor` |
+| `TLA-018_applied_stale_cursor.trace.txt` | TLA-018-F3 | the pre-fix model (labelled): the driver log of the former `known-defect-stale-applied-cursor` |
 | `TLA-019_reader_view_deleted.trace.txt` | TLA-019-F1 (withdrawn) | the model without the compactor checkpoint (labelled) |
-| `TLA-019_fork_no_retry.trace.txt`, `TLA-019_fork_pin_after_successful_delete.trace.txt` | TLA-019-F4 | the current model: the driver logs of `probe-no-client-retry` and `witness-fork-PinAfterSuccessfulDelete` |
+| `TLA-019_fork_no_retry.trace.txt`, `TLA-019_fork_pin_after_successful_delete.trace.txt` | TLA-019-F4 | the pre-fix model (labelled): the driver logs of the former `probe-no-client-retry` and of `witness-fork-PinAfterSuccessfulDelete` |

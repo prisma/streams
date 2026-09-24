@@ -28,4 +28,10 @@ MutShortIndexAccepted == TRUE
 \* check always reads the Remote-durable absorbed boundary, although an
 \* applied scan runs at Memory level and sees applied trims.
 MutRaceBoundaryRemote == VD.abs
+
+\* NC pre-fix TLA-018-F3 (before "A provisional read cursor proves the
+\* history it continues, or answers an explicit resync"): the entry span
+\* checks neither a continuation's history nor a position's durability; the
+\* only guard left is `start > end` against the current owner's tail.
+MutNoContinuationCheck == FALSE
 =============================================================================

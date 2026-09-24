@@ -1,3 +1,4 @@
+PRE-FIX MODEL TRACE (TLA-019-F4). Recorded on the model before the fork-debt marker and the reconciler were added (0d40dc2, 8a03e0d). The witness is still reachable on the current model (the state exists until the reconciler pays the marker); the reconciler now releases the reference (TLA-019/witness-fork-ReconcilerReleasesLatePin, TLA-019/fork-liveness-reconciler). The state names below are those of the pre-fix model.
 TLA-019/witness-fork-PinAfterSuccessfulDelete: reachable state (TLA-019-F4): a DELETE of the child returned success, then the creator's late install landed and the creator died before its post-check; the reference pins the source (raw TLC trace from the formal.py driver log, trimmed to the trace).
 Spec: verification/tla/history/MC_ForkPin.tla  Config: verification/tla/history/MC_ForkPin_w_PinAfterSuccessfulDelete.cfg
 COMMAND: python3 scripts/quality/formal.py run --id TLA-019 (TLC 2.19, -workers 2)

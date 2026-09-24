@@ -1757,11 +1757,12 @@
       "id": "TLA-018",
       "kind": "tla",
       "title": "Exact composition of history, hot storage, and read visibility",
-      "status": "counterexample",
-      "owner": "merged read path: execute_segment, the absorption race check and the durable resume cursor",
+      "status": "pass-with-recorded-scope",
+      "owner": "merged read path: execute_segment, the absorption race check, the durable resume cursor and the provisional continuation",
       "source_paths": [
         "src/application/read.rs",
         "src/application/read_request.rs",
+        "src/application/read_continuation.rs",
         "src/application/read_budget.rs",
         "src/shard/record.rs",
         "src/history/postings_read.rs",
@@ -1797,7 +1798,7 @@
         "ASM-HISTORY-POSTINGS-CACHE",
         "ASM-HISTORY-RING"
       ],
-      "input_scope": "one stream incarnation and segment, 3 offsets with routing keys K1, K2, K1 and sizes 3, 1, 1 bytes, page request 2 bytes (the first record exceeds a page); durable and applied visibility, keyed (K1) and unfiltered reads; small shapes: 3 records durable at Init, 4 pages; expanded shapes: 1 durable record and 2 appends during the reads, 5 pages; up to 2 applied-not-durable commit groups; 1 ownership move; race-check loop bound 2 (production 16); trim allowances {0,1,3}; durable tail ring (durable mode); corrupt postings and short postings windows (keyed); history read errors on the current engine (small shapes); the probes lose a durable postings page or canonical row. No symmetry, no state or action constraints.",
+      "input_scope": "one stream incarnation and segment, 3 offsets with routing keys K1, K2, K1 and sizes 3, 1, 1 bytes, page request 2 bytes (the first record exceeds a page); durable and applied visibility, keyed (K1) and unfiltered reads; small shapes: 3 records durable at Init, 4 pages; expanded shapes: 1 durable record and 2 appends during the reads, 5 pages; up to 2 applied-not-durable commit groups; 1 ownership move; race-check loop bound 2 (production 16); trim allowances {0,1,3}; durable tail ring (durable mode); corrupt postings and short postings windows (keyed); history read errors on the current engine (small shapes); applied-mode provisional continuations bound to the serving engine (writer epoch) and an observation digest, verified by a re-read on another engine or refused with the durable recovery cursor, and V2 positions refused past the durable frontier (applied expanded shapes, keyed and unfiltered); the probes lose a durable postings page or canonical row. No symmetry, no state or action constraints.",
       "checks": [
         {
           "id": "TLA-018/baseline-durable-keyed-small",
@@ -1867,15 +1868,14 @@
           "timeout_seconds": 3600
         },
         {
-          "id": "TLA-018/known-defect-stale-applied-cursor",
-          "role": "known-defect",
+          "id": "TLA-018/baseline-applied-keyed-expanded",
+          "role": "baseline",
           "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_kd_stale_applied_cursor.cfg",
+          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_expanded.cfg",
           "expect": {
-            "result": "violation",
-            "property": "ExactDurablePrefix"
+            "result": "pass"
           },
-          "timeout_seconds": 1800
+          "timeout_seconds": 5400
         },
         {
           "id": "TLA-018/nc-old-history-view",
@@ -1925,6 +1925,16 @@
           "expect": {
             "result": "violation",
             "property": "TailGapExplained"
+          }
+        },
+        {
+          "id": "TLA-018/nc-no-continuation-check",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_no_continuation_check.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
           }
         },
         {
@@ -2056,11 +2066,37 @@
             "result": "violation",
             "property": "Witness_ReadErrorCurrentEngine"
           }
+        },
+        {
+          "id": "TLA-018/witness-ContinuedAcrossMove",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ContinuedAcrossMove.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ContinuedAcrossMove"
+          }
+        },
+        {
+          "id": "TLA-018/witness-StaleContinuationResynced",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_StaleContinuationResynced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleContinuationResynced"
+          }
         }
       ],
       "regressions": [
         "dst::dst_tests::reads_applied::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
         "dst::dst_tests::reads_applied::a_stale_applied_cursor_is_refused_after_crash_restart",
+        "dst::dst_tests::reads_applied_history::a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it",
+        "dst::dst_tests::reads_applied_history::a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it",
+        "dst::dst_tests::reads_applied_history::an_owner_change_that_loses_nothing_keeps_the_continuation",
+        "application::read_continuation::tests::only_the_observed_records_prove_a_replaced_history",
+        "application::read_continuation::tests::a_digest_carried_across_pages_equals_the_single_page_digest",
+        "application::read_continuation::tests::a_session_started_at_the_applied_tail_cannot_be_verified",
         "verification/regressions/TLA-018-F3/README.md",
         "verification/tla/history/evidence/TLA-018_applied_keyed_skip.trace.txt",
         "verification/tla/history/evidence/TLA-018_applied_stale_cursor.trace.txt"
@@ -2077,7 +2113,9 @@
         "src/application/read.rs",
         "src/application/creation/deletion.rs",
         "src/application/creation/anchor.rs",
-        "src/application/creation/fork.rs"
+        "src/application/creation/fork.rs",
+        "src/application/creation/reconcile.rs",
+        "src/registry/fork_debt.rs"
       ],
       "verification_paths": [
         "verification/tla/history/ReachGC.tla",
@@ -2110,7 +2148,7 @@
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations, 2 fork children, creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE), client DELETE retries weakly fair only in the client-retry liveness check. No symmetry, no state or action constraints.",
+      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); a legacy shape where deletes before the rollout write no marker and the one-time backfill indexes them. No symmetry, no state or action constraints.",
       "checks": [
         {
           "id": "TLA-019/baseline-small",
@@ -2330,6 +2368,33 @@
           }
         },
         {
+          "id": "TLA-019/fork-liveness-reconciler",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_reconciler.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-reconciler-recreated",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_reconciler_recreated.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-backfill",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_backfill.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "TLA-019/nc-ignore-fork-pin",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_ForkPin.tla",
@@ -2350,13 +2415,63 @@
           }
         },
         {
-          "id": "TLA-019/probe-no-client-retry",
+          "id": "TLA-019/nc-no-reconciler",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_ForkPin.tla",
-          "config": "verification/tla/history/MC_ForkPin_probe_no_client_retry.cfg",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_reconciler.cfg",
           "expect": {
             "result": "violation",
             "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-settle-inconclusive",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_settle_inconclusive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-backfill",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_backfill.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-reconcile-live-child",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_reconcile_live_child.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadyHoldsRef"
+          }
+        },
+        {
+          "id": "TLA-019/nc-release-current-name-id",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_release_current_name_id.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadyHoldsRef"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-write-ahead-marker",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_write_ahead_marker.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OwedRefIndexed"
           }
         },
         {
@@ -2438,12 +2553,58 @@
             "result": "violation",
             "property": "Witness_PinAfterSuccessfulDelete"
           }
+        },
+        {
+          "id": "TLA-019/witness-fork-ReconcilerReleasesLatePin",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ReconcilerReleasesLatePin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReconcilerReleasesLatePin"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-ReconcilerReleasesReplacedName",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ReconcilerReleasesReplacedName.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReconcilerReleasesReplacedName"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-BackfillReleased",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_BackfillReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BackfillReleased"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-UnindexedDebtOverwritten",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_UnindexedDebtOverwritten.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnindexedDebtOverwritten"
+          }
         }
       ],
       "regressions": [
         "dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
         "dst::dst_tests::read_history_lifecycle::tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+        "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry",
+        "dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+        "dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart",
+        "dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released",
+        "dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart",
+        "dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert",
         "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",
         "verification/tla/history/evidence/TLA-019_fork_no_retry.trace.txt",
         "verification/tla/history/evidence/TLA-019_fork_pin_after_successful_delete.trace.txt"
