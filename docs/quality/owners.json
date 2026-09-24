@@ -219,6 +219,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fork_debt",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Fork-debt backfill and observability scenarios (TLA-019-F4): pre-index tombstones repaired without a client DELETE, the backfill resuming across a restart, and the fork_debt_stale alert; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fork_debt.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_peer_compatibility",
       "path": "src/dst/dst_tests.rs",
       "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",

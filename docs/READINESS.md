@@ -67,6 +67,8 @@ acceptance, ops-history/SLO work, documented terminal-closure residual.
   scanning; restore/corruption/region-loss drills on record.
 - Alerts: maintenance backlog, bulk-gate waits, compaction working set,
   scheduler deferrals (walk_deferred_total), terminal billing debt,
+  fork cleanup debt (fork_debt_stale: a pending marker or a stalled
+  reconciler circle older than 3 × FORK_DEBT_SWEEP_SECS),
   digest mismatch, platform-origin 5xx/404, billing readiness.
 
 ## Deliberately NOT on the GA path

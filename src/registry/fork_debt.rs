@@ -13,6 +13,12 @@
 //! leaf's marker, by the same ancestor walk a repeated delete runs. It also records
 //! the release itself, because a debt-bearing tombstone may be replaced by a
 //! recreation of its name, and the marker is then the only record left.
+//!
+//! Tombstones written before the index existed carry debt with no marker. A
+//! one-time backfill walks the cell's descriptors once, indexes every
+//! debt-bearing tombstone it finds, and records its progress and completion
+//! in one conditionally written object, so it resumes after a restart and
+//! runs once per deployment.
 use super::*;
 
 /// Outside `PROJECTS_ROOT`: the catalog scans fail closed on any key under
@@ -21,6 +27,26 @@ const FORK_DEBT_ROOT: &str = "registry/v4/fork-debt/";
 /// A marker holds two names and two epochs; anything larger was not minted
 /// here.
 const MAX_MARKER_BYTES: u64 = 16 * 1024;
+/// The backfill's progress and completion. Beside the index root, never
+/// under it: the index pages must not list it.
+const BACKFILL_PATH: &str = "registry/v4/fork-debt-backfill.json";
+
+/// The persisted backfill progress: the last consumed catalog key, or done.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct BackfillProgress {
+    after: Option<String>,
+    complete: bool,
+}
+
+/// What one backfill step did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackfillStep {
+    /// Every descriptor of the cell has been walked; nothing is left to do.
+    Complete,
+    /// One catalog page was walked and `indexed` debt-bearing tombstones
+    /// found on it were given markers. More pages remain.
+    Advanced { indexed: usize },
+}
 
 /// The persisted body: the release the incarnation may owe.
 #[derive(Serialize, Deserialize)]
@@ -34,6 +60,7 @@ struct OwedRelease {
 /// and fenced to the source incarnation, that pays it.
 #[derive(Debug, Clone)]
 pub(crate) struct ForkDebt {
+    written_ms: i64,
     child: crate::tenant::TenantStreamRef,
     child_epoch: String,
     source: crate::tenant::TenantStreamRef,
@@ -42,6 +69,11 @@ pub(crate) struct ForkDebt {
 }
 
 impl ForkDebt {
+    /// When the marker was written: ahead of the tombstone that owes it, or
+    /// by the backfill for a tombstone older than the index.
+    pub(crate) fn written_ms(&self) -> i64 {
+        self.written_ms
+    }
     /// The stream whose tombstone may owe the release.
     pub(crate) fn child(&self) -> &crate::tenant::TenantStreamRef {
         &self.child
@@ -210,6 +242,7 @@ impl Registry {
             return Ok(None);
         };
         Ok(Some(ForkDebt {
+            written_ms: meta.last_modified.timestamp_millis(),
             // A fork reference binds inside the referring stream's project
             // (`PersistedDescriptor::ref_in_project`).
             source: crate::tenant::TenantStreamRef::new(child.project_id().clone(), source),
@@ -218,6 +251,73 @@ impl Registry {
             source_epoch: owed.source_epoch,
             fork_id: owed.fork_id,
         }))
+    }
+
+    /// One bounded step of the one-time backfill: walk the next catalog page
+    /// of every project in the cell (`reconciliation_page`, tombstones
+    /// included) and index each tombstone that still owes its fork source.
+    /// Markers are written before the progress that passes them, so a crash
+    /// replays the page (the writes are idempotent). The progress is one
+    /// conditional write; an instance that loses it to a peer adopts the
+    /// peer's progress on its next step instead of rewinding it.
+    pub(crate) async fn backfill_fork_debt(
+        &self,
+        limit: usize,
+    ) -> Result<BackfillStep, object_store::Error> {
+        let path = ObjPath::from(BACKFILL_PATH);
+        let (progress, etag) = match self.store.get(&path).await {
+            Ok(result) => {
+                let etag = result.meta.e_tag.clone();
+                let raw = result.bytes().await?;
+                let progress: BackfillProgress = serde_json::from_slice(&raw)
+                    .map_err(|error| catalog_error(&format!("fork-debt backfill: {error}")))?;
+                (progress, Some(etag))
+            }
+            Err(object_store::Error::NotFound { .. }) => (BackfillProgress::default(), None),
+            Err(error) => return Err(error),
+        };
+        if progress.complete {
+            return Ok(BackfillStep::Complete);
+        }
+        let page = self
+            .reconciliation_page(progress.after.as_deref(), limit)
+            .await?;
+        let mut indexed = 0;
+        for desc in page
+            .streams
+            .iter()
+            .filter(|d| d.deleted && d.parent_ref_pending)
+        {
+            self.record_fork_debt(desc).await?;
+            indexed += 1;
+        }
+        let next = match page.next_after {
+            Some(after) if !page.exhausted => BackfillProgress {
+                after: Some(after),
+                complete: false,
+            },
+            _ => BackfillProgress {
+                after: None,
+                complete: true,
+            },
+        };
+        let body = serde_json::to_vec(&next)
+            .map_err(|error| catalog_error(&format!("fork-debt backfill: {error}")))?;
+        let mode = match etag {
+            Some(etag) => ConditionalUpdateToken::from_etag(etag)?.mode(),
+            None => PutMode::Create,
+        };
+        match self
+            .store
+            .put_opts(&path, PutPayload::from(body), PutOptions::from(mode))
+            .await
+        {
+            Ok(_)
+            | Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        Ok(BackfillStep::Advanced { indexed })
     }
 
     /// Drop the marker of `child`'s incarnation `child_epoch` once the caller

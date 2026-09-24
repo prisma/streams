@@ -156,6 +156,8 @@ pub(crate) struct RuntimeCaps {
     pub history: Arc<crate::history::HistoryResources>,
     pub postings: Arc<crate::postings_cache::PostingsCache>,
     pub telemetry: Arc<TelemetryResources>,
+    /// What the fork-debt reconciler last published (ops gauges).
+    pub fork_debt: Arc<crate::application::creation::ForkDebtStatus>,
     pub clock: Arc<dyn Clock>,
     pub entropy: Arc<dyn Entropy>,
     pub identity: RuntimeIdentity,
@@ -251,6 +253,7 @@ impl RuntimeCaps {
                 &crate::config::AdmissionConfig::default(),
                 clock.clone(),
             )),
+            fork_debt: Arc::default(),
             clock,
             entropy: epoch_source,
             identity: RuntimeIdentity {

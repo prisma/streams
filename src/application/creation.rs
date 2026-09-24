@@ -95,7 +95,7 @@ mod product;
 mod raw;
 mod reconcile;
 pub(crate) use product::{ProductCreateConfig, ProductCreateError};
-pub(crate) use reconcile::spawn_fork_debt_reconciler;
+pub(crate) use reconcile::{ForkDebtStatus, spawn_fork_debt_reconciler};
 
 impl CreationService {
     pub(crate) async fn resolve(

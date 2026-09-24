@@ -22,6 +22,12 @@
 //! Restart safety: the index is durable and the cursor is not. A restarted
 //! reconciler begins a new circle; every step is idempotent, and a marker is
 //! dropped only after its debt was seen paid.
+//!
+//! Until the one-time backfill (`Registry::backfill_fork_debt`) records its
+//! completion, each round also walks one catalog page to index tombstones
+//! older than the index. Each completed circle publishes the pending count
+//! and the oldest pending marker's write time to [`ForkDebtStatus`], which
+//! the ops snapshot exports and the `fork_debt_stale` alert reads.
 use super::deletion::{release_fork_ref, repair_tombstone};
 use super::*;
 use crate::registry::Lifecycle;
@@ -30,6 +36,94 @@ use crate::registry::fork_debt::ForkDebt;
 /// Markers one pass examines. Each costs a descriptor read and at most one
 /// repeated-delete repair, itself bounded by the 64-hop ancestor walk.
 const PASS_LIMIT: usize = 64;
+/// Descriptors one backfill step walks: the billing tombstone walk's page.
+const BACKFILL_PAGE: usize = 256;
+/// A pending debt older than this many circle periods raises
+/// `fork_debt_stale`, as does a circle that has not completed for as long.
+const STALE_CIRCLES: u32 = 3;
+
+/// The reconciler's published state, one per runtime: what the last
+/// completed circle left pending, and whether the backfill is done.
+#[derive(Debug, Default)]
+pub(crate) struct ForkDebtStatus {
+    pending: std::sync::atomic::AtomicU64,
+    deferred: std::sync::atomic::AtomicU64,
+    /// Write time of the oldest marker the last circle left pending; 0 when
+    /// it left none.
+    oldest_pending_ms: std::sync::atomic::AtomicI64,
+    /// When the last circle completed; 0 before the first.
+    circle_ms: std::sync::atomic::AtomicI64,
+    /// When this reconciler started; 0 when none runs in this runtime.
+    started_ms: std::sync::atomic::AtomicI64,
+    stale_after_ms: std::sync::atomic::AtomicU64,
+    backfill_complete: std::sync::atomic::AtomicBool,
+}
+
+impl ForkDebtStatus {
+    /// `gauges` with the reconciler's own added: the ops snapshot's
+    /// assembly. Ages are measured now, on the wall clock (marker write
+    /// times are the object store's), so they keep growing while the
+    /// reconciler is stuck. A runtime with no reconciler adds nothing.
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
+    pub(crate) fn exported(
+        &self,
+        mut gauges: std::collections::BTreeMap<String, u64>,
+    ) -> std::collections::BTreeMap<String, u64> {
+        self.export(now_ms(), &mut gauges);
+        gauges
+    }
+
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
+    fn export(&self, now_ms: i64, gauges: &mut std::collections::BTreeMap<String, u64>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let started = self.started_ms.load(Relaxed);
+        if started == 0 {
+            return;
+        }
+        let age = |since: i64| u64::try_from(now_ms.saturating_sub(since)).unwrap_or(0);
+        let oldest = self.oldest_pending_ms.load(Relaxed);
+        let circle = self.circle_ms.load(Relaxed);
+        for (name, value) in [
+            ("fork_debt_pending", self.pending.load(Relaxed)),
+            ("fork_debt_deferred", self.deferred.load(Relaxed)),
+            (
+                "fork_debt_oldest_pending_age_ms",
+                if oldest == 0 { 0 } else { age(oldest) },
+            ),
+            (
+                "fork_debt_circle_age_ms",
+                age(if circle == 0 { started } else { circle }),
+            ),
+            (
+                "fork_debt_stale_after_ms",
+                self.stale_after_ms.load(Relaxed),
+            ),
+            (
+                "fork_debt_backfill_complete",
+                u64::from(self.backfill_complete.load(Relaxed)),
+            ),
+        ] {
+            gauges.insert(name.into(), value);
+        }
+    }
+
+    fn start(&self, now_ms: i64, period: std::time::Duration) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let stale = period.saturating_mul(STALE_CIRCLES).as_millis();
+        self.stale_after_ms
+            .store(u64::try_from(stale).unwrap_or(u64::MAX), Relaxed);
+        self.started_ms.store(now_ms, Relaxed);
+    }
+
+    fn publish(&self, now_ms: i64, circle: &ReconcilePass) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.pending.store(circle.pending as u64, Relaxed);
+        self.deferred.store(circle.deferred as u64, Relaxed);
+        self.oldest_pending_ms
+            .store(circle.oldest_pending_ms.unwrap_or(0), Relaxed);
+        self.circle_ms.store(now_ms, Relaxed);
+    }
+}
 
 /// What one pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +135,26 @@ pub(crate) struct ReconcilePass {
     /// Markers whose descriptor owes nothing yet: live, expiring or retained
     /// for its own forks.
     pub(crate) deferred: usize,
+    /// Write time of the oldest marker left pending.
+    pub(crate) oldest_pending_ms: Option<i64>,
+}
+
+impl ReconcilePass {
+    fn pend(&mut self, debt: &ForkDebt) {
+        self.pending += 1;
+        let written = debt.written_ms();
+        self.oldest_pending_ms = Some(self.oldest_pending_ms.map_or(written, |o| o.min(written)));
+    }
+
+    fn absorb(&mut self, pass: &ReconcilePass) {
+        self.settled += pass.settled;
+        self.pending += pass.pending;
+        self.deferred += pass.deferred;
+        self.oldest_pending_ms = match (self.oldest_pending_ms, pass.oldest_pending_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
 }
 
 enum Verdict {
@@ -67,12 +181,12 @@ impl CreationService {
             match settle(self, debt).await {
                 Ok(Verdict::Settled) => pass.settled += 1,
                 Ok(Verdict::Deferred) => pass.deferred += 1,
-                Ok(Verdict::Pending) => pass.pending += 1,
+                Ok(Verdict::Pending) => pass.pend(debt),
                 Err(error) => {
                     // Revisited next circle; one failing marker must not
                     // stall the rest of the index.
                     tracing::warn!(stream = %debt.child(), "fork-debt reconcile: {error}");
-                    pass.pending += 1;
+                    pass.pend(debt);
                 }
             }
         }
@@ -146,12 +260,69 @@ async fn settle(state: &Arc<CreationService>, debt: &ForkDebt) -> Result<Verdict
     Ok(Verdict::Settled)
 }
 
+/// The loop's own state: where the circle continues, what it has seen so
+/// far, and whether the backfill is known to be done.
+#[derive(Default)]
+struct Round {
+    after: Option<String>,
+    circle: ReconcilePass,
+    backfilled: bool,
+}
+
+/// One bounded round: a backfill step while the backfill is incomplete, then
+/// one reconcile pass. Returns whether more work is due at once (the circle
+/// or the backfill continues) rather than after the period.
+async fn round(service: &Arc<CreationService>, state: &mut Round) -> bool {
+    let status = &service.runtime.fork_debt;
+    let mut backfill_continues = false;
+    if !state.backfilled {
+        match service.registry.backfill_fork_debt(BACKFILL_PAGE).await {
+            Ok(crate::registry::fork_debt::BackfillStep::Complete) => {
+                state.backfilled = true;
+                status
+                    .backfill_complete
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!("fork-debt backfill complete");
+            }
+            Ok(crate::registry::fork_debt::BackfillStep::Advanced { indexed }) => {
+                if indexed > 0 {
+                    tracing::info!(indexed, "fork-debt backfill indexed older tombstones");
+                }
+                backfill_continues = true;
+            }
+            // Retried next round, after the period.
+            Err(error) => tracing::warn!("fork-debt backfill paused: {error}"),
+        }
+    }
+    match service.reconcile_fork_debt(state.after.as_deref()).await {
+        Ok((pass, next)) => {
+            if pass.settled + pass.pending + pass.deferred > 0 {
+                tracing::info!(
+                    settled = pass.settled,
+                    pending = pass.pending,
+                    deferred = pass.deferred,
+                    "fork-debt reconcile pass"
+                );
+            }
+            state.circle.absorb(&pass);
+            state.after = next;
+            if state.after.is_none() {
+                status.publish(now_ms(), &state.circle);
+                state.circle = ReconcilePass::default();
+            }
+        }
+        // The page replays next round.
+        Err(error) => tracing::warn!("fork-debt reconcile paused (index list): {error}"),
+    }
+    backfill_continues || state.after.is_some()
+}
+
 /// The supervised reconciler: a circle over the index at start, then one
-/// every `period` (`FORK_DEBT_SWEEP_SECS`). Each pass is bounded by
-/// `PASS_LIMIT` markers; the passes of one circle run back to back so a
-/// backlog drains at the index's pace, not one page per period. Every pass
-/// observes cancellation, so shutdown drops at most the current marker's
-/// idempotent step.
+/// every `period` (`FORK_DEBT_SWEEP_SECS`). Each round is bounded by one
+/// backfill page and `PASS_LIMIT` markers; the rounds of one circle, and of
+/// the backfill, run back to back so a backlog drains at the index's pace,
+/// not one page per period. Every round observes cancellation, so shutdown
+/// drops at most the current marker's idempotent step.
 pub(crate) fn spawn_fork_debt_reconciler(
     service: Arc<CreationService>,
     tasks: &crate::tasks::TaskSupervisor,
@@ -161,29 +332,15 @@ pub(crate) fn spawn_fork_debt_reconciler(
         "fork-debt-reconcile",
         crate::tasks::Policy::Critical,
         move |cancel| async move {
-            let mut after: Option<String> = None;
+            service.runtime.fork_debt.start(now_ms(), period);
+            let mut state = Round::default();
             loop {
-                let cursor = after.clone();
-                tokio::select! {
+                let more = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                    outcome = service.reconcile_fork_debt(cursor.as_deref()) => match outcome {
-                        Ok((pass, next)) => {
-                            if pass != ReconcilePass::default() {
-                                tracing::info!(
-                                    settled = pass.settled,
-                                    pending = pass.pending,
-                                    deferred = pass.deferred,
-                                    "fork-debt reconcile pass"
-                                );
-                            }
-                            after = next;
-                        }
-                        // The page replays next pass.
-                        Err(error) => tracing::warn!("fork-debt reconcile paused (index list): {error}"),
-                    },
-                }
-                if after.is_some() {
+                    more = round(&service, &mut state) => more,
+                };
+                if more {
                     continue;
                 }
                 tokio::select! {

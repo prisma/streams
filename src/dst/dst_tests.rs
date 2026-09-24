@@ -79,6 +79,9 @@ mod fixture_storage;
 #[path = "tests/fork_cleanup.rs"]
 mod fork_cleanup;
 
+#[path = "tests/fork_debt.rs"]
+mod fork_debt;
+
 #[path = "tests/fork_lifecycle.rs"]
 mod fork_lifecycle;
 

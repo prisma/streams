@@ -178,6 +178,17 @@
     ]
   },
   {
+    "name": "a_debt_that_outlives_its_circles_raises_the_stale_alert",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4aeff92b3d778372045cd1a94bbe8382c9acc360c8fcefdeafdbed8eb2faa3bc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_declined_retirement_keeps_the_engine_and_arms_nothing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -1242,6 +1253,17 @@
       "crate::failpoints::stop_before_mark_committed_off(\"lease2\");"
     ],
     "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_tombstone_older_than_the_index_is_backfilled_and_released",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7edcf8668d3ba7dc181e6e2c604874cb6ced6bcb2000444257d7a0e3a8d73cb7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
     "scenarios": []
   },
   {
@@ -6223,6 +6245,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_backfill_resumes_after_a_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4855ffc12e6c3c4531d63d6ff1e040d08e6fe40f7e15a36f7d50938e6fb9efce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
     "scenarios": []
   },
   {

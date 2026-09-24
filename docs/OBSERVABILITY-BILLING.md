@@ -955,6 +955,7 @@ usage outbox lag
 usage ledger unavailable
 rollup lag or month-close failure
 telemetry outbox overflow
+fork cleanup debt stale (fork_debt_stale: oldest pending marker or last circle older than 3 sweep periods)
 ```
 
 Alerts have a fingerprint, `opened_at`, `last_seen`, and `resolved_at`. Open and resolved transitions are appended to `_ops_events`.

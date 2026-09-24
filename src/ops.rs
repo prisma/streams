@@ -386,7 +386,7 @@ pub(crate) static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// Collect the instance snapshot from the live plane.
 #[expect(
     clippy::too_many_lines,
-    reason = "collect_snapshot; the snapshot gathers every runtime gauge once under one clock reading; splitting it would let the fields describe different instants"
+    reason = "collect_snapshot; the snapshot gathers every runtime gauge once under one clock reading, the fork-debt ages on the wall clock their markers carry, and adds them without a line of its own; splitting it would let the fields describe different instants"
 )]
 pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
     let mut counters = std::collections::BTreeMap::new();
@@ -591,7 +591,7 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
             "server".into()
         },
         counters,
-        gauges,
+        gauges: state.runtime.fork_debt.exported(gauges),
     }
 }
 
@@ -635,15 +635,15 @@ pub(crate) struct AlertState {
 /// evaluator itself is a pure function of observable state.
 #[expect(
     clippy::unwrap_used,
-    reason = "evaluate_alerts; a poisoned ops journal may hold a partially appended event or alert; recovering it could emit or report a half-written record"
+    reason = "evaluate_alerts; a poisoned ops journal may hold a partially appended event or alert, the fork-debt rule included; recovering it could emit or report a half-written record"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "evaluate_alerts; every alert rule reads the same snapshot and publishes into the same alert map in one pass; splitting the rules would hide which rule cleared or raised each alert"
+    reason = "evaluate_alerts; every alert rule, fork-debt staleness included, reads the same snapshot and publishes into the same alert map in one pass; splitting the rules would hide which rule cleared or raised each alert"
 )]
 #[expect(
     clippy::excessive_nesting,
-    reason = "evaluate_alerts; the debt count nests the threshold and page verdicts inside the per-engine page loop; flattening them would separate the verdicts from the page they read"
+    reason = "evaluate_alerts; the debt count nests the threshold and page verdicts inside the per-engine page loop, while the fork-debt rule stays flat; flattening them would separate the verdicts from the page they read"
 )]
 pub(crate) async fn evaluate_alerts(
     state: &std::sync::Arc<crate::http::AppState>,
@@ -721,6 +721,20 @@ pub(crate) async fn evaluate_alerts(
             format!(
                 "{} corrupt read-spool rows quarantined — reads under-billed until recovered",
                 g("read_spool_quarantined")
+            ),
+        ),
+        (
+            // TLA-019-F4: a deleted fork's reference still pins its source
+            // after several reconciler circles, or the circles stopped.
+            "fork_debt_stale".into(),
+            snap.gauges.contains_key("fork_debt_stale_after_ms")
+                && (g("fork_debt_oldest_pending_age_ms") > g("fork_debt_stale_after_ms")
+                    || g("fork_debt_circle_age_ms") > g("fork_debt_stale_after_ms")),
+            format!(
+                "{} fork-reference debts pending, oldest {} ms; last reconciler circle {} ms ago",
+                g("fork_debt_pending"),
+                g("fork_debt_oldest_pending_age_ms"),
+                g("fork_debt_circle_age_ms")
             ),
         ),
     ];
