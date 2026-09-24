@@ -12,6 +12,11 @@ commit gate. Select invariant verification using
 Prune obsolete warning allowances with `scripts/quality/gate.py --prune`; never
 regenerate or grow an adoption baseline during ordinary work.
 
+An exception's `reason` is explanation only: never edit one, or rename or
+re-attach its owner, to absorb growth. Growth under an existing exception needs
+an owner-approved row in `docs/quality/exception-growth.json`; propose it as a
+decision, never add it yourself (docs/RUST-QUALITY.md).
+
 The repository-local `thermo-nuclear-code-quality-review` skill is pinned at
 `.agents/skills/thermo-nuclear-code-quality-review/SKILL.md`. Invoke it explicitly
 for structural reviews; `.cursor/skills` points at the same canonical file.

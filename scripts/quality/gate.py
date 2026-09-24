@@ -65,7 +65,7 @@ def main():
         write_json(allowances_path, {'schema': 1, 'warnings': diagnostics.records(now, metrics)})
     report = {'anchor': ANCHOR, 'merge_base': base, 'warnings': sum(now.values()),
               'identities': len(now), 'obsolete': sum(stale.values()),
-              'accepted_exceptions': {'scopes': len(exception_contracts),
+              'accepted_exceptions': {'contracts': len(exception_contracts),
                                       'source_metrics': exception_metrics},
               'syntax_templates': list(json.loads((ROOT / 'docs/quality/syntax-fragments.json').read_text())),
               'source_occurrences': source_rules.entries(source_rules.inventory(facts)),
@@ -76,7 +76,7 @@ def main():
         print(problem)
     print(f'quality ratchets: {"FAIL" if problems else "OK"}; {len(sources)} Rust files; '
           f'{sum(now.values())} emitted warning occurrences; '
-          f'{len(exception_contracts)} accepted exception scopes; base {base[:12]}')
+          f'{len(exception_contracts)} accepted exception contracts; base {base[:12]}')
     return bool(problems)
 
 

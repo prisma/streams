@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ANCHOR = '5bdaf9684197ff84bd544fd0fcd69520001ea196'
 DENIED = {'unsafe_op_in_unsafe_fn', 'unused_must_use', 'unfulfilled_lint_expectations',
           'clippy::await_holding_lock', 'clippy::await_holding_refcell_ref',
-          'clippy::await_holding_invalid_type', 'clippy::undocumented_unsafe_blocks'}
+          'clippy::await_holding_invalid_type', 'clippy::undocumented_unsafe_blocks',
+          # An unprefixed Clippy lint name still works with this warning
+          # allowed, and would sit outside every clippy:: exception contract.
+          'renamed_and_removed_lints'}
 
 
 def git(*args):
@@ -29,8 +32,10 @@ def merge_base():
     if event == 'push':
         if not before:
             raise ValueError('push ratchet requires QUALITY_BEFORE_SHA')
-        if set(before) != {'0'}:
-            target = before
+        if set(before) == {'0'}:
+            # A branch-creating push: CI's base ref is the pushed commit.
+            raise ValueError('push ratchet has no previous revision (branch creation)')
+        target = before
     return git('merge-base', 'HEAD', target)
 
 
@@ -109,12 +114,24 @@ def verification_comparison():
                                   'local-merge-base')
 
 
+def source_directory(name, top=False):
+    """One rule for the checkout walk and base listings: hidden directories
+    and dependency trees hold no ratcheted source, nor does Cargo's build
+    directory at the root. A module directory named `target` below it does."""
+    return not name.startswith('.') and name != 'node_modules' and not (top and name == 'target')
+
+
+def source_path(path):
+    parts = path.split('/')[:-1]
+    return all(source_directory(part, index == 0) for index, part in enumerate(parts))
+
+
 def tracked_sources(root=ROOT):
     # Include untracked new source, exclude build/dependency/generated directories.
-    excluded = {'.git', 'target', 'node_modules', '.agents', '.cursor'}
     sources = {}
     for directory, subdirs, files in os.walk(root):
-        subdirs[:] = sorted(d for d in subdirs if d not in excluded and not d.startswith('.'))
+        top = Path(directory) == Path(root)
+        subdirs[:] = sorted(d for d in subdirs if source_directory(d, top))
         for name in sorted(files):
             if name.endswith('.rs'):
                 p = Path(directory) / name
