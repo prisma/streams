@@ -1197,6 +1197,28 @@
     ]
   },
   {
+    "name": "a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fa2273d263f94b93959d4c80a6f596c271cfbc0eddf0fb08157e779efc0c0be7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "84efb1c30e3bc2c102fe3b685d3bee84a5971bbbcbe2c2f2b5ba1474e80a80b1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1676,6 +1698,19 @@
     "scenarios": [
       "HIS-005"
     ]
+  },
+  {
+    "name": "an_owner_change_that_loses_nothing_keeps_the_continuation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d978634ea05baa372497b8dacc404e0091a7dc81ee05d5454e3b1fd9de3ae41",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 0xF4, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
   },
   {
     "name": "an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_ledger",

@@ -2528,7 +2528,7 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "product_read; the read takes every extractor and the verified principal the entry resolved, dispatches raw, keyed and long-poll reads from one place and hands the principal to the page render that debits it; a request struct or a split would separate the dispatch from the parts it needs"
+    reason = "product_read; the read takes every extractor and the verified principal the entry resolved, dispatches raw, keyed and long-poll reads from one place, proves a continued position before an SSE start, and hands the principal to the page render that debits it; a request struct or a split would separate the dispatch from the parts it needs"
 )]
 async fn product_read(
     state: Arc<AppState>,
@@ -2662,30 +2662,10 @@ async fn product_read(
             );
         }
     };
-    let kh = crate::crypto::stream_hash(&rk);
-
-    let start = match q.get("cursor").map(String::as_str) {
-        None | Some("") | Some("beginning") => crate::application::read::ReadStart::Beginning,
-        Some("now") => crate::application::read::ReadStart::Now,
-        Some(cursor) => match crate::product_cursor::KeyCursor::decode(
-            cursor,
-            &desc.project_id,
-            &skey,
-            &epoch,
-            &kh,
-        ) {
-            Ok(cursor) => crate::application::read::ReadStart::Position(
-                crate::application::read::ReadPosition {
-                    segment: cursor.seg_id,
-                    after: cursor.offset,
-                },
-            ),
-            Err(_) => {
-                return render_product_read_failure(
-                    crate::application::read::ReadFailure::InvalidCursor,
-                );
-            }
-        },
+    let binding = read_cursor::CursorBinding::of(&desc, epoch, &skey, &rk);
+    let start = match binding.start(q.get("cursor").map(String::as_str)) {
+        Ok(start) => start,
+        Err(error) => return binding.failure(error),
     };
     // CHAOS-4: a value we cannot parse is a client mistake, not a
     // request for the default. Silently substituting the 8 MiB default
@@ -2729,7 +2709,7 @@ async fn product_read(
     };
 
     use crate::application::read::{ReadCommand, ReadMode};
-    let command = ReadCommand {
+    let mut command = ReadCommand {
         descriptor: desc,
         key: Some(skey.clone()),
         start,
@@ -2768,6 +2748,9 @@ async fn product_read(
         return response;
     }
     if live == Some("sse") {
+        if let Err(error) = state.read_service().settle_continuation(&mut command).await {
+            return binding.failure(error);
+        }
         let params = crate::http::ReadParams {
             offset: None,
             format: None,
@@ -2793,13 +2776,13 @@ async fn product_read(
     }
     match state.read_service().execute_read(command).await {
         Ok(outcome) => render_product_read(&state, principal, &skey, &rk, &outcome),
-        Err(error) => render_product_read_failure(error),
+        Err(error) => binding.failure(error),
     }
 }
 
 #[expect(
     clippy::unwrap_used,
-    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail once the served bytes are debited; mapping a builder error into a substitute response would report a wire status the handler never decided"
+    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail once the served bytes are debited; mapping a builder error into a substitute response would report a wire status the handler never decided. The cursor binding's encoders it now calls contain no unwrap"
 )]
 fn render_product_read(
     state: &AppState,
@@ -2809,15 +2792,8 @@ fn render_product_read(
     out: &crate::application::read::ReadOutcome,
 ) -> Response {
     use crate::application::read::ReadResultKind;
-    let cursor = |position: crate::application::read::ReadPosition| {
-        crate::product_cursor::KeyCursor {
-            epoch: out.descriptor.epoch(),
-            key_hash: crate::crypto::stream_hash(routing_key),
-            seg_id: position.segment,
-            offset: position.after,
-        }
-        .encode(&out.descriptor.project_id, key)
-    };
+    let cursor =
+        read_cursor::CursorBinding::of(&out.descriptor, out.descriptor.epoch(), key, routing_key);
     let mut response = Response::builder()
         .status(if out.kind == ReadResultKind::Timeout {
             StatusCode::NO_CONTENT
@@ -2826,9 +2802,12 @@ fn render_product_read(
         })
         .header(header::CONTENT_TYPE, &out.descriptor.content_type)
         .header(header::CACHE_CONTROL, "no-store")
-        .header("Prisma-Next-Cursor", cursor(out.next));
+        .header(
+            "Prisma-Next-Cursor",
+            cursor.session(out.next, out.continuation),
+        );
     if let Some(durable) = out.durable {
-        response = response.header("Prisma-Durable-Cursor", cursor(durable));
+        response = response.header("Prisma-Durable-Cursor", cursor.durable(durable));
     }
     if let Some(index) = out.pending_from {
         response = response.header("Prisma-Pending-From", index.to_string());
@@ -2896,7 +2875,7 @@ pub(crate) fn render_product_read_failure(
             false,
             None,
         ),
-        E::CursorBeyondTail => (
+        E::CursorBeyondTail | E::HistoryReplaced(_) => (
             StatusCode::CONFLICT,
             "cursor_beyond_tail",
             "cursor is ahead of the stream tail; resume from the durable cursor",
@@ -3989,6 +3968,7 @@ pub(crate) async fn product_list(
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
+mod read_cursor;
 mod scan;
 use scan::product_scan;
 mod usage;

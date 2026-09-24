@@ -472,6 +472,20 @@ durable when served) and `durableCursor` (see below).
   stale session cursor — silently rewinds to the durable cursor and
   continues, re-delivering the un-durable suffix rather than skipping
   or stalling.
+- **A session cursor is bound to the history it continues.** When a
+  page ends past the durable frontier, its session cursor names the
+  server-side writer that applied the provisional records and a digest
+  of what the page delivered from the first record that was not yet
+  durable. The next read continues from it only if that writer still
+  owns the stream, or if the records the client holds at those offsets
+  are, byte for byte, the ones the current owner now serves. Otherwise
+  the owner lost the provisional records and may have appended
+  different ones at the same offsets: the server answers `409
+  cursor_beyond_tail` with the durable recovery cursor, even when the
+  new tail has already passed the session cursor. Discard every record
+  at or after the recovery position and resume from it. An ordinary
+  owner change that loses nothing keeps the session cursor usable, and
+  durable cursors are unaffected by owner changes.
 - **Everything else stays durable.** Appends still ack only at
   durability. Consumer groups, watches, and the raw `/v1/stream/{name}`
   surface are untouched by this mode. `deliver=applied` is rejected on
@@ -491,6 +505,8 @@ for that, durable mode (the default) or consumer groups are the tool.
 | Provisional marker | `Prisma-Pending-From: <index>` — records from this array index on were not yet durable when served |
 | Resume cursor | `Prisma-Durable-Cursor: <cursor>` — persist THIS, not `Prisma-Next-Cursor` |
 | Stale session cursor | `409` with code `cursor_beyond_tail` — resume from the durable cursor |
+| Replaced provisional history | the same `409 cursor_beyond_tail`, plus `Prisma-Durable-Cursor: <recovery cursor>` and `error.details = {"reason": "history_replaced", "durableCursor": "<recovery cursor>"}` — drop records at or after the recovery position and resume from it |
+| Cursor versions | a session cursor past the durable frontier is a v3 token (history, recovery position, digest); every durable position, including `Prisma-Durable-Cursor`, stays a v2 token. A v2 token presented with `deliver=applied` beyond the current durable frontier is refused with `409 cursor_beyond_tail`; at or below it, it is a durable replay position. Older servers refuse v3 tokens with `400 invalid_cursor`; resume from the durable cursor |
 | Invalid values | `400 invalid_deliver`; `400 deliver_sse_unsupported`; `400 deliver_unsupported_fork` |
 
 ## 5. Traps

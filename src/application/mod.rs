@@ -29,5 +29,6 @@ pub(crate) mod read_keys;
 pub(crate) mod read_retention_probe;
 
 pub(crate) mod read_batch;
+mod read_continuation;
 mod read_decode;
 pub(crate) mod read_range;

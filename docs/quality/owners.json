@@ -2267,6 +2267,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::reads_applied_history",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "TLA-018-F3 continuation scenarios; a held shard WAL PUT, a fencing replacement instance and real HTTP product, raw and relay reads of the stale and durable cursors; compiled and executed with DST.",
+      "syntax": "path = \"tests/reads_applied_history.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::tests",
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",

@@ -2,8 +2,9 @@
 #![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use super::{
-    CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_LEASE_V2, KIND_SCAN_V2, KeyCursor,
-    LeaseToken, MAC_LEN, MessageId, SCAN_CURSOR_MAX, ScanCursor, StreamKey, mac_key, mac16, unb64,
+    CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_KEY_V3, KIND_LEASE_V2, KIND_SCAN_V2,
+    KeyCursor, LeaseToken, MAC_LEN, MessageId, ReadCursor, SCAN_CURSOR_MAX, ScanCursor,
+    SessionCursor, StreamKey, mac_key, mac16, unb64,
 };
 use crate::tenant::ProjectId;
 
@@ -56,18 +57,75 @@ impl KeyCursor {
             return Err("wrong_cursor_kind");
         }
         let raw: &[u8; 45 + MAC_LEN] = raw.as_slice().try_into().map_err(|_| invalid)?;
-        let payload = product_payload(raw, project, key).ok_or(invalid)?;
-        let (_, mut fields) = payload.split_first().ok_or(invalid)?;
-        let value = position(&mut fields).ok_or(invalid)?;
-        if &value.epoch != expect_epoch || &value.key_hash != expect_key_hash {
-            return Err(invalid);
-        }
+        let (value, _) = key_fields(raw, project, key, expect_epoch, expect_key_hash)?;
         Ok(Self {
             epoch: value.epoch,
             key_hash: value.key_hash,
             seg_id: value.seg_id,
             offset: value.offset,
         })
+    }
+}
+
+/// The authenticated fields of a key cursor, after its kind byte, bound to
+/// the expected incarnation and routing key.
+fn key_fields<'a>(
+    raw: &'a [u8],
+    project: &ProjectId,
+    key: &StreamKey,
+    expect_epoch: &[u8; 16],
+    expect_key_hash: &[u8; 16],
+) -> Result<(MessageId, &'a [u8]), &'static str> {
+    let invalid = "invalid_cursor";
+    let payload = product_payload(raw, project, key).ok_or(invalid)?;
+    let (_, fields) = payload.split_first().ok_or(invalid)?;
+    let mut rest = fields;
+    let value = position(&mut rest).ok_or(invalid)?;
+    if &value.epoch != expect_epoch || &value.key_hash != expect_key_hash {
+        return Err(invalid);
+    }
+    Ok((value, fields))
+}
+
+impl ReadCursor {
+    /// A v2 position or a v3 continuation; any other kind is
+    /// `wrong_cursor_kind`. A v3 cursor whose recovery offset is not below
+    /// its position, or whose digest starts past it, is invalid.
+    pub(crate) fn decode(
+        s: &str,
+        project: &ProjectId,
+        key: &StreamKey,
+        expect_epoch: &[u8; 16],
+        expect_key_hash: &[u8; 16],
+    ) -> Result<Self, &'static str> {
+        let invalid = "invalid_cursor";
+        let raw = unb64(s).ok_or(invalid)?;
+        if raw.first() != Some(&KIND_KEY_V3) {
+            return KeyCursor::decode(s, project, key, expect_epoch, expect_key_hash)
+                .map(Self::Durable);
+        }
+        let raw: &[u8; 93 + MAC_LEN] = raw.as_slice().try_into().map_err(|_| invalid)?;
+        let (at, mut fields) = key_fields(raw, project, key, expect_epoch, expect_key_hash)?;
+        position(&mut fields).ok_or(invalid)?;
+        let history = field(&mut fields).ok_or(invalid)?;
+        let recover = u64::from_le_bytes(field(&mut fields).ok_or(invalid)?);
+        let from = u64::from_le_bytes(field(&mut fields).ok_or(invalid)?);
+        let digest = field(&mut fields).ok_or(invalid)?;
+        if recover >= at.offset || from > at.offset {
+            return Err(invalid);
+        }
+        Ok(Self::Session(SessionCursor {
+            position: KeyCursor {
+                epoch: at.epoch,
+                key_hash: at.key_hash,
+                seg_id: at.seg_id,
+                offset: at.offset,
+            },
+            history,
+            recover,
+            from,
+            digest,
+        }))
     }
 }
 

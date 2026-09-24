@@ -11,14 +11,14 @@ fn the_page_route_refusal_names_the_owner_verdict() {
         (ReadFailure::Missing, "missing"),
         (ReadFailure::Gone, "gone"),
     ] {
-        let refused = WireReadRefusal::of(&failure).expect("a stream verdict is typed");
+        let refused = WireRefusedPage::of(&failure).expect("a stream verdict is typed");
         assert_eq!(
-            serde_json::to_string(&WireRefusedPage { refused }).unwrap(),
+            serde_json::to_string(&refused).unwrap(),
             format!("{{\"refused\":\"{code}\"}}")
         );
         assert!(
             matches!(
-                (ReadFailure::from(refused), &failure),
+                (refused.into_failure(), &failure),
                 (ReadFailure::CursorBeyondTail, ReadFailure::CursorBeyondTail)
                     | (
                         ReadFailure::ChangedIncarnation,
@@ -30,6 +30,15 @@ fn the_page_route_refusal_names_the_owner_verdict() {
             "{code} round-trips to the verdict it names"
         );
     }
+    let replaced = ReadFailure::HistoryReplaced(crate::application::read::ReadPosition {
+        segment: 2,
+        after: 7,
+    });
+    let refused = WireRefusedPage::of(&replaced).expect("a replaced history is a verdict");
+    assert_eq!(
+        serde_json::to_string(&refused).unwrap(),
+        r#"{"refused":"history_replaced","recover":{"segment":2,"after":7}}"#
+    );
     for failure in [
         ReadFailure::WrongKey,
         ReadFailure::InvalidCursor,
@@ -69,6 +78,17 @@ fn a_typed_refusal_is_relayed_and_an_untyped_answer_keeps_its_transport_class() 
         ),
         (404, br#"{"refused":"missing"}"#, "Missing"),
         (410, br#"{"refused":"gone"}"#, "Gone"),
+        (
+            409,
+            br#"{"refused":"history_replaced","recover":{"segment":2,"after":7}}"#,
+            "HistoryReplaced(ReadPosition { segment: 2, after: 7 })",
+        ),
+        // A replaced history without its recovery position is malformed.
+        (
+            409,
+            br#"{"refused":"history_replaced"}"#,
+            "Remote(InvalidResponse(\"history_replaced without recover\"))",
+        ),
         // The verdict wins over the status it travelled with.
         (
             500,

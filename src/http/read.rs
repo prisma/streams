@@ -37,6 +37,11 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
             "cursor_beyond_tail",
             "cursor is ahead of the stream tail; resume from the durable cursor",
         ),
+        E::HistoryReplaced(_) => err_resp(
+            StatusCode::CONFLICT,
+            "cursor_beyond_tail",
+            "the provisional records this offset continues were replaced; resume from stream-durable-offset",
+        ),
         E::KeylessLive => err_resp(
             StatusCode::BAD_REQUEST,
             "keyless_live",
@@ -98,7 +103,46 @@ fn resolve_response(error: crate::shard_directory::ResolveError) -> Response {
         ),
     }
 }
+/// Where a lineage feed starts. A continuation is settled into a verified
+/// position before SSE (`ReadService::settle_continuation`), so an
+/// unverified one never serves.
+fn lineage_start(start: ReadStart, source: &crate::sse::source::LineageSource) -> Option<StartPos> {
+    use crate::sse::feed::FeedSourceRead;
+    match start {
+        ReadStart::Now => Some(StartPos::Now),
+        ReadStart::Beginning => Some(StartPos::At(0)),
+        ReadStart::Position(position) => source
+            .logicalize(crate::sse::feed::WirePosition {
+                seg_id: position.segment,
+                local_after: position.after,
+            })
+            .map(StartPos::At),
+        ReadStart::Continue(..) => None,
+    }
+}
+/// A relayed continuation (`streams-internal-continuation`, fleet-internal
+/// only) binds the offset it arrives with; it must fit that offset.
 fn raw_start(
+    desc: &StreamDesc,
+    params: &ReadParams,
+    headers: &HeaderMap,
+) -> Result<ReadStart, ReadFailure> {
+    let start = raw_position_start(desc, params.key.as_deref(), params.offset.as_deref())?;
+    let continuation = hdr(headers, "streams-internal-continuation").filter(|_| params.internal);
+    let Some(continuation) = continuation.as_deref() else {
+        return Ok(start);
+    };
+    match (
+        start,
+        crate::application::read::Continuation::from_header(continuation),
+    ) {
+        (ReadStart::Position(at), Some(continuation)) if continuation.fits(at.after) => {
+            Ok(ReadStart::Continue(at, continuation))
+        }
+        _ => Err(ReadFailure::InvalidCursor),
+    }
+}
+fn raw_position_start(
     desc: &StreamDesc,
     selector: Option<&str>,
     offset: Option<&str>,
@@ -178,7 +222,7 @@ pub(crate) async fn read_inner(
     {
         ReadStart::Beginning
     } else {
-        match raw_start(&desc, params.key.as_deref(), params.offset.as_deref()) {
+        match raw_start(&desc, &params, &headers) {
             Ok(start) => start,
             Err(error) => return read_failure_response(error),
         }
@@ -250,13 +294,37 @@ async fn respond_read(
             .get("streams-internal-read-page")
             .and_then(|v| v.to_str().ok())
             == Some("1");
+    let segmented = command
+        .descriptor
+        .segments
+        .as_ref()
+        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
     match state.read_service().execute_read(command).await {
         Ok(out) if page => axum::Json(crate::application::read_remote::WireReadPage::from_outcome(
             &out,
         ))
         .into_response(),
-        Ok(out) => render_raw_read(state, params, headers, key, out),
+        Ok(out) => {
+            let continuation = out.continuation;
+            let mut response = render_raw_read(state, params, headers, key, out);
+            if let Some(value) =
+                continuation.and_then(|c| axum::http::HeaderValue::from_str(&c.to_header()).ok())
+            {
+                response.headers_mut().insert("stream-continuation", value);
+            }
+            response
+        }
         Err(error) if page => typed_refusal(error),
+        Err(ReadFailure::HistoryReplaced(recover)) => {
+            let mut response = read_failure_response(ReadFailure::HistoryReplaced(recover));
+            if let Ok(value) = axum::http::HeaderValue::from_str(&raw_position(recover, segmented))
+            {
+                response
+                    .headers_mut()
+                    .insert("stream-durable-offset", value);
+            }
+            response
+        }
         Err(error) => read_failure_response(error),
     }
 }
@@ -264,13 +332,10 @@ async fn respond_read(
 /// A decided verdict swaps the envelope for its typed body; the status the
 /// public renderer chose is kept so an older coordinator is unaffected.
 fn typed_refusal(error: ReadFailure) -> Response {
-    use crate::application::read_remote::{WireReadRefusal, WireRefusedPage};
-    let refused = WireReadRefusal::of(&error);
+    let refused = crate::application::read_remote::WireRefusedPage::of(&error);
     let mut response = read_failure_response(error);
     if let Some(refused) = refused {
-        *response.body_mut() = axum::Json(WireRefusedPage { refused })
-            .into_response()
-            .into_body();
+        *response.body_mut() = axum::Json(refused).into_response().into_body();
     }
     response
 }
@@ -614,17 +679,8 @@ pub(crate) async fn serve_read_sse(
             };
         }
     };
-    use crate::sse::feed::FeedSourceRead;
-    let start = match command.start {
-        ReadStart::Now => StartPos::Now,
-        ReadStart::Beginning => StartPos::At(0),
-        ReadStart::Position(position) => match source.logicalize(crate::sse::feed::WirePosition {
-            seg_id: position.segment,
-            local_after: position.after,
-        }) {
-            Some(position) => StartPos::At(position),
-            None => return failure(ReadFailure::InvalidCursor),
-        },
+    let Some(start) = lineage_start(command.start, &source) else {
+        return failure(ReadFailure::InvalidCursor);
     };
     let slot = match sse_acquire(&state) {
         Ok(slot) => slot,

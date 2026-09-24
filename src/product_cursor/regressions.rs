@@ -1,7 +1,8 @@
 //! Falsifiable shape, authentication and allocation-admission controls.
 use super::{
-    CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_LEASE_V2, KIND_MSG_V2, KIND_SCAN_V2,
-    KeyCursor, LeaseToken, MessageId, ScanCursor, StreamKey, b64, mac_key, mac16, unb64,
+    CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_KEY_V3, KIND_LEASE_V2, KIND_MSG_V2,
+    KIND_SCAN_V2, KeyCursor, LeaseToken, MessageId, ReadCursor, ScanCursor, SessionCursor,
+    StreamKey, b64, mac_key, mac16, unb64,
 };
 use crate::tenant::ProjectId;
 use proptest::{prop_assert, prop_assert_eq};
@@ -309,4 +310,75 @@ fn encoded_size_boundary_preserves_kind_error_priority() {
         ScanCursor::decode(&token, &project(), &key(), &[1; 16], 0),
         Err("invalid_cursor")
     );
+}
+
+fn session(recover: u64, from: u64) -> SessionCursor {
+    SessionCursor {
+        position: KeyCursor {
+            epoch: [1; 16],
+            key_hash: [2; 16],
+            seg_id: 3,
+            offset: 40,
+        },
+        history: [5; 16],
+        recover,
+        from,
+        digest: [6; 16],
+    }
+}
+
+/// TLA-018-F3: a v3 session cursor is accepted only by the read decoder,
+/// which still accepts v2 as a durable position.
+#[test]
+fn a_session_cursor_is_its_own_kind_beside_the_durable_position() {
+    let decode = |token: &str| ReadCursor::decode(token, &project(), &key(), &[1; 16], &[2; 16]);
+    let cursor = session(30, 20);
+    let token = cursor.encode(&project(), &key());
+    assert_eq!(decode(&token), Ok(ReadCursor::Session(cursor.clone())));
+    assert_eq!(unb64(&token).unwrap().first(), Some(&KIND_KEY_V3));
+    let durable = cursor.position.encode(&project(), &key());
+    assert_eq!(unb64(&durable).unwrap().first(), Some(&KIND_KEY_V2));
+    assert_eq!(decode(&durable), Ok(ReadCursor::Durable(cursor.position)));
+    // Every other token endpoint refuses v3 by kind; v3 binds like v2.
+    assert_eq!(
+        KeyCursor::decode(&token, &project(), &key(), &[1; 16], &[2; 16]),
+        Err("wrong_cursor_kind")
+    );
+    let message = MessageId {
+        epoch: [1; 16],
+        key_hash: [2; 16],
+        seg_id: 3,
+        offset: 40,
+    }
+    .encode(&project(), &key());
+    assert_eq!(decode(&message), Err("wrong_cursor_kind"));
+    assert_eq!(
+        ReadCursor::decode(&token, &project(), &key(), &[9; 16], &[2; 16]),
+        Err("invalid_cursor")
+    );
+    assert_eq!(
+        ReadCursor::decode(&token, &project(), &key(), &[1; 16], &[9; 16]),
+        Err("invalid_cursor")
+    );
+    // A recovery position at or past the position, or a digest that starts
+    // past it, is not a continuation of that position.
+    assert!(decode(&session(39, 40).encode(&project(), &key())).is_ok());
+    assert!(decode(&session(0, 40).encode(&project(), &key())).is_ok());
+    for bad in [session(40, 20), session(41, 20), session(30, 41)] {
+        assert_eq!(
+            decode(&bad.encode(&project(), &key())),
+            Err("invalid_cursor"),
+            "{bad:?}"
+        );
+    }
+    // Exact length, authenticated.
+    let raw = unb64(&token).unwrap();
+    let (payload, _) = raw.split_at(raw.len() - 16);
+    for shape in [&payload[..payload.len() - 1], &[payload, &[0]].concat()[..]] {
+        let tag = mac16(&mac_key(&project(), &key(), &[1; 16]), shape);
+        assert_eq!(decode(&b64(&[shape, &tag].concat())), Err("invalid_cursor"));
+    }
+    let mut tampered = raw.clone();
+    tampered[70] ^= 1;
+    assert_eq!(decode(&b64(&tampered)), Err("invalid_cursor"));
 }

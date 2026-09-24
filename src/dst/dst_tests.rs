@@ -141,6 +141,9 @@ mod quota_read_volume;
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
 
+#[path = "tests/reads_applied_history.rs"]
+mod reads_applied_history;
+
 #[path = "tests/reads_history.rs"]
 mod reads_history;
 

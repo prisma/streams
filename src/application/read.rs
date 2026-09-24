@@ -102,6 +102,7 @@ impl ReadPage {
 }
 
 pub(crate) use super::read_batch::{PlainBatch, PlainRec};
+pub(crate) use super::read_continuation::{Continuation, ObservationKey, WriterHistory};
 use super::read_decode::decode_frames_into;
 pub(crate) use super::read_range::ReadRange;
 

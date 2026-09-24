@@ -19,6 +19,7 @@ use crate::crypto::StreamKey;
 mod decode;
 
 pub(crate) const KIND_KEY_V2: u8 = 0x12;
+pub(crate) const KIND_KEY_V3: u8 = 0x13;
 pub(crate) const KIND_SCAN_V2: u8 = 0x22;
 pub(crate) const KIND_MSG_V2: u8 = 0x32;
 pub(crate) const KIND_LEASE_V2: u8 = 0x42;
@@ -99,6 +100,51 @@ impl KeyCursor {
         p.extend_from_slice(&mac);
         b64(&p)
     }
+}
+
+/// v3 (TLA-018-F3): a key cursor whose position continues a provisional
+/// suffix served by `deliver=applied`. It adds the writer history that
+/// applied the suffix, the durable recovery offset (the same page's
+/// `Prisma-Durable-Cursor`), and the digest of what the client observed
+/// from `from`. The read service continues it only while that history is
+/// unreplaced or the observation still holds; otherwise it answers with the
+/// recovery position. Every durable position stays a v2 [`KeyCursor`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionCursor {
+    pub position: KeyCursor,
+    pub history: [u8; 16],
+    /// Durable recovery offset; strictly below `position.offset`.
+    pub recover: u64,
+    /// First offset the digest covers; at most `position.offset`.
+    pub from: u64,
+    pub digest: [u8; 16],
+}
+
+impl SessionCursor {
+    pub(crate) fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
+        let at = &self.position;
+        let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 16 + 8 + 8 + 16 + MAC_LEN);
+        p.push(KIND_KEY_V3);
+        p.extend_from_slice(&at.epoch);
+        p.extend_from_slice(&at.key_hash);
+        p.extend_from_slice(&at.seg_id.to_le_bytes());
+        p.extend_from_slice(&at.offset.to_le_bytes());
+        p.extend_from_slice(&self.history);
+        p.extend_from_slice(&self.recover.to_le_bytes());
+        p.extend_from_slice(&self.from.to_le_bytes());
+        p.extend_from_slice(&self.digest);
+        let mac = mac16(&mac_key(project, key, &at.epoch), &p);
+        p.extend_from_slice(&mac);
+        b64(&p)
+    }
+}
+
+/// What a product read accepts as `cursor=`: a durable position (v2) or a
+/// provisional continuation (v3). No other endpoint accepts v3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadCursor {
+    Durable(KeyCursor),
+    Session(SessionCursor),
 }
 
 /// Snapshot-bounded scan cursor (spec Stage 6 §5.3): the whole snapshot

@@ -1132,6 +1132,8 @@ struct InFlightGroup {
 
 pub(crate) struct ShardEngine {
     pub prefix: String,
+    /// SlateDB writer epoch this engine claimed at open: the history its applied reads serve.
+    pub writer_epoch: u64,
     pub db: Arc<Db>,
     /// R29 custody model. `last_external_seq`: the global adoption
     /// sequence value of the most recent EXTERNAL resolution of this
@@ -1155,15 +1157,12 @@ pub(crate) struct ShardEngine {
     maintenance: std::sync::RwLock<ShardMaintenance>,
     /// Per-shard backpressure latch (hysteresis lives with the shard).
     pub maintenance_shard_shed: std::sync::atomic::AtomicBool,
-    /// Object store the shard's DBs live on — held so the engine can
-    /// lazily open its shared history v2 partition.
+    /// Object store of the shard's DBs, held to lazily open the history v2 partition.
     data_store: Arc<dyn object_store::ObjectStore>,
-    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db
-    /// per shard at `{prefix}/history2`, opened lazily by whoever needs
-    /// it first (absorber gather lane or a v2 history read) and shared —
-    /// two independent opens would fence each other. Closed with the
-    /// engine; a new shard owner's open fences this one at the slatedb
-    /// layer, same dynamics as the per-stream v1 DBs.
+    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db per shard at
+    /// `{prefix}/history2`, opened lazily by whoever needs it first (absorber gather lane or
+    /// a v2 history read) and shared — two independent opens would fence each other. Closed with
+    /// the engine; a new shard owner's open fences this one, like the per-stream v1 DBs.
     history2: Arc<history_partition::HistoryPartition>,
     /// Pre-built SlateDB settings for `history2` (history knobs + the
     /// ONE process-wide compactor profile, from the engine's ShardConfig).
@@ -1335,24 +1334,20 @@ pub(crate) fn now_ms() -> i64 {
 impl ShardEngine {
     #[expect(
         clippy::too_many_lines,
-        reason = "ShardEngine::start; the committer, acker, pump and trim tickers are spawned from one place so their channels and handles are wired in one visible order; splitting it would hide which task owns each channel end"
+        reason = "ShardEngine::start; the committer, acker, pump and trim tickers are spawned from one place so their channels and handles are wired in one visible order; splitting it would hide which task owns each channel end. The engine value it builds also records the writer epoch the opened database claimed, one field line that spawns and wires nothing"
     )]
     #[expect(
         clippy::too_many_arguments,
-        reason = "ShardEngine::start; the engine takes its prefix, database, store, config, signal channel, park and maintenance row separately as the opener resolved them; a builder would exist for this single call site"
-    )]
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::start; a trim tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
+        reason = "ShardEngine::start; the engine takes its prefix, database, store, config, signal channel, park and maintenance row separately as the opener resolved them; a builder would exist for this single call site. The writer epoch is read from the database argument, so the argument list is unchanged"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
+        reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data. The writer-epoch initializer calls two manifest accessors and adds no unwrap site"
     )]
     #[expect(
         clippy::cast_possible_truncation,
         clippy::excessive_nesting,
-        reason = "ShardEngine::start; the pump and ticker loops nest each flush, eviction and trim verdict inside the tick that produced it and stamp their gaps in whole milliseconds and microseconds that fit u64; flattening them or checking the stamps would separate the verdicts from the tick and restate the clock"
+        reason = "ShardEngine::start; the pump and ticker loops nest each flush, eviction and trim verdict inside the tick that produced it and stamp their gaps in whole milliseconds and microseconds that fit u64; flattening them or checking the stamps would separate the verdicts from the tick and restate the clock. The writer-epoch initializer adds neither a cast nor a nested block"
     )]
     pub(crate) fn start(
         prefix: String,
@@ -1377,6 +1372,7 @@ impl ShardEngine {
             crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
         let engine = Arc::new(ShardEngine {
             prefix,
+            writer_epoch: db.manifest().writer_epoch(),
             db,
             last_external_seq: std::sync::atomic::AtomicU64::new(0),
             sweep_custody: std::sync::atomic::AtomicU64::new(0),
@@ -1740,6 +1736,10 @@ impl ShardEngine {
                 // tick retries; trim work is never urgent enough to
                 // block behind.
                 if !ticker.trim_debt.lock().unwrap().is_empty() {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "ShardEngine::start; the trim-tick send: a tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
+                    )]
                     let _ = ticker.tx.try_send(CommitOp::TrimTick);
                 }
             }
