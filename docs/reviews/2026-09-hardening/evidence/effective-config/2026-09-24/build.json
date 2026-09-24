@@ -1,0 +1,64 @@
+{
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "head_tree": {
+    "commit": "a50680532d8c2e8fd5e52ecd955c4cf4366617e0",
+    "dirty": []
+  },
+  "old-model": {
+    "rev": "6bcaff69",
+    "commit": "6bcaff698c06c83ee99b0d1dc533f09e86d8ecde",
+    "tree": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/ecfg-trees/old-model",
+    "target": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/target-old-model",
+    "seconds": 72.9,
+    "artifacts": {
+      "effective_config": {
+        "path": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/bin/old-model/effective_config",
+        "sha256": "4d6f9dfd2d39758299d0822da41f5c4eb69ac6f61b432a3d2f5eb4b72868bd70"
+      }
+    },
+    "injected_lib_diff": "diff --git a/src/lib.rs b/src/lib.rs\nindex 063570a9..e3d33b99 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -64,3 +64,4 @@ pub use bootstrap::{\n /// Deploy scripts intentionally do NOT override them.\n pub const DEFAULT_MANIFEST_POLL_MS: u64 = 2000;\n pub const DEFAULT_COMPACTOR_POLL_MS: u64 = 2500;\n+pub mod effective_config_dump;"
+  },
+  "head": {
+    "rev": "HEAD",
+    "commit": "a50680532d8c2e8fd5e52ecd955c4cf4366617e0",
+    "tree": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1",
+    "target": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/target-head",
+    "seconds": 99.2,
+    "artifacts": {
+      "effective_config": {
+        "path": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/bin/head/effective_config",
+        "sha256": "8da58d1a662e4489f81c8f418c1d285ed07bed48be0bb8e213bb8cd93a49e28e"
+      }
+    }
+  },
+  "rc4": {
+    "rev": "v0.2.0-rc.4",
+    "commit": "685ea0354f123864154b46e585f9c22664929763",
+    "tree": "/private/tmp/claude-501/-Users-sorenschmidt-code-streams/4580d18c-ad9e-4e38-8ca1-89558fd0d592/scratchpad/ecfg-trees/rc4",
+    "target": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/target-rc4",
+    "seconds": 73.3,
+    "artifacts": {
+      "streams-slate": {
+        "path": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/bin/rc4/streams-slate",
+        "sha256": "42f62b5526127a067231dcf14b1575d798180f5bd39a805766ad18bea11c2ae4"
+      }
+    }
+  },
+  "head-bin": {
+    "rev": "HEAD",
+    "commit": "a50680532d8c2e8fd5e52ecd955c4cf4366617e0",
+    "tree": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1",
+    "target": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/target-head",
+    "seconds": 74.7,
+    "artifacts": {
+      "streams-slate": {
+        "path": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/bin/head-bin/streams-slate",
+        "sha256": "06571aba951ddbe73209cb37c6127bf7887aa8c7db2000dd503c4c3787b95387"
+      },
+      "s3lite": {
+        "path": "/Users/sorenschmidt/code/streams/.claude/worktrees/agent-a0da30aa9ba4cb2c1/.ecfg-work/bin/head-bin/s3lite",
+        "sha256": "153539af5086dcf93cea8d2365288c7e4dce1ca451a04b4360ba6090f2c92469"
+      }
+    }
+  }
+}

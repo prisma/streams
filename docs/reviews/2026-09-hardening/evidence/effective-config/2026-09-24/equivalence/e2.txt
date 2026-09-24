@@ -1,0 +1,77 @@
+E2 PASS: rc.4 production env names (72) == 6bcaff69 ENV_KNOBS (70) + {TOKIO_WORKERS: transcribed, anchors 6bcaff69 src/main.rs ok + v0.2.0-rc.4 src/main.rs ok; DST_DRAIN_TRACE: #[cfg(test)] only}; generic helpers resolved: 6/6; 85 read sites
+only rc.4: []
+only 6bcaff69: []
+
+name -> rc.4 read sites
+ABSORB_GLOBAL_BUDGET_BYTES: src/history.rs:285
+ABSORB_GLOBAL_GATHERS: src/history.rs:300
+ABSORB_PAUSE: src/history.rs:32
+ALERT_USAGE_OUTBOX_DIRTY: src/ops.rs:623
+APP_BINARY_SHA256: src/http.rs:1177
+BILLING_METER: src/http.rs:5680
+BILLING_MODE: src/billing.rs:1054, src/http.rs:2184
+COMPACTOR_MAX_CONCURRENT: src/main.rs:690
+COMPACTOR_POLL_MS: src/main.rs:692
+COMPACT_BYTES_TO_FETCH: src/main.rs:701
+COMPACT_MAX_FETCH_TASKS: src/main.rs:700
+COMPACT_MAX_SST_SIZE_BYTES: src/main.rs:702, src/store_timing.rs:213
+COMPACT_MAX_SUBCOMPACTIONS: src/main.rs:699
+DST_DRAIN_TRACE: src/history.rs:1165, src/history.rs:1581, src/shard.rs:3206
+FLEET_ALLOW_HTTP_PEERS: src/fleet.rs:138
+FLEET_MIN: src/fleet.rs:682
+FLEET_PEER_DOMAINS: src/fleet.rs:166
+FRAME_COMPRESS: src/crypto.rs:44
+HISTORY_CACHE_BYTES: src/history.rs:481, src/main.rs:2434
+HISTORY_COMPACTOR: src/history.rs:513
+HISTORY_GC_INTERVAL_SECS: src/history.rs:527
+HISTORY_GC_MAX_INTERVAL_SECS: src/history.rs:529
+LIMIT_BURST_SECS: src/usage.rs:154
+LIMIT_BYTES_PER_SEC: src/usage.rs:151
+LIMIT_RECS_PER_SEC: src/usage.rs:153
+LIMIT_REQS_PER_SEC: src/usage.rs:152
+MAINT_BACKPRESSURE_RELEASE_PCT: src/backpressure.rs:78
+MAX_ABSORB_LAG_SECS: src/backpressure.rs:77
+MAX_SEGMENTS_PER_STREAM: src/scaler3.rs:53
+MAX_UNABSORBED_BYTES_PER_INSTANCE: src/backpressure.rs:75
+MAX_UNABSORBED_BYTES_PER_SHARD: src/backpressure.rs:76
+MEMPROFILE_CERT: src/main.rs:754, src/main.rs:1908
+METRICS_INTERVAL_SECS: src/billing.rs:1481
+MONTH_CLOSE_GRACE_MS: src/billing.rs:1750
+OUTBOX_SWEEP_SECS: src/billing.rs:1467
+PATH_PREFIX: src/billing.rs:1442
+POOL_IDLE_SECS: src/main.rs:619
+POSTINGS_CACHE_BYTES: src/main.rs:2435, src/postings_cache.rs:53
+REBALANCE_LAG_SECS: src/fleet.rs:389
+REBALANCE_MOVE_COOLDOWN_SECS: src/fleet.rs:393
+REBALANCE_RETURN_SECS: src/fleet.rs:880
+ROLLUP: src/http.rs:2102, src/http.rs:2181
+SCALE_COLD_EVALS: src/scaler3.rs:51
+SCALE_COLD_PCT: src/scaler3.rs:49
+SCALE_COOLDOWN_SECS: src/scaler3.rs:52
+SCALE_EVAL_SECS: src/scaler3.rs:46
+SCALE_HOT_EVALS: src/scaler3.rs:50
+SCALE_HOT_PCT: src/scaler3.rs:48
+SCALE_RATE_WINDOW_SECS: src/scaler3.rs:47
+SELF_URL: src/fleet.rs:480
+SHARD_OPEN_DEADLINE_MS: src/sharddir.rs:283
+SHARD_OPEN_WAIT_MS: src/http.rs:656
+SLATEDB_RT_THREADS: src/main.rs:836, src/main.rs:2454
+SSE_FEED_PROJECT_BYTES: src/sse/feed.rs:309
+SSE_FEED_RING_BYTES: src/sse/budget.rs:12
+SSE_FEED_TOTAL_BYTES: src/main.rs:1909, src/sse/budget.rs:34
+SSE_H1_MAX_BUF: src/main.rs:2509
+SSE_HEARTBEAT_MS: src/main.rs:2194
+STORE_BULK_INFLIGHT_MAX_BYTES: src/main.rs:723, src/store_timing.rs:223
+STORE_MAX_CONCURRENT: src/store_timing.rs:85
+STREAMS_CERTIFICATION_MODE: src/main.rs:961
+STREAMS_CERT_SEALED_PUBLISH_DELAY_MS: src/main.rs:958
+STREAMS_DEBUG_EXIT: src/http.rs:1653
+STREAMS_DEBUG_TIMING: src/http.rs:83
+SWEEP_DISCOVERY_MAX: src/billing.rs:2311
+SWEEP_MAINT_RESIDENT: src/billing.rs:2386, src/main.rs:1683
+SWEEP_RESIDENT_QUANTUM: src/billing.rs:2481
+TAIL_MAX_BYTES: src/http.rs:89
+TELEMETRY_CACHE_BYTES: src/billing.rs:1834, src/main.rs:2436
+TELEMETRY_DRAIN_SECS: src/billing.rs:1477
+TOKIO_WORKERS: src/main.rs:1699
+UNREADY_EXIT_AFTER_SECS: src/sharddir.rs:163

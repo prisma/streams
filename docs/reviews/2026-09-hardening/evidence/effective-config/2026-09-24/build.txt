@@ -1,0 +1,11 @@
+free before 125 GiB (floor 12 GiB)
+old-model 6bcaff69 examples/effective_config sha256=4d6f9dfd2d39758299d0822da41f5c4eb69ac6f61b432a3d2f5eb4b72868bd70
+old-model: 73s
+head a5068053 examples/effective_config sha256=8da58d1a662e4489f81c8f418c1d285ed07bed48be0bb8e213bb8cd93a49e28e
+head: 99s
+rc4 685ea035 streams-slate sha256=42f62b5526127a067231dcf14b1575d798180f5bd39a805766ad18bea11c2ae4
+rc4: 73s
+head-bin a5068053 streams-slate sha256=06571aba951ddbe73209cb37c6127bf7887aa8c7db2000dd503c4c3787b95387
+head-bin a5068053 s3lite sha256=153539af5086dcf93cea8d2365288c7e4dce1ca451a04b4360ba6090f2c92469
+head-bin: 75s
+free after 126 GiB; work dir 3.3 GiB

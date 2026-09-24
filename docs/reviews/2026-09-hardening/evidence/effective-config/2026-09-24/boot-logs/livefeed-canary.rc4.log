@@ -1,0 +1,61 @@
+[2m2026-09-24T13:20:42.398241Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory profile certified: compute-1g (all DB families) [3mprofile[0m[2m=[0m{"bytes_to_fetch":1048576,"max_concurrent_compactions":1,"max_fetch_tasks":1,"max_sst_size":33554432,"max_subcompactions":1,"store_bulk_inflight_max_bytes":33554432,"worker_max_concurrent_compactions":1}
+[2m2026-09-24T13:20:42.398390Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m tokio runtime: 20 worker threads
+[2m2026-09-24T13:20:42.398409Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m project memory-pressure model (round-13; weights are code-versioned) [3mmodel[0m[2m=[0m{"dirty_stream_weight_bytes":65536,"feed_weight_bytes":16384,"sub_weight_bytes":32768,"version":1}
+[2m2026-09-24T13:20:42.441339Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m startup canary: ops/shard/data buckets readable and writable
+[2m2026-09-24T13:20:42.441478Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot); feed retention budget=67108864B
+[2m2026-09-24T13:20:42.441499Z[0m [33m WARN[0m [2mstreams_slate[0m[2m:[0m INITIAL_SHARDS=8 < 4×FLEET_MAX=3: a fresh topology this coarse draws unevenly under rendezvous and the rebalancer flaps against return-home; use >= 16
+[2m2026-09-24T13:20:42.450104Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m topology v1: 8 shard(s), body ceiling 33554432 bytes (namespace-pinned)
+[2m2026-09-24T13:20:42.450456Z[0m [33m WARN[0m [2mstreams_slate[0m[2m:[0m CERTIFICATION MODE: sealed publication delayed [3mms[0m[2m=[0m1500
+[2m2026-09-24T13:20:42.450557Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m maintenance backpressure bounds [3munabsorbed_instance[0m[2m=[0m536870912 [3munabsorbed_shard[0m[2m=[0m268435456 [3mlag_secs[0m[2m=[0m900 [3mrelease_pct[0m[2m=[0m75
+[2m2026-09-24T13:20:42.450641Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m fleet coordination on (prefix=fleet, cap=0 rps)
+[2m2026-09-24T13:20:42.450661Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory budget: caches shared=128MiB history=32MiB postings=64MiB telemetry=16MiB; unflushed/db=16MiB; absorb budget=96MiB (worst-frame build=96MiB, per-gather reservation=96MiB, configured gather slots=1, EFFECTIVE gather concurrency=1); slatedb rt threads=4; shed line=500MB (RSS + reserved absorber bytes)
+[2m2026-09-24T13:20:42.451180Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m streams-slate listening on 127.0.0.1:53470
+[2m2026-09-24T13:20:42.451202Z[0m [32m INFO[0m [2mstreams_slate::http[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot)
+[2m2026-09-24T13:20:42.452243Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:42.452363Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:42.452503Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:42.468459Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/010 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.538853Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/000 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.624363Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 000
+[2m2026-09-24T13:20:42.624435Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/001 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.624519Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m000
+[2m2026-09-24T13:20:42.712916Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 001
+[2m2026-09-24T13:20:42.712994Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/011 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.713067Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m001
+[2m2026-09-24T13:20:42.803539Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 011
+[2m2026-09-24T13:20:42.803604Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/100 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.803638Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m011
+[2m2026-09-24T13:20:42.891736Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 100
+[2m2026-09-24T13:20:42.891804Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/101 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.891742Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m100 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:42.891882Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m100
+[2m2026-09-24T13:20:42.982779Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 101
+[2m2026-09-24T13:20:42.982849Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/110 (lazy; fences prior owner)
+[2m2026-09-24T13:20:42.982889Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m101
+[2m2026-09-24T13:20:43.073395Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 110
+[2m2026-09-24T13:20:43.073466Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/111 (lazy; fences prior owner)
+[2m2026-09-24T13:20:43.073525Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m110
+[2m2026-09-24T13:20:43.165615Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 111
+[2m2026-09-24T13:20:43.165920Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m111
+[2m2026-09-24T13:20:43.310286Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:43.310372Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m110 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:43.351157Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:43.351223Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m011 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:43.452291Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:43.452536Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:43.452640Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:44.452069Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:44.452299Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:44.452467Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:44.462264Z[0m [33m WARN[0m [2mstreams_slate::billing[0m[2m:[0m ops drain: system create _ops_events: 503
+[2m2026-09-24T13:20:44.485742Z[0m [32m INFO[0m [2mstreams_slate::fleet[0m[2m:[0m fleet desired 1 -> 3 (cores_used=0.20 util->1 inflight=0 slots->0 hot_cpu=0% (0) ack_p50=0ms (0) edge_p50=0ms (0) rps=0 (0) live=1)
+[2m2026-09-24T13:20:44.548871Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:44.548936Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m111 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:44.675544Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:44.675632Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m000 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:45.452701Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:45.452792Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:45.452860Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:45.510044Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber seeded 1 dirty streams from the durable index (010)
+[2m2026-09-24T13:20:45.604371Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:45.604475Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m001 [3mpending_bytes[0m[2m=[0m0

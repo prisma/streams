@@ -1,0 +1,59 @@
+[2m2026-09-24T13:20:35.781748Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory profile certified: compute-1g (all DB families) [3mprofile[0m[2m=[0m{"bytes_to_fetch":1048576,"max_concurrent_compactions":1,"max_fetch_tasks":1,"max_sst_size":33554432,"max_subcompactions":1,"store_bulk_inflight_max_bytes":33554432,"worker_max_concurrent_compactions":1}
+[2m2026-09-24T13:20:35.781857Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m tokio runtime: 20 worker threads
+[2m2026-09-24T13:20:35.781871Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m project memory-pressure model (round-13; weights are code-versioned) [3mmodel[0m[2m=[0m{"dirty_stream_weight_bytes":65536,"feed_weight_bytes":16384,"sub_weight_bytes":32768,"version":1}
+[2m2026-09-24T13:20:35.828799Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m startup canary: ops/shard/data buckets readable and writable
+[2m2026-09-24T13:20:35.829583Z[0m [33m WARN[0m [2mstreams_slate[0m[2m:[0m FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy posture; the release posture requires workload identity (§14.1)
+[2m2026-09-24T13:20:35.829638Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot); feed retention budget=67108864B
+[2m2026-09-24T13:20:35.838632Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m topology v1: 16 shard(s), body ceiling 33554432 bytes (namespace-pinned)
+[2m2026-09-24T13:20:35.839969Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m maintenance backpressure bounds [3munabsorbed_instance[0m[2m=[0m536870912 [3munabsorbed_shard[0m[2m=[0m268435456 [3mlag_secs[0m[2m=[0m900 [3mrelease_pct[0m[2m=[0m75
+[2m2026-09-24T13:20:35.840154Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m fleet coordination on (prefix=fleetops, cap=0 rps)
+[2m2026-09-24T13:20:36.020961Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory budget: caches shared=128MiB history=32MiB postings=64MiB telemetry=16MiB; unflushed/db=16MiB; absorb budget=96MiB (worst-frame build=96MiB, per-gather reservation=96MiB, configured gather slots=1, EFFECTIVE gather concurrency=1); slatedb rt threads=4; shed line=500MB (RSS + reserved absorber bytes)
+[2m2026-09-24T13:20:36.021376Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0000 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.021445Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m usage rollup running
+[2m2026-09-24T13:20:36.021874Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m streams-slate listening on 127.0.0.1:53255
+[2m2026-09-24T13:20:36.021900Z[0m [32m INFO[0m [2mstreams_slate::http[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot)
+[2m2026-09-24T13:20:36.035222Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0100 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.104363Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0000 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.104827Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0000
+[2m2026-09-24T13:20:36.104894Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0001 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.104915Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0000
+[2m2026-09-24T13:20:36.116972Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0100 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.189850Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0001 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.190092Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0001
+[2m2026-09-24T13:20:36.190132Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0010 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.190174Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0001
+[2m2026-09-24T13:20:36.276597Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0010 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.276883Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0010
+[2m2026-09-24T13:20:36.276914Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0011 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.276950Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0010
+[2m2026-09-24T13:20:36.364714Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0011 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.365028Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0011
+[2m2026-09-24T13:20:36.365078Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0101 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.365118Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0011
+[2m2026-09-24T13:20:36.453529Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0101 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.453767Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0101
+[2m2026-09-24T13:20:36.453802Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0110 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.453862Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0101
+[2m2026-09-24T13:20:36.541556Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0110 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.541806Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0110
+[2m2026-09-24T13:20:36.541846Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/0111 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.541881Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0110
+[2m2026-09-24T13:20:36.543689Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:36.543739Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m0001 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:36.627388Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m0111 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.627721Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 0111
+[2m2026-09-24T13:20:36.627778Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/1000 (lazy; fences prior owner)
+[2m2026-09-24T13:20:36.627833Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m0111
+[2m2026-09-24T13:20:36.716342Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m1000 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:36.716714Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m sweep closed shard 1000
+[2m2026-09-24T13:20:36.717084Z[0m [31mERROR[0m [2mstreams_slate::shard[0m[2m:[0m shard db closed: Clean [3mshard[0m[2m=[0m1000
+[2m2026-09-24T13:20:37.875847Z[0m [32m INFO[0m [2mstreams_slate::fleet[0m[2m:[0m fleet desired 1 -> 1 (cores_used=0.17 util->1 inflight=0 slots->0 hot_cpu=0% (0) ack_p50=0ms (0) edge_p50=0ms (0) rps=0 (0) live=1)
+[2m2026-09-24T13:20:38.032117Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/1011 (lazy; fences prior owner)
+[2m2026-09-24T13:20:38.120451Z[0m [32m INFO[0m [2mstreams_slate::shard[0m[2m:[0m WAL group-commit pump on [3mshard[0m[2m=[0m1011 [3mgap_ms[0m[2m=[0m10 [3mgather_ms[0m[2m=[0m6
+[2m2026-09-24T13:20:38.363618Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:38.363668Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m0000 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:38.393779Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:38.393830Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m0010 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:38.789719Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m dirty-stream index scan failed at absorber start (retrying): Closed error: db is closed [3mfailures[0m[2m=[0m1
+[2m2026-09-24T13:20:38.789770Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber exiting: shard fenced/closed [3mshard[0m[2m=[0m0101 [3mpending_bytes[0m[2m=[0m0
+[2m2026-09-24T13:20:38.925404Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber seeded 1 dirty streams from the durable index (0100)

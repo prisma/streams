@@ -1,0 +1,10 @@
+# Deploy-script drift: rc.4-era vs HEAD-era --env names (R6)
+
+bench/fleet/deploy-fleet.sh: rc.4 70 names, HEAD 69; removed ['ABSORB_PASS_BYTES']; added []
+bench/soak/deploy-region.sh: rc.4 58 names, HEAD 57; removed ['ABSORB_PASS_BYTES']; added []
+bench/soak/mt-tenants.sh: rc.4 62 names, HEAD 61; removed ['ABSORB_PASS_BYTES']; added []
+bench/soak/wc-ladder.sh: rc.4 89 names, HEAD 88; removed ['ABSORB_PASS_BYTES']; added []
+scripts/bench-fra-ab.sh: rc.4 39 names, HEAD 38; removed ['ABSORB_PASS_BYTES']; added []
+deploy/profiles/compute-1g.env: 24 -> 24 knob lines; changed none
+ABSORB_PASS_BYTES removed: 13 scripts (5 Compute): ['bench/costab/run-keyed.sh', 'bench/costab/run-mature.sh', 'bench/costab/run-soak.sh', 'bench/costab/run-split.sh', 'bench/costab/run-wide.sh', 'bench/costab/wedge-liveness.sh', 'bench/docker/harness/cluster-deploy.sh', 'bench/fleet/deploy-fleet.sh', 'bench/fleet/local-fanout.sh', 'bench/soak/deploy-region.sh', 'bench/soak/mt-tenants.sh', 'bench/soak/wc-ladder.sh', 'scripts/bench-fra-ab.sh']
+ABSORB_PASS_BYTES still set at HEAD in: ['scripts/effective-config/boot.py', 'scripts/effective-config/effective_config.py']

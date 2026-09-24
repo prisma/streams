@@ -1,0 +1,14 @@
+# Red-first outputs (plan §3.1), each recorded before its commit's code existed
+
+## C1: cargo build --locked -p streams-slate --example effective_config, before examples/effective_config.rs
+error: no example target named `effective_config` in `streams-slate` package
+help: available example targets:
+    readertest
+
+## C2: python3 -m unittest discover -s <dir with only test_effective_config.py>
+ERROR: test_effective_config (unittest.loader._FailedTest.test_effective_config)
+ModuleNotFoundError: No module named 'effective_config'
+FAILED (errors=1)
+
+## C3: python3 scripts/effective-config/effective_config.py boot ... at 4f9f48a0, before boot.py
+effective_config.py: error: argument command: invalid choice: 'boot' (choose from build, clean, equivalence, compare, controls, drift, check-families, report, redact)

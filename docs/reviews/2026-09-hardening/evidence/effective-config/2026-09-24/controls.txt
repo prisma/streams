@@ -1,0 +1,14 @@
+PASS K1 identity(new): fleet-server-1 vs fleet-server-1: 0 differences
+PASS K2 sensitivity(old): defaults vs defaults+SHARD_OPEN_WAIT_MS=10001: exactly [shard.open_wait_ms: 10000 -> 10001]
+PASS K2 sensitivity(new): defaults vs defaults+SHARD_OPEN_WAIT_MS=10001: exactly [shard.open_wait_ms: 10000 -> 10001]
+PASS K3 argv(old): --flush-interval-ms 99: exactly [cli.flush_interval_ms: 25 -> 99]
+PASS K3 argv(new): --flush-interval-ms 99: exactly [cli.flush_interval_ms: 25 -> 99]
+PASS K4 isolation: ambient FLEET_MIN=9 not observed (fleet.fleet_min = 1 old, 1 new)
+PASS K5 release-flavour pin(old): history.absorb_global_budget_bytes = 67108864, history.absorb_global_gathers = 2 (a pin of the shipped non-test defaults; cfg(test) is unreachable from an example build, C7)
+PASS K6 refusal(new): defaults+SSE_H1_MAX_BUF=4096 -> refused / configuration invalid (1 problem(s)): /   - SSE_H1_MAX_BUF=4096 is below hyper's 8192-byte h1 buffer floor
+PASS K7 secret policy: family with AUTH_TOKEN=not-a-placeholder refused before build/run (exit 2: family k7: AUTH_TOKEN must be a placeholder)
+PASS K7 secret policy: family with URL userinfo refused before build/run (exit 2: family k7: SLATE_S3_ENDPOINT: value carries URL userinfo (a credential); use a placeholder host)
+PASS K7 secret policy: family with unlisted *_KEY name refused before build/run (exit 2: family k7: PLATFORM_API_KEY must be a placeholder)
+PASS K8 probe: SHARD_OPEN_WAIT_MS=BOTH SSE_H1_HEADER_TIMEOUT_MS=NEW_ONLY KEEP_AWAKE=NEITHER(supervisor) RUST_LOG=PROCESS
+PASS K9 coverage: old 156 leaves, new 155 leaves; unmatched old {billing.mode_env, billing.rollup_env}, new {http.h1_header_timeout}; all declared in rename-map.json
+PASS K13 artifact identity: old-model dumper sha != new dumper sha; rc.4 streams-slate sha != head streams-slate sha; old output contains billing.mode_env (new does not)
