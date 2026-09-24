@@ -6,8 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "59167d94100920388ec6d34bfb24ba880e6fc9281363ff2935551c53e6dbe1c4",
       "role": "baseline",
-      "seconds": 25.8,
+      "seconds": 40.2,
       "verdict": "pass"
     },
     {
@@ -18,6 +19,7 @@
       "failed_checks": [
         "\"a lower epoch is stale, whatever the sequence, hashes or closure\""
       ],
+      "log_sha256": "865ff070b8f715b8bc54a6bf6323b6f35f79296c0c4226725675a1d202ba7226",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -25,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 27.3,
+      "seconds": 33.6,
       "verdict": "fail"
     },
     {
@@ -36,6 +38,7 @@
       "failed_checks": [
         "\"a new epoch must start at sequence 0\""
       ],
+      "log_sha256": "e6b08a410762ff7226f8d2d02b1e76795c098671e9ec15f86acd5c7b0ffb3c18",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -43,21 +46,61 @@
         }
       },
       "role": "negative-control",
-      "seconds": 22.1,
+      "seconds": 28.5,
       "verdict": "fail"
     }
   ],
+  "complete": true,
   "id": "KANI-036",
-  "inputs_sha256": "3d24b71773d264c07facbeb2e62e1223ba809211b9a23d6433cf304a9cd72f56",
-  "run_on": {
-    "dirty_tree": true,
-    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
+      "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/shard/commit_plan.rs": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "verification/kani/controls/KANI-036-accept-a-lower-epoch.patch": "a41605ccfa79e1ce80c672deccace628bafa23d7ab28cdaf9249eaf54c6ac42a",
+      "verification/kani/controls/KANI-036-new-epoch-may-skip-zero.patch": "3d5ba9d6416c09de5930b78f7e29a29f44646925b57f31af0627767fc49a5cdf"
+    },
+    "manifest_entry": "53b6da0db82c2d0ce2e269a3b685e3c7ee761c8119978d97dfd2eb20edfde32f",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
   },
-  "schema": 1,
+  "inputs_sha256": "0c93dc3b9b3f923ddb4f52add68f1898ac35de6fc6a69d2d5848d816173fb3ac",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+  },
+  "schema": 2,
   "tools": {
     "java": "17.0.1",
     "kani": "0.68.0",
-    "platform": "x86_64-apple-darwin",
+    "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"
   }

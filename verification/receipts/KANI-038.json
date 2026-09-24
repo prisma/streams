@@ -6,14 +6,16 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "73dfd40e6b7d018d92ffc4efc5feba0f524650f724fb04338613452a4de8d9cc",
       "role": "baseline",
-      "seconds": 22.4,
+      "seconds": 23.7,
       "verdict": "pass"
     },
     {
       "check": "KANI-038/exhausted",
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "e24e870d89b2d08d36ea5f61d1435aa8698a0f80bee1719bec9b3b67089e08c0",
       "role": "baseline",
       "seconds": 21.6,
       "verdict": "pass"
@@ -26,6 +28,7 @@
       "failed_checks": [
         "\"the adjacent sequence is admitted unless the collection is closed\""
       ],
+      "log_sha256": "aa7fc5816110f3b6a69e07e250370c2eb0aa88fb6b46d4274834a316e2b8d20c",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -33,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 24.8,
+      "seconds": 21.3,
       "verdict": "fail"
     },
     {
@@ -44,6 +47,7 @@
       "failed_checks": [
         "\"a sequence beyond the successor is a gap naming the successor\""
       ],
+      "log_sha256": "49cf384f0000d3549aa166f56e56ee8d61cc5a7451fa9fb197d127778bb03ab4",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -51,21 +55,61 @@
         }
       },
       "role": "negative-control",
-      "seconds": 24.1,
+      "seconds": 21.8,
       "verdict": "fail"
     }
   ],
+  "complete": true,
   "id": "KANI-038",
-  "inputs_sha256": "463a3324e1d8bd5c502adefac5afc638ac0854cb712307b3dddb26ddfee51acb",
-  "run_on": {
-    "dirty_tree": true,
-    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
+      "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/shard/commit_plan.rs": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch": "05216c8200f89353e4e075df14e1df17b068ea69fb91bc8c124d7d0780e57c6b",
+      "verification/kani/controls/KANI-038-inclusive-gap.patch": "59b968d78c75b4a01aaec4e8c5f15948bda1003455bcea32d5b7d72f90a1160a"
+    },
+    "manifest_entry": "bfcedb292784d0773bcc11a314bb4cd297809d93037d134f8cb339b5259159e4",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
   },
-  "schema": 1,
+  "inputs_sha256": "41e9a11653baa1021272d5d0e3d38d465d969ba296da6c1ee2c7752dcf702753",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+  },
+  "schema": 2,
   "tools": {
     "java": "17.0.1",
     "kani": "0.68.0",
-    "platform": "x86_64-apple-darwin",
+    "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"
   }

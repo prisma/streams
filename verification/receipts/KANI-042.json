@@ -6,8 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "e915a4bf6fdb29ebe84d4c8ddfb633c4aa0bd415b1fd50f29fdb372a7b52e29a",
       "role": "baseline",
-      "seconds": 197.5,
+      "seconds": 136.9,
       "verdict": "pass"
     },
     {
@@ -18,14 +19,15 @@
       "failed_checks": [
         "\"the raw surface follows the contract\""
       ],
+      "log_sha256": "1dd27299fcb668c9ad318251d7b58c0248ad80f138def9271bef90d49fe33901",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
-          "baseline": "974cc584e6a3e927f6baa24e8fe34bfa84fab3af8d419bbbad1f64372ea2ab7f",
-          "control": "cfbfedec534ac0a68f6d297e8c6498b4be0c69519858e9d9c68d55d6f4ac6a4d"
+          "baseline": "27722776fa954e6f4a6a2ef6879dddec941698dff5a3b54b4e2cf64917de1ea2",
+          "control": "3bfd9d8cd9f5782d74171c33805940f9e38cc999a748e68e4c5c50f6098255c9"
         }
       },
       "role": "negative-control",
-      "seconds": 263.1,
+      "seconds": 138.3,
       "verdict": "fail"
     },
     {
@@ -36,24 +38,65 @@
       "failed_checks": [
         "\"the product surface agrees with the raw surface\""
       ],
+      "log_sha256": "454aad57ecce1bcd5073d90aa0a6b15e917e51d33d2ebdc3f5f6d2a094fc3606",
       "mutated": {
         "src/application/append/contract.rs": {
-          "baseline": "2785d9108eafa9c32c508c451683b00a5a19026189511b9379aad4566a74fb1b",
-          "control": "db5040b8bfb8253fb0480042260a9912f002bbfe5c1a3f8978ce74635dda76ea"
+          "baseline": "fefbe17dc356061d8ff884317e3af3fd4113e7f10c3ddcafe287283d027d22da",
+          "control": "fb820c3ca75d86e653f079ba40af1a30eed861332fae33487f4c1719e96e6d60"
         }
       },
       "role": "negative-control",
-      "seconds": 230.9,
+      "seconds": 135.5,
       "verdict": "fail"
     }
   ],
+  "complete": true,
   "id": "KANI-042",
-  "inputs_sha256": "34b760c82403c3245bfc707e1512c0f86699f8dad677e73f65add5d7ca357c05",
-  "run_on": {
-    "dirty_tree": true,
-    "revision": "0d7dc48df75534c909a6792243155bfb38fa1ed3"
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/application/append/contract.rs": "fefbe17dc356061d8ff884317e3af3fd4113e7f10c3ddcafe287283d027d22da",
+      "src/application/lifecycle/claims.rs": "27722776fa954e6f4a6a2ef6879dddec941698dff5a3b54b4e2cf64917de1ea2",
+      "src/application/lifecycle/claims/proofs.rs": "d44a48a2bbc0294bc37d33ebb1cbd8e54fa874093d5918d6053915efc86c2f6d",
+      "verification/kani/controls/KANI-042-producer-gap-releases-debt.patch": "54b9227da1cd26c88ebb20ace82f64b8a80afeb092dc23f6e839cc16007ea3cc",
+      "verification/kani/controls/KANI-042-product-surface-drifts.patch": "a06ae1caac5e87713204749e602a83bad2fae904d1b20d791d40e250df7d9140"
+    },
+    "manifest_entry": "e7a8f77adb6c3dea9434f4f1ac4667ede26a3691415a0985c1fa96d9e30617d8",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
   },
-  "schema": 1,
+  "inputs_sha256": "30562cdb85228021d942d4a6885e6edab7d08023961782c62841607cf66ffcb5",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+  },
+  "schema": 2,
   "tools": {
     "java": "17.0.1",
     "kani": "0.68.0",

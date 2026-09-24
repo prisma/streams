@@ -6,8 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "e960e342b98d1c29d23f4c7113f736efee0c6b5a327d0f3971e384ba3584490a",
       "role": "baseline",
-      "seconds": 213.3,
+      "seconds": 430.7,
       "verdict": "pass"
     },
     {
@@ -18,6 +19,7 @@
       "failed_checks": [
         "\"a token resumes at the index it was issued for\""
       ],
+      "log_sha256": "cd203d4843636e1d1f8d8f5927d5b2af70c2b0271750f17ee731c54a8e2cb510",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
@@ -25,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 236.6,
+      "seconds": 449.0,
       "verdict": "fail"
     },
     {
@@ -36,6 +38,7 @@
       "failed_checks": [
         "\"a position resumes at its own index\""
       ],
+      "log_sha256": "ce744317f2c5d4668a6981b726c439ef60a7601533430c2f034144e7c64be96c",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
@@ -43,21 +46,62 @@
         }
       },
       "role": "negative-control",
-      "seconds": 294.1,
+      "seconds": 480.3,
       "verdict": "fail"
     }
   ],
+  "complete": true,
   "id": "KANI-002",
-  "inputs_sha256": "30c41f7c4a9fa4b204723b05740290d61c9b5baa2b8673085faa20f6b8d368d5",
-  "run_on": {
-    "dirty_tree": true,
-    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
+      "ASM-OFFSET-DOMAIN": "6230ea5c9d5b7adf8d65021741845c17dc6d8003ab216a3e0cffb3a79e5d5de2"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/application/read_range.rs": "83fbc175a94f531938aea356347dc905d7ecbae85a30133130de0d2117786cd5",
+      "src/offsets.rs": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
+      "src/offsets/proofs.rs": "d33cc88fcf9bc1d835feec80035976f433b0391bf8103fe3db73e0f46638540c",
+      "verification/kani/controls/KANI-002-exhausted-index-wraps-to-start.patch": "19c4a4ccd3c2e86b420d59750f4ebe8fa5512935d0e3dbccdcb0da4248bc9ce0",
+      "verification/kani/controls/KANI-002-start-token-skips-entry-zero.patch": "a95bb6e9e619d3218ca75c7e149fffeabb5b4ae218026fcd1a2adc451b16743e"
+    },
+    "manifest_entry": "c5231aee190eb283439cc58876fdd2f76427e28352cd57ed67c5d0cf81717a07",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
   },
-  "schema": 1,
+  "inputs_sha256": "99a0db8599b929d6d9d226fe14251da24c84f9987bafc86b090aaaf74c8bcbe6",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+  },
+  "schema": 2,
   "tools": {
     "java": "17.0.1",
     "kani": "0.68.0",
-    "platform": "x86_64-apple-darwin",
+    "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"
   }

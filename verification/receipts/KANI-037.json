@@ -6,8 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
+      "log_sha256": "80337ae001d2402d057ed8434e19b2a62a1e1d54c654f34bb3729e707c585755",
       "role": "baseline",
-      "seconds": 26.9,
+      "seconds": 25.2,
       "verdict": "pass"
     },
     {
@@ -19,6 +20,7 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
+      "log_sha256": "a8e9f47fb35118542a3303980f6360bf37fd504733f6a8653e8df48abfecf9d3",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -26,7 +28,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 35.7,
+      "seconds": 24.9,
       "verdict": "fail"
     },
     {
@@ -37,6 +39,7 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
+      "log_sha256": "7a29b12340f0fe03cbbb81c6903b3e1221042696b2b84a036246cd2d797c34aa",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -44,7 +47,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 25.4,
+      "seconds": 24.0,
       "verdict": "fail"
     },
     {
@@ -55,6 +58,7 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
+      "log_sha256": "3534c71b20ddd62081d0869954980c3de78161d052033c7de74c568f49f12c2c",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
@@ -62,21 +66,62 @@
         }
       },
       "role": "negative-control",
-      "seconds": 22.3,
+      "seconds": 24.2,
       "verdict": "fail"
     }
   ],
+  "complete": true,
   "id": "KANI-037",
-  "inputs_sha256": "174841ca96163a62ba7e1d0475335a89e6424f9f5c671fb47b0d699582aa3e68",
-  "run_on": {
-    "dirty_tree": true,
-    "revision": "ab73296773bc2d14f7efd832bcf2da9573f3e0aa"
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
+      "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/shard/commit_plan.rs": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "verification/kani/controls/KANI-037-closure-before-duplicate.patch": "8084545cac28b51625a02d68439f9e977c7e15c3e82fc7f132c7b764a659f974",
+      "verification/kani/controls/KANI-037-ignore-hash-conflict.patch": "58192885768bc0f733e7d5f26300dbc30d58707f550fb6f6e6f732fee1250bf3",
+      "verification/kani/controls/KANI-037-older-duplicate-allocates.patch": "2862ba77d3c0b0c6682661457c7adfe74f1b8bf6d97418dda28e8ce571e33258"
+    },
+    "manifest_entry": "b5450e9c87ffbecf9b7f525aa44a2a0e6c12c2d626e1a7111953657a1bf99177",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
   },
-  "schema": 1,
+  "inputs_sha256": "4edce3622e3b16e073adc120094680bdca0b077306a174f6431dca4e050265ca",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+  },
+  "schema": 2,
   "tools": {
     "java": "17.0.1",
     "kani": "0.68.0",
-    "platform": "x86_64-apple-darwin",
+    "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"
   }
