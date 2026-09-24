@@ -1,5 +1,6 @@
 #!/bin/sh
 # The LOCAL half of the release gate: fmt, clippy (fingerprint-gated),
+# formal-verification receipts (every claimed result current and valid),
 # workflow lint (actionlint, REQUIRED — the zero-jobs incident class),
 # the Rust/DST binary suite (capacity mechanism gate isolated so the
 # measurement owns the machine), and supply-chain checks (round 11.8:
@@ -22,6 +23,10 @@ python3 scripts/test-inventory.py --check
 python3 scripts/review-evidence.py --self-test
 python3 scripts/review-evidence.py --check
 python3 scripts/verify-rc-evidence.py --self-test --repo .
+# A release needs a current receipt for every claimed formal result; the
+# commit gate (quality.sh) only reports staleness, and the formal CI job
+# runs what each change affects. Re-record with `formal.py run --record`.
+python3 scripts/quality/formal.py check --fresh
 
 echo "== fmt =="
 cargo fmt --check

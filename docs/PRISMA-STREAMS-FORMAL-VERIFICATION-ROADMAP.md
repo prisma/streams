@@ -97,11 +97,16 @@ model found is kept as a negative control.
   - A JSON collection stores some floats with different digits than the
     client sent, because serde_json's `float_roundtrip` feature is off (found
     during the TLA-003-F3 fix).
-- *Tooling notes.* `formal.py check --fresh` checks receipt freshness only for
-  `pass-with-recorded-scope` obligations, not for `counterexample` ones.
-  Concurrent TLC runs on one machine can race on TLC's shared temporary
-  directory; a per-run `java.io.tmpdir` avoids it. Changing the driver makes
-  every receipt stale, so both are left for a separate change.
+- *Evidence gate (after review).* A review found the receipt check was not
+  fail-closed: it compared digests only, ignored counterexample obligations,
+  accepted empty or fabricated check lists, did not invalidate on assumption
+  or dependency-pin changes, took the digest after execution, and let
+  concurrent TLC runs race on one temporary directory. "Receipts are
+  validated, bound to their inputs, and invalidated by assumption and pin
+  changes" fixes each case with a negative test. `formal.py check` (run by
+  `quality.sh`) fails on a missing or invalid receipt and reports stale ones;
+  the CI `formal` job runs what a change affects; `release-gate.sh` requires
+  `check --fresh`.
 - *Withdrawn.* TLA-019-F1 was a model gap: SlateDB's compaction checkpoint
   protects a stale writer view, and two tests now pin that protection.
 
