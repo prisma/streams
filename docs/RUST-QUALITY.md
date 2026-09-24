@@ -56,7 +56,7 @@ Never replace a deliberate poisoned-lock failure with silent recovery, swallow a
 
 ## Architecture requirements
 
-The syntax-aware gate extends the existing architecture check and keeps its historical anchors. Merge-base comparisons and the adoption inventory provide a non-growing limit after a file has shrunk.
+The syntax-aware gate extends the existing architecture check and keeps its historical anchors. Merge-base comparisons and the adoption inventory provide a non-growing limit after a file has shrunk. On a push the source ratchet's comparison base is the event's previous revision (`QUALITY_BEFORE_SHA`), because `origin/<branch>` is the pushed commit itself; a push without it fails closed rather than comparing HEAD with HEAD.
 
 | Gate | Mandatory behavior |
 | --- | --- |

@@ -20,12 +20,17 @@ def git(*args):
 def merge_base():
     # Source/debt ratchets retain merge-base semantics. Verification selection
     # uses verification_comparison() below because push and schedule events have
-    # different meanings from a pull request.
+    # different meanings from a pull request. On a push origin/<branch> is the
+    # pushed commit itself, so only the event's previous revision is a base;
+    # without it the ratchet would compare HEAD with HEAD and pass any growth.
     target = os.environ.get('QUALITY_BASE_REF') or 'origin/slate'
     before = os.environ.get('QUALITY_BEFORE_SHA', '')
     event = os.environ.get('QUALITY_EVENT_NAME') or os.environ.get('GITHUB_EVENT_NAME', '')
-    if event == 'push' and before and set(before) != {'0'}:
-        target = before
+    if event == 'push':
+        if not before:
+            raise ValueError('push ratchet requires QUALITY_BEFORE_SHA')
+        if set(before) != {'0'}:
+            target = before
     return git('merge-base', 'HEAD', target)
 
 

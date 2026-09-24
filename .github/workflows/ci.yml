@@ -30,19 +30,27 @@ jobs:
   architecture-report:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # On a push the source ratchet's base is the event's previous revision:
+    # origin/<branch> is the pushed commit itself, so without it the ratchet
+    # compared HEAD with HEAD (scripts/quality/common.py now refuses that).
+    env:
+      QUALITY_EVENT_NAME: ${{ github.event_name }}
+      QUALITY_BEFORE_SHA: ${{ github.event.before }}
+      QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           # Mechanism provenance compares immutable ancestor source, not only HEAD.
           fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
       - uses: ./.github/actions/rust-toolchain
       - name: Build pinned Rust syntax scanner
         run: cargo build --locked -p streams-quality-syntax
       - name: Scanner self-test
         run: python3 scripts/architecture-report.py --self-test
       - name: Architecture budgets and owner boundaries (hard gate)
-        env:
-          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: |
           python3 scripts/architecture-gate.py --self-test
           python3 scripts/architecture-gate.py --check
