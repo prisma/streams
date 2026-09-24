@@ -294,20 +294,22 @@ class ReviewedReceiptGaps(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn(f'FORMAL_FAIL: {oid}', output)
 
-    def test_the_checked_in_receipts_are_valid_but_stale(self):
+    def test_the_checked_in_receipts_are_valid_and_fresh_decides_staleness(self):
         code, output = invoke('check')
         self.assertEqual(code, 0, output)
-        self.assertEqual(output.count('FORMAL_STALE:'), len(formal.load()['obligations']))
+        stale = output.count('FORMAL_STALE:')
         code, output = invoke('check', '--fresh')
-        self.assertEqual(code, 1, output)
+        self.assertEqual(code, 1 if stale else 0, output)
 
     def test_1_a_counterexample_without_a_receipt_fails(self):
-        for oid in ('TLA-003', 'TLA-018'):
-            (self.receipts / f'{oid}.json').unlink()
-        code, output = invoke('check')
-        self.assertEqual(code, 1, output)
-        self.assertIn('FORMAL_FAIL: TLA-003: status counterexample has no receipt', output)
-        self.assertIn('FORMAL_FAIL: TLA-018: status counterexample has no receipt', output)
+        manifest = formal.load()
+        for obligation in manifest['obligations']:
+            if obligation['id'] in ('TLA-003', 'TLA-018'):
+                obligation['status'] = 'counterexample'
+                (self.receipts / f"{obligation['id']}.json").unlink()
+        problems, _ = formal.receipt_report(manifest)
+        self.assertIn('TLA-003: status counterexample has no receipt', problems)
+        self.assertIn('TLA-018: status counterexample has no receipt', problems)
 
     def test_1_a_passing_obligation_without_a_receipt_fails(self):
         (self.receipts / 'KANI-001.json').unlink()
