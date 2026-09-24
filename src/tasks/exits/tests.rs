@@ -138,7 +138,7 @@ async fn only_an_unrequested_critical_exit_on_the_process_root_is_a_cause() {
 
 /// T3. Held interleaving: the first critical exit is the cause; a critical
 /// loop that ends because of the stop it requested, and a later request,
-/// are its consequences.
+/// are its consequences. The join report names both failures.
 #[tokio::test]
 async fn the_first_critical_exit_is_the_cause_and_later_exits_its_consequences() {
     let root = test_root();
@@ -166,6 +166,14 @@ async fn the_first_critical_exit_is_the_cause_and_later_exits_its_consequences()
                 TaskOutcome::Failed("stopped by the first".into())
             ),
         ]
+    );
+    assert_eq!(
+        report.failed(),
+        vec![
+            ("fleet", "repository gone"),
+            ("telemetry-drain", "stopped by the first")
+        ],
+        "the ordered stop's join log names every failed loop and why"
     );
     assert_eq!(
         root.stop_cause(),
@@ -266,7 +274,19 @@ const HELPER_MARKER: &str = "STREAMS_STOP_DEADLINE_HELPER";
 const HELPER_TEST: &str = "tasks::exits::tests::stop_deadline_helper";
 const ESCALATED: &str = "process root stopped";
 const WEDGED: &str = "executor wedged";
-const EXPIRED: &str = "stop deadline: the ordered stop outlived its 200ms deadline; exiting";
+/// The bounded root's escalation, logged with its cause (name and outcome).
+const CAUSE_LOGGED: &str = "critical task fleet exited while the runtime was running: \
+     Failed(\"gone\"); requesting the ordered stop, bounded at 200ms";
+const EXPIRED: &str = "stop deadline: a stop was requested 200ms ago and has not finished; \
+     exiting (a critical exit that caused it is logged above)";
+
+/// Whether the parent keeps reading the helper's stderr, or closes its read
+/// end at once so that every later write to it fails (EPIPE).
+#[derive(PartialEq)]
+enum Stderr {
+    Read,
+    Closed,
+}
 
 /// Kills and reaps the helper on every exit path.
 struct Helper(Child);
@@ -297,7 +317,7 @@ fn drained(helper: &mut Helper) -> String {
 /// way `how` names, and waits up to 20 s for it to exit. A helper still
 /// running then is killed BEFORE its pipes are drained: it holds their
 /// write ends, so a drain would never return (skeptic C1).
-async fn helper_exit(how: &str) -> (Option<i32>, String) {
+async fn helper_exit(how: &str, stderr: Stderr) -> (Option<i32>, String) {
     let exe = std::env::current_exe().expect("test binary path");
     let child = Command::new(exe)
         .args([HELPER_TEST, "--exact", "--nocapture", "--test-threads=1"])
@@ -308,6 +328,9 @@ async fn helper_exit(how: &str) -> (Option<i32>, String) {
         .spawn()
         .expect("spawn the stop-deadline helper");
     let mut helper = Helper(child);
+    if stderr == Stderr::Closed {
+        drop(helper.0.stderr.take());
+    }
     let exited = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if let Some(status) = helper.0.try_wait().expect("poll the helper") {
@@ -329,12 +352,14 @@ async fn helper_exit(how: &str) -> (Option<i32>, String) {
 
 /// T6. The bound runs in a CHILD process, since it ends its process: the
 /// binary's own root answers a critical exit, and a root whose only executor
-/// thread is then blocked for good still exits 1 at its deadline.
+/// thread is then blocked for good still exits 1 at its deadline. Its
+/// escalation logs the cause, name and outcome, before the executor wedges.
 #[tokio::test]
 async fn the_process_root_bounds_its_stop_off_the_executor() {
-    let (code, transcript) = helper_exit("critical").await;
+    let (code, transcript) = helper_exit("critical", Stderr::Read).await;
     assert_eq!(code, Some(1), "{transcript}");
     assert!(transcript.contains(ESCALATED), "{transcript}");
+    assert!(transcript.contains(CAUSE_LOGGED), "{transcript}");
     assert!(transcript.contains(WEDGED), "{transcript}");
     assert!(transcript.contains(EXPIRED), "{transcript}");
 }
@@ -344,22 +369,39 @@ async fn the_process_root_bounds_its_stop_off_the_executor() {
 /// 1 at its deadline.
 #[tokio::test]
 async fn a_requested_stop_of_the_process_root_is_bounded_off_the_executor() {
-    let (code, transcript) = helper_exit("request").await;
+    let (code, transcript) = helper_exit("request", Stderr::Read).await;
     assert_eq!(code, Some(1), "{transcript}");
     assert!(!transcript.contains(ESCALATED), "{transcript}");
     assert!(transcript.contains(WEDGED), "{transcript}");
     assert!(transcript.contains(EXPIRED), "{transcript}");
 }
 
+/// T10. The bound does not depend on its message: with the helper's stderr
+/// closed, the deadline's write fails (EPIPE) and the process still exits 1
+/// at its deadline instead of losing the bound with the write.
+#[tokio::test]
+async fn the_stop_deadline_exits_even_when_stderr_is_closed() {
+    let (code, transcript) = helper_exit("request", Stderr::Closed).await;
+    assert_eq!(code, Some(1), "{transcript}");
+    assert!(transcript.contains(WEDGED), "{transcript}");
+}
+
 /// Subject of `helper_exit`; inert unless the parent set the marker. With
 /// "critical", the binary's own root first answers a critical exit, then a
 /// 200 ms root stops for one; with "request", a 200 ms root is asked to stop
 /// as the signal task asks. Either way the only executor thread then blocks.
+/// The log goes to stdout, as the binary's does.
 #[tokio::test]
 async fn stop_deadline_helper() {
     let Some(how) = ProcessEnvironment.get(HELPER_MARKER) else {
         return;
     };
+    let _log = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stdout)
+            .with_ansi(false)
+            .finish(),
+    );
     let wedged = TaskSupervisor::new().bounded_root(Duration::from_millis(200));
     if how == "request" {
         wedged.shutdown_request().request();

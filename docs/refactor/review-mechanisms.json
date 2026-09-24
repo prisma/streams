@@ -200,17 +200,22 @@
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "the_process_root_bounds_its_stop_off_the_executor",
-          "sha256": "f9f5dd147e4b28c214394129f58f1fa4e5ab51d3f21208aa12f8e8008e43c2b5"
+          "sha256": "6a069cd2b1f56941fc361c4e2782197f67fcd3879483b97dff44520401591b29"
         },
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "a_requested_stop_of_the_process_root_is_bounded_off_the_executor",
-          "sha256": "2fb2f3378fc00d4f6105d13f84ef89bccca0f0d0d1e35005748de5763ab06aa4"
+          "sha256": "adb378cec2fa3503154820658d6aefa7e973f6600d6bca11e288549eded385c6"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_stop_deadline_exits_even_when_stderr_is_closed",
+          "sha256": "d7af0438bebbd9b6cf138b82ee5d88abe25331436d5557b1e02c05d6d92cd584"
         },
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "stop_deadline_helper",
-          "sha256": "dd7dc0766f75884ddf54346c9fb398d4485e0b2729ba6f8e2c7d91deb913cde3"
+          "sha256": "9c6577977526417a1f4c56dc97b31b86de3d4b2138216cfd1cba5b84c4a7e9f0"
         }
       ],
       "support_functions": [
@@ -227,7 +232,7 @@
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "helper_exit",
-          "sha256": "5c3b4f302b524e47b5b5a1dcd4ad4f37f8834ea732386b2e37094aabcbd89d4f"
+          "sha256": "0b31f97cf7fb9c4b5e656fa2744753e61bfb6aa946515db6a6dbe64f908c906d"
         },
         {
           "file": "src/tasks/exits/tests.rs",

@@ -155,6 +155,17 @@ impl ShutdownReport {
         self.names(|o| matches!(o, TaskOutcome::Panicked(_)))
     }
 
+    /// The loops that returned `Failed`, each with its error.
+    pub(crate) fn failed(&self) -> Vec<(&'static str, &str)> {
+        self.outcomes
+            .iter()
+            .filter_map(|(name, outcome)| match outcome {
+                TaskOutcome::Failed(error) => Some((*name, error.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn terminated(&self, name: &str) -> bool {
         self.outcomes.iter().any(|(n, _)| *n == name)

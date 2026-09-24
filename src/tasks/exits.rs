@@ -17,6 +17,7 @@ use super::{Inner, Policy, TaskOutcome, TaskResult, TaskSupervisor, shutdown};
 use futures_util::FutureExt;
 use std::any::Any;
 use std::future::Future;
+use std::io::Write;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
@@ -131,13 +132,14 @@ impl ExitWatch {
             name: self.label,
             outcome: outcome_of(ended),
         };
-        if stop_on_exit(&inner.cancel_tx, &inner.stop_cause, exit) {
+        if stop_on_exit(&inner.cancel_tx, &inner.stop_cause, exit.clone()) {
+            // Bounded first: the log line below writes to stdout, which can
+            // block, and a published stop must never be left unbounded.
+            arm_root_deadline(&inner);
             tracing::error!(
                 task = self.label,
-                "critical task exited while the runtime was running; \
-                 requesting the ordered stop, bounded at {deadline:?}"
+                "{exit}; requesting the ordered stop, bounded at {deadline:?}"
             );
-            arm_root_deadline(&inner);
         }
     }
 }
@@ -165,7 +167,8 @@ pub(super) fn arm_root_deadline(inner: &Inner) {
 /// whose root was asked to stop is ending either way, and so it also bounds
 /// the runtime's teardown after `run` returns, which otherwise waits for
 /// every blocking task. A thread that cannot be started cannot bound the
-/// stop, so the process ends at once instead (owner decision D3).
+/// stop, so the process ends at once instead (owner decision D3). The
+/// stop's cause, when a critical exit requested it, is already on the log.
 #[expect(
     clippy::disallowed_methods,
     reason = "arm_stop_deadline; the process root's bound on its ordered stop must run where a wedged executor cannot hold it, and it ends the process rather than being joined; a supervised task would share the executor it has to outlive"
@@ -175,13 +178,25 @@ fn arm_stop_deadline(after: Duration) {
         .name("stop-deadline".into())
         .spawn(move || {
             std::thread::sleep(after);
-            eprintln!("stop deadline: the ordered stop outlived its {after:?} deadline; exiting");
-            std::process::exit(1);
+            exit_failed(format_args!(
+                "stop deadline: a stop was requested {after:?} ago and has not finished; \
+                 exiting (a critical exit that caused it is logged above)"
+            ));
         });
     if let Err(error) = armed {
-        eprintln!("stop deadline: cannot bound the ordered stop ({error}); exiting now");
-        std::process::exit(1);
+        exit_failed(format_args!(
+            "stop deadline: cannot bound the requested stop ({error}); exiting now"
+        ));
     }
+}
+
+/// Ends the process with code 1 after writing `line` to stderr, best effort:
+/// the bound must not depend on its message. `eprintln!` panics when the
+/// write fails (a closed pipe gives EPIPE), and a panic would end only the
+/// calling thread and leave the stop unbounded.
+fn exit_failed(line: std::fmt::Arguments<'_>) -> ! {
+    drop(writeln!(std::io::stderr(), "{line}"));
+    std::process::exit(1)
 }
 
 impl TaskSupervisor {
@@ -218,6 +233,7 @@ impl TaskSupervisor {
         let report = self.shutdown(grace).await;
         tracing::info!(
             finished = ?report.finished(),
+            failed = ?report.failed(),
             aborted = ?report.aborted,
             panicked = ?report.panicked(),
             "supervised loops stopped"
