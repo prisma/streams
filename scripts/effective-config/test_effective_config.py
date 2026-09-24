@@ -270,5 +270,45 @@ class EquivalenceTest(unittest.TestCase):
                                         'X'), '64 * 1024')
 
 
+class BootTest(unittest.TestCase):
+    def test_classify(self):
+        import boot
+        self.assertEqual(boot.classify_boot(None, 0.4), 'REFUSED')
+        self.assertEqual(boot.classify_boot(1.0, None), 'BOOTED')
+        self.assertEqual(boot.classify_boot(1.0, 9.0), 'BOOTED')
+        self.assertEqual(boot.classify_boot(1.0, 2.5), 'DIED_AFTER_BIND')
+        self.assertEqual(boot.classify_boot(None, None), 'TIMEOUT')
+
+    def test_substitutions_are_declared(self):
+        import boot
+        argv, env, subs = boot.substitute(['--listen', '0.0.0.0:8080', '--bucket', 'b'],
+                                          {'SLATE_S3_ENDPOINT': 'https://x.invalid', 'A': '1'}, 9, 'http://s3')
+        self.assertEqual(argv, ['--listen', '127.0.0.1:9', '--bucket', 'b'])
+        self.assertEqual(env, {'SLATE_S3_ENDPOINT': 'http://s3', 'A': '1'})
+        self.assertEqual(len(subs), 2)
+        argv, _, subs = boot.substitute(['--s3-endpoint', 'http://old'], {}, 9, 'http://s3')
+        self.assertEqual(argv, ['--s3-endpoint', 'http://s3', '--listen', '127.0.0.1:9'])
+
+    def test_notices_refusal_and_runtime_split(self):
+        import boot
+        log = '\n'.join([
+            '2026-09-24T00:00:00Z  INFO streams_slate::bootstrap: memory profile certified: compute-1g',
+            '\x1b[33m2026-09-24T00:00:00Z  WARN\x1b[0m streams_slate::bootstrap: FLEET_AUTH_MODE=static: legacy',
+            '2026-09-24T00:00:00Z  WARN streams_slate::x: SWEEP_MAINT_RESIDENT is odd on 127.0.0.1:4321',
+            '2026-09-24T00:00:00Z  WARN streams_slate::ops: ops drain: 503',
+            '2026-09-24T00:00:00Z  INFO streams_slate::bootstrap: memory budget: caches shared=128MiB',
+            'Error: configuration invalid (1 problem(s)):',
+            '  - SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain',
+        ])
+        parsed = boot.notices(log, {'SWEEP_MAINT_RESIDENT'})
+        self.assertEqual([n['message'] for n in parsed['notices']],
+                         ['memory profile certified: compute-1g', 'FLEET_AUTH_MODE=static: legacy',
+                          'SWEEP_MAINT_RESIDENT is odd on 127.0.0.1:<port>'])
+        self.assertEqual([n['message'] for n in parsed['runtime']], ['ops drain: 503'])
+        self.assertEqual(len(parsed['budget']), 1)
+        self.assertEqual(parsed['refusal'], ['Error: configuration invalid (1 problem(s)):',
+                                             '  - SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1347,6 +1347,8 @@ def parser():
             work=False, out=False)
     r.add_argument('--family', required=True)
     r.add_argument('--note', required=True, help='where the export came from (project, date, who)')
+    boot_ = add('boot', 'Leg C: boot the real rc.4 and HEAD binaries per family; K10-K12')
+    boot_.add_argument('--only', nargs='*')
     return p
 
 
@@ -1355,9 +1357,14 @@ def cmd_report(args):
     return report.cmd_report(args)
 
 
+def cmd_boot(args):
+    import boot
+    return boot.cmd_boot(args)
+
+
 COMMANDS = {'build': cmd_build, 'clean': cmd_clean, 'equivalence': cmd_equivalence, 'compare': cmd_compare,
             'controls': cmd_controls, 'drift': cmd_drift, 'check-families': cmd_check_families,
-            'report': cmd_report, 'redact': cmd_redact}
+            'report': cmd_report, 'redact': cmd_redact, 'boot': cmd_boot}
 
 
 def main(argv=None):
