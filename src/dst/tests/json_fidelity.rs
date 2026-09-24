@@ -184,7 +184,7 @@ async fn json_request_identities_cover_the_client_bytes() {
         preq(addr, "POST", "/v1/streams/idemseal:seal", &KEY, different).await;
     // A different final is a different operation on a sealed collection:
     // refused (AlreadySealed, rendered by `seal_error_response`).
-    assert_ne!(status, 200, "{}", String::from_utf8_lossy(&answer));
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&answer));
     assert!(String::from_utf8_lossy(&answer).contains("already sealed"));
     let (_, _, body) = preq(addr, "GET", "/v1/streams/idemseal/records", &KEY, b"").await;
     assert_eq!(body, br#"[{"n":1.50}]"#);

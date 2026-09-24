@@ -1702,6 +1702,17 @@
     "scenarios": []
   },
   {
+    "name": "another_operation_on_a_sealed_collection_is_refused_definitively",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ae0b57fc96d70a75c4fc6f07ddff870a541c4def1ae8c3c4cc3ef3f01029e12c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_coordination.rs",
+    "scenarios": []
+  },
+  {
     "name": "applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2784,7 +2795,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "14651aa0dcd0c2035d47da38b5640f2863c54b713dbbc73e23af55eb7afe0a83",
+    "function_sha256": "0523a13fbdfb97b0987653e25d1351845cf0a7dcfbb81a40ba67aa815461fede",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/json_fidelity.rs",

@@ -1882,27 +1882,27 @@ async fn product_seal_only(
     }
 }
 
-/// Follow-up review finding 3: a RESUMABLE seal failure is not an
-/// invariant failure — answering it 500 told clients the service broke
-/// when the honest answer is "retry later" (and produced worse client
-/// behavior than the machine's own contract warrants). Classification:
-///   * another live final-bearing claim -> 409 sealing (unchanged);
-///   * resumable states of this transition (close refused/pending,
-///     topology busy, publication declined, resolution failed)
-///     -> 503 seal_incomplete, retryable;
-///   * everything else (invariant/corruption/store) -> 500 internal.
+/// The one seal-refusal mapping: another live final-bearing claim -> 409
+/// sealing; a resumable state (close refused/pending, topology busy,
+/// publication declined, resolution failed) -> 503 seal_incomplete, never a
+/// 500; both retryable. Sealed under another operation -> 409 sealed, NOT
+/// retryable: no retry claims that terminal proof (raw: 409 stream_closed).
+/// Anything else (invariant/corruption/store) -> 500 internal.
 pub(crate) fn seal_error_response(
     stream: &str,
     error: &crate::application::lifecycle::SealError,
 ) -> Response {
     use crate::application::lifecycle::SealError;
-    let (status, code) = match error {
-        SealError::Conflict(_) => (StatusCode::CONFLICT, "sealing"),
-        SealError::Resumable(_) => (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete"),
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    let (status, code, retryable) = match error {
+        SealError::Conflict(_) => (StatusCode::CONFLICT, "sealing", true),
+        SealError::Resumable(_) => (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete", true),
+        SealError::AlreadySealed | SealError::OtherOperation => {
+            (StatusCode::CONFLICT, "sealed", false)
+        }
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal", true),
     };
     tracing::error!(stream = %stream, status = %status, code, "seal failed: {error}");
-    perr(status, code, &error.to_string(), None, true)
+    perr(status, code, &error.to_string(), None, retryable)
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
