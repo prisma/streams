@@ -335,11 +335,9 @@ impl CommitTransaction<'_> {
                 crate::crypto::hex(&hash[..4]),
             )
         };
-        let options = slatedb::config::ScanOptions {
-            read_ahead_bytes: 2 * 1024 * 1024,
-            max_fetch_tasks: 4,
-            ..Default::default()
-        };
+        // At most one gather chunk, read once on a mis-started advance: the
+        // default scan needs no read-ahead tuning.
+        let options = slatedb::config::ScanOptions::default();
         let range = record_key(hash, from)..record_key(hash, to);
         let mut rows = self
             .engine
