@@ -256,17 +256,17 @@ pub(crate) const GAP_UNKNOWN: u64 = u64::MAX;
 /// carries gap_bytes_before=0 and the planner coalesces arbitrarily
 /// distant pages into one giant span (measured: a 40k-offset stream
 /// scanned WHOLE for a 2-record key — 10,000x amplification).
-pub(crate) fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> {
+///
+/// A page that starts below the accumulated end is admitted only as a
+/// second description of the same records (`keep_past`).
+pub(crate) fn append_page_runs(all: &mut Vec<AbsRun>, mut page: Vec<AbsRun>) -> Option<()> {
     validated::validate(&page)?;
     let prev_end = match all.last() {
         Some(r) => Some(r.start.checked_add(u64::from(r.count))?),
         None => None,
     };
-    if prev_end
-        .zip(page.first())
-        .is_some_and(|(end, first)| end > first.start)
-    {
-        return None;
+    if let Some(end) = prev_end {
+        keep_past(all, &mut page, end)?;
     }
     for (i, mut r) in page.into_iter().enumerate() {
         if i == 0 && prev_end != Some(r.start) {
@@ -275,6 +275,63 @@ pub(crate) fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Opti
         all.push(r);
     }
     Some(())
+}
+
+/// Keep only the part of `page` past the accumulated end `end`, provided the
+/// page agrees with the accumulated runs wherever both speak.
+///
+/// A page is a deterministic projection of immutable canonical rows, complete
+/// over its span from its first run's start to its last run's end. Two
+/// gathers whose chunks cut the same rows differently — a rescan's re-gather
+/// over chunks still in flight, or a new owner's re-gather over flushed
+/// chunks whose advances never landed — both leave their pages, and those
+/// spans overlap. Pages arrive in key order, so the page that reached `end`
+/// starts at or before this one and covers the whole common span. The page
+/// is admitted only if its offsets there equal the accumulated offsets
+/// exactly; a disagreeing page is still corruption. A page starting at or
+/// past `end` has no common span and is kept whole. A run straddling `end`
+/// continues contiguously and keeps its whole matching bytes, as boundary
+/// estimates do (`RunWindow`).
+fn keep_past(all: &[AbsRun], page: &mut Vec<AbsRun>, end: u64) -> Option<()> {
+    let (Some(first), Some(last)) = (page.first(), page.last()) else {
+        return Some(());
+    };
+    let first = first.start;
+    let common = end.min(last.start.checked_add(u64::from(last.count))?);
+    let from = all.partition_point(|r| r.start.saturating_add(u64::from(r.count)) <= first);
+    if offset_spans(all.get(from..)?, first, common) != offset_spans(page, first, common) {
+        return None;
+    }
+    page.retain(|r| r.start.saturating_add(u64::from(r.count)) > end);
+    if let Some(r) = page.first_mut()
+        && r.start < end
+    {
+        let run_end = r.start.checked_add(u64::from(r.count))?;
+        *r = AbsRun {
+            start: end,
+            count: u32::try_from(run_end.checked_sub(end)?).ok()?,
+            gap_bytes_before: 0,
+            ..*r
+        };
+    }
+    Some(())
+}
+
+/// The offsets `runs` holds inside `[from, to)`, as maximal intervals.
+fn offset_spans(runs: &[AbsRun], from: u64, to: u64) -> Vec<(u64, u64)> {
+    let mut spans: Vec<(u64, u64)> = Vec::new();
+    for r in runs {
+        let start = r.start.max(from);
+        let end = r.start.saturating_add(u64::from(r.count)).min(to);
+        if start >= end {
+            continue;
+        }
+        match spans.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => spans.push((start, end)),
+        }
+    }
+    spans
 }
 
 /// Decode a page into absolute runs. `page_first` (from the KEY) must

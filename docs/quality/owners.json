@@ -2299,9 +2299,9 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::rolled_back_mark_regather_keeps_the_ledger_exact",
+      "owner": "crate::commit_behind_held_dispatch",
       "path": "src/history/bounded_discovery_tests.rs",
-      "reason": "TLA-016-F1 ledger regression owns its append handles: each append waits on the held dispatch while the test drives the gathers, and is joined once dispatch is released. Only concurrent requests can commit behind a lagging published end.",
+      "reason": "Bounded-discovery regressions own their append handles through this one helper: each append waits on the held dispatch while its test drives the gathers, and is joined once dispatch is released. Only concurrent requests can commit behind a lagging published end.",
       "syntax": "tokio::spawn"
     },
     {

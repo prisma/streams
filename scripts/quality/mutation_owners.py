@@ -54,6 +54,7 @@ OWNERS = (
     owner('postings_codec', 'src/postings.rs', 'postings::', 'harness-lib'),
     owner('postings_codec_tests', 'src/postings/codec_tests.rs', 'postings::', 'harness-lib'),
     owner('postings', 'src/postings/validated.rs', 'postings::', 'harness-lib'),
+    owner('postings_properties', 'src/postings/validated/properties.rs', 'postings::', 'harness-lib'),
     owner('batch', 'src/application/read_batch.rs', 'application::read_batch::', 'harness-lib'),
     owner('retained', 'src/retained_bytes.rs', 'retained_bytes::', 'harness-lib'),
     owner('quota', 'src/quota/bucket.rs', 'quota_bucket::', 'harness-lib'),

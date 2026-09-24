@@ -81,8 +81,9 @@ struct Submission {
 /// rests on that chunk's end, and the next chunk replays exactly that chunk:
 /// the same rows, so the same postings pages, overwritten in place. Flushed
 /// pages above the chunk's end (a later chunk still in flight, or a flush
-/// that failed after writing) are never straddled by a wider re-gather,
-/// whose pages would overlap them.
+/// that failed after writing) are never straddled by the replay. A wider
+/// re-gather (a rescan's, or a new owner's) leaves pages overlapping them,
+/// which describe the same rows and admit as one index (`append_page_runs`).
 #[derive(Default)]
 pub(super) struct Lane {
     pub(super) marks: HashMap<[u8; 16], LaneMark>,

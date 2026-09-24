@@ -3,7 +3,8 @@
 //! warm the slice cache over a head it never read (TLA-016-F3); a warm bridge
 //! never crosses a chunk the cache declined to admit. A refused group's lane
 //! marks roll back to replay its chunks, keeping the ledger exact and the
-//! postings pages disjoint, and a gather never waits on the committer.
+//! postings pages disjoint, and a gather never waits on the committer. A
+//! re-gather across flushed chunks, by a rescan or a new owner, stays readable.
 #![cfg(test)]
 use super::*;
 use slatedb::WriteBatch;
@@ -145,8 +146,8 @@ async fn tail_until(
 }
 
 /// The keyed reader's own admission over `[0, next)`: every postings page of
-/// `rk` decodes, no page overlaps another, and together they cover each
-/// record exactly once.
+/// `rk` decodes, agrees with every page it overlaps, and together they cover
+/// each record exactly once.
 async fn assert_postings_admit(
     engine: &ShardEngine,
     hash: [u8; 16],
@@ -165,7 +166,7 @@ async fn assert_postings_admit(
             .and_then(|page| crate::postings::append_page_runs(&mut runs, page));
         assert!(
             admitted.is_some(),
-            "a postings page overlaps or fails to decode"
+            "a postings page fails to decode or disagrees with one it overlaps"
         );
     }
     let covered: u64 = runs.iter().map(|run| u64::from(run.count)).sum();
@@ -184,10 +185,6 @@ async fn assert_postings_admit(
 /// bytes of `[absorbed, next)`, later passes still drain it to zero, and the
 /// re-gather's postings replace the queued chunk's pages instead of
 /// overlapping them, so a keyed read still admits the index.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "rolled_back_mark_regather_keeps_the_ledger_exact; the fixture's appends wait on the held dispatch while the test drives the gathers, and each is joined once dispatch is released; only concurrent requests can commit behind a lagging published end"
-)]
 #[expect(
     clippy::let_underscore_must_use,
     reason = "rolled_back_mark_regather_keeps_the_ledger_exact; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
@@ -212,22 +209,7 @@ async fn rolled_back_mark_regather_keeps_the_ledger_exact() {
         Default::default(),
     );
     let hash = [29u8; 16];
-    let coverage = crate::dst::FaultStore::uniform(
-        Arc::new(object_store::memory::InMemory::new()),
-        1,
-        crate::dst::FaultPlan::new(0, 0, 0),
-    )
-    .coverage();
-    let append = |body: &'static str| {
-        let (engine, w) = (engine.clone(), crate::dst::Workload::new(coverage.clone()));
-        tokio::spawn(async move {
-            let key = crate::crypto::StreamKey([7u8; 32]);
-            let out = w
-                .attempt_with_deadline(&engine, hash, &key, "k", body, None, None)
-                .await;
-            matches!(out, crate::dst::Outcome::Acked { .. })
-        })
-    };
+    let append = |body| commit_behind_held_dispatch(&engine, hash, body);
     // Record 0 is published. Records 1 and 2 commit one at a time while
     // dispatch is held, so the published end lags at 1.
     assert!(append("r0").await.unwrap());
@@ -821,6 +803,174 @@ async fn absorber_gathers_never_wait_on_a_stalled_committer() {
     let tail = engine.tail_fields(&hash).await.unwrap().unwrap();
     assert_eq!((tail.absorbed, tail.next, tail.unabsorbed_bytes), (6, 6, 0));
     assert_postings_admit(&engine, hash, &tail, "k").await;
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Appends one record under "k" in a task of its own, so it can commit while
+/// dispatch is held and the published end lags; resolves to whether it was
+/// acknowledged.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "commit_behind_held_dispatch; each append waits on the held dispatch while its test drives the gathers, and is joined once dispatch is released; only concurrent requests can commit behind a lagging published end"
+)]
+fn commit_behind_held_dispatch(
+    engine: &Arc<ShardEngine>,
+    hash: [u8; 16],
+    body: &'static str,
+) -> tokio::task::JoinHandle<bool> {
+    let coverage = crate::dst::FaultStore::uniform(
+        Arc::new(object_store::memory::InMemory::new()),
+        1,
+        crate::dst::FaultPlan::new(0, 0, 0),
+    )
+    .coverage();
+    let (engine, writer) = (engine.clone(), crate::dst::Workload::new(coverage));
+    tokio::spawn(async move {
+        let key = crate::crypto::StreamKey([7u8; 32]);
+        let out = writer
+            .attempt_with_deadline(&engine, hash, &key, "k", body, None, None)
+            .await;
+        matches!(out, crate::dst::Outcome::Acked { .. })
+    })
+}
+
+/// Flushes [0, 1) and then [1, 2) with both advances queued behind the held
+/// committer: [0, 1) stops at the published end, which then moves to 2.
+/// Returns the stored frame bytes and the held committer.
+async fn two_chunks_in_flight<'a>(
+    engine: &'a Arc<ShardEngine>,
+    absorber: &Absorber,
+    hash: [u8; 16],
+) -> (Vec<u64>, tokio::sync::MutexGuard<'a, ()>) {
+    let mut frames = append_records(engine, hash, &["r0"]).await;
+    let dispatch = engine.test_hold_dispatch().await;
+    let rider = commit_behind_held_dispatch(engine, hash, "r1");
+    let committed = tail_until(engine, hash, |t| t.next == 2).await;
+    frames.push(committed.unabsorbed_bytes - frames[0]);
+    let commit = engine.test_hold_commit().await;
+    let first = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&first), [(0, 1)]);
+    drop(dispatch);
+    assert!(rider.await.unwrap());
+    let second = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&second), [(1, 2)]);
+    (frames, commit)
+}
+
+/// Once [0, 2) is absorbed, the key's pages admit and a cold keyed history
+/// read serves both records from the index: the cold load publishes a slice
+/// only when every page it scanned admitted, and a refused index is served
+/// from the POSTINGS_CORRUPT envelope instead.
+async fn assert_regathered_index_admits(engine: &Arc<ShardEngine>, hash: [u8; 16], frames: &[u64]) {
+    let tail = until_exact(engine, hash, frames, 2).await;
+    assert_postings_admit(engine, hash, &tail, "k").await;
+    engine.postings_cache.sweep_idle(Duration::ZERO);
+    let part = engine.history_partition().await.unwrap();
+    let (inc, route) = (
+        crate::crypto::SegmentHash(hash),
+        crate::crypto::RouteHash(tail.route),
+    );
+    let (read, _, complete) = crate::history::read_history2_keyed_cached(
+        &engine.postings_cache,
+        &part,
+        route,
+        inc,
+        "k",
+        0,
+        2,
+        2,
+        1 << 20,
+    )
+    .await
+    .unwrap();
+    assert_eq!((read.len(), complete), (2, true));
+    let slice = engine
+        .postings_cache
+        .debug_slice(&inc, &crate::postings::rk_hash("k"));
+    assert!(slice.is_some(), "the cold keyed read refused the index");
+}
+
+/// A rescan finds the durable boundary behind a lane mark while the chunks
+/// that raised it, [0, 1) and [1, 2), are still in flight, and the stream is
+/// re-gathered as [0, 2): its page from 0 overlaps [1, 2)'s flushed page.
+/// Both describe the same records, so the key's index still admits and the
+/// ledger stays exact.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_rescan_regather_across_a_chunk_in_flight_keeps_the_index_readable; the fixture closes its database best effort once the assertions are done; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rescan_regather_across_a_chunk_in_flight_keeps_the_index_readable() {
+    let (db, engine, absorber) = refusal_rig("overlap-rescan", GATHER_PER_STREAM_CAP).await;
+    let hash = [44u8; 16];
+    let (frames, commit) = two_chunks_in_flight(&engine, &absorber, hash).await;
+    absorber
+        .seed_from_dirty_index(&mut HashMap::new())
+        .await
+        .unwrap();
+    let regather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&regather), [(0, 2)]);
+    drop(commit);
+    assert_regathered_index_admits(&engine, hash, &frames).await;
+    engine.begin_close();
+    let _ = db.close().await;
+}
+
+/// Opens an engine and an absorber over `store` as the shard opener does,
+/// with the maintenance row loaded before the engine serves.
+async fn open_owner(store: Arc<dyn ObjectStore>) -> (Arc<Db>, Arc<ShardEngine>, Absorber) {
+    let db = Arc::new(
+        Db::builder("overlap-owner", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let engine = ShardEngine::start(
+        "overlap-owner".into(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        tx,
+        None,
+        maintenance,
+    );
+    let absorber = Absorber::new(
+        store,
+        engine.clone(),
+        Arc::new(KeyCache::default()),
+        AbsorberConfig::default(),
+    );
+    (db, engine, absorber)
+}
+
+/// The owner closes with [0, 1) and [1, 2) flushed and both advances still
+/// queued. The next owner has no lane marks and re-gathers [0, 2) over the
+/// inherited pages; the key's index still admits and the ledger stays exact.
+#[expect(
+    clippy::let_underscore_must_use,
+    reason = "a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable; the fixture closes each owner's databases best effort; a handled close would only restate the teardown"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let hash = [45u8; 16];
+    let (db, engine, absorber) = open_owner(store.clone()).await;
+    let (frames, commit) = two_chunks_in_flight(&engine, &absorber, hash).await;
+    engine.begin_close();
+    if let Some(part) = engine.history_partition_if_open() {
+        let _ = part.close().await;
+    }
+    let _ = db.close().await;
+    drop(commit);
+    let (db, engine, absorber) = open_owner(store).await;
+    let regather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
+    assert_eq!(chunks(&regather), [(0, 2)]);
+    assert_regathered_index_admits(&engine, hash, &frames).await;
     engine.begin_close();
     let _ = db.close().await;
 }

@@ -152,7 +152,13 @@ run*: varint gap_offsets            // offsets skipped since prev run end
 ```
 
 Pages self-describe (header/runs disagreement or key/header first-
-offset mismatch = corruption → the §8.6 envelope). Encoded pages cap
+offset mismatch = corruption → the §8.6 envelope). Two gathers that cut
+the same rows into different chunks (a rescan's re-gather over chunks
+still in flight, or a new owner's over flushed chunks whose advances
+never landed) leave pages whose spans overlap. Each page is complete
+over its own span, so readers admit an overlapping page only when it
+lists exactly the offsets already admitted over the common span, and
+keep its part past them; a disagreeing overlap is corruption. Encoded pages cap
 at POSTINGS_PAGE_MAX_ENCODED_BYTES = 32 KiB; the builder splits a
 bucket into further pages (fresh page_first) at the cap. The byte
 fields let the read planner choose between scanning exact runs,
