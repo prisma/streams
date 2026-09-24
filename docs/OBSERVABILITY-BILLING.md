@@ -637,7 +637,8 @@ If the same name had multiple incarnations during the month:
 
 - the name endpoint returns an aggregate plus an `incarnations` breakdown;
 - invoice line items remain keyed by immutable stream ID;
-- a direct resource lookup uses the current stream ID.
+- a direct resource lookup uses the current stream ID;
+- `?streamId=<id>` on the name endpoint addresses one incarnation of that name: the current one, or one the month's `incarnations` lists. Any other id is `404 not_found`, before any row of it is read; authorization covers the name in the URL, never an id's own stream.
 
 ### 10.4 Performance target
 

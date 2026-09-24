@@ -210,6 +210,9 @@ mod security_routes;
 #[path = "tests/security_subscription.rs"]
 mod security_subscription;
 
+#[path = "tests/security_usage.rs"]
+mod security_usage;
+
 #[path = "tests/security_workload.rs"]
 mod security_workload;
 

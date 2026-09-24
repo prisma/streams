@@ -14,12 +14,12 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| high | 2 | 1 | 2 | 0 | 0 | 0 | 5 |
+| high | 3 | 1 | 2 | 0 | 0 | 0 | 6 |
 | medium | 5 | 0 | 6 | 0 | 0 | 0 | 11 |
 | low | 5 | 2 | 6 | 9 | 10 | 4 | 36 |
-| **Total** | **12** | **3** | **14** | **9** | **10** | **4** | **52** |
+| **Total** | **13** | **3** | **14** | **9** | **10** | **4** | **53** |
 
-52 records in total; 51 matched their commit and 1 is flagged.
+53 records in total; 51 matched their commit and 1 is flagged. #53 is a security fix recorded by its implementer for owner ratification; it has not been checked against its commit.
 
 ### Index
 
@@ -77,8 +77,9 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 50 | e19c80c5 | One corrupt row fails only its stream in a v2 gather lane | operator-debug | low | matches |
 | 51 | 5d9d517f | Undecodable pending billing artifact is logged | operator-debug | low | matches |
 | 52 | 31fd9096 | Late byte-time beyond a correction fails its rollup page | fleet-internal | low | matches |
+| 53 | this record's commit | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | recorded for ratification |
 
-## High risk (5)
+## High risk (6)
 
 In each of these changes, a request that used to succeed can now fail permanently. Each risk reason states how narrow the affected inputs are and, where it applies, why the earlier success was incorrect.
 
@@ -178,6 +179,21 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - src/shard/transaction_tests.rs::r12_an_undecodable_stream_seq_row_refuses_the_append_and_writes_nothing
 - **Risk reason:** Graded high by the rubric's letter: a request that previously succeeded (fence silently dropped) now fails permanently, and the lane stays wedged with no repair tool. Practical exposure is corruption only; the history check shows no writer ever produced an unsupported width or non-UTF-8 seq bytes. Test gap: the tests pin AppendErr::Internal at the shard level only; no HTTP-level test pins raw 500 internal or product 500 append_failed for this condition. That mapping comes from the existing AppendErr::Internal → FailureClass::Internal path.
 - **Check against commit:** Matches, with one nuance: 'before, it was accepted with the idempotence fence silently dropped' is the typical outcome. Because the old code judged the request against absent or misdecoded state, it could also answer a spurious producer error (409 producer_seq_gap, 403 producer_stale_epoch) or a false-duplicate 204.
+
+### #53 (this record's commit) — Usage `?streamId=` is served only for an incarnation of the URL's name
+
+- **Program item:** security fix found by the adversarial authorization review of item 73 (external review, 2026-09-24). Recorded by its implementer for owner ratification.
+- **Surface:** product
+- **Endpoint:** GET /v1/streams/{name}/usage[?month=YYYY-MM]&streamId=\<id> and GET /v1/streams/{name}/usage/current?streamId=\<id> (product_usage, which now reads through UsageRollup::usage_row in src/product/usage.rs).
+- **Condition:** The streamId is neither the live incarnation of {name} nor listed in the month's name aggregate for {name}, which is the answer's `incarnations`. That covers another stream's id, an incarnation of {name} that contributed nothing in the requested month, and an id that names nothing. It applies in every auth mode. Rollup keys carry the account and project, so the id could only ever select a row inside the request's own project.
+- **Before:** The handler replaced the rollup lookup key with the id without checking it, and the gate had prefix-checked only the URL's name. The answer was 200 with that id's month row: ingest, read, queue and append counters, storage byte-seconds, status, corrections and the correction list, next to the URL name's `streamName`, `nameAggregate` and `incarnations`. For the current month, an id with no month row also read that id's persistent segment states into `ownedStoredBytesNow` and the provisional storage. On an enforce rig, a credential holding streams.usage.read with prefix grant ["a"] got 403 prefix_denied on /v1/streams/b/secret/usage/current, but 200 with b/secret's full row on /v1/streams/a/mine/usage/current?streamId=\<b/secret's id>. The id is b/secret's stream epoch: the `streamId` of its own usage answer, and the `epoch` of its metadata when it has watches. An id naming nothing got 200 with a zero row.
+- **After:** 404 with Content-Type application/json and Cache-Control: no-store. Body: {"error":{"code":"not_found","message":"streamId is not an incarnation of this stream in the requested month","retryable":false}}. The id's month row and segment states are not read. The live id named explicitly, and a prior incarnation that the month lists, are served exactly as before. A failed read of the name aggregate is 503 usage_unavailable (retryable), like every other rollup read failure on this route. Without streamId nothing changes.
+- **Retry semantics:** 200 becomes a permanent 404 with retryable:false. The TS SDK has no usage method, so only direct HTTP callers see it.
+- **Who is affected:** Callers passing a streamId outside the name's incarnations for the month. That includes a credential reading another stream's usage through a name it may read, which is the bypass this closes, whether the other stream is outside its prefix grant or not. It also includes a dashboard asking for a prior incarnation of the name in a month that incarnation did not contribute to: it used to get a 200 zero row and now gets 404. Callers using the ids `incarnations` lists are unaffected.
+- **Pinning tests:**
+  - a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name (src/dst/tests/security_usage.rs; red at 26c555dd, where b/secret's id through a/mine's URL answered 200 with b/secret's row; controls for a prior incarnation after delete/recreate on both route spellings and for the live id named explicitly)
+- **Risk reason:** High by the rubric's letter: a request that used to return 200 now fails permanently. The earlier 200 was an authorization bypass across names and prefix grants, so no correct behaviour is lost. The round-21 delete/recreate lookup, with an id from `incarnations`, is unchanged. The one legitimate-looking loss is the zero row for an incarnation in a month it did not contribute to.
+- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 200 → 404 edge change.
 
 ## Medium risk (11)
 

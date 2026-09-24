@@ -1289,6 +1289,17 @@
     ]
   },
   {
+    "name": "a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9584cc1e30152a1df7483c7faf0733f588b07ed2c950908e0ddef5283df801d0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_usage.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -2355,6 +2355,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::security_usage",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::tests",
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
