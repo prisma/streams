@@ -1352,7 +1352,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "61ac7eaa8cd71df361a37151d7edbc375e5105adc619cd105f284bc01f2f647b",
+    "function_sha256": "55ba0c9c6623e6fa92b0c783ca325fc005d1d0e1a5e053e2d4a2c91dba4867e7",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
