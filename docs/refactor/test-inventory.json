@@ -4846,6 +4846,17 @@
     "scenarios": []
   },
   {
+    "name": "r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "ec74f4622b65e0fd3963796ee0d008571319d6b6a124f5436c95645e3131dd72",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"

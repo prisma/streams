@@ -319,3 +319,98 @@ async fn r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams() {
     );
     engine_shutdown(&state).await;
 }
+
+/// A raw close whose seal intent could not be installed has not sealed
+/// anything. Another seal's live claim is a conflict and stays the 409
+/// `sealed`. A registry the intent could not read (here, the lapsed
+/// final's takeover re-reading the descriptor to fence it) decided
+/// nothing: the close answers the retryable 503 `seal_incomplete` its
+/// completion answers, and its retry closes the collection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed() {
+    use crate::application::append::FailureClass;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "typed-close-read";
+    let create = br#"{"format":{"kind":"json"}}"#;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    let (status, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/typed-close-read",
+        &headers,
+        create,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let owed = |claimed_ms| {
+        move |d: &mut crate::registry::PersistedDescriptor| {
+            d.seal_gen_counter += 1;
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: "owed-final".into(),
+                intent: crate::registry::SealIntent::Final {
+                    routing_key: String::new(),
+                    request_hash: "owed-final".into(),
+                    final_committed: false,
+                },
+                claimed_ms,
+                claim_generation: d.seal_gen_counter,
+            });
+            true
+        }
+    };
+    let close = |desc: &crate::registry::StreamDesc| AppendCommand {
+        body: Bytes::new(),
+        producer: None,
+        close: true,
+        request_hash: None,
+        ..command(desc, "close", b"")
+    };
+    let app = state.append_service();
+    let now = crate::shard::now_ms();
+    assert!(state.registry.cas_update(&sref, owed(now)).await.unwrap());
+    state.registry.invalidate(&sref);
+    let live = state.registry.get(&sref).await.unwrap().unwrap();
+    let conflict = app.execute(close(&live)).await.unwrap_err();
+    assert_eq!(
+        (conflict.class, conflict.code),
+        (FailureClass::Conflict, AppendCode::Sealed),
+        "{conflict:?}"
+    );
+
+    let lapsed = now - crate::registry::SEAL_CLAIM_MS - 1_000;
+    assert!(
+        state
+            .registry
+            .cas_update(&sref, owed(lapsed))
+            .await
+            .unwrap()
+    );
+    state.registry.invalidate(&sref);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let prepared = app
+        .prepare(&sref, AppendKey::Provided(skey()))
+        .await
+        .unwrap();
+    state.registry.fail_next_get(name);
+    let error = app
+        .execute_prepared(prepared, close(&desc))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("injected registry get failure"),
+        "{error:?}"
+    );
+    assert_eq!(
+        (error.class, error.code),
+        (FailureClass::Unavailable, AppendCode::SealIncomplete),
+        "{error:?}"
+    );
+    state.registry.invalidate(&sref);
+    assert!(!state.registry.get(&sref).await.unwrap().unwrap().sealed);
+    let closed = app.execute(close(&desc)).await.unwrap();
+    assert!(closed.closed, "the retry closes the collection");
+    state.registry.invalidate(&sref);
+    assert!(state.registry.get(&sref).await.unwrap().unwrap().sealed);
+    engine_shutdown(&state).await;
+}

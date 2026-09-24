@@ -203,7 +203,7 @@ pub(super) async fn install_intent(
                     plan.generation = Some(g);
                 }
             }
-            Err(e) => return fail(FailureClass::Conflict, AppendCode::Sealed, &e.to_string()),
+            Err(e) => return Err(intent_refused(&e)),
         }
         #[cfg(test)]
         if crate::failpoints::should_stop_after_seal_intent(&name) {
@@ -216,6 +216,28 @@ pub(super) async fn install_intent(
     }
 
     Ok(())
+}
+
+/// A close whose intent was not installed has sealed nothing. Another
+/// seal's live claim, or a refusal the lifecycle settled, is the conflict
+/// `sealed`. A registry the intent could not read or write, or a
+/// transition that kept the collection busy, decided nothing: the close
+/// answers what its completion answers, retry.
+fn intent_refused(error: &crate::application::lifecycle::SealError) -> AppendFailure {
+    use crate::application::lifecycle::SealError;
+    let (class, code) = match error {
+        SealError::Storage(_) | SealError::Resumable(_) => {
+            (FailureClass::Unavailable, AppendCode::SealIncomplete)
+        }
+        SealError::Conflict(_)
+        | SealError::Missing
+        | SealError::ChangedIncarnation
+        | SealError::AlreadySealed
+        | SealError::OtherOperation
+        | SealError::OwedFinal
+        | SealError::InvalidClaim => (FailureClass::Conflict, AppendCode::Sealed),
+    };
+    AppendFailure::new(class, code, error.to_string())
 }
 
 #[expect(

@@ -15,11 +15,11 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 3 | 1 | 2 | 0 | 0 | 0 | 6 |
-| medium | 5 | 0 | 6 | 0 | 0 | 0 | 11 |
+| medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
 | low | 5 | 2 | 7 | 9 | 10 | 4 | 37 |
-| **Total** | **13** | **3** | **15** | **9** | **10** | **4** | **54** |
+| **Total** | **13** | **4** | **15** | **9** | **10** | **4** | **55** |
 
-54 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix) and #54 (a release-hold fix) were recorded by their implementers for owner ratification; they have not been checked against their commits.
+55 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers for owner ratification; they have not been checked against their commits.
 
 ### Index
 
@@ -79,6 +79,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 52 | 31fd9096 | Late byte-time beyond a correction fails its rollup page | fleet-internal | low | matches |
 | 53 | this record's commit | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | recorded for ratification |
 | 54 | this record's commit | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | recorded for ratification |
+| 55 | this record's commit | A raw close whose seal intent failed transiently answers retryable, not sealed | raw | medium | recorded for ratification |
 
 ## High risk (6)
 
@@ -196,7 +197,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** High by the rubric's letter: a request that used to return 200 now fails permanently. The earlier 200 was an authorization bypass across names and prefix grants, so no correct behaviour is lost. The round-21 delete/recreate lookup, with an id from `incarnations`, is unchanged. The one legitimate-looking loss is the zero row for an incarnation in a month it did not contribute to.
 - **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 200 → 404 edge change.
 
-## Medium risk (11)
+## Medium risk (12)
 
 These changes alter a status, error code or retry behaviour on an error case clients may branch on, or change the semantics of a successful path (redelivery timing, connection lifetime, subscription lifetime, new quota refusals).
 
@@ -402,6 +403,22 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - sse::auth::tests::lease_terminations_have_one_slot_per_reason (pre-existing)
 - **Risk reason:** This changes the lifetime of successful live product subscriptions: they now end on re-placement. It also introduces a 403 project_missing at establishment (race-only) for a condition the request path answers 421, which clients may branch on as a permanent denial instead of re-resolving. The previous behaviour was incorrect (serving from a cell that no longer owns the project), and reconnect semantics are unchanged. No end-to-end SSE test pins the live termination on re-placement; only the unit lease_check test does.
 - **Check against commit:** None in behaviour. Precision: '403 at establishment' is reachable only when the republish lands between request verification (already 421 wrong_cell for a foreign placement) and LeaseWatch::new_checked. The common visible effect is a clean EOF on a live stream. Cosmetic defect: served_policy was inserted between status_and_quotas's doc comment and its fn, so at HEAD (src/auth.rs \~726-741) status_and_quotas's doc comment is attached to served_policy and status_and_quotas has no doc.
+
+### #55 (this record's commit) — A raw close whose seal intent failed transiently answers retryable, not sealed
+
+- **Program item:** release hold, follow-up to skeptic finding F3 (the same defect class on the raw close path; plan decision D6). Recorded by its implementer for owner ratification.
+- **Surface:** raw
+- **Endpoint:** Raw POST /v1/stream/{name} with Stream-Closed: true, close-only or append-and-close, when the close publishes a fresh seal intent (application::lifecycle::begin_sealing_for_close, called from close::install_intent). The product :seal never takes this step, because its final record carries its claim.
+- **Condition:** The intent step fails with a transient error. SealError::Storage: the descriptor store could not be read or written by the intent CAS, or by the takeover of a lapsed final-bearing claim (its reservation, its fence's descriptor read, its installation, or the completion of the old operation). SealError::Resumable: a split or merge kept the collection busy through all six claim rounds, the takeover's fence could not be placed or was refused, or completing the old operation's seal is resumable.
+- **Before:** 409 {"error":{"code":"sealed","message":"\<error>"}}, with no Stream-Closed or Retry-After header. A raw client reads 409 sealed as a permanent state of the collection, although nothing was sealed: the intent is absent, or, after an ambiguous write, installed and resumable by the same close.
+- **After:** 503 {"error":{"code":"seal_incomplete","message":"\<error>"}}, with no Retry-After. This is the answer the same close already gives when its completion fails (close::complete). The message text is unchanged. These keep 409 sealed: another seal's live claim ("a seal with a final record is in flight; retry that request to finish it", "a different seal operation is in flight"), the settled lifecycle refusals (changed incarnation, invalid claim, other operation, owed final, already sealed, missing), and the superseded owed-final resume.
+- **Retry semantics:** A permanent 409 becomes a retryable 503. The retry re-enters the same operation: a plain close joins its own Empty intent, and a takeover restarts from the lapsed claim, which the failed attempt left in place. The collection then closes.
+- **Who is affected:** Raw clients closing a stream while the descriptor store fails once, while a split or merge keeps the collection busy, or while their close takes over a lapsed final-bearing seal. Clients that treated 409 sealed on a close as "already closed" now see a 503 when the close did not happen.
+- **Pinning tests:**
+  - src/dst/tests/append_application.rs::r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed (red at cf5d6e05 with (Conflict, Sealed); the same test pins that a live final-bearing claim still answers (Conflict, Sealed), and that the retry closes and seals the collection)
+  - NOT pinned: the Resumable variants. No test drives six busy claim rounds or a refused fence through a raw close.
+- **Risk reason:** Medium: a status and code on an error case that raw clients may branch on changes (409 sealed becomes 503 seal_incomplete), as record #8 did for the append's refresh read (409 becomes 503). The earlier 409 was wrong, because the collection was not sealed. No code is new: seal_incomplete is already a raw append answer.
+- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 409 → 503 edge change.
 
 ## Low risk (37)
 
