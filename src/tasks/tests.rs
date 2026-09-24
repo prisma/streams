@@ -2,6 +2,7 @@
 
 use super::{Phase, Policy, SpawnRejected, TaskOutcome, TaskResult, TaskSupervisor};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, TryLockError};
 use std::{future::pending, sync::Arc, time::Duration};
 
 #[tokio::test]
@@ -494,37 +495,104 @@ fn panicked_connections_are_counted_on_the_monitor() {
 /// drop (which joins every worker, with no timeout) never returned.
 #[test]
 fn a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor() {
-    struct ShutsDownOnDrop(TaskSupervisor);
-    impl Drop for ShutsDownOnDrop {
-        fn drop(&mut self) {
-            self.0
-                .begin_shutdown_with(Duration::ZERO, "late-finalizer", async { TaskResult::Done });
-        }
-    }
-    struct SpawnsOnDrop(TaskSupervisor);
-    impl Drop for SpawnsOnDrop {
-        fn drop(&mut self) {
-            let guard = ShutsDownOnDrop(self.0.clone());
-            let spawned = self.0.spawn("late", Policy::Critical, move |_| async move {
-                let _guard = guard;
-                TaskResult::Done
-            });
-            assert!(spawned.is_ok(), "the supervisor itself is still running");
-        }
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let owner = SpawnsOnDrop(TaskSupervisor::new());
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "F-G deadlock rig; the task exists only to be dropped by the runtime teardown under test; supervising it would put the supervisor under test in its own teardown path"
-    )]
-    runtime.spawn(async move {
-        let _owner = owner;
-        pending::<()>().await;
-    });
+    assert_teardown_completes(runtime, 1, LateDrop::ShutsDown);
+}
+
+/// The same refusal on a multi-threaded runtime whose teardown drops many
+/// supervisors' refused futures on several workers at once.
+#[test]
+fn a_multi_thread_teardown_cannot_deadlock_any_supervisor() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_teardown_completes(runtime, 16, LateDrop::ShutsDown);
+}
+
+/// A refused future whose destructor spawns again: the nested spawn is
+/// refused too, and its future is set aside and dropped outside the lock
+/// the same way.
+#[test]
+fn a_refused_future_that_spawns_again_is_set_aside_again() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_teardown_completes(runtime, 1, LateDrop::SpawnsAgain);
+}
+
+/// What the late task's guard does when the closing runtime drops it.
+#[derive(Clone, Copy)]
+enum LateDrop {
+    ShutsDown,
+    SpawnsAgain,
+}
+
+/// Counts the refused futures that were dropped, not merely set aside.
+struct Counted(Arc<AtomicUsize>);
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct LateGuard(TaskSupervisor, LateDrop, Counted);
+impl Drop for LateGuard {
+    fn drop(&mut self) {
+        match self.1 {
+            LateDrop::ShutsDown => {
+                self.0
+                    .begin_shutdown_with(Duration::ZERO, "late-finalizer", async {
+                        TaskResult::Done
+                    });
+            }
+            LateDrop::SpawnsAgain => {
+                let counted = Counted(self.2.0.clone());
+                let nested = self
+                    .0
+                    .spawn("nested", Policy::Critical, move |_| async move {
+                        let _counted = counted;
+                        TaskResult::Done
+                    });
+                assert!(nested.is_ok(), "the supervisor itself is still running");
+            }
+        }
+    }
+}
+
+struct SpawnsOnDrop(TaskSupervisor, LateDrop, Arc<AtomicUsize>);
+impl Drop for SpawnsOnDrop {
+    fn drop(&mut self) {
+        let guard = LateGuard(self.0.clone(), self.1, Counted(self.2.clone()));
+        let spawned = self.0.spawn("late", Policy::Critical, move |_| async move {
+            let _guard = guard;
+            TaskResult::Done
+        });
+        assert!(spawned.is_ok(), "the supervisor itself is still running");
+    }
+}
+
+/// Drops `runtime` while `owners` tasks each hold a supervisor that spawns
+/// from its own drop, and fails (instead of hanging) if the teardown does not
+/// finish or leaves a refused future undropped.
+fn assert_teardown_completes(runtime: tokio::runtime::Runtime, owners: usize, late: LateDrop) {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    for _ in 0..owners {
+        let owner = SpawnsOnDrop(TaskSupervisor::new(), late, dropped.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "F-G deadlock rig; the task exists only to be dropped by the runtime teardown under test; supervising it would put the supervisor under test in its own teardown path"
+        )]
+        runtime.spawn(async move {
+            let _owner = owner;
+            pending::<()>().await;
+        });
+    }
     runtime.block_on(tokio::task::yield_now());
     let (done, finished) = std::sync::mpsc::channel();
     // A deadlocked teardown never returns: it runs on its own thread so
@@ -540,5 +608,69 @@ fn a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor() {
     assert!(
         finished.recv_timeout(Duration::from_secs(10)).is_ok(),
         "runtime teardown deadlocked inside TaskSupervisor::spawn"
+    );
+    let per_owner = match late {
+        LateDrop::ShutsDown => 1,
+        LateDrop::SpawnsAgain => 2,
+    };
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        owners * per_owner,
+        "every refused future is dropped once its spawn has released the lock"
+    );
+}
+
+/// F-G slot: a spawn call that unwinds (there is no runtime to spawn onto)
+/// happens while its caller holds the registration lock. The future it
+/// refused is not dropped inside the call, where its destructor could take
+/// that lock, and the thread's slot still closes: an open slot would park
+/// every later supervised drop on this thread instead of dropping it.
+#[test]
+fn a_spawn_that_unwinds_closes_its_slot_and_drops_nothing_under_the_lock() {
+    struct TriesLock(Arc<Mutex<()>>, Arc<AtomicBool>);
+    impl Drop for TriesLock {
+        fn drop(&mut self) {
+            if matches!(self.0.try_lock(), Err(TryLockError::WouldBlock)) {
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let supervisor = TaskSupervisor::new();
+    let later = Arc::new(AtomicBool::new(false));
+    let flag = DropFlag(later.clone());
+    runtime.block_on(async {
+        let spawned = supervisor.spawn("later", Policy::Critical, move |_| async move {
+            let _flag = flag;
+            pending::<TaskResult>().await
+        });
+        assert!(spawned.is_ok());
+        tokio::task::yield_now().await;
+    });
+
+    let lock = Arc::new(Mutex::new(()));
+    let under_lock = Arc::new(AtomicBool::new(false));
+    let probe = TriesLock(lock.clone(), under_lock.clone());
+    let held = lock.lock().unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::refusal::spawn_set_aside(async move {
+            let _probe = probe;
+        })
+    }));
+    drop(held);
+    assert!(unwound.is_err(), "there is no runtime to spawn onto");
+    assert!(
+        !under_lock.load(Ordering::SeqCst),
+        "the unwound spawn dropped its refused future while the caller held its lock"
+    );
+
+    // The runtime's teardown drops the later task's future on this thread.
+    drop(runtime);
+    assert!(
+        later.load(Ordering::SeqCst),
+        "the unwound spawn left its slot open, so a later supervised drop was parked"
     );
 }

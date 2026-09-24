@@ -659,7 +659,15 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor",
+      "owner": "crate::<OpenSlot as Drop>::drop",
+      "path": "src/tasks/refusal.rs",
+      "reason": "A spawn call that unwinds under the registration lock can neither hand its set-aside futures back nor drop them there without the same-thread deadlock the slot prevents; the unwind poisons that lock, so the one failed spawn's futures are leaked and the slot is closed.",
+      "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::assert_teardown_completes",
       "path": "src/tasks/tests.rs",
       "reason": "F-G deadlock fixture owns one detached thread that drops the runtime under test; a deadlocked drop never returns, so a bounded channel receive observes it instead of hanging the suite.",
       "syntax": "std::thread::spawn"
