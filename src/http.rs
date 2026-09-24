@@ -253,6 +253,25 @@ impl AppState {
             meter_enabled: self.config.billing.meter_enabled,
         }
     }
+
+    /// The raw surface's append (`POST /v1/stream/{name}`): the typed
+    /// append, then its accepted outcome (applied, a producer duplicate or
+    /// a close) counted once (§4.5 `append_requests`) against the
+    /// incarnation it committed to, with no second descriptor read and no
+    /// await between the outcome and the count; then the protocol answer.
+    /// The BILLED ingest bytes are the committer's, atomic with the records.
+    pub(crate) async fn raw_append(
+        self: &Arc<Self>,
+        sref: crate::tenant::TenantStreamRef,
+        headers: HeaderMap,
+        body: Body,
+    ) -> Response {
+        let result = append_typed(self.clone(), sref, headers, body, None, None, None).await;
+        if let Ok(out) = &result {
+            crate::billing::meter_append_request(self, &out.descriptor);
+        }
+        render_append(result)
+    }
 }
 
 impl AppState {
@@ -1979,7 +1998,6 @@ async fn stream_entry(
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     clippy::unwrap_used,
     reason = "stream_entry_inner; the raw entry takes every extractor axum resolved and dispatches every method from one match, and its preflight response carries only fixed headers; a request struct, a split or a fallible build would separate the dispatch from the extractors and the preflight from the method it answers"
 )]
@@ -2057,27 +2075,9 @@ async fn stream_entry_inner(
             r
         }
         Method::POST => {
-            let r = append(
-                state.clone(),
-                state.deployment.raw_adapter_sref(&name),
-                headers,
-                body,
-                None,
-                None,
-                None,
-            )
-            .await;
-            // Operation count only (§4.5) — the BILLED ingest bytes are
-            // the committer's, atomic with the records themselves.
-            if r.status().is_success()
-                && let Ok(Some(desc)) = state
-                    .registry
-                    .get(&state.deployment.raw_adapter_sref(&name))
-                    .await
-            {
-                crate::billing::meter_append_request(&state, &desc);
-            }
-            r
+            state
+                .raw_append(state.deployment.raw_adapter_sref(&name), headers, body)
+                .await
         }
         Method::GET | Method::HEAD => {
             // Round-4 finding 2: a workload-JWT read carries its
@@ -2476,41 +2476,6 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
         .map(|t| t.timestamp_millis())
 }
 
-/// ROUTING-V3 sealed-segment retry wrapper: an ENGINE's stream-closed
-/// answer is retried after refreshing the descriptor and resuming any
-/// pending transition, whatever the cached map looked like (it may
-/// predate the first split) — a seal is a few ms of routing
-/// indirection, never a client-visible 409. It passes through as a
-/// genuine user-closed stream only when the refreshed map still routes
-/// the key to that same segment, LIVE, with no pending transition. A
-/// closure the descriptor itself declares (sealed/sealing) is final and
-/// costs no refresh (AppendService::closure_is_current).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "append; the append entry takes the state, descriptor, key, headers, body and producer parts as the handler resolved them; a request struct would exist only for this signature"
-)]
-pub(crate) async fn append(
-    state: Arc<AppState>,
-    sref: crate::tenant::TenantStreamRef,
-    headers: HeaderMap,
-    body: Body,
-    product_hash: Option<[u8; 16]>,
-    product_key: Option<String>,
-    seal_auth: Option<SealAuthz>,
-) -> Response {
-    render_append(
-        append_typed(
-            state,
-            sref,
-            headers,
-            body,
-            product_hash,
-            product_key,
-            seal_auth,
-        )
-        .await,
-    )
-}
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,

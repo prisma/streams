@@ -2323,6 +2323,30 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_operation_counts",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Operation-count scenarios for §4.5 append_requests: real HTTP appends on both surfaces, appends parked at the committer enqueue under registry faults, and a handler dropped mid-commit; compiled and executed with DST.",
+      "syntax": "path = \"tests/billing_operation_counts.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::park_append",
+      "path": "src/dst/tests/billing_operation_counts.rs",
+      "reason": "Operation-count fixture owns one request handle per scenario; the request is parked at the committer enqueue by stream name and joined after release. Concurrent execution is required to change the registry while the append is in flight.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::an_append_its_handler_never_answered_is_not_counted",
+      "path": "src/dst/tests/billing_operation_counts.rs",
+      "reason": "Abandoned-append fixture owns the product handler task; it is aborted while durability dispatch is held and joined before release. Concurrent execution is required to drop the handler between the commit and its answer.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::security_operations",
       "path": "src/dst/dst_tests.rs",
       "reason": "Product-operation authorization scenarios; the section 6.1 scope every dispatched operation demands and authentication before a route refusal, over real HTTP against an enforce-mode rig; compiled and executed with DST.",

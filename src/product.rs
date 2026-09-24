@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::json;
@@ -1020,12 +1020,10 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
 /// explicit matching before wildcard interpretation).
-/// Operation-count metering at the dispatch choke point (§4.5's
-/// non-priced dimensions). Bytes are metered where payloads are in
-/// hand; OPERATIONS are counted here so no handler forgets them. The
-/// registry read is a warm cache hit for a request that just succeeded.
+/// The settle's queue operation (§4.5) is still counted at the dispatch
+/// choke point, from a second registry read after the answer; an append
+/// is counted from its typed outcome (`render_product_append`).
 enum OpKind {
-    Append,
     Queue,
 }
 
@@ -1040,7 +1038,6 @@ async fn meter_op_if_ok(
     }
     if let Ok(Some(desc)) = state.registry.get(sref).await {
         match kind {
-            OpKind::Append => crate::billing::meter_append_request(state, &desc),
             OpKind::Queue => crate::billing::meter_queue_op(state, &desc),
         }
     }
@@ -1115,7 +1112,7 @@ pub(crate) async fn product_entry(
         ProductRoute::Records { name } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::POST, None) => {
-                    let r = product_append(
+                    product_append(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1124,13 +1121,10 @@ pub(crate) async fn product_entry(
                         false,
                         principal.as_ref(),
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Append).await;
-                    r
+                    .await
                 }
                 (Method::POST, Some("batch")) => {
-                    let r = product_append(
+                    product_append(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1139,10 +1133,7 @@ pub(crate) async fn product_entry(
                         true,
                         principal.as_ref(),
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Append).await;
-                    r
+                    .await
                 }
                 (Method::GET, live @ (None | Some("long-poll"))) => {
                     // §17.2: a page route is admitted only while the
@@ -2166,7 +2157,7 @@ async fn product_append_inner(
         seal_auth,
     )
     .await;
-    render_product_append(&desc, &key, routing_key, count, result)
+    render_product_append(&state, &key, routing_key, count, result)
 }
 
 #[expect(
@@ -2250,15 +2241,14 @@ async fn submit_product_append(
         .await
 }
 
-/// Map the shared path's protocol response into the product contract:
+/// Map the shared path's typed outcome into the product contract:
 /// {cursor, count, duplicate, sealed} on success, the stable product
-/// error schema otherwise.
-#[expect(
-    clippy::unwrap_used,
-    reason = "render_product_append; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
-)]
+/// error schema otherwise. An accepted request (applied, or a producer
+/// duplicate answered from the dedup window) is one `append_requests`
+/// (§4.5), counted against the incarnation the outcome committed to
+/// before the answer exists; a refusal counts nothing.
 fn render_product_append(
-    desc: &StreamDesc,
+    state: &AppState,
     key: &crate::crypto::StreamKey,
     routing_key: &str,
     count: usize,
@@ -2268,20 +2258,29 @@ fn render_product_append(
         Ok(out) => out,
         Err(error) => return render_product_append_error(error),
     };
+    crate::billing::meter_append_request(state, &out.descriptor);
     let next = if out.duplicate {
         out.last_offset.saturating_add(1).min(out.next_offset)
     } else {
         out.next_offset
     };
     let cursor = crate::product_cursor::KeyCursor {
-        epoch: desc.epoch(),
+        epoch: out.descriptor.epoch(),
         key_hash: crate::crypto::stream_hash(routing_key),
         seg_id: out.seg_id,
         offset: next,
     }
-    .encode(&desc.project_id, key);
-    Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE,"application/json").header(header::CACHE_CONTROL,"no-store")
-        .body(Body::from(json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string())).unwrap()
+    .encode(&out.descriptor.project_id, key);
+    let body = json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {

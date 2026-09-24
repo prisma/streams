@@ -665,6 +665,17 @@
     ]
   },
   {
+    "name": "a_product_append_answers_json_that_is_never_cached",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a290864f156acd4079963484caef38a40eedb5e49c4d74991d6213327d846127",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -788,6 +799,17 @@
     "scenarios": [
       "QUE-011"
     ]
+  },
+  {
+    "name": "a_recreated_stream_counts_each_incarnation_on_its_own_identity",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "56a6442fd57f7064106416f0e20f24376c7d08c6527c52cbad62d1909365bcaa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
   },
   {
     "name": "a_refused_oversized_chunk_defers_and_sizes_the_next_reservation",
@@ -1417,6 +1439,30 @@
     ]
   },
   {
+    "name": "an_append_counts_when_its_descriptor_cannot_be_read_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d687552bb186d5bca56fa158b14def379f5e0aeb5de8cd6dc2af6aed407de534",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_append_before_enqueue(\"opcreread\");"
+    ],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_its_handler_never_answered_is_not_counted",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c2396dd108a5cce8bbd6c1a7f84f8d43faeaf7b46a303f57be02dfb18c4430ad",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_default_key",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1458,6 +1504,19 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_straddling_a_recreate_counts_on_the_incarnation_it_committed_to",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "60b840e86b7196076c715bc989fd331bb5b8b0a6ee143db113bb3fefb1f8b66b",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_append_before_enqueue(\"opcrecreate\");"
+    ],
+    "file": "src/dst/tests/billing_operation_counts.rs",
     "scenarios": []
   },
   {
@@ -4299,6 +4358,17 @@
     "scenarios": []
   },
   {
+    "name": "product_append_counts_follow_the_typed_outcome",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4f57ff303ef9fcaa43883339f510760195ceb3761d08738902dfa0dadd202f29",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
     "name": "product_append_producer_duplicate",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5169,6 +5239,30 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "raw_append_counts_follow_the_typed_outcome",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e87ffb8522a3963b931f499c536a907587d98285f4fbe80ae711d42dc1d5bed4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "raw_append_counts_when_its_descriptor_cannot_be_read_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0950d21820c0ddc73b0e3ca760038a1c8056c39f14be69032ccad98fb34b4226",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_append_before_enqueue(\"opcrawreread\");"
+    ],
+    "file": "src/dst/tests/billing_operation_counts.rs",
     "scenarios": []
   },
   {
@@ -6245,7 +6339,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "69ad86d7ed7714477d4bf16ecda79e3f6a7c82ce3ec99987d09a4387a14eb3ee",
+    "function_sha256": "077951aea9449ba77e5d2dd7146d8c4b7541f500832cea70cf5ba9b6ac755fe5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",

@@ -300,7 +300,6 @@ async fn execute_once(
     )?;
     let routing_key = command.routing_key.clone();
     let seg = route::resolve_segment(state, &mut desc, &routing_key).await?;
-    let hash = seg.identity;
     let _stream_slot = match state.admission.stream_slot(seg.identity) {
         Ok(s) => s,
         Err(_) => {
@@ -335,11 +334,11 @@ async fn execute_once(
     }
     state.usage.link_storage(
         crate::crypto::RouteHash::for_stream(&desc.sref()),
-        crate::crypto::SegmentHash(hash),
+        crate::crypto::SegmentHash(seg.identity),
     );
     let kv = command.key_version;
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
-    state.keys.put(hash, key, epoch);
+    state.keys.put(seg.identity, key, epoch);
 
     let touch = state.watches.append_touch(&desc, &entries);
 
@@ -355,7 +354,7 @@ async fn execute_once(
     let appended_records = entries.len();
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
-        hash,
+        hash: seg.identity,
         route: seg.shard_route,
         entries,
         usage: usage_c,
@@ -413,6 +412,7 @@ async fn execute_once(
             closed: ack.closed,
             producer: ack.producer.filter(|_| !close_plan.synthetic_producer),
             appended_records,
+            descriptor: desc,
         }),
         Err(error) => Err(AppendFailure::from_commit(
             seg.seg_id,

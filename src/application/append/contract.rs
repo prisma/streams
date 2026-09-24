@@ -335,6 +335,10 @@ pub(crate) struct AppendOutcome {
     pub(crate) closed: bool,
     pub(crate) producer: Option<(u64, u64)>,
     pub(crate) appended_records: usize,
+    /// The descriptor the append committed under (the incarnation
+    /// `expected_epoch` fenced): a surface counts the request (§4.5)
+    /// against it instead of reading the registry again.
+    pub(crate) descriptor: StreamDesc,
 }
 pub(crate) type AppendResult = Result<AppendOutcome, AppendFailure>;
 pub(crate) fn fail<T>(

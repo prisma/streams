@@ -31,6 +31,9 @@ mod billing_maintenance;
 #[path = "tests/billing_readiness.rs"]
 mod billing_readiness;
 
+#[path = "tests/billing_operation_counts.rs"]
+mod billing_operation_counts;
+
 #[path = "tests/billing_usage.rs"]
 mod billing_usage;
 
