@@ -42,6 +42,11 @@ MutSettleAlways(conclusive) == TRUE
 \* NC the one-time backfill never runs.
 MutNoBackfill == FALSE
 
+\* NC pre-fix recreation (before the recreate CAS indexed the fork debt of
+\* the tombstone it overwrites): recreating a child's name overwrites a
+\* debt-bearing tombstone the backfill has not indexed, and the debt is lost.
+MutNoIndexOverwritten == FALSE
+
 \* NC no reconciler: the reconciler task never runs (no fairness on it).
 NoReconciler == TRUE
 =============================================================================

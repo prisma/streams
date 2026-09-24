@@ -997,14 +997,9 @@ impl Registry {
     }
 
     /// Replace a dead (deleted/expired) descriptor with a fresh incarnation.
-    /// Predicated CAS: the replacement applies only while the current
-    /// descriptor is still dead per `still_dead`. Racing recreators get
-    /// one winner; a decline returns the current descriptor `still_dead`
-    /// refused (`(false, current)`): live, or retained for its forks.
-    #[expect(
-        clippy::expect_used,
-        reason = "Registry::recreate; the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced"
-    )]
+    /// Predicated CAS: the replacement applies only while the stored descriptor
+    /// is still dead per `still_dead` (one winner among racing recreators; a
+    /// decline returns `(false, current)`), and indexes fork debt it overwrites.
     pub(crate) async fn recreate(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1036,6 +1031,11 @@ impl Registry {
                 self.invalidate(sref);
                 return Ok((false, current));
             }
+            self.index_overwritten_debt(&current).await?;
+            #[expect(
+                clippy::expect_used,
+                reason = "Registry::recreate; the replacement body: the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced. Narrowed to this statement when the recreation began indexing the fork debt it overwrites, which adds no expect site"
+            )]
             let body = serde_json::to_vec(&fresh).expect("desc json");
             match self
                 .store

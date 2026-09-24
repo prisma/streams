@@ -18,7 +18,9 @@
 //! one-time backfill walks the cell's descriptors once, indexes every
 //! debt-bearing tombstone it finds, and records its progress and completion
 //! in one conditionally written object, so it resumes after a restart and
-//! runs once per deployment.
+//! runs once per deployment. A recreation that would overwrite such a
+//! tombstone before the backfill reaches it indexes the debt first
+//! (`Registry::recreate`).
 use super::*;
 
 /// Outside `PROJECTS_ROOT`: the catalog scans fail closed on any key under
@@ -170,6 +172,24 @@ impl Registry {
                 PutOptions::default(),
             )
             .await?;
+        Ok(())
+    }
+
+    /// Index the debt a recreation is about to overwrite (TLA-019-F4). The
+    /// replacement writes over the dead incarnation's descriptor, and a
+    /// tombstone that still owes its fork source a release is the debt's
+    /// only record unless it has a marker: one older than the index has
+    /// none, and the one-time backfill finds only descriptors still there.
+    /// With the marker written first, the reconciler pays the release from
+    /// it, as for any recreated name. A failed write fails the recreation
+    /// before anything changed. Idempotent, like `record_fork_debt`.
+    pub(crate) async fn index_overwritten_debt(
+        &self,
+        current: &StreamDesc,
+    ) -> Result<(), object_store::Error> {
+        if current.deleted && current.parent_ref_pending {
+            self.record_fork_debt(current).await?;
+        }
         Ok(())
     }
 

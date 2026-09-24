@@ -2262,7 +2262,8 @@
         "src/application/creation/anchor.rs",
         "src/application/creation/fork.rs",
         "src/application/creation/reconcile.rs",
-        "src/registry/fork_debt.rs"
+        "src/registry/fork_debt.rs",
+        "src/registry.rs"
       ],
       "verification_paths": [
         "verification/tla/history/ReachGC.tla",
@@ -2295,7 +2296,7 @@
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); a legacy shape where deletes before the rollout write no marker and the one-time backfill indexes them. No symmetry, no state or action constraints.",
+      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
       "checks": [
         {
           "id": "TLA-019/baseline-small",
@@ -2506,6 +2507,16 @@
           }
         },
         {
+          "id": "TLA-019/fork-baseline-legacy",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_baseline_legacy.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
           "id": "TLA-019/fork-liveness-client-retries",
           "role": "baseline",
           "spec": "verification/tla/history/MC_ForkPin.tla",
@@ -2537,6 +2548,15 @@
           "role": "baseline",
           "spec": "verification/tla/history/MC_ForkPin.tla",
           "config": "verification/tla/history/MC_ForkPin_liveness_backfill.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-backfill-recreated",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_backfill_recreated.cfg",
           "expect": {
             "result": "pass"
           }
@@ -2586,6 +2606,26 @@
           "role": "negative-control",
           "spec": "verification/tla/history/MC_ForkPin.tla",
           "config": "verification/tla/history/MC_ForkPin_nc_no_backfill.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-recreate-without-index",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_recreate_without_index.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OwedRefIndexed"
+          }
+        },
+        {
+          "id": "TLA-019/nc-recreate-without-index-liveness",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_recreate_without_index_liveness.cfg",
           "expect": {
             "result": "violation",
             "property": "RefEventuallyReleased"
@@ -2732,13 +2772,23 @@
           }
         },
         {
-          "id": "TLA-019/witness-fork-UnindexedDebtOverwritten",
+          "id": "TLA-019/witness-fork-RecreationIndexesDebt",
           "role": "witness",
           "spec": "verification/tla/history/MC_ForkPin.tla",
-          "config": "verification/tla/history/MC_ForkPin_w_UnindexedDebtOverwritten.cfg",
+          "config": "verification/tla/history/MC_ForkPin_w_RecreationIndexesDebt.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_UnindexedDebtOverwritten"
+            "property": "Witness_RecreationIndexesDebt"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-OldBinaryOverwroteDebt",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_OldBinaryOverwroteDebt.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OldBinaryOverwroteDebt"
           }
         }
       ],
@@ -2750,6 +2800,7 @@
         "dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
         "dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart",
         "dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released",
+        "dst::dst_tests::fork_debt::a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced",
         "dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart",
         "dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert",
         "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",

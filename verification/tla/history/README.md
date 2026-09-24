@@ -162,55 +162,60 @@ Not yet recorded as a receipt: the table is from `formal.py run --id TLA-018 --i
 
 ### TLA-019 (`pass-with-recorded-scope`)
 
-Not yet recorded as a receipt: the table is from the same unrecorded driver run. 45 checks, every verdict as expected; 50 min of TLC wall time in total. In that run `nc-ignore-fork-pin` and `nc-install-ignores-incarnation` first failed with a configuration error (their configurations lacked the new `Prev` and `Legacy` constants); after the fix they were rerun with `--id TLA-019 --role negative-control`, where all 15 controls matched, and the two rows below are from that rerun.
+Not yet recorded as a receipt: the table is from `formal.py run --id TLA-019` (without `--record`) on `d93490f` with the uncommitted fork-debt recreation fix and model changes, which `verification/receipts/TLA-019.json` does not yet reflect. 50 checks, every verdict as expected; TLC 2.19 on Java 17.0.1, 2 workers; 43 min of TLC wall time in total.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
 | `baseline-small` | `ReachGC` / `small` | baseline | pass | pass | 3,938,288 | 53 |
-| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 399 |
-| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 52 |
-| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 105 |
-| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 1792 |
-| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 247,997 | 5 |
-| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 161 | 1 |
-| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 446,545 | 7 |
-| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 445,895 | 8 |
-| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 23,177 | 2 |
-| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,182,834 | 16 |
-| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 566,760 | 126 |
-| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 524,423 | 8 |
-| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 200,038 | 4 |
-| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,308,058 | 20 |
-| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 447,745 | 8 |
-| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 684 | 1 |
-| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 25,032 | 2 |
-| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 1,673 | 1 |
-| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 126,423 | 3 |
-| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 3,374,329 | 117 |
-| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 72,328 | 14 |
-| `fork-liveness-reconciler` | `ForkPin` / `liveness_reconciler` | baseline | pass | pass | 72,328 | 16 |
-| `fork-liveness-reconciler-recreated` | `ForkPin` / `liveness_reconciler_recreated` | baseline | pass | pass | 49,238 | 11 |
-| `fork-liveness-backfill` | `ForkPin` / `liveness_backfill` | baseline | pass | pass | 564,266 | 174 |
-| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 48 | 1 |
-| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 451 | 1 |
-| `nc-no-reconciler` | `ForkPin` / `nc_no_reconciler` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 45,231 | 4 |
-| `nc-settle-inconclusive` | `ForkPin` / `nc_settle_inconclusive` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 31,147 | 4 |
-| `nc-no-backfill` | `ForkPin` / `nc_no_backfill` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 39,156 | 4 |
-| `nc-reconcile-live-child` | `ForkPin` / `nc_reconcile_live_child` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 102 | 1 |
-| `nc-release-current-name-id` | `ForkPin` / `nc_release_current_name_id` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 1,646 | 1 |
-| `nc-no-write-ahead-marker` | `ForkPin` / `nc_no_write_ahead_marker` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 45 | 1 |
-| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 105 | 1 |
-| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 3,233 | 1 |
-| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 455 | 1 |
-| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 84 | 1 |
-| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 127 | 1 |
-| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 876 | 1 |
-| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 784 | 1 |
-| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 526 | 1 |
-| `witness-fork-ReconcilerReleasesLatePin` | `ForkPin` / `w_ReconcilerReleasesLatePin` | witness | violation `Witness_ReconcilerReleasesLatePin` | violation `Witness_ReconcilerReleasesLatePin` | 537 | 1 |
-| `witness-fork-ReconcilerReleasesReplacedName` | `ForkPin` / `w_ReconcilerReleasesReplacedName` | witness | violation `Witness_ReconcilerReleasesReplacedName` | violation `Witness_ReconcilerReleasesReplacedName` | 420 | 1 |
-| `witness-fork-BackfillReleased` | `ForkPin` / `w_BackfillReleased` | witness | violation `Witness_BackfillReleased` | violation `Witness_BackfillReleased` | 828 | 1 |
-| `witness-fork-UnindexedDebtOverwritten` | `ForkPin` / `w_UnindexedDebtOverwritten` | witness | violation `Witness_UnindexedDebtOverwritten` | violation `Witness_UnindexedDebtOverwritten` | 214 | 1 |
+| `baseline-expanded` | `ReachGC` / `expanded` | baseline | pass | pass | 27,990,301 | 368 |
+| `baseline-timing-lapse` | `ReachGC` / `lapse` | baseline | pass | pass | 3,594,585 | 36 |
+| `liveness-small` | `ReachGC` / `liveness` | baseline | pass | pass | 637,394 | 69 |
+| `liveness-expanded` | `ReachGC` / `liveness_expanded` | baseline | pass | pass | 4,826,314 | 732 |
+| `nc-no-compaction-checkpoint` | `ReachGC` / `nc_no_compaction_checkpoint` | negative-control | violation `LiveReadViewProtected` | violation `LiveReadViewProtected` | 234,706 | 3 |
+| `nc-advance-on-upload` | `ReachGC` / `nc_advance_on_upload` | negative-control | violation `HistoryBacked` | violation `HistoryBacked` | 162 | 1 |
+| `nc-swallow-read-error` | `ReachGC` / `nc_swallow_read_error` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 463,603 | 4 |
+| `probe-upstream-short-read` | `ReachGC` / `probe_upstream_short_read` | negative-control | violation `NoFalseCompleteRead` | violation `NoFalseCompleteRead` | 508,278 | 5 |
+| `nc-no-generation-condition` | `ReachGC` / `nc_no_generation` | negative-control | violation `ManifestRefsPresent` | violation `ManifestRefsPresent` | 29,992 | 1 |
+| `nc-ignore-checkpoint-pin` | `ReachGC` / `nc_ignore_checkpoint_pin` | negative-control | violation `CheckpointPinned` | violation `CheckpointPinned` | 1,123,210 | 8 |
+| `nc-stale-inventory` | `ReachGC` / `nc_stale_inventory` | negative-control | violation `EligibleEventuallyReclaimed` | violation (temporal) | 566,760 | 58 |
+| `witness-CompactedInputReclaimed` | `ReachGC` / `w_CompactedInputReclaimed` | witness | violation `Witness_CompactedInputReclaimed` | violation `Witness_CompactedInputReclaimed` | 460,934 | 4 |
+| `witness-OrphanReclaimed` | `ReachGC` / `w_OrphanReclaimed` | witness | violation `Witness_OrphanReclaimed` | violation `Witness_OrphanReclaimed` | 202,160 | 2 |
+| `witness-HistoryServedAfterReclaim` | `ReachGC` / `w_HistoryServedAfterReclaim` | witness | violation `Witness_HistoryServedAfterReclaim` | violation `Witness_HistoryServedAfterReclaim` | 1,253,118 | 10 |
+| `witness-ReaderViewErrors` | `ReachGC` / `w_ReaderViewErrors` | witness | violation `Witness_ReaderViewErrors` | violation `Witness_ReaderViewErrors` | 625,102 | 5 |
+| `witness-StaleWriterViewRead` | `ReachGC` / `w_StaleWriterViewRead` | witness | violation `Witness_StaleWriterViewRead` | violation `Witness_StaleWriterViewRead` | 701 | 1 |
+| `witness-QuietDeadZoneRetains` | `ReachGC` / `w_QuietDeadZoneRetains` | witness | violation `Witness_QuietDeadZoneRetains` | violation `Witness_QuietDeadZoneRetains` | 22,804 | 1 |
+| `witness-LateCommitAfterGcView` | `ReachGC` / `w_LateCommitAfterGcView` | witness | violation `Witness_LateCommitAfterGcView` | violation `Witness_LateCommitAfterGcView` | 1,924 | 1 |
+| `witness-CheckpointProtectsReadView` | `ReachGC` / `w_CheckpointProtectsReadView` | witness | violation `Witness_CheckpointProtectsReadView` | violation `Witness_CheckpointProtectsReadView` | 118,239 | 2 |
+| `fork-baseline` | `ForkPin` / `baseline` | baseline | pass | pass | 3,374,329 | 64 |
+| `fork-baseline-legacy` | `ForkPin` / `baseline_legacy` | baseline | pass | pass | 41,723,978 | 895 |
+| `fork-liveness-client-retries` | `ForkPin` / `liveness_client_retries` | baseline | pass | pass | 72,328 | 8 |
+| `fork-liveness-reconciler` | `ForkPin` / `liveness_reconciler` | baseline | pass | pass | 72,328 | 10 |
+| `fork-liveness-reconciler-recreated` | `ForkPin` / `liveness_reconciler_recreated` | baseline | pass | pass | 49,238 | 8 |
+| `fork-liveness-backfill` | `ForkPin` / `liveness_backfill` | baseline | pass | pass | 564,266 | 107 |
+| `fork-liveness-backfill-recreated` | `ForkPin` / `liveness_backfill_recreated` | baseline | pass | pass | 367,371 | 68 |
+| `nc-ignore-fork-pin` | `ForkPin` / `nc_ignore_fork_pin` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 53 | 1 |
+| `nc-install-ignores-incarnation` | `ForkPin` / `nc_install_ignores_incarnation` | negative-control | violation `ForkPinRespected` | violation `ForkPinRespected` | 348 | 1 |
+| `nc-no-reconciler` | `ForkPin` / `nc_no_reconciler` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 63,987 | 4 |
+| `nc-settle-inconclusive` | `ForkPin` / `nc_settle_inconclusive` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 51,288 | 4 |
+| `nc-no-backfill` | `ForkPin` / `nc_no_backfill` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 55,550 | 4 |
+| `nc-recreate-without-index` | `ForkPin` / `nc_recreate_without_index` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 299 | 1 |
+| `nc-recreate-without-index-liveness` | `ForkPin` / `nc_recreate_without_index_liveness` | negative-control | violation `RefEventuallyReleased` | violation (temporal) | 45,896 | 4 |
+| `nc-reconcile-live-child` | `ForkPin` / `nc_reconcile_live_child` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 115 | 1 |
+| `nc-release-current-name-id` | `ForkPin` / `nc_release_current_name_id` | negative-control | violation `ReadyHoldsRef` | violation `ReadyHoldsRef` | 1,395 | 1 |
+| `nc-no-write-ahead-marker` | `ForkPin` / `nc_no_write_ahead_marker` | negative-control | violation `OwedRefIndexed` | violation `OwedRefIndexed` | 47 | 1 |
+| `witness-fork-SoftDeleteRetainedForFork` | `ForkPin` / `w_SoftDeleteRetainedForFork` | witness | violation `Witness_SoftDeleteRetainedForFork` | violation `Witness_SoftDeleteRetainedForFork` | 116 | 1 |
+| `witness-fork-TwoChildrenPinSource` | `ForkPin` / `w_TwoChildrenPinSource` | witness | violation `Witness_TwoChildrenPinSource` | violation `Witness_TwoChildrenPinSource` | 4,469 | 1 |
+| `witness-fork-ForkCascadeTombstone` | `ForkPin` / `w_ForkCascadeTombstone` | witness | violation `Witness_ForkCascadeTombstone` | violation `Witness_ForkCascadeTombstone` | 382 | 1 |
+| `witness-fork-InstallAfterChildDeleted` | `ForkPin` / `w_InstallAfterChildDeleted` | witness | violation `Witness_InstallAfterChildDeleted` | violation `Witness_InstallAfterChildDeleted` | 77 | 1 |
+| `witness-fork-InstallDeclinedOnRecreatedSource` | `ForkPin` / `w_InstallDeclinedOnRecreatedSource` | witness | violation `Witness_InstallDeclinedOnRecreatedSource` | violation `Witness_InstallDeclinedOnRecreatedSource` | 122 | 1 |
+| `witness-fork-DebtClearedOnRecreatedSource` | `ForkPin` / `w_DebtClearedOnRecreatedSource` | witness | violation `Witness_DebtClearedOnRecreatedSource` | violation `Witness_DebtClearedOnRecreatedSource` | 583 | 1 |
+| `witness-fork-PermanentPinWithoutRetry` | `ForkPin` / `w_PermanentPinWithoutRetry` | witness | violation `Witness_PermanentPinWithoutRetry` | violation `Witness_PermanentPinWithoutRetry` | 742 | 1 |
+| `witness-fork-PinAfterSuccessfulDelete` | `ForkPin` / `w_PinAfterSuccessfulDelete` | witness | violation `Witness_PinAfterSuccessfulDelete` | violation `Witness_PinAfterSuccessfulDelete` | 582 | 1 |
+| `witness-fork-ReconcilerReleasesLatePin` | `ForkPin` / `w_ReconcilerReleasesLatePin` | witness | violation `Witness_ReconcilerReleasesLatePin` | violation `Witness_ReconcilerReleasesLatePin` | 1,053 | 1 |
+| `witness-fork-ReconcilerReleasesReplacedName` | `ForkPin` / `w_ReconcilerReleasesReplacedName` | witness | violation `Witness_ReconcilerReleasesReplacedName` | violation `Witness_ReconcilerReleasesReplacedName` | 451 | 1 |
+| `witness-fork-BackfillReleased` | `ForkPin` / `w_BackfillReleased` | witness | violation `Witness_BackfillReleased` | violation `Witness_BackfillReleased` | 859 | 1 |
+| `witness-fork-RecreationIndexesDebt` | `ForkPin` / `w_RecreationIndexesDebt` | witness | violation `Witness_RecreationIndexesDebt` | violation `Witness_RecreationIndexesDebt` | 140 | 1 |
+| `witness-fork-OldBinaryOverwroteDebt` | `ForkPin` / `w_OldBinaryOverwroteDebt` | witness | violation `Witness_OldBinaryOverwroteDebt` | violation `Witness_OldBinaryOverwroteDebt` | 39 | 1 |
 <!-- /RESULTS -->
 
 ## Findings
@@ -227,7 +232,7 @@ Not yet recorded as a receipt: the table is from the same unrecorded driver run.
 | TLA-018-F3 | production defect | **Fixed** by "A provisional read cursor proves the history it continues, or answers an explicit resync" (`55881d7`). `baseline-applied-unfiltered-expanded` (the former known-defect shape) and `baseline-applied-keyed-expanded` check `ExactDurablePrefix` and pass; `nc-no-continuation-check` reproduces the pre-fix acceptance. Regressions in `dst::dst_tests::reads_applied_history`; `verification/regressions/TLA-018-F3/README.md`. |
 | TLA-018-F2 | specification finding (owner decision) | **Open; needs an owner decision.** H11 is not enforced by the reader; it holds only through durability and the cache contract. The owner either adopts that scope for H11, with its assumptions, or asks for reader-side enforcement. |
 | TLA-019-F1 | abstraction gap (not reproduced) | **Withdrawn as a defect.** The model lacked the compactor's checkpoint. With it, `LiveReadViewProtected` passes under ASM-SLATEDB-COMPACTION-CHECKPOINT; `nc-no-compaction-checkpoint` reproduces the earlier counterexample. |
-| TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. Residual: pre-index debt overwritten by a recreation of the child's name before the backfill indexes it. |
+| TLA-019-F4 | unjustified assumption, then production work | **Fixed** by "A background reconciler releases fork references that deleted children still owe" (`0d40dc2`) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (`8a03e0d`). `fork-liveness-reconciler` (the former `probe-no-client-retry` shape, with no client retry), `fork-liveness-reconciler-recreated` and `fork-liveness-backfill` pass; `nc-no-reconciler`, `nc-settle-inconclusive` and `nc-no-backfill` violate `RefEventuallyReleased`. The residual found by the model (pre-index debt overwritten by a recreation of the child's name before the backfill indexes it) is **fixed** too: the recreate CAS indexes the debt it overwrites; `fork-baseline-legacy` and `fork-liveness-backfill-recreated` pass and `nc-recreate-without-index*` reproduce the pre-fix loss. |
 | TLA-019-F2 | unjustified assumption | **Open.** H14 convergence holds only while the partition keeps writing. |
 | TLA-019-F3 | scope gap (owner question) | **Open.** There is no physical reclamation policy for a hard-deleted incarnation's rows. |
 
@@ -782,6 +787,15 @@ the states the reconciler now repairs.
   the model, with `Legacy`, child deletes before `Rollout` write no marker,
   `Backfill(c)` indexes such a tombstone and `BackfillFinish` completes the
   walk (mutation point `BackfillOn`).
+- A recreation of the child's name overwrites its tombstone and the debt on
+  it. `Registry::recreate`, the one recreate CAS every create surface uses,
+  now indexes a debt the stored tombstone still carries before it writes the
+  replacement (`src/registry.rs:1034`; `Registry::index_overwritten_debt`,
+  `src/registry/fork_debt.rs:186-194`); a failed marker write fails the
+  recreation before anything changed. This closes the residual the model
+  found in the first version of this fix (below). In the model `ForkBegin`
+  of a child that recreates a name marks the overwritten debt when the new
+  binary runs (mutation point `IndexOverwritten`).
 
 **Checks.** `fork-liveness-reconciler` (the former `probe-no-client-retry`
 shape: no client retry) and `fork-liveness-reconciler-recreated` (the child's
@@ -791,14 +805,23 @@ name is recreated, so the debt survives only as a marker) pass
 `fork-liveness-client-retries` still passes: a client retry remains a valid
 repair. `fork-baseline` adds `OwedRefIndexed`: a deleted child's reference
 that still pins the incarnation it forked, with no creator left, always has a
-marker. Controls, each a hand mutation the commits name: `nc-no-reconciler`,
+marker, or, until the backfill completes, a pre-index tombstone that still
+carries the debt. `fork-baseline-legacy` checks it in the legacy shape with
+a recreated child name, and `fork-liveness-backfill-recreated` checks the
+liveness properties there. Controls, each a hand mutation the commits name: `nc-no-reconciler`,
 `nc-settle-inconclusive` and `nc-no-backfill` violate
 `RefEventuallyReleased`; `nc-reconcile-live-child` and
 `nc-release-current-name-id` violate `ReadyHoldsRef`;
-`nc-no-write-ahead-marker` violates `OwedRefIndexed`. Witnesses:
+`nc-no-write-ahead-marker` violates `OwedRefIndexed`;
+`nc-recreate-without-index` (the pre-fix recreation) violates
+`OwedRefIndexed` and `nc-recreate-without-index-liveness` violates
+`RefEventuallyReleased`. Witnesses:
 `witness-fork-ReconcilerReleasesLatePin` (the path-2 schedule released with
 no client retry), `witness-fork-ReconcilerReleasesReplacedName`,
-`witness-fork-BackfillReleased`.
+`witness-fork-BackfillReleased`, `witness-fork-RecreationIndexesDebt` (a
+recreation after the rollout indexes a debt the backfill had not reached)
+and `witness-fork-OldBinaryOverwroteDebt` (the exclusion below is
+reachable).
 
 **Regressions.**
 `dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry`
@@ -806,20 +829,28 @@ no client retry), `witness-fork-ReconcilerReleasesReplacedName`,
 `dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds`,
 `dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart`,
 `dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released`,
+`dst::dst_tests::fork_debt::a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced`
+(fails before the recreation fix: the reconciler and the backfill ran for
+10 s and the source stayed soft-deleted, pinned by the replaced child's
+reference),
 `dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart` and
 `dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert`.
 `dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry`
 still pins the client-retry repair.
 
-**Residual (recorded, not claimed).** A debt-bearing tombstone that has no
-marker, because an old binary wrote it, is lost if its child's name is
-recreated before the backfill indexes it: the recreation overwrites the
-tombstone and its debt, and nothing else records the release. Before the
-rollout this is the older leak the reconciler commit names; after the
-rollout the window lasts until the backfill passes the name.
-`witness-fork-UnindexedDebtOverwritten` shows the post-rollout case is
-reachable, so `fork-liveness-backfill` uses two children under distinct
-names. The commit's own known limits also stand: a marker whose creator died
+**Residual found by the model, then fixed.** In the first version of this
+fix, a debt-bearing tombstone with no marker, because an old binary wrote
+it, was lost if its child's name was recreated before the backfill indexed
+it: the recreation overwrote the tombstone and its debt, and nothing else
+recorded the release. The model reached it after the rollout (the former
+witness `UnindexedDebtOverwritten`), and
+`a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced`
+reproduced it on the real code. The recreate CAS now indexes the debt first
+(above). What remains is outside any repair: a debt the old binary itself
+overwrote before the rollout has no record left. The properties exclude it
+explicitly (`LostByOldBinary`, the ghost `lostOld`), and
+`witness-fork-OldBinaryOverwroteDebt` shows it is reachable. The commit's own
+known limits also stand: a marker whose creator died
 before installing its reference stays pending until an operator confirms it
 inert, and the `fork_debt_stale` alert is evaluated only in the telemetry
 cadence.
@@ -1367,15 +1398,16 @@ checkpoint on the pre-compaction manifest.
   forked, across a source's deletion and recreation under the same name.
 - ForkPin `OwedRefIndexed`: a deleted child's reference that still pins
   the incarnation it forked, with no creator left to release it, always has a
-  fork-debt marker (no crash or settlement leaves debt the reconciler cannot
-  find).
+  fork-debt marker, or, until the backfill completes, a pre-index tombstone
+  that still carries the debt (no crash, settlement or recreation after the
+  rollout leaves debt the reconciler cannot find).
 - ForkPin `RefEventuallyReleased` / `SoftSourceEventuallyTombstoned`
   (liveness, under the reconciler's fairness and with no client retry; also
   under the client-retry premise alone when no child name is recreated): once
   a child is gone, its reference is released, and a soft-deleted source whose
-  children are gone is tombstoned. With pre-index debt, this holds after the
-  rollout through the backfill, when no child name is recreated before the
-  backfill indexes it (TLA-019-F4 residual).
+  children are gone is tombstoned. With pre-index debt this holds through the
+  backfill and the recreation's indexing, except for a debt the old binary
+  overwrote before the rollout, which no record survives (`LostByOldBinary`).
 
 **Requirement anchors:** F6, H13, H14, R4; F5, F8 and F10 through ForkPin.
 
@@ -1407,7 +1439,7 @@ child name (`Prev`), and whether the binary with the index is deployed.
 | `CkCreate` / `CkRelease` | Upstream user-checkpoint API. **The repository never creates one** | Models the upstream contract only (`UseCheckpoint`). The compactor's checkpoint is `CompactCommit`'s. |
 | `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:719`; `read_history2*`, `src/history.rs:900-1103`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
 | `GcReadCompactions` → `GcReadManifest` → `GcList` → `GcDelete`* → `GcFinish` | Upstream `GarbageCollector::run_gc_task` → `remove_expired_checkpoints`, then `CompactedGcTask::collect` (SlateDB `0717cc1`, `garbage_collector.rs`, `garbage_collector/compacted_gc.rs`) | Compactions are read before the manifest; the manifest read includes the manifests of unexpired checkpoints (`CheckpointRefs`; expiry is checked at that step, which can only make deletion earlier); then the list, then per-object deletes. At most one pass per tick. |
-| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. |
+| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:1003-1061`), which indexes the debt of the stored tombstone first (`:1034`; `fork_debt.rs:186-194`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
 | `ForkInstall` | `anchor::install`: `mutate_incarnation(source, forked epoch)` (`src/application/creation/anchor.rs:78`) | One CAS bound to the forked incarnation (ASM-OBJSTORE-CAS). Idempotent when already installed; declines on a soft, tombstoned or recreated source. Mutation point `InstallFence`. |
 | `ForkPostCheck` | `anchor.rs:134-182`: if the child incarnation vanished (lookup by name, bound to its epoch), release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The source presence check is by name, with no epoch check. |
 | `CreatorCrash` | The create request dies before its post-check | Bounded fault. |
@@ -1440,7 +1472,8 @@ ASM-HISTORY-GC-CLOCK, ASM-HISTORY-ACTORS and ASM-OBJSTORE-CAS.
 | ForkPin `liveness_reconciler_recreated` | children `{F1, F3}`, F3 recreating F1's name | | | | | | | `LiveSpecReconciler` |
 | ForkPin `liveness_client_retries` | children `{F1, F2}` | | | | | | | `LiveSpecClientRetries` |
 | ForkPin `liveness_backfill`, `nc_no_backfill`, `w_BackfillReleased` | children `{F1, F2}`, `Legacy` | | | | | | | `LiveSpecReconciler` / `Spec` |
-| ForkPin `w_UnindexedDebtOverwritten` | children `{F1, F2, F3}`, `Legacy` | | | | | | | `Spec` |
+| ForkPin `baseline_legacy` | children `{F1, F2, F3}`, F3 recreating F1's name, `Legacy` | | | | | | | `Spec` |
+| ForkPin `liveness_backfill_recreated`, `nc_recreate_without_index`, `nc_recreate_without_index_liveness`, `w_RecreationIndexesDebt`, `w_OldBinaryOverwroteDebt` | children `{F1, F3}`, F3 recreating F1's name, `Legacy` | | | | | | | `LiveSpecReconciler` / `Spec` |
 
 Every ReachGC configuration uses `PollInterval = 1` and `ReadSpan = 1`: one
 tick is 300 s, the writer view is refreshed within one tick of going stale,
@@ -1486,6 +1519,8 @@ distinct names and one with a recreated name.
 | ForkPin `nc_reconcile_live_child` | repository | `MarkerView <- MutMarkerViewNoDefer`: a live child's marker is paid from the marker | `ReadyHoldsRef` |
 | ForkPin `nc_release_current_name_id` | repository | `ReleaseId <- MutReleaseCurrentNameId`: a recreated name's marker releases the fork id of the incarnation that now holds the name | `ReadyHoldsRef` |
 | ForkPin `nc_no_write_ahead_marker` | repository | `WriteAhead <- MutNoWriteAhead`: the tombstone is written without the marker ahead of it | `OwedRefIndexed` |
+| ForkPin `nc_recreate_without_index` (legacy, recreated name) | repository (pre-fix recreation) | `IndexOverwritten <- MutNoIndexOverwritten`: the recreate CAS overwrites a debt-bearing tombstone without indexing its debt | `OwedRefIndexed` |
+| ForkPin `nc_recreate_without_index_liveness` (legacy, recreated name) | repository (pre-fix recreation) | as above | `RefEventuallyReleased` |
 
 The former probe `probe_no_client_retry` (no client retry, no reconciler)
 is retired: with the reconciler the same premise is the passing baseline
@@ -1518,7 +1553,12 @@ exactly one property.
 | ForkPin `ReconcilerReleasesLatePin` | The reconciler releases the reference of a child whose `DELETE` had returned success, with no client retry. |
 | ForkPin `ReconcilerReleasesReplacedName` | The reconciler releases, from the marker, the reference of a child incarnation whose name was recreated. |
 | ForkPin `BackfillReleased` (legacy shape) | A pre-index debt is indexed by the backfill and released by the reconciler. |
-| ForkPin `UnindexedDebtOverwritten` (legacy shape, recreated name) | After the rollout, a recreation of a child's name overwrites a debt-bearing tombstone the backfill has not indexed (the F4 residual). |
+| ForkPin `RecreationIndexesDebt` (legacy shape, recreated name) | After the rollout, a recreation of a child's name indexes the debt of a tombstone the backfill has not reached. |
+| ForkPin `OldBinaryOverwroteDebt` (legacy shape, recreated name) | Before the rollout, the old binary's recreation overwrites a debt nothing recorded; the properties exclude that reference. |
+
+The former witness `UnindexedDebtOverwritten` (the residual after the
+rollout) is retired: with the fix it is unreachable, and
+`nc-recreate-without-index` reproduces it.
 
 ### Exclusions and what is not claimed
 
@@ -1545,9 +1585,11 @@ exactly one property.
   `FORK_DEBT_SWEEP_SECS`), the backfill's page walk and progress object, the
   ancestor walk inside `repair_tombstone`, unparseable markers (skipped and
   left in place) and the `fork_debt_stale` alert are not modelled; one
-  reconciler step settles one marker, weakly fair per marker. Debt lost to a
-  recreation before the backfill indexes it is the recorded F4 residual, not
-  a claim.
+  reconciler step settles one marker, weakly fair per marker. A debt the old
+  binary overwrote before the rollout is excluded from the claims.
+- A recreation that races another instance's old-binary delete of the same
+  name during a mixed-version rollout is not modelled; the recreate CAS
+  indexes whatever tombstone it reads.
 
 ---
 

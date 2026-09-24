@@ -132,6 +132,38 @@ async fn a_tombstone_older_than_the_index_is_backfilled_and_released() {
     rig.shutdown().await;
 }
 
+/// A pre-index debt tombstone whose child name is recreated before the
+/// backfill reaches it: the recreation overwrites the tombstone and the debt
+/// it carried, and the backfill then finds only the new, live incarnation.
+/// The recreation must index the overwritten debt first, so the reconciler
+/// pays it from the marker and the source it pinned is tombstoned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced() {
+    let _serial = gap_lock().lock().await;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let (state, addr) = (rig.state.clone(), rig.addr);
+    let (src_ref, kid_ref) = plant_debt(&state, addr, ("frk33src", "frk33kid"), true).await;
+    let owed = desc(&state, &kid_ref).await.stream_epoch.clone();
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk33kid", &ct, b"").await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    let kid = desc(&state, &kid_ref).await;
+    assert!(
+        kid.stream_epoch != owed && !kid.deleted && !kid.parent_ref_pending,
+        "the name holds a new incarnation: {kid:?}"
+    );
+    assert!(desc(&state, &src_ref).await.soft_deleted);
+
+    crate::application::creation::spawn_fork_debt_reconciler(
+        state.creation_service(),
+        &rig.tasks,
+        Duration::from_millis(50),
+    );
+    released(&state, &src_ref).await;
+    assert_eq!(gauge(&state, "fork_debt_backfill_complete"), Some(1));
+    rig.shutdown().await;
+}
+
 /// The backfill resumes from its durable progress after a restart: the next
 /// process indexes only what the first had not yet walked, then completes,
 /// and its reconciler releases both sources.

@@ -527,9 +527,9 @@ actions to these contracts.
   returned success the client has no signal to retry.
 - **Invalidation:** a change to task ownership, the rescan cadence or the
   reconciler's pass bound; a reconciler that stops before a circle completes
-  (a marker it cannot parse is skipped, not retried); a recreation of a child
-  name over a debt-bearing tombstone that the backfill has not indexed
-  (the debt is then lost, see TLA-019-F4).
+  (a marker it cannot parse is skipped, not retried); a create path that
+  overwrites a debt-bearing tombstone without going through
+  `Registry::recreate`, which indexes the debt first (TLA-019-F4).
 - **Standing:** established for the in-process actors and the reconciler;
   unestablished for client `DELETE` retries.
 

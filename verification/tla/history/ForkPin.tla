@@ -36,7 +36,7 @@
 (* indexes the debt-bearing tombstones it finds after the rollout.         *)
 (*                                                                         *)
 (* Mutation points: DeleteDecision, InstallFence, WriteAhead, MarkerView,  *)
-(* ReleaseId, SettleMarker, BackfillOn.                                    *)
+(* ReleaseId, SettleMarker, BackfillOn, IndexOverwritten.                  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -72,14 +72,15 @@ VARIABLES
     recReplaced, \* ghost: the reconciler released from the marker of a recreated name
     bfSet,     \* ghost: the incarnations whose marker the backfill wrote
     recBackfilled, \* ghost: the reconciler released a reference the backfill indexed
-    lostUnindexed  \* ghost: after the rollout, a recreation overwrote an unindexed debt
+    recIndexed, \* ghost: a recreation indexed the unindexed debt of the tombstone it replaced
+    lostOld    \* ghost: children whose unindexed debt a pre-rollout recreation overwrote
 
 vars == <<srcEpoch, src, refs, child, cEpoch, creator, debt, req, marker, rolled, bfDone,
           crashes, cascaded, lateInst, declinedRecreated, conclusiveRecreated, okDel,
-          recLate, recReplaced, bfSet, recBackfilled, lostUnindexed>>
+          recLate, recReplaced, bfSet, recBackfilled, recIndexed, lostOld>>
 ghosts == <<cascaded, lateInst, declinedRecreated, conclusiveRecreated, okDel,
-            recLate, recReplaced, bfSet, recBackfilled, lostUnindexed>>
-rghosts == <<recLate, recReplaced, bfSet, recBackfilled, lostUnindexed>>
+            recLate, recReplaced, bfSet, recBackfilled, recIndexed, lostOld>>
+rghosts == <<recLate, recReplaced, bfSet, recBackfilled, recIndexed, lostOld>>
 
 \* delete_transition: soft-delete while live children exist, else tombstone.
 DeleteDecision(hasRef) == IF hasRef THEN "soft" ELSE "deleted"
@@ -102,6 +103,9 @@ ReleaseId(c) == c
 SettleMarker(conclusive) == conclusive
 \* The one-time backfill (Registry::backfill_fork_debt) runs.
 BackfillOn == TRUE
+\* A recreation indexes the debt of the tombstone it overwrites
+\* (Registry::recreate; Registry::index_overwritten_debt).
+IndexOverwritten == TRUE
 
 Alive(c) == child[c] \in {"creating", "anchored", "ready"}
 NameFree(c) == IF Prev[c] = "-" THEN TRUE ELSE child[Prev[c]] = "gone"
@@ -122,7 +126,7 @@ Init ==
     /\ declinedRecreated = FALSE /\ conclusiveRecreated = FALSE
     /\ okDel = [c \in Children |-> FALSE]
     /\ recLate = FALSE /\ recReplaced = FALSE /\ bfSet = {}
-    /\ recBackfilled = FALSE /\ lostUnindexed = FALSE
+    /\ recBackfilled = FALSE /\ recIndexed = FALSE /\ lostOld = {}
 
 (* release_fork_ref(source, id, sep) as one atomic step: the epoch check on *)
 (* its snapshot and the CAS bound to that snapshot's incarnation agree (a   *)
@@ -152,11 +156,21 @@ ForkBegin(c) ==     \* fork::prepare validated the live current incarnation
     /\ cEpoch' = [cEpoch EXCEPT ![c] = srcEpoch]
     /\ creator' = [creator EXCEPT ![c] = "pending"]
     \* Recreating the name overwrites the previous incarnation's tombstone,
-    \* and its parent_ref_pending debt with it; only its marker remains.
-    /\ debt' = IF Prev[c] = "-" THEN debt ELSE [debt EXCEPT ![Prev[c]] = FALSE]
-    /\ lostUnindexed' = (lostUnindexed \/ IF Prev[c] = "-" THEN FALSE
-                                            ELSE rolled /\ debt[Prev[c]] /\ ~marker[Prev[c]])
-    /\ UNCHANGED <<srcEpoch, src, refs, req, marker, rolled, bfDone, crashes, cascaded,
+    \* and its parent_ref_pending debt with it; only its marker remains.  The
+    \* recreate CAS first indexes a debt the tombstone still carries
+    \* (Registry::recreate -> index_overwritten_debt, new binary only): a
+    \* tombstone older than the index has no marker yet.  Before the rollout
+    \* the old binary overwrote such a debt unrecorded (lostOld).
+    /\ IF Prev[c] = "-"
+         THEN UNCHANGED <<debt, marker, recIndexed, lostOld>>
+         ELSE LET p       == Prev[c]
+                  owed    == debt[p] /\ ~marker[p]
+                  indexed == owed /\ rolled /\ IndexOverwritten
+              IN /\ debt' = [debt EXCEPT ![p] = FALSE]
+                 /\ marker' = [marker EXCEPT ![p] = @ \/ indexed]
+                 /\ recIndexed' = (recIndexed \/ indexed)
+                 /\ lostOld' = IF owed /\ ~rolled THEN lostOld \cup {p} ELSE lostOld
+    /\ UNCHANGED <<srcEpoch, src, refs, req, rolled, bfDone, crashes, cascaded,
                    lateInst, declinedRecreated, conclusiveRecreated, okDel,
                    recLate, recReplaced, bfSet, recBackfilled>>
 
@@ -299,7 +313,7 @@ Reconcile(c) ==
               /\ UNCHANGED <<debt, conclusiveRecreated, recLate, recBackfilled>>
          [] OTHER -> FALSE      \* deferred: a live child's delete may not have tombstoned yet
     /\ UNCHANGED <<srcEpoch, child, cEpoch, creator, req, rolled, bfDone, crashes, lateInst,
-                   declinedRecreated, okDel, bfSet, lostUnindexed>>
+                   declinedRecreated, okDel, bfSet, recIndexed, lostOld>>
 
 Rollout ==          \* the binary with the index replaces the old one; an old
                     \* request still in flight wrote no marker, so it finishes alike
@@ -318,7 +332,7 @@ Backfill(c) ==      \* backfill_fork_debt indexes a debt-bearing tombstone it wa
     /\ bfSet' = bfSet \cup {c}
     /\ UNCHANGED <<srcEpoch, src, refs, child, cEpoch, creator, debt, req, rolled, bfDone,
                    crashes, cascaded, lateInst, declinedRecreated, conclusiveRecreated,
-                   okDel, recLate, recReplaced, recBackfilled, lostUnindexed>>
+                   okDel, recLate, recReplaced, recBackfilled, recIndexed, lostOld>>
 
 \* The walk has passed every descriptor and records `complete`; it never
 \* runs again in this deployment (fork_debt.rs:279-281, :298-303).  After
@@ -396,25 +410,33 @@ ForkPinRespected ==
 ReadyHoldsRef ==
     \A c \in Children : child[c] \in {"anchored", "ready"} =>
         (cEpoch[c] = srcEpoch /\ c \in refs)
-\* (New binary.)  A deleted child's reference that still pins the source
-\* incarnation it forked, with no creator left to release it, is indexed:
-\* no crash and no settlement leaves debt the reconciler cannot find.
+\* A deleted child's reference that still pins the source incarnation it
+\* forked, with no creator left to release it, is recorded where the
+\* reconciler finds it: a marker, or (only until the backfill completes) a
+\* pre-index tombstone that still carries the debt.  No crash, settlement or
+\* recreation after the rollout leaves debt the reconciler cannot find.  The
+\* debts the old binary overwrote before the rollout (lostOld) are excluded:
+\* nothing records them.
 OwedRefIndexed ==
     \A c \in Children :
         (/\ child[c] = "gone" /\ c \in refs /\ cEpoch[c] = srcEpoch
-         /\ creator[c] = "done")
-            => marker[c]
+         /\ creator[c] = "done" /\ c \notin lostOld)
+            => marker[c] \/ (debt[c] /\ ~Replaced(c) /\ ~bfDone)
 
 \* No permanent pin: once a child is gone, its reference on the incarnation
 \* it forked is eventually released, and a soft-deleted source whose
 \* children are all gone is eventually tombstoned.
+\* Both allow one outcome besides the release: the old binary overwrote the
+\* reference's debt before the rollout (lostOld, empty unless Legacy), and
+\* no record of it survives.
+LostByOldBinary(c) == c \in lostOld /\ c \in refs /\ cEpoch[c] = srcEpoch
 RefEventuallyReleased ==
     \A c \in Children :
         (child[c] = "gone" /\ cEpoch[c] = srcEpoch /\ c \in refs)
-            ~> ~(cEpoch[c] = srcEpoch /\ c \in refs)
+            ~> (~(cEpoch[c] = srcEpoch /\ c \in refs) \/ LostByOldBinary(c))
 SoftSourceEventuallyTombstoned ==
     (src = "soft" /\ \A c \in Children : child[c] \in {"none", "gone"})
-        ~> (src = "deleted")
+        ~> (src = "deleted" \/ \E c \in Children : LostByOldBinary(c))
 
 Witness_SoftDeleteRetainedForFork ==
     ~(src = "soft" /\ \E c \in Children : child[c] = "ready")
@@ -450,7 +472,10 @@ Witness_ReconcilerReleasesLatePin == ~recLate
 Witness_ReconcilerReleasesReplacedName == ~recReplaced
 \* Legacy: a pre-index debt was indexed by the backfill and released.
 Witness_BackfillReleased == ~recBackfilled
-\* Legacy residual: after the rollout, a recreation of a child's name
-\* overwrote a debt-bearing tombstone the backfill had not yet indexed.
-Witness_UnindexedDebtOverwritten == ~lostUnindexed
+\* Legacy: after the rollout, a recreation of a child's name indexed the
+\* debt of a tombstone the backfill had not yet reached.
+Witness_RecreationIndexesDebt == ~recIndexed
+\* Legacy: before the rollout, the old binary's recreation overwrote a debt
+\* nothing had recorded (the leak the properties exclude).
+Witness_OldBinaryOverwroteDebt == lostOld = {}
 =============================================================================
