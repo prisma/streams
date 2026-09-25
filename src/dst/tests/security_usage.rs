@@ -165,3 +165,90 @@ async fn a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name() {
     assert_eq!(row_of(&named), (Some(live.as_str()), Some(2)), "{named}");
     engine_shutdown(&state).await;
 }
+
+/// The month before `month` ("YYYY-MM").
+fn previous(month: &str) -> String {
+    let (y, m) = crate::billing::parse_month(month).unwrap();
+    if m == 1 {
+        crate::billing::month_str(y - 1, 12)
+    } else {
+        crate::billing::month_str(y, m - 1)
+    }
+}
+
+/// An id is authorized by the name the rollup recorded for it, in every
+/// month, not only by the requested month's aggregate. A prior
+/// incarnation of the URL's name is served for a month it did not
+/// contribute to (a zero row: its segment states carry the name), while
+/// a foreign id stays 404 in that month too, where the URL's name has no
+/// aggregate at all; and a name with no usage yet refuses a foreign id
+/// and serves its own live id named explicitly. Reds against the first
+/// version of the check (aggregate membership in the requested month
+/// only): the prior incarnation's past month answered 404. The foreign
+/// probes kill the two mutants a review planted: serving any id when the
+/// name has no aggregate, and checking only the current month.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
+        .await
+        .unwrap();
+    install_rollup(&state, rollup);
+    let (full, pfx) = bearers(&svc);
+
+    stream_with(addr, &full, "a/mine", 1).await;
+    roll_up(&state).await;
+    let (st, first) = usage(addr, &full, "/v1/streams/a/mine/usage/current").await;
+    assert_eq!(st, 200, "{first}");
+    let prior = first["streamId"].as_str().unwrap().to_string();
+    let month = first["month"].as_str().unwrap().to_string();
+    let past = previous(&month);
+    let headers = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("authorization", full.as_str()),
+    ];
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/a/mine", &headers, b"").await;
+    assert!(st == 200 || st == 204, "delete: {st}");
+    stream_with(addr, &full, "a/mine", 2).await;
+    stream_with(addr, &full, "b/secret", 3).await;
+    // a/empty exists but has no usage, so no aggregate names it.
+    rig_create(addr, "a/empty", &full).await;
+    roll_up(&state).await;
+    let (st, secret) = usage(addr, &full, "/v1/streams/b/secret/usage/current").await;
+    assert_eq!(st, 200, "{secret}");
+    let foreign = secret["streamId"].as_str().unwrap().to_string();
+
+    // The prior incarnation, in a month it did not contribute to: its
+    // own zero row.
+    let path = format!("/v1/streams/a/mine/usage?month={past}&streamId={prior}");
+    let (st, old) = usage(addr, &pfx, &path).await;
+    assert_eq!(st, 200, "{old}");
+    assert_eq!(row_of(&old), (Some(prior.as_str()), Some(0)), "{old}");
+
+    // A foreign id in that month, where a/mine has no aggregate, and
+    // through a name with no usage at all: never its row.
+    for path in [
+        format!("/v1/streams/a/mine/usage?month={past}&streamId={foreign}"),
+        format!("/v1/streams/a/mine/usage?month={month}&streamId={foreign}"),
+        format!("/v1/streams/a/empty/usage/current?streamId={foreign}"),
+        format!("/v1/streams/a/empty/usage?month={past}&streamId={foreign}"),
+    ] {
+        for bearer in [&pfx, &full] {
+            let (st, body) = usage(addr, bearer, &path).await;
+            assert_eq!(st, 404, "{path}: {body}");
+            assert_eq!(body["error"]["code"], "not_found", "{body}");
+            assert_eq!(row_of(&body), (None, None), "{body}");
+        }
+    }
+
+    // a/empty's own live id, named explicitly, is served.
+    let (st, empty) = usage(addr, &full, "/v1/streams/a/empty/usage/current").await;
+    assert_eq!(st, 200, "{empty}");
+    let live = empty["streamId"].as_str().unwrap().to_string();
+    let path = format!("/v1/streams/a/empty/usage/current?streamId={live}");
+    let (st, named) = usage(addr, &pfx, &path).await;
+    assert_eq!(st, 200, "{named}");
+    assert_eq!(row_of(&named), (Some(live.as_str()), Some(0)), "{named}");
+    engine_shutdown(&state).await;
+}

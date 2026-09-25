@@ -136,20 +136,37 @@ impl<'a> Page<'a> {
             return Ok(());
         }
         mr.corr.absorb(&c);
-        for key in [
-            k_name(
-                &c.month,
-                &c.identity.account_id,
-                &c.identity.project_id,
-                &c.identity.stream_name,
+        // A correction may be the first write of its row (a correction
+        // envelope for a month the incarnation had no row in): stamp the
+        // identity like every other writer, and list the incarnation on
+        // its name, since the correction is its contribution to the month.
+        if mr.stream_name.is_empty() {
+            mr.account_id.clone_from(&c.identity.account_id);
+            mr.stream_name.clone_from(&c.identity.stream_name);
+        }
+        for (key, is_name) in [
+            (
+                k_name(
+                    &c.month,
+                    &c.identity.account_id,
+                    &c.identity.project_id,
+                    &c.identity.stream_name,
+                ),
+                true,
             ),
-            k_project(&c.month, &c.identity.account_id, &c.identity.project_id),
+            (
+                k_project(&c.month, &c.identity.account_id, &c.identity.project_id),
+                false,
+            ),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),
                 None => get_json(self.db, &key).await?,
             };
             a.corr.absorb(&c);
+            if is_name && !a.incarnations.contains(&c.identity.stream_id) {
+                a.incarnations.push(c.identity.stream_id.clone());
+            }
             self.aggregates.insert(key, a);
         }
         if mr.finalized_at_ms.is_some() {

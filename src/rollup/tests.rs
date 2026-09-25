@@ -805,3 +805,65 @@ async fn rollup_applies_deltas_and_closes_months() {
         "row stays pending for the operator"
     );
 }
+
+/// A correction can be the first write of an incarnation's month row (a
+/// correction envelope for a month it had no row in). The row must carry
+/// the incarnation's name and the name's aggregate must list it, as every
+/// other writer does: the usage API authorizes a prior incarnation's
+/// `?streamId=` by either. Red before: an empty `stream_name` and an
+/// empty `incarnations` list.
+#[tokio::test]
+async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
+    let r = UsageRollup::open(mem_store(), "corr-first", &test_cfg())
+        .await
+        .unwrap();
+    let corr = UsageEnvelope {
+        v: 1,
+        event_id: "corr/first".into(),
+        event_time_ms: 0,
+        emitted_ms: 0,
+        cell: "c".into(),
+        payload: UsagePayload::UsageCorrection(crate::billing::UsageCorrection {
+            identity: id(),
+            month: "2026-06".into(),
+            reason: "late read batch".into(),
+            correction_id: String::new(),
+            correction_version: 0,
+            source_event_id: String::new(),
+            created_at_ms: 0,
+            ingest_payload_bytes_delta: 0,
+            ingest_records_delta: 0,
+            read_payload_bytes_delta: 12,
+            read_records_delta: 0,
+            read_operations_delta: 0,
+            queue_operations_delta: 0,
+            append_requests_delta: 0,
+            storage_byte_ms_delta: "0".into(),
+        }),
+    };
+    r.apply_page(&[corr.clone()], "c1").await.unwrap();
+    let row = r
+        .month_row("2026-06", "acct", "proj", &id().stream_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (row.account_id.as_str(), row.stream_name.as_str()),
+        ("acct", "orders")
+    );
+    assert_eq!(row.corrections.len(), 1);
+    let name = r
+        .name_row("2026-06", "acct", "proj", "orders")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(name.incarnations, vec![id().stream_id]);
+    // A replay lists it once.
+    r.apply_page(&[corr], "c2").await.unwrap();
+    let name = r
+        .name_row("2026-06", "acct", "proj", "orders")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(name.incarnations, vec![id().stream_id]);
+}

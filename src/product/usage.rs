@@ -30,7 +30,7 @@ impl IntoResponse for UsageRefusal {
             UsageRefusal::NotAnIncarnation => perr(
                 StatusCode::NOT_FOUND,
                 "not_found",
-                "streamId is not an incarnation of this stream in the requested month",
+                "streamId is not an incarnation of this stream",
                 None,
                 false,
             ),
@@ -46,10 +46,10 @@ impl crate::rollup::UsageRollup {
     /// delete/recreate, `?streamId=` addresses a PRIOR incarnation's rows
     /// directly, so invoice history survives the live resource. The gate
     /// authorized the name in the URL and nothing else, so the id must be
-    /// an incarnation of that name: the live one, or one the month's
-    /// aggregate for the name lists. Any other id is refused as not found
-    /// before any row of it is read; otherwise a credential allowed one
-    /// name would read any stream's usage by naming its id.
+    /// an incarnation of that name ([`Self::names_incarnation`]). Any
+    /// other id is refused as not found before its month row is read;
+    /// otherwise a credential allowed one name would read any stream's
+    /// usage by naming its id.
     async fn usage_row(
         &self,
         month: &str,
@@ -57,11 +57,11 @@ impl crate::rollup::UsageRollup {
         stream_id: Option<&String>,
     ) -> Result<(crate::billing::BillingIdentity, crate::rollup::MonthRow), UsageRefusal> {
         if let Some(sid) = stream_id.filter(|sid| **sid != id.stream_id) {
-            let listed = self
-                .name_row(month, &id.account_id, &id.project_id, &id.stream_name)
+            let named = self
+                .names_incarnation(month, &id, sid)
                 .await
                 .map_err(UsageRefusal::Unavailable)?;
-            if !listed.is_some_and(|aggregate| aggregate.incarnations.contains(sid)) {
+            if !named {
                 return Err(UsageRefusal::NotAnIncarnation);
             }
             id.stream_id.clone_from(sid);
@@ -71,6 +71,33 @@ impl crate::rollup::UsageRollup {
             .await
             .map_err(UsageRefusal::Unavailable)?;
         Ok((id, row.unwrap_or_default()))
+    }
+
+    /// Whether `sid` is an incarnation of `id`'s name, as the rollup
+    /// recorded it under `id`'s own account and project: the month's
+    /// aggregate for the name lists it, or its month row or any of its
+    /// segment states carries the name. Every writer stamps a row with
+    /// its own identity's name, so a foreign id's rows carry the foreign
+    /// stream's name. The segment states answer for a month the
+    /// incarnation did not contribute to (a zero row) and for storage
+    /// the month's aggregate has not listed yet.
+    async fn names_incarnation(
+        &self,
+        month: &str,
+        id: &crate::billing::BillingIdentity,
+        sid: &str,
+    ) -> anyhow::Result<bool> {
+        let (account, project, name) = (&id.account_id, &id.project_id, &id.stream_name);
+        let listed = self.name_row(month, account, project, name).await?;
+        if listed.is_some_and(|aggregate| aggregate.incarnations.iter().any(|i| i == sid)) {
+            return Ok(true);
+        }
+        let row = self.month_row(month, account, project, sid).await?;
+        if row.is_some_and(|row| row.stream_name == *name) {
+            return Ok(true);
+        }
+        let states = self.stream_segment_states(account, project, sid).await?;
+        Ok(states.iter().any(|state| state.stream_name == *name))
     }
 }
 

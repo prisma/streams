@@ -1289,6 +1289,17 @@
     ]
   },
   {
+    "name": "a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c6d56fbe9af01c646e9f821f1e7a4d84fe1de5511c15469f6fd6540cb1e769ea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_usage.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
