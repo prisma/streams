@@ -617,6 +617,15 @@ the roadmap's unimplemented list
   `src/shard/record/proofs.rs`, with the routing-key length fixed per
   harness (0 and 4 bytes); a symbolic length makes the checker validate
   UTF-8 of every length (it did not finish in 40 minutes).
+- **KANI-029 (tried, not landed):** a harness calling `SegmentMap::split`
+  on two live segments over symbolic tiled ranges did not finish in 12
+  minutes. Two costs, both from vectors held inside the map's vector whose
+  lengths the checker loses: `split`'s own `debug_assert!(check_partition())`
+  (Kani builds with debug assertions) sorts a live-range vector of symbolic
+  length, and so does any harness that filters leaves by `successors`. A
+  workable harness needs the leaf set computed from known indices and a
+  cheaper form of that debug check (for example `tiles_keyspace` over a
+  fixed-size array), which is a production change to decide deliberately.
 - **KANI-006 (ready, held for the owner):** the postings varint codec, on branch
   `formal/kani-006` (FORMAL_OK, 4 checks, no finding). It cannot land without
   an owner decision: `src/postings.rs` is compiled by path into
