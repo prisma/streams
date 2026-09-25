@@ -19,6 +19,7 @@ const RUNNER = `
 const { superviseBinary } = await import(process.env.SUPERVISE_MODULE);
 const policy = { onDeathAfterReady: process.env.DEATH_POLICY };
 if (process.env.READY_UPTIME_MS) policy.readyUptimeMs = Number(process.env.READY_UPTIME_MS);
+if (process.env.FORWARD_GRACE_MS) policy.forwardGraceMs = Number(process.env.FORWARD_GRACE_MS);
 await superviseBinary(process.execPath, ["-e", process.env.CHILD_SCRIPT], process.env, policy);
 `;
 
@@ -36,8 +37,18 @@ Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });
 setTimeout(() => process.kill(process.pid, "SIGKILL"), 1500);
 `;
 /// Never binds, and dies with code 2 after 1.5 s: a boot failure that took
-/// its time.
-const EXITS_2_WITHOUT_BINDING = `setTimeout(() => process.exit(2), 1500);`;
+/// its time. Its stderr carries something a caller must never see.
+const EXITS_2_WITHOUT_BINDING = `console.error("SECRET-IN-STDERR"); setTimeout(() => process.exit(2), 1500);`;
+/// Serves on $PORT; on SIGTERM says so on stderr and stops cleanly (0).
+const SERVES_STOPS_ON_SIGTERM = `
+Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });
+process.on("SIGTERM", () => { console.error("child got SIGTERM"); setTimeout(() => process.exit(0), 100); });
+`;
+/// Serves on $PORT and ignores SIGTERM: a stop that never finishes.
+const SERVES_IGNORES_SIGTERM = `
+Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });
+process.on("SIGTERM", () => { console.error("child ignores SIGTERM"); });
+`;
 
 async function freePort(): Promise<number> {
   const server = Bun.serve({ port: 0, fetch: () => new Response("") });
@@ -52,6 +63,7 @@ function wrapper(
   policy: "exit" | "hold",
   readyUptimeMs?: number,
   stderr: "pipe" | "ignore" = "ignore",
+  forwardGraceMs?: number,
 ) {
   return Bun.spawn([process.execPath, "-e", RUNNER], {
     env: {
@@ -61,6 +73,7 @@ function wrapper(
       CHILD_SCRIPT: child,
       DEATH_POLICY: policy,
       READY_UPTIME_MS: readyUptimeMs === undefined ? "" : String(readyUptimeMs),
+      FORWARD_GRACE_MS: forwardGraceMs === undefined ? "" : String(forwardGraceMs),
     },
     stdout: "ignore",
     stderr,
@@ -84,14 +97,40 @@ async function diagnostic(port: number, ms: number): Promise<Response | undefine
   return undefined;
 }
 
-/// The wrapper holds the death: $PORT serves the diagnostic with the
-/// child's exit code, and the wrapper stays up.
-async function expectHeld(proc: { exited: Promise<number> }, port: number, code: number) {
+/// The wrapper holds the death: $PORT answers a generic 500
+/// `binary_exited` that carries nothing of the binary (second external
+/// review: the wrapper answers the port unauthenticated), the wrapper stays
+/// up, and the details (exit code, arguments) are in its log.
+async function expectHeld(
+  proc: { exited: Promise<number>; kill: () => void; stderr: unknown },
+  port: number,
+  code: number,
+) {
   const response = await diagnostic(port, 10_000);
   expect(response?.status).toBe(500);
-  const body = await response!.json();
-  expect([body.error, body.exitCode]).toEqual(["binary_exited", code]);
+  const text = await response!.text();
+  expect(Object.keys(JSON.parse(text)).sort()).toEqual(["error", "message"]);
+  expect(JSON.parse(text).error).toBe("binary_exited");
+  for (const leak of ["argv", "exitCode", "stderrTail", "SECRET-IN-STDERR", "CHILD_SCRIPT", "-e"]) {
+    expect(text).not.toContain(leak);
+  }
   expect(await exitWithin(proc, 500)).toBe("running");
+  proc.kill();
+  const log = await new Response(proc.stderr as ReadableStream).text();
+  expect(log).toContain(`binary exited with code ${code}; holding :${port} unhealthy; details: `);
+  expect(log).toContain(`"exitCode":${code}`);
+}
+
+/// Waits until the child answers on $PORT, so the wrapper is supervising.
+async function serving(port: number) {
+  const until = Date.now() + 10_000;
+  while (Date.now() < until) {
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/`)).status === 200) return;
+    } catch {}
+    await Bun.sleep(50);
+  }
+  throw new Error(`the child never served on :${port}`);
 }
 
 test("the three wrapper copies are byte-identical", () => {
@@ -178,7 +217,7 @@ test("a ready child killed by a signal ends the wrapper with 128 + its number", 
 
 test("a child that never accepted is held and served as a diagnostic", async () => {
   const port = await freePort();
-  const proc = wrapper(port, EXITS_2_WITHOUT_BINDING, "exit", 1_000);
+  const proc = wrapper(port, EXITS_2_WITHOUT_BINDING, "exit", 1_000, "pipe");
   try {
     await expectHeld(proc, port, 2);
   } finally {
@@ -188,7 +227,7 @@ test("a child that never accepted is held and served as a diagnostic", async () 
 
 test("a child that died within its first minute of serving is held as a boot failure", async () => {
   const port = await freePort();
-  const proc = wrapper(port, servesThenExits(1), "exit");
+  const proc = wrapper(port, servesThenExits(1), "exit", undefined, "pipe");
   try {
     await expectHeld(proc, port, 1);
   } finally {
@@ -198,9 +237,45 @@ test("a child that died within its first minute of serving is held as a boot fai
 
 test("a holding caller serves the diagnostic after a ready child's death", async () => {
   const port = await freePort();
-  const proc = wrapper(port, servesThenExits(1), "hold", 1_000);
+  const proc = wrapper(port, servesThenExits(1), "hold", 1_000, "pipe");
   try {
     await expectHeld(proc, port, 1);
+  } finally {
+    proc.kill();
+  }
+}, 15_000);
+
+// Second external review: the platform's stop reaches the binary. A
+// SIGTERM to the wrapper is forwarded to the child, and the wrapper exits
+// with the child's code, even under "hold": a stopping instance's death is
+// not held.
+test("a SIGTERM to the wrapper is forwarded and the wrapper exits with the child's code", async () => {
+  const port = await freePort();
+  const proc = wrapper(port, SERVES_STOPS_ON_SIGTERM, "hold", 1_000, "pipe");
+  try {
+    await serving(port);
+    proc.kill("SIGTERM");
+    expect(await exitWithin(proc, 10_000)).toBe(0);
+    const log = await new Response(proc.stderr).text();
+    expect(log).toContain("wrapper received SIGTERM; forwarding it to the binary");
+    expect(log).toContain("child got SIGTERM");
+  } finally {
+    proc.kill();
+  }
+}, 15_000);
+
+// Bounded: a child that does not stop within the grace is killed, and the
+// wrapper exits 137.
+test("a child that ignores the forwarded SIGTERM is killed after the grace", async () => {
+  const port = await freePort();
+  const proc = wrapper(port, SERVES_IGNORES_SIGTERM, "exit", 1_000, "pipe", 500);
+  try {
+    await serving(port);
+    proc.kill("SIGTERM");
+    expect(await exitWithin(proc, 10_000)).toBe(137);
+    const log = await new Response(proc.stderr).text();
+    expect(log).toContain("child ignores SIGTERM");
+    expect(log).toContain("binary did not stop within 500 ms of SIGTERM; killing it");
   } finally {
     proc.kill();
   }

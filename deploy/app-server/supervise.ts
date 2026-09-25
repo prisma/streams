@@ -8,8 +8,12 @@
 // binding $PORT).
 //
 // So: capture stderr, and when the child exits, bind $PORT ourselves and
-// serve the exit code plus the tail of its stderr. A dead service then
-// explains itself over HTTP instead of looking like a platform fault.
+// answer every request with a generic 500 `binary_exited`. A dead service
+// then reads as dead instead of looking like a cold start. The details
+// (binary, arguments, exit code, hint) go to the platform log, next to the
+// child's own stderr, which the wrapper tees there as it runs: $PORT is
+// customer-reachable and the wrapper, not the binary, answers it, so no
+// application authentication protects it (second external review).
 //
 // Item 39: that holds only for a death at or near boot. A child that was
 // READY (it accepted on $PORT and had been up for READY_UPTIME_MS) failed at
@@ -27,12 +31,13 @@
 // one: there is no default, because a silently defaulted "hold" would bring
 // back the unreplaced 500 that item 39 removed.
 //
-// Known gap (predates item 39): the wrapper does not forward SIGTERM/SIGINT
-// to the child. A signal to the wrapper ends it at once and leaves the child
-// running; the child's graceful stop runs only when the platform signals
-// the child itself.
+// A SIGTERM or SIGINT to the wrapper is forwarded to the child, and the
+// wrapper then exits with the child's code whatever its policy: the platform
+// is stopping the instance, so the death is neither held nor served. A child
+// that has not exited FORWARD_GRACE_MS after the first forwarded signal
+// (streams-slate bounds its own stop at 30 s, plus up to 250 ms for its last
+// line) is killed, and the wrapper exits 137.
 
-const TAIL_BYTES = 16 * 1024;
 /// How often the wrapper checks whether the child accepts on $PORT yet.
 const READY_PROBE_MS = 250;
 /// How long a child that accepted on $PORT must have been up before its
@@ -41,6 +46,10 @@ const READY_PROBE_MS = 250;
 /// D4(c)), on the monotonic clock: a wall-clock step at boot cannot move a
 /// death across the line.
 const READY_UPTIME_MS = 60_000;
+/// How long a child may take to stop after a forwarded SIGTERM/SIGINT before
+/// the wrapper kills it: the binary's own 30 s stop bound, its last line's
+/// 250 ms, and margin.
+const FORWARD_GRACE_MS = 35_000;
 
 export type DeathPolicy = {
   /// "exit": a ready child's death ends the wrapper too, so the platform
@@ -49,6 +58,8 @@ export type DeathPolicy = {
   onDeathAfterReady: "exit" | "hold";
   /// Tests only: overrides READY_UPTIME_MS.
   readyUptimeMs?: number;
+  /// Tests only: overrides FORWARD_GRACE_MS.
+  forwardGraceMs?: number;
 };
 
 /// The wrapper apps under deploy/, each with its own index.ts.
@@ -94,14 +105,30 @@ export async function superviseBinary(
     stderr: "pipe",
   });
 
-  // Tee stderr: still goes to the platform log, and we keep the tail.
-  let tail = "";
+  // Forward the platform's stop to the child, bounded, and remember that the
+  // instance is stopping: its death is then not a failure to hold.
+  let stopping = false;
+  const forward = (signal: "SIGTERM" | "SIGINT") => {
+    if (!stopping) {
+      stopping = true;
+      setTimeout(() => {
+        console.error(
+          `binary did not stop within ${policy.forwardGraceMs ?? FORWARD_GRACE_MS} ms of ${signal}; killing it`,
+        );
+        proc.kill("SIGKILL");
+      }, policy.forwardGraceMs ?? FORWARD_GRACE_MS).unref();
+    }
+    console.error(`wrapper received ${signal}; forwarding it to the binary`);
+    proc.kill(signal);
+  };
+  process.on("SIGTERM", () => forward("SIGTERM"));
+  process.on("SIGINT", () => forward("SIGINT"));
+
+  // Tee stderr to the platform log.
   const pump = (async () => {
     const dec = new TextDecoder();
     for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
-      const s = dec.decode(chunk, { stream: true });
-      process.stderr.write(s);
-      tail = (tail + s).slice(-TAIL_BYTES);
+      process.stderr.write(dec.decode(chunk, { stream: true }));
     }
   })();
 
@@ -121,6 +148,10 @@ export async function superviseBinary(
   await pump.catch(() => {});
   await probe.catch(() => {});
 
+  if (stopping) {
+    console.error(`binary exited with code ${code} after a forwarded stop; exiting ${code}`);
+    process.exit(code);
+  }
   const ready = accepted && uptime >= (policy.readyUptimeMs ?? READY_UPTIME_MS);
   if (ready && policy.onDeathAfterReady === "exit") {
     console.error(
@@ -129,36 +160,39 @@ export async function superviseBinary(
     process.exit(code);
   }
 
-  const body = JSON.stringify(
-    {
-      error: "binary_exited",
-      binary: bin,
-      argv,
-      exitCode: code,
-      // A binary that never bound the port almost always failed argument
-      // or environment validation; say so rather than making the reader
-      // guess from an empty log.
-      hint:
-        code !== 0
-          ? "non-zero exit: check required env vars and that the binary is x86_64"
-          : "clean exit: the workload finished",
-      stderrTail: tail.slice(-8192),
-    },
-    null,
-    2,
-  );
-
-  console.error(`binary exited with code ${code}; serving diagnostic on :${port}`);
+  // The details stay in the platform log (the child's stderr is already
+  // there, above this line); the port answers generically.
+  const details = JSON.stringify({
+    binary: bin,
+    argv,
+    exitCode: code,
+    uptimeMs: uptime,
+    acceptedOnPort: accepted,
+    // A binary that never bound the port almost always failed argument or
+    // environment validation; say so rather than making the reader guess.
+    hint:
+      code !== 0
+        ? "non-zero exit: check required env vars and that the binary is x86_64"
+        : "clean exit: the workload finished",
+  });
+  console.error(`binary exited with code ${code}; holding :${port} unhealthy; details: ${details}`);
+  const body = JSON.stringify({
+    error: "binary_exited",
+    message: "the service is not running; its exit is recorded in the platform log",
+  });
   Bun.serve({
     port: Number(port),
     fetch: () =>
       new Response(body, {
         status: 500,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
       }),
   });
 
-  // Never resolve: keep the diagnostic reachable for the operator.
+  // Never resolve: keep the instance visibly unhealthy until it is replaced
+  // or stopped (a signal now ends the wrapper; there is no child left).
+  process.removeAllListeners("SIGTERM");
+  process.removeAllListeners("SIGINT");
   return new Promise<never>(() => {});
 }
 

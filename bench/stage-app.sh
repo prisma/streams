@@ -1,7 +1,8 @@
 #!/bin/bash
 # Stage one deploy/<app> wrapper into the campaign app directory a Compute
-# deploy runs from (`--path .`), and refuse to go on unless the staged
-# sources are the repo's. Every campaign deploy path calls this first.
+# deploy runs from (`--path .`), so that the directory holds exactly the
+# repo's sources plus the installed node_modules. Every campaign deploy
+# path calls this first.
 #
 #   bench/stage-app.sh app-server "$SOAK_HOME/app-server-eu-central-1"
 #
@@ -12,13 +13,28 @@
 # after a critical loop's exit (item 38) becomes a 500 diagnostic the
 # platform never replaces, where the old binary at least kept serving.
 #
-# It copies every file of deploy/<app> except node_modules (index.ts,
-# supervise.ts, downloader.ts, package.json, bun.lock) over the staged
-# copy, runs `bun install` until one has succeeded for the staged manifest
-# (a marker in node_modules records it, so a failed install is retried by
-# the next run, and its output is shown), and exits non-zero if any
-# source still differs or the staged directory holds a file the repo does
-# not (`--path .` would deploy it; remove it by hand).
+# And the deploy ships the whole directory: a stray file ships with it.
+# Bun loads a `.env` (or `.env.local`, ...) it finds there on its own, so a
+# stale dotfile would change the deployed configuration behind the
+# environment the operator exported and compared (second external review).
+#
+# So, in this order, before anything is installed or replaced:
+#   1. The source: every entry of deploy/<app> except node_modules,
+#      hidden ones included, must be a regular file (not a symlink).
+#   2. The existing staged directory, if any: every entry, hidden ones
+#      included, must be one of those file names as a regular file, or
+#      node_modules as a real directory. Anything else (a dotfile, another
+#      directory, a symlink) is refused, and named, for the operator to
+#      remove by hand: this script deletes nothing it did not stage.
+#   3. A FRESH directory next to it gets exactly the source files; the old
+#      node_modules moves in only if an install succeeded for exactly this
+#      manifest (a marker in node_modules records the manifest's hash),
+#      otherwise `bun install` (frozen when bun.lock exists) runs there, its
+#      output shown, and a failure refuses the deploy.
+#   4. The fresh directory must then list exactly the source files plus
+#      node_modules, byte-identical, before it replaces the staged one.
+# The marker proves an install once succeeded for a manifest; it is not an
+# integrity check of node_modules.
 set -euo pipefail
 APP=${1:?usage: stage-app.sh <app-server|app-lb|app-gen> <staged app directory>}
 DIR=${2:?usage: stage-app.sh <app-server|app-lb|app-gen> <staged app directory>}
@@ -29,51 +45,73 @@ esac
 SRC="$(cd "$(dirname "$0")/.." && pwd)/deploy/$APP"
 [ -f "$SRC/index.ts" ] && [ -f "$SRC/supervise.ts" ] || {
   echo "stage-app: $SRC is not a wrapper app (no index.ts/supervise.ts)" >&2; exit 1; }
-mkdir -p "$DIR"
+DIR="${DIR%/}"
+refuse() { echo "stage-app: $*; refusing to deploy" >&2; exit 1; }
 
-CHANGED=""
-for f in "$SRC"/*; do
-  name=$(basename "$f")
+# Every entry of a directory, hidden ones included, one name per line.
+entries() { find "$1" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort; }
+
+# 1. The source allowlist.
+FILES=()
+while IFS= read -r name; do
   [ "$name" = node_modules ] && continue
-  if [ ! -f "$f" ]; then
-    echo "stage-app: deploy/$APP/$name is not a regular file; extend stage-app.sh" >&2
-    exit 1
-  fi
-  if ! cmp -s "$f" "$DIR/$name"; then
-    cp "$f" "$DIR/$name"
-    CHANGED="$CHANGED $name"
-  fi
-done
-# Installed means: an install succeeded for exactly this manifest.
-MANIFEST=$(cat "$DIR/package.json" "$DIR/bun.lock" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
-MARKER="$DIR/node_modules/.stage-app-installed"
-if [ "$(cat "$MARKER" 2>/dev/null)" != "$MANIFEST" ]; then
-  LOCKED=""
-  [ -f "$DIR/bun.lock" ] && LOCKED=--frozen-lockfile
-  if ! (cd "$DIR" && bun install $LOCKED); then
-    echo "stage-app: bun install failed in $DIR; refusing to deploy" >&2
-    exit 1
-  fi
-  echo "$MANIFEST" > "$MARKER"
+  { [ -f "$SRC/$name" ] && [ ! -L "$SRC/$name" ]; } ||
+    refuse "deploy/$APP/$name is not a regular file; extend stage-app.sh"
+  FILES+=("$name")
+done < <(entries "$SRC")
+allowed() {
+  local f
+  for f in "${FILES[@]}"; do [ "$f" = "$1" ] && return 0; done
+  return 1
+}
+
+# 2. The existing staged directory.
+if [ -L "$DIR" ]; then refuse "$DIR is a symlink"; fi
+if [ -e "$DIR" ]; then
+  [ -d "$DIR" ] || refuse "$DIR is not a directory"
+  STRAY=""
+  while IFS= read -r name; do
+    path="$DIR/$name"
+    if [ "$name" = node_modules ]; then
+      { [ -d "$path" ] && [ ! -L "$path" ]; } || STRAY="$STRAY $name"
+    elif ! allowed "$name" || [ ! -f "$path" ] || [ -L "$path" ]; then
+      STRAY="$STRAY $name"
+    fi
+  done < <(entries "$DIR")
+  [ -z "$STRAY" ] ||
+    refuse "$DIR holds entries deploy/$APP does not (the deploy would ship them):$STRAY; remove them"
 fi
 
-# The refusal: whatever happened above, deploy only the repo's sources.
-for f in "$SRC"/*; do
-  name=$(basename "$f")
-  [ "$name" = node_modules ] && continue
-  if ! cmp -s "$f" "$DIR/$name"; then
-    echo "stage-app: $DIR/$name differs from deploy/$APP/$name; refusing to deploy" >&2
-    exit 1
-  fi
-done
-EXTRA=""
-for f in "$DIR"/*; do
-  name=$(basename "$f")
-  [ "$name" = node_modules ] && continue
-  [ -e "$SRC/$name" ] || EXTRA="$EXTRA $name"
-done
-if [ -n "$EXTRA" ]; then
-  echo "stage-app: $DIR holds files deploy/$APP does not:$EXTRA; the deploy would ship them; remove them and rerun" >&2
-  exit 1
+# 3. A fresh directory with exactly the source files.
+FRESH="$DIR.staging.$$"
+rm -rf "$FRESH"
+mkdir -p "$FRESH"
+trap 'rm -rf "$FRESH"' EXIT
+for name in "${FILES[@]}"; do cp "$SRC/$name" "$FRESH/$name"; done
+MANIFEST=$(cat "$FRESH/package.json" "$FRESH/bun.lock" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+if [ "$(cat "$DIR/node_modules/.stage-app-installed" 2>/dev/null)" = "$MANIFEST" ]; then
+  mv "$DIR/node_modules" "$FRESH/node_modules"
+else
+  LOCKED=()
+  [ -f "$FRESH/bun.lock" ] && LOCKED=(--frozen-lockfile)
+  (cd "$FRESH" && bun install ${LOCKED[@]+"${LOCKED[@]}"}) || refuse "bun install failed for deploy/$APP"
+  [ -d "$FRESH/node_modules" ] || refuse "bun install left no node_modules for deploy/$APP"
+  echo "$MANIFEST" > "$FRESH/node_modules/.stage-app-installed"
 fi
-echo "staged deploy/$APP -> $DIR (updated:${CHANGED:- nothing})"
+
+# 4. Exactly the sources plus node_modules, then swap.
+[ "$(entries "$FRESH")" = "$(printf '%s\n' "${FILES[@]}" node_modules | LC_ALL=C sort)" ] ||
+  refuse "the fresh staging directory is not exactly deploy/$APP plus node_modules"
+for name in "${FILES[@]}"; do
+  cmp -s "$SRC/$name" "$FRESH/$name" || refuse "$FRESH/$name differs from deploy/$APP/$name"
+done
+if [ -e "$DIR" ]; then
+  OLD="$DIR.replaced.$$"
+  mv "$DIR" "$OLD"
+  mv "$FRESH" "$DIR"
+  rm -rf "$OLD"
+else
+  mv "$FRESH" "$DIR"
+fi
+trap - EXIT
+echo "staged deploy/$APP -> $DIR (${#FILES[@]} files and node_modules)"

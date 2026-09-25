@@ -284,8 +284,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Credential-wait cancellation (Bun)
         run: bun test sdk/scripts/credential-cancellation.test.mjs
-      - name: Deploy wrapper replaces a binary that died after serving (Bun)
-        run: bun test ./deploy/supervise.test.ts
+      - name: Deploy wrapper and campaign staging (Bun)
+        run: bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts
       - name: Smoke through the package (Bun)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8092 \
