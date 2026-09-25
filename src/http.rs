@@ -1818,7 +1818,7 @@ async fn project_usage_axum_inner(
     let authority = if state.auth.mode == crate::auth::AuthMode::Enforce {
         match crate::product::enforce_customer(&state, req.headers()) {
             Ok(p) => {
-                if let Err(e) = p.require(crate::tenant::Scope::UsageRead) {
+                if let Err(e) = p.require_project_usage() {
                     return crate::product::with_product_cors(crate::audit::tag_project(
                         crate::product::auth_failure_response(&e),
                         &p.project_id,

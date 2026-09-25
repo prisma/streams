@@ -171,10 +171,12 @@ pub(super) async fn install_intent(
                     "the seal this close was resuming has been superseded",
                 );
             }
+            // Only a registry read or write failure: nothing was renewed,
+            // so the close answers what its completion answers, retry.
             Err(e) => {
                 return fail(
                     FailureClass::Unavailable,
-                    AppendCode::Internal,
+                    AppendCode::SealIncomplete,
                     &e.to_string(),
                 );
             }

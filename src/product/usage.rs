@@ -16,6 +16,23 @@ fn usage_unavailable(error: &dyn std::fmt::Display) -> Response {
     )
 }
 
+impl crate::auth::RequestPrincipal {
+    /// Project usage totals (`GET /v1/projects/{project}/usage`) answer for
+    /// every stream of the project, so they need `streams.usage.read` AND an
+    /// unrestricted effective stream grant: a credential limited to some
+    /// names could otherwise subtract its own streams' usage from the total
+    /// and learn the rest (owner decision, second external review). A
+    /// restricted credential is refused 403 `prefix_denied`, the refusal a
+    /// stream outside its grant gets; its per-stream usage stays readable.
+    pub(crate) fn require_project_usage(&self) -> Result<(), crate::auth::AuthError> {
+        self.require(crate::tenant::Scope::UsageRead)?;
+        match self.grant {
+            crate::tenant::StreamGrant::All => Ok(()),
+            crate::tenant::StreamGrant::Prefixes(_) => Err(crate::auth::AuthError::PrefixDenied),
+        }
+    }
+}
+
 /// Why a per-stream usage lookup has no row to answer with.
 enum UsageRefusal {
     /// `?streamId=` names no incarnation of the URL's name in the month.

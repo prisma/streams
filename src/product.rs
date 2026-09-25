@@ -1524,36 +1524,11 @@ async fn product_seal(
     };
     let validated_epoch = validated.stream_epoch.clone();
     if !body.is_empty() {
-        #[derive(serde::Deserialize, Default)]
-        #[serde(deny_unknown_fields, rename_all = "camelCase")]
-        struct SealDoc {
-            // Double Option: serde collapses a PRESENT `null` into
-            // `None`, so `{"final": null}` silently became a seal with
-            // no final record — dropping a perfectly valid JSON null
-            // that the SDK sends whenever T admits it. The outer layer
-            // is presence, the inner is the value.
-            #[serde(default, deserialize_with = "deserialize_some")]
-            #[expect(
-                clippy::option_option,
-                reason = "final; absent, null and a value are three distinct wire states the seal contract names; a tri-state enum would restate serde's own null handling"
-            )]
-            r#final: Option<Option<serde_json::Value>>,
-            #[serde(default)]
-            routing_key: Option<String>,
-        }
-        let doc: SealDoc = match serde_json::from_slice(&body) {
-            Ok(d) => d,
-            Err(e) => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_body",
-                    &format!("seal request: {e}"),
-                    None,
-                    false,
-                );
-            }
+        let doc = match seal_request(&state, &headers, &body) {
+            Ok(doc) => doc,
+            Err(refused) => return *refused,
         };
-        if let Some(fin) = doc.r#final.map(|v| v.unwrap_or(serde_json::Value::Null)) {
+        if let Some(fin) = doc.final_record() {
             // EVERY deterministic error first. Publishing the intent
             // before validating let a request that could never complete
             // — no key, wrong key, unusable routing key — leave the
@@ -1588,7 +1563,7 @@ async fn product_seal(
             // that names a record the append path will always reject
             // leaves the collection sealing forever, owing something
             // undeliverable.
-            let rk = doc.routing_key.as_deref().unwrap_or_default();
+            let rk = doc.routing_key();
             let routing_key = match parse_routing_key(rk.as_bytes()) {
                 Ok(key) => key,
                 Err(why) => {
@@ -1713,15 +1688,6 @@ async fn product_seal(
         }
     }
     product_seal_only(state, tenant, name, headers, validated_epoch).await
-}
-
-/// Distinguishes an ABSENT field from one present as `null`.
-fn deserialize_some<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(d).map(Some)
 }
 
 #[expect(
@@ -3880,6 +3846,8 @@ mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};
 mod scan;
 use scan::product_scan;
+mod seal_request;
+use seal_request::seal_request;
 mod usage;
 use usage::product_usage;
 pub(crate) use usage::project_usage;

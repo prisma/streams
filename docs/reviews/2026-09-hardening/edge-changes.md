@@ -14,12 +14,12 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| high | 3 | 1 | 2 | 0 | 0 | 0 | 6 |
+| high | 5 | 1 | 2 | 0 | 0 | 0 | 8 |
 | medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
 | low | 5 | 2 | 7 | 9 | 10 | 4 | 37 |
-| **Total** | **13** | **4** | **15** | **9** | **10** | **4** | **55** |
+| **Total** | **15** | **4** | **15** | **9** | **10** | **4** | **57** |
 
-55 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers for owner ratification; they have not been checked against their commits.
+57 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#57 have not been checked against their commits by an independent pass.
 
 ### Index
 
@@ -77,11 +77,13 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 50 | e19c80c5 | One corrupt row fails only its stream in a v2 gather lane | operator-debug | low | matches |
 | 51 | 5d9d517f | Undecodable pending billing artifact is logged | operator-debug | low | matches |
 | 52 | 31fd9096 | Late byte-time beyond a correction fails its rollup page | fleet-internal | low | matches |
-| 53 | this record's commit | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | recorded for ratification |
-| 54 | this record's commit | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | recorded for ratification |
-| 55 | this record's commit | A raw close whose seal intent failed transiently answers retryable, not sealed | raw | medium | recorded for ratification |
+| 53 | 7549e28a, e347fb1a | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | ratified |
+| 54 | 0f4cd8c1 | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | ratified |
+| 55 | 839135a4, this batch | A raw close whose seal intent failed transiently answers retryable, not sealed | raw | medium | ratified |
+| 56 | this record's commit | Project usage totals need an unrestricted stream grant | product | high | owner decision |
+| 57 | this record's commit | A seal carrying a final record needs records.append as well as lifecycle.manage | product | high | owner decision |
 
-## High risk (6)
+## High risk (8)
 
 In each of these changes, a request that used to succeed can now fail permanently. Each risk reason states how narrow the affected inputs are and, where it applies, why the earlier success was incorrect.
 
@@ -182,7 +184,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** Graded high by the rubric's letter: a request that previously succeeded (fence silently dropped) now fails permanently, and the lane stays wedged with no repair tool. Practical exposure is corruption only; the history check shows no writer ever produced an unsupported width or non-UTF-8 seq bytes. Test gap: the tests pin AppendErr::Internal at the shard level only; no HTTP-level test pins raw 500 internal or product 500 append_failed for this condition. That mapping comes from the existing AppendErr::Internal → FailureClass::Internal path.
 - **Check against commit:** Matches, with one nuance: 'before, it was accepted with the idempotence fence silently dropped' is the typical outcome. Because the old code judged the request against absent or misdecoded state, it could also answer a spurious producer error (409 producer_seq_gap, 403 producer_stale_epoch) or a false-duplicate 204.
 
-### #53 (this record's commit) — Usage `?streamId=` is served only for an incarnation of the URL's name
+### #53 (7549e28a, e347fb1a) — Usage `?streamId=` is served only for an incarnation of the URL's name
 
 - **Program item:** security fix found by the adversarial authorization review of item 73 (external review, 2026-09-24). Recorded by its implementer for owner ratification.
 - **Surface:** product
@@ -197,7 +199,37 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded (same file; a prior incarnation in the previous month answers its zero row, red against the aggregate-only first version with 404; a foreign id in that month, where the URL's name has no aggregate, and through a name with no usage, is 404; a name's live id named explicitly with no aggregate is 200)
   - rollup::tests::a_correction_that_writes_a_month_row_first_names_its_incarnation (a correction-only row carries its account and name, and the name aggregate lists it once; red: ("", "") and no incarnation)
 - **Risk reason:** High by the rubric's letter: a request that used to return 200 now fails permanently. The earlier 200 was an authorization bypass across names and prefix grants, so no correct behaviour is lost. The round-21 delete/recreate lookup is unchanged for every incarnation of the name in every month.
-- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 200 → 404 edge change.
+- **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25** (second external review): keep the reworked historical-incarnation check; do not revert to "the id must equal the current descriptor's".
+
+### #56 (this record's commit) — Project usage totals need an unrestricted stream grant
+
+- **Program item:** owner decision, second external review of 9813d1cb (a pre-existing gap found by the review of #53).
+- **Surface:** product
+- **Endpoint:** GET /v1/projects/{project}/usage[?month=YYYY-MM] (project_usage_axum_inner in src/http.rs, now asking RequestPrincipal::require_project_usage in src/product/usage.rs).
+- **Condition:** Enforce mode; the credential holds streams.usage.read but its EFFECTIVE stream grant (token grant intersected with the credential's current grant, as verified) is a prefix set rather than every name.
+- **Before:** 200 with the whole project's totals, corrections and effective figures. A credential limited to names under "a" could subtract its own streams' usage (readable per stream) from the total and learn the usage of streams outside its grant; exactly when one such stream exists.
+- **After:** 403 {"error":{"code":"prefix_denied","message":"the credential's stream grant does not cover this stream","retryable":false}}, tagged for the project's denial journal like every other prefix denial. No totals, corrections or breakdowns are returned. A credential with an unrestricted grant is unchanged; a restricted one still reads per-stream usage for names its grant covers (including historical incarnations, #53).
+- **Retry semantics:** 200 becomes a permanent 403 for that credential.
+- **Who is affected:** Callers of project usage holding a prefix-limited credential. The TS SDK has no usage method.
+- **Pinning tests:**
+  - src/dst/tests/security_usage.rs::project_usage_totals_need_an_unrestricted_stream_grant (red on the previous check with 200 and the project's totals; the per-stream read and the unrestricted credential's totals as controls)
+- **Risk reason:** High by the rubric's letter (a 200 now fails permanently); the earlier 200 disclosed usage outside the credential's grant. The endpoint is deliberately not redefined as a prefix-filtered aggregate.
+- **Check against commit:** Owner decision; written with the change.
+
+### #57 (this record's commit) — A seal carrying a final record needs records.append as well as lifecycle.manage
+
+- **Program item:** owner decision, second external review of 9813d1cb (the `:seal` gap item 73's review found).
+- **Surface:** product
+- **Endpoint:** POST /v1/streams/{name}:seal with a JSON body carrying `final` (product_seal; the body is parsed by seal_request in src/product/seal_request.rs).
+- **Condition:** Enforce mode; the body carries `final`, present even as `null` (`{"final": null}` is a final record whose value is null); the caller holds streams.lifecycle.manage (the gate demands it for every seal) but not streams.records.append. A body without `final` (for example `{}`) appends nothing and is unaffected.
+- **Before:** The seal appended the final record and sealed: 200 {"sealed":true}. A credential without append rights could write a record, and revoking records.append did not stop record writes through :seal.
+- **After:** 403 {"error":{"code":"missing_scope",...,"retryable":false}}, journaled like the gate's scope denials, decided after the body parses and before any seal claim, final append, producer-state or descriptor write: the stream keeps its records, stays unsealed and open to ordinary appends (no seal intent owes a final), and the refused request's producer triple is still unused. The bearer is verified again for this check (the gate's verified principal does not reach the handler without growing product_entry's excepted scope); a credential whose authority lapsed in between is refused. An append-only credential still gets 403 missing_scope from the gate for any seal.
+- **Retry semantics:** 200 becomes a permanent 403 for such a credential.
+- **Who is affected:** Callers sealing with a final record using a credential that holds lifecycle.manage without records.append.
+- **Pinning tests:**
+  - src/dst/tests/security_seal.rs::a_final_record_seal_needs_append_as_well_as_lifecycle (red with the check disabled: (200, "") for {"final":{"n":2}}; asserts no record, not sealed, ordinary append and the refused producer triple still land; plain seals with no body and with {} under lifecycle alone; the final-record seal with both scopes)
+- **Risk reason:** High by the rubric's letter (a 200 now fails permanently); the earlier 200 let a credential append without the append scope.
+- **Check against commit:** Owner decision; written with the change.
 
 ## Medium risk (12)
 
@@ -406,7 +438,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** This changes the lifetime of successful live product subscriptions: they now end on re-placement. It also introduces a 403 project_missing at establishment (race-only) for a condition the request path answers 421, which clients may branch on as a permanent denial instead of re-resolving. The previous behaviour was incorrect (serving from a cell that no longer owns the project), and reconnect semantics are unchanged. No end-to-end SSE test pins the live termination on re-placement; only the unit lease_check test does.
 - **Check against commit:** None in behaviour. Precision: '403 at establishment' is reachable only when the republish lands between request verification (already 421 wrong_cell for a foreign placement) and LeaseWatch::new_checked. The common visible effect is a clean EOF on a live stream. Cosmetic defect: served_policy was inserted between status_and_quotas's doc comment and its fn, so at HEAD (src/auth.rs \~726-741) status_and_quotas's doc comment is attached to served_policy and status_and_quotas has no doc.
 
-### #55 (this record's commit) — A raw close whose seal intent failed transiently answers retryable, not sealed
+### #55 (839135a4) — A raw close whose seal intent failed transiently answers retryable, not sealed
 
 - **Program item:** release hold, follow-up to skeptic finding F3 (the same defect class on the raw close path; plan decision D6). Recorded by its implementer for owner ratification.
 - **Surface:** raw
@@ -420,7 +452,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - src/dst/tests/append_application.rs::r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed (red at cf5d6e05 with (Conflict, Sealed); the same test pins that a live final-bearing claim still answers (Conflict, Sealed), and that the retry closes and seals the collection)
   - NOT pinned: the Resumable variants. No test drives six busy claim rounds or a refused fence through a raw close.
 - **Risk reason:** Medium: a status and code on an error case that raw clients may branch on changes (409 sealed becomes 503 seal_incomplete), as record #8 did for the append's refresh read (409 becomes 503). The earlier 409 was wrong, because the collection was not sealed. No code is new: seal_incomplete is already a raw append answer.
-- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 409 → 503 edge change.
+- **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**, with one follow-up done in the same batch as #56/#57: a close resuming an owed final whose claim renewal cannot be written (only a registry read or write failure) answered 503 `internal`; it now answers 503 `seal_incomplete` like the rest of the close step (src/application/append/close.rs::install_intent; no dedicated test: the renewal's store failure needs an owed final whose operation matches the close's own).
 
 ## Low risk (37)
 
@@ -1070,7 +1102,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** Only a corrupt ledger envelope can trigger this, and that request could not succeed before either: it persisted an unreadable row. No client status or code changes on a normal path. Caveat for the reviewer: the blast radius shifts from one unreadable stream-month to a rollup-wide halt at the offending page (no skip or quarantine), which is visible only as growing lastApplyAgeSecs and a repeating warn.
 - **Check against commit:** None in the code. Clarification: after the change the rollup still wedges, now at the offending page itself and with no persisted corruption, and it needs operator action to proceed.
 
-### #54 (this record's commit) — The transition retry's re-preparation answers an unreadable registry as retryable
+### #54 (0f4cd8c1) — The transition retry's re-preparation answers an unreadable registry as retryable
 
 - **Program item:** release hold (split-boundary outcomes), skeptic finding F3. Recorded by its implementer for owner ratification.
 - **Surface:** both
@@ -1084,7 +1116,7 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/dst/tests/append_application.rs::r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal (red at 7549e28a with (Internal, Internal, None); the retry lands once, not as a duplicate)
   - src/dst/tests/append_application.rs::r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final (the closure check's read, unchanged)
 - **Risk reason:** Low: the answer to a request that committed nothing moves from a non-retryable 500 to the retryable 503 that the same loop already gives the neighbouring read. No status, code or header is new to either surface, and the message text (the store error) is the same.
-- **Check against commit:** Not checked. This record was written with the change, by its implementer, for the owner to ratify or reverse the 500 → 503 edge change.
+- **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**: keep the retryable 503 for a refusal before any write; it is not a licence to retry appends after an uncertain write outcome. The first registry read's 500 on a transient store failure is the next fix (typed classification with its own regression).
 
 ## Discrepancies
 

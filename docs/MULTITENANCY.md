@@ -489,6 +489,7 @@ streams.usage.read
 | Append/appendMany             | `streams.records.append`      |
 | Create/recreate stream        | `streams.create`              |
 | Seal/delete/update lifecycle  | `streams.lifecycle.manage`    |
+| Seal with a final record      | `streams.lifecycle.manage` and `streams.records.append` |
 | Consumer pull                 | `streams.consumers.pull`      |
 | Consumer settle               | `streams.consumers.settle`    |
 | Create/update/delete consumer | `streams.consumers.configure` |
@@ -496,7 +497,8 @@ streams.usage.read
 | Configure DLQ                 | `streams.dlq.configure`       |
 | Create watch (create body)    | `streams.watches.manage`      |
 | List project streams          | `streams.catalog.read`        |
-| Read stream/project usage     | `streams.usage.read`          |
+| Read stream usage             | `streams.usage.read`          |
+| Read project usage totals     | `streams.usage.read` and an unrestricted stream grant |
 
 The gate authorizes the scope of the product operation a request names
 (`ProductOperation`, `src/product/operation.rs`), and the product entry

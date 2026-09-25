@@ -2355,6 +2355,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::security_seal",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Seal authorization scenarios; a seal carrying a final record needs records.append as well as lifecycle.manage and a refused one changes nothing, over real HTTP against an enforce-mode rig; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_seal.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::security_usage",
       "path": "src/dst/dst_tests.rs",
       "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",

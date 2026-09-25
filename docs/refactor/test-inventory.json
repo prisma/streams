@@ -377,6 +377,17 @@
     "scenarios": []
   },
   {
+    "name": "a_final_record_seal_needs_append_as_well_as_lifecycle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d9455dcfbd2f914d91e1a5e4359a679eb7f862b66e388c5177b1897674249992",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_seal.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_inheriting_a_legacy_window_is_born_alive",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4780,6 +4791,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "project_usage_totals_need_an_unrestricted_stream_grant",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e90b6622deaef749300b15770ee636efb3c2afe2dcc785ac6286fe52ad51ab96",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_usage.rs",
     "scenarios": []
   },
   {

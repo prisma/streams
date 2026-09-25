@@ -207,6 +207,9 @@ mod security_revocation;
 #[path = "tests/security_routes.rs"]
 mod security_routes;
 
+#[path = "tests/security_seal.rs"]
+mod security_seal;
+
 #[path = "tests/security_subscription.rs"]
 mod security_subscription;
 

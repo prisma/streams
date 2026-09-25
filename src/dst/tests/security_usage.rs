@@ -252,3 +252,40 @@ async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
     assert_eq!(row_of(&named), (Some(live.as_str()), Some(0)), "{named}");
     engine_shutdown(&state).await;
 }
+
+/// Project usage totals need an unrestricted effective stream grant as
+/// well as `streams.usage.read` (owner decision, second external review):
+/// `c-pfx`, limited to names under "a", could subtract a/mine's usage from
+/// the project total and learn b/secret's. Red before: 200 with the
+/// project's totals. Now 403 `prefix_denied` with no usage in the body,
+/// while its per-stream usage for a/mine stays readable and `c-full` still
+/// reads the totals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_usage_totals_need_an_unrestricted_stream_grant() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
+        .await
+        .unwrap();
+    install_rollup(&state, rollup);
+    let (full, pfx) = bearers(&svc);
+    stream_with(addr, &full, "a/mine", 1).await;
+    stream_with(addr, &full, "b/secret", 3).await;
+    roll_up(&state).await;
+
+    let totals = format!("/v1/projects/{}/usage", PROJECT.0);
+    let (st, body) = usage(addr, &pfx, &totals).await;
+    assert_eq!(
+        (st, &body["error"]["code"]),
+        (403, &"prefix_denied".into()),
+        "{body}"
+    );
+    assert!(body.get("ingestRecords").is_none(), "{body}");
+    let (st, body) = usage(addr, &full, &totals).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["ingestRecords"].as_u64(), Some(4), "{body}");
+    let (st, mine) = usage(addr, &pfx, "/v1/streams/a/mine/usage/current").await;
+    assert_eq!(st, 200, "{mine}");
+    assert_eq!(mine["ingestRecords"].as_u64(), Some(1), "{mine}");
+    engine_shutdown(&state).await;
+}
