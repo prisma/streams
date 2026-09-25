@@ -1,7 +1,7 @@
 //! Public replay/long-poll application operation. Protocol adapters decode their
 //! own cursors and render these typed positions; neither surface invokes the
 //! other surface's HTTP handler.
-use super::{ReadPosition, ReadService, ReadTopology};
+use super::{Continuation, ObservationKey, ReadPosition, ReadService, ReadTopology, WriterHistory};
 use crate::crypto::StreamKey;
 use crate::registry::StreamDesc;
 use crate::shard::{Deliver, StreamHandle};
@@ -11,7 +11,43 @@ use std::time::Duration;
 pub(crate) enum ReadStart {
     Beginning,
     Now,
+    /// A durable position: valid across owner changes.
     Position(ReadPosition),
+    /// A position past the durable frontier when it was minted, bound to the
+    /// history that served the suffix below it (TLA-018-F3).
+    Continue(ReadPosition, Continuation),
+}
+impl ReadStart {
+    /// The continuation a page starting at `start` in `segment` carries
+    /// forward: only a page that begins exactly at the continued position.
+    pub(crate) fn continuation_at(&self, segment: u32, start: u64) -> Option<&Continuation> {
+        match self {
+            Self::Continue(at, continuation) if at.segment == segment && at.after == start => {
+                Some(continuation)
+            }
+            Self::Beginning | Self::Now | Self::Position(_) | Self::Continue(..) => None,
+        }
+    }
+}
+/// Where a span scan starts. "Now" has its own variant so that every scan
+/// index, `u64::MAX` included, is an ordinary position with ordinary
+/// past-the-tail semantics; no number selects live-tail behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScanStart {
+    /// The span's tail at the moment the owner executes the read.
+    Now,
+    At(u64),
+}
+impl ScanStart {
+    /// A span's first record.
+    const FIRST: Self = Self::At(0);
+    /// The scan index this start denotes in a span whose tail is `tail`.
+    const fn against(self, tail: u64) -> u64 {
+        match self {
+            Self::Now => tail,
+            Self::At(at) => at,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReadMode {
@@ -42,13 +78,16 @@ pub(crate) enum ReadResultKind {
 }
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "ReadOutcome; the outcome reports independent facts (up to date, closed, waited, filtered) that the wire renders as separate headers; an enum would force one axis onto independent flags"
+    reason = "ReadOutcome; the outcome reports independent facts (up to date, closed, waited, filtered) that the wire renders as separate headers; an enum would force one axis onto independent flags. The next position's continuation is an optional value, not another flag"
 )]
 pub(crate) struct ReadOutcome {
     pub descriptor: StreamDesc,
     pub records: super::PlainBatch,
     pub next: ReadPosition,
     pub durable: Option<ReadPosition>,
+    /// Set when `next` continues a provisional suffix; `None` means `next`
+    /// is a durable position.
+    pub continuation: Option<Continuation>,
     pub pending_from: Option<usize>,
     pub up_to_date: bool,
     pub closed: bool,
@@ -71,6 +110,9 @@ pub(crate) enum ReadFailure {
     InvalidCursor,
     ChangedIncarnation,
     CursorBeyondTail,
+    /// A continuation's provisional suffix was lost and cannot be proven
+    /// unchanged; the client resumes from this durable recovery position.
+    HistoryReplaced(ReadPosition),
     KeylessLive,
     AppliedFork,
     Resolve(crate::shard_directory::ResolveError),
@@ -87,13 +129,14 @@ impl std::error::Error for ReadFailure {}
 impl ReadOutcome {
     #[expect(
         clippy::too_many_arguments,
-        reason = "ReadOutcome::empty; an empty outcome still carries every fact the wire renders (cursor, closure, waiting, filtering); a builder would exist for this single call site"
+        reason = "ReadOutcome::empty; an empty outcome still carries every fact the wire renders (cursor, closure, waiting, filtering), and now takes the serving writer's history because its cursor may continue a provisional suffix; a builder would exist for this single call site"
     )]
     fn empty(
         command: &ReadCommand,
         position: ReadPosition,
         end: u64,
         durable: u64,
+        history: WriterHistory,
         closed: bool,
         kind: ReadResultKind,
         identity: [u8; 16],
@@ -103,14 +146,35 @@ impl ReadOutcome {
             .segments
             .as_ref()
             .is_some_and(|map| map.segments.len() > 1 || map.pending.is_some());
+        let records = super::PlainBatch::default();
+        let durable = (command.visibility == Deliver::Applied).then_some(ReadPosition {
+            segment: position.segment,
+            after: position.after.min(durable),
+        });
+        let observer = command
+            .key
+            .as_ref()
+            .map(|key| ObservationKey::of(key, &command.descriptor.epoch()));
+        let continuation = durable.zip(observer).and_then(|(durable, observer)| {
+            let incoming = command
+                .start
+                .continuation_at(position.segment, position.after);
+            Continuation::after_page(
+                incoming,
+                position.after,
+                &records,
+                position,
+                durable,
+                history,
+                &observer,
+            )
+        });
         Self {
             descriptor: command.descriptor.clone(),
-            records: super::PlainBatch::default(),
+            records,
             next: position,
-            durable: (command.visibility == Deliver::Applied).then_some(ReadPosition {
-                segment: position.segment,
-                after: position.after.min(durable),
-            }),
+            durable,
+            continuation,
             pending_from: None,
             up_to_date: !matches!(kind, ReadResultKind::Handoff | ReadResultKind::Head)
                 && !(segmented && kind == ReadResultKind::Timeout),
@@ -182,19 +246,15 @@ impl ReadService {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "ReadService::execute_read; one read resolves, waits, executes and meters in the order the wire contract promises; splitting it would hide which step each header reports"
-    )]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "ReadService::execute_read; a wait measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
+        reason = "ReadService::execute_read; one read resolves, checks the start of its entry span, waits, executes and meters in the order the wire contract promises, handing the serving writer's history to every outcome it builds; splitting it would hide which step each header reports"
     )]
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "ReadService::execute_read; a topology schedule the rebalancer cannot take is re-driven by the next read of the same stream; a handled result would only restate that the schedule is advisory"
+        reason = "ReadService::execute_read; a topology schedule the rebalancer cannot take is re-driven by the next read of the same stream; a handled result would only restate that the schedule is advisory. Neither the entry-span start check nor the writer history passed to empty outcomes discards a result"
     )]
     #[expect(
         clippy::excessive_nesting,
-        reason = "ReadService::execute_read; the read nests the remote redirect inside the not-owner branch and the refresh and resume decisions inside the long-poll wait; flattening them would separate the decisions from the wait and the ownership verdict they follow"
+        reason = "ReadService::execute_read; the read nests the remote redirect inside the not-owner branch and the refresh and resume decisions inside the long-poll wait; flattening them would separate the decisions from the wait and the ownership verdict they follow. The entry-span start check (one call at loop depth) and the writer history passed to empty outcomes add no nested block"
     )]
     pub(crate) async fn execute_read(
         &self,
@@ -217,7 +277,7 @@ impl ReadService {
         if spans.is_empty() {
             return Err(ReadFailure::Storage("empty read lineage".into()));
         }
-        let (mut index, mut start) = match command.position_in(&topology) {
+        let (mut index, mut from) = match command.position_in(&topology) {
             Ok(position) => position,
             Err(_) if command.refresh => return self.refreshed_read(command).await,
             Err(error) => return Err(error),
@@ -241,7 +301,7 @@ impl ReadService {
                                 owner,
                                 &command,
                                 span.seg_id,
-                                start,
+                                from,
                             )
                             .await;
                         }
@@ -254,6 +314,7 @@ impl ReadService {
                                 },
                                 0,
                                 0,
+                                WriterHistory::UNKNOWN,
                                 false,
                                 ReadResultKind::Handoff,
                                 identity,
@@ -285,15 +346,16 @@ impl ReadService {
                     .and_then(|m| m.pending.as_ref())
                     .is_some_and(|p| p.segs.contains(&span.seg_id));
             end = span.sealed_next_offset.unwrap_or(end);
-            if start == u64::MAX {
-                start = end;
+            let start = from.against(end);
+            if index == entry_index {
+                check_entry_start(&command, &engine, &handle, start, durable).await?;
             }
             if command.visibility == Deliver::Applied && start > end {
                 return Err(ReadFailure::CursorBeyondTail);
             }
             if start >= end && !last {
                 index += 1;
-                start = 0;
+                from = ScanStart::FIRST;
                 continue;
             }
             let position = ReadPosition {
@@ -309,17 +371,19 @@ impl ReadService {
                     },
                     end,
                     durable,
+                    WriterHistory::of(&engine),
                     closed && last && !seal_gap,
                     ReadResultKind::Head,
                     identity,
                 ));
             }
-            if matches!(command.start, ReadStart::Now) && matches!(command.mode, ReadMode::Replay) {
+            if from == ScanStart::Now && matches!(command.mode, ReadMode::Replay) {
                 let mut out = ReadOutcome::empty(
                     &command,
                     position,
                     end,
                     durable,
+                    WriterHistory::of(&engine),
                     closed && !seal_gap,
                     ReadResultKind::Snapshot,
                     identity,
@@ -341,6 +405,10 @@ impl ReadService {
                     return self.refreshed_read(command).await;
                 }
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ReadService::execute_read; the long-poll wait stamp: a wait measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
+            )]
             let wait_micros = wait_started.elapsed().as_micros() as u64;
             if matches!(command.mode, ReadMode::LongPoll(_)) && start >= end {
                 let resume = if segmented {
@@ -356,6 +424,7 @@ impl ReadService {
                     resume,
                     end,
                     durable,
+                    WriterHistory::of(&engine),
                     closed && !seal_gap,
                     ReadResultKind::Timeout,
                     identity,
@@ -382,10 +451,6 @@ impl ReadService {
         }
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ReadService::execute_fork_read; a poisoned handle state may hold a partially advanced boundary; recovering it could report a closure that was never committed"
-    )]
     async fn execute_fork_read(&self, command: ReadCommand) -> Result<ReadOutcome, ReadFailure> {
         let desc = &command.descriptor;
         let (_, handle) = self.handle_of(desc).await.map_err(ReadFailure::Storage)?;
@@ -412,6 +477,7 @@ impl ReadService {
                 },
                 end,
                 durable,
+                WriterHistory::UNKNOWN,
                 closed,
                 ReadResultKind::Head,
                 handle.hash,
@@ -432,6 +498,7 @@ impl ReadService {
                 },
                 end,
                 durable,
+                WriterHistory::UNKNOWN,
                 closed,
                 ReadResultKind::Timeout,
                 handle.hash,
@@ -445,12 +512,17 @@ impl ReadService {
             segment,
             after: page.scanned_through(start),
         };
+        #[expect(
+            clippy::unwrap_used,
+            reason = "ReadService::execute_fork_read; the closure flag read after the page: a poisoned handle state may hold a partially advanced boundary; recovering it could report a closure that was never committed"
+        )]
         let closed = handle.state.lock().unwrap().durable.closed;
         Ok(ReadOutcome {
             descriptor: desc.clone(),
             records: page.recs,
             next,
             durable: None,
+            continuation: None,
             pending_from: None,
             up_to_date: page.completed,
             closed: closed && page.completed,
@@ -524,14 +596,6 @@ struct ResolvedRead<'a> {
     wait_micros: u64,
 }
 impl ResolvedRead<'_> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "ResolvedRead::execute; a read measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
-    )]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ResolvedRead::execute; a poisoned handle state may hold a partially advanced boundary; recovering it could serve a floor that was never committed"
-    )]
     async fn execute(self) -> Result<ReadOutcome, ReadFailure> {
         let command = self.command;
         let topology = self.topology;
@@ -569,10 +633,18 @@ impl ResolvedRead<'_> {
         .execute()
         .await
         .map_err(ReadFailure::Storage)?;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ResolvedRead::execute; the page read stamp: a read measured in microseconds fits u64 for any request lifetime; a checked conversion would only restate the clock"
+        )]
         let read_micros = read_started.elapsed().as_micros() as u64;
         let (next, mut durable_resume, drained) = topology
             .page_progress(span.seg_id, start, &page)
             .ok_or(ReadFailure::InvalidCursor)?;
+        #[expect(
+            clippy::unwrap_used,
+            reason = "ResolvedRead::execute; the durable floor read after the page: a poisoned handle state may hold a partially advanced boundary; recovering it could serve a floor that was never committed"
+        )]
         let floor = handle.state.lock().unwrap().durable.next;
         let hopped = next.segment != span.seg_id;
         if !hopped {
@@ -580,11 +652,24 @@ impl ResolvedRead<'_> {
         }
         let pending = page.recs.iter().position(|record| record.off >= floor);
         let complete = drained && last;
+        let durable = (command.visibility == Deliver::Applied).then_some(durable_resume);
+        let continuation = durable.and_then(|durable| {
+            Continuation::after_page(
+                command.start.continuation_at(span.seg_id, start),
+                start,
+                &page.recs,
+                next,
+                durable,
+                WriterHistory::of(&engine),
+                &ObservationKey::of(key, &desc.epoch()),
+            )
+        });
         Ok(ReadOutcome {
             descriptor: desc.clone(),
             records: page.recs,
             next,
-            durable: (command.visibility == Deliver::Applied).then_some(durable_resume),
+            durable,
+            continuation,
             pending_from: (command.visibility == Deliver::Applied)
                 .then_some(pending)
                 .flatten(),
@@ -602,16 +687,108 @@ impl ResolvedRead<'_> {
     }
 }
 
+/// The start of the entry span. A continuation must prove its history; a
+/// durable position carries none, so past the durable frontier it may
+/// continue a lost suffix and is refused in applied mode.
+async fn check_entry_start(
+    command: &ReadCommand,
+    engine: &std::sync::Arc<crate::shard::ShardEngine>,
+    handle: &std::sync::Arc<StreamHandle>,
+    start: u64,
+    durable: u64,
+) -> Result<(), ReadFailure> {
+    match &command.start {
+        ReadStart::Continue(at, continuation) => {
+            verify_continuation(command, engine, handle, *at, continuation).await
+        }
+        ReadStart::Position(_) if command.visibility == Deliver::Applied && start > durable => {
+            Err(ReadFailure::CursorBeyondTail)
+        }
+        ReadStart::Beginning | ReadStart::Now | ReadStart::Position(_) => Ok(()),
+    }
+}
+
+/// A continuation continues only the history that served it. Another writer
+/// continues it only if a read of `[from, at)` holds exactly what the client
+/// observed there; otherwise the suffix was lost and possibly rewritten at
+/// the same offsets, and the client must resume from the recovery position,
+/// even when the replacement tail has passed `at`.
+async fn verify_continuation(
+    command: &ReadCommand,
+    engine: &std::sync::Arc<crate::shard::ShardEngine>,
+    handle: &std::sync::Arc<StreamHandle>,
+    at: ReadPosition,
+    continuation: &Continuation,
+) -> Result<(), ReadFailure> {
+    if continuation.history() == WriterHistory::of(engine) {
+        return Ok(());
+    }
+    let key = command.key.as_ref().ok_or(ReadFailure::MissingKey)?;
+    let page = super::ReadPlan::segment(
+        key,
+        &command.descriptor.epoch(),
+        handle,
+        engine,
+        super::ReadRange::bounded(continuation.from(), at.after),
+        command.selector.as_deref(),
+        8 << 20,
+        command.visibility,
+    )
+    .execute()
+    .await
+    .map_err(ReadFailure::Storage)?;
+    if continuation.observed_in(
+        &page,
+        at.after,
+        &ObservationKey::of(key, &command.descriptor.epoch()),
+    ) {
+        return Ok(());
+    }
+    Err(ReadFailure::HistoryReplaced(ReadPosition {
+        segment: at.segment,
+        after: continuation.recover(),
+    }))
+}
+
+impl ReadService {
+    /// Resolves a continuation start into a verified position for a caller
+    /// that serves its own records (SSE), which has no page to carry it.
+    pub(crate) async fn settle_continuation(
+        &self,
+        command: &mut ReadCommand,
+    ) -> Result<(), ReadFailure> {
+        let ReadStart::Continue(at, continuation) = command.start else {
+            return Ok(());
+        };
+        let desc = &command.descriptor;
+        let route = desc
+            .segment_route_by_id(at.segment)
+            .ok_or(ReadFailure::InvalidCursor)?;
+        let engine = self
+            .shards
+            .resolve(&route, crate::shard_directory::Adoption::External)
+            .await
+            .map_err(ReadFailure::Resolve)?;
+        let handle = engine
+            .stream_handle(desc.dynamic_segment_identity(at.segment))
+            .await
+            .map_err(|e| ReadFailure::Storage(e.to_string()))?;
+        verify_continuation(command, &engine, &handle, at, &continuation).await?;
+        command.start = ReadStart::Position(at);
+        Ok(())
+    }
+}
+
 impl ReadCommand {
-    fn position_in(&self, topology: &ReadTopology) -> Result<(usize, u64), ReadFailure> {
+    fn position_in(&self, topology: &ReadTopology) -> Result<(usize, ScanStart), ReadFailure> {
         match self.start {
-            ReadStart::Beginning => Ok((0, 0)),
-            ReadStart::Now => Ok((topology.spans.len() - 1, u64::MAX)),
-            ReadStart::Position(position) => topology
+            ReadStart::Beginning => Ok((0, ScanStart::FIRST)),
+            ReadStart::Now => Ok((topology.spans.len() - 1, ScanStart::Now)),
+            ReadStart::Position(position) | ReadStart::Continue(position, _) => topology
                 .spans
                 .iter()
                 .position(|span| span.seg_id == position.segment)
-                .map(|index| (index, position.after))
+                .map(|index| (index, ScanStart::At(position.after)))
                 .ok_or(ReadFailure::InvalidCursor),
         }
     }

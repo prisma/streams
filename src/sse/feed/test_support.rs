@@ -50,6 +50,37 @@ impl FeedMemoryBudget {
 }
 
 impl LiveFeed {
+    /// Test-only stall report: the feed's lifecycle, cursor space,
+    /// subscribers, driver permit and source, read without blocking. A
+    /// lock another thread holds reads as `held`, which is itself the
+    /// finding when a stalled test reports it.
+    pub(crate) fn describe_for_test(&self) -> String {
+        let state = match self.st.try_lock() {
+            Ok(st) => format!(
+                "{:?} head={} floor={} version={}",
+                st.lifecycle, st.head, st.floor, st.version
+            ),
+            Err(_) => "state=held".to_string(),
+        };
+        let source = match self.src.try_read() {
+            Ok(snapshot) => format!(
+                "source gen={} frontier={} closed={} cut_off={:?} spans={:?}",
+                snapshot.generation,
+                snapshot.source.frontier(),
+                snapshot.source.closed(),
+                snapshot.source.cut_off(),
+                snapshot.source.span_sig()
+            ),
+            Err(_) => "source=held".to_string(),
+        };
+        format!(
+            "{state} subscribers={} driving={} reads={} {source}",
+            self.subscribers.load(Ordering::SeqCst),
+            self.driving.load(Ordering::SeqCst),
+            self.source_reads.load(Ordering::Relaxed)
+        )
+    }
+
     /// Retention tests compare the budget's reservation with the charge the
     /// ring itself holds, the number `Drop` releases, never with a copy of it.
     pub(crate) fn retained(&self) -> usize {

@@ -508,9 +508,10 @@ proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 1024, ..proptest::prelude::ProptestConfig::default() })]
     /// External review §5: the product handler's capacity verdict, decided
     /// before the project's volume debit, is exactly the append core's,
-    /// because it measures what the core measures: the wire body the handler
-    /// hands on (a single value travels as `[value]`) and the records the
-    /// core's own parser counts in it. Single values, batches and opaque
+    /// because it measures what the core measures: the records the core's own
+    /// parser finds in the wire body the handler hands on (a single value
+    /// travels as `[value]`), counted and measured as they are stored. Single
+    /// values, batches and opaque
     /// bytes, compact or pretty, against buckets a few units either side of
     /// the request.
     #[test]
@@ -537,8 +538,8 @@ proptest::proptest! {
                 (raw, false, 1)
             }
         };
-        // Bucket capacities straddle the request: the `[value]` wrapping and
-        // the record count decide the verdict at the boundary.
+        // Bucket capacities straddle the request: the stored bytes and the
+        // record count decide the verdict at the boundary.
         let limits = crate::config::AdmissionConfig {
             limit_bytes_per_sec: (body.len() as u64 + bytes_slack).saturating_sub(4).max(1) as f64,
             limit_recs_per_sec: (records as u64 + recs_slack).saturating_sub(2).max(1) as f64,
@@ -549,14 +550,16 @@ proptest::proptest! {
         let Ok(parsed) = parse_append_body(&usage, &desc, &Bytes::from(body), batch) else {
             panic!("a generated body is well formed");
         };
-        // content.rs::parse_content: the core counts entries in the wire body.
+        // content.rs::parse_content: the core counts the entries it stores
+        // from the wire body and measures their stored bytes.
         let entries = if desc.is_json() {
-            crate::application::creation::json_entries(&parsed.wire, false).unwrap().len()
+            crate::application::creation::json_entries(&parsed.wire, false).unwrap()
         } else {
-            1
+            vec![parsed.wire.clone()]
         };
-        proptest::prop_assert_eq!(parsed.count, entries);
-        let core = usage.permanently_unadmittable(parsed.wire.len() as u64, entries as u64);
+        proptest::prop_assert_eq!(parsed.count, entries.len());
+        let stored = entries.iter().map(|entry| entry.len() as u64).sum();
+        let core = usage.permanently_unadmittable(stored, entries.len() as u64);
         proptest::prop_assert_eq!(parsed.over_capacity, core);
     }
 }

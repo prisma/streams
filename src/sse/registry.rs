@@ -203,6 +203,16 @@ impl FeedRegistry {
     pub(crate) fn feed_for_test(&self, key: &FeedKey) -> Option<Arc<LiveFeed>> {
         self.map.lock().unwrap().get(key).cloned()
     }
+
+    /// Test-only stall report: every registered feed, read without
+    /// blocking; a held map reads as such rather than stalling the report.
+    #[cfg(test)]
+    pub(crate) fn describe_for_test(&self) -> Vec<String> {
+        let Ok(map) = self.map.try_lock() else {
+            return vec!["feed map held".to_string()];
+        };
+        map.values().map(|feed| feed.describe_for_test()).collect()
+    }
 }
 
 // ==================================================================

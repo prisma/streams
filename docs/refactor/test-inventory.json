@@ -57,6 +57,32 @@
     "scenarios": []
   },
   {
+    "name": "a_ceiling_limited_exact_retry_still_completes_a_committed_final",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a2940d00afc409d7092315c03a7fdb3ca2215979918d15137556536054f00862",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_before_mark_committed(name);",
+      "crate::failpoints::stop_before_mark_committed_off(name);",
+      "assert_eq!(status, 503, \"the failpoint did not interrupt the close\");"
+    ],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7b6db75dcce4f5ea0ae77b25c576e02a00badd5654b5cad40a8db6afc7c8d282",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -74,6 +100,50 @@
       "CRT-006",
       "FRK-013"
     ]
+  },
+  {
+    "name": "a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f1fcb852cc1995ecc16fc040e77bfaa1b5aee22bb00524bf1951da0f3975f1c6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_continuation_carries_across_provisional_pages_and_is_verified_over_both",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "11384ebace840fe40e0fd9f723f12060a5322c5f7c96babc85a01ab0cc9dd288",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 0xF5, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_crashed_creators_late_reference_is_released_without_a_client_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f865287d00f70270a0e269837d02c7dfa6ba59992ef7c68202bdc2dcb411c307",
+    "mechanisms": [],
+    "configuration": [
+      "let pre = crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk19kid\");",
+      "let post = crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk19kid\");",
+      "crate::failpoints::park_fork_before_source_ref(\"frk19kid\");",
+      "crate::failpoints::park_fork_after_source_ref(\"frk19kid\");",
+      "park_reached(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk19kid\", pre).await;",
+      "crate::failpoints::release_fork_before_source_ref(\"frk19kid\");",
+      "park_reached(crate::failpoints::Fp::ForkAfterSourceRef, \"frk19kid\", post).await;",
+      "crate::failpoints::release_fork_after_source_ref(\"frk19kid\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
   },
   {
     "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
@@ -130,6 +200,17 @@
     "scenarios": [
       "SEL-008"
     ]
+  },
+  {
+    "name": "a_debt_that_outlives_its_circles_raises_the_stale_alert",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4aeff92b3d778372045cd1a94bbe8382c9acc360c8fcefdeafdbed8eb2faa3bc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
   },
   {
     "name": "a_declined_retirement_keeps_the_engine_and_arms_nothing",
@@ -296,6 +377,22 @@
     "scenarios": [
       "SEL-026"
     ]
+  },
+  {
+    "name": "a_fence_survives_engine_replacement",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2b7cde81dc4b0f38eb60c0e0629c781270f4c27b7613ccc04fb026119e7f8a1b",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"refence\");",
+      "crate::failpoints::park_close_before_enqueue(\"refence\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"refence\") > before",
+      "crate::failpoints::release_close_before_enqueue(\"refence\");"
+    ],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
   },
   {
     "name": "a_fence_survives_handle_eviction",
@@ -663,17 +760,45 @@
     ]
   },
   {
+    "name": "a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5daa1f81f3bd61e9a86269cecb43501b138298edef19d86efae62774234a1b05",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_close_before_enqueue(name);",
+      "wait_parked(crate::failpoints::Fp::CloseBeforeEnqueue, name, 1).await;",
+      "crate::failpoints::release_close_before_enqueue(name);"
+    ],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_plain_seal_cannot_finish_someone_elses_final",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1a4ca92fc1de23b0bb1f88a3270f70b582f7a212e5397e72d921b66561f2e262",
+    "function_sha256": "3857c2974483398436c3b0ab823b5b1292244849f7a6a874419225eee979adb5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",
     "scenarios": [
       "SEL-005"
     ]
+  },
+  {
+    "name": "a_position_at_a_sealed_span_end_continues_in_its_successor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "4d3490f2a41f5171c049f0fc8b73ba73e59f177baa7bfe399912665f5ecb21ea",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
+    ],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
   },
   {
     "name": "a_product_append_answers_json_that_is_never_cached",
@@ -745,6 +870,20 @@
     "scenarios": []
   },
   {
+    "name": "a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e80b8587374dedc37691abf486ce7ff77c6d41c0a14b8187c3081be6144d1026",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"adopt\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"adopt\");"
+    ],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_raw_close_with_content_owes_its_records",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -810,6 +949,28 @@
     "scenarios": [
       "QUE-011"
     ]
+  },
+  {
+    "name": "a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "dad4a6d4a85919a3c8f570da749e53df4eb0fc97bc478aab2e42c51a27c5cebf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_recreated_name_releases_the_reference_its_expired_fork_held",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "166e5043475fb3f93a37c4046153f715cf4b0f1aeadcf273471323f6a89f5c4c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
   },
   {
     "name": "a_recreated_stream_counts_each_incarnation_on_its_own_identity",
@@ -882,6 +1043,19 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_workload.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "54360df9fcf816c675d5cd49ea04733fefaac182c4327efcaea87630fe33b38f",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
     "scenarios": []
   },
   {
@@ -1233,6 +1407,28 @@
     ]
   },
   {
+    "name": "a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fa2273d263f94b93959d4c80a6f596c271cfbc0eddf0fb08157e779efc0c0be7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "84efb1c30e3bc2c102fe3b685d3bee84a5971bbbcbe2c2f2b5ba1474e80a80b1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1266,6 +1462,17 @@
     ]
   },
   {
+    "name": "a_superseded_final_waits_for_its_fence_to_be_durable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "27ec94eee75c7f485159da11febd9381230b38f489c7eed57365145cfd6bfd55",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_sweep_eviction_arms_only_the_base_holdoff",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -1289,6 +1496,17 @@
       "crate::failpoints::stop_before_mark_committed_off(\"lease2\");"
     ],
     "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_tombstone_older_than_the_index_is_backfilled_and_released",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7edcf8668d3ba7dc181e6e2c604874cb6ced6bcb2000444257d7a0e3a8d73cb7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
     "scenarios": []
   },
   {
@@ -1470,6 +1688,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "adapters_never_serve_a_u64_max_token_as_the_live_tail",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e4d08e46b83e731089de0784bab0d754d5694be71624c0959dd4795613744fde",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
     "scenarios": []
   },
   {
@@ -1660,7 +1889,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "de30985a35006c025b9d461418fc3effd20b0987850e64dbf9a4c142797c6185",
+    "function_sha256": "8736ef0b0ba1771b00781a4ee9995ed06ef8b5eac8628b81beb5af66c18cad12",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_recovery.rs",
@@ -1668,6 +1897,17 @@
       "SEL-001",
       "SEL-007"
     ]
+  },
+  {
+    "name": "an_ingest_refused_exact_retry_leaves_the_claim_to_its_original",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "913ef138b034f51ff1baa6792c815b37ee21a9e79ad3d959746c342262d1275b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
   },
   {
     "name": "an_initialization_cannot_be_resumed_with_another_key",
@@ -1684,6 +1924,22 @@
     ]
   },
   {
+    "name": "an_interrupted_reconcile_pass_is_completed_after_a_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8f06ef8210deba9730d761cb13c7bf7195cbf2019b72004f3e3733a1db51f7e5",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ReleaseAfterEpochCheck, \"frk21src\");",
+      "crate::failpoints::park_release_after_epoch_check(\"frk21src\");",
+      "crate::failpoints::Fp::ReleaseAfterEpochCheck,",
+      "crate::failpoints::release_release_after_epoch_check(\"frk21src\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1696,6 +1952,17 @@
       "DUR-007",
       "SEL-011"
     ]
+  },
+  {
+    "name": "an_over_ceiling_product_final_is_refused_before_its_seal_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "35c0bfc47ad1d27eb6522816da628f22649e500434debc3748e1285ce8123c47",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
   },
   {
     "name": "an_override_the_ring_ignores_is_never_opened_by_its_target",
@@ -1724,11 +1991,24 @@
     ]
   },
   {
+    "name": "an_owner_change_that_loses_nothing_keeps_the_continuation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d978634ea05baa372497b8dacc404e0091a7dc81ee05d5454e3b1fd9de3ae41",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 0xF4, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_unadmittable_append_leaves_the_project_volume_quota_untouched",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8d860fd867030384fcd33ee48a7c1ac604a6fee1d624cabd26ebea2428c4ea7f",
+    "function_sha256": "7e4bad7c49674646539d630eeede5c29aa37f813e9344679fb4a55ae0d58fe39",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
@@ -1756,6 +2036,30 @@
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
     ],
     "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "another_operation_on_a_sealed_collection_is_refused_definitively",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ae0b57fc96d70a75c4fc6f07ddff870a541c4def1ae8c3c4cc3ef3f01029e12c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_coordination.rs",
+    "scenarios": []
+  },
+  {
+    "name": "applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3096d9986889f7a77a3bbaf07ca1c2408e1b8f7c94aed61981f1c1c810f306ab",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 1818, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/tests/reads_applied.rs",
     "scenarios": []
   },
   {
@@ -2484,6 +2788,17 @@
     "scenarios": []
   },
   {
+    "name": "every_read_surface_serves_the_minified_client_text",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6a8e309d821b18ac97ae9281b466bbbfc78cd6dca155b829a98237ed3584929b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
     "name": "expiry_closes_the_storage_gauge",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2884,6 +3199,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
+    "scenarios": []
+  },
+  {
+    "name": "json_records_are_admitted_measured_and_billed_on_their_stored_text",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d6203dd45c91a9ad97f3353ad2cb9aeab41d818b09d9d947de6a2436af5def4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
+    "name": "json_request_identities_cover_the_client_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0523a13fbdfb97b0987653e25d1351845cf0a7dcfbb81a40ba67aa815461fede",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/json_fidelity.rs",
     "scenarios": []
   },
   {
@@ -3506,9 +3843,9 @@
   {
     "name": "livefeed_reopened_sealed_span_serves_catch_up",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      "#[test]"
     ],
-    "function_sha256": "1c5ac2848c78f04607dfb70940d28785a1ffe23ba558c2d3611425ec9254aeec",
+    "function_sha256": "e970902001396b0cbbbe4152c114de660491e67bf1b469a8b54f4607507d1bd6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_ownership.rs",
@@ -5063,7 +5400,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2ccad8807a4df1c37f0121206e5f3e649e0150e73ead70385a7743f1a23bba6a",
+    "function_sha256": "33b3d4a3ffac0c128af885fce57a5d49f732bbbfb0de9e3ef37fba730e33a560",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_page_limits.rs",
@@ -5505,11 +5842,25 @@
     "scenarios": []
   },
   {
+    "name": "refused_absorbed_chunk_leaves_no_phantom_backlog",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "acbee3c62a60e56ede4c4ae78a255dbe6446847cf32448fb4559c34a1f1d8d10",
+    "mechanisms": [],
+    "configuration": [
+      "let w = Workload::new(FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage());",
+      "\"failpoint never fired\""
+    ],
+    "file": "src/dst/tests/billing_maintenance.rs",
+    "scenarios": []
+  },
+  {
     "name": "relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7259128bc09702563a3755070c2ec7af5d2e0c6e1d5d2a6070ecda34061841a1",
+    "function_sha256": "0388b415a8a64482a5d6cff78d4e06888aee52e482cb170aaf7fc9d1506c6e20",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
@@ -5790,6 +6141,17 @@
     ]
   },
   {
+    "name": "scan_index_u64_max_is_a_position_not_now_locally_and_relayed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "be45eaac80e8c63816a0b74638c366089d8ee03fab0866fc2132341c168002c8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "scan_pages_draw_on_the_read_byte_quota",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -5946,7 +6308,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "f6f2dd1675d155b913d7addae37639e2b2d654a8f52cca5543dd9d893fe2317a",
+    "function_sha256": "c1bcd8d46a7159e3651abc36cddf2eb193b2c60d86b2233d110372ce67a2fae6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",
@@ -6475,6 +6837,17 @@
     "scenarios": []
   },
   {
+    "name": "the_backfill_resumes_after_a_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4855ffc12e6c3c4531d63d6ff1e040d08e6fe40f7e15a36f7d50938e6fb9efce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_entry_dispatches_exactly_the_resolved_operations",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6540,10 +6913,31 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "d4fc8de5e508d1f35b1fa6f413d9c1e2ea242926c6534b35056d69d7ac3f2e4a",
+    "function_sha256": "d9a71c1a5e251c3f9ba23ae4dd129aebb518e51e27b11fe7d6577f23279336c6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d06c151ae63a1cab3b231f3a0cd9cca578ba397c1d6e3a3d55dc124255fd9070",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk20kid\"),",
+      "crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk20kid\"),",
+      "crate::failpoints::park_fork_before_source_ref(\"frk20kid\");",
+      "crate::failpoints::park_fork_after_source_ref(\"frk20kid\");",
+      "park_reached(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk20kid\", pre).await;",
+      "crate::failpoints::release_fork_before_source_ref(\"frk20kid\");",
+      "park_reached(crate::failpoints::Fp::ForkAfterSourceRef, \"frk20kid\", post).await;",
+      "crate::failpoints::Fp::ForkAfterSourceRef,",
+      "crate::failpoints::release_fork_after_source_ref(\"frk20kid\");"
+    ],
+    "file": "src/dst/tests/fork_cleanup.rs",
     "scenarios": []
   },
   {
@@ -6571,6 +6965,28 @@
     "scenarios": [
       "HIS-010"
     ]
+  },
+  {
+    "name": "tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0f6500ea17eb36a90f1e8f763e541a7140b0393f5edd5175d6439a662af63b1c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_history_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "20d8c8efb5ebcf10fa9a33ac187f5c658d29db44f9fec399e8d08a1c67b1d637",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_history_lifecycle.rs",
+    "scenarios": []
   },
   {
     "name": "token_expiry_interrupts_slowly_progressing_delivery",

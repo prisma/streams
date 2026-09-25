@@ -3,30 +3,27 @@
 use super::{AppState, auth_failure_response, enforce_customer, perr};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use bytes::Bytes;
 
 /// `{final, routingKey}`. `final` is tri-state: absent (a plain seal), a
-/// present `null` (a final record whose value is null) or a value.
+/// present `null` (a final record whose value is null) or a value, held as
+/// the record the seal stores.
 #[derive(serde::Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct SealDoc {
-    // Double Option: serde collapses a PRESENT `null` into `None`, so
-    // `{"final": null}` silently became a seal with no final record,
-    // dropping a perfectly valid JSON null that the SDK sends whenever T
-    // admits it. The outer layer is presence, the inner is the value.
-    #[serde(default, deserialize_with = "deserialize_some")]
-    #[expect(
-        clippy::option_option,
-        reason = "final; absent, null and a value are three distinct wire states the seal contract names; a tri-state enum would restate serde's own null handling"
-    )]
-    r#final: Option<Option<serde_json::Value>>,
+    // A PRESENT `null` is the record `null`: a plain Option drops the valid
+    // JSON null the SDK sends whenever T admits it.
+    #[serde(default, deserialize_with = "stored_final")]
+    r#final: Option<Bytes>,
     #[serde(default)]
     routing_key: Option<String>,
 }
 
 impl SealDoc {
-    /// The final record, `null` included, or `None` for a plain seal.
-    pub(super) fn final_record(&self) -> Option<serde_json::Value> {
-        self.r#final.clone().map(Option::unwrap_or_default)
+    /// The final record as the seal stores it, `null` included, or `None`
+    /// for a plain seal.
+    pub(super) fn final_record(&self) -> Option<Bytes> {
+        self.r#final.clone()
     }
 
     /// The final record's routing key, empty when absent.
@@ -71,11 +68,13 @@ pub(super) fn seal_request(
     Ok(doc)
 }
 
-/// Distinguishes an ABSENT field from one present as `null`.
-fn deserialize_some<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(d).map(Some)
+/// An ABSENT final is `None`; a present one, `null` included, is the record
+/// the seal stores: the client's own text, validated and without whitespace
+/// (`creation::json_record`), never re-serialised.
+fn stored_final<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Bytes>, D::Error> {
+    use serde::Deserialize;
+    let text = Box::<serde_json::value::RawValue>::deserialize(d)?;
+    crate::application::creation::json_record(text.get().as_bytes())
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }

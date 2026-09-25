@@ -1,0 +1,401 @@
+# TLA-006/nc-admit-after-close-acked: raw TLC counterexample, trimmed to the trace.
+# Run by scripts/quality/formal.py run --id TLA-006 --record; TLC 2.19 of 08 August 2024 (rev: 5a47802).
+# Command: java -XX:+UseParallelGC -Xmx3g -cp target/quality-tools/tla2tools.jar tlc2.TLC -workers 2 -metadir <tmp> -config verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close_acked.cfg verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close_acked.tla
+# Inputs (SHA-256): HandoffRetirement.tla=0d9a9383891ae5115395d86599d0253b8e2c2ff5024a8d2aea4aff02bacfbfd8, CommitHandoff.tla=03b318dd50dfa8c4f8dcd600d422bc6477eb0f46314e8e273a2820ead25cb0e8, MC_HandoffRetirement_nc_admit_after_close_acked.tla=109d8cb4670c028e7b5d48e15889a5676083f12806046b80eaa1a4f6463fc966, MC_HandoffRetirement_nc_admit_after_close_acked.cfg=d14e4a0f0e94d07445e613a404b0bc50517ec578cd3ab382fb75d75f1a1637b5
+# Verdict: violation LateSuccessWasClaimedLive; trace length 10 states.
+
+Error: Invariant LateSuccessWasClaimedLive is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ retires = 0
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 0
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 0
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> FALSE]
+/\ gate = "free"
+/\ wal = 0
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 2: <Issue line 128, col 5 to line 138, col 44 of module HandoffRetirement>
+/\ retires = 0
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 0
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 0
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<"r1">>
+/\ ho = [pending |-> <<>>, terminal |-> FALSE]
+/\ gate = "free"
+/\ wal = 0
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 3: <Take line 183, col 5 to line 198, col 92 of module HandoffRetirement>
+/\ retires = 0
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "staged",
+  reqs |-> {"r1"},
+  writes |-> TRUE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 0
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 0
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> FALSE]
+/\ gate = "free"
+/\ wal = 0
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 4: <WriteOk line 201, col 5 to line 209, col 44 of module HandoffRetirement>
+/\ retires = 0
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "written",
+  reqs |-> {"r1"},
+  writes |-> TRUE,
+  seq |-> 1,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 0
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 0
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> FALSE]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 5: <ExternalClose line 388, col 5 to line 394, col 56 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "written",
+  reqs |-> {"r1"},
+  writes |-> TRUE,
+  seq |-> 1,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 0
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 0
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> TRUE]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 6: <Publish line 289, col 5 to line 301, col 73 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 0
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 1
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 1
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [ pending |-> <<[seq |-> 1, replies |-> {[dep |-> 1, req |-> "r1"]}]>>,
+  terminal |-> TRUE ]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 7: <Land line 429, col 5 to line 435, col 73 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 1
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 1
+/\ reported = 0
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 1
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [ pending |-> <<[seq |-> 1, replies |-> {[dep |-> 1, req |-> "r1"]}]>>,
+  terminal |-> TRUE ]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 8: <Report line 438, col 5 to line 444, col 44 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 1
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 1
+/\ reported = 1
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 1
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [ pending |-> <<[seq |-> 1, replies |-> {[dep |-> 1, req |-> "r1"]}]>>,
+  terminal |-> TRUE ]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 9: <Claim line 350, col 5 to line 362, col 44 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 1
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 1
+/\ reported = 1
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 1
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [ phase |-> "claimed",
+  groups |-> <<[seq |-> 1, replies |-> {[dep |-> 1, req |-> "r1"]}]>> ]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "none", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> TRUE]
+/\ gate = "disp"
+/\ wal = 1
+/\ nsent = [r1 |-> 0, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE
+
+State 10: <Replies line 366, col 5 to line 373, col 92 of module HandoffRetirement>
+/\ retires = 1
+/\ landed = 1
+/\ cancelled = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ txn = [ phase |-> "idle",
+  reqs |-> {},
+  writes |-> FALSE,
+  seq |-> 0,
+  dep |-> 0,
+  verdict |-> "none" ]
+/\ appliedSeq = 1
+/\ reported = 1
+/\ lateWrite = 0
+/\ dbClosed = FALSE
+/\ strandedDurable = {}
+/\ writeFails = 0
+/\ pubCount = 1
+/\ aborts = 0
+/\ strandedEver = {}
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ issued = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ sentDep = [r1 |-> 1, r2 |-> 0, r3 |-> 0]
+/\ res = [r1 |-> "ok", r2 |-> "none", r3 |-> "none"]
+/\ preFailAt = 0
+/\ decidedLive = [r1 |-> FALSE, r2 |-> FALSE, r3 |-> FALSE]
+/\ queue = <<>>
+/\ ho = [pending |-> <<>>, terminal |-> TRUE]
+/\ gate = "free"
+/\ wal = 1
+/\ nsent = [r1 |-> 1, r2 |-> 0, r3 |-> 0]
+/\ writeRetire = FALSE
+/\ walFails = 0
+/\ strand = <<>>
+/\ walDead = FALSE
+/\ afterRetire = [r1 |-> TRUE, r2 |-> FALSE, r3 |-> FALSE]
+/\ writerDead = FALSE
+/\ pubAtRetire = 0
+/\ committerAlive = TRUE

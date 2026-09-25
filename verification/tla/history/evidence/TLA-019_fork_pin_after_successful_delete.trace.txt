@@ -1,0 +1,103 @@
+PRE-FIX MODEL TRACE (TLA-019-F4). Recorded on the model before the fork-debt marker and the reconciler were added (0d40dc2, 8a03e0d). The witness is still reachable on the current model (the state exists until the reconciler pays the marker); the reconciler now releases the reference (TLA-019/witness-fork-ReconcilerReleasesLatePin, TLA-019/fork-liveness-reconciler). The state names below are those of the pre-fix model.
+TLA-019/witness-fork-PinAfterSuccessfulDelete: reachable state (TLA-019-F4): a DELETE of the child returned success, then the creator's late install landed and the creator died before its post-check; the reference pins the source (raw TLC trace from the formal.py driver log, trimmed to the trace).
+Spec: verification/tla/history/MC_ForkPin.tla  Config: verification/tla/history/MC_ForkPin_w_PinAfterSuccessfulDelete.cfg
+COMMAND: python3 scripts/quality/formal.py run --id TLA-019 (TLC 2.19, -workers 2)
+Search at violation: 386 states generated, 244 distinct states found, 160 states left on queue.
+
+Error: Invariant Witness_PinAfterSuccessfulDelete is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "none"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 2: <ForkBegin line 107, col 5 to line 111, col 68 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 1, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "creating", F2 |-> "none"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 3: <ChildDelete line 176, col 5 to line 180, col 74 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 1, F2 |-> 0]
+/\ req = [F1 |-> "releasing", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "none"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 4: <InRequestRelease line 183, col 5 to line 189, col 91 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> TRUE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 1, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "none"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 5: <ForkInstall line 114, col 5 to line 134, col 47 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = TRUE
+/\ okDel = [F1 |-> TRUE, F2 |-> FALSE]
+/\ refs = {"F1"}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 1, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "installed", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "none"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 6: <CreatorCrash line 159, col 5 to line 163, col 74 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = TRUE
+/\ okDel = [F1 |-> TRUE, F2 |-> FALSE]
+/\ refs = {"F1"}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 1, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "done", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 1
+/\ child = [F1 |-> "gone", F2 |-> "none"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]

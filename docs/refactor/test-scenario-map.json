@@ -1839,7 +1839,8 @@
       }
     ],
     "mapped": true,
-    "coverage": "full"
+    "coverage": "partial",
+    "note": "Corrupt page only. A postings page or canonical row lost after it was durable has no test and is not detected by the reader: H11 open obligation, docs/dst/DST-EXPANSION-SPEC.md \u00a79.12.2."
   },
   {
     "id": "HIS-020",

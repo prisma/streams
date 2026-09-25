@@ -144,6 +144,20 @@ struct Hold {
     /// itself: opening the new owner also writes to the held class, so the
     /// handoff can never happen and the gate is never released.
     max_parked: u64,
+    /// Only paths under this prefix park (one DB's WAL directory, say), so
+    /// writes of other DBs on the same store cannot take the parked slots.
+    under: Option<String>,
+}
+
+impl Hold {
+    fn parks(&self, op: StoreOp, class: ObjClass, path: &str) -> bool {
+        self.op == op
+            && self.class == class
+            && self
+                .under
+                .as_deref()
+                .is_none_or(|under| path.starts_with(under))
+    }
 }
 
 /// Mutable fault state, behind an `Arc` so `delete_stream` — which must
@@ -211,10 +225,6 @@ impl FaultState {
 
     /// Latency / hold / error decision, shared by every verb.
     /// `Ok(true)` means "perform it, then discard the response".
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "FaultState::gate; the permit is the wait itself and is released the moment it is granted, so the gate paces operations without holding them; a bound permit would serialise the store"
-    )]
     async fn gate(&self, op: StoreOp, path: &str) -> OsResult<bool> {
         self.ops.fetch_add(1, Ordering::Relaxed);
         let class = ObjClass::of(path);
@@ -228,7 +238,7 @@ impl FaultState {
         let held = {
             let h = self.hold.lock().unwrap();
             match h.as_ref() {
-                Some(hold) if hold.op == op && hold.class == class => {
+                Some(hold) if hold.parks(op, class, path) => {
                     Some((hold.gate.clone(), hold.engaged.clone(), hold.max_parked))
                 }
                 _ => None,
@@ -238,6 +248,10 @@ impl FaultState {
             // fetch_add returns the PREVIOUS value, so this parks exactly
             // the first `max_parked` matching operations.
             if engaged.fetch_add(1, Ordering::SeqCst) < max_parked {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "FaultState::gate; the parked acquire: the permit is the wait itself and is released the moment it is granted, so the gate paces operations without holding them; a bound permit would serialise the store"
+                )]
                 // resolves only once the scenario closes the gate
                 let _ = gate.acquire().await;
             }
@@ -364,6 +378,27 @@ impl FaultStore {
         class: ObjClass,
         max_parked: u64,
     ) -> Arc<AtomicU64> {
+        self.hold(op, class, None, max_parked)
+    }
+
+    /// [`hold_class`](Self::hold_class) for paths under `under` only.
+    pub(crate) fn hold_class_under(
+        &self,
+        op: StoreOp,
+        class: ObjClass,
+        under: &str,
+        max_parked: u64,
+    ) -> Arc<AtomicU64> {
+        self.hold(op, class, Some(under.to_string()), max_parked)
+    }
+
+    fn hold(
+        &self,
+        op: StoreOp,
+        class: ObjClass,
+        under: Option<String>,
+        max_parked: u64,
+    ) -> Arc<AtomicU64> {
         let engaged = Arc::new(AtomicU64::new(0));
         *self.st.hold.lock().unwrap() = Some(Hold {
             op,
@@ -371,6 +406,7 @@ impl FaultStore {
             gate: Arc::new(tokio::sync::Semaphore::new(0)),
             engaged: engaged.clone(),
             max_parked,
+            under,
         });
         engaged
     }

@@ -130,10 +130,16 @@ The planner records `visibility_only_files` when the only changes narrow parsed
 `pub` visibility to `pub(crate)`, `pub(super)` or `pub(self)` and every other
 source character matches. It separately records `production_unchanged_files`
 when parsed production tokens match after removing direct lint `allow`/`expect`
-annotations and items with their own explicit `#[cfg(test)]` attribute. Entire
-files require an actual `#![cfg(test)]`; filenames and enclosing function names
-are not proof. Visibility may only narrow as above. Compiler, source, dependency
-and ordinary test jobs remain mandatory for both classifications.
+annotations and items with their own explicit `#[cfg(test)]` or `#[cfg(kani)]`
+attribute. No production build sets either: `kani` is set only by the pinned
+Kani toolchain for proof harnesses, and `build.rs` declares it. Entire files
+require an actual `#![cfg(test)]` or `#![cfg(kani)]`, with one layout exception.
+A Kani harness file, `<module>/proofs.rs`, is the body of its parent's
+`#[cfg(kani)] mod proofs;` and carries no cfg of its own; the source gate fails
+every `proofs.rs` whose one parent module file does not declare it exactly that
+way. Other filenames and enclosing function names are not proof. Visibility may
+only narrow as above. Compiler, source, dependency and ordinary test jobs remain
+mandatory for both classifications.
 
 The second comparison preserves signatures, expressions, literal spellings,
 documentation attributes, configuration and macro tokens. Opaque item macros,
@@ -152,13 +158,13 @@ custom inner or conditionally constructed attributes, opaque item macros and
 source introspection retain checks. The remaining production source must still pass the parsed token
 comparison. Positive and negative controls cover these boundaries.
 
-A separate, stricter byte comparison may remove only trailing root items with
-an explicit `#[cfg(test)]` while preserving the entire production prefix and
-all its item locations. Unchanged custom attributes and derives are eligible
-only under this proof: their complete input bytes and spans remain fixed.
-Nested test items inside a production macro input cannot use this exception.
-Custom crate-level inner attributes, opaque item macros and source-introspection
-macros still retain checks.
+A separate, stricter byte comparison may remove only trailing root items with an
+explicit `#[cfg(test)]` or `#[cfg(kani)]` while preserving the entire production
+prefix and all its item locations. Unchanged custom attributes and derives are
+eligible only under this proof: their complete input bytes and spans remain
+fixed. Nested test items inside a production macro input cannot use this
+exception. Custom crate-level inner attributes, opaque item macros and
+source-introspection macros still retain checks.
 
 The planner separately records `formatted_visibility_files` for narrowed
 visibility plus token-preserving formatting, including parser-identified

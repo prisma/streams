@@ -9,6 +9,7 @@ mod submit;
 use crate::crypto::derive_subkey;
 use crate::registry::Registry;
 use crate::shard::{AppendReq, now_ms};
+pub(crate) use content::stored_records;
 pub(crate) use contract::fail;
 pub(crate) use contract::{
     AppendCode, AppendCommand, AppendFailure, AppendKey, AppendOutcome, AppendResult,
@@ -283,14 +284,13 @@ async fn execute_once(
     let epoch = desc.epoch();
     #[cfg(test)]
     let name = desc.sref().name().as_str().to_string();
-    let body = command.body.clone();
     let close = command.close;
     let product_hash = command.request_hash;
     let mut producer = command.producer.clone();
     if let (Some(producer), Some(hash)) = (producer.as_mut(), product_hash) {
         producer.request_hash = Some(hash);
     }
-    let close_only = close && body.is_empty();
+    let close_only = close && command.body.is_empty();
     let mut close_plan = close::prepare_close(state, &desc, command, producer).await?;
     let content = content::parse_content(
         &state.usage,
@@ -310,12 +310,14 @@ async fn execute_once(
     close::install_intent(state, &desc, command, &content, &mut close_plan).await?;
     let content::ContentPlan { entries, deferred } = content;
     let close_carries_content = !entries.is_empty();
+    // Admission, the autoscaler and billing all measure the stored records.
+    let bytes: usize = entries.iter().map(|e| e.len()).sum();
     let usage_c = admission::admit_usage(
         &state.usage,
         &desc,
         close_only,
         deferred.is_none(),
-        body.len(),
+        bytes,
         entries.len(),
     )?;
     let routing_key = command.routing_key.clone();
@@ -347,10 +349,9 @@ async fn execute_once(
         _ => Vec::new(),
     };
     if !close_only && deferred.is_none() {
-        let fed: usize = entries.iter().map(|e| e.len()).sum();
         state
             .scaler
-            .note_append(&desc, &seg, fed as u64, entries.len() as u64);
+            .note_append(&desc, &seg, bytes as u64, entries.len() as u64);
     }
     state.usage.link_storage(
         crate::crypto::RouteHash::for_stream(&desc.sref()),
@@ -362,7 +363,6 @@ async fn execute_once(
 
     let touch = state.watches.append_touch(&desc, &entries);
 
-    let bytes = entries.iter().map(|e| e.len()).sum();
     #[cfg(test)]
     if !close {
         crate::failpoints::pause_append_before_enqueue(&name).await;

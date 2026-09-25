@@ -120,7 +120,16 @@ pub(super) fn parse_append_body(
         }
         (body.clone(), 1)
     };
-    let over_capacity = usage.permanently_unadmittable(wire.len() as u64, count as u64);
+    // Capacity measures the bytes stored, as the core and its bucket do. The
+    // wire form bounds them from above, so only a body over capacity on the
+    // wire is measured exactly, by the owner that stores it.
+    let over_capacity = usage
+        .permanently_unadmittable(wire.len() as u64, count as u64)
+        .and_then(|_| {
+            let (records, _) = crate::application::append::stored_records(desc, &wire, usize::MAX);
+            let stored = records.iter().map(|record| record.len() as u64).sum();
+            usage.permanently_unadmittable(stored, count as u64)
+        });
     Ok(AppendBody {
         wire,
         count,

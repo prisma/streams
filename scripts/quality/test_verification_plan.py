@@ -7,6 +7,7 @@ from unittest.mock import patch
 import verification_plan
 from common import ROOT, syntax
 from mutation_owners import MutationOwner, OWNERS, validate_plan
+from source_rules import harness_layout
 from verification_plan import (
     discover_changes,
     is_visibility_only,
@@ -277,6 +278,64 @@ class RenameSelection(unittest.TestCase):
             checks['renamed_source_files'][0]['disposition'],
             'production-unchanged',
         )
+
+    def kani_harness(self, declaration):
+        parent = self.root / 'src/shard/commit_handoff.rs'
+        parent.write_text(parent.read_text() + declaration)
+        harness = self.root / 'src/shard/commit_handoff/proofs.rs'
+        harness.parent.mkdir()
+        harness.write_text(
+            'use super::Handoff;\n'
+            '#[kani::proof]\n'
+            'fn close_is_terminal() {\n'
+            '    let mut handoff = Handoff { terminal: kani::any() };\n'
+            '    handoff.close();\n'
+            '    kani::cover!(handoff.terminal());\n'
+            '}\n'
+        )
+        self.git('add', '.')
+        changes = discover_changes(self.base, self.root)
+        owners = (MutationOwner('commit_handoff', ('src/shard/commit_handoff.rs',), ('shard::',)),)
+        with patch.object(verification_plan, 'ROOT', self.root):
+            visibility, production, formatted = verification_plan.source_changes(
+                self.base, changes
+            )
+        checks = plan_changes(
+            changes,
+            visibility,
+            production,
+            formatted,
+            {'src/shard/commit_handoff.rs': 'commit_handoff'},
+            owners,
+        )
+        layout = harness_layout(syntax({
+            path: (self.root / path).read_text()
+            for path in ('src/shard/commit_handoff.rs', 'src/shard/commit_handoff/proofs.rs')
+        }))
+        return checks, owners, layout
+
+    def test_a_kani_harness_and_its_declaration_are_not_mutation_scope(self):
+        checks, owners, layout = self.kani_harness('\n#[cfg(kani)]\nmod proofs;\n')
+        self.assertEqual(layout, [])
+        self.assertEqual(checks['production_unchanged_files'], [
+            'src/shard/commit_handoff.rs', 'src/shard/commit_handoff/proofs.rs'
+        ])
+        self.assertEqual(checks['mutation_source_files'], [])
+        self.assertEqual(checks['unregistered_mutation_source_files'], [])
+        self.assertFalse(checks['mutants'])
+        self.assertEqual(validate_plan(checks, owners), ())
+
+    def test_a_production_proofs_declaration_is_selected_and_refused(self):
+        checks, owners, layout = self.kani_harness('\nmod proofs;\n')
+        self.assertEqual(checks['mutation_source_files'], ['src/shard/commit_handoff.rs'])
+        self.assertEqual(checks['selected_mutation_owners'], ['commit_handoff'])
+        self.assertEqual(validate_plan(checks, owners), owners)
+        # The planner trusts the harness layout; the mandatory source gate
+        # refuses a harness file whose parent compiles it into production.
+        self.assertEqual(layout, [
+            'Kani harness needs exactly `#[cfg(kani)] mod proofs;` in its parent '
+            'module file: src/shard/commit_handoff/proofs.rs'
+        ])
 
     def test_unregistered_rename_destination_fails_before_discovery(self):
         _, checks, owners = self.moved(register=False)

@@ -139,6 +139,14 @@ impl Fixture {
             vec![created, conflicted],
         )
     }
+    /// Commits `ops` as one group. Staging, refusing and writing never wait
+    /// on dispatch, so a held dispatch gate cannot hold the group itself.
+    async fn commit(&self, ops: Vec<CommitOp>) {
+        let group = self.engine.commit_group(ops, &self.cfg);
+        tokio::time::timeout(Duration::from_secs(10), group)
+            .await
+            .expect("the group waited on the held dispatch");
+    }
     async fn rows(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
         let mut out = BTreeMap::new();
         let mut rows = self.engine.db.scan(..).await.unwrap();
@@ -219,6 +227,8 @@ impl Fixture {
             producer.extend([5; 16]);
             expected.insert(producer_key(&hash, &KEY, "writer"), producer);
         }
+        // The generation-8 seal fence persists its own row (TLA-002-F1).
+        expected.insert(seal_fence_key(&HASH), 8u64.to_le_bytes().to_vec());
         expected.insert(
             crate::queue::config_key(&HASH, "c"),
             serde_json::to_vec(&ConsumerRecord {
@@ -286,7 +296,7 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
         let engine = fixture.engine.clone();
         let dispatch = engine.test_hold_dispatch().await;
         let start = now_ms();
-        fixture.engine.commit_group(ops, &fixture.cfg).await;
+        fixture.commit(ops).await;
         fixture.assert_quiet().await;
         if let Some(failure) = failure {
             assert_eq!(
@@ -320,12 +330,8 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
             }
             assert_eq!(
                 engine.seal_fences.lock().unwrap().get(&HASH).copied(),
-                if failure == "required-read" {
-                    None
-                } else {
-                    Some(8)
-                },
-                "only a staged fence may conservatively survive failure"
+                None,
+                "a failed group leaves no cached fence that no row backs (TLA-002-F2)"
             );
             assert_eq!(
                 fixture.engine.maintenance_snapshot(),

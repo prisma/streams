@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -41,7 +41,7 @@ pub(crate) fn encode(epoch: u32, next: u64) -> String {
+ /// bytes as a string, and the Kani proofs reason over them directly.
+ fn digits(epoch: u32, next: u64) -> [u8; 26] {
+     // Epoch and next occupy disjoint bits, so their sum is their concatenation.
+-    let n: u128 = ((epoch as u128) << 96) + ((next as u128) << 32);
++    let n: u128 = (((epoch & !(1 << 29)) as u128) << 96) + ((next as u128) << 32);
+     let padded = n << 2; // 128 -> 130 bits
+     let mut out = [0u8; 26];
+     for (i, digit) in out.iter_mut().enumerate() {

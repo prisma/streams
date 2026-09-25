@@ -1,0 +1,15 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -92,6 +92,11 @@
+     sealed: Option<SealedReject>,
+ ) -> ProducerDecision {
+     let reject = |error| ProducerDecision::Reply(Err(error));
++    if sealed.is_some() {
++        return reject(AppendErr::Closed {
++            next_offset: tail.next,
++        });
++    }
+     if let Some((epoch, seq, offset, request_hash)) = current {
+         if request.epoch < epoch {
+             return reject(AppendErr::ProducerStale {

@@ -10,7 +10,7 @@ impl CommitTransaction<'_> {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail; recovering it could accept an append against a boundary that was never committed"
+        reason = "CommitTransaction::append; a poisoned handle state may hold a partially applied tail (the seal-fence check it calls answers its own refusals, Internal for an unreadable fence); recovering it could accept an append against a boundary that was never committed"
     )]
     #[expect(
         clippy::excessive_nesting,
@@ -136,22 +136,9 @@ impl CommitTransaction<'_> {
                 return;
             }
         }
-        if req.seal_gen.is_some() || (req.finish == AppendFinish::Close) {
-            let fence = self
-                .engine
-                .seal_fences
-                .lock()
-                .unwrap()
-                .get(&hash)
-                .copied()
-                .unwrap_or(0);
-            let stale = !seal_authorized(req.seal_gen, req.finish == AppendFinish::Close, fence);
-            if stale {
-                let _ = req.resp.send(Err(AppendErr::SealSuperseded));
-                return;
-            }
+        if let Some(req) = self.seal_authorizes(hash, req).await {
+            self.accept_append(local, hash, req, prod_echo);
         }
-        self.accept_append(local, hash, req, prod_echo);
     }
     fn accept_append(
         &mut self,

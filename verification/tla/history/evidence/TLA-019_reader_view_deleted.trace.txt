@@ -1,0 +1,246 @@
+PRE-REFINEMENT TRACE (TLA-019-F1, withdrawn). Recorded on the model before it included the compactor's checkpoint on the pre-compaction manifest (SlateDB compactor_state_protocols.rs write_manifest) and the poll and read timing bounds. It is not a production behaviour: the checkpoint keeps the replaced SSTs for 900 s, and the writer view is refreshed within 300 s. On the current model LiveReadViewProtected passes in MC_ReachGC_small.cfg, and the negative control TLA-019/nc-no-compaction-checkpoint reproduces this trace's shape.
+TLA-019 check TLA-019/reader-clause: LiveReadViewProtected counterexample: a read on the writer's stale in-memory view loses a compaction input to the collector (raw TLC trace, trimmed to the trace).
+Spec: verification/tla/history/MC_ReachGC.tla  Config: verification/tla/history/MC_ReachGC_reader_clause.cfg
+COMMAND: cd <repo> && java -XX:+UseParallelGC -Xmx3g -cp target/quality-tools/tla2tools.jar tlc2.TLC -workers 2 -metadir <scratch>/tlc/history/MC_ReachGC_reader_clause_final -config verification/tla/history/MC_ReachGC_reader_clause.cfg verification/tla/history/MC_ReachGC.tla
+TLC 2.19 (tla2tools v1.7.4, sha256 936a2620...0e88); OpenJDK 17.0.1; -workers 2
+Search at violation: 453721 states generated, 195042 distinct states found, 96541 states left on queue.
+
+Error: Invariant LiveReadViewProtected is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> FALSE, start |-> 0, inputs |-> {}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 0
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "none", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1"}
+/\ cov = [L1 |-> {0}, L2 |-> {}, C |-> {}, O |-> {}]
+/\ committed = {"L1"}
+/\ gen = [L1 |-> 0, L2 |-> 0, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 2: <Tick line 130, col 5 to line 132, col 69 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> FALSE, start |-> 0, inputs |-> {}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 1
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "none", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1"}
+/\ cov = [L1 |-> {0}, L2 |-> {}, C |-> {}, O |-> {}]
+/\ committed = {"L1"}
+/\ gen = [L1 |-> 0, L2 |-> 0, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 3: <Tick line 130, col 5 to line 132, col 69 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> FALSE, start |-> 0, inputs |-> {}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "none", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1"}
+/\ cov = [L1 |-> {0}, L2 |-> {}, C |-> {}, O |-> {}]
+/\ committed = {"L1"}
+/\ gen = [L1 |-> 0, L2 |-> 0, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 4: <FlushUpload line 138, col 5 to line 143, col 41 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> FALSE, start |-> 0, inputs |-> {}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {}, O |-> {}]
+/\ committed = {"L1"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 5: <FlushCommit line 150, col 5 to line 154, col 41 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> FALSE, start |-> 0, inputs |-> {}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1", "L2"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {}, O |-> {}]
+/\ committed = {"L1", "L2"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 6: <CompactStart line 157, col 5 to line 160, col 41 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> TRUE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "none", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1", "L2"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {}, O |-> {}]
+/\ committed = {"L1", "L2"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 0, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 7: <CompactUpload line 163, col 5 to line 168, col 41 of module ReachGC>
+/\ done = [start |-> 0, has |-> FALSE]
+/\ job = [active |-> TRUE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 0
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"L1", "L2"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 8: <CompactCommit line 174, col 5 to line 180, col 77 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 0, refs |-> {}, inv |-> {}, cut |-> 0, ph |-> "idle"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 5
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 9: <GcReadCompactions line 237, col 5 to line 241, col 62 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 1, refs |-> {}, inv |-> {}, cut |-> 1, ph |-> "lw"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 2
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 10: <GcReadManifest line 244, col 5 to line 246, col 70 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> FALSE, view |-> {}, out |-> "none"]
+/\ gc = [age |-> 1, refs |-> {"C"}, inv |-> {}, cut |-> 1, ph |-> "viewed"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 2
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 11: <ReadBegin line 218, col 5 to line 220, col 70 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> TRUE, view |-> {"L1", "L2"}, out |-> "none"]
+/\ gc = [age |-> 1, refs |-> {"C"}, inv |-> {}, cut |-> 1, ph |-> "viewed"]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 2
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> FALSE, inv |-> {}]
+
+State 12: <GcList line 249, col 5 to line 253, col 60 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> TRUE, view |-> {"L1", "L2"}, out |-> "none"]
+/\ gc = [ age |-> 1,
+  refs |-> {"C"},
+  inv |-> {"L1", "L2", "C"},
+  cut |-> 1,
+  ph |-> "listed" ]
+/\ st = [L1 |-> "present", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 2
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> TRUE, inv |-> {"L1", "L2", "C"}]
+
+State 13: <GcDelete line 256, col 5 to line 262, col 41 of module ReachGC>
+/\ done = [start |-> 2, has |-> TRUE]
+/\ job = [active |-> FALSE, start |-> 2, inputs |-> {"L1", "L2"}]
+/\ ck = [refs |-> {}, active |-> FALSE, used |-> FALSE]
+/\ now = 2
+/\ lastCompL0 = 2
+/\ rv = [active |-> TRUE, view |-> {"L1", "L2"}, out |-> "none"]
+/\ gc = [age |-> 1, refs |-> {"C"}, inv |-> {"L2", "C"}, cut |-> 1, ph |-> "listed"]
+/\ st = [L1 |-> "deleted", L2 |-> "present", C |-> "present", O |-> "none"]
+/\ abs = 0
+/\ man = {"C"}
+/\ cov = [L1 |-> {0}, L2 |-> {1}, C |-> {0, 1}, O |-> {}]
+/\ committed = {"L1", "L2", "C"}
+/\ gen = [L1 |-> 0, L2 |-> 2, C |-> 2, O |-> 0]
+/\ gcLast = 2
+/\ wv = {"L1", "L2"}
+/\ firstInv = [set |-> TRUE, inv |-> {"L1", "L2", "C"}]

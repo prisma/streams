@@ -1,8 +1,35 @@
 //! Generated inputs reach the production admission/codec, including invalid
 //! arrays. Proptest persists minimized failures beside this owner.
 use super::*;
-use crate::postings::{PostingRun, decode_page, decode_page_abs, encode_page};
+use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
+use crate::postings::{
+    BUCKET_OFFSETS, PageBuilder, PostingRun, append_page_runs, bucket_of, decode_page,
+    decode_page_abs, decode_stored_page, encode_page, postings_key, rk_hash,
+};
 use proptest::prelude::*;
+use std::collections::BTreeMap;
+
+/// The pages `builder` emits for key `k`, stored under their postings keys;
+/// a page already stored under the same key is overwritten, as in the store.
+fn store_pages(stored: &mut BTreeMap<Vec<u8>, Vec<u8>>, builder: PageBuilder, k: RoutingKeyHash) {
+    let (pages, _) = builder.finish();
+    for (kh, bucket, first, value) in pages {
+        if kh == k {
+            let key = postings_key(RouteHash([1; 16]), SegmentHash([2; 16]), &kh, bucket, first);
+            stored.insert(key, value);
+        }
+    }
+}
+
+/// The key-ordered admission every reader runs over `k`'s stored pages.
+fn admit_pages(stored: &BTreeMap<Vec<u8>, Vec<u8>>, k: RoutingKeyHash) -> Option<Vec<AbsRun>> {
+    let mut runs = Vec::new();
+    for (key, value) in stored {
+        let page = decode_stored_page(RouteHash([1; 16]), SegmentHash([2; 16]), &k, key, value)?;
+        append_page_runs(&mut runs, page)?;
+    }
+    Some(runs)
+}
 
 #[test]
 fn quality_minimized_nonzero_prefix_extension() {
@@ -33,6 +60,46 @@ fn quality_minimized_nonzero_prefix_extension() {
     assert_eq!(&*old.extend_after(&old, 2).unwrap(), &*old);
 }
 
+/// An overlapping page is admitted only as a second description of the
+/// admitted offsets: filling a hole inside the common span is corruption,
+/// and an agreeing page contributes only its part past the admitted end, the
+/// straddling run continuing with no gap of its own. A page starting at the
+/// admitted end has no common span and is kept whole.
+#[test]
+fn quality_an_overlapping_page_must_agree_inside_the_common_span() {
+    let run = |start, count| AbsRun {
+        start,
+        count,
+        matching_bytes: 1,
+        gap_bytes_before: 0,
+    };
+    let admitted = || vec![run(10, 1), run(12, 1), run(14, 1)];
+    let mut all = admitted();
+    assert!(append_page_runs(&mut all, vec![run(12, 3)]).is_none());
+    let mut all = admitted();
+    let straddler = AbsRun {
+        gap_bytes_before: 9,
+        ..run(14, 3)
+    };
+    append_page_runs(&mut all, vec![run(12, 1), straddler]).unwrap();
+    let shape: Vec<_> = all
+        .iter()
+        .map(|r| (r.start, r.count, r.gap_bytes_before))
+        .collect();
+    assert_eq!(shape, [(10, 1, 0), (12, 1, 0), (14, 1, 0), (15, 2, 0)]);
+    let mut all = admitted();
+    let contiguous = AbsRun {
+        gap_bytes_before: 9,
+        ..run(15, 1)
+    };
+    append_page_runs(&mut all, vec![contiguous]).unwrap();
+    assert_eq!(
+        all.last(),
+        Some(&contiguous),
+        "a page past the end is kept whole"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1024, .. ProptestConfig::default() })]
 
@@ -53,7 +120,7 @@ proptest! {
     }
 
     #[test]
-    #[expect(clippy::arithmetic_side_effects, reason = "postings property oracle; generated u32 offsets fit in u64 and 64 u64 terms fit in u128; reusing checked production arithmetic would weaken the independent oracle")]
+    #[expect(clippy::arithmetic_side_effects, reason = "postings property oracles; generated offsets and sizes stay far below u64 (u32 offsets, or a hundred offsets around one bucket boundary) and 64 u64 terms sum in u128; reusing checked production arithmetic would weaken the independent oracles")]
     fn quality_arbitrary_runs_match_wide_integer_oracle(values in prop::collection::vec((any::<u64>(), any::<u32>(), any::<u64>(), any::<u64>()), 0..64)) {
         let runs: Vec<_> = values.into_iter().map(|(start,count,matching_bytes,gap_bytes_before)| AbsRun {start,count,matching_bytes,gap_bytes_before}).collect();
         let mut previous = 0u128;
@@ -71,7 +138,7 @@ proptest! {
     }
 
     #[test]
-    #[expect(clippy::arithmetic_side_effects, reason = "postings property oracle; generated u32 offsets fit in u64 and 64 u64 terms fit in u128; reusing checked production arithmetic would weaken the independent oracle")]
+    #[expect(clippy::arithmetic_side_effects, reason = "postings property oracles; generated offsets and sizes stay far below u64 (u32 offsets, or a hundred offsets around one bucket boundary) and 64 u64 terms sum in u128; reusing checked production arithmetic would weaken the independent oracles")]
     fn quality_zero_overflow_overlap_are_rejected(start in any::<u32>(), bytes in 1u64..u64::MAX) {
         let valid = AbsRun { start:u64::from(start), count:2, matching_bytes:bytes, gap_bytes_before:0 };
         prop_assert!(ValidatedRuns::new(vec![AbsRun {count:0,..valid}]).is_none(), "invalid run was accepted");
@@ -111,6 +178,47 @@ proptest! {
         prop_assert_eq!(extended.iter().map(|run| (run.start, run.count)).collect::<Vec<_>>(), vec![(start,count),(cut,extra)]);
         let prefix_only = old.extend_after(&old, cut).unwrap();
         prop_assert_eq!(&*prefix_only, &*old);
+    }
+
+    /// The same rows cut into chunks three ways, as re-gathers over flushed
+    /// chunks do, leave overlapping pages built by the production gather
+    /// builder. Admitted in key order they are exactly the key's offsets,
+    /// across a bucket boundary too; a forged page inside an admitted span
+    /// that lists a row of another key is refused.
+    #[test]
+    #[expect(clippy::arithmetic_side_effects, reason = "postings property oracles; generated offsets and sizes stay far below u64 (u32 offsets, or a hundred offsets around one bucket boundary) and 64 u64 terms sum in u128; reusing checked production arithmetic would weaken the independent oracles")]
+    fn quality_pages_of_three_chunkings_admit_as_one_index(
+        base in (BUCKET_OFFSETS - 48)..(BUCKET_OFFSETS + 16),
+        rows in prop::collection::vec((any::<bool>(), any::<[bool; 3]>()), 1..96),
+        forged in any::<prop::sample::Index>(),
+    ) {
+        let (k, other) = (rk_hash("k"), rk_hash("other"));
+        let mut stored = BTreeMap::new();
+        for chunking in 0..3 {
+            let mut builder = PageBuilder::default();
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 && row.1.get(chunking).copied().unwrap_or_default() {
+                    store_pages(&mut stored, std::mem::take(&mut builder), k);
+                }
+                let key = if row.0 { k } else { other };
+                builder.note_frame(key, base + i as u64, 10 + i as u64);
+            }
+            store_pages(&mut stored, builder, k);
+        }
+        let truth: Vec<u64> = (base..).zip(&rows).filter(|(_, row)| row.0).map(|(off, _)| off).collect();
+        let runs = admit_pages(&stored, k).expect("agreeing overlapping pages were refused");
+        let admitted: Vec<u64> = runs.iter().flat_map(|r| r.start..r.start + u64::from(r.count)).collect();
+        prop_assert_eq!(&admitted, &truth);
+        prop_assert!(ValidatedRuns::new(runs).is_some());
+        let holes: Vec<u64> = stored.values().filter_map(|value| decode_page(value)).flat_map(|page| {
+            (page.first_offset + 1..page.last_offset_exclusive).filter(|off| !truth.contains(off))
+        }).collect();
+        if !holes.is_empty() {
+            let hole = *forged.get(&holes);
+            let lie = encode_page(hole, &[PostingRun { gap_offsets: 0, record_count: 1, matching_frame_bytes: 1, gap_frame_bytes_before: 0 }]);
+            stored.insert(postings_key(RouteHash([1; 16]), SegmentHash([2; 16]), &k, bucket_of(hole), hole), lie);
+            prop_assert!(admit_pages(&stored, k).is_none(), "a page disagreeing with the span it overlaps was admitted");
+        }
     }
 
 }

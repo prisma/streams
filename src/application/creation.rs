@@ -93,7 +93,9 @@ mod fork;
 mod initialization;
 mod product;
 mod raw;
+mod reconcile;
 pub(crate) use product::{ProductCreateConfig, ProductCreateError};
+pub(crate) use reconcile::{ForkDebtStatus, spawn_fork_debt_reconciler};
 
 impl CreationService {
     pub(crate) async fn resolve(
@@ -244,24 +246,94 @@ pub(crate) fn fresh_desc(
     (desc, epoch)
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "json_entries; a serde_json::Value serialises infallibly; a fallible path would add a branch no value reaches"
-)]
+/// The records a JSON body holds, as a JSON collection stores them: each
+/// top-level element of an array body, or the body itself when it is not an
+/// array, as the client's own text with the whitespace outside strings
+/// removed. Number literals, key order, duplicate keys and string escapes
+/// are kept byte for byte, so every read serves what the client wrote and
+/// storing a stored record again is a no-op. The body is refused unless
+/// every record is JSON under the correctly rounded parser: finite numbers
+/// and no lone surrogate escapes.
 pub(crate) fn json_entries(body: &[u8], allow_empty_array: bool) -> Result<Vec<Bytes>, String> {
-    let v: serde_json::Value =
+    let first = body.iter().find(|b| !is_json_whitespace(**b));
+    if first != Some(&b'[') {
+        return Ok(vec![json_record(body)?]);
+    }
+    let elements: Vec<&serde_json::value::RawValue> =
         serde_json::from_slice(body).map_err(|_| "invalid JSON body".to_string())?;
-    match v {
-        serde_json::Value::Array(arr) => {
-            if arr.is_empty() && !allow_empty_array {
-                return Err("empty JSON array".to_string());
-            }
-            Ok(arr
-                .iter()
-                .map(|e| Bytes::from(serde_json::to_vec(e).expect("json")))
-                .collect())
+    if elements.is_empty() && !allow_empty_array {
+        return Err("empty JSON array".to_string());
+    }
+    elements
+        .iter()
+        .map(|element| json_record(element.get().as_bytes()))
+        .collect()
+}
+/// One JSON value's stored text: validated without building a DOM, then
+/// with the whitespace outside its strings removed. A valid string holds no
+/// raw control character, so the stored text holds no raw CR or LF: SSE
+/// frames each record on one `data:` line and relies on that.
+pub(crate) fn json_record(text: &[u8]) -> Result<Bytes, String> {
+    serde_json::from_slice::<ValidJson>(text).map_err(|_| "invalid JSON body".to_string())?;
+    let mut stored = Vec::with_capacity(text.len());
+    let (mut in_string, mut escaped) = (false, false);
+    for &byte in text {
+        if escaped {
+            escaped = false;
+        } else if in_string {
+            escaped = byte == b'\\';
+            in_string = byte != b'"';
+        } else if is_json_whitespace(byte) {
+            continue;
+        } else {
+            in_string = byte == b'"';
         }
-        other => Ok(vec![Bytes::from(serde_json::to_vec(&other).expect("json"))]),
+        stored.push(byte);
+    }
+    Ok(Bytes::from(stored))
+}
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+/// Any JSON value, parsed into nothing through `deserialize_any`: serde_json
+/// still range-checks every number (correctly rounded under
+/// `float_roundtrip`) and decodes every string escape, but builds no DOM.
+struct ValidJson;
+impl<'de> serde::Deserialize<'de> for ValidJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(ValidJson)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for ValidJson {
+    type Value = ValidJson;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<ValidJson>()?.is_some() {}
+        Ok(self)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        while map.next_entry::<ValidJson, ValidJson>()?.is_some() {}
+        Ok(self)
     }
 }
 pub(crate) fn over_record_ceiling(cap: usize, entries: &[Bytes]) -> Option<usize> {
@@ -388,6 +460,292 @@ mod tests {
                 recreatable(&d, at),
             );
             assert_eq!(got, want, "{expiry:?} {deleted} {soft_deleted} {children}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod json_record_tests {
+    use super::json_entries;
+    use proptest::prelude::{Just, ProptestConfig, Strategy, any};
+    use proptest::{collection::vec, prop_assert_eq, prop_oneof};
+
+    /// Numeric fidelity corpus (FLOAT report §2.1): shortest, long, halfway,
+    /// subnormal, exponent-form, big-integer and out-of-range literals.
+    const CORPUS: &[&str] = &[
+        "1.7802719962921167e-19",
+        "-1.7802719962921167e-19",
+        "0.1",
+        "0.3",
+        "0.30000000000000004",
+        "0.8337463852537358",
+        "3.141592653589793",
+        "2.718281828459045",
+        "1.0",
+        "1",
+        "1.50",
+        "1e2",
+        "1E+2",
+        "100.0",
+        "-0",
+        "-0.0",
+        "0e10",
+        "-0e-5",
+        "5e-324",
+        "4.9406564584124654e-324",
+        "2.4703282292062327e-324",
+        "2.4703282292062328e-324",
+        "1e-310",
+        "3e-320",
+        "4.35416759957975e-310",
+        "2.225073858507201e-308",
+        "2.2250738585072014e-308",
+        "2.2250738585072011e-308",
+        "1e-7",
+        "1.2345678901234567e-19",
+        "9.999999999999999e-20",
+        "3.0000000000000004e-19",
+        "1e16",
+        "1e21",
+        "1e22",
+        "1e23",
+        "9.999999999999999e22",
+        "7.3177701707893310e+15",
+        "8.98846567431158e307",
+        "1e308",
+        "1.7976931348623157e308",
+        "1.7976931348623158e308",
+        "1.7976931348623159e308",
+        "1e309",
+        "1e400",
+        "9007199254740992",
+        "9007199254740993",
+        "9007199254740993.0",
+        "18446744073709551615",
+        "18446744073709551616",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "123456789012345678901234567890",
+        "0.1000000000000000055511151231257827021181583404541015625",
+        "3.141592653589793238462643383279502884197",
+        "1.00000000000000011102230246251565404236316680908203125",
+        "1.00000000000000011102230246251565404236316680908203126",
+        "123456789012345678901234567890.123",
+        "1.23456789012345678901234567890e+30",
+        "0.000000000000000000000000000001",
+        "12345678901234567890e-10",
+        "1234567.0",
+    ];
+    /// The corpus literals that round to infinity: refused, as today.
+    const OVERFLOW: &[&str] = &["1.7976931348623159e308", "1e309", "1e400"];
+
+    fn stored(body: &str) -> Result<Vec<String>, String> {
+        let records = json_entries(body.as_bytes(), false)?;
+        Ok(records
+            .iter()
+            .map(|record| String::from_utf8(record.to_vec()).unwrap())
+            .collect())
+    }
+
+    #[test]
+    fn json_records_store_the_validated_client_text() {
+        for literal in CORPUS {
+            let admitted = !OVERFLOW.contains(literal);
+            let bodies = [
+                (format!("[ {literal} ]"), (*literal).to_string()),
+                (
+                    format!("{{ \"v\" :\n\t{literal} }}"),
+                    format!("{{\"v\":{literal}}}"),
+                ),
+            ];
+            for (body, record) in bodies {
+                let want = admitted
+                    .then(|| vec![record])
+                    .ok_or_else(|| "invalid JSON body".to_string());
+                assert_eq!(stored(&body), want, "{body}");
+            }
+        }
+        // serde_json's default parse refused 159 finite literals below
+        // f64::MAX; the correctly rounded one admits exactly the finite ones.
+        for i in 0..1000 {
+            let literal = format!("1.797693134862315{i:03}e308");
+            let finite = literal.parse::<f64>().unwrap().is_finite();
+            assert_eq!(stored(&literal).is_ok(), finite, "{literal}");
+        }
+        let cases: &[(&str, &[&str])] = &[
+            (r#"[ 1 , {"a" : 1} ,"x"]"#, &["1", r#"{"a":1}"#, r#""x""#]),
+            (
+                "{\n  \"b\" : 1,\n  \"a\" : 2,\r\n  \"a\" : 3\n}\n",
+                &[r#"{"b":1,"a":2,"a":3}"#],
+            ),
+            (r#"[ "é\/" , 1.0 ]"#, &[r#""é\/""#, "1.0"]),
+            (
+                r#"[ {"k" : " a \" b \\" , "z":" x  y "} ]"#,
+                &[r#"{"k":" a \" b \\","z":" x  y "}"#],
+            ),
+            (
+                r#"[ "\\" , "\" " , [ 1 , 2 ] ]"#,
+                &[r#""\\""#, r#""\" ""#, "[1,2]"],
+            ),
+            (r#" "\ud83d\ude00 \u00e9" "#, &[r#""\ud83d\ude00 \u00e9""#]),
+            (" [[ ]] ", &["[]"]),
+            (" null ", &["null"]),
+        ];
+        for (body, records) in cases {
+            let want: Vec<String> = records.iter().map(|r| (*r).to_string()).collect();
+            assert_eq!(stored(body), Ok(want), "{body}");
+        }
+        for refused in [
+            r#"["\ud800"]"#,
+            r#""\udc00 x""#,
+            r#"{"\ud800":1}"#,
+            "[1e400]",
+            r#"{"a":[-1e400]}"#,
+            "[1,]",
+            "[",
+            "",
+            " ",
+            r#"{"a" 1}"#,
+            "[1] x",
+            "[\"\t\"]",
+        ] {
+            assert!(stored(refused).is_err(), "{refused:?} admitted");
+        }
+        assert!(json_entries(b"[\"\xff\"]", false).is_err());
+        assert_eq!(stored(" [ ] "), Err("empty JSON array".to_string()));
+        assert_eq!(json_entries(b" [ ] ", true), Ok(Vec::new()));
+    }
+
+    /// Fails if `float_roundtrip` is dropped (the default parse moves this
+    /// literal by one ulp) or if a dependency unifies `arbitrary_precision`
+    /// in (it keeps `1.50` verbatim, and breaks the billing envelope's
+    /// flatten decode).
+    #[test]
+    fn serde_json_parses_correctly_rounded_and_without_arbitrary_precision() {
+        let literal = "1.7802719962921167e-19";
+        let parsed: f64 = serde_json::from_str(literal).unwrap();
+        assert_eq!(parsed.to_bits(), literal.parse::<f64>().unwrap().to_bits());
+        let value: serde_json::Value = serde_json::from_str("1.50").unwrap();
+        assert_eq!(value.to_string(), "1.5");
+    }
+
+    /// One generated JSON value: the client's text, with random whitespace
+    /// between its tokens, the text it must be stored as, and its numbers.
+    #[derive(Clone, Debug)]
+    struct Doc {
+        client: String,
+        stored: String,
+        numbers: Vec<String>,
+    }
+
+    fn whitespace() -> impl Strategy<Value = String> {
+        vec(
+            prop_oneof![Just(' '), Just('\t'), Just('\n'), Just('\r')],
+            0..3,
+        )
+        .prop_map(String::from_iter)
+    }
+
+    fn number() -> impl Strategy<Value = String> {
+        let finite = any::<u64>()
+            .prop_map(f64::from_bits)
+            .prop_filter("finite", |f| f.is_finite());
+        prop_oneof![
+            finite.clone().prop_map(|f| format!("{f:e}")),
+            finite.prop_map(|f| format!("{f:.16e}")),
+            (1u64..1 << 52).prop_map(|bits| format!("{:e}", f64::from_bits(bits))),
+            (1u8..10, vec(0u8..10, 19..30), any::<bool>()).prop_map(|(lead, rest, negative)| {
+                let digits: String = rest.iter().map(|d| char::from(b'0' + d)).collect();
+                format!("{}{lead}{digits}", if negative { "-" } else { "" })
+            }),
+            any::<i64>().prop_map(|i| i.to_string()),
+            (0u32..100_000, 0u32..100).prop_map(|(units, cents)| format!("{units}.{cents:02}")),
+        ]
+    }
+
+    fn string() -> impl Strategy<Value = String> {
+        let part = prop_oneof![
+            Just(" "),
+            Just("\\\""),
+            Just("\\\\"),
+            Just("\\n"),
+            Just("\\u00e9"),
+            Just("é"),
+            Just("x"),
+            Just("\\/"),
+        ];
+        vec(part, 0..6).prop_map(|parts| format!("\"{}\"", parts.concat()))
+    }
+
+    fn document() -> impl Strategy<Value = Doc> {
+        let leaf = prop_oneof![
+            number().prop_map(|n| Doc {
+                client: n.clone(),
+                stored: n.clone(),
+                numbers: vec![n],
+            }),
+            prop_oneof![string(), Just("true".into()), Just("null".into())].prop_map(|s| Doc {
+                client: s.clone(),
+                stored: s,
+                numbers: Vec::new(),
+            }),
+        ];
+        leaf.prop_recursive(3, 24, 4, |inner| {
+            let members = vec((whitespace(), string(), whitespace(), inner.clone()), 0..4);
+            prop_oneof![
+                (vec((whitespace(), inner), 0..4), whitespace()).prop_map(|(items, end)| {
+                    let client: Vec<String> = items
+                        .iter()
+                        .map(|(ws, d)| format!("{ws}{}{ws}", d.client))
+                        .collect();
+                    let stored: Vec<&str> = items.iter().map(|(_, d)| d.stored.as_str()).collect();
+                    Doc {
+                        client: format!("[{end}{}]", client.join(",")),
+                        stored: format!("[{}]", stored.join(",")),
+                        numbers: items.into_iter().flat_map(|(_, d)| d.numbers).collect(),
+                    }
+                }),
+                (members, whitespace()).prop_map(|(members, end)| {
+                    let client: Vec<String> = members
+                        .iter()
+                        .map(|(a, key, b, d)| format!("{a}{key}{b}:{a}{}{b}", d.client))
+                        .collect();
+                    let stored: Vec<String> = members
+                        .iter()
+                        .map(|(_, key, _, d)| format!("{key}:{}", d.stored))
+                        .collect();
+                    Doc {
+                        client: format!("{{{end}{}}}", client.join(",")),
+                        stored: format!("{{{}}}", stored.join(",")),
+                        numbers: members.into_iter().flat_map(|(.., d)| d.numbers).collect(),
+                    }
+                }),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+
+        /// Every record is stored as its client text without whitespace;
+        /// storing the stored records again reproduces them byte for byte;
+        /// and the server's parse of every number is the correctly rounded
+        /// f64 of the client's literal.
+        #[test]
+        fn stored_json_records_are_the_minified_client_text(
+            elements in vec((whitespace(), document(), whitespace()), 1..4),
+        ) {
+            let client: Vec<String> =
+                elements.iter().map(|(a, d, b)| format!("{a}{}{b}", d.client)).collect();
+            let want: Vec<String> = elements.iter().map(|(_, d, _)| d.stored.clone()).collect();
+            let records = stored(&format!("[{}]", client.join(","))).unwrap();
+            prop_assert_eq!(&records, &want);
+            prop_assert_eq!(stored(&format!("[{}]", records.join(","))).unwrap(), records);
+            for literal in elements.iter().flat_map(|(_, d, _)| &d.numbers) {
+                let server: f64 = serde_json::from_str(literal).unwrap();
+                let correct: f64 = literal.parse().unwrap();
+                prop_assert_eq!(server.to_bits(), correct.to_bits(), "{}", literal);
+            }
         }
     }
 }

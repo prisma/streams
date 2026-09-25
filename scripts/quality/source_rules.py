@@ -428,6 +428,34 @@ def exception_growth(current, previous, rows=()):
     return failures
 
 
+def harness_layout(facts):
+    """Hold the one filename the syntax tool treats as a whole-file cfg.
+
+    A `<module>/proofs.rs` is classified test-only without an attribute of its
+    own, so the only proof is its parent: exactly one parent module file that
+    declares `crate::proofs` once, under a direct `#[cfg(kani)]`, and never
+    redirects it by `path`. Anything else, such as a production `mod proofs;`,
+    a crate-root harness or a missing parent, fails rather than being trusted.
+    """
+    failures = []
+    for path, parsed in facts.items():
+        if not parsed.get('kani_harness'):
+            continue
+        directory = path.removesuffix('/proofs.rs')
+        parents = [facts[candidate] for candidate in (f'{directory}.rs', f'{directory}/mod.rs')
+                   if candidate in facts]
+        declarations = [item for parent in parents for item in parent.get('items', ())
+                        if item['kind'] == 'module' and item['qualified'] == 'crate::proofs']
+        attributes = [fact['value'] for parent in parents for fact in parent['facts']
+                      if fact['kind'] == 'attribute' and fact['qualified'] == 'crate::proofs']
+        if (len(parents) != 1 or len(declarations) != 1
+                or not declarations[0]['explicit_test_cfg'] or 'cfg (kani)' not in attributes
+                or any(value.startswith('path') for value in attributes)):
+            failures.append(f'Kani harness needs exactly `#[cfg(kani)] mod proofs;` '
+                            f'in its parent module file: {path}')
+    return failures
+
+
 def violations(sources, facts, before_lines, prior_lines, allowed, architecture):
     failures = []
     groups, denied = from_compiler()
@@ -490,4 +518,4 @@ def violations(sources, facts, before_lines, prior_lines, allowed, architecture)
             continue
         if count > allowed[identity]:
             failures.append(f'unregistered source occurrence ({count - allowed[identity]}): {identity}')
-    return failures
+    return failures + harness_layout(facts)

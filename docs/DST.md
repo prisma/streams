@@ -259,7 +259,9 @@ Families still to build, in rough priority order:
   union, parent or child is ever deleted; a fenced DB cannot mutate live
   state.
 - **Ownership, routing, topology** — at most one owner epoch acknowledges
-  per shard; a stale route costs latency but never a record; replay-to
+  new writes per shard, and a retired epoch may only finish responses for
+  writes it claimed durable before a newer epoch fenced it (T11 in
+  `dst/DST-EXPANSION-SPEC.md`); a stale route costs latency but never a record; replay-to
   terminates; the segment map is always a complete non-overlapping
   partition; a crash between seal, clone, map CAS and parent retirement
   leaves a recoverable intent, never a hole; the serving map reflects

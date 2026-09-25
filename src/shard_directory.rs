@@ -208,6 +208,12 @@ impl ShardDirectory {
         self.inner.gate.clear_holdoff(prefix)
     }
 
+    /// Tests only: one prefix's gate and resident, for a stall report.
+    #[cfg(test)]
+    pub(crate) fn describe_for_test(&self, prefix: &str) -> String {
+        self.inner.gate.describe_for_test(prefix)
+    }
+
     /// Tests only: this directory's open gate, so the lock-order proof
     /// can reach the forced-interleaving park.
     #[cfg(test)]

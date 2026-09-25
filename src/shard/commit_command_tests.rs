@@ -1,6 +1,7 @@
 //! R03: close and fence commands wait for durability and dispatch together.
 #![cfg(test)]
 use super::*;
+use slatedb::config::DurabilityLevel;
 
 #[expect(
     clippy::too_many_lines,

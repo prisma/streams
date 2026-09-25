@@ -446,7 +446,7 @@ async fn keyed_tail_reads_serve_from_ring() {
     );
 }
 
-/// The held operation is inside durable_absorbed itself, after handle warming.
+/// The held operation is inside visible_absorbed itself, after handle warming.
 /// A retained dense keyed ring page never enters it; fallback and applied reads do.
 #[expect(
     clippy::too_many_lines,

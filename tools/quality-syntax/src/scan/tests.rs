@@ -202,6 +202,85 @@ fn test_only_file_requires_a_real_file_level_test_cfg() {
 }
 
 #[test]
+fn a_positive_kani_cfg_is_test_only_like_cfg_test() {
+    let parsed = source(
+        "src/a.rs",
+        r#"
+        #[cfg(kani)] mod proofs;
+        #[cfg(kani)] mod inline { fn harness() { let _: u8 = kani::any(); } }
+        #[cfg(all(kani, unix))] fn all() {}
+        #[cfg(any(kani, test))] fn any() {}
+        #[cfg(any(kani, unix))] fn mixed() {}
+        #[cfg(not(kani))] fn production() {}
+        #[cfg(feature = "kani")] fn feature() {}
+        #[cfg_attr(kani, cfg(kani))] fn conditional() {}
+    "#,
+    )
+    .unwrap();
+    let marked = |select: fn(&super::Item) -> bool| -> Vec<String> {
+        parsed
+            .items
+            .iter()
+            .filter(|item| select(item))
+            .map(|item| item.qualified.clone())
+            .collect()
+    };
+    assert_eq!(
+        marked(|item| item.test_only),
+        [
+            "crate::proofs",
+            "crate::inline",
+            "crate::inline::harness",
+            "crate::all",
+            "crate::any"
+        ]
+    );
+    assert_eq!(
+        marked(|item| item.explicit_test_cfg),
+        ["crate::proofs", "crate::inline"]
+    );
+    assert!(
+        parsed
+            .facts
+            .iter()
+            .filter(|fact| fact.value == "kani::any")
+            .all(|fact| fact.test_only)
+    );
+    assert!(
+        source("src/a.rs", "#![cfg(kani)] fn f() {}")
+            .unwrap()
+            .test_only_file
+    );
+    for guard in ["any(kani, unix)", "not(kani)", "feature = \"kani\""] {
+        let code = format!("#![cfg({guard})] fn f() {{}}");
+        assert!(!source("src/a.rs", &code).unwrap().test_only_file);
+    }
+}
+
+#[test]
+fn only_the_kani_harness_layout_makes_a_filename_a_whole_file_cfg() {
+    let harness = source(
+        "src/shard/commit_plan/proofs.rs",
+        "fn check() { let _: u8 = kani::any(); }",
+    )
+    .unwrap();
+    assert!(harness.kani_harness && harness.test_only_file);
+    assert!(harness.items.iter().all(|item| item.test_only));
+    assert!(harness.facts.iter().all(|fact| fact.test_only));
+    for path in [
+        "proofs.rs",
+        "src/shard/kani_proofs.rs",
+        "src/shard/proofs/mod.rs",
+        "src/shard/proofs/helpers.rs",
+        "src/shard/proofs_tests.rs",
+        "src/dst/tests/fake.rs",
+    ] {
+        let parsed = source(path, "fn f() {}").unwrap();
+        assert!(!parsed.kani_harness && !parsed.test_only_file, "{path}");
+    }
+}
+
+#[test]
 fn explicit_item_cfg_belongs_to_the_item_header() {
     let parsed = source(
         "src/tests/fake.rs",

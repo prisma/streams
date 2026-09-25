@@ -384,6 +384,80 @@ async fn a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases()
     engine_shutdown(&state).await;
 }
 
+/// A crash between a dead-letter append and the source settle leaves the copy
+/// committed under the message's own derived producer at sequence 0 and the
+/// source lease held. The next pass builds its copy again; when that copy is
+/// not byte-identical to the committed one (built by an earlier release, whose
+/// envelope re-encoded the value), the target answers `ProducerSeqReused`.
+/// That producer names this one message, so a committed sequence 0 is the
+/// delivery: the pass settles instead of retaining the lease forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass() {
+    let (state, addr) = http_rig(mem()).await;
+    let token = source_with_expired_poison(addr, "dl-crash", "dl-crash-dlq").await;
+    let source = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("dl-crash"))
+        .await
+        .unwrap()
+        .unwrap();
+    let stream_key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let lease = crate::product_cursor::LeaseToken::decode(
+        &token,
+        &source.project_id,
+        &stream_key,
+        &source.epoch(),
+    )
+    .unwrap();
+    let msg_id = lease.msg.encode(&source.project_id, &stream_key);
+    let committed = format!(
+        r#"{{"attempts":1,"consumer":"work","messageId":"{msg_id}","routingKey":"p","sourceStream":"dl-crash","value":{{"poison":true}},"release":"earlier"}}"#
+    );
+    let producer = format!("dlq:work:{msg_id}");
+    let (status, _, body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/dl-crash-dlq/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", producer.as_str()),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        committed.as_bytes(),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+
+    let pull = bounded_pull(addr, "dl-crash", br#"{"waitMs":200}"#).await;
+    assert!(pull["messages"].as_array().unwrap().is_empty(), "{pull}");
+    let segment = source.resolve_segment("p");
+    let engine = state.engine_for(&segment.shard_route).await.unwrap();
+    let lease_key = crate::queue::lease_key(
+        &segment.identity,
+        "work",
+        lease.consumer_gen,
+        lease.msg.offset,
+    );
+    assert!(
+        engine.db.get(&lease_key).await.unwrap().is_none(),
+        "the committed copy is the delivery, so the source lease settles"
+    );
+    assert_eq!(
+        engine
+            .queue_cursor(segment.identity, "work", lease.consumer_gen)
+            .await
+            .unwrap(),
+        1
+    );
+    let (status, _, body) = preq(addr, "GET", "/v1/streams/dl-crash-dlq/records", &KEY, b"").await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let dead: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(dead.len(), 1, "settling writes no second copy");
+    assert_eq!(dead[0]["release"], "earlier");
+    engine_shutdown(&state).await;
+}
+
 // ---- the lease window a settle keeps ---------------------------------
 
 /// The lease window `:pull` has always kept, which a settle must keep too.

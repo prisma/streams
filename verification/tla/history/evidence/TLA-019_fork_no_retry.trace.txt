@@ -1,0 +1,220 @@
+PRE-FIX TRACE (TLA-019-F4). Recorded on the model as it was before the fix commits "A background reconciler releases fork references that deleted children still owe" (0d40dc2) and "Fork-reference debt from before the index is backfilled, and stale debt raises an alert" (8a03e0d), when this shape was the probe probe-no-client-retry (its config has since been removed). On the current model the same premise (no client retry) passes with the reconciler (TLA-019/fork-liveness-reconciler), and TLA-019/nc-no-reconciler reproduces this behaviour. The state names below are those of the pre-fix model, which had no marker, rolled or reconciler ghost variables.
+TLA-019/probe-no-client-retry: RefEventuallyReleased counterexample (TLA-019-F4) with the client DELETE retry premise removed (raw TLC trace from the formal.py driver log, trimmed to the trace).
+Spec: verification/tla/history/MC_ForkPin.tla  Config: verification/tla/history/MC_ForkPin_probe_no_client_retry.cfg
+COMMAND: python3 scripts/quality/formal.py run --id TLA-019 (TLC 2.19, -workers 2)
+Search at violation: 59200 states generated, 16900 distinct states found, 0 states left on queue.
+
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 0]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "idle"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "none"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 2: <ForkBegin line 107, col 5 to line 111, col 68 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "pending"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "creating"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 3: <SourceDelete line 166, col 5 to line 168, col 87 of module ForkPin>
+/\ src = "deleted"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "pending"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "creating"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 4: <ChildDelete line 176, col 5 to line 180, col 74 of module ForkPin>
+/\ src = "deleted"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> FALSE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "releasing"]
+/\ creator = [F1 |-> "idle", F2 |-> "pending"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "gone"]
+/\ debt = [F1 |-> FALSE, F2 |-> TRUE]
+
+State 5: <InRequestRelease line 183, col 5 to line 189, col 91 of module ForkPin>
+/\ src = "deleted"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "pending"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "gone"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 6: <ForkInstall line 114, col 5 to line 134, col 47 of module ForkPin>
+/\ src = "deleted"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 1
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "gone"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 7: <SourceRecreate line 171, col 5 to line 173, col 71 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 0, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "idle", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "none", F2 |-> "gone"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 8: <ForkBegin line 107, col 5 to line 111, col 68 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "creating", F2 |-> "gone"]
+/\ debt = [F1 |-> FALSE, F2 |-> FALSE]
+
+State 9: <ChildDelete line 176, col 5 to line 180, col 74 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> FALSE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "releasing", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "gone"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 10: <InRequestRelease line 183, col 5 to line 189, col 91 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = FALSE
+/\ okDel = [F1 |-> TRUE, F2 |-> TRUE]
+/\ refs = {}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "pending", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "gone"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 11: <ForkInstall line 114, col 5 to line 134, col 47 of module ForkPin>
+/\ src = "live"
+/\ cascaded = FALSE
+/\ lateInst = TRUE
+/\ okDel = [F1 |-> TRUE, F2 |-> TRUE]
+/\ refs = {"F1"}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "installed", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "gone"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 12: <SourceDelete line 166, col 5 to line 168, col 87 of module ForkPin>
+/\ src = "soft"
+/\ cascaded = FALSE
+/\ lateInst = TRUE
+/\ okDel = [F1 |-> TRUE, F2 |-> TRUE]
+/\ refs = {"F1"}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "installed", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 0
+/\ child = [F1 |-> "gone", F2 |-> "gone"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 13: <CreatorCrash line 159, col 5 to line 163, col 74 of module ForkPin>
+/\ src = "soft"
+/\ cascaded = FALSE
+/\ lateInst = TRUE
+/\ okDel = [F1 |-> TRUE, F2 |-> TRUE]
+/\ refs = {"F1"}
+/\ declinedRecreated = FALSE
+/\ srcEpoch = 2
+/\ cEpoch = [F1 |-> 2, F2 |-> 1]
+/\ req = [F1 |-> "none", F2 |-> "none"]
+/\ creator = [F1 |-> "done", F2 |-> "done"]
+/\ conclusiveRecreated = FALSE
+/\ crashes = 1
+/\ child = [F1 |-> "gone", F2 |-> "gone"]
+/\ debt = [F1 |-> TRUE, F2 |-> FALSE]
+
+State 14: Stuttering
+Finished checking temporal properties in 00s at 2026-09-24 02:49:40

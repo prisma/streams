@@ -1470,7 +1470,7 @@ async fn product_metadata(
 #[expect(
     clippy::too_many_lines,
     clippy::excessive_nesting,
-    reason = "product_seal; the seal validates the intent, claims, finalises and answers in one sequence whose header and disposition checks nest inside the final record path; splitting it or flattening the checks would separate the steps from the claim they share"
+    reason = "product_seal; the seal refuses every deterministic failure of the final record, its capacity and per-record ceiling measured on the exact wire body the append submits, before it claims, then appends, finalises and answers under that one claim; splitting it or flattening the checks would separate the checked body from the submitted one and the steps from the claim they share"
 )]
 async fn product_seal(
     state: Arc<AppState>,
@@ -1528,7 +1528,7 @@ async fn product_seal(
             Ok(doc) => doc,
             Err(refused) => return *refused,
         };
-        if let Some(fin) = doc.final_record() {
+        if let Some(record) = doc.final_record() {
             // EVERY deterministic error first. Publishing the intent
             // before validating let a request that could never complete
             // — no key, wrong key, unusable routing key — leave the
@@ -1605,17 +1605,28 @@ async fn product_seal(
                     false,
                 );
             }
-            // Capacity, measured on the EXACT wire body the append will
-            // build — a single product record travels as `[value]`, two
-            // bytes longer than the value itself, and a value on the
-            // boundary would otherwise pass here and be refused there,
-            // leaving the intent behind.
+            // Capacity and the per-record ceiling, measured on the EXACT
+            // record the final append stores (the final's own text without
+            // insignificant whitespace, the bytes its operation id and
+            // producer hash cover), or a value on a boundary would pass here
+            // and be refused there, leaving the intent behind.
             if let Some(refusal) = state
                 .runtime
                 .usage
-                .permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
+                .permanently_unadmittable(record.len() as u64, 1)
             {
                 return capacity_refused(&refusal);
+            }
+            let wire = if validated.is_json() {
+                Bytes::from([b"[", record.as_ref(), b"]"].concat())
+            } else {
+                record.clone()
+            };
+            let ceiling = state.admission.record_ceiling();
+            if let (_, Some(refusal)) =
+                crate::application::append::stored_records(&validated, &wire, ceiling)
+            {
+                return render_product_append_error(refusal);
             }
             // Only now: enter Sealing. Ordinary appends are refused from
             // here, so nothing can land between the final record and the
@@ -1630,7 +1641,7 @@ async fn product_seal(
             };
             let (pid, pep, pseq) = (hv("producer-id"), hv("producer-epoch"), hv("producer-seq"));
             let op_id = seal_op_id_full(
-                &fin,
+                &record,
                 routing_key,
                 (!pid.is_empty()).then_some((pid.as_str(), pep.as_str(), pseq.as_str())),
             );
@@ -1647,14 +1658,17 @@ async fn product_seal(
                 |auth| async {
                     #[cfg(test)]
                     crate::failpoints::pause_product_final_before_append(&name).await;
-                    product_append_sealing(
+                    submit_product_append(
                         state.clone(),
                         &sref,
                         &validated,
+                        &key_b64,
                         routing_key,
                         &headers,
-                        Bytes::from(fin.to_string()),
-                        auth,
+                        &record,
+                        wire,
+                        false,
+                        Some(auth),
                     )
                     .await
                     .map(|ack| crate::application::lifecycle::FinalRecordAck { closed: ack.closed })
@@ -1729,27 +1743,27 @@ async fn product_seal_only(
     }
 }
 
-/// Follow-up review finding 3: a RESUMABLE seal failure is not an
-/// invariant failure — answering it 500 told clients the service broke
-/// when the honest answer is "retry later" (and produced worse client
-/// behavior than the machine's own contract warrants). Classification:
-///   * another live final-bearing claim -> 409 sealing (unchanged);
-///   * resumable states of this transition (close refused/pending,
-///     topology busy, publication declined, resolution failed)
-///     -> 503 seal_incomplete, retryable;
-///   * everything else (invariant/corruption/store) -> 500 internal.
+/// The one seal-refusal mapping: another live final-bearing claim -> 409
+/// sealing; a resumable state (close refused/pending, topology busy,
+/// publication declined, resolution failed) -> 503 seal_incomplete, never a
+/// 500; both retryable. Sealed under another operation -> 409 sealed, NOT
+/// retryable: no retry claims that terminal proof (raw: 409 stream_closed).
+/// Anything else (invariant/corruption/store) -> 500 internal.
 pub(crate) fn seal_error_response(
     stream: &str,
     error: &crate::application::lifecycle::SealError,
 ) -> Response {
     use crate::application::lifecycle::SealError;
-    let (status, code) = match error {
-        SealError::Conflict(_) => (StatusCode::CONFLICT, "sealing"),
-        SealError::Resumable(_) => (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete"),
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    let (status, code, retryable) = match error {
+        SealError::Conflict(_) => (StatusCode::CONFLICT, "sealing", true),
+        SealError::Resumable(_) => (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete", true),
+        SealError::AlreadySealed | SealError::OtherOperation => {
+            (StatusCode::CONFLICT, "sealed", false)
+        }
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal", true),
     };
     tracing::error!(stream = %stream, status = %status, code, "seal failed: {error}");
-    perr(status, code, &error.to_string(), None, true)
+    perr(status, code, &error.to_string(), None, retryable)
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
@@ -1770,61 +1784,9 @@ fn parse_routing_key(raw: &[u8]) -> Result<&str, &'static str> {
     }
 }
 
-/// Both product append routes compile to the ONE committer command the
-/// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
-/// contract — explicit single/batch semantics, Prisma-* names — then
-/// drives the shared append path. A single JSON append wraps the value
-/// as `[value]`, the protocol's own one-level flattening rule, so an
-/// array-valued record stays ONE message; a batch passes its elements
-/// straight through.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "product_append_sealing; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
-)]
-async fn product_append_sealing(
-    state: Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    desc: &StreamDesc,
-    routing_key: &str,
-    headers: &HeaderMap,
-    body: Bytes,
-    auth: crate::application::lifecycle::SealAuthz,
-) -> crate::application::append::AppendResult {
-    use crate::application::append::{AppendCode, AppendFailure, FailureClass};
-    let key_b64 = product_key(headers).ok_or_else(|| {
-        AppendFailure::new(
-            FailureClass::Invalid,
-            AppendCode::MissingKey,
-            "Prisma-Encryption-Key required",
-        )
-    })?;
-    let wire_body = if desc.is_json() {
-        let mut bytes = Vec::with_capacity(body.len() + 2);
-        bytes.push(b'[');
-        bytes.extend_from_slice(&body);
-        bytes.push(b']');
-        Bytes::from(bytes)
-    } else {
-        body.clone()
-    };
-    submit_product_append(
-        state,
-        sref,
-        desc,
-        &key_b64,
-        routing_key,
-        headers,
-        &body,
-        wire_body,
-        false,
-        Some(auth),
-    )
-    .await
-}
-
 /// Appends refuse a collection that is sealed OR sealing — only the
 /// seal operation's own final record may write during Sealing, and it
-/// goes through product_append_sealing with seal_after set (audit P0).
+/// goes through submit_product_append with seal_after set (audit P0).
 fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> {
     if desc.sealed {
         return Some(perr(
@@ -2030,9 +1992,16 @@ async fn product_append_inner(
     render_product_append(&state, &key, routing_key, count, result)
 }
 
+/// Both product append routes compile to the ONE committer command the
+/// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
+/// contract — explicit single/batch semantics, Prisma-* names — then
+/// drives the shared append path. A single JSON append wraps the value
+/// as `[value]`, the protocol's own one-level flattening rule, so an
+/// array-valued record stays ONE message; a batch passes its elements
+/// straight through.
 #[expect(
     clippy::too_many_arguments,
-    reason = "submit_product_append; parsed protocol fields converge here into one typed application command; bundling them earlier would parse the wire shape twice"
+    reason = "submit_product_append; parsed protocol fields, and the final record of a seal with its claim authority, converge here into one typed application command; bundling them earlier would parse the wire shape twice and let the seal submit a body other than the one it checked"
 )]
 async fn submit_product_append(
     state: Arc<AppState>,
@@ -2366,7 +2335,7 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "product_read; the read takes every extractor and the verified principal the entry resolved, dispatches raw, keyed and long-poll reads from one place and hands the principal to the page render that debits it; a request struct or a split would separate the dispatch from the parts it needs"
+    reason = "product_read; the read takes every extractor and the verified principal the entry resolved, dispatches raw, keyed and long-poll reads from one place, proves a continued position before an SSE start, and hands the principal to the page render that debits it; a request struct or a split would separate the dispatch from the parts it needs"
 )]
 async fn product_read(
     state: Arc<AppState>,
@@ -2500,30 +2469,10 @@ async fn product_read(
             );
         }
     };
-    let kh = crate::crypto::stream_hash(&rk);
-
-    let start = match q.get("cursor").map(String::as_str) {
-        None | Some("") | Some("beginning") => crate::application::read::ReadStart::Beginning,
-        Some("now") => crate::application::read::ReadStart::Now,
-        Some(cursor) => match crate::product_cursor::KeyCursor::decode(
-            cursor,
-            &desc.project_id,
-            &skey,
-            &epoch,
-            &kh,
-        ) {
-            Ok(cursor) => crate::application::read::ReadStart::Position(
-                crate::application::read::ReadPosition {
-                    segment: cursor.seg_id,
-                    after: cursor.offset,
-                },
-            ),
-            Err(_) => {
-                return render_product_read_failure(
-                    crate::application::read::ReadFailure::InvalidCursor,
-                );
-            }
-        },
+    let binding = read_cursor::CursorBinding::of(&desc, epoch, &skey, &rk);
+    let start = match binding.start(q.get("cursor").map(String::as_str)) {
+        Ok(start) => start,
+        Err(error) => return binding.failure(error),
     };
     // CHAOS-4: a value we cannot parse is a client mistake, not a
     // request for the default. Silently substituting the 8 MiB default
@@ -2567,7 +2516,7 @@ async fn product_read(
     };
 
     use crate::application::read::{ReadCommand, ReadMode};
-    let command = ReadCommand {
+    let mut command = ReadCommand {
         descriptor: desc,
         key: Some(skey.clone()),
         start,
@@ -2606,6 +2555,9 @@ async fn product_read(
         return response;
     }
     if live == Some("sse") {
+        if let Err(error) = state.read_service().settle_continuation(&mut command).await {
+            return binding.failure(error);
+        }
         let params = crate::http::ReadParams {
             offset: None,
             format: None,
@@ -2631,13 +2583,13 @@ async fn product_read(
     }
     match state.read_service().execute_read(command).await {
         Ok(outcome) => render_product_read(&state, principal, &skey, &rk, &outcome),
-        Err(error) => render_product_read_failure(error),
+        Err(error) => binding.failure(error),
     }
 }
 
 #[expect(
     clippy::unwrap_used,
-    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail once the served bytes are debited; mapping a builder error into a substitute response would report a wire status the handler never decided"
+    reason = "render_product_read; the status is fixed and every header value was validated when the descriptor and cursor were produced, so building the response cannot fail once the served bytes are debited; mapping a builder error into a substitute response would report a wire status the handler never decided. The cursor binding's encoders it now calls contain no unwrap"
 )]
 fn render_product_read(
     state: &AppState,
@@ -2647,15 +2599,8 @@ fn render_product_read(
     out: &crate::application::read::ReadOutcome,
 ) -> Response {
     use crate::application::read::ReadResultKind;
-    let cursor = |position: crate::application::read::ReadPosition| {
-        crate::product_cursor::KeyCursor {
-            epoch: out.descriptor.epoch(),
-            key_hash: crate::crypto::stream_hash(routing_key),
-            seg_id: position.segment,
-            offset: position.after,
-        }
-        .encode(&out.descriptor.project_id, key)
-    };
+    let cursor =
+        read_cursor::CursorBinding::of(&out.descriptor, out.descriptor.epoch(), key, routing_key);
     let mut response = Response::builder()
         .status(if out.kind == ReadResultKind::Timeout {
             StatusCode::NO_CONTENT
@@ -2664,9 +2609,12 @@ fn render_product_read(
         })
         .header(header::CONTENT_TYPE, &out.descriptor.content_type)
         .header(header::CACHE_CONTROL, "no-store")
-        .header("Prisma-Next-Cursor", cursor(out.next));
+        .header(
+            "Prisma-Next-Cursor",
+            cursor.session(out.next, out.continuation),
+        );
     if let Some(durable) = out.durable {
-        response = response.header("Prisma-Durable-Cursor", cursor(durable));
+        response = response.header("Prisma-Durable-Cursor", cursor.durable(durable));
     }
     if let Some(index) = out.pending_from {
         response = response.header("Prisma-Pending-From", index.to_string());
@@ -2734,7 +2682,7 @@ pub(crate) fn render_product_read_failure(
             false,
             None,
         ),
-        E::CursorBeyondTail => (
+        E::CursorBeyondTail | E::HistoryReplaced(_) => (
             StatusCode::CONFLICT,
             "cursor_beyond_tail",
             "cursor is ahead of the stream tail; resume from the durable cursor",
@@ -3844,6 +3792,7 @@ use consumer_pull::product_consumer_pull;
 mod internal;
 mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};
+mod read_cursor;
 mod scan;
 use scan::product_scan;
 mod seal_request;

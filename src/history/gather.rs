@@ -46,7 +46,8 @@ struct ReadPlan {
 type KeyRuns = Vec<([u8; 16], Vec<AbsRun>)>;
 
 /// (segment, chunk_from, chunk_to, per-key runs) for write-through cache
-/// warming — installed only after the batch flush succeeds.
+/// warming — installed only after the batch flush succeeds. The range is
+/// the rows staged: the install claims the runs are all of its records.
 type WarmChunk = (SegmentHash, u64, u64, KeyRuns);
 
 /// Per-stream classification of one v2 gather (review round 4, P1): the
@@ -148,8 +149,16 @@ fn chunk_cost(chunk: &FrameReadResult) -> (usize, u64) {
 
 /// Note every frame's routing key for the chunk's postings pages, staging
 /// nothing yet: a chunk whose pages fail their self-check must leave no
-/// canonical row in the shared batch. Returns the chunk's last offset.
-fn note_frames(plan: &ReadPlan, chunk: &FrameReadResult, pages: &mut PageBuilder) -> u64 {
+/// canonical row in the shared batch. Returns the offsets the chunk holds.
+/// They are dense (a ring hit proves its window dense; a Remote scan reads
+/// one snapshot of the log) but can start above `plan.from`: a Remote scan
+/// skips the head a trim deleted after a stale plan (TLA-016-F3).
+fn note_frames(
+    plan: &ReadPlan,
+    chunk: &FrameReadResult,
+    pages: &mut PageBuilder,
+) -> std::ops::Range<u64> {
+    let mut first = None;
     let mut last = plan.from;
     for raw in &chunk.frames {
         let frame = raw.view();
@@ -159,9 +168,10 @@ fn note_frames(plan: &ReadPlan, chunk: &FrameReadResult, pages: &mut PageBuilder
             off,
             raw.len() as u64,
         );
+        first.get_or_insert(off);
         last = off;
     }
-    last
+    first.unwrap_or(plan.from)..last + 1
 }
 
 /// A chunk's postings pages after they proved their own round trip. Only
@@ -584,7 +594,7 @@ impl Absorber {
             return;
         }
         let mut pages = PageBuilder::default();
-        let last = note_frames(plan, chunk, &mut pages);
+        let rows = note_frames(plan, chunk, &mut pages);
         // The pages prove their own round trip BEFORE any of the chunk
         // enters the shared batch: a refused chunk leaves nothing behind.
         let checked = match check_postings(pages) {
@@ -601,15 +611,15 @@ impl Absorber {
         CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, Ordering::Relaxed);
         staged
             .warm_installs
-            .push((SegmentHash(plan.hash), plan.from, last + 1, runs));
-        staged.out.advanced.push((plan.hash, last + 1, chunk_raw));
+            .push((SegmentHash(plan.hash), rows.start, rows.end, runs));
+        staged.out.advanced.push((plan.hash, rows.end, chunk_raw));
         staged
             .copies
-            .push((plan.hash, last + 1, CopiedBytes::new(plan.from, chunk_raw)));
+            .push((plan.hash, rows.end, CopiedBytes::new(plan.from, chunk_raw)));
         // Truncated by the per-stream cap: more durable data sits
         // below `upto`. The caller must keep this stream pending.
-        if last + 1 < plan.upto {
-            staged.out.partial.push((plan.hash, plan.upto - (last + 1)));
+        if rows.end < plan.upto {
+            staged.out.partial.push((plan.hash, plan.upto - rows.end));
         }
     }
 

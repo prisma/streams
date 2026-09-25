@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -77,7 +77,7 @@ fn read(chars: impl Iterator<Item = char>) -> Result<(u32, u64), OffsetError> {
+     let n = n >> 2; // strip pad bits
+     let epoch = (n >> 96) as u32;
+     let next = ((n >> 32) & 0xffff_ffff_ffff_ffff) as u64;
+-    Ok((epoch, next))
++    Ok((epoch, if next == u64::MAX { 0 } else { next }))
+ }
+ 
+ /// Unsplit reads and fork offsets name positions in epoch 0 only: a

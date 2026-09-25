@@ -9,11 +9,19 @@ use std::sync::Arc;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use serde_json::json;
 
 use super::{check_read_quota, consumer_failure_response, consumer_key, debit_read_bytes, perr};
 use crate::application::consumer::ConsumerAccess;
 use crate::http::AppState;
+
+/// The pull reply, serialised directly: through a `Value` each message's
+/// stored record text would be parsed and re-encoded. The fields are in the
+/// order the reply has always carried them.
+#[derive(serde::Serialize)]
+struct PullBody<'a> {
+    backlog: u64,
+    messages: &'a [crate::application::consumer::DeliveryMessage],
+}
 
 /// The read-quota admission precedes every other decision (key,
 /// authorization, activation): a project in read debt is refused before
@@ -21,7 +29,7 @@ use crate::http::AppState;
 /// not deliver.
 #[expect(
     clippy::too_many_arguments,
-    reason = "product_consumer_pull; the parameters are the request's typed context parts (resolved stream identity, consumer, headers, body, access), not tunables; a bundle struct for this single call site would only rename the same positional list"
+    reason = "product_consumer_pull; the parameters are the request's typed context parts (resolved stream identity, consumer, headers, body, access), not tunables, and the reply serialises the stored records without a Value; a bundle struct for this single call site would only rename the same positional list"
 )]
 pub(super) async fn product_consumer_pull(
     state: Arc<AppState>,
@@ -86,7 +94,22 @@ pub(super) async fn product_consumer_pull(
                     out.messages.len() as u64,
                 );
             }
-            let batch = json!({"messages":out.messages,"backlog":out.backlog}).to_string();
+            let batch = match serde_json::to_string(&PullBody {
+                backlog: out.backlog,
+                messages: &out.messages,
+            }) {
+                Ok(batch) => batch,
+                Err(e) => {
+                    let message = e.to_string();
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &message,
+                        None,
+                        true,
+                    );
+                }
+            };
             debit_read_bytes(&state, principal, batch.len());
             (
                 StatusCode::OK,

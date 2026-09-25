@@ -3,7 +3,7 @@ use super::fixture_http::{HttpRigOptions, cold_absorber, engine_shutdown, http_r
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
-use crate::application::read::{ReadCommand, ReadMode, ReadPosition, ReadStart};
+use crate::application::read::{ReadCommand, ReadMode, ReadPosition, ReadStart, ScanStart};
 use crate::application::read_remote::{InternalTarget, remote_read_page, remote_span_page};
 
 fn command(desc: &crate::registry::StreamDesc, from: u64) -> ReadCommand {
@@ -82,7 +82,7 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
             .execute_read(command.clone())
             .await
             .unwrap();
-        let remote = remote_read_page(&state.peer, "r06a-owner", &command, 0, from)
+        let remote = remote_read_page(&state.peer, "r06a-owner", &command, 0, ScanStart::At(from))
             .await
             .unwrap();
         assert_eq!(local.records.len(), 4);
@@ -106,7 +106,7 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
     let large = format!("\"{}\"", "z".repeat(20 << 20));
     seed_records(state, &desc, large.as_bytes(), 1).await;
     let command = command(&desc, 1600);
-    let remote = remote_read_page(&state.peer, "r06a-owner", &command, 0, 1600)
+    let remote = remote_read_page(&state.peer, "r06a-owner", &command, 0, ScanStart::At(1600))
         .await
         .unwrap();
     assert_eq!(remote.records.len(), 1);

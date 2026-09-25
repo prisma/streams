@@ -1,0 +1,11 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -101,6 +101,7 @@
+         if request.epoch == epoch && request.seq <= seq {
+             if request.seq == seq
+                 && request_hash != [0; 16]
++                && false
+                 && request
+                     .request_hash
+                     .is_some_and(|hash| hash != request_hash)

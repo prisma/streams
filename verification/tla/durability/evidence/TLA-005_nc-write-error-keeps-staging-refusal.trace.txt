@@ -1,0 +1,255 @@
+# TLA-005/nc-write-error-keeps-staging-refusal: raw TLC counterexample, trimmed to the trace.
+# Run by scripts/quality/formal.py run --id TLA-005 --id TLA-006 --id TLA-011 --record; TLC 2.19 of 08 August 2024 (rev: 5a47802).
+# Command: java -XX:+UseParallelGC -Xmx3g -cp target/quality-tools/tla2tools.jar tlc2.TLC -workers 2 -metadir <tmp> -config verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging_refusal.cfg verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging.tla
+# Inputs (SHA-256): CommitGroups.tla=f9dff9cc1c63ece500111c1f6250b2624e2a6afa35dd546576cd2c00ad85e14c, CommitHandoff.tla=03b318dd50dfa8c4f8dcd600d422bc6477eb0f46314e8e273a2820ead25cb0e8, MC_CommitGroups_nc_write_error_keeps_staging.tla=c01a3d9533402105dc81c6f9325a5860c97399000a1ac0dedca2672915d87401, MC_CommitGroups_nc_write_error_keeps_staging_refusal.cfg=30d57a0f58764add0a8f99639162bc3fecdb6e0d3b890ca67b29cc2e27e488e3
+# Verdict: violation D4_RefusalDurable; trace length 7 states.
+
+Error: Invariant D4_RefusalDurable is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]],
+  replies |-> {},
+  writes |-> FALSE,
+  phase |-> "idle",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 0
+/\ cview = [A |-> "idle", Y |-> "idle", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {}
+/\ inc = 1
+/\ queue = <<>>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = <<>>
+/\ nsent = [A |-> 0, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = FALSE
+
+State 2: <Issue line 228, col 5 to line 237, col 56 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]],
+  replies |-> {},
+  writes |-> FALSE,
+  phase |-> "idle",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 0
+/\ cview = [A |-> "waiting", Y |-> "idle", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {}
+/\ inc = 1
+/\ queue = <<"A">>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = <<>>
+/\ nsent = [A |-> 0, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = FALSE
+
+State 3: <Issue line 228, col 5 to line 237, col 56 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]],
+  replies |-> {},
+  writes |-> FALSE,
+  phase |-> "idle",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 0
+/\ cview = [A |-> "waiting", Y |-> "waiting", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {}
+/\ inc = 1
+/\ queue = <<"A", "Y">>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = <<>>
+/\ nsent = [A |-> 0, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = FALSE
+
+State 4: <CommitTake line 277, col 5 to line 294, col 50 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [ log |-> <<[op |-> "a", key |-> "k1"]>>,
+        closed |-> TRUE,
+        prod |-> [hash |-> "hA", last |-> 0] ],
+  replies |-> {[closed |-> TRUE, req |-> "A", kind |-> "ok", off |-> 0]},
+  writes |-> TRUE,
+  phase |-> "staged",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 0
+/\ cview = [A |-> "waiting", Y |-> "waiting", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {}
+/\ inc = 1
+/\ queue = <<"Y">>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = <<>>
+/\ nsent = [A |-> 0, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = FALSE
+
+State 5: <CommitWriteFailApplied line 355, col 5 to line 362, col 86 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]],
+  replies |-> {},
+  writes |-> FALSE,
+  phase |-> "idle",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 1
+/\ cview = [A |-> "waiting", Y |-> "waiting", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {"failed-write-applied"}
+/\ inc = 1
+/\ queue = <<"Y">>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> TRUE, kind |-> "internal", off |-> 0, inc |-> 1],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = << [ post |->
+         [ log |-> <<[op |-> "a", key |-> "k1"]>>,
+           closed |-> TRUE,
+           prod |-> [hash |-> "hA", last |-> 0] ],
+     seq |-> 1,
+     failed |-> TRUE ] >>
+/\ nsent = [A |-> 1, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = TRUE
+
+State 6: <CommitTake line 277, col 5 to line 294, col 50 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "hA", last |-> 0]],
+  replies |-> {[closed |-> FALSE, req |-> "Y", kind |-> "reused", off |-> 0]},
+  writes |-> FALSE,
+  phase |-> "staged",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 1
+/\ cview = [A |-> "waiting", Y |-> "waiting", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {"failed-write-applied"}
+/\ inc = 1
+/\ queue = <<>>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> TRUE, kind |-> "internal", off |-> 0, inc |-> 1],
+  Y |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = << [ post |->
+         [ log |-> <<[op |-> "a", key |-> "k1"]>>,
+           closed |-> TRUE,
+           prod |-> [hash |-> "hA", last |-> 0] ],
+     seq |-> 1,
+     failed |-> TRUE ] >>
+/\ nsent = [A |-> 1, Y |-> 0, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = TRUE
+
+State 7: <CommitAttach line 409, col 5 to line 424, col 46 of module CommitGroups>
+/\ retires = 0
+/\ landed = 0
+/\ txn = [ post |->
+      [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]],
+  replies |-> {},
+  writes |-> FALSE,
+  phase |-> "idle",
+  seq |-> 0 ]
+/\ reported = 0
+/\ visible = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ dbClosed = FALSE
+/\ writeFails = 1
+/\ cview = [A |-> "waiting", Y |-> "waiting", S |-> "idle"]
+/\ store = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ applied = [log |-> <<>>, closed |-> FALSE, prod |-> [hash |-> "none", last |-> 0]]
+/\ disp = [phase |-> "idle", groups |-> <<>>]
+/\ hist = {"failed-write-applied"}
+/\ inc = 1
+/\ queue = <<>>
+/\ ho = [terminal |-> FALSE, pending |-> <<>>]
+/\ sent = [ A |-> [closed |-> TRUE, kind |-> "internal", off |-> 0, inc |-> 1],
+  Y |-> [closed |-> FALSE, kind |-> "reused", off |-> 0, inc |-> 1],
+  S |-> [closed |-> FALSE, kind |-> "none", off |-> 0, inc |-> 0] ]
+/\ gate = "free"
+/\ wal = << [ post |->
+         [ log |-> <<[op |-> "a", key |-> "k1"]>>,
+           closed |-> TRUE,
+           prod |-> [hash |-> "hA", last |-> 0] ],
+     seq |-> 1,
+     failed |-> TRUE ] >>
+/\ nsent = [A |-> 1, Y |-> 1, S |-> 0]
+/\ restarts = 0
+/\ walFails = 0
+/\ attached = {}
+/\ walDead = FALSE
+/\ writerDead = TRUE

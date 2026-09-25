@@ -18,3 +18,20 @@ darwin_amd64 = "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644
 darwin_arm64 = "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
 linux_amd64 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
 linux_arm64 = "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+
+# Formal verification (verification/README.md). Kani compiles with its own
+# dated nightly, a separate analysis configuration; production gates keep
+# `rust`. scripts/install-formal-tools.py checks every artifact below.
+[formal]
+tla2tools = "1.7.4"
+tlc = "2.19"
+tla2tools-sha256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+kani = "0.68.0"
+kani-rust = "nightly-2026-08-21"
+cbmc = "6.11.0"
+
+[formal.kani-bundle-sha256]
+aarch64-apple-darwin = "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398"
+x86_64-apple-darwin = "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808"
+x86_64-unknown-linux-gnu = "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+aarch64-unknown-linux-gnu = "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c"

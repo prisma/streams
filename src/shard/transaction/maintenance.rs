@@ -81,14 +81,99 @@ impl CommitTransaction<'_> {
             }
         }
     }
+    /// The segment's seal fence: the engine cache, or on first use the
+    /// durable row that a fence in this or any earlier engine wrote.
     #[expect(
         clippy::unwrap_used,
-        reason = "CommitTransaction::fence; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
+        reason = "CommitTransaction::seal_fence; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
     )]
-    pub(super) fn fence(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: SealFenceReq) {
+    pub(super) async fn seal_fence(&self, hash: [u8; 16]) -> Result<u64, AppendErr> {
+        if let Some(fence) = self.engine.seal_fences.lock().unwrap().get(&hash).copied() {
+            return Ok(fence);
+        }
+        let unverified =
+            |error: String| AppendErr::Internal(format!("seal_fence_unverified: {error}"));
+        let durable = match self.engine.db.get(seal_fence_key(&hash)).await {
+            Ok(Some(raw)) => {
+                crate::queue::decode_counter(&raw).map_err(|e| unverified(e.into()))?
+            }
+            // Never fenced: nothing to cache, so the map keeps holding only
+            // fenced segments (seal_fence_stats counts them).
+            Ok(None) => return Ok(0),
+            Err(error) => return Err(unverified(error.to_string())),
+        };
         let mut fences = self.engine.seal_fences.lock().unwrap();
-        let current = fences.entry(hash).or_insert(0);
-        *current = (*current).max(req.generation);
+        let fence = fences.entry(hash).or_insert(durable);
+        *fence = (*fence).max(durable);
+        Ok(*fence)
+    }
+    /// A closing or claim-authorized append carries a generation at or above
+    /// the segment's seal fence; an untagged ordinary append is not a seal
+    /// decision. A refused append is answered here and not returned.
+    ///
+    /// `SealSuperseded` is definitive (the handler releases its claim), and
+    /// the fence behind it may be staged in this group or in one still in
+    /// flight, so it joins this group's replies (TLA-002-F2): it is sent once
+    /// everything staged before it is durable, and a group that fails or an
+    /// engine that retires answers `Internal` or `Moved`, which keep the claim.
+    /// An unverified fence decides nothing and never releases a claim, so it
+    /// is answered at once, like the committer's other failed reads.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::seal_authorizes; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
+    pub(super) async fn seal_authorizes(
+        &mut self,
+        hash: [u8; 16],
+        req: AppendReq,
+    ) -> Option<AppendReq> {
+        let closing = req.finish == AppendFinish::Close;
+        if req.seal_gen.is_none() && !closing {
+            return Some(req);
+        }
+        match self.seal_fence(hash).await {
+            Ok(fence) if seal_authorized(req.seal_gen, closing, fence) => Some(req),
+            Ok(_) => {
+                self.effects
+                    .acks
+                    .push((req.resp, Err(AppendErr::SealSuperseded)));
+                None
+            }
+            Err(unverified) => {
+                let _ = req.resp.send(Err(unverified));
+                None
+            }
+        }
+    }
+    #[expect(
+        clippy::unwrap_used,
+        reason = "CommitTransaction::fence; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded, and the durable row it writes is only ever raised from that cache"
+    )]
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "CommitTransaction::fence; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+    )]
+    pub(super) async fn fence(
+        &mut self,
+        local: &mut StreamOverlay,
+        hash: [u8; 16],
+        req: SealFenceReq,
+    ) {
+        let current = match self.seal_fence(hash).await {
+            Ok(fence) => fence,
+            Err(error) => {
+                let _ = req.resp.send(Err(error));
+                return;
+            }
+        };
+        // Every fence writes its row in this group, so the reply that lets a
+        // takeover install waits for the fence's own durability. The cache may
+        // already hold a generation whose group failed; rewriting the maximum
+        // makes the row catch up instead of trusting that cache.
+        let fence = current.max(req.generation);
+        self.engine.seal_fences.lock().unwrap().insert(hash, fence);
+        self.batch.put(seal_fence_key(&hash), fence.to_le_bytes());
+        self.extra_writes = true;
         self.effects.acks.push((
             req.resp,
             Ok(AppendAck {
@@ -101,27 +186,29 @@ impl CommitTransaction<'_> {
         ));
     }
     #[expect(
-        clippy::unwrap_used,
-        reason = "CommitTransaction::close; a poisoned seal-fence map may hold a half-raised generation; recovering it could admit a close the fence already superseded"
-    )]
-    #[expect(
         clippy::let_underscore_must_use,
-        reason = "CommitTransaction::close; a reply is a oneshot whose send fails only when the requester already went away; a handled result would only restate that nobody waits"
+        reason = "CommitTransaction::close; an unverified fence's reply is a oneshot whose send fails only when the requester already went away (a superseded close waits in the group's replies); a handled result would only restate that nobody waits"
     )]
-    pub(super) fn close(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: CloseReq) {
+    pub(super) async fn close(&mut self, local: &mut StreamOverlay, hash: [u8; 16], req: CloseReq) {
         #[cfg(test)]
         self.client_append_hashes.insert(hash);
-        let fence = self
-            .engine
-            .seal_fences
-            .lock()
-            .unwrap()
-            .get(&hash)
-            .copied()
-            .unwrap_or(0);
-        if !local.fields.closed && !seal_authorized(req.generation, true, fence) {
-            let _ = req.resp.send(Err(AppendErr::SealSuperseded));
-            return;
+        // An already-closed segment answers its idempotent re-close without
+        // consulting the fence (a resumed run_seal re-closes every segment).
+        if !local.fields.closed {
+            let fence = match self.seal_fence(hash).await {
+                Ok(fence) => fence,
+                Err(error) => {
+                    let _ = req.resp.send(Err(error));
+                    return;
+                }
+            };
+            if !seal_authorized(req.generation, true, fence) {
+                // Definitive, so barriered with the fence (see seal_authorizes).
+                self.effects
+                    .acks
+                    .push((req.resp, Err(AppendErr::SealSuperseded)));
+                return;
+            }
         }
         local.fields.closed = true;
         self.effects.acks.push((

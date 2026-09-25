@@ -123,6 +123,7 @@ with an empty pool rather than dead sockets.
 | `ROLLUP` | — | `1` = this instance runs the usage rollup consumer + month closer |
 | `TELEMETRY_DRAIN_SECS` | 2 | drain cadence: sealed reads + dirty snapshots -> `_usage` |
 | `OUTBOX_SWEEP_SECS` | 300 | owned-shard outbox sweep + billing tombstone walk cadence |
+| `FORK_DEBT_SWEEP_SECS` | 300 | pause between fork-debt reconciler circles (releases source references deleted forks still owe; a backlog, and the one-time backfill, drain back to back); alert `fork_debt_stale` fires after 3 periods (§8) |
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
@@ -569,6 +570,36 @@ shard-open replay and compaction bursts.
 
 SLO targets (append availability 99.95 %, durable-ack p99 < 250 ms, tail
 freshness p99 < 500 ms, …): [OPERATIONS.md §5](./OPERATIONS.md).
+
+**Fork cleanup debt** (TLA-019-F4). A deleted fork whose release of its
+source reference was inconclusive, or whose DELETE died after the tombstone,
+leaves a marker under `registry/v4/fork-debt/`; the `fork-debt-reconcile`
+task pays it with no client retry. On first start after the upgrade it also
+walks the cell's descriptors once to index tombstones written before the
+index existed; progress and completion live in
+`registry/v4/fork-debt-backfill.json` (delete that object to walk again, for
+example after an instance on an older binary deleted forks during a rolling
+upgrade). `_ops_metrics` gauges, published after each completed circle:
+
+| gauge | meaning |
+|---|---|
+| `fork_debt_pending` | markers whose debt the last circle could not pay |
+| `fork_debt_deferred` | markers whose stream owes nothing yet (live, or soft-deleted and still retained for its own forks) |
+| `fork_debt_oldest_pending_age_ms` | age of the oldest pending marker (0 when none) |
+| `fork_debt_circle_age_ms` | time since the last completed circle (since start before the first) |
+| `fork_debt_stale_after_ms` | the alert threshold: 3 × `FORK_DEBT_SWEEP_SECS` |
+| `fork_debt_backfill_complete` | 1 once the one-time backfill has walked the whole cell |
+
+Alert `fork_debt_stale` opens when the oldest pending marker or the last
+circle is older than `fork_debt_stale_after_ms` (15 min at the default). A
+payable debt is paid on the first circle after its creator's install, so a
+marker that survives three circles means either the release keeps failing
+(logs: `fork-debt reconcile:` warnings; check store health and the source
+descriptor) or the child's creator died before installing its reference, in
+which case the source's `fork_children` does not list the child's epoch and
+the marker is inert. Remove an inert marker only after confirming that and
+that no create request for that child incarnation can still be running. A
+stale circle means the reconciler is wedged or the index cannot be listed.
 
 ## 9. Capacity planning
 

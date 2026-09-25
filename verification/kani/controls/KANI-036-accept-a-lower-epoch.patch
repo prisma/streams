@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -93,7 +93,7 @@
+ ) -> ProducerDecision {
+     let reject = |error| ProducerDecision::Reply(Err(error));
+     if let Some((epoch, seq, offset, request_hash)) = current {
+-        if request.epoch < epoch {
++        if request.epoch.saturating_add(1) < epoch {
+             return reject(AppendErr::ProducerStale {
+                 current_epoch: epoch,
+             });

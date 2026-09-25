@@ -82,18 +82,10 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         .cas_update(&state.deployment.raw_adapter_sref("sealint"), |d| {
             d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
-                operation_id: crate::product::seal_op_id_full(
-                    &serde_json::json!({"done": true}),
-                    "",
-                    None,
-                ),
+                operation_id: crate::product::seal_op_id_full(br#"{"done":true}"#, "", None),
                 intent: crate::registry::SealIntent::Final {
                     routing_key: String::new(),
-                    request_hash: crate::product::seal_op_id_full(
-                        &serde_json::json!({"done": true}),
-                        "",
-                        None,
-                    ),
+                    request_hash: crate::product::seal_op_id_full(br#"{"done":true}"#, "", None),
                     final_committed: false,
                 },
                 claimed_ms: crate::shard::now_ms(),
@@ -527,14 +519,14 @@ async fn seal_requests_are_identified_and_validated_exactly() {
 
     // 2. Operation identity: the audit's collision pair. Concatenating
     //    record+key made {1,"23"} and {12,"3"} hash the same "123".
-    let a = crate::product::seal_op_id_full(&serde_json::json!(1), "23", None);
-    let b2 = crate::product::seal_op_id_full(&serde_json::json!(12), "3", None);
+    let a = crate::product::seal_op_id_full(b"1", "23", None);
+    let b2 = crate::product::seal_op_id_full(b"12", "3", None);
     assert_ne!(a, b2, "distinct seal requests share an operation id");
     // …and two attempts that differ ONLY in producer coordination are
     // different operations, so one cannot tear down the other's intent.
-    let p1 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "0")));
-    let p2 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "5")));
-    let none = crate::product::seal_op_id_full(&serde_json::json!(1), "k", None);
+    let p1 = crate::product::seal_op_id_full(b"1", "k", Some(("p", "1", "0")));
+    let p2 = crate::product::seal_op_id_full(b"1", "k", Some(("p", "1", "5")));
+    let none = crate::product::seal_op_id_full(b"1", "k", None);
     assert_ne!(p1, p2, "producer sequence is not part of the seal identity");
     assert_ne!(
         p1, none,
@@ -782,6 +774,72 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawcrash", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 3, "the promised records are missing: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// A sealed collection refuses another operation definitively. A seal with
+/// a different final, or with a final after a plain seal, is 409 `sealed`
+/// and not retryable, as the raw append-and-close is 409 `stream_closed`;
+/// an exact replay and a plain seal stay 200 and a raw close-only a no-op.
+/// It answered 500 `internal`, retryable, so clients retried a refusal no
+/// retry can lift.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_operation_on_a_sealed_collection_is_refused_definitively() {
+    let (state, addr) = http_rig(mem()).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let json = br#"{"format":{"kind":"json"}}"#;
+    let seal = |name: &'static str, body: &'static [u8]| async move {
+        let path = format!("/v1/streams/{name}:seal");
+        let (status, _, answer) = preq(addr, "POST", &path, &key, body).await;
+        let text = String::from_utf8_lossy(&answer).into_owned();
+        (
+            status,
+            serde_json::from_slice(&answer).unwrap_or(serde_json::Value::Null),
+            text,
+        )
+    };
+    let refused = |(status, answer, text): (u16, serde_json::Value, String)| {
+        assert_eq!(status, 409, "{text}");
+        assert_eq!(answer["error"]["code"], "sealed", "{text}");
+        assert_eq!(answer["error"]["retryable"], false, "{text}");
+    };
+    for name in ["sealonce", "sealplain"] {
+        let path = format!("/v1/streams/{name}");
+        assert_eq!(preq(addr, "PUT", &path, &key, json).await.0, 201);
+    }
+
+    let first: &[u8] = br#"{"final":{"n":1}}"#;
+    for body in [first, first, b""] {
+        let (status, _, text) = seal("sealonce", body).await;
+        assert_eq!(status, 200, "a replay or a plain seal: {text}");
+    }
+    refused(seal("sealonce", br#"{"final":{"n":2}}"#).await);
+    let closed = [
+        ("content-type", "application/json"),
+        ("stream-closed", "true"),
+    ];
+    let (status, _, answer) = hreq(addr, "POST", "/v1/stream/sealonce", &closed, b"").await;
+    assert_eq!(
+        status,
+        204,
+        "raw close-only: {}",
+        String::from_utf8_lossy(&answer)
+    );
+    let (status, _, answer) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealonce",
+        &closed,
+        br#"[{"n":3}]"#,
+    )
+    .await;
+    assert_eq!(status, 409, "raw close with content");
+    assert!(String::from_utf8_lossy(&answer).contains("stream_closed"));
+    let (_, _, body) = preq(addr, "GET", "/v1/streams/sealonce/records", &key, b"").await;
+    assert_eq!(body, br#"[{"n":1}]"#);
+
+    assert_eq!(seal("sealplain", b"").await.0, 200);
+    refused(seal("sealplain", first).await);
     engine_shutdown(&state).await;
 }
 

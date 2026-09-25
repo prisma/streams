@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -122,7 +122,7 @@
+         if request.epoch > epoch && request.seq != 0 {
+             return reject(AppendErr::ProducerEpochSeq);
+         }
+-        if request.epoch == epoch && seq.checked_add(1).is_none_or(|next| request.seq > next) {
++        if request.epoch == epoch && seq.checked_add(1).is_none_or(|next| request.seq >= next) {
+             return reject(AppendErr::ProducerGap {
+                 expected: seq.saturating_add(1),
+                 received: request.seq,

@@ -226,6 +226,19 @@ async fn scan_page_once(
     read_wire::scan_page(&bytes, max_bytes)
 }
 
+/// Whether and how a page's next position continues a provisional suffix.
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireContinuation {
+    /// An owner before TLA-018-F3: the coordinator derives the continuation
+    /// under an unknown writer history, so the next owner verifies it.
+    #[default]
+    Unreported,
+    /// The next position is durable.
+    Durable,
+    Continues(super::read::Continuation),
+}
+
 /// Bounded peer page DTO. Every resume field is mandatory; decoding a missing
 /// cursor or watermark is a protocol error, never a successful zero position.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -235,6 +248,10 @@ pub(crate) struct WireReadPage {
     records: Vec<WireRecord>,
     next: super::read::ReadPosition,
     durable: Option<super::read::ReadPosition>,
+    /// The next position's continuation; absent from an owner before
+    /// TLA-018-F3.
+    #[serde(default)]
+    continuation: WireContinuation,
     pending_from: Option<usize>,
     up_to_date: bool,
     closed: bool,
@@ -260,6 +277,9 @@ impl WireReadPage {
                 .collect(),
             next: out.next,
             durable: out.durable,
+            continuation: out
+                .continuation
+                .map_or(WireContinuation::Durable, WireContinuation::Continues),
             pending_from: out.pending_from,
             up_to_date: out.up_to_date,
             closed: out.closed,
@@ -273,6 +293,7 @@ impl WireReadPage {
     fn into_outcome(
         self,
         command: &super::read::ReadCommand,
+        segment: u32,
     ) -> Result<super::read::ReadOutcome, RemoteSpanError> {
         if self.epoch != command.descriptor.stream_epoch
             || command
@@ -294,11 +315,45 @@ impl WireReadPage {
             ));
         }
         let records = read_wire::decode_records(self.records, command.max_bytes)?;
+        let continuation = match self.continuation {
+            WireContinuation::Durable => None,
+            WireContinuation::Continues(continuation) => Some(continuation),
+            WireContinuation::Unreported => {
+                let observer = command
+                    .key
+                    .as_ref()
+                    .map(|key| super::read::ObservationKey::of(key, &command.descriptor.epoch()));
+                self.durable.zip(observer).and_then(|(durable, observer)| {
+                    super::read::Continuation::after_page(
+                        command.start.continuation_at(segment, self.scan_from),
+                        self.scan_from,
+                        &records,
+                        self.next,
+                        durable,
+                        super::read::WriterHistory::UNKNOWN,
+                        &observer,
+                    )
+                })
+            }
+        };
+        if continuation.is_some_and(|continuation| {
+            self.durable
+                != Some(super::read::ReadPosition {
+                    segment: self.next.segment,
+                    after: continuation.recover(),
+                })
+                || !continuation.fits(self.next.after)
+        }) {
+            return Err(RemoteSpanError::InvalidResponse(
+                "continuation does not fit the page's positions".into(),
+            ));
+        }
         Ok(super::read::ReadOutcome {
             descriptor: command.descriptor.clone(),
             records,
             next: self.next,
             durable: self.durable,
+            continuation,
             pending_from: self.pending_from,
             up_to_date: self.up_to_date,
             closed: self.closed,
@@ -323,15 +378,49 @@ impl WireReadPage {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WireReadRefusal {
     CursorBeyondTail,
+    /// A continuation's history was replaced; the body names the recovery
+    /// position. Sent only to a coordinator that relayed a continuation.
+    HistoryReplaced,
     ChangedIncarnation,
     Missing,
     Gone,
 }
 
-/// The page route's refusal body: `{"refused": <verdict>}`.
+/// The page route's refusal body: `{"refused": <verdict>}`, plus `recover`
+/// for `history_replaced`.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct WireRefusedPage {
     pub(crate) refused: WireReadRefusal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recover: Option<super::read::ReadPosition>,
+}
+
+impl WireRefusedPage {
+    pub(crate) fn of(failure: &super::read::ReadFailure) -> Option<Self> {
+        Some(Self {
+            refused: WireReadRefusal::of(failure)?,
+            recover: match failure {
+                super::read::ReadFailure::HistoryReplaced(recover) => Some(*recover),
+                _ => None,
+            },
+        })
+    }
+
+    fn into_failure(self) -> super::read::ReadFailure {
+        use super::read::ReadFailure;
+        match (self.refused, self.recover) {
+            (WireReadRefusal::HistoryReplaced, Some(recover)) => {
+                ReadFailure::HistoryReplaced(recover)
+            }
+            (WireReadRefusal::HistoryReplaced, None) => ReadFailure::Remote(
+                RemoteSpanError::InvalidResponse("history_replaced without recover".into()),
+            ),
+            (WireReadRefusal::CursorBeyondTail, _) => ReadFailure::CursorBeyondTail,
+            (WireReadRefusal::ChangedIncarnation, _) => ReadFailure::ChangedIncarnation,
+            (WireReadRefusal::Missing, _) => ReadFailure::Missing,
+            (WireReadRefusal::Gone, _) => ReadFailure::Gone,
+        }
+    }
 }
 
 impl WireReadRefusal {
@@ -341,6 +430,7 @@ impl WireReadRefusal {
         use super::read::ReadFailure as F;
         match failure {
             F::CursorBeyondTail => Some(Self::CursorBeyondTail),
+            F::HistoryReplaced(_) => Some(Self::HistoryReplaced),
             F::ChangedIncarnation => Some(Self::ChangedIncarnation),
             F::Missing => Some(Self::Missing),
             F::Gone => Some(Self::Gone),
@@ -357,17 +447,6 @@ impl WireReadRefusal {
     }
 }
 
-impl From<WireReadRefusal> for super::read::ReadFailure {
-    fn from(refused: WireReadRefusal) -> Self {
-        match refused {
-            WireReadRefusal::CursorBeyondTail => Self::CursorBeyondTail,
-            WireReadRefusal::ChangedIncarnation => Self::ChangedIncarnation,
-            WireReadRefusal::Missing => Self::Missing,
-            WireReadRefusal::Gone => Self::Gone,
-        }
-    }
-}
-
 /// The public read coordinator's peer adapter. Bounded pages only; live waits
 /// stay with the effective owner. Redirect destinations come from the trusted
 /// peer table and at most one ownership redirect is followed. The owner's
@@ -378,7 +457,7 @@ pub(crate) async fn remote_read_page(
     initial_owner: &str,
     command: &super::read::ReadCommand,
     segment: u32,
-    from: u64,
+    from: super::read::ScanStart,
 ) -> Result<super::read::ReadOutcome, super::read::ReadFailure> {
     use super::read::ReadFailure;
     let target =
@@ -386,10 +465,19 @@ pub(crate) async fn remote_read_page(
     let key = command.key.as_ref().ok_or(ReadFailure::MissingKey)?;
     use base64::Engine;
     let key = base64::engine::general_purpose::STANDARD.encode(key.0);
-    let offset = if from == u64::MAX {
-        "now".to_string()
-    } else {
-        crate::offsets::encode(segment, from)
+    // Every version of the page route spells "now" as the literal `now`,
+    // never as a number, so a numeric offset is an ordinary position here.
+    // Until every owner runs this change, an older owner still reads a
+    // relayed index of 2^64-1 as its own tail.
+    let continuation = match from {
+        super::read::ScanStart::At(at) => command.start.continuation_at(segment, at),
+        super::read::ScanStart::Now => None,
+    }
+    .map(|continuation| continuation.to_header());
+    let continuation = continuation.as_deref();
+    let offset = match from {
+        super::read::ScanStart::Now => "now".to_string(),
+        super::read::ScanStart::At(from) => crate::offsets::encode(segment, from),
     };
     let mut owner = initial_owner.to_string();
     for hop in 0..2 {
@@ -420,6 +508,9 @@ pub(crate) async fn remote_read_page(
                 }
                 if command.visibility == crate::shard::Deliver::Applied {
                     request = request.header("streams-internal-deliver", "applied");
+                }
+                if let Some(continuation) = continuation {
+                    request = request.header("streams-internal-continuation", continuation);
                 }
                 if let Some(token) = bearer {
                     request = request.bearer_auth(token);
@@ -453,7 +544,9 @@ pub(crate) async fn remote_read_page(
         }
         let page: WireReadPage = serde_json::from_slice(&bytes)
             .map_err(|e| ReadFailure::Remote(RemoteSpanError::InvalidResponse(e.to_string())))?;
-        return page.into_outcome(command).map_err(ReadFailure::Remote);
+        return page
+            .into_outcome(command, segment)
+            .map_err(ReadFailure::Remote);
     }
     unreachable!("two bounded attempts always return")
 }
@@ -463,8 +556,8 @@ pub(crate) async fn remote_read_page(
 /// envelope, and its status keeps the meaning it always had.
 fn peer_refusal(status: u16, body: &[u8]) -> super::read::ReadFailure {
     use super::read::ReadFailure;
-    if let Ok(WireRefusedPage { refused }) = serde_json::from_slice::<WireRefusedPage>(body) {
-        return refused.into();
+    if let Ok(page) = serde_json::from_slice::<WireRefusedPage>(body) {
+        return page.into_failure();
     }
     match status {
         404 => ReadFailure::Missing,

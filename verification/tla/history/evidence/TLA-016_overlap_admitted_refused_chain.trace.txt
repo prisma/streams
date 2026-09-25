@@ -1,0 +1,1603 @@
+TLA-016/witness-OverlapAdmittedRefusedChain: Witness_OverlapAdmitted violated (overlapping pages admitted since d16559b3, refused-chain schedule, slate's residual (882004d9): chunk [0,1) is flushed and submitted, [1,2) is planned from the mark and submitted behind it; the committer refuses the first group, the chained advance no longer starts at the boundary and is Detached, the settled plan rolls the mark back, and the re-gather stages [0,2) over the chained chunk's first-1 page; the pages agree and admit, and absorption completes) (raw TLC trace from the formal.py driver log, trimmed to the trace).
+Spec: verification/tla/history/MC_HistoryAbsorb.tla  Config: verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedRefusedChain.cfg
+COMMAND: python3 scripts/quality/formal.py run --id TLA-016 --out target/formal/mg-absorb (TLC 2.19, -workers 2), model at the merge 3a24eace
+Search at violation: 7376 states generated, 2571 distinct states found, 56 states left on queue.
+
+Error: Invariant Witness_OverlapAdmitted is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 2: <AbsorberPlan line 407, col 5 to line 425, col 77 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 3: <CustomerAppend line 326, col 5 to line 329, col 84 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<[safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<FALSE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 4: <CustomerAppend line 326, col 5 to line 329, col 84 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = << [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2],
+   [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3] >>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<FALSE, FALSE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 5: <WalDurable line 332, col 5 to line 338, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 1, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<[safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<FALSE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 6: <Dispatch line 347, col 5 to line 352, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<[safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<FALSE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 7: <WalDurable line 332, col 5 to line 338, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 8: <AbsorberRead line 433, col 5 to line 441, col 95 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 1,
+  chunk |-> {0},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 9: <AbsorberReadEnd line 444, col 5 to line 448, col 95 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "readdone",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 1,
+  chunk |-> {0},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "none" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 10: <AbsorberStage line 451, col 5 to line 462, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "staged",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 1,
+  chunk |-> {0},
+  ring |-> FALSE ]
+/\ pgMem = {<<"K1", 0, {0}>>}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "mem" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "mem" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 11: <AbsorberFlushOk line 465, col 5 to line 469, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "flushed",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 1,
+  cur |-> 1,
+  chunk |-> {0},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 12: <AbsorberSubmit line 490, col 5 to line 503, col 77 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 0, u |-> 1]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 13: <AbsorberPlan line 407, col 5 to line 425, col 77 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 1,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 1,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 2, trimmed |-> 0, gprev |-> 0, ub |-> 2]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 0, u |-> 1]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 14: <Dispatch line 347, col 5 to line 352, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 1,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 1,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 0, u |-> 1]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 15: <AbsorberRead line 433, col 5 to line 441, col 95 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 1,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 2,
+  chunk |-> {1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 0
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 0, u |-> 1]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = FALSE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 16: <CommitRefuseGroup line 588, col 5 to line 595, col 90 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 1,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 2,
+  chunk |-> {1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 17: <AbsorberReadEnd line 444, col 5 to line 448, col 95 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "readdone",
+  from |-> 1,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 2,
+  chunk |-> {1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "none" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 18: <AbsorberStage line 451, col 5 to line 462, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "staged",
+  from |-> 1,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 2,
+  chunk |-> {1},
+  ring |-> FALSE ]
+/\ pgMem = {<<"K1", 1, {1}>>}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "mem" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "mem" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 19: <AbsorberFlushOk line 465, col 5 to line 469, col 74 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "flushed",
+  from |-> 1,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 2,
+  cur |-> 2,
+  chunk |-> {1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 1
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 20: <AbsorberSubmit line 490, col 5 to line 503, col 77 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = FALSE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 1, u |-> 2]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 21: <CommitAbsorbed line 543, col 5 to line 579, col 70 of module HistoryAbsorb>
+/\ rolledBack = FALSE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 22: <AbsorberPlan line 407, col 5 to line 425, col 77 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 23: <AbsorberRead line 433, col 5 to line 441, col 95 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 1,
+  chunk |-> {0},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 24: <AbsorberRead line 433, col 5 to line 441, col 95 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {0, 1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 25: <AbsorberReadEnd line 444, col 5 to line 448, col 95 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "readdone",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {0, 1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 26: <AbsorberStage line 451, col 5 to line 462, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "staged",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {0, 1},
+  ring |-> FALSE ]
+/\ pgMem = {<<"K1", 0, {0, 1}>>}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 27: <AbsorberFlushOk line 465, col 5 to line 469, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "flushed",
+  from |-> 0,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {0, 1},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 0
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 28: <AbsorberSubmit line 490, col 5 to line 503, col 77 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 2, f |-> 0, u |-> 2]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 29: <AbsorberPlan line 407, col 5 to line 425, col 77 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 2,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 2, f |-> 0, u |-> 2]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 30: <CommitAbsorbed line 543, col 5 to line 579, col 70 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 2,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 2,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 31: <AbsorberRead line 433, col 5 to line 441, col 95 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "reading",
+  from |-> 2,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 3,
+  chunk |-> {2},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 32: <AbsorberReadEnd line 444, col 5 to line 448, col 95 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "readdone",
+  from |-> 2,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 3,
+  chunk |-> {2},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "none")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 33: <AbsorberStage line 451, col 5 to line 462, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "staged",
+  from |-> 2,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 3,
+  chunk |-> {2},
+  ring |-> FALSE ]
+/\ pgMem = {<<"K2", 2, {2}>>}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "mem")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "mem")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 34: <AbsorberFlushOk line 465, col 5 to line 469, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "flushed",
+  from |-> 2,
+  snap |-> [next |-> 3, set |-> TRUE, trimmed |-> 0],
+  upto |-> 3,
+  cur |-> 3,
+  chunk |-> {2},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = TRUE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>, <<"K2", 2, {2}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 2
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 35: <AbsorberSubmit line 490, col 5 to line 503, col 77 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = FALSE
+/\ rejects = 1
+/\ pend = <<[safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>, <<"K2", 2, {2}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 2, u |-> 3]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 0
+/\ mark = 3
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 36: <WalDurable line 332, col 5 to line 338, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ D = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = FALSE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>, <<"K2", 2, {2}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<[b |-> 1, f |-> 2, u |-> 3]>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 1
+/\ mark = 3
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 37: <CommitAbsorbed line 543, col 5 to line 579, col 70 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 2, abs |-> 3, next |-> 3, trimmed |-> 0, gprev |-> 2, ub |-> 0]
+/\ D = [safe |-> 0, abs |-> 2, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 1]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = FALSE
+/\ rejects = 1
+/\ pend = <<[safe |-> 2, abs |-> 3, next |-> 3, trimmed |-> 0, gprev |-> 2, ub |-> 0]>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>, <<"K2", 2, {2}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<TRUE>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 1
+/\ mark = 3
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]
+
+State 38: <WalDurable line 332, col 5 to line 338, col 74 of module HistoryAbsorb>
+/\ rolledBack = TRUE
+/\ crashLoss = FALSE
+/\ ab = [ ph |-> "idle",
+  from |-> 0,
+  snap |-> [next |-> 0, set |-> FALSE, trimmed |-> 0],
+  upto |-> 0,
+  cur |-> 0,
+  chunk |-> {},
+  ring |-> FALSE ]
+/\ pgMem = {}
+/\ A = [safe |-> 2, abs |-> 3, next |-> 3, trimmed |-> 0, gprev |-> 2, ub |-> 0]
+/\ D = [safe |-> 2, abs |-> 3, next |-> 3, trimmed |-> 0, gprev |-> 2, ub |-> 0]
+/\ P = [safe |-> 0, abs |-> 0, next |-> 3, trimmed |-> 0, gprev |-> 0, ub |-> 3]
+/\ due = FALSE
+/\ rejects = 1
+/\ pend = <<>>
+/\ hc = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ diverged = FALSE
+/\ hp = (0 :> "dur" @@ 1 :> "dur" @@ 2 :> "dur")
+/\ evicts = 0
+/\ detached = TRUE
+/\ pgDur = {<<"K1", 0, {0, 1}>>, <<"K1", 1, {1}>>, <<"K2", 2, {2}>>}
+/\ prunedInFlight = FALSE
+/\ held = <<>>
+/\ mateHeld = FALSE
+/\ drops = 0
+/\ reads = 0
+/\ crashes = 0
+/\ chan = <<>>
+/\ lateInstall = FALSE
+/\ rd = [ph |-> "idle", B |-> 0]
+/\ rejectLoss = TRUE
+/\ dupSeen = FALSE
+/\ sl = [ K1 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}],
+  K2 |-> [has |-> FALSE, cf |-> 0, it |-> 0, runs |-> {}] ]
+/\ mateBusy = FALSE
+/\ flushFails = 0
+/\ durHeld = 2
+/\ mark = 3
+/\ wm = [from |-> 0, set |-> FALSE, to |-> 0, clean |-> TRUE]

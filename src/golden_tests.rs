@@ -75,6 +75,15 @@ mod shard_keys {
     }
 
     #[test]
+    fn golden_layout4_seal_fence_key_bytes() {
+        // <hash16> 'G' -> u64 LE: the durable seal fence (TLA-002-F1)
+        assert_eq!(
+            hex(&seal_fence_key(&H)),
+            concat!("11111111111111111111111111111111", "47")
+        );
+    }
+
+    #[test]
     fn golden_layout4_dirty_key_sentinel_bytes() {
         // <0xFF*16 sentinel> 'D' <hash16>
         assert_eq!(
@@ -773,6 +782,61 @@ mod cursors {
                 "9210000000000000",                 // offset 4242 LE
             )
         );
+    }
+
+    /// Product session cursor (TLA-018-F3): base64url(payload || mac16),
+    /// payload = [0x13 kind][epoch 16][key_hash 16][seg_id u32 LE]
+    /// [offset u64 LE][history 16][recover u64 LE][from u64 LE][digest 16],
+    /// MAC exactly as the v2 key cursor. Expected string recomputed
+    /// independently from those primitives (RFC 5869 HKDF, HMAC-SHA256,
+    /// base64url-no-pad).
+    #[test]
+    fn golden_layout4_session_cursor_string_with_mac() {
+        use crate::product_cursor::{ReadCursor, SessionCursor};
+        let c = SessionCursor {
+            position: KeyCursor {
+                epoch: [1; 16],
+                key_hash: [2; 16],
+                seg_id: 7,
+                offset: 4242,
+            },
+            history: [3; 16],
+            recover: 4200,
+            from: 4100,
+            digest: [4; 16],
+        };
+        let s = c.encode(&proj(), &StreamKey([9u8; 32]));
+        assert_eq!(
+            s,
+            concat!(
+                "EwEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICBwAAAJIQAAAAAAAAAwMDAwMDAwMDAwMDAwMDA2gQ",
+                "AAAAAAAABBAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEG7l8nbKDJwsgWeTzJ3-rZQ"
+            )
+        );
+        let d = ReadCursor::decode(&s, &proj(), &StreamKey([9u8; 32]), &[1; 16], &[2; 16])
+            .expect("golden session cursor verifies");
+        assert_eq!(d, ReadCursor::Session(c));
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&s)
+            .unwrap();
+        assert_eq!(raw.len(), 93 + 16);
+        assert_eq!(
+            crate::crypto::hex(&raw[45..93]),
+            concat!(
+                "03030303030303030303030303030303", // history
+                "6810000000000000",                 // recover 4200 LE
+                "0410000000000000",                 // from 4100 LE
+                "04040404040404040404040404040404", // digest
+            )
+        );
+        // A v2 key cursor still decodes, as a durable position.
+        let v2 =
+            "EgEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICBwAAAJIQAAAAAAAA79N5ZF0cdhYyslfZAoUlLw";
+        assert!(matches!(
+            ReadCursor::decode(v2, &proj(), &StreamKey([9u8; 32]), &[1; 16], &[2; 16]),
+            Ok(ReadCursor::Durable(KeyCursor { offset: 4242, .. }))
+        ));
     }
 
     /// Raw-surface cursor: the Durable Streams offset token — 26-char

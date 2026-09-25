@@ -1,0 +1,57 @@
+PRE-FIX EVIDENCE. Reproduced on the current model by the negative control named below, which keeps the admission snapshot's plan after the claim. Fixed by commit "A raw close that takes over an abandoned final claim writes its own record".
+
+Per-step view of evidence/TLA-003-F2d_pre-fix_without-lapse-producer-release.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = ( L :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", CN>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [ held |-> 0, crash |-> 1, retire |-> 0, cancel |-> 1, timeout |-> 1, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      bud = (X :> 1 @@ W :> 1 @@ N1 :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+ 2 Issue
+      h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 Issue
+      h[W/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 4 Issue
+      h[N1/1]: pc="a_prep" gen=NONE rep=NONE rej=FALSE
+ 5 APrep
+      h[N1/1]: pc="enqueue" gen=NONE rep=NONE rej=FALSE
+ 6 FClaim
+      h[X/1]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"product", CX, L, 0>>, gen |-> 1 ], sealed |-> FALSE, sealOp |-> NONE ]
+ 7 FCheck
+      h[X/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE
+ 8 FValidate
+      h[W/1]: pc="claim" gen=NONE rep=NONE rej=TRUE
+ 9 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<N1, 1>>, op |-> N1, gen |-> NONE, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[N1/1]: pc="await" gen=NONE rep=NONE rej=FALSE
+10 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<N1, 1>>, op |-> N1, gen |-> NONE, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ], [ hid |-> <<X, 1>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/1]: pc="await" gen=1 rep=NONE rej=FALSE
+11 ProcessAppend
+      lanes = ( L :> [seq |-> 0, hash |-> <<CX, FALSE>>] @@ <<"rawseal", CN>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[N1/1]: pc="await" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+12 ProcessAppend
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[X/1]: pc="await" gen=1 rep=[err |-> "ProducerSeqReused", closed |-> FALSE, dup |-> FALSE] rej=FALSE
+13 FRelease
+      h[X/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 1, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+14 FClaim
+      h[W/1]: pc="enqueue" gen=2 rep=NONE rej=TRUE
+      desc = [ counter |-> 2, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CN, NONE, 0>>, gen |-> 2 ], sealed |-> FALSE, sealOp |-> NONE ]
+15 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<W, 1>>, op |-> W, gen |-> 2, rej |-> TRUE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[W/1]: pc="await" gen=2 rep=NONE rej=TRUE
+16 ProcessAppend
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[W/1]: pc="await" gen=2 rep=[err |-> "Closed", closed |-> FALSE, dup |-> FALSE] rej=TRUE
+17 FRelease
+      h[W/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 2, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      hist = [ badClosed |-> TRUE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]

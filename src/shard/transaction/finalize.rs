@@ -193,8 +193,16 @@ impl CommitTransaction<'_> {
                     .await;
                 self.publish(handle.seqnum(), maintenance, encode_us, write_us);
             }
-            Err(error) => self.reject(&error.to_string()),
+            Err(error) => self.write_failed(&error),
         }
+    }
+    /// TLA-005-F5: SlateDB can answer Err after applying the batch and making
+    /// it readable, before the Db reports closed. No later group may stage
+    /// from that batch, so the engine retires before the failure is answered.
+    fn write_failed(self, error: &slatedb::Error) {
+        tracing::error!(shard = %self.engine.prefix, "commit write failed: {error}");
+        self.engine.begin_close();
+        self.reject(&error.to_string());
     }
     #[cfg(test)]
     #[expect(

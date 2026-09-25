@@ -93,3 +93,49 @@ jobs:
       - name: Diff-scoped read-owner mutants
         if: env.CHECK_MUTANTS == 'true'
         run: scripts/quality/mutations.sh
+  formal:
+    runs-on: ubuntu-latest
+    # The first-spike receipts took about 1.7 h of Kani and 5.7 h of TLC on
+    # a heavily loaded 8-core laptop; the longest check (the KANI-001 round
+    # trip) took an hour. The obligations are split over the shards by their
+    # position in the sorted manifest, so a new obligation always lands in
+    # one; the slowest shard measured about 3 h. A push or pull request runs
+    # only what its diff affects.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned TLC and Kani
+        run: python3 scripts/install-formal-tools.py
+      - name: The driver rejects incomplete, misconfigured and empty runs
+        run: python3 scripts/quality/formal.py self-test
+      - name: This shard's obligations the change can affect (all of them on a schedule)
+        env:
+          FORMAL_SHARD: ${{ matrix.shard }}
+          FORMAL_SHARDS: 6
+        run: |
+          set -euo pipefail
+          ids=()
+          while IFS= read -r id; do ids+=("$id"); done < <(python3 -c 'import json, os, sys; ids = sorted(o["id"] for o in json.load(open("verification/manifest.json"))["obligations"]); n, k = int(os.environ["FORMAL_SHARDS"]), int(os.environ["FORMAL_SHARD"]); sys.stdout.write("".join(i + "\n" for j, i in enumerate(ids) if j % n == k))')
+          if (( ${#ids[@]} == 0 )); then
+            echo "FORMAL_OK: shard $FORMAL_SHARD holds no obligation"
+            exit 0
+          fi
+          args=()
+          for id in "${ids[@]}"; do args+=(--id "$id"); done
+          if [[ "$QUALITY_EVENT_NAME" == schedule ]]; then
+            python3 scripts/quality/formal.py run "${args[@]}"
+          else
+            base=$(python3 -c 'import sys; sys.path.insert(0, "scripts/quality"); import common; print(common.verification_comparison().comparison_revision)')
+            python3 scripts/quality/formal.py run --changed-from "$base" "${args[@]}"
+          fi

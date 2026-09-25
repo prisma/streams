@@ -379,21 +379,12 @@ impl WatchService {
 /// same watch key offline (see `sdk/src/index.ts`), so the two must
 /// agree byte for byte. Two places where a naive `to_string()` would
 /// not: object keys are sorted (serde's map already is, JavaScript's
-/// is not), and a float with no fractional part is written as an
-/// integer, because serde writes `1.0` where JSON.stringify writes `1`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "canonical_arg; the argument was parsed as a finite whole number before it is rendered back; a checked conversion would only restate the parse"
-)]
+/// is not), and a number is written as JavaScript's `String(v)` writes
+/// the f64 `JSON.parse` gives it (`sdk_number`).
 pub(crate) fn canonical_arg(v: &serde_json::Value) -> String {
     use serde_json::Value as V;
     match v {
-        V::Number(n) => match n.as_f64() {
-            Some(f) if n.as_i64().is_none() && n.as_u64().is_none() && f.fract() == 0.0 => {
-                format!("{}", f as i64)
-            }
-            _ => n.to_string(),
-        },
+        V::Number(n) => n.as_f64().map_or_else(|| n.to_string(), sdk_number),
         V::Array(a) => {
             let items: Vec<String> = a.iter().map(canonical_arg).collect();
             format!("[{}]", items.join(","))
@@ -415,6 +406,45 @@ pub(crate) fn canonical_arg(v: &serde_json::Value) -> String {
         }
         other => other.to_string(),
     }
+}
+
+/// JavaScript's `String(v)` for a finite number (ECMA-262
+/// `Number::toString`), which is how the SDK keys a watch value. Rust's
+/// `{:e}` yields the same shortest round-trip digits JavaScript chooses;
+/// only the layout differs: whole numbers below 1e21 in full, decimals from
+/// 1e-6, and an exponent with an explicit sign otherwise. Every whole number
+/// keeps its own digits, 2^63 and beyond included.
+fn sdk_number(f: f64) -> String {
+    if f == 0.0 {
+        return "0".into(); // -0 too
+    }
+    let scientific = format!("{:e}", f.abs());
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    // ECMA-262's n: the decimal point sits after this many digits.
+    let point = exponent.parse::<i32>().unwrap_or(0) + 1;
+    let sign = if f < 0.0 { "-" } else { "" };
+    let text = match usize::try_from(point) {
+        Ok(n) if (digits.len()..=21).contains(&n) => {
+            format!("{digits}{}", "0".repeat(n - digits.len()))
+        }
+        Ok(n @ 1..=21) => {
+            let (whole, fraction) = digits.split_at(n);
+            format!("{whole}.{fraction}")
+        }
+        _ if (-5..=0).contains(&point) => {
+            format!(
+                "0.{}{digits}",
+                "0".repeat(usize::try_from(-point).unwrap_or(0))
+            )
+        }
+        _ => {
+            let (first, rest) = digits.split_at(1);
+            let dot = if rest.is_empty() { "" } else { "." };
+            format!("{first}{dot}{rest}e{:+}", point - 1)
+        }
+    };
+    format!("{sign}{text}")
 }
 
 fn watch_arg(v: Option<&serde_json::Value>) -> Option<String> {
@@ -488,5 +518,77 @@ mod tests {
             assert!(first.take(clock.monotonic()));
         }
         assert!(!first.take(clock.monotonic()));
+    }
+
+    /// The SDK keys a watch value with JavaScript's `String(v)` of the number
+    /// `JSON.parse` gives it, so the server must render the correctly rounded
+    /// f64 of every stored literal exactly that way: whole numbers of any size
+    /// (2^63 and beyond saturated to `i64::MAX` here once), exponent forms from
+    /// 1e21 and below 1e-6, and values a non-correctly-rounded parse moves.
+    #[test]
+    fn watch_keys_render_every_number_as_the_sdk_string_of_its_value() {
+        let sdk = [
+            ("0", "0"),
+            ("-0", "0"),
+            ("-0.0", "0"),
+            ("1.0", "1"),
+            ("1.50", "1.5"),
+            ("1e2", "100"),
+            ("-12", "-12"),
+            ("0.1", "0.1"),
+            ("0.000001", "0.000001"),
+            ("1e-6", "0.000001"),
+            ("1.5e-7", "1.5e-7"),
+            ("1e-7", "1e-7"),
+            ("123e-20", "1.23e-18"),
+            ("1.7802719962921167e-19", "1.7802719962921167e-19"),
+            ("-1.7802719962921167e-19", "-1.7802719962921167e-19"),
+            ("9.999999999999999e-20", "9.999999999999999e-20"),
+            ("0.8337463852537358", "0.8337463852537358"),
+            ("9007199254740993", "9007199254740992"),
+            ("9223372036854775807", "9223372036854776000"),
+            ("9223372036854775808", "9223372036854776000"),
+            ("9.3e18", "9300000000000000000"),
+            ("-9.3e18", "-9300000000000000000"),
+            ("18446744073709551615", "18446744073709552000"),
+            ("1e20", "100000000000000000000"),
+            ("123456789012345678901", "123456789012345680000"),
+            ("1e21", "1e+21"),
+            ("-1e21", "-1e+21"),
+            ("1.5e300", "1.5e+300"),
+            ("1.7976931348623157e308", "1.7976931348623157e+308"),
+            ("5e-324", "5e-324"),
+        ];
+        let render = |literal: &str| canonical_arg(&serde_json::from_str(literal).unwrap());
+        let wrong: Vec<String> = sdk
+            .iter()
+            .filter(|(literal, want)| render(literal) != *want)
+            .map(|(literal, want)| format!("{literal}: {} is not {want}", render(literal)))
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        // Math.random()-style values: in [1e-6, 1e21) JavaScript's String(v)
+        // and Rust's shortest Display agree, so Display is the SDK oracle.
+        let mut state = 0x5eed_u64;
+        let mut drifted = Vec::new();
+        for _ in 0..100_000 {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            let random = f64::from_bits(0x3ff0_0000_0000_0000 | ((z ^ (z >> 31)) >> 12)) - 1.0;
+            if random < 1e-6 {
+                continue;
+            }
+            let literal = random.to_string();
+            if render(&literal) != literal {
+                drifted.push(literal);
+            }
+        }
+        assert!(
+            drifted.is_empty(),
+            "{} drifted, first {:?}",
+            drifted.len(),
+            drifted.first()
+        );
     }
 }

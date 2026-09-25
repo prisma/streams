@@ -1,0 +1,35 @@
+Per-step view of evidence/TLA-003_nc-release-by-operation-only.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = (LX :> [seq |-> -1, hash |-> NONE] @@ LY :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [ held |-> 0, crash |-> 1, retire |-> 0, cancel |-> 1, timeout |-> 1, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      bud = (X :> 2 @@ Y :> 1 @@ S :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+ 2 Issue
+      h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 FClaim
+      h[X/1]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ counter |-> 1, claim |-> [ op |-> <<"product", CX, LX, 0>>, lap |-> FALSE, fin |-> TRUE, com |-> FALSE, gen |-> 1 ], sealed |-> FALSE, sealOp |-> NONE ]
+ 4 Issue
+      h[X/2]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 5 FClaim
+      h[X/2]: pc="check" gen=2 rep=NONE rej=FALSE
+      desc = [ counter |-> 2, claim |-> [ op |-> <<"product", CX, LX, 0>>, lap |-> FALSE, fin |-> TRUE, com |-> FALSE, gen |-> 2 ], sealed |-> FALSE, sealOp |-> NONE ]
+ 6 FCheck
+      h[X/2]: pc="enqueue" gen=2 rep=NONE rej=FALSE
+ 7 FCheck
+      h[X/1]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      desc = [counter |-> 2, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+ 8 Enqueue
+      eng = [ fence |-> 0, q |-> << [ op |-> X, hid |-> <<X, 2>>, gen |-> 2, rej |-> FALSE, kind |-> "append", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/2]: pc="await" gen=2 rep=NONE rej=FALSE
+ 9 ProcessAppend
+      lanes = (LX :> [seq |-> 0, hash |-> <<CX, TRUE>>] @@ LY :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[X/2]: pc="await" gen=2 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE
+      seg = [ fence |-> 0, closed |-> TRUE, finalRec |-> X, closer |-> <<"product", CX, LX, 0>> ]

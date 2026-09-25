@@ -241,8 +241,10 @@ documented in docs/SCALING.md §9 "Known v1 limitations":
 
 - **Retention.** Stream TTL exists in the registry (`ttl_secs`,
   `expires_at_ms`). Staging sets a **default 14-day TTL** on tester
-  streams so the keyspace cannot grow without bound and so we exercise
-  expiry — which we have never run at length.
+  streams so the live keyspace cannot grow without bound and so we
+  exercise expiry — which we have never run at length. Expiry and hard
+  deletion do not yet reclaim a deleted incarnation's stored rows (an open
+  service obligation in docs/READINESS.md), so bucket bytes still grow.
 - **GC.** WAL objects reaped per `WAL_GC_*`; history SSTs retired by
   compaction. Watch bucket size weekly (§8); unbounded growth is the
   cheapest early signal that something is wrong.

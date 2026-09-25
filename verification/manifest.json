@@ -1,0 +1,4021 @@
+{
+  "schema": 1,
+  "roadmap": "docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md",
+  "obligations": [
+    {
+      "id": "KANI-001",
+      "kind": "kani",
+      "title": "Epoch-aware offset round trip",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "T10",
+        "S6"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-021",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN"
+      ],
+      "input_scope": "every epoch below 2^30 (the documented round-trip domain) and every u64 next through digits, the bytes encode collects, and read, the value computation parse runs after its \"-1\" and length gates; fixed 26 digits, loops unwound to 40 with unwinding checks on",
+      "checks": [
+        {
+          "id": "KANI-001/round-trip",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_001_every_admitted_epoch_and_next_round_trips",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-001/nc-drop-top-admitted-epoch-bit",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_001_every_admitted_epoch_and_next_round_trips",
+          "patch": "verification/kani/controls/KANI-001-drop-top-admitted-epoch-bit.patch",
+          "expect": {
+            "result": "fail",
+            "property": "epoch and next survive the round trip"
+          },
+          "timeout_seconds": 7200
+        }
+      ],
+      "regressions": [
+        "offsets::tests::round_trip",
+        "offsets::tests::epoch_round_trip",
+        "offsets::tests::quality_offsets_every_position_has_one_ordered_token",
+        "golden_tests::cursors::golden_layout4_raw_offset_tokens",
+        "golden_tests::cursors::golden_layout4_raw_epoch_offset_token",
+        "verification/regressions/KANI-001/README.md"
+      ]
+    },
+    {
+      "id": "KANI-002",
+      "kind": "kani",
+      "title": "Offset start-of-stream and resume index",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs",
+        "src/application/read_range.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "H2",
+        "T10"
+      ],
+      "models": [
+        "TLA-007",
+        "TLA-018",
+        "TLA-021"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN"
+      ],
+      "input_scope": "the literal \"-1\" through parse, next 0, and every u64 next including u64::MAX with every u32 epoch through digits and read",
+      "checks": [
+        {
+          "id": "KANI-002/start-and-resume-index",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_002_start_and_resume_index",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-002/nc-exhausted-next-wraps-to-start",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_002_start_and_resume_index",
+          "patch": "verification/kani/controls/KANI-002-exhausted-next-wraps-to-start.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a token resumes at the next it was issued for"
+          },
+          "timeout_seconds": 7200
+        }
+      ],
+      "regressions": [
+        "offsets::tests::round_trip",
+        "offsets::tests::non_canonical_tokens_keep_their_lax_reading",
+        "offsets::tests::quality_offsets_any_accepted_token_names_one_canonical_position",
+        "http::tests::raw_position_tokens_and_fork_refusals_are_exact",
+        "verification/regressions/KANI-002/README.md"
+      ]
+    },
+    {
+      "id": "KANI-003",
+      "kind": "kani",
+      "title": "Offset encoding injectivity and ordering",
+      "status": "pass-with-recorded-scope",
+      "owner": "offset codec",
+      "source_paths": [
+        "src/offsets.rs"
+      ],
+      "verification_paths": [
+        "src/offsets/proofs.rs"
+      ],
+      "requirements": [
+        "T10"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-021",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-OFFSET-DOMAIN"
+      ],
+      "input_scope": "two symbolic (epoch below 2^30, u64 next) positions; byte order of the 26 digits (which is String order) against position order",
+      "checks": [
+        {
+          "id": "KANI-003/injective-ordered",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-003/nc-reverse-digit-order",
+          "role": "negative-control",
+          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
+          "patch": "verification/kani/controls/KANI-003-reverse-digit-order.patch",
+          "expect": {
+            "result": "fail",
+            "property": "token byte order is position order"
+          }
+        }
+      ],
+      "regressions": [
+        "offsets::tests::epoch_round_trip",
+        "offsets::tests::quality_offsets_every_position_has_one_ordered_token"
+      ]
+    },
+    {
+      "id": "KANI-036",
+      "kind": "kani",
+      "title": "Producer stale-epoch and new-epoch admission",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P1",
+        "P2",
+        "P8"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "decide_producer over every u64 request/current epoch and sequence, every remembered offset and 16-byte hash, present or absent current state and request hash, every tail next/closed value, and all three sealed states; producer id fixed empty (not an input)",
+      "checks": [
+        {
+          "id": "KANI-036/admission",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-036/nc-accept-a-lower-epoch",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "patch": "verification/kani/controls/KANI-036-accept-a-lower-epoch.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a lower epoch is stale"
+          }
+        },
+        {
+          "id": "KANI-036/nc-new-epoch-may-skip-zero",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_036_stale_and_new_epoch_admission",
+          "patch": "verification/kani/controls/KANI-036-new-epoch-may-skip-zero.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a new epoch must start at sequence 0"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
+    },
+    {
+      "id": "KANI-037",
+      "kind": "kani",
+      "title": "Producer duplicate, conflict, and replay-result semantics",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P2",
+        "P3",
+        "D2"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "every same-epoch request at or below the remembered sequence, with every stored offset (including the u64::MAX legacy sentinel), every stored hash (including all-zero), present or absent request hash, every tail and sealed state",
+      "checks": [
+        {
+          "id": "KANI-037/duplicates",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-037/nc-closure-before-duplicate",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-closure-before-duplicate.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a duplicate is answered, not admitted or refused"
+          }
+        },
+        {
+          "id": "KANI-037/nc-ignore-hash-conflict",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-ignore-hash-conflict.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a known hash conflict at the remembered sequence is refused"
+          }
+        },
+        {
+          "id": "KANI-037/nc-older-duplicate-allocates",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_037_duplicates_conflicts_and_replay_results",
+          "patch": "verification/kani/controls/KANI-037-older-duplicate-allocates.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a duplicate is answered, not admitted or refused"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
+    },
+    {
+      "id": "KANI-038",
+      "kind": "kani",
+      "title": "Producer sequence gaps and numeric exhaustion",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "P8"
+      ],
+      "models": [
+        "TLA-003",
+        "TLA-005",
+        "TLA-007"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-PRODUCER-ROW"
+      ],
+      "input_scope": "every same-epoch request above the remembered sequence (so the remembered sequence is below u64::MAX), plus every request against a lane remembered at u64::MAX; all tails, hashes and sealed states",
+      "checks": [
+        {
+          "id": "KANI-038/gaps",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-038/exhausted",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_038_an_exhausted_sequence_only_replays",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-038/nc-inclusive-gap",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "patch": "verification/kani/controls/KANI-038-inclusive-gap.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the adjacent sequence is admitted unless the collection is closed"
+          }
+        },
+        {
+          "id": "KANI-038/nc-gap-names-wrong-successor",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_038_sequence_gaps_at_the_numeric_boundary",
+          "patch": "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a sequence beyond the successor is a gap naming the successor"
+          }
+        }
+      ],
+      "regressions": []
+    },
+    {
+      "id": "KANI-039",
+      "kind": "kani",
+      "title": "Seal generation authorization truth table",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit planning",
+      "source_paths": [
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "L4",
+        "L6",
+        "L8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-003",
+        "TLA-004",
+        "TLA-006"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "seal_authorized over every u64 fence, every Option<u64> generation and both closing flags",
+      "checks": [
+        {
+          "id": "KANI-039/truth-table",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-039/nc-fence-equality-refused",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "patch": "verification/kani/controls/KANI-039-fence-equality-refused.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a tagged operation is authorized exactly at or above the fence"
+          }
+        },
+        {
+          "id": "KANI-039/nc-untagged-close-after-fence",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_039_seal_generation_truth_table",
+          "patch": "verification/kani/controls/KANI-039-untagged-close-after-fence.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an untagged close is refused once a fence exists"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence"
+      ]
+    },
+    {
+      "id": "KANI-042",
+      "kind": "kani",
+      "title": "Final-append error disposition",
+      "status": "pass-with-recorded-scope",
+      "owner": "seal lifecycle",
+      "source_paths": [
+        "src/application/lifecycle/claims.rs",
+        "src/application/append/contract.rs"
+      ],
+      "verification_paths": [
+        "src/application/lifecycle/claims/proofs.rs"
+      ],
+      "requirements": [
+        "L10",
+        "L11",
+        "D7"
+      ],
+      "models": [
+        "TLA-003"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "every AppendErr variant (enumeration pinned by an exhaustive match) with symbolic numeric payloads and symbolic segment/materialized inputs to the product translation; string payloads empty (neither classifier reads them)",
+      "checks": [
+        {
+          "id": "KANI-042/disposition",
+          "role": "baseline",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-042/nc-producer-gap-releases-debt",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "patch": "verification/kani/controls/KANI-042-producer-gap-releases-debt.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the raw surface follows the contract"
+          }
+        },
+        {
+          "id": "KANI-042/nc-product-surface-drifts",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_042_final_append_error_disposition",
+          "patch": "verification/kani/controls/KANI-042-product-surface-drifts.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the product surface agrees with the raw surface"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_cancellation::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it"
+      ]
+    },
+    {
+      "id": "TLA-005",
+      "kind": "tla",
+      "title": "Commit groups, dependency barriers, and observable replies",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit transaction",
+      "source_paths": [
+        "src/shard/transaction/mod.rs",
+        "src/shard/transaction/append.rs",
+        "src/shard/transaction/maintenance.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/shard/transaction/publish.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/commit_handoff.rs",
+        "src/shard.rs",
+        "src/application/append/contract.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/durability/CommitGroups.tla",
+        "verification/tla/durability/CommitHandoff.tla",
+        "verification/tla/durability/MC_CommitGroups.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_failed_release.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_idem_close_unbarriered.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_publish_early.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_reply_before_visible.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_skip_barrier.tla",
+        "verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging.tla"
+      ],
+      "requirements": [
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8",
+        "D10",
+        "W1"
+      ],
+      "models": [
+        "TLA-006",
+        "TLA-007",
+        "TLA-011",
+        "KANI-036",
+        "KANI-037",
+        "KANI-038"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-OBJSTORE-CAS",
+        "ASM-DURABILITY-1",
+        "ASM-DURABILITY-2",
+        "ASM-DURABILITY-3",
+        "ASM-DURABILITY-4",
+        "ASM-DURABILITY-7",
+        "ASM-DURABILITY-8",
+        "ASM-DURABILITY-9"
+      ],
+      "input_scope": "one stream; requests drawn from A (final producer append), R (its retry), X (plain append), Y (same producer seq, other hash), S (Y retry) and C (producer-less empty close); shapes small {A,R,X}, requests {A,R,X,Y}, requests-faults {A,R,X,Y}, faults {A,R,X} with 2 restarts, close {A,R,C} and refusal-retry {A,Y,S}; at most 2 restarts, 1 fatal WAL failure, 1 group failure (a db.write error before or after apply, or a pre-write reject; pinned SlateDB order: default reads stay open until closed_result is written after a post-apply error) and 1 external retirement; any grouping of the committer channel; only the producer-row staging read is modelled; safety only, no symmetry",
+      "checks": [
+        {
+          "id": "TLA-005/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/baseline-expanded-requests",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/baseline-expanded-requests-faults",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_requests_faults.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/baseline-expanded-faults",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_faults.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/baseline-close",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_close.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/baseline-refusal-retry",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_refusal_retry.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-005/nc-write-error-keeps-staging",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D2_DuplicateAckDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-write-error-keeps-staging-refusal",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_write_error_keeps_staging_refusal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D4_RefusalDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-skip-barrier",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_skip_barrier.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_skip_barrier.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D2_DuplicateAckDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-publish-early",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_publish_early.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_publish_early.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PubVisibleDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-failed-release",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_failed_release.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_failed_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D4_RefusalDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-failed-release-d10",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_failed_release.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_failed_release_d10.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D10_RefusedNeverAppears"
+          }
+        },
+        {
+          "id": "TLA-005/nc-idem-close-unbarriered",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_idem_close_unbarriered.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_idem_close_unbarriered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "D3_CloseAckDurable"
+          }
+        },
+        {
+          "id": "TLA-005/nc-reply-before-visible",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_CommitGroups_nc_reply_before_visible.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_nc_reply_before_visible.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckAfterVisibility"
+          }
+        },
+        {
+          "id": "TLA-005/witness-duplicate-ack-received",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_duplicate_ack_received.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DuplicateAckReceived"
+          }
+        },
+        {
+          "id": "TLA-005/witness-closed-refusal-received",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_closed_refusal_received.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ClosedRefusalReceived"
+          }
+        },
+        {
+          "id": "TLA-005/witness-lost-ack-then-retry-resolved",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_lost_ack_then_retry_resolved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LostAckThenRetryResolved"
+          }
+        },
+        {
+          "id": "TLA-005/witness-attached-reply-released",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_attached_reply_released.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AttachedReplyReleased"
+          }
+        },
+        {
+          "id": "TLA-005/witness-dependent-rejected-with-group",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_dependent_rejected_with_group.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DependentRejectedWithGroup"
+          }
+        },
+        {
+          "id": "TLA-005/witness-unreported-batch-recovered",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_unreported_batch_recovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnreportedBatchRecovered"
+          }
+        },
+        {
+          "id": "TLA-005/witness-wal-failure-retires",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_wal_failure_retires.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_WalFailureRetires"
+          }
+        },
+        {
+          "id": "TLA-005/witness-failed-write-recovered",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_failed_write_recovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FailedWriteRecovered"
+          }
+        },
+        {
+          "id": "TLA-005/witness-producer-load-fails-internal",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_producer_load_fails_internal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ProducerLoadFailsInternal"
+          }
+        },
+        {
+          "id": "TLA-005/witness-seq-reused-refusal",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_seq_reused_refusal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SeqReusedRefusal"
+          }
+        },
+        {
+          "id": "TLA-005/witness-idempotent-close-after-attach",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_idempotent_close_after_attach.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_IdempotentCloseAfterAttach"
+          }
+        },
+        {
+          "id": "TLA-005/witness-close-by-write-refuses-final-append",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_close_by_write_refuses_final_append.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CloseByWriteRefusesFinalAppend"
+          }
+        },
+        {
+          "id": "TLA-005/witness-refused-retry-resolved",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_refused_retry_resolved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RefusedRetryResolved"
+          }
+        },
+        {
+          "id": "TLA-005/witness-write-error-strands-group",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_write_error_strands_group.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_WriteErrorStrandsGroup"
+          }
+        },
+        {
+          "id": "TLA-005/witness-read-window-group-moved",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_CommitGroups.tla",
+          "config": "verification/tla/durability/MC_CommitGroups_witness_read_window_group_moved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReadWindowGroupMoved"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::retirement_tests::tla005_f5_a_failed_write_answers_nothing_from_its_batch",
+        "dst::dst_tests::durability_fences::idempotent_successes_wait_for_durability",
+        "dst::dst_tests::durability_fences::state_dependent_conflicts_wait_for_durability",
+        "dst::dst_tests::durability_fences::a_fence_waits_for_durability_before_reporting_closed",
+        "dst::dst_tests::durability_failures::a_failed_group_write_fails_its_duplicate_too",
+        "dst::dst_tests::durability_failures::a_reuse_verdict_dies_with_its_failed_group",
+        "dst::dst_tests::durability_failures::a_failed_group_fails_the_close_and_its_retry_together",
+        "shard::retirement_tests::r17b_live_duplicate_waits_for_actual_remote_durability",
+        "shard::retirement_tests::r17b_retirement_after_duplicate_attachment_owns_every_reply",
+        "dst::dst_tests::producer_handoff::ambiguous_commit_survives_handoff_and_dedupes",
+        "verification/tla/durability/evidence/TLA-005_pre-fix_read-window.trace.txt",
+        "verification/tla/durability/evidence/TLA-005_pre-fix_read-window-refusal.trace.txt",
+        "verification/tla/durability/evidence/TLA-005_nc-write-error-keeps-staging.trace.txt",
+        "verification/tla/durability/evidence/TLA-005_nc-write-error-keeps-staging-refusal.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-006",
+      "kind": "tla",
+      "title": "Commit handoff, retirement, and already-durable completion",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard commit handoff",
+      "source_paths": [
+        "src/shard/commit_handoff.rs",
+        "src/shard.rs",
+        "src/shard/transaction/mod.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/shard/transaction/publish.rs",
+        "src/shard/lifecycle.rs",
+        "src/tasks/shutdown.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/durability/HandoffRetirement.tla",
+        "verification/tla/durability/CommitHandoff.tla",
+        "verification/tla/durability/MC_HandoffRetirement.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close_acked.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_attach_ignore_terminal.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_no_storage_progress.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_reclaim_claimed.tla",
+        "verification/tla/durability/MC_HandoffRetirement_nc_write_error_keeps_staging.tla"
+      ],
+      "requirements": [
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "T11",
+        "T12",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "models": [
+        "TLA-005",
+        "TLA-011",
+        "TLA-028"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-DURABILITY-1",
+        "ASM-DURABILITY-2",
+        "ASM-DURABILITY-3",
+        "ASM-DURABILITY-7",
+        "ASM-DURABILITY-8",
+        "ASM-DURABILITY-10"
+      ],
+      "input_scope": "one engine; 3 requests (2 writers, 1 no-write verdict) for small and liveness, 4 requests (2 writers) for expanded; 1 fatal WAL failure; 1 group failure (a db.write error before or after apply, or a pre-write reject); 1 or 2 external retirements; 1 committer abort; requester cancellation; pinned post-apply read window; liveness with weak fairness on the committer, the completer, the acker close, stranded rejection, WAL landing and durable_seq reporting only; no symmetry",
+      "checks": [
+        {
+          "id": "TLA-006/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-006/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-006/liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-006/nc-write-error-keeps-staging",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_write_error_keeps_staging.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_write_error_keeps_staging.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SuccessIsDurable"
+          }
+        },
+        {
+          "id": "TLA-006/nc-reclaim-claimed",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_reclaim_claimed.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_reclaim_claimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SettledAtMostOnce"
+          }
+        },
+        {
+          "id": "TLA-006/nc-admit-after-close",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RetiredEngineFrozen"
+          }
+        },
+        {
+          "id": "TLA-006/nc-admit-after-close-acked",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close_acked.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_admit_after_close_acked.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LateSuccessWasClaimedLive"
+          }
+        },
+        {
+          "id": "TLA-006/nc-attach-ignore-terminal",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_attach_ignore_terminal.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_attach_ignore_terminal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LateSuccessWasClaimedLive"
+          }
+        },
+        {
+          "id": "TLA-006/nc-no-storage-progress",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_HandoffRetirement_nc_no_storage_progress.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_nc_no_storage_progress.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AllIssuedSettle"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-006/witness-late-durable-reply",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_late_durable_reply.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateDurableReply"
+          }
+        },
+        {
+          "id": "TLA-006/witness-late-durable-attach-reply",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_late_durable_attach_reply.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateDurableAttachReply"
+          }
+        },
+        {
+          "id": "TLA-006/witness-unclaimed-durable-rejected",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_unclaimed_durable_rejected.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnclaimedDurableRejected"
+          }
+        },
+        {
+          "id": "TLA-006/witness-non-durable-rejected",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_non_durable_rejected.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NonDurableRejected"
+          }
+        },
+        {
+          "id": "TLA-006/witness-cancelled-requester-settled",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_cancelled_requester_settled.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CancelledRequesterSettled"
+          }
+        },
+        {
+          "id": "TLA-006/witness-late-write-lands",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_late_write_lands.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateWriteLands"
+          }
+        },
+        {
+          "id": "TLA-006/witness-abort-drops-replies",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_abort_drops_replies.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AbortDropsReplies"
+          }
+        },
+        {
+          "id": "TLA-006/witness-pre-write-reject-then-success",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_pre_write_reject_then_success.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PreWriteRejectThenSuccess"
+          }
+        },
+        {
+          "id": "TLA-006/witness-write-error-strands-group",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_HandoffRetirement.tla",
+          "config": "verification/tla/durability/MC_HandoffRetirement_witness_write_error_strands_group.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_WriteErrorStrandsGroup"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::retirement_tests::tla005_f5_a_failed_write_answers_nothing_from_its_batch",
+        "shard::commit_handoff::loom_tests::quality_loom_held_wal_retry_cannot_turn_retirement_into_durability",
+        "shard::commit_handoff::loom_tests::quality_loom_publication_and_durable_claim_have_one_terminal_owner",
+        "shard::commit_handoff::loom_tests::quality_handoff_attachment_moves_each_reply_once",
+        "shard::retirement_tests::r17b_durable_dispatch_claim_before_retirement_keeps_its_completion",
+        "shard::retirement_tests::r17b_late_successful_write_settles_without_publishing_retired_effects",
+        "shard::retirement_tests::r17b_retirement_before_duplicate_attachment_cannot_erase_remote_dependency",
+        "verification/tla/durability/evidence/TLA-006_nc-write-error-keeps-staging.trace.txt",
+        "verification/tla/durability/evidence/TLA-006_nc-attach-ignore-terminal.trace.txt",
+        "verification/tla/durability/evidence/TLA-006_nc-no-storage-progress.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-011",
+      "kind": "tla",
+      "title": "Serving possession, owner fencing, and shard movement",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard ownership and serving directory",
+      "source_paths": [
+        "src/ownership.rs",
+        "src/fleet.rs",
+        "src/shard_directory.rs",
+        "src/sharddir.rs",
+        "src/bootstrap.rs",
+        "src/shard.rs",
+        "src/shard/lifecycle.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/application/append/contract.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/durability/ServingOwnership.tla",
+        "verification/tla/durability/CommitHandoff.tla",
+        "verification/tla/durability/MC_ServingOwnership.tla",
+        "verification/tla/durability/MC_ServingOwnership_nc_ring_authorizes.tla",
+        "verification/tla/durability/MC_ServingOwnership_nc_ring_grants_storage.tla",
+        "verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.tla",
+        "verification/tla/durability/MC_ServingOwnership_nc_serve_before_fence.tla"
+      ],
+      "requirements": [
+        "T10",
+        "T11",
+        "T12",
+        "D1",
+        "D7",
+        "P4",
+        "R1"
+      ],
+      "models": [
+        "TLA-005",
+        "TLA-006",
+        "TLA-012",
+        "TLA-039"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-FENCE",
+        "ASM-SLATEDB-DURABLE",
+        "ASM-OBJSTORE-CAS",
+        "ASM-DURABILITY-1",
+        "ASM-DURABILITY-5",
+        "ASM-DURABILITY-6"
+      ],
+      "input_scope": "CONDITIONAL DESIGN CHECK: write authority rests on ASM-SLATEDB-FENCE, which rests on the unestablished ASM-OBJSTORE-CAS; two nodes, one shard prefix, one stream; fleet mode with 1 override move and stale per-node views, or single (no-ring) mode; A and R (small), A, R and X with 2 attempts of R (expanded), or A, R and X (single); 3 engine incarnations; 1 node crash (the restart bootstraps with no ring); 1 ambiguous WAL PUT; abandoned storage closes and crashed PUTs landing later; one request per committer group; safety only, no symmetry",
+      "checks": [
+        {
+          "id": "TLA-011/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-011/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 10800
+        },
+        {
+          "id": "TLA-011/baseline-single",
+          "role": "baseline",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_single.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-011/nc-ring-authorizes",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_ServingOwnership_nc_ring_authorizes.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_nc_ring_authorizes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedDurable"
+          }
+        },
+        {
+          "id": "TLA-011/nc-ring-grants-storage",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_ServingOwnership_nc_ring_grants_storage.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_nc_ring_grants_storage.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedDurable"
+          }
+        },
+        {
+          "id": "TLA-011/nc-serve-before-fence",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_ServingOwnership_nc_serve_before_fence.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_nc_serve_before_fence.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HigherEpochCoversAcks"
+          }
+        },
+        {
+          "id": "TLA-011/nc-ring-skips-refresh",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HigherEpochCoversAcks"
+          }
+        },
+        {
+          "id": "TLA-011/witness-takeover-installs",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_takeover_installs.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        },
+        {
+          "id": "TLA-011/witness-stale-write-fenced",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_stale_write_fenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleWriteFenced"
+          }
+        },
+        {
+          "id": "TLA-011/witness-late-durable-reply-after-takeover",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_late_durable_reply_after_takeover.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateDurableReplyAfterTakeover"
+          }
+        },
+        {
+          "id": "TLA-011/witness-late-reply-after-override-move",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_late_reply_after_override_move.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateDurableReplyAfterTakeover"
+          }
+        },
+        {
+          "id": "TLA-011/witness-duplicate-resolved-by-new-owner",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_duplicate_resolved_by_new_owner.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DuplicateResolvedByNewOwner"
+          }
+        },
+        {
+          "id": "TLA-011/witness-zombie-write-lands",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_zombie_write_lands.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ZombieWriteLands"
+          }
+        },
+        {
+          "id": "TLA-011/witness-abandoned-close-write-lands",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_abandoned_close_write_lands.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AbandonedCloseWriteLands"
+          }
+        },
+        {
+          "id": "TLA-011/witness-ambiguous-put-recovered",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_ambiguous_put_recovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AmbiguousPutRecovered"
+          }
+        },
+        {
+          "id": "TLA-011/witness-crash-between-fence-and-serve",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_crash_between_fence_and_serve.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CrashBetweenFenceAndServe"
+          }
+        },
+        {
+          "id": "TLA-011/witness-superseded-open-fails",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_superseded_open_fails.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SupersededOpenFails"
+          }
+        },
+        {
+          "id": "TLA-011/witness-single-both-nodes-serve",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_single_both_nodes_serve.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::producer_handoff::producer_state_survives_a_handoff_and_suppresses_duplicates",
+        "dst::dst_tests::producer_handoff::ambiguous_commit_survives_handoff_and_dedupes",
+        "history::tests::absorber_exits_when_shard_engine_is_fenced",
+        "shard_directory::directory_tests::foreign_shard_is_refused_with_its_owner_and_never_opened",
+        "dst::dst_tests::runtime_retirement::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
+        "verification/tla/durability/evidence/TLA-011_nc-ring-grants-storage.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-016",
+      "kind": "tla",
+      "title": "History absorption, publication, and safe hot-data trimming",
+      "status": "pass-with-recorded-scope",
+      "owner": "history absorber (gather, lane marks, the settled plan-time rollback of a stranded mark, the dirty-index rescan and the sweep prune), shard committer maintenance (absorbed-advance retirement from the stream's own boundary, trims, byte ledger), the settlement receipts, the postings warm install and the postings index admission of overlapping pages",
+      "source_paths": [
+        "src/history.rs",
+        "src/history/gather.rs",
+        "src/history/worker.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/maintenance.rs",
+        "src/shard/transaction/mod.rs",
+        "src/shard/transaction/prepare.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/shard/record.rs",
+        "src/shard.rs",
+        "src/postings_cache.rs",
+        "src/postings.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/HistoryAbsorb.tla",
+        "verification/tla/history/MC_HistoryAbsorb.tla"
+      ],
+      "requirements": [
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H11",
+        "H13"
+      ],
+      "models": [
+        "TLA-017",
+        "TLA-018",
+        "TLA-019",
+        "TLA-020"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-HISTORY-ACTORS",
+        "ASM-HISTORY-REABSORB",
+        "ASM-HISTORY-EVICTION",
+        "ASM-HISTORY-SETTLEMENT",
+        "ASM-HISTORY-PAGES"
+      ],
+      "input_scope": "one stream incarnation, 3 one-byte record offsets (1 durable at Init, 2 appends) with routing keys K1, K1, K2, or 4 offsets (K1, K1, K2, K1; 3 appends) in the page shape; per-stream gather cap 2 records (small, ledger, liveness, cache-cap2, page, overlap witnesses, scan probe) or 1 record (expanded, cache); gathers by one Remote scan over the snapshot taken when it starts (small, ledger, liveness, overlap witnesses) or by that scan or the durable ring (expanded, cache, page); up to 2 (small) or 3 (expanded) applied-not-durable commit groups; up to 2 AbsorbedBatch messages in flight (3 in the scan probe), each carrying the chunk start and byte count of its copy and a settlement receipt that a group retiring an Exact advance holds until dispatch has published its tails, and every other advance drops at staging; the committer retires an advance only from the stream's own boundary (Exact, Detached, Diverged); a plan rolls a stranded lane mark back only while the stream's bucket is settled; a pending-roster flag that signals, the gather outcome and the seeding-only dirty-index rescan update; the sweep prune for evictable handles, not gated on settlement (all shapes but the page shape, liveness-refusal keeps it); a bucket-sharing stream toggled by the environment (ledger-small, the mate witness only); 1 crash, 1 failed or ambiguous history flush and 1 refused group or dropped op (small, expanded, ledger-small); 2 refused groups, one of which may be a dropped op, and 1 failed or ambiguous flush, with no crash or prune (page); 1 crash and 1 refused group with the prune (page-regather); 1 refused group or dropped op (liveness-refusal); none in the ledger-overlap, cache and liveness shapes; 1 (small) or 2 (expanded) reader snapshots; per-operation trim allowances {0,1,3}; postings-slice cache with 1 weight eviction and cold loads (cache shapes only); postings pages per routing key as (first offset, offsets) under the (key, first offset) page key, with the reader's admission of overlapping pages that agree over their common span (page shapes, the overlap witnesses and the scan probe only); liveness with bounded faults and fairness on actor attempts only, the rescan included. No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-016/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 14400
+        },
+        {
+          "id": "TLA-016/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 28800
+        },
+        {
+          "id": "TLA-016/ledger-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 14400
+        },
+        {
+          "id": "TLA-016/ledger-overlap",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_overlap.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/liveness-refusal",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_liveness_refusal.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/baseline-cache",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_cache.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/baseline-cache-cap2",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_cache_cap2.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-016/baseline-pages",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_pages.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-016/baseline-pages-regather",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_pages_regather.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-016/nc-publish-before-flush",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_publish_before_flush.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "H3_AbsorbedBackedByDurableHistory"
+          }
+        },
+        {
+          "id": "TLA-016/nc-canonical-only",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_canonical_only.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "H3_AbsorbedBackedByDurableHistory"
+          }
+        },
+        {
+          "id": "TLA-016/nc-trim-to-proposed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_trim_to_proposed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-duplicate-collapse",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_duplicate_collapse.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-tick-trim-to-absorbed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_tick_trim_to_absorbed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "StaleReaderRangeIntact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-lastcopy-publish-before-flush",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_publish_before_flush.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LastRecoverableCopy"
+          }
+        },
+        {
+          "id": "TLA-016/nc-lastcopy-trim-past-absorbed",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_trim_past_absorbed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LastRecoverableCopy"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LedgerExact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes-overlap",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_overlap.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LedgerExact"
+          }
+        },
+        {
+          "id": "TLA-016/nc-retire-chunk-bytes-liveness",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_liveness.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AbsorptionCompletes"
+          }
+        },
+        {
+          "id": "TLA-016/nc-warm-install-from-plan",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_warm_install_from_plan.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CacheNeverProvesFalseAbsence"
+          }
+        },
+        {
+          "id": "TLA-016/nc-ungated-rollback",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_ungated_rollback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "DetachedOnlyAfterFault"
+          }
+        },
+        {
+          "id": "TLA-016/nc-settle-before-publish",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_settle_before_publish.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoRegatherUnderInFlight"
+          }
+        },
+        {
+          "id": "TLA-016/nc-no-plan-rollback",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_no_plan_rollback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AbsorptionCompletes"
+          }
+        },
+        {
+          "id": "TLA-016/probe-scan-per-row",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_probe_scan_per_row.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PagesAdmit"
+          }
+        },
+        {
+          "id": "TLA-016/witness-TrimDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_TrimDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TrimDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-FullyAbsorbedDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_FullyAbsorbedDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FullyAbsorbedDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-LostPublicationRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_LostPublicationRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LostPublicationRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-FlushFailRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_FlushFailRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FlushFailRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-StaleDuplicateIgnored",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleDuplicateIgnored.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleDuplicateIgnored"
+          }
+        },
+        {
+          "id": "TLA-016/witness-CrashRecovered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_CrashRecovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CrashRecovered"
+          }
+        },
+        {
+          "id": "TLA-016/witness-GatherOverTrimmedPrefix",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_GatherOverTrimmedPrefix.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GatherOverTrimmedPrefix"
+          }
+        },
+        {
+          "id": "TLA-016/witness-StaleSnapshotLosesTail",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleSnapshotLosesTail.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleSnapshotLosesTail"
+          }
+        },
+        {
+          "id": "TLA-016/witness-TwoAdvancesNotDurable",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_TwoAdvancesNotDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TwoAdvancesNotDurable"
+          }
+        },
+        {
+          "id": "TLA-016/witness-EvictedMarkPrunedInFlight",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_EvictedMarkPrunedInFlight.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EvictedMarkPrunedInFlight"
+          }
+        },
+        {
+          "id": "TLA-016/witness-RingGatherBelowTrim",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_RingGatherBelowTrim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RingGatherBelowTrim"
+          }
+        },
+        {
+          "id": "TLA-016/witness-WarmBridgeCovers",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_WarmBridgeCovers.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_WarmBridgeCovers"
+          }
+        },
+        {
+          "id": "TLA-016/witness-InstallStartsAbovePlan",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_InstallStartsAbovePlan.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallStartsAbovePlan"
+          }
+        },
+        {
+          "id": "TLA-016/witness-RefusalHealed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_RefusalHealed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RefusalHealed"
+          }
+        },
+        {
+          "id": "TLA-016/witness-MateDelaysRollback",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_MateDelaysRollback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MateDelaysRollback"
+          }
+        },
+        {
+          "id": "TLA-016/witness-OverlapAdmittedRefusedChain",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedRefusedChain.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OverlapAdmitted"
+          }
+        },
+        {
+          "id": "TLA-016/witness-OverlapAdmittedPrune",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedPrune.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OverlapAdmitted"
+          }
+        },
+        {
+          "id": "TLA-016/witness-OverlapAdmittedNewOwner",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedNewOwner.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OverlapAdmitted"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog",
+        "shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary",
+        "shard::commit_plan::tests::a_stream_settles_when_its_last_receipt_drops",
+        "shard::maintenance_tests::an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
+        "shard::maintenance_tests::an_advance_that_skips_offsets_is_dropped_whole",
+        "shard::maintenance_tests::a_receipted_advance_settles_only_after_its_group_is_durable",
+        "shard::maintenance_tests::a_refused_advance_settles_with_its_group",
+        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_never_retires_a_byte_twice",
+        "shard::commit_plan::loom_tests::quality_loom_an_upto_only_retirement_counts_a_regathered_overlap_twice",
+        "shard::commit_plan::loom_tests::quality_loom_an_unsettled_batch_keeps_its_lane_mark",
+        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_regathers_under_an_unsettled_batch",
+        "shard::commit_plan::loom_tests::quality_loom_a_refused_batch_is_regathered_from_the_durable_boundary",
+        "shard::commit_plan::loom_tests::quality_loom_a_shared_bucket_only_delays_a_rollback",
+        "history::bounded_discovery_tests::a_regather_from_the_submitted_mark_retires_each_byte_once",
+        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_never_fails_an_append",
+        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark",
+        "history::bounded_discovery_tests::a_refused_advance_is_regathered_from_the_durable_boundary",
+        "history::bounded_discovery_tests::a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber",
+        "history::bounded_discovery_tests::a_regather_across_a_detached_chunk_keeps_the_index_readable",
+        "history::bounded_discovery_tests::a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable",
+        "history::bounded_discovery_tests::stale_regather_never_warms_a_trimmed_head_as_absent",
+        "postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows",
+        "postings_cache::tests::a_demand_bridge_never_crosses_an_unadmitted_install",
+        "postings_cache::tests::an_install_bridge_never_crosses_an_unadmitted_install",
+        "postings_cache::tests::a_bridge_never_crosses_a_chunk_that_found_its_key_short",
+        "history::bounded_discovery_tests::a_warm_bridge_never_crosses_an_unadmitted_install",
+        "dst::dst_tests::reads_ring::a_duplicate_absorbed_op_does_not_advance_the_trim",
+        "verification/tla/history/evidence/TLA-016_ledger_under_retire.trace.txt",
+        "verification/tla/history/evidence/TLA-016_ledger_over_retire.trace.txt",
+        "verification/tla/history/evidence/TLA-016_liveness_stall.trace.txt",
+        "verification/tla/history/evidence/TLA-016_cache_false_absence.trace.txt",
+        "verification/tla/history/evidence/TLA-016_overlap_admitted_refused_chain.trace.txt",
+        "verification/tla/history/evidence/TLA-016_overlap_admitted_prune.trace.txt",
+        "verification/tla/history/evidence/TLA-016_overlap_admitted_new_owner.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-018",
+      "kind": "tla",
+      "title": "Exact composition of history, hot storage, and read visibility",
+      "status": "pass-with-recorded-scope",
+      "owner": "merged read path: execute_segment, the absorption race check, the durable resume cursor and the provisional continuation",
+      "source_paths": [
+        "src/application/read.rs",
+        "src/application/read_request.rs",
+        "src/application/read_continuation.rs",
+        "src/application/read_budget.rs",
+        "src/shard/record.rs",
+        "src/history/postings_read.rs",
+        "src/history.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/ReadCompose.tla",
+        "verification/tla/history/MC_ReadCompose.tla"
+      ],
+      "requirements": [
+        "H1",
+        "H2",
+        "H9",
+        "H10",
+        "H11",
+        "D8",
+        "D9"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-015",
+        "TLA-016",
+        "TLA-019",
+        "TLA-020",
+        "TLA-021",
+        "KANI-022"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-DURABLE",
+        "ASM-HISTORY-FENCED-VIEW",
+        "ASM-SLATEDB-GC",
+        "ASM-HISTORY-WRITER",
+        "ASM-HISTORY-POSTINGS-CACHE",
+        "ASM-HISTORY-RING"
+      ],
+      "input_scope": "one stream incarnation and segment, 3 offsets with routing keys K1, K2, K1 and sizes 3, 1, 1 bytes, page request 2 bytes (the first record exceeds a page); durable and applied visibility, keyed (K1) and unfiltered reads; small shapes: 3 records durable at Init, 4 pages; expanded shapes: 1 durable record and 2 appends during the reads, 5 pages; up to 2 applied-not-durable commit groups; 1 ownership move; race-check loop bound 2 (production 16); trim allowances {0,1,3}; durable tail ring (durable mode); corrupt postings and short postings windows (keyed); history read errors on the current engine (small shapes); applied-mode provisional continuations bound to the serving engine (writer epoch) and an observation digest, verified by a re-read on another engine or refused with the durable recovery cursor, and V2 positions refused past the durable frontier (applied expanded shapes, keyed and unfiltered); the probes lose a durable postings page or canonical row. No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-018/baseline-durable-keyed-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/baseline-durable-unfiltered-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-applied-keyed-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/baseline-applied-unfiltered-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-durable-keyed-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 5400
+        },
+        {
+          "id": "TLA-018/baseline-durable-unfiltered-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-applied-unfiltered-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-018/baseline-applied-keyed-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 5400
+        },
+        {
+          "id": "TLA-018/nc-old-history-view",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_old_history_view.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-filtered-race-never",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_filtered_race_never.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-short-index-accepted",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_short_index_accepted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-applied-race-remote",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/nc-applied-race-remote-unfiltered",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote_unfiltered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "TailGapExplained"
+          }
+        },
+        {
+          "id": "TLA-018/nc-no-continuation-check",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_nc_no_continuation_check.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/probe-lost-durable-postings",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_probe_lost_postings.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/probe-lost-durable-canonical",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_probe_lost_canonical.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ExactDurablePrefix"
+          }
+        },
+        {
+          "id": "TLA-018/witness-BoundaryRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_BoundaryRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BoundaryRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-UnfilteredRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_UnfilteredRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BoundaryRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-AppliedRaceAdopted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_AppliedRaceAdopted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AppliedRaceAdopted"
+          }
+        },
+        {
+          "id": "TLA-018/witness-LargeFirstRecordDelivered",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_LargeFirstRecordDelivered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LargeFirstRecordDelivered"
+          }
+        },
+        {
+          "id": "TLA-018/witness-EnvelopeServed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_EnvelopeServed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EnvelopeServed"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ShortIndexPartial",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ShortIndexPartial.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ShortIndexPartial"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReadFromFencedEngine",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReadFromFencedEngine.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReadFromFencedEngine"
+          }
+        },
+        {
+          "id": "TLA-018/witness-RingServed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_RingServed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RingServed"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReaderCompletes",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReaderCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReaderCompletes"
+          }
+        },
+        {
+          "id": "TLA-018/witness-TrimBelowReaderCursor",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_TrimBelowReaderCursor.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TrimBelowReaderCursor"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ReadErrorCurrentEngine",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ReadErrorCurrentEngine.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReadErrorCurrentEngine"
+          }
+        },
+        {
+          "id": "TLA-018/witness-ContinuedAcrossMove",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_ContinuedAcrossMove.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ContinuedAcrossMove"
+          }
+        },
+        {
+          "id": "TLA-018/witness-StaleContinuationResynced",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_StaleContinuationResynced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleContinuationResynced"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::reads_applied::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+        "dst::dst_tests::reads_applied::a_stale_applied_cursor_is_refused_after_crash_restart",
+        "dst::dst_tests::reads_applied_history::a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it",
+        "dst::dst_tests::reads_applied_history::a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it",
+        "dst::dst_tests::reads_applied_history::an_owner_change_that_loses_nothing_keeps_the_continuation",
+        "application::read_continuation::tests::only_the_observed_records_prove_a_replaced_history",
+        "application::read_continuation::tests::a_digest_carried_across_pages_equals_the_single_page_digest",
+        "application::read_continuation::tests::a_session_started_at_the_applied_tail_cannot_be_verified",
+        "verification/regressions/TLA-018-F3/README.md",
+        "verification/tla/history/evidence/TLA-018_applied_keyed_skip.trace.txt",
+        "verification/tla/history/evidence/TLA-018_applied_stale_cursor.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-019",
+      "kind": "tla",
+      "title": "Reachability-based garbage collection and reader/fork protection",
+      "status": "pass-with-recorded-scope",
+      "owner": "history-partition GC settings and read view, and fork-reference retention and release",
+      "source_paths": [
+        "src/history.rs",
+        "src/application/read.rs",
+        "src/application/creation/deletion.rs",
+        "src/application/creation/anchor.rs",
+        "src/application/creation/fork.rs",
+        "src/application/creation/reconcile.rs",
+        "src/registry/fork_debt.rs",
+        "src/registry/replaced.rs",
+        "src/registry.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/history/ReachGC.tla",
+        "verification/tla/history/MC_ReachGC.tla",
+        "verification/tla/history/ForkPin.tla",
+        "verification/tla/history/MC_ForkPin.tla"
+      ],
+      "requirements": [
+        "F5",
+        "F6",
+        "F8",
+        "F10",
+        "H13",
+        "H14",
+        "R4"
+      ],
+      "models": [
+        "TLA-013",
+        "TLA-014",
+        "TLA-016",
+        "TLA-018",
+        "TLA-020",
+        "TLA-044"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-GC",
+        "ASM-SLATEDB-COMPACTION-CHECKPOINT",
+        "ASM-HISTORY-FENCED-VIEW",
+        "ASM-HISTORY-GC-CLOCK",
+        "ASM-HISTORY-ACTORS",
+        "ASM-OBJSTORE-CAS"
+      ],
+      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
+      "checks": [
+        {
+          "id": "TLA-019/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-019/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-019/baseline-timing-lapse",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_lapse.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-019/liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/liveness-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_liveness_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-019/nc-no-compaction-checkpoint",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_no_compaction_checkpoint.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LiveReadViewProtected"
+          }
+        },
+        {
+          "id": "TLA-019/nc-advance-on-upload",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_advance_on_upload.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HistoryBacked"
+          }
+        },
+        {
+          "id": "TLA-019/nc-swallow-read-error",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_swallow_read_error.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoFalseCompleteRead"
+          }
+        },
+        {
+          "id": "TLA-019/probe-upstream-short-read",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_probe_upstream_short_read.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoFalseCompleteRead"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-generation-condition",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_no_generation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ManifestRefsPresent"
+          }
+        },
+        {
+          "id": "TLA-019/nc-ignore-checkpoint-pin",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_ignore_checkpoint_pin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CheckpointPinned"
+          }
+        },
+        {
+          "id": "TLA-019/nc-stale-inventory",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_nc_stale_inventory.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "EligibleEventuallyReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-CompactedInputReclaimed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_CompactedInputReclaimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CompactedInputReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-OrphanReclaimed",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_OrphanReclaimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OrphanReclaimed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-HistoryServedAfterReclaim",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_HistoryServedAfterReclaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_HistoryServedAfterReclaim"
+          }
+        },
+        {
+          "id": "TLA-019/witness-ReaderViewErrors",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_ReaderViewErrors.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReaderViewErrors"
+          }
+        },
+        {
+          "id": "TLA-019/witness-StaleWriterViewRead",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_StaleWriterViewRead.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleWriterViewRead"
+          }
+        },
+        {
+          "id": "TLA-019/witness-QuietDeadZoneRetains",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_QuietDeadZoneRetains.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_QuietDeadZoneRetains"
+          }
+        },
+        {
+          "id": "TLA-019/witness-LateCommitAfterGcView",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_LateCommitAfterGcView.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LateCommitAfterGcView"
+          }
+        },
+        {
+          "id": "TLA-019/witness-CheckpointProtectsReadView",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReachGC.tla",
+          "config": "verification/tla/history/MC_ReachGC_w_CheckpointProtectsReadView.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CheckpointProtectsReadView"
+          }
+        },
+        {
+          "id": "TLA-019/fork-baseline",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_baseline.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-baseline-legacy",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_baseline_legacy.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-019/fork-liveness-client-retries",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_client_retries.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-reconciler",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_reconciler.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-reconciler-recreated",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_reconciler_recreated.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-backfill",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_backfill.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/fork-liveness-backfill-recreated",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_liveness_backfill_recreated.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-019/nc-ignore-fork-pin",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_ignore_fork_pin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ForkPinRespected"
+          }
+        },
+        {
+          "id": "TLA-019/nc-install-ignores-incarnation",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_install_ignores_incarnation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ForkPinRespected"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-reconciler",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_reconciler.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-settle-inconclusive",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_settle_inconclusive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-backfill",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_backfill.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-recreate-without-index",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_recreate_without_index.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OwedRefIndexed"
+          }
+        },
+        {
+          "id": "TLA-019/nc-recreate-without-index-liveness",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_recreate_without_index_liveness.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefEventuallyReleased"
+          }
+        },
+        {
+          "id": "TLA-019/nc-reconcile-live-child",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_reconcile_live_child.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadyHoldsRef"
+          }
+        },
+        {
+          "id": "TLA-019/nc-release-current-name-id",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_release_current_name_id.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadyHoldsRef"
+          }
+        },
+        {
+          "id": "TLA-019/nc-no-write-ahead-marker",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_nc_no_write_ahead_marker.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OwedRefIndexed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-SoftDeleteRetainedForFork",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_SoftDeleteRetainedForFork.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SoftDeleteRetainedForFork"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-TwoChildrenPinSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_TwoChildrenPinSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TwoChildrenPinSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-ForkCascadeTombstone",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ForkCascadeTombstone.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ForkCascadeTombstone"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-InstallAfterChildDeleted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_InstallAfterChildDeleted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallAfterChildDeleted"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-InstallDeclinedOnRecreatedSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_InstallDeclinedOnRecreatedSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InstallDeclinedOnRecreatedSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-DebtClearedOnRecreatedSource",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_DebtClearedOnRecreatedSource.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DebtClearedOnRecreatedSource"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-PermanentPinWithoutRetry",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_PermanentPinWithoutRetry.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PermanentPinWithoutRetry"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-PinAfterSuccessfulDelete",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_PinAfterSuccessfulDelete.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PinAfterSuccessfulDelete"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-ReconcilerReleasesLatePin",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ReconcilerReleasesLatePin.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReconcilerReleasesLatePin"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-ReconcilerReleasesReplacedName",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_ReconcilerReleasesReplacedName.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReconcilerReleasesReplacedName"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-BackfillReleased",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_BackfillReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_BackfillReleased"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-RecreationIndexesDebt",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_RecreationIndexesDebt.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RecreationIndexesDebt"
+          }
+        },
+        {
+          "id": "TLA-019/witness-fork-OldBinaryOverwroteDebt",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ForkPin.tla",
+          "config": "verification/tla/history/MC_ForkPin_w_OldBinaryOverwroteDebt.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OldBinaryOverwroteDebt"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
+        "dst::dst_tests::read_history_lifecycle::tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
+        "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+        "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry",
+        "dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+        "dst::dst_tests::fork_cleanup::an_interrupted_reconcile_pass_is_completed_after_a_restart",
+        "dst::dst_tests::fork_debt::a_tombstone_older_than_the_index_is_backfilled_and_released",
+        "dst::dst_tests::fork_debt::a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced",
+        "dst::dst_tests::fork_debt::a_recreated_name_releases_the_reference_its_expired_fork_held",
+        "dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart",
+        "dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert",
+        "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",
+        "verification/tla/history/evidence/TLA-019_fork_no_retry.trace.txt",
+        "verification/tla/history/evidence/TLA-019_fork_pin_after_successful_delete.trace.txt"
+      ]
+    },
+    {
+      "id": "TLA-001",
+      "kind": "tla",
+      "title": "Registry CAS, attempt-local outcomes, and incarnation fencing",
+      "status": "pass-with-recorded-scope",
+      "owner": "stream registry: Registry::mutate_incarnation and Registry::recreate",
+      "source_paths": [
+        "src/registry.rs",
+        "src/registry/replaced.rs",
+        "src/registry/fork_debt.rs",
+        "src/application/creation/claim.rs",
+        "src/bootstrap/s3_store.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/RegistryCas.tla",
+        "verification/tla/seal/MC_RegistryCas.tla",
+        "verification/tla/seal/MC_RegistryCas3.tla",
+        "verification/tla/seal/MC_RegistryCas_NcLeak.tla",
+        "verification/tla/seal/MC_RegistryCas_NcEpoch.tla",
+        "verification/tla/seal/MC_RegistryCas_NcEtag.tla",
+        "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla"
+      ],
+      "requirements": [
+        "C4",
+        "L5",
+        "L14",
+        "T8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-003",
+        "TLA-008",
+        "TLA-009",
+        "TLA-014",
+        "KANI-032",
+        "KANI-040",
+        "KANI-041"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-DECIDE-FN",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-PATH",
+        "ASM-SEAL-NODELETE"
+      ],
+      "input_scope": "Two projects share one stream name (two descriptor paths). Small: M1 and M2 race generation allocations on (P1, n) incarnation E1 while D tombstones E1 and recreates the same name and key as E2; M5, validated against E2, races them on the replacement; M3 allocates on (P2, n) at E3; every E1 mutator may start before, during or after the delete and recreate; 2 attempts per call; generations <= 3; one lost PUT reply, one failed dispatch, one missing ETag, one failed GET, one client retry of an ambiguous recreate. Expanded: three E1 racers (M1, M2, M4) and two E2 racers (M5, M6) on one name, the production bound of 5 attempts, two lost replies, two failed dispatches, two missing ETags, one failed GET, one recreate retry. A conditional PUT is one request (src/bootstrap/s3_store.rs sends conditional requests with max_retries 0), so a committed PUT is never answered Precondition. Evidence properties: UniqueAllocation, IncarnationFenced, AllocatorCountsWrites, RecreateAnswerTruthful. AttemptLocalResult and NegativeOutcomesWroteNothing hold by construction (ASM-SEAL-DECIDE-FN).",
+      "checks": [
+        {
+          "id": "TLA-001/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-001/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_RegistryCas3.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3000
+        },
+        {
+          "id": "TLA-001/nc-leaked-outcome",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcLeak.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_leak.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "UniqueAllocation"
+          }
+        },
+        {
+          "id": "TLA-001/nc-dropped-incarnation-check",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcEpoch.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_epoch.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IncarnationFenced"
+          }
+        },
+        {
+          "id": "TLA-001/nc-missing-etag-overwrite",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcEtag.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_etag.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AllocatorCountsWrites"
+          }
+        },
+        {
+          "id": "TLA-001/nc-client-retry",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_client_retry.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AllocatorCountsWrites"
+          }
+        },
+        {
+          "id": "TLA-001/nc-client-retry-recreate",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_RegistryCas_NcClientRetry.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_nc_client_retry_recreate.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RecreateAnswerTruthful"
+          }
+        },
+        {
+          "id": "TLA-001/witness-LoserRetriesThenApplies",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_LoserRetriesThenApplies.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LoserRetriesThenApplies"
+          }
+        },
+        {
+          "id": "TLA-001/witness-AmbiguousAfterWrite",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_AmbiguousAfterWrite.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AmbiguousAfterWrite"
+          }
+        },
+        {
+          "id": "TLA-001/witness-StaleMutatorFenced",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_StaleMutatorFenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleMutatorFenced"
+          }
+        },
+        {
+          "id": "TLA-001/witness-MissingTokenRefused",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_MissingTokenRefused.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MissingTokenRefused"
+          }
+        },
+        {
+          "id": "TLA-001/witness-Recreated",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_Recreated.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_Recreated"
+          }
+        },
+        {
+          "id": "TLA-001/witness-ConflictExhausted",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_ConflictExhausted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ConflictExhausted"
+          }
+        },
+        {
+          "id": "TLA-001/witness-DeclinedOnTombstone",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_DeclinedOnTombstone.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DeclinedOnTombstone"
+          }
+        },
+        {
+          "id": "TLA-001/witness-ReplacementAllocatesWhileStaleFenced",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_ReplacementAllocatesWhileStaleFenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReplacementAllocatesWhileStaleFenced"
+          }
+        },
+        {
+          "id": "TLA-001/witness-AmbiguousRecreateRetried",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_RegistryCas.tla",
+          "config": "verification/tla/seal/MC_RegistryCas_w_AmbiguousRecreateRetried.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AmbiguousRecreateRetried"
+          }
+        }
+      ],
+      "regressions": [
+        "registry::tests::typed_mutation_never_leaks_a_lost_attempts_decision",
+        "registry::tests::r08_missing_conditional_token_fails_closed",
+        "registry::tests::r08_only_precondition_conflicts_are_retried",
+        "registry::tests::r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion",
+        "registry::tests::recreate_race_has_one_winner",
+        "dst::dst_tests::seal_incarnation::a_product_seal_never_binds_to_a_recreated_incarnation",
+        "bootstrap::tests::provider_contract::s3lite_through_the_production_client_meets_the_provider_contract",
+        "verification/tla/seal/evidence/TLA-001_nc-leaked-outcome.txt",
+        "verification/tla/seal/evidence/TLA-001_nc-dropped-incarnation-check.txt",
+        "verification/tla/seal/evidence/TLA-001_nc-missing-etag-overwrite.txt",
+        "verification/tla/seal/evidence/TLA-001-F1_pre-fix_mutation-applied-twice.txt",
+        "verification/tla/seal/evidence/TLA-001-F1_pre-fix_recreate-declines-own-write.txt"
+      ]
+    },
+    {
+      "id": "TLA-002",
+      "kind": "tla",
+      "title": "Seal claims, renewal, and competing takeover reservations",
+      "status": "pass-with-recorded-scope",
+      "owner": "seal coordinator (application::lifecycle) and the shard committer's seal fence",
+      "source_paths": [
+        "src/application/lifecycle.rs",
+        "src/application/lifecycle/claims.rs",
+        "src/application/append/close.rs",
+        "src/application/append/submit.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/mod.rs",
+        "src/shard/transaction/append.rs",
+        "src/shard/transaction/maintenance.rs",
+        "src/shard/transaction/finalize.rs",
+        "src/shard.rs",
+        "src/shard_directory.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/SealProtocol.tla",
+        "verification/tla/seal/MC_SealTakeover.tla",
+        "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+        "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+        "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+        "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+        "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla"
+      ],
+      "requirements": [
+        "L3",
+        "L5",
+        "L6",
+        "L7",
+        "L8",
+        "L9",
+        "L10",
+        "L13",
+        "L15"
+      ],
+      "models": [
+        "TLA-001",
+        "TLA-003",
+        "TLA-004",
+        "TLA-006",
+        "TLA-011",
+        "KANI-039",
+        "KANI-040",
+        "KANI-041",
+        "KANI-042"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-REPLY-ORDER",
+        "ASM-SEAL-ENGINE-HANDOFF",
+        "ASM-SEAL-FENCE-ROW",
+        "ASM-SEAL-QUEUE",
+        "ASM-SEAL-OWNER",
+        "ASM-SEAL-CLOCK",
+        "ASM-SEAL-RECOVERY-ACTOR",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-NODELETE",
+        "ASM-SEAL-OPID"
+      ],
+      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held, retire-held and liveness-held, which separate them for one fence group: it may become durable, be lost with its engine, or be rejected without an engine retirement. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
+      "checks": [
+        {
+          "id": "TLA-002/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-faults",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_faults.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-002/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-xproc",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_xproc.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-retire",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_retire.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-002/baseline-engine",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_engine.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 5400
+        },
+        {
+          "id": "TLA-002/baseline-liveness-small",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_small.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-liveness-contenders",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_contenders.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4200
+        },
+        {
+          "id": "TLA-002/baseline-liveness-faults",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_faults.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/baseline-xproc-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_held_xproc.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-002/baseline-retire-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_held_retire.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4200
+        },
+        {
+          "id": "TLA-002/baseline-liveness-held",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_live_held.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-002/nc-no-newest-reservation",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_newest.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NewestInstall"
+          }
+        },
+        {
+          "id": "TLA-002/nc-no-newest-reservation-live-fenced",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcNewest.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_newest_live.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "LiveClaimNeverFenced"
+          }
+        },
+        {
+          "id": "TLA-002/nc-install-before-fence-durable",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_early_install.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-install-before-fence-inqueue",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_early_install_inqueue.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "QueuedFinalDecidedBeforeReplacement"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-xproc",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_xproc.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-retire",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_retire.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-002/nc-engine-resident-fence-false-success",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_engine_fence_false_success.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SuccessProvesOutcome"
+          }
+        },
+        {
+          "id": "TLA-002/nc-refusal-at-staging-closure",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_refusal_at_staging_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-refusal-at-staging-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_refusal_at_staging_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-002/nc-cache-survives-rejected-group",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_cache_survives_reject.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/witness-TakeoverInstalls",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_TakeoverInstalls.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        },
+        {
+          "id": "TLA-002/witness-CompetingReservations",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_CompetingReservations.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CompetingReservations"
+          }
+        },
+        {
+          "id": "TLA-002/witness-LowerReservationRestarts",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_LowerReservationRestarts.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LowerReservationRestarts"
+          }
+        },
+        {
+          "id": "TLA-002/witness-OldFinalSealedOnBehalf",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_OldFinalSealedOnBehalf.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OldFinalSealedOnBehalf"
+          }
+        },
+        {
+          "id": "TLA-002/witness-StaleClaimSuperseded",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_StaleClaimSuperseded.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleClaimSuperseded"
+          }
+        },
+        {
+          "id": "TLA-002/witness-ExactRenewalAfterReservation",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_ExactRenewalAfterReservation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ExactRenewalAfterReservation"
+          }
+        },
+        {
+          "id": "TLA-002/witness-FinalSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FinalSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FinalSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-002/witness-PlainSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_PlainSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PlainSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-002/witness-EngineRetiredMidFlight",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_EngineRetiredMidFlight.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_EngineRetiredMidFlight"
+          }
+        },
+        {
+          "id": "TLA-002/witness-CommittedButAnsweredMoved",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_CommittedButAnsweredMoved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CommittedButAnsweredMoved"
+          }
+        },
+        {
+          "id": "TLA-002/witness-OwnershipMovedToOtherProcess",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_OwnershipMovedToOtherProcess.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_OwnershipMovedToOtherProcess"
+          }
+        },
+        {
+          "id": "TLA-002/witness-NotOwnerRedirect",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_NotOwnerRedirect.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NotOwnerRedirect"
+          }
+        },
+        {
+          "id": "TLA-002/witness-StaleFinalRefusedAfterReplacement",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_StaleFinalRefusedAfterReplacement.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleFinalRefusedAfterReplacement"
+          }
+        },
+        {
+          "id": "TLA-002/witness-FenceUnverifiedRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FenceUnverifiedRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FenceUnverifiedRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-002/witness-SupersededAfterFenceDurable",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_SupersededAfterFenceDurable.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SupersededAfterFenceDurable"
+          }
+        },
+        {
+          "id": "TLA-002/witness-FenceGroupRejected",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_SealTakeover.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_w_FenceGroupRejected.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FenceGroupRejected"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_fencing::a_fence_survives_engine_replacement",
+        "shard::durability_frontier_tests::a_seal_fence_survives_engine_replacement",
+        "dst::dst_tests::seal_fencing::a_superseded_final_waits_for_its_fence_to_be_durable",
+        "shard::durability_frontier_tests::a_superseded_close_waits_for_its_fence_to_be_durable",
+        "shard::durability_frontier_tests::a_failed_fence_group_refuses_nothing",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_cross-instance-crash-failover.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_engine-replacement.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_release-of-durable-final.txt",
+        "verification/tla/seal/evidence/TLA-002-F1_pre-fix_false-success.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_refusal-before-fence-durable.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_release-after-durable-final.txt",
+        "verification/tla/seal/evidence/TLA-002-F2_pre-fix_cache-survives-rejected-group.txt"
+      ]
+    },
+    {
+      "id": "TLA-003",
+      "kind": "tla",
+      "title": "Final-record sealing, ambiguous append outcomes, and owed debt",
+      "status": "pass-with-recorded-scope",
+      "owner": "seal coordinator final-record path: raw close-with-content and product seal-with-final",
+      "source_paths": [
+        "src/application/lifecycle.rs",
+        "src/application/lifecycle/claims.rs",
+        "src/application/lifecycle/raw_close.rs",
+        "src/application/append.rs",
+        "src/application/append/close.rs",
+        "src/application/append/content.rs",
+        "src/application/append/contract.rs",
+        "src/application/append/submit.rs",
+        "src/product.rs",
+        "src/product/seal_request.rs",
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/append.rs",
+        "src/shard/transaction/maintenance.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/seal/SealProtocol.tla",
+        "verification/tla/seal/MC_FinalSeal.tla",
+        "verification/tla/seal/MC_FinalSeal_NcGapDefinitive.tla",
+        "verification/tla/seal/MC_FinalSeal_NcMovedDefinitive.tla",
+        "verification/tla/seal/MC_FinalSeal_NcReleaseByOp.tla",
+        "verification/tla/seal/MC_FinalSeal_NcDupCompletes.tla",
+        "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+        "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+        "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+        "verification/tla/seal/MC_FinalSeal_NcRenewBeforeValidation.tla",
+        "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+        "verification/tla/seal/MC_FinalSeal_NcPlainResumesOwed.tla"
+      ],
+      "requirements": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L11",
+        "L12",
+        "L15",
+        "D6",
+        "D7",
+        "P8"
+      ],
+      "models": [
+        "TLA-002",
+        "TLA-005",
+        "TLA-007",
+        "KANI-037",
+        "KANI-040",
+        "KANI-042",
+        "KANI-043",
+        "KANI-044",
+        "KANI-096"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS",
+        "ASM-SEAL-REPLY-ORDER",
+        "ASM-SEAL-ENGINE-HANDOFF",
+        "ASM-SEAL-FENCE-ROW",
+        "ASM-SEAL-QUEUE",
+        "ASM-SEAL-OWNER",
+        "ASM-SEAL-VALIDITY",
+        "ASM-SEAL-CLOCK",
+        "ASM-SEAL-EPOCH",
+        "ASM-SEAL-NODELETE",
+        "ASM-SEAL-OPID"
+      ],
+      "input_scope": "One incarnation, one segment; operation ids, producer lanes and request hashes derived from (surface, content, coordination); validity is a function of the request and the handling instance's record ceiling and ingest capacity; generations <= 5 (CONSTRAINT); MaxClaimLoop = 0. A: raw close-with-content X on client producer (L, 1), two requests; raw appends N0 = (L, 0) and N1 = (L, 1) with X's bytes; plain S; 1 crash, 1 cancellation, 1 timeout (expanded: also 1 registry fault, 1 enqueue failure). A2: X on two concurrent slots, the retry on instance B; 1 engine replacement, 1 enqueue failure; plus HandlersProgress. B: raw X (two concurrent slots) and product Y with the same bytes and different coordination, plain S. C: B with X on the product surface. P: product final X on client (L, 0), product append N1 and raw append N2 on the same tuple and bytes, plain S. SL: raw X and product Y without producer headers and with the same bytes (one synthetic lane), plain S. PW: product final X on (L, 0), product append N1 on the same tuple, raw close-with-content W admitted while X's claim stands (X's claim can be released without a lapse). V: one instance; raw X, two requests; product Y over the record ceiling; product Z refused before intent. V4: X's retry on B over B's ingest capacity. V5: X's retry on B over B's record ceiling, B owns the shard at start, 1 engine replacement, three X requests, plain S. V5A: V5 with A owning the shard at start (the original commits before the retry reaches a committer). VP: V5 for product Y. OP: raw close-with-content X and a raw append N1 without Stream-Closed, both without producer headers and with the same bytes (N1 has X's semantic operation id), plain S, 1 crash, 1 cancellation. Exact retries at every persisted boundary. Every baseline checks SealingRefusesNewAppends (L4). No TLA-003 liveness (renewal generations are unbounded).",
+      "checks": [
+        {
+          "id": "TLA-003/baseline-lanes",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_lanes.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-lanes-engine",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_lanes_engine.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-renewal",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_renewal.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 4800
+        },
+        {
+          "id": "TLA-003/baseline-renewal-product",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_renewal_product.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-product-lanes",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_product_lanes.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-product-release",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_product_release.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-shared-lane",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_shared_lane.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 2400
+        },
+        {
+          "id": "TLA-003/baseline-validation",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-capacity",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_capacity.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-ceiling",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_ceiling.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-product",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_product.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-validation-ceiling-dup",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_validation_ceiling_dup.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/baseline-op-id",
+          "role": "baseline",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_op_id.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-003/nc-gap-definitive",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcGapDefinitive.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_gap_definitive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-moved-definitive",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcMovedDefinitive.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_moved_definitive.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-release-by-operation-only",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcReleaseByOp.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_release_by_op.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-duplicate-completes-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcDupCompletes.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_dup_completes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SealedFinalHasItsRecord"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-false-closed",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_false_closed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "FinalClosedTruthful"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-any-release-orphaned",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_any_release_orphaned.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-any-release-plain-over-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusalAnyRelease.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_any_release_plain_over_final.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PlainCannotCompleteOwedFinal"
+          }
+        },
+        {
+          "id": "TLA-003/nc-admission-refusal-without-lapse",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAdmissionRefusal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_admission_without_lapse.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "FinalClosedTruthful"
+          }
+        },
+        {
+          "id": "TLA-003/witness-InvalidRefusedBeforeIntent",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_InvalidRefusedBeforeIntent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_InvalidRefusedBeforeIntent"
+          }
+        },
+        {
+          "id": "TLA-003/witness-CommitAfterCancel",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_CommitAfterCancel.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CommitAfterCancel"
+          }
+        },
+        {
+          "id": "TLA-003/witness-LostReplyThenRetrySucceeds",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_LostReplyThenRetrySucceeds.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LostReplyThenRetrySucceeds"
+          }
+        },
+        {
+          "id": "TLA-003/witness-GapRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_GapRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GapRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-003/witness-NonClosingDuplicateReleased",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_NonClosingDuplicateReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NonClosingDuplicateReleased"
+          }
+        },
+        {
+          "id": "TLA-003/witness-FinalSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_FinalSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FinalSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-003/witness-PlainSealCompletes",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_PlainSealCompletes.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PlainSealCompletes"
+          }
+        },
+        {
+          "id": "TLA-003/witness-DefinitiveRelease",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_DefinitiveRelease.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DefinitiveRelease"
+          }
+        },
+        {
+          "id": "TLA-003/witness-TakeoverInstalls",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_TakeoverInstalls.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_TakeoverInstalls"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SeqReusedReleased",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SeqReusedReleased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SeqReusedReleased"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SharedLaneDuplicate",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SharedLaneDuplicate.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SharedLaneDuplicate"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RawMovedRetainsClaim",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RawMovedRetainsClaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RawMovedRetainsClaim"
+          }
+        },
+        {
+          "id": "TLA-003/witness-NotOwnerRedirect",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_NotOwnerRedirect.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_NotOwnerRedirect"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RawTakeoverWritesItsRecord",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RawTakeoverWritesItsRecord.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RawTakeoverWritesItsRecord"
+          }
+        },
+        {
+          "id": "TLA-003/witness-RetryAfterMarkRunsItsSeal",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_RetryAfterMarkRunsItsSeal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RetryAfterMarkRunsItsSeal"
+          }
+        },
+        {
+          "id": "TLA-003/nc-ceiling-after-intent-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_ceiling_after_intent_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IntentOnlyAfterValidation"
+          }
+        },
+        {
+          "id": "TLA-003/nc-ceiling-after-intent-closed-without-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcCeilingAfterIntent.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_ceiling_after_intent_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-renew-before-validation-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcRenewBeforeValidation.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_renew_before_validation_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "IntentOnlyAfterValidation"
+          }
+        },
+        {
+          "id": "TLA-003/nc-any-attempt-releases-release",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_release.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReleaseOnlyWhenUndeliverable"
+          }
+        },
+        {
+          "id": "TLA-003/nc-any-attempt-releases-closed-without-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_closure.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-003/nc-any-attempt-releases-plain-over-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcAnyAttemptReleases.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_any_attempt_releases_plain_over_final.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PlainCannotCompleteOwedFinal"
+          }
+        },
+        {
+          "id": "TLA-003/nc-plain-append-resumes-owed-final",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_FinalSeal_NcPlainResumesOwed.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_nc_plain_resumes_owed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "SealingRefusesNewAppends"
+          }
+        },
+        {
+          "id": "TLA-003/witness-SameIdPlainAppendRefused",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_SameIdPlainAppendRefused.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SameIdPlainAppendRefused"
+          }
+        },
+        {
+          "id": "TLA-003/witness-CeilingRetryCompletesCommittedFinal",
+          "role": "witness",
+          "spec": "verification/tla/seal/MC_FinalSeal.tla",
+          "config": "verification/tla/seal/MC_FinalSeal_w_CeilingRetryCompletesCommittedFinal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CeilingRetryCompletesCommittedFinal"
+          }
+        }
+      ],
+      "regressions": [
+        "dst::dst_tests::seal_fencing::a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
+        "dst::dst_tests::seal_cancellation::an_over_ceiling_product_final_is_refused_before_its_seal_intent",
+        "dst::dst_tests::seal_cancellation::an_ingest_refused_exact_retry_leaves_the_claim_to_its_original",
+        "dst::dst_tests::seal_cancellation::a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original",
+        "dst::dst_tests::seal_cancellation::a_ceiling_limited_exact_retry_still_completes_a_committed_final",
+        "dst::dst_tests::seal_cancellation::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
+        "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_raw-takeover-releases-deliverable-debt.txt",
+        "verification/tla/seal/evidence/TLA-003-F2a_pre-fix_false-closed-answer.txt",
+        "verification/tla/seal/evidence/TLA-003-F2b_pre-fix_committed-final-orphaned.txt",
+        "verification/tla/seal/evidence/TLA-003-F2c_pre-fix_plain-seal-over-committed-final.txt",
+        "verification/tla/seal/evidence/TLA-003-F2d_pre-fix_without-lapse.txt",
+        "verification/tla/seal/evidence/TLA-003-F3_pre-fix_intent-before-record-ceiling.txt",
+        "verification/tla/seal/evidence/TLA-003-F3_pre-fix_closed-without-claim.txt",
+        "verification/tla/seal/evidence/TLA-003-F4_pre-fix_renew-before-validation.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_release-while-deliverable.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_closed-without-claim.txt",
+        "verification/tla/seal/evidence/TLA-003-F5_pre-fix_plain-over-final.txt",
+        "verification/tla/seal/evidence/TLA-003-F6_pre-fix_plain-append-resumes-owed-final.txt",
+        "verification/tla/seal/evidence/TLA-003-M2_dupack-after-foreign-close.txt"
+      ]
+    }
+  ]
+}

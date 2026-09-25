@@ -381,6 +381,50 @@ share.
   carry ciphertext records; decryption happens client-side with the stream
   key or a per-routing-key subkey (D19). The `streams-keys` CLI documents
   the envelope for non-SDK consumers.
+- **C12 JSON records are stored as the client wrote them**: a JSON
+  collection stores each record (each top-level element of an array body)
+  as the exact text of the client's JSON value with the insignificant
+  whitespace outside strings removed. Number literals, key order, duplicate
+  keys and string escapes are kept byte for byte; every reader of a
+  duplicate key resolves it last-wins. A record is admitted only if it is
+  valid JSON whose every number is finite when correctly rounded to f64 and
+  whose strings hold no lone surrogate escape. The per-record ceiling, the
+  per-stream ingest capacity and billed ingest bytes all measure these
+  stored bytes (the project append quota and the queued-body charge are
+  taken before the parse, on the client body, which is never smaller).
+  Every read surface (reads, scans, SSE, cross-node reads, consumer
+  Receive `value`, dead-letter copies) returns them unchanged; server-side
+  interpretation (watch keys) parses them correctly rounded and renders
+  numbers as JavaScript's `String(v)`. Identities cover client bytes: a
+  producer retry must be byte-identical to be a duplicate, and a retry
+  reformatted at the same sequence is `producer_sequence_reused` (409).
+
+### JSON record fidelity change (September 2026)
+
+- **Records written before this change** were stored as a serde_json
+  re-encoding: whitespace removed, object keys sorted, duplicate keys
+  collapsed (last wins), escapes normalised, and every non-integer number
+  rewritten through a parse that was not correctly rounded, up to 2 ulp
+  per store (a seal's final was stored twice, a dead-letter copy three
+  times). They are immutable and are still served exactly as stored; the
+  drift cannot be recovered.
+- **Seal operation ids moved to `prisma-seal-v3`**, which hashes the
+  final's stored client text instead of a re-serialisation (v2), so old and
+  new ids never collide. A seal-with-final in flight across the rollout is
+  a different operation on the new build: its retry is answered 409
+  ("a seal with a final record is in flight") until the claim is abandoned
+  after `SEAL_CLAIM_MS` (15 s) and the retry takes it over; the retry of a
+  seal the old build completed is answered as `AlreadySealed`, not the
+  idempotent success. Roll out when no descriptor owes a final
+  (`SealState::owes_final`), or accept and release-note this.
+- **Dead-letter copies** embed the source record's stored text, and a pass
+  that finds the message's own `dlq:{consumer}:{message}` producer already
+  committed at sequence 0 (`producer_sequence_reused`) settles the source
+  lease: that sequence is the delivery. A copy committed by an earlier build
+  just before a crash therefore no longer blocks its message for good.
+- **Watch keys** render every number as the SDK's `String(v)`: integral
+  values of 2^63 and beyond no longer saturate to `i64::MAX`, and decimals
+  from 1e-6 are no longer written in exponent form.
 
 ## 7. Limitations
 

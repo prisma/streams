@@ -34,14 +34,20 @@ impl std::fmt::Display for OffsetError {
 /// The one token for "records from `next` on" in `epoch`; in_block is
 /// always 0, so equal positions are equal strings on every surface.
 pub(crate) fn encode(epoch: u32, next: u64) -> String {
+    digits(epoch, next).into_iter().map(char::from).collect()
+}
+
+/// The token's 26 ALPHABET bytes, most significant first: `encode` is these
+/// bytes as a string, and the Kani proofs reason over them directly.
+fn digits(epoch: u32, next: u64) -> [u8; 26] {
     // Epoch and next occupy disjoint bits, so their sum is their concatenation.
     let n: u128 = ((epoch as u128) << 96) + ((next as u128) << 32);
     let padded = n << 2; // 128 -> 130 bits
-    let mut out = String::with_capacity(26);
-    for i in 0..26 {
+    let mut out = [0u8; 26];
+    for (i, digit) in out.iter_mut().enumerate() {
         let shift = 5 * (25 - i);
         let idx = ((padded >> shift) & 31) as usize;
-        out.push(ALPHABET[idx] as char);
+        *digit = ALPHABET[idx];
     }
     out
 }
@@ -57,8 +63,14 @@ pub(crate) fn parse(input: &str) -> Result<(u32, u64), OffsetError> {
     if input.len() != 26 {
         return Err(OffsetError::Length(input.len()));
     }
+    read(input.chars())
+}
+
+/// The position a token's chars spell, after `parse`'s gates: every char
+/// read, five bits each, into u128, so bits past it fall off the top.
+fn read(chars: impl Iterator<Item = char>) -> Result<(u32, u64), OffsetError> {
     let mut n: u128 = 0;
-    for ch in input.chars() {
+    for ch in chars {
         let v = decode_char(ch).ok_or(OffsetError::Char(ch))?;
         n = (n << 5) + v as u128; // v < 32 fills the five bits the shift cleared
     }
@@ -92,6 +104,9 @@ fn decode_char(ch: char) -> Option<u8> {
         }
     }
 }
+
+#[cfg(kani)]
+mod proofs;
 
 #[cfg(test)]
 mod tests {

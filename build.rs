@@ -4,17 +4,33 @@
 use std::path::Path;
 use std::process::Command;
 
+fn main() {
+    let (rev, ts) = release_identity();
+    println!("cargo:rustc-env=STREAMS_GIT_COMMIT={rev}");
+    println!("cargo:rustc-env=STREAMS_BUILD_UNIX={ts}");
+    // Resolve per-worktree HEAD and shared refs through Git. Watching absent
+    // .git/HEAD or packed-refs paths makes Cargo rerun this script forever.
+    println!("cargo:rerun-if-changed=build.rs");
+    watch_git_identity();
+    println!("cargo:rerun-if-env-changed=STREAMS_GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // Kani compiles the colocated `#[cfg(kani)]` proof modules (see
+    // verification/README.md); ordinary builds check the cfg name instead
+    // of warning about it.
+    println!("cargo::rustc-check-cfg=cfg(kani)");
+}
+
+/// The release commit and build time embedded in the binary.
 #[expect(
     clippy::disallowed_methods,
     reason = "build identity owner; the release builder supplies commit and reproducible time through two explicit environment inputs; reading these at build time avoids runtime provenance overrides"
 )]
-fn main() {
+fn release_identity() -> (String, u64) {
     let rev = std::env::var("STREAMS_GIT_COMMIT")
         .ok()
         .filter(|v| !v.is_empty());
     let rev = rev
         .unwrap_or_else(|| git_output(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into()));
-    println!("cargo:rustc-env=STREAMS_GIT_COMMIT={rev}");
     // SOURCE_DATE_EPOCH (reproducible-builds convention): the release
     // builder injects one timestamp and records the SAME value in the
     // campaign manifest, so verify-running can require exact equality
@@ -30,13 +46,7 @@ fn main() {
                 .map(|d| d.as_secs())
                 .unwrap_or(0)
         });
-    println!("cargo:rustc-env=STREAMS_BUILD_UNIX={ts}");
-    // Resolve per-worktree HEAD and shared refs through Git. Watching absent
-    // .git/HEAD or packed-refs paths makes Cargo rerun this script forever.
-    println!("cargo:rerun-if-changed=build.rs");
-    watch_git_identity();
-    println!("cargo:rerun-if-env-changed=STREAMS_GIT_COMMIT");
-    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    (rev, ts)
 }
 
 fn git_output(args: &[&str]) -> Option<String> {

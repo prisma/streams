@@ -4,12 +4,13 @@
 //! entry point: [`run`].
 
 mod rss;
+mod s3_store;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::Db;
 
@@ -19,38 +20,32 @@ use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
+use s3_store::S3Store;
 
 impl crate::config::ServerConfig {
-    fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<AmazonS3> {
+    fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<S3Store> {
         let bucket = bucket.as_deref().unwrap_or(&self.cli.bucket);
-        AmazonS3Builder::new()
+        let builder = AmazonS3Builder::new()
             .with_endpoint(&self.cli.s3_endpoint)
             .with_bucket_name(bucket)
             .with_region(&self.cli.region)
             .with_access_key_id(&self.cli.access_key_id)
             .with_secret_access_key(&self.cli.secret_access_key)
             .with_allow_http(true)
-            .with_conditional_put(S3ConditionalPut::ETagMatch)
-            // Idle pooled connections die silently across scale-to-zero
-            // snapshot/restore; expiring them just under the platform's 5 s
-            // idle threshold means a restored image wakes with an empty
-            // pool instead of dead sockets (EXPERIMENT-PILOT.md). The pool
-            // is shared by every shard/stream on the instance, and manifest
-            // polling keeps it warm whenever any shard is open — the cold
-            // path only bites fully-idle instances. POOL_IDLE_SECS exists
-            // so production fleets can lift this once the platform stops
-            // killing idle flows (2026-07 plan); until then keep <5.
-            .with_client_options(
-                object_store::ClientOptions::new()
-                    .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
-                    .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs)),
-            )
-            // Records Tigris's Server-Timing (their internal ms) and
-            // x-tigris-served-from per response → sp50/sp99 + served_from
-            // in /v1/debug/store. wall − server = network path.
-            .with_http_connector(crate::store_timing::SniffConnector)
-            .build()
-            .context("build s3 object store")
+            .with_conditional_put(S3ConditionalPut::ETagMatch);
+        // Idle pooled connections die silently across scale-to-zero
+        // snapshot/restore; expiring them just under the platform's 5 s
+        // idle threshold means a restored image wakes with an empty
+        // pool instead of dead sockets (EXPERIMENT-PILOT.md). The pool
+        // is shared by every shard/stream on the instance, and manifest
+        // polling keeps it warm whenever any shard is open — the cold
+        // path only bites fully-idle instances. POOL_IDLE_SECS exists
+        // so production fleets can lift this once the platform stops
+        // killing idle flows (2026-07 plan); until then keep <5.
+        let options = object_store::ClientOptions::new()
+            .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
+            .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs));
+        S3Store::build(builder, options).context("build s3 object store")
     }
 
     // All stores share this runtime's admission handle. Physical-process
@@ -90,6 +85,9 @@ pub(crate) use process_executor::{init_slatedb_runtime_threads, slatedb_runtime}
 mod runtime_handoff;
 pub(crate) use runtime_handoff::on_slatedb_rt;
 
+mod service_runtime;
+pub(crate) use service_runtime::serve;
+
 static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The CLI-to-active-absorber boundary. Legacy compatibility options are not
@@ -115,27 +113,27 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 /// drive owners directly, not this.
 #[expect(
     clippy::too_many_lines,
-    reason = "run; boot wires the stores, keys, runtime, caches and tasks in one visible dependency order; splitting it would hide which resource each later step relies on"
+    reason = "run; boot wires the stores, keys, runtime, caches and tasks, the fork-debt reconciler included, in one visible dependency order; splitting it would hide which resource each later step relies on"
 )]
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "run; the flush interval fits u64 milliseconds and the shared cache size fits usize on the 64-bit targets the service builds for; checked conversions would only restate the target width"
+    reason = "run; the flush interval fits u64 milliseconds and the shared cache size fits usize on the 64-bit targets the service builds for, and the fork-debt reconciler start adds no cast; checked conversions would only restate the target width"
 )]
 #[expect(
     clippy::let_underscore_must_use,
-    reason = "run; the probe delete is best effort, the supervisor rejects a spawn only while stopping, and the capability publication is advisory; handled results would only restate what boot already logs"
+    reason = "run; the probe delete is best effort, the supervisor rejects a spawn only while stopping (the fork-debt reconciler logs that rejection itself), and the capability publication is advisory; handled results would only restate what boot already logs"
 )]
 #[expect(
     clippy::expect_used,
-    reason = "run; covers exactly one site, the maintenance-worker spawn, and none in the shard opener: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
+    reason = "run; covers exactly one site, the maintenance-worker spawn, and none in the shard opener or the fork-debt reconciler start: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths, and none in the shard opener: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths, and none in the shard opener or the fork-debt reconciler start: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
 #[expect(
     clippy::excessive_nesting,
-    reason = "run; boot nests each shard opener's flush stagger, database open and close callback inside the opener closure it hands the directory; flattening them would separate the opener from the shard it builds"
+    reason = "run; boot nests each shard opener's flush stagger, database open and close callback inside the opener closure it hands the directory, while the fork-debt reconciler start stays flat; flattening them would separate the opener from the shard it builds"
 )]
 pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // The executable has one process bootstrap: OS-resource setup, the
@@ -759,6 +757,13 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     }
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
     crate::scaler3::start(Arc::downgrade(&state), &tasks);
+    // TLA-019-F4: the service, not a client repeating DELETE, settles the
+    // fork-reference debt a deleted fork's tombstone retains.
+    crate::application::creation::spawn_fork_debt_reconciler(
+        state.creation_service(),
+        &tasks,
+        std::time::Duration::from_secs(config.cli.fork_debt_sweep_secs.max(1)),
+    );
     {
         // RSS sampler for the shed check (500 ms; /proc read per request
         // would be silly). Unconditional: this used to live inside the

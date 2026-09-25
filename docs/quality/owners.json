@@ -219,6 +219,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fork_debt",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Fork-debt backfill and observability scenarios (TLA-019-F4): pre-index tombstones repaired without a client DELETE, the backfill resuming across a restart, and the fork_debt_stale alert; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fork_debt.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_peer_compatibility",
       "path": "src/dst/dst_tests.rs",
       "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",
@@ -235,7 +243,7 @@
     {
       "category": "effect",
       "count": 2,
-      "owner": "crate::main",
+      "owner": "crate::release_identity",
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
@@ -263,30 +271,6 @@
       "path": "src/bin/pilot/client.rs",
       "reason": "Pilot HTTP pool regression; the sole loopback server is aborted and joined after the real connection assertions; it does not authorize a workload background task.",
       "syntax": "tokio::spawn"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Stats::snapshot",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::Stats::detailed_snapshot",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/bin/s3lite.rs",
-      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
-      "syntax": "path = \"s3lite/tests.rs\""
     },
     {
       "category": "effect",
@@ -350,14 +334,6 @@
       "owner": "crate::tests::macro(proptest::proptest)",
       "path": "src/quota/bucket.rs",
       "reason": "Quota bucket properties; the pinned macro generates full-burst and refused-debit cases against the production owner; all generated cases execute with the service and invariant harness.",
-      "syntax": "proptest::proptest"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::macro(proptest::proptest)",
-      "path": "src/offsets.rs",
-      "reason": "Offset codec properties; the pinned macro generates the valid-position round trip and order, and arbitrary accepted-or-refused inputs, against the one production codec; all generated cases execute in the quality_ codec leg.",
       "syntax": "proptest::proptest"
     },
     {
@@ -507,14 +483,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::OpenGate::stats_json",
-      "path": "src/sharddir.rs",
-      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes this gate's reviewed shard-open counters; it does not establish domain identity or introduce an unowned effect.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::drift_stats",
       "path": "src/store_timing/sentinels.rs",
       "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the reviewed measurement expressions; it does not establish domain identity or introduce an unowned effect.",
@@ -555,10 +523,10 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
-      "path": "src/dst/tests/livefeed_ownership.rs",
-      "reason": "Test-only orphaned transition; its own stream name and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
-      "syntax": "tokio::spawn"
+      "owner": "crate::watched_test",
+      "path": "src/dst/tests/fixture_livefeed.rs",
+      "reason": "Test-only located-stall watchdog; the OS thread holds only the current step and a non-blocking state probe, is woken by the test's completion and joined before the test returns, and aborts the process only after reporting a step that outlived every runtime bound. A runtime task cannot report a runtime whose workers are blocked or whose teardown never ends.",
+      "syntax": "std::thread::Builder::new"
     },
     {
       "category": "effect",
@@ -639,38 +607,6 @@
       "path": "src/sketch.rs",
       "reason": "Sketch arithmetic property owner; the pinned macro generates 1,024 actual-source clock and range cases per property; it produces test cases rather than service state.",
       "syntax": "proptest::proptest"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::spawn_set_aside",
-      "path": "src/tasks/refusal.rs",
-      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership; a task a closing runtime refuses is dropped after the lock is released.",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "global-macro",
-      "count": 1,
-      "owner": "crate::macro(thread_local)",
-      "path": "src/tasks/refusal.rs",
-      "reason": "Per-thread set-aside slot for one supervised spawn call: it is Some only while tokio::spawn runs on this thread, so a future the closing runtime drops inline is handed back to the caller instead of re-entering the registration lock; it holds nothing between calls.",
-      "syntax": "thread_local"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::<OpenSlot as Drop>::drop",
-      "path": "src/tasks/refusal.rs",
-      "reason": "A spawn call that unwinds under the registration lock can neither hand its set-aside futures back nor drop them there without the same-thread deadlock the slot prevents; the unwind poisons that lock, so the one failed spawn's futures are leaked and the slot is closed.",
-      "syntax": "std::mem::forget"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::assert_teardown_completes",
-      "path": "src/tasks/tests.rs",
-      "reason": "F-G deadlock fixture owns one detached thread that drops the runtime under test; a deadlocked drop never returns, so a bounded channel receive observes it instead of hanging the suite.",
-      "syntax": "std::thread::spawn"
     },
     {
       "category": "macro-dsl",
@@ -777,28 +713,12 @@
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::range_tests",
-      "path": "src/bin/s3lite.rs",
-      "reason": "Directly cfg(test) HTTP range regressions execute the canonical emulator object handler, including retained metadata after body discard.",
-      "syntax": "path = \"s3lite/range_tests.rs\""
-    },
-    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::macro(proptest::proptest)",
       "path": "src/bin/s3lite/range_tests.rs",
       "reason": "The actual range parser must produce only nonempty ranges accepted by a backing slice; 1024 generated closed, open and suffix cases exercise its bounds.",
       "syntax": "proptest::proptest"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::operation_tests",
-      "path": "src/bin/s3lite.rs",
-      "reason": "Directly cfg(test) protocol checks execute the canonical HTTP request dispatcher for conditional writes, listing, multipart lifecycle, deletion, failed bodies and poisoned state.",
-      "syntax": "path = \"s3lite/operation_tests.rs\""
     },
     {
       "category": "by-path-module",
@@ -875,9 +795,25 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Plain-append identity fixture owns the parked close's request handle; it is released and joined after the plain append answers. Concurrent execution is required to hold the close at its enqueue failpoint while the plain append runs.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
       "path": "src/dst/tests/seal_cancellation.rs",
       "reason": "Seal race fixture owns the request handles; each is released and joined, or aborted and joined before retry. Concurrent execution is required to enter the held production boundary.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::original_survives_a_refused_retry",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Refused-retry fixture owns the original close's request handle; it is released and joined after the exact retry answers on the second instance. Concurrent execution is required to hold the original at its enqueue failpoint while the retry runs.",
       "syntax": "tokio::spawn"
     },
     {
@@ -1294,6 +1230,22 @@
       "owner": "crate::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
       "path": "src/dst/tests/fork_cleanup.rs",
       "reason": "Crashed creator fixture owns the parked creator handle; it is released and joined before shutdown. Concurrent execution is required to park it at the simulated crash point.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_crashed_creators_late_reference_is_released_without_a_client_retry",
+      "path": "src/dst/tests/fork_cleanup.rs",
+      "reason": "Crashed creator fixture owns the parked creator handle; it is released and joined before shutdown. Concurrent execution is required to park it at the simulated crash point while the reconciler repairs the source without a second DELETE.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
+      "path": "src/dst/tests/fork_cleanup.rs",
+      "reason": "Live creator race fixture owns both parked creator handles; each is released and joined before shutdown. Concurrent execution is required to hold both creators in their install windows while reconciler passes interleave with them.",
       "syntax": "tokio::spawn"
     },
     {
@@ -1785,22 +1737,6 @@
       "syntax": "serde_json::json"
     },
     {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::capacity_refused",
-      "path": "src/product/append_body.rs",
-      "reason": "The permanent capacity refusal's details object {dimension, capacity, requested} is rendered with serde_json's literal macro; its wire shape is the product error contract pinned by admission_maintenance, seal_recovery and product::tests, and WIRE-MATRIX §2.5/§2.7/§2.8.",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::macro(proptest::proptest)",
-      "path": "src/product/tests.rs",
-      "reason": "Product capacity-verdict property (external review §5); the pinned macro generates 1,024 JSON values, JSON batches and byte bodies against buckets straddling each request and runs each through the production parse_append_body, comparing its verdict with the append core's measure; it produces test cases, not service state.",
-      "syntax": "proptest::proptest"
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::lb",
@@ -2026,6 +1962,22 @@
     },
     {
       "category": "effect",
+      "count": 2,
+      "owner": "crate::tests::held_scan",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Teardown regression, run only in a child process: a closing probe and one scan are ordinary tasks in the served runtime because the runtime's close is the subject; the scan deliberately deadlocks its worker inside a foyer cache miss, and the child exits after the bounded teardown without it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::a_panic_resumes_only_after_the_runtime_is_torn_down",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Teardown regression spawns one idle probe into the served runtime; the bounded teardown drops it before the panic resumes, which is what the test observes.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
       "count": 1,
       "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
       "path": "src/application/read_wire_tests.rs",
@@ -2113,38 +2065,6 @@
       "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
     },
     {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::serve_connections",
-      "path": "src/http/serve.rs",
-      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
-      "syntax": "tokio::task::JoinSet::spawn"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::serve_connections",
-      "path": "src/http/serve.rs",
-      "reason": "The accept loop selects cancellation, accept and connection reaping; the pinned Tokio macro is the await-any form and all three arms are owned by the loop; the http::serve rig tests drive every arm.",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::debug_routes",
-      "path": "src/http.rs",
-      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 7,
-      "owner": "crate::debug_routes",
-      "path": "src/http.rs",
-      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the operator debug table's reviewed answers behind its one bearer gate; it does not establish domain identity or introduce an unowned effect.",
-      "syntax": "serde_json::json"
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::test_support",
@@ -2182,14 +2102,6 @@
       "owner": "crate",
       "path": "src/sse/feed/retention.rs",
       "reason": "Retention entry imports its enclosing feed owner; the compiler resolves the parent exports and the entry only mirrors admission.",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/sse/feed/test_support.rs",
-      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets or read a feed's retained charge.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -2289,14 +2201,6 @@
       "syntax": "AtomicU64"
     },
     {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::LEASE_TERMINATIONS",
-      "path": "src/sse/auth.rs",
-      "reason": "Process instrumentation counters: one AtomicU64 per lease-termination reason, sized by LeaseInvalidReason::ALL so a reason's slot is its discriminant; /v1/debug/load exports them as lease_terminations, and a per-runtime copy would hide terminations from the canary.",
-      "syntax": "[std :: sync :: atomic :: AtomicU64 ; LeaseInvalidReason :: ALL . len ()]"
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::livefeed_engine_retired",
@@ -2311,6 +2215,382 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Read-byte quota scenarios across the page-serving product routes; real HTTP scan and records pages against one enforce-mode project bucket; compiled and executed with DST.",
       "syntax": "path = \"tests/quota_read_volume.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_applied_history",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "TLA-018-F3 continuation scenarios; a held shard WAL PUT, a fencing replacement instance and real HTTP product, raw and relay reads of the stale and durable cursors; compiled and executed with DST.",
+      "syntax": "path = \"tests/reads_applied_history.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_remote.rs",
+      "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
+      "syntax": "path = \"read_remote_tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_fence_survives_engine_replacement",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Seal fence replacement fixture owns the parked close; it is released and joined after the takeover and the engine replacement. Concurrent execution is required to hold the request across both.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_001_every_admitted_epoch_and_next_round_trips",
+      "path": "src/offsets/proofs.rs",
+      "reason": "Kani proof harness for KANI-001 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_002_start_and_resume_index",
+      "path": "src/offsets/proofs.rs",
+      "reason": "Kani proof harness for KANI-002 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_003_tokens_are_injective_and_ordered",
+      "path": "src/offsets/proofs.rs",
+      "reason": "Kani proof harness for KANI-003 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_036_stale_and_new_epoch_admission",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-036 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::kani_037_duplicates_conflicts_and_replay_results",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-037 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_038_sequence_gaps_at_the_numeric_boundary",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-038 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_039_seal_generation_truth_table",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-039 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_042_final_append_error_disposition",
+      "path": "src/application/lifecycle/claims/proofs.rs",
+      "reason": "Kani proof harness for KANI-042 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_is_refused_before_its_intent",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Pre-intent seal fixture; pin the real product seal request so the test can poll it inline while observing the parked final-append failpoint; no task is spawned and no substitute request model is used.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_is_refused_before_its_intent",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "reason": "Pre-intent seal fixture; the select macro races the pinned seal request against a short tick so the test can observe the claim-to-append failpoint and release it; compiled tests verify the request answers.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::unfenced_final_keeps_its_claim",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "reason": "Unfenced refusal fixture owns P's two seal attempts and T's takeover; each is joined before the claim and the tail are checked. Concurrent execution is required to hold them at their failpoints and behind the held commit gate.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/reconcile.rs",
+      "reason": "The fork-debt reconciler imports its enclosing creation owner; the compiler resolves the parent exports and the reconciler only pays debts through the owner's deletion protocol.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::spawn_fork_debt_reconciler",
+      "path": "src/application/creation/reconcile.rs",
+      "reason": "The supervised fork-debt reconciler selects cancellation around each bounded pass and each pause between circles; the restart DST (an_interrupted_reconcile_pass_is_completed_after_a_restart) cancels it mid-pass.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/registry/fork_debt.rs",
+      "reason": "The fork-debt index imports its enclosing registry owner; the compiler resolves the parent exports and the index only writes, lists and deletes its own marker keys.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/registry/fork_debt.rs",
+      "reason": "The fork-debt index tests import the index module under test; the compiler resolves the parent exports.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Stats::snapshot",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::Stats::detailed_snapshot",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",
+      "syntax": "path = \"tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::range_tests",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "Directly cfg(test) HTTP range regressions execute the canonical emulator object handler, including retained metadata after body discard.",
+      "syntax": "path = \"range_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::operation_tests",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "Directly cfg(test) protocol checks execute the canonical HTTP request dispatcher for conditional writes, listing, multipart lifecycle, deletion, failed bodies and poisoned state.",
+      "syntax": "path = \"operation_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 2,
+      "owner": "crate::emulator",
+      "path": "src/bin/s3lite.rs",
+      "reason": "The s3lite binary serves the emulator module; declared once for test builds and once for the served binary so every test build compiles it as test code, as the provider contract suite does, and its unwrap exceptions bind the served binary only.",
+      "syntax": "path = \"s3lite/emulator.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::emulator",
+      "path": "src/bootstrap/tests/provider_contract/s3lite_harness.rs",
+      "reason": "The provider contract suite serves the s3lite emulator from the binary's own source over loopback HTTP, so the production S3 client is qualified against the emulator the benches use rather than a copy.",
+      "syntax": "path = \"../../../bin/s3lite/emulator.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::S3lite::serve_while",
+      "path": "src/bootstrap/tests/provider_contract/s3lite_harness.rs",
+      "reason": "Provider contract fixture; the pinned select macro serves the in-process emulator only while the contract future runs, so no detached server task outlives the test.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::json_fidelity",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "JSON record fidelity scenarios; real HTTP appends, seals, reads, scans, SSE, the peer segment-scan wire, consumer Receive and dead-letter copies against one stored-text contract; compiled and executed with DST.",
+      "syntax": "path = \"tests/json_fidelity.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::whitespace",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::number",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::string",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::json_record_tests::document",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::prop_oneof"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json_record_tests::macro(proptest::proptest)",
+      "path": "src/application/creation.rs",
+      "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/offsets.rs",
+      "reason": "Offset codec properties; the pinned macro generates the valid-position round trip and order, and arbitrary accepted-or-refused inputs, against the one production codec; all generated cases execute in the quality_ codec leg.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::OpenGate::stats_json",
+      "path": "src/sharddir.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes this gate's reviewed shard-open counters; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "reason": "Test-only orphaned transition; its own stream name and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_set_aside",
+      "path": "src/tasks/refusal.rs",
+      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership; a task a closing runtime refuses is dropped after the lock is released.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "src/tasks/refusal.rs",
+      "reason": "Per-thread set-aside slot for one supervised spawn call: it is Some only while tokio::spawn runs on this thread, so a future the closing runtime drops inline is handed back to the caller instead of re-entering the registration lock; it holds nothing between calls.",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<OpenSlot as Drop>::drop",
+      "path": "src/tasks/refusal.rs",
+      "reason": "A spawn call that unwinds under the registration lock can neither hand its set-aside futures back nor drop them there without the same-thread deadlock the slot prevents; the unwind poisons that lock, so the one failed spawn's futures are leaked and the slot is closed.",
+      "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::assert_teardown_completes",
+      "path": "src/tasks/tests.rs",
+      "reason": "F-G deadlock fixture owns one detached thread that drops the runtime under test; a deadlocked drop never returns, so a bounded channel receive observes it instead of hanging the suite.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::capacity_refused",
+      "path": "src/product/append_body.rs",
+      "reason": "The permanent capacity refusal's details object {dimension, capacity, requested} is rendered with serde_json's literal macro; its wire shape is the product error contract pinned by admission_maintenance, seal_recovery and product::tests, and WIRE-MATRIX §2.5/§2.7/§2.8.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/product/tests.rs",
+      "reason": "Product capacity-verdict property (external review §5); the pinned macro generates 1,024 JSON values, JSON batches and byte bodies against buckets straddling each request and runs each through the production parse_append_body, comparing its verdict with the append core's measure; it produces test cases, not service state.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve_connections",
+      "path": "src/http/serve.rs",
+      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve_connections",
+      "path": "src/http/serve.rs",
+      "reason": "The accept loop selects cancellation, accept and connection reaping; the pinned Tokio macro is the await-any form and all three arms are owned by the loop; the http::serve rig tests drive every arm.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::debug_routes",
+      "path": "src/http.rs",
+      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::debug_routes",
+      "path": "src/http.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the operator debug table's reviewed answers behind its one bearer gate; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/test_support.rs",
+      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets or read a feed's retained charge.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LEASE_TERMINATIONS",
+      "path": "src/sse/auth.rs",
+      "reason": "Process instrumentation counters: one AtomicU64 per lease-termination reason, sized by LeaseInvalidReason::ALL so a reason's slot is its discriminant; /v1/debug/load exports them as lease_terminations, and a per-runtime copy would hide terminations from the canary.",
+      "syntax": "[std :: sync :: atomic :: AtomicU64 ; LeaseInvalidReason :: ALL . len ()]"
     },
     {
       "category": "by-path-module",
@@ -2367,14 +2647,6 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
       "syntax": "path = \"tests/security_usage.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/application/read_remote.rs",
-      "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
-      "syntax": "path = \"read_remote_tests.rs\""
     },
     {
       "category": "effect",

@@ -192,6 +192,65 @@ fn a_failure_after_progress_waits_the_first_delay_again() {
     );
 }
 
+/// One raw control frame's JSON fields.
+fn raw_control(frame: &Bytes) -> serde_json::Map<String, serde_json::Value> {
+    let text = std::str::from_utf8(frame).unwrap();
+    let data = text
+        .strip_prefix("event: control\ndata:")
+        .and_then(|rest| rest.strip_suffix("\n\n"))
+        .unwrap_or_else(|| panic!("not one control frame: {text:?}"));
+    serde_json::from_str(data).unwrap()
+}
+
+/// The (segment, resume offset) a raw control's `streamNextOffset` names.
+fn raw_resume(control: &serde_json::Map<String, serde_json::Value>) -> (u32, u64) {
+    let token = control["streamNextOffset"].as_str().unwrap();
+    crate::offsets::parse(token).unwrap()
+}
+
+/// The RAW surface's controls name the segment and the offset a reader
+/// resumes at (the start before any record), carry a stream cursor beyond
+/// a presented numeric cursor while the stream is open, fold `upToDate`
+/// into the record control at the head and into the status control, and
+/// name `streamClosed` instead of a cursor once the stream is closed.
+#[test]
+fn raw_controls_name_the_resume_position_cursor_and_flags() {
+    let lane_rk = String::new();
+    let ctx = SessionCtx {
+        surface: Surface::RawToken,
+        rk_hash: crate::crypto::stream_hash(&lane_rk),
+        epoch: [3; 16],
+        key: crate::crypto::StreamKey([9; 32]),
+        desc: crate::sse::feed::tests::test_desc("rawctl"),
+        raw_cursor: Some("99999999999".into()),
+    };
+    let at = |seg_id, local_after| crate::sse::feed::WirePosition {
+        seg_id,
+        local_after,
+    };
+    let first = raw_control(&ctx.record_ctl(at(0, 0), false));
+    assert_eq!(raw_resume(&first), (0, 0));
+    assert_eq!(first["streamCursor"], "100000000000");
+    assert!(!first.contains_key("upToDate") && !first.contains_key("streamClosed"));
+
+    let head = raw_control(&ctx.record_ctl(at(2, 42), true));
+    assert_eq!(raw_resume(&head), (2, 42));
+    assert_eq!(head["streamCursor"], "100000000000");
+    assert_eq!(head["upToDate"], true);
+
+    let open = raw_control(&ctx.status_ctl(at(2, 42), false));
+    assert_eq!(open, head, "an open stream's status is the head control");
+
+    let closed = raw_control(&ctx.status_ctl(at(2, 43), true));
+    assert_eq!(raw_resume(&closed), (2, 43));
+    assert_eq!(closed["upToDate"], true);
+    assert_eq!(closed["streamClosed"], true);
+    assert!(
+        !closed.contains_key("streamCursor"),
+        "a closed stream names no cursor: {closed:?}"
+    );
+}
+
 /// Item 86: a catch-up read that advanced nothing is answered at one
 /// owner. A fatal cutoff ends the session at once; a failed read and an
 /// empty page each wait the bounded retry before the next read.

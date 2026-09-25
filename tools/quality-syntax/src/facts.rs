@@ -45,6 +45,7 @@ pub(super) struct Source {
     pub(super) path: String,
     pub(super) tokens: String,
     pub(super) test_only_file: bool,
+    pub(super) kani_harness: bool,
     pub(super) items: Vec<Item>,
     pub(super) facts: Vec<Fact>,
 }
@@ -53,18 +54,26 @@ pub(super) fn tokens(value: &impl ToTokens) -> String {
     value.to_token_stream().to_string()
 }
 
+/// The cfg names a production build never sets: `test`, and `kani`, which
+/// only the pinned Kani toolchain sets for its `#[cfg(kani)]` proof harnesses
+/// (`build.rs` declares it). Either one marks code no production binary holds.
+fn non_production(path: &syn::Path) -> bool {
+    path.is_ident("test") || path.is_ident("kani")
+}
+
 /// Only a direct attribute on this AST node proves this exact cfg boundary.
 pub(super) fn explicit_test_cfg(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
                 .parse_args::<syn::Path>()
-                .is_ok_and(|path| path.is_ident("test"))
+                .is_ok_and(|path| non_production(&path))
     })
 }
 
-/// Classify only a positive `cfg(test)` requirement as test-only. Unknown and
-/// mixed cfg expressions remain production-visible facts, never skipped.
+/// Classify only a positive `cfg(test)` or `cfg(kani)` requirement as
+/// test-only. Unknown and mixed cfg expressions remain production-visible
+/// facts, never skipped.
 pub(super) fn test_only(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("test")
@@ -83,7 +92,7 @@ pub(super) fn test_only(attrs: &[syn::Attribute]) -> bool {
 fn requires_test(meta: &syn::Meta) -> bool {
     use syn::{Meta, Token, punctuated::Punctuated};
     match meta {
-        Meta::Path(path) => path.is_ident("test"),
+        Meta::Path(path) => non_production(path),
         Meta::List(list) => {
             let Ok(children) =
                 list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)

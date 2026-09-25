@@ -903,12 +903,12 @@ async fn read_history2_scan(
 /// per-offset GET pattern is structurally impossible here: reads are
 /// range scans only.
 ///
-/// Ranges with ZERO postings pages fall back to the pre-postings
-/// covering index (`k!`-era `hist2_index_key` rows / filtered canonical
-/// scan for the empty key) — the migration arm for partitions absorbed
-/// before postings existed. Partitions that STRADDLE the cutover in one
-/// requested range are a dev-rig-only shape and are not served exactly
-/// (docs/ROUTING-V3.md §3); production deployments are greenfield.
+/// Ranges with ZERO postings pages are read as holding no matches (the
+/// greenfield layout; the covering-index fallback was deleted, see
+/// docs/ROUTING-V3.md). The reader cannot tell a page lost after it was
+/// durable from an absent key, so H11's missing-postings clause rests on
+/// storage assumptions today: docs/dst/DST-EXPANSION-SPEC.md §9.12.2
+/// records the open obligation.
 #[expect(
     clippy::too_many_arguments,
     reason = "read_history2_keyed; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"

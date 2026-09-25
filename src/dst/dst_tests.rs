@@ -52,6 +52,9 @@ mod consumer_product;
 #[path = "tests/consumer_saga.rs"]
 mod consumer_saga;
 
+#[path = "tests/json_fidelity.rs"]
+mod json_fidelity;
+
 #[path = "tests/durability_failures.rs"]
 mod durability_failures;
 
@@ -84,6 +87,9 @@ mod fixture_storage;
 
 #[path = "tests/fork_cleanup.rs"]
 mod fork_cleanup;
+
+#[path = "tests/fork_debt.rs"]
+mod fork_debt;
 
 #[path = "tests/fork_lifecycle.rs"]
 mod fork_lifecycle;
@@ -140,6 +146,9 @@ mod quota_read_volume;
 
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
+
+#[path = "tests/reads_applied_history.rs"]
+mod reads_applied_history;
 
 #[path = "tests/reads_history.rs"]
 mod reads_history;

@@ -2,6 +2,7 @@
 
 use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_livefeed::wait_parked;
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 
@@ -635,4 +636,344 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
     assert_eq!(recs, vec![serde_json::json!({"n": 0})], "{recs:?}");
     engine_shutdown(&state).await;
+}
+
+/// TLA-002-F1: the takeover fence outlives the engine that recorded it.
+/// A's final-bearing close passes its claim check and parks before it
+/// enqueues; its lease lapses; B takes over (reserve, fence, install);
+/// then every engine is replaced before A enqueues. The fence lived only
+/// in the retired engine's memory, so the fresh engine let A's superseded
+/// generation write its record and close the segment under B's claim.
+/// The durable fence row now refuses it on the new engine too.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "seal fence replacement fixture; the held close is released and joined before the winning claim and stored records are checked; running it inline cannot hold it across the takeover and the engine replacement"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_survives_engine_replacement() {
+    let _serial = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/refence", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, "refence");
+    crate::failpoints::park_close_before_enqueue("refence");
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/refence",
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
+            br#"[{"fin":"a"}]"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, "refence") > before
+        {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never reached the window");
+    let sref = state.deployment.raw_adapter_sref("refence");
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    let a_gen = d
+        .sealing
+        .as_ref()
+        .expect("A published no intent")
+        .claim_generation;
+    let b_intent = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "b-op".into(),
+        final_committed: false,
+    };
+    let claim = crate::product::claim_seal(&state, &sref, "b-op", &b_intent, &d.stream_epoch)
+        .await
+        .unwrap();
+    let b_gen = match claim {
+        crate::product::EnterSeal::Installed { generation } => generation,
+        other => panic!("takeover did not install: {other:?}"),
+    };
+    assert!(b_gen > a_gen, "no fresh generation");
+
+    // The engine that recorded B's fence is replaced before A enqueues.
+    engine_shutdown(&state).await;
+    crate::failpoints::release_close_before_enqueue("refence");
+    let (st, _, b) = a.await.unwrap();
+    let code = serde_json::from_slice::<serde_json::Value>(&b)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_owned));
+    assert_eq!(
+        (st, code.as_deref()),
+        (409, Some("seal_superseded")),
+        "a superseded close was not refused after engine replacement: {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(!d.sealed, "the superseded close sealed the collection");
+    assert_eq!(
+        d.sealing.as_ref().map(|s| s.operation_id.as_str()),
+        Some("b-op"),
+        "B's claim did not survive A's fenced write: {:?}",
+        d.sealing
+    );
+    let (_, headers, body) = hreq(addr, "GET", "/v1/stream/refence", &[], b"").await;
+    let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        records,
+        vec![serde_json::json!({"n": 0})],
+        "A's record landed"
+    );
+    assert!(
+        !headers.contains_key("stream-closed"),
+        "A's superseded close closed the segment: {headers:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// TLA-003-F2: a raw close that takes over another operation's abandoned
+/// final claim owns the seal from then on. Y's close-with-content crashes
+/// after its intent; its lease lapses; X, a different close-with-content,
+/// is admitted while the snapshot still shows Y's claim and then takes
+/// it over. X's own final used to carry the snapshot's Sealing refusal:
+/// the committer refused it as Closed, X answered 409 Stream-Closed for
+/// an open stream, and released the claim it had just installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record() {
+    let _serial = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let close = [
+        ("content-type", "application/json"),
+        ("stream-closed", "true"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/adopt", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    crate::failpoints::stop_after_seal_intent("adopt");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/adopt",
+        &close,
+        br#"[{"fin":"y"}]"#,
+    )
+    .await;
+    assert_eq!(st, 503);
+    crate::failpoints::stop_after_seal_intent_off("adopt");
+    let sref = state.deployment.raw_adapter_sref("adopt");
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/adopt",
+        &close,
+        br#"[{"fin":"x"}]"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "the close that took the abandoned claim was refused: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(
+        d.sealed && d.sealing.is_none(),
+        "X did not seal: {:?}",
+        d.sealing
+    );
+    let (_, _, body) = hreq(addr, "GET", "/v1/stream/adopt", &[], b"").await;
+    let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        records,
+        vec![serde_json::json!({"n": 0}), serde_json::json!({"fin": "x"})],
+        "X's final record is missing or Y's fenced record landed"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// TLA-002-F2: a `SealSuperseded` refusal waits for the fence behind it.
+/// P's product seal-with-final claims and parks before its enqueue; P's
+/// exact retry renews the claim and parks before its append; the claim
+/// lapses; T reserves above both and fences in a commit group that fails.
+/// Refused from the fence the committer had only staged or cached, whether
+/// in that group or a later one, the retry released P's claim, and the
+/// replacement engine, finding no fence row, let P's first attempt close
+/// the segment with no claim standing. The refusal now waits for its group,
+/// a failed group leaves no cached fence, and P's claim survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_superseded_final_waits_for_its_fence_to_be_durable() {
+    let _serial = gap_lock().lock().await;
+    let (state, addr) = http_rig(mem()).await;
+    // The retry's final shares the failed fence group, or follows it.
+    unfenced_final_keeps_its_claim(&state, addr, "unfenced", false).await;
+    unfenced_final_keeps_its_claim(&state, addr, "unfenced-later", true).await;
+}
+
+/// Runs the TLA-002-F2 schedule on a new collection `name`; `later` puts the
+/// retry's final in the group after the failed fence group instead of in it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "unfenced refusal fixture; P's two attempts and T's takeover are spawned and joined before the claim and the tail are checked; running them inline cannot hold them at their failpoints and the commit gate"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "unfenced refusal scenario; the two parked attempts, the held takeover group, the engine replacement and the claim check are one causal interleaving; splitting the phases into helpers would hide which attempt each park holds"
+)]
+async fn unfenced_final_keeps_its_claim(
+    state: &std::sync::Arc<crate::http::AppState>,
+    addr: std::net::SocketAddr,
+    name: &str,
+    later: bool,
+) {
+    use crate::failpoints::Fp;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let path = format!("/v1/streams/{name}");
+    let format = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(preq(addr, "PUT", &path, &key, format).await.0, 201);
+    let seal = format!("{path}:seal");
+    let attempt = || {
+        let seal = seal.clone();
+        tokio::spawn(async move {
+            let key = [("prisma-encryption-key", PRISMA_KEY)];
+            preq(addr, "POST", &seal, &key, br#"{"final":{"fin":"p"}}"#).await
+        })
+    };
+    let sref = state.deployment.raw_adapter_sref(name);
+    let claim = async || {
+        state.registry.invalidate(&sref);
+        let d = state.registry.get(&sref).await.unwrap().unwrap();
+        (d.sealing.clone().expect("P holds no claim"), d)
+    };
+    crate::failpoints::park_close_before_enqueue(name);
+    let first = attempt();
+    wait_parked(Fp::CloseBeforeEnqueue, name, 1).await;
+    let (first_claim, _) = claim().await;
+    crate::failpoints::park_product_final_before_append(name);
+    let retry = attempt();
+    wait_parked(Fp::ProductFinalBeforeAppend, name, 1).await;
+    let (renewed, d) = claim().await;
+    assert!(renewed.claim_generation > first_claim.claim_generation);
+    state
+        .registry
+        .cas_update(&sref, |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+    let seg = d.resolve_segment("");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let tripped = engine.group_failures_tripped();
+
+    // T's fence is staged in a held group, which then fails.
+    let hold = engine.test_hold_commit().await;
+    let base = engine.appends_enqueued();
+    let takeover = {
+        let (state, sref, epoch) = (state.clone(), sref.clone(), d.stream_epoch.clone());
+        tokio::spawn(async move {
+            let intent = crate::registry::SealIntent::Final {
+                routing_key: String::new(),
+                request_hash: "t-op".into(),
+                final_committed: false,
+            };
+            crate::product::claim_seal(&state, &sref, "t-op", &intent, &epoch).await
+        })
+    };
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let (stray, _stray) = tokio::sync::oneshot::channel();
+    if later {
+        // A stale close stands in for the failed group's other work.
+        engine
+            .try_close(crate::shard::CloseReq {
+                hash: seg.identity,
+                generation: Some(first_claim.claim_generation),
+                resp: stray,
+            })
+            .unwrap();
+    } else {
+        crate::failpoints::release_product_final_before_append(name);
+    }
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.fail_next_group_for(seg.identity);
+    drop(hold);
+    let fenced = takeover.await.unwrap();
+    assert!(fenced.is_err(), "T installed over a lost fence: {fenced:?}");
+    crate::failpoints::release_product_final_before_append(name);
+    let (retry_status, _, retry_body) = retry.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), tripped + 1);
+
+    // The owner is replaced before P's first attempt enqueues.
+    engine_shutdown(state).await;
+    crate::failpoints::release_close_before_enqueue(name);
+    let (first_status, _, first_body) = first.await.unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let tail = engine.tail_fields(&seg.identity).await.unwrap();
+    let closed = tail.is_some_and(|tail| tail.closed);
+    let standing = d
+        .sealing
+        .as_ref()
+        .is_some_and(|c| c.operation_id == renewed.operation_id);
+    assert!(
+        !closed || d.sealed || standing,
+        "{name}: the segment closed with no claim standing: closed={closed} sealed={} \
+         sealing={:?}; the retry answered {retry_status} {}; the first attempt answered \
+         {first_status} {}",
+        d.sealed,
+        d.sealing,
+        String::from_utf8_lossy(&retry_body),
+        String::from_utf8_lossy(&first_body),
+    );
+    let (status, _, body) = attempt().await.unwrap();
+    state.registry.invalidate(&sref);
+    let d = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(
+        status == 200 && d.sealed,
+        "{name}: P's exact retry did not seal: {status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    engine_shutdown(state).await;
 }

@@ -1,4 +1,767 @@
 {
-  "rows": [],
+  "rows": [
+    {
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "unreachable_pub",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "unused_imports",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/append/close.rs",
+      "owner": "crate::complete",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 32,
+        "syntax_facts": 39
+      },
+      "rationale": "Completion releases a claim only for the attempt that installed it (TLA-003-F5, 56ffc65f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/consumer/delivery.rs",
+      "owner": "crate::dlq_and_settle",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 134,
+        "syntax_facts": 194
+      },
+      "rationale": "Dead-letter copies keep the record as the client's validated JSON text (1eaf5a5b), so a DLQ read returns the stored bytes.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/consumer/delivery.rs",
+      "owner": "crate::dlq_and_settle",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 134,
+        "syntax_facts": 194
+      },
+      "rationale": "Dead-letter copies keep the record as the client's validated JSON text (1eaf5a5b), so a DLQ read returns the stored bytes.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read.rs",
+      "owner": "crate::absorption_race",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 40,
+        "syntax_facts": 75
+      },
+      "rationale": "The race check carries the provisional continuation it must re-verify (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read.rs",
+      "owner": "crate::execute_segment",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 134,
+        "syntax_facts": 207
+      },
+      "rationale": "An applied read revalidates its tail scan at the level it scanned and reports the provisional suffix it served (TLA-018-F1/F3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read.rs",
+      "owner": "crate::execute_segment",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 134,
+        "syntax_facts": 207,
+        "unwrap_site:ordinary-call::fe06d3caa30b951b": 1,
+        "unwrap_site:path::24eb7713c7aad9ff": 4,
+        "unwrap_site:path::6b1455d4d2cd2692": 2,
+        "unwrap_site:path::c9c7e423e06852c9": 1
+      },
+      "rationale": "An applied read revalidates its tail scan at the level it scanned and reports the provisional suffix it served (TLA-018-F1/F3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadOutcome",
+      "scope": "struct",
+      "lint": "clippy::struct_excessive_bools",
+      "metrics": {
+        "nested_items": 17,
+        "scope_lines": 18,
+        "syntax_facts": 53
+      },
+      "rationale": "The outcome carries the provisional continuation and its recovery position (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadOutcome::empty",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 58,
+        "syntax_facts": 85
+      },
+      "rationale": "An empty outcome carries the continuation and recovery position a resumed read must present (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadService::execute_fork_read",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 81,
+        "syntax_facts": 141,
+        "unwrap_site:ordinary-call::0eca504d0924318b": 1,
+        "unwrap_site:ordinary-call::3d96856466cfd4a9": 1,
+        "unwrap_site:ordinary-call::53080bf8c14d085d": 1,
+        "unwrap_site:ordinary-call::aeaaa3050e5a45de": 1,
+        "unwrap_site:ordinary-call::c6ce19da235c5f39": 1,
+        "unwrap_site:path::170a730da262f661": 2,
+        "unwrap_site:path::7f34e5ba4975f4ed": 3
+      },
+      "rationale": "Fork reads take the typed scan start that separates a u64::MAX position from now (ec55262f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadService::execute_read",
+      "scope": "function",
+      "lint": "clippy::cast_possible_truncation",
+      "metrics": {
+        "scope_lines": 190,
+        "syntax_facts": 343
+      },
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadService::execute_read",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 190,
+        "syntax_facts": 343
+      },
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadService::execute_read",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 190,
+        "syntax_facts": 343
+      },
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ReadService::execute_read",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 190,
+        "syntax_facts": 343
+      },
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ResolvedRead < '_ >::execute",
+      "scope": "function",
+      "lint": "clippy::cast_possible_truncation",
+      "metrics": {
+        "scope_lines": 81,
+        "syntax_facts": 149
+      },
+      "rationale": "A resolved read checks and carries the provisional continuation, and answers the explicit resync when the history it continues was replaced (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/application/read_request.rs",
+      "owner": "crate::ResolvedRead < '_ >::execute",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 81,
+        "syntax_facts": 149,
+        "unwrap_site:ordinary-call::1d043d6a12da71d1": 1,
+        "unwrap_site:ordinary-call::1d759324271f450c": 1,
+        "unwrap_site:ordinary-call::585fd9ff38df6541": 1,
+        "unwrap_site:ordinary-call::9c73eaee8a800898": 1,
+        "unwrap_site:path::0f39d1c8e7b0dba3": 1,
+        "unwrap_site:path::21ab7880064beb61": 2,
+        "unwrap_site:path::2679e427ea83675d": 3,
+        "unwrap_site:path::3b3f4326f1571ec2": 4,
+        "unwrap_site:path::3f3408f9e2f391d6": 3,
+        "unwrap_site:path::4a8d858c750c7f90": 5,
+        "unwrap_site:path::66fa254d103f6bea": 1,
+        "unwrap_site:path::6735a1ea5e439d85": 1,
+        "unwrap_site:path::6ae92937f28b0ba2": 5,
+        "unwrap_site:path::c7c7f96099fa0785": 1,
+        "unwrap_site:path::eac1625ee614f42a": 4,
+        "unwrap_site:path::ed1e1ecedacacfae": 10,
+        "unwrap_site:path::fd97ae9017e75f05": 2
+      },
+      "rationale": "A resolved read checks and carries the provisional continuation, and answers the explicit resync when the history it continues was replaced (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::cast_possible_truncation",
+      "metrics": {
+        "scope_lines": 583,
+        "syntax_facts": 977
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 583,
+        "syntax_facts": 977
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::expect_used",
+      "metrics": {
+        "expect_site:ordinary-call::60495e231cd908aa": 1,
+        "expect_site:ordinary-call::83e435826e2785b7": 1,
+        "expect_site:path::125ff86eabf35b16": 14,
+        "expect_site:path::2a13749f1b017f52": 83,
+        "expect_site:path::86b17f87900c8a32": 5,
+        "expect_site:path::ae13c50420034e4c": 1,
+        "expect_site:path::ed8ca5365d0895fe": 14,
+        "scope_lines": 583,
+        "syntax_facts": 977
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 583,
+        "syntax_facts": 977
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 583,
+        "syntax_facts": 977
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/bootstrap.rs",
+      "owner": "crate::run",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 583,
+        "syntax_facts": 977,
+        "unwrap_site:ordinary-call::60495e231cd908aa": 1,
+        "unwrap_site:ordinary-call::83e435826e2785b7": 1,
+        "unwrap_site:path::125ff86eabf35b16": 14,
+        "unwrap_site:path::2a13749f1b017f52": 83,
+        "unwrap_site:path::86b17f87900c8a32": 5,
+        "unwrap_site:path::ae13c50420034e4c": 1,
+        "unwrap_site:path::ed8ca5365d0895fe": 14
+      },
+      "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/dst/fault_store.rs",
+      "owner": "crate::FaultState::gate",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "syntax_facts": 100
+      },
+      "rationale": "Test fault store: the gate holds a shard WAL put so tests can keep records applied but not durable (TLA-018-F3 and absorber regressions).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/ops.rs",
+      "owner": "crate::collect_snapshot",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "syntax_facts": 466
+      },
+      "rationale": "The snapshot exports the fork-debt gauges the stale-debt alert reads (8a03e0d5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/ops.rs",
+      "owner": "crate::evaluate_alerts",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 133
+      },
+      "rationale": "One more alert rule, fork_debt_stale, reads the same snapshot and publishes into the same alert map (8a03e0d5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/ops.rs",
+      "owner": "crate::evaluate_alerts",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 133
+      },
+      "rationale": "One more alert rule, fork_debt_stale, reads the same snapshot and publishes into the same alert map (8a03e0d5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/ops.rs",
+      "owner": "crate::evaluate_alerts",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 133
+      },
+      "rationale": "One more alert rule, fork_debt_stale, reads the same snapshot and publishes into the same alert map (8a03e0d5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/postings/validated/properties.rs",
+      "owner": "crate::macro(proptest)",
+      "scope": "macro",
+      "lint": "clippy::arithmetic_side_effects",
+      "metrics": {
+        "scope_lines": 99
+      },
+      "rationale": "The postings property block gained the three-chunking admission property for overlapping pages (d16559b3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/postings_cache.rs",
+      "owner": "crate::PostingsCache::install_chunk",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 168,
+        "syntax_facts": 282
+      },
+      "rationale": "The install records which runs a chunk's slices covered, so a warm bridge never crosses a chunk whose runs no slice recorded (cache-bridge fix).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/postings_cache.rs",
+      "owner": "crate::PostingsCache::install_chunk",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 168,
+        "syntax_facts": 282
+      },
+      "rationale": "The install records which runs a chunk's slices covered, so a warm bridge never crosses a chunk whose runs no slice recorded (cache-bridge fix).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/postings_cache.rs",
+      "owner": "crate::PostingsCache::install_chunk",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 168,
+        "syntax_facts": 282,
+        "unwrap_site:path::5aeb196e83598231": 25,
+        "unwrap_site:path::6162591f71d8fe40": 11,
+        "unwrap_site:path::810779cf600c63f1": 9,
+        "unwrap_site:path::9e1462dd57e91979": 3,
+        "unwrap_site:path::ad71179f12a47927": 7
+      },
+      "rationale": "The install records which runs a chunk's slices covered, so a warm bridge never crosses a chunk whose runs no slice recorded (cache-bridge fix).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product.rs",
+      "owner": "crate::product_read",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "syntax_facts": 317
+      },
+      "rationale": "The product read mints and accepts the provisional session cursor and answers its explicit resync (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product.rs",
+      "owner": "crate::product_read",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "syntax_facts": 317
+      },
+      "rationale": "The product read mints and accepts the provisional session cursor and answers its explicit resync (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product.rs",
+      "owner": "crate::product_seal",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 200,
+        "syntax_facts": 285
+      },
+      "rationale": "The seal checks capacity and the per-record ceiling on the exact record its final stores (the client's JSON text, 1eaf5a5b) before publishing its intent, and answers another operation's seal 409 sealed (fcbd8bd5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product.rs",
+      "owner": "crate::product_seal",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 200,
+        "syntax_facts": 285
+      },
+      "rationale": "The seal checks capacity and the per-record ceiling on the exact record its final stores (the client's JSON text, 1eaf5a5b) before publishing its intent, and answers another operation's seal 409 sealed (fcbd8bd5).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product.rs",
+      "owner": "crate::render_product_read",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:ordinary-call::5dd710938bd0d475": 1,
+        "unwrap_site:path::3311b7b0ec5c14cf": 13,
+        "unwrap_site:path::3e18471a105d8dcc": 1
+      },
+      "rationale": "The product read renders the session cursor that carries a provisional continuation (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/product/consumer_pull.rs",
+      "owner": "crate::product_consumer_pull",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 93,
+        "syntax_facts": 129
+      },
+      "rationale": "Pull delivery serves records as the client's stored JSON text (1eaf5a5b).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::cast_possible_truncation",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::start",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 289,
+        "syntax_facts": 589,
+        "unwrap_site:ordinary-call::2a637e05f6f92bc6": 1,
+        "unwrap_site:path::2d6401022ffa52ab": 2
+      },
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard/transaction/append.rs",
+      "owner": "crate::CommitTransaction < '_ >::append",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:path::6162591f71d8fe40": 14
+      },
+      "rationale": "An append checks the persisted, segment-scoped seal fence, reloaded when an engine loses its cache (TLA-002-F1).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard/transaction/maintenance.rs",
+      "owner": "crate::CommitTransaction < '_ >::close",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 29,
+        "syntax_facts": 48
+      },
+      "rationale": "A close stages the durable seal fence row and routes its SealSuperseded refusal through the durability barrier (TLA-002-F1, e953ef28).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard/transaction/maintenance.rs",
+      "owner": "crate::CommitTransaction < '_ >::fence",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 28,
+        "syntax_facts": 56,
+        "unwrap_site:ordinary-call::0a812afb564ed2bd": 1,
+        "unwrap_site:ordinary-call::2ab393efe672a108": 1,
+        "unwrap_site:path::04f862a1ecfaea81": 1,
+        "unwrap_site:path::0635d081387f3501": 3,
+        "unwrap_site:path::3186235c5e309c88": 2,
+        "unwrap_site:path::6ca6ecb8786092f2": 3,
+        "unwrap_site:path::95270985d1d4b887": 5,
+        "unwrap_site:path::a3a3439e11de0b0b": 3,
+        "unwrap_site:path::acea5464b965a836": 2,
+        "unwrap_site:path::f472b30691ef0832": 1
+      },
+      "rationale": "The fence op persists the segment-scoped seal fence row, so an engine replacement reloads it (TLA-002-F1).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard/transaction/maintenance.rs",
+      "owner": "crate::CommitTransaction < '_ >::seal_fence",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "syntax_facts": 76,
+        "unwrap_site::be84b1623ff366ad": 2,
+        "unwrap_site:ordinary-call::0a812afb564ed2bd": 1,
+        "unwrap_site:ordinary-call::0b71d0be929a95c4": 1,
+        "unwrap_site:ordinary-call::5a1888a82a85507e": 1,
+        "unwrap_site:ordinary-call::8aee46217d7caf85": 1,
+        "unwrap_site:ordinary-call::a495a9d893c6c9b0": 1,
+        "unwrap_site:ordinary-call::b28dcfcb3b23a6ab": 1,
+        "unwrap_site:ordinary-call::c351a53484abb1ce": 1,
+        "unwrap_site:ordinary-call::cbb688a38263a5ad": 1,
+        "unwrap_site:ordinary-call::d16829374e73356a": 1,
+        "unwrap_site:path::04f862a1ecfaea81": 1,
+        "unwrap_site:path::1cfba7e5241c9c32": 1,
+        "unwrap_site:path::2679e427ea83675d": 2,
+        "unwrap_site:path::2824a7ccda2caa72": 1,
+        "unwrap_site:path::3186235c5e309c88": 2,
+        "unwrap_site:path::33d0532e5be52818": 1,
+        "unwrap_site:path::56e356e0cbfff92b": 1,
+        "unwrap_site:path::58b38fc01db34a42": 1,
+        "unwrap_site:path::600bc671ea2506ca": 1,
+        "unwrap_site:path::6162591f71d8fe40": 2,
+        "unwrap_site:path::6ca6ecb8786092f2": 3,
+        "unwrap_site:path::7af5456c96eb9dae": 1,
+        "unwrap_site:path::932b6f5bb6795de5": 2,
+        "unwrap_site:path::95c8a5710d194a76": 1,
+        "unwrap_site:path::a3a3439e11de0b0b": 4,
+        "unwrap_site:path::acea5464b965a836": 5,
+        "unwrap_site:path::ca6ed938664b68f4": 1,
+        "unwrap_site:path::f472b30691ef0832": 1,
+        "unwrap_site:path::f6f6e825b5eb244c": 1,
+        "unwrap_sites": 2
+      },
+      "rationale": "Seal-fence lookup reads the persisted fence row when the cached fence is absent after an engine replacement (TLA-002-F1).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "src/shard/transaction/mod.rs",
+      "owner": "crate::CommitTransaction < 'a >::reject",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:ordinary-call::99d5c2babfe2b2ba": 1,
+        "unwrap_site:ordinary-call::b3ad6e8f4d32917c": 1,
+        "unwrap_site:path::055f556b432b30c2": 1,
+        "unwrap_site:path::902d0b71c1fd5ced": 1,
+        "unwrap_site:path::ca6ed938664b68f4": 1,
+        "unwrap_site:path::f1068910294abcc0": 1,
+        "unwrap_site:path::f6f6e825b5eb244c": 2
+      },
+      "rationale": "A rejected group drops the provisional seal fences it staged, so a refused group leaves no authoritative fence behind (TLA-002-F2); the unwraps moved here from close.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "unreachable_pub",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::postings",
+      "scope": "module",
+      "lint": "unused_imports",
+      "metrics": {
+        "nested_items": 126,
+        "scope_lines": 1397,
+        "syntax_facts": 2601
+      },
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::product_cursor",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "field_site:crate::ReadCursor::Durable::<tuple-field>:c37df2435d40d20b": 1,
+        "field_site:crate::ReadCursor::Session::<tuple-field>:afb905132d98e15d": 1,
+        "field_site:crate::SessionCursor::digest:17cdcf435a202410": 1,
+        "field_site:crate::SessionCursor::from:3b62874f03b6b7c1": 1,
+        "field_site:crate::SessionCursor::history:956989b20c9785c9": 1,
+        "field_site:crate::SessionCursor::position:3d27b5976863f6dc": 1,
+        "field_site:crate::SessionCursor::recover:4e2dc0f7dc21ecb4": 1,
+        "fields": 27,
+        "nested_items": 110,
+        "scope_lines": 942,
+        "syntax_facts": 2057
+      },
+      "rationale": "The harness includes src/product_cursor.rs verbatim; it grew with the provisional V3 session cursor that proves the history it continues (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::product_cursor",
+      "scope": "module",
+      "lint": "unreachable_pub",
+      "metrics": {
+        "nested_items": 110,
+        "scope_lines": 942,
+        "syntax_facts": 2057
+      },
+      "rationale": "The harness includes src/product_cursor.rs verbatim; it grew with the provisional V3 session cursor that proves the history it continues (TLA-018-F3, 55881d7a).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    }
+  ],
   "schema": 1
 }

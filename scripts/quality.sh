@@ -14,6 +14,13 @@ cargo fmt --all -- --check
 cargo test --locked -p streams-quality-syntax
 cargo build --locked -p streams-quality-syntax
 python3 -m unittest discover -s scripts/quality -v
+# The formal-verification manifest names real harnesses, models and
+# assumptions, and every claimed result has a structurally valid receipt:
+# an invalid or missing receipt fails here. A stale receipt (inputs changed
+# since it was recorded) is only reported: the formal CI job re-runs what a
+# change affects, and scripts/release-gate.sh requires `check --fresh`
+# (verification/README.md, "Three levels of enforcement").
+python3 scripts/quality/formal.py check
 python3 -m unittest discover -s scripts/effective-config -v
 # The JSON goes to a file, so a failed clippy would otherwise stop here with
 # no finding on screen: the ratchet always reads it and prints what the

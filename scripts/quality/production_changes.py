@@ -60,7 +60,9 @@ def fixed_attribute_inputs(before, after, old_facts, new_facts):
 
 def normalized_source(source, parsed, fixed_attributes=()):
     # Opaque templates cannot establish this proof. Do not use the scanner's
-    # filename-based test hints: only a direct Rust cfg(test) can erase an item.
+    # filename-based test hints: only a direct cfg(test) or cfg(kani) can erase
+    # an item. A whole file needs its own inner cfg, or the Kani harness layout
+    # (`<module>/proofs.rs`), whose parent declaration the source gate enforces.
     if 'tokens' not in parsed:
         return None
     if parsed['test_only_file']:

@@ -152,11 +152,25 @@ run*: varint gap_offsets            // offsets skipped since prev run end
 ```
 
 Pages self-describe (header/runs disagreement or key/header first-
-offset mismatch = corruption → the §8.6 envelope). Encoded pages cap
+offset mismatch = corruption → the §8.6 envelope). Two gathers that cut
+the same rows into different chunks (a rescan's re-gather over chunks
+still in flight, or a new owner's over flushed chunks whose advances
+never landed) leave pages whose spans overlap. Each page is complete
+over its own span, so readers admit an overlapping page only when it
+lists exactly the offsets already admitted over the common span, and
+keep its part past them; a disagreeing overlap is corruption. Encoded pages cap
 at POSTINGS_PAGE_MAX_ENCODED_BYTES = 32 KiB; the builder splits a
 bucket into further pages (fresh page_first) at the cap. The byte
 fields let the read planner choose between scanning exact runs,
 combining nearby runs, or reading one envelope and filtering.
+
+Zero pages for a key over an absorbed range are read as "no matches".
+A corrupt page is detected. A page or canonical row lost after it was
+durable is not: the reader cannot tell it from an absent key.
+Completeness against that loss rests on storage assumptions today. DST
+invariant H11 promises more, and the choice between a coverage mechanism
+and a revised contract is an open owner decision
+(docs/dst/DST-EXPANSION-SPEC.md §9.12.2).
 
 Postings pages enter the SAME history WriteBatch and flush as their
 canonical rows. Therefore postings add **no** additional Class A

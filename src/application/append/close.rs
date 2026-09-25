@@ -6,13 +6,19 @@ pub(super) struct ClosePlan {
     pub(super) operation: String,
     pub(super) generation: Option<u64>,
     pub(super) owed_final: bool,
+    /// This attempt installed the claim it carries, after its own content
+    /// was validated. Only such an attempt's definitive refusal proves its
+    /// final undeliverable; an exact retry that joined or renewed another
+    /// attempt's claim leaves it to that attempt (TLA-003-F5).
+    pub(super) installed_claim: bool,
     pub(super) synthetic_producer: bool,
     pub(super) producer: Option<ProducerReq>,
     pub(super) sealed_reject_new: Option<SealedReject>,
 }
 
-/// Authenticate a final's execution token and plan the close. An owed
-/// final's claim is renewed by `install_intent`, after validation.
+/// Authenticate a final's execution token and find the owed claim this close
+/// resumes. An exact retry joins that claim at the generation it observed;
+/// only [`install_intent`], once the retry's content is valid here, renews it.
 pub(super) async fn prepare_close(
     state: &AppendService,
     desc: &StreamDesc,
@@ -62,12 +68,21 @@ pub(super) async fn prepare_close(
             );
         }
     }
-    let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
-        sl.owes_final()
+    // Only a close resumes an owed final. The close flag is not part of the
+    // operation identity, so a plain append with the final's body and
+    // coordination would otherwise pass as its exact retry: it would skip
+    // the Sealing refusal, renew the claim and land the record twice.
+    let owed_claim = desc.sealing.as_ref().filter(|sl| {
+        close
+            && sl.owes_final()
             && (sl.operation_id == this_close_op
                 || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|a| a.op_id.as_str()))
     });
-    let raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|a| a.generation);
+    let is_owed_final = owed_claim.is_some();
+    let raw_seal_gen = match seal_auth {
+        Some(auth) => Some(auth.generation),
+        None => owed_claim.map(|sl| sl.claim_generation),
+    };
 
     let synthetic_producer = close && !body.is_empty() && producer.is_none();
     if synthetic_producer {
@@ -99,6 +114,7 @@ pub(super) async fn prepare_close(
         operation: this_close_op,
         generation: raw_seal_gen,
         owed_final: is_owed_final,
+        installed_claim: false,
         synthetic_producer,
         producer,
         sealed_reject_new,
@@ -133,9 +149,13 @@ async fn closed_tail_failure(state: &AppendService, desc: &StreamDesc) -> Append
     AppendFailure::declared_closed(seg.seg_id, desc.segments.is_some(), next)
 }
 
-/// Publish the close's lifecycle write, a fresh intent or the renewal of the
-/// owed final it resumes, only after deterministic validation: malformed or
-/// refused closes leave no debt and renew nothing.
+/// Publish or renew intent only after deterministic validation: malformed
+/// closes leave no debt. Validation includes this instance's ingest capacity
+/// and record ceiling, which may be below the instance that accepted the
+/// claim. An exact retry refused by them, 413 in `parse_content` or with a
+/// deferred refusal, therefore leaves the owed claim as it found it (TLA-003-F4);
+/// the deferred one still reaches the committer, which acknowledges a
+/// committed final as a duplicate so the retry marks and seals it.
 pub(super) async fn install_intent(
     state: &AppendService,
     desc: &StreamDesc,
@@ -151,46 +171,22 @@ pub(super) async fn install_intent(
     let this_close_op = &plan.operation;
     #[cfg(test)]
     let name = desc.sref().name().as_str().to_string();
-    if is_owed_final && seal_auth.is_none() {
+    if is_owed_final && seal_auth.is_none() && deferred.is_none() {
         // Resuming an owed final renews only its own claim, and only now,
         // after deterministic validation (external review §5): a retry the
-        // content owner refused has written nothing.
-        match crate::application::lifecycle::renew_owed_claim(
-            &state.lifecycle,
-            &desc.sref(),
-            this_close_op,
-            &desc.stream_epoch,
-        )
-        .await
-        {
-            Ok(Some(g)) => plan.generation = Some(g),
-            Ok(None) => {
-                return fail(
-                    FailureClass::Conflict,
-                    AppendCode::Sealed,
-                    "the seal this close was resuming has been superseded",
-                );
-            }
-            // Only a registry read or write failure: nothing was renewed,
-            // so the close answers what its completion answers, retry.
-            Err(e) => {
-                return fail(
-                    FailureClass::Unavailable,
-                    AppendCode::SealIncomplete,
-                    &e.to_string(),
-                );
-            }
-        }
+        // content owner refused, or deferred, has written nothing.
+        plan.generation = Some(renew_owed_final(state, desc, this_close_op).await?);
     }
     if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
-        let intent = if entries.is_empty() {
-            crate::registry::SealIntent::Empty
-        } else {
+        let carries_final = !entries.is_empty();
+        let intent = if carries_final {
             crate::registry::SealIntent::Final {
                 routing_key: command.routing_key.clone(),
                 request_hash: this_close_op.clone(),
                 final_committed: false,
             }
+        } else {
+            crate::registry::SealIntent::Empty
         };
         match crate::application::lifecycle::begin_sealing_for_close(
             &state.lifecycle,
@@ -200,11 +196,20 @@ pub(super) async fn install_intent(
         )
         .await
         {
-            Ok(g) => {
-                if let Some(g) = g {
-                    plan.generation = Some(g);
+            Ok(Some((g, installed))) => {
+                plan.generation = Some(g);
+                plan.installed_claim = installed;
+                // The claim is now this operation's (installed, taken over or
+                // renewed). The admission snapshot may have shown another
+                // operation's claim: its Sealing refusal no longer applies, or
+                // this final would be refused as Closed and release the claim
+                // it just took (TLA-003-F2).
+                if carries_final {
+                    plan.owed_final = true;
+                    plan.sealed_reject_new = None;
                 }
             }
+            Ok(None) => {}
             Err(e) => return Err(intent_refused(&e)),
         }
         #[cfg(test)]
@@ -218,6 +223,37 @@ pub(super) async fn install_intent(
     }
 
     Ok(())
+}
+
+/// Renew an owed-final claim for its own exact retry: fresh lease, fresh
+/// generation, so no fence or takeover can stand above the active retry.
+async fn renew_owed_final(
+    state: &AppendService,
+    desc: &StreamDesc,
+    operation: &str,
+) -> Result<u64, AppendFailure> {
+    let renewed = crate::application::lifecycle::renew_owed_claim(
+        &state.lifecycle,
+        &desc.sref(),
+        operation,
+        &desc.stream_epoch,
+    )
+    .await;
+    match renewed {
+        Ok(Some(generation)) => Ok(generation),
+        Ok(None) => fail(
+            FailureClass::Conflict,
+            AppendCode::Sealed,
+            "the seal this close was resuming has been superseded",
+        ),
+        // Only a registry read or write failure: nothing was renewed, so
+        // the close answers what its completion answers, retry.
+        Err(e) => fail(
+            FailureClass::Unavailable,
+            AppendCode::SealIncomplete,
+            &e.to_string(),
+        ),
+    }
 }
 
 /// A close whose intent was not installed has sealed nothing. Another
@@ -244,7 +280,7 @@ fn intent_refused(error: &crate::application::lifecycle::SealError) -> AppendFai
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "complete; completion takes the state, descriptor, key, claim, outcome and reply parts as the close resolved them; a request struct would exist only for this signature"
+    reason = "complete; completion takes the state, descriptor, command, the close plan with whether this attempt installed its claim, the content flag and the outcome as the close resolved them; a request struct would exist only for this signature"
 )]
 pub(super) async fn complete(
     state: &AppendService,
@@ -263,6 +299,7 @@ pub(super) async fn complete(
                 generation: plan.generation,
                 carries_content,
                 resumes_owed_final: plan.owed_final,
+                installed_claim: plan.installed_claim,
             },
             outcome,
         )

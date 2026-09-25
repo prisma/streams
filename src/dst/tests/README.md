@@ -10,6 +10,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Producer ordering and handoff | `producer_protocol`, `producer_handoff` |
 | History absorption and budgets | `history_absorption`, `history_gather`, `history_recovery` |
 | Read protocols and visibility | `reads_applied`, `reads_history`, `reads_product`, `reads_raw`, `reads_ring` |
+| JSON record fidelity (stored text, admission, identities, every read surface) | `json_fidelity` |
 | Lifecycle and topology | `lifecycle_*`, `fork_*`, `seal_*`, `topology_*`, `product_lifecycle` |
 | Consumer delivery and deletion | `consumer_atomicity`, `consumer_delete`, `consumer_generations`, `consumer_product`, `consumer_saga` |
 | Watches and live delivery | `watch_observation`, `sse_delivery`, `livefeed_*` (incl. `livefeed_engine_retired`) |

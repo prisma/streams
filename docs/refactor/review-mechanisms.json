@@ -1184,9 +1184,9 @@
       "name": "r03a_mixed_transaction_preserves_every_row_reply_and_publication",
       "before_commit": "89884ab114b22929aa93707361e9e8d52c762bc2",
       "before_sha256": "940599f041678935429f3f7443f1f452085df84c9fa48c02ccf9578cf79f4c7f",
-      "after_sha256": "bf37a0aae5e06ba86fba41c4bca669e8f5ba2f0508dc6eb36cf6d92452c85eb7",
-      "finding": "R17-B",
-      "reason": "Inspect the same groups through CommitHandoff.pending() instead of a bare vector. Every exact row/reply/accounting/publication assertion is unchanged."
+      "after_sha256": "3d9f83888ed86cbc609bbbf47d850267ea080b9e570ec34cc0d6c8a180874bd3",
+      "finding": "R17-B/TLA-002-F2",
+      "reason": "Inspect the same groups through CommitHandoff.pending() instead of a bare vector. Every exact row/reply/accounting/publication assertion is unchanged. TLA-002-F2 then changed one assertion on purpose: a failed group no longer keeps its staged seal fence cached, so the cached fence is None after every failure. A staged fence that survives its failed group is not conservative once the SealSuperseded refusal it causes is definitive. The mutation-lane tests then commit the group through a helper that fails if the held dispatch gate holds it; no assertion changed."
     },
     {
       "file": "src/dst/tests/security_revocation.rs",

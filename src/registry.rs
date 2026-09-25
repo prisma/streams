@@ -976,12 +976,11 @@ impl Registry {
         }
     }
 
-    /// Replace a dead (deleted/expired) descriptor with a fresh incarnation.
-    /// Predicated CAS: the replacement applies only while the current
-    /// descriptor is still dead per `still_dead`. Racing recreators get
-    /// one winner; a decline returns the current descriptor `still_dead`
-    /// refused (`(false, current)`): live, or retained for its forks. What
-    /// it replaces is first recorded as a closure debt (`replaced.rs`).
+    /// Replace a dead (deleted/expired) descriptor with a fresh incarnation. Predicated CAS: the
+    /// replacement applies only while the current descriptor is still dead per `still_dead`. Racing
+    /// recreators get one winner; a decline returns the current descriptor `still_dead` refused
+    /// (`(false, current)`): live, or retained for its forks. What it replaces is first recorded:
+    /// its closure debt (`replaced.rs`), then any fork release it owes (`fork_debt.rs`).
     pub(crate) async fn recreate(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1016,6 +1015,7 @@ impl Registry {
                 return Ok((false, current));
             }
             self.record_replaced(&current).await?;
+            self.index_overwritten_debt(&current).await?;
             match self
                 .store
                 .put_opts(
@@ -1039,9 +1039,8 @@ impl Registry {
         })
     }
 
-    /// CAS-update the descriptor (delete = tombstone). Production callers
-    /// converted to fenced APIs; kept as the corruption fail-closed probe
-    /// (tests) pending a Stage-4 cleanup decision.
+    /// CAS-update the descriptor (delete = tombstone). Production callers converted to fenced APIs;
+    /// kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision.
     #[cfg(test)]
     pub(crate) async fn update<F: Fn(&mut PersistedDescriptor)>(
         &self,
@@ -1445,6 +1444,7 @@ mod cache;
 mod catalog;
 #[cfg(test)]
 mod failpoints;
+pub(crate) mod fork_debt;
 pub(crate) mod replaced;
 #[cfg(test)]
 mod resolution_tests;

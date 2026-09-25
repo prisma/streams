@@ -16,7 +16,7 @@ Catalogue source: `docs/dst/SCENARIO-CATALOG.md` (189 scenarios).
 ## Counts
 
 - scenarios inventoried: **189**
-- mapped to concrete tests: **143** (full 117, partial 24, external 2)
+- mapped to concrete tests: **143** (full 116, partial 25, external 2)
 - unmapped (no concrete test): **46**
 
 Status labels as recorded in the catalogue:

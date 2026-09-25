@@ -128,9 +128,12 @@ pub(super) fn decide_claim(
 /// Identity of a seal-with-final operation: the record it promised,
 /// under the routing key it promised it for. A retry of the same seal
 /// derives the same id and resumes; anything else is a different
-/// operation and may not finish this one.
+/// operation and may not finish this one. `record` is the stored text
+/// of the client's final (`creation::json_record`), so the id depends on
+/// the client's bytes alone, never on a parser or formatter. v3 hashes that
+/// text; v2 hashed a serde re-serialisation, so the two never collide.
 pub(crate) fn seal_op_id_full(
-    final_value: &serde_json::Value,
+    record: &[u8],
     routing_key: &str,
     producer: Option<(&str, &str, &str)>,
 ) -> String {
@@ -140,13 +143,18 @@ pub(crate) fn seal_op_id_full(
     // different producer coordination are different operations: sharing
     // one id let a request that was definitively refused tear down the
     // intent a concurrent valid attempt was still committing under.
-    let record = final_value.to_string();
     let (pid, pep, pseq) = producer.unwrap_or(("", "", ""));
     let mut h = Sha256::new();
-    h.update(b"prisma-seal-v2\0");
-    for part in [routing_key, &record, pid, pep, pseq] {
+    h.update(b"prisma-seal-v3\0");
+    for part in [
+        routing_key.as_bytes(),
+        record,
+        pid.as_bytes(),
+        pep.as_bytes(),
+        pseq.as_bytes(),
+    ] {
         h.update((part.len() as u64).to_le_bytes());
-        h.update(part.as_bytes());
+        h.update(part);
     }
     crate::crypto::hex(&h.finalize()[..16])
 }
@@ -190,13 +198,24 @@ pub(crate) struct SealAuthz {
 }
 
 /// What a refused FINAL append does to the seal intent it belongs to
-/// — ONE policy, shared verbatim by the raw and product surfaces
-/// (they previously kept separate stringly-typed lists, which drifted:
-/// the product list named codes its own translator never produces, so
-/// stale-epoch was "retained" in the comment and definitive in fact).
+/// — ONE policy for both surfaces (they previously kept separate
+/// stringly-typed lists, which drifted: the product list named codes its
+/// own translator never produces, so stale-epoch was "retained" in the
+/// comment and definitive in fact). The raw close applies
+/// [`final_err_disposition`] to the committer's error, and releases only
+/// for the attempt that installed the claim: a record ceiling is per
+/// instance, so a retry's `BadBody` proves nothing about its original
+/// (TLA-003-F5, `complete_raw_close`); the product seal
+/// classifies its typed `AppendFailure` with `definitively_rejected`,
+/// which must agree on every committer error: the KANI-042 proof checks
+/// both against this table.
 ///
-/// After round 11 every one of these verdicts is durability-barriered,
-/// and after round 8 every claim is generation-fenced — so releasing a
+/// After round 11 (TLA-002-F2 for `SealSuperseded`) every one of these
+/// verdicts that rests on committer state is durability-barriered: it is
+/// answered once everything staged before it is durable, and a lost group
+/// answers `Internal` or `Moved` instead. A deferred content refusal
+/// (`CtMismatch`, `BadBody`) rests on no committer state and is answered at
+/// once. After round 8 every claim is generation-fenced — so releasing a
 /// definitively-refused generation's intent can never destroy a
 /// concurrent exact retry (the retry renewed to a newer generation the
 /// release cannot name).
@@ -221,6 +240,8 @@ pub(crate) enum FinalDisposition {
 
 pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposition {
     use crate::shard::AppendErr::*;
+    // Every variant is named: a new refusal must choose whether it releases
+    // owed-final debt instead of inheriting either verdict from a default.
     match e {
         ProducerStale { .. }
         | ProducerSeqReused
@@ -230,7 +251,31 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
         | Closed { .. }
         | SealSuperseded => FinalDisposition::DefinitivelyRejected,
         // A producer gap or epoch/sequence disagreement may still resolve
-        // once the producer catches up, like every other error.
-        _ => FinalDisposition::AmbiguousOrTransient,
+        // once the producer catches up; an internal failure or a moved
+        // shard is about the moment.
+        ProducerGap { .. } | ProducerEpochSeq | Internal(_) | Moved => {
+            FinalDisposition::AmbiguousOrTransient
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs;
+
+#[cfg(test)]
+mod tests {
+    /// The product seal's operation id over the repository's float example.
+    /// A parser, formatter or serde change can no longer move it: a failure
+    /// here is an identity change that turns in-flight seal retries into
+    /// conflicts, and needs a new domain tag and a rollout note.
+    #[test]
+    fn seal_operation_ids_are_golden() {
+        let record = br#"{"f":1.7802719962921167e-19}"#;
+        let id = super::seal_op_id_full;
+        assert_eq!(id(record, "", None), "dde70a03bdf3bcb2083a444b38ac9fa5");
+        assert_eq!(
+            id(record, "k", Some(("p", "1", "0"))),
+            "a9302ad7eada99064917c2f48a645981"
+        );
     }
 }

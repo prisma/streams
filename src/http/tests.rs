@@ -62,6 +62,48 @@ fn stream_ttl_refuses_windows_past_the_ceiling() {
     assert_eq!(parse_ttl_strict("18446744073709551616"), None);
 }
 
+/// An append response names the position a reader resumes at: the scalar
+/// offset token while the stream's segments are not materialized, the
+/// segment's epoch/segment token once they are, and the start before any
+/// record. A closed refusal names its closing position the same way.
+#[test]
+fn append_responses_name_the_resume_position() {
+    let header = |response: Response| {
+        let value = &response.headers()["stream-next-offset"];
+        value.to_str().unwrap().to_owned()
+    };
+    let appended = |seg_id, next_offset, materialized| {
+        let outcome = crate::application::append::AppendOutcome {
+            seg_id,
+            materialized,
+            next_offset,
+            last_offset: next_offset.saturating_sub(1),
+            duplicate: false,
+            closed: false,
+            producer: None,
+            appended_records: 1,
+            descriptor: crate::sse::feed::tests::test_desc("resume-position"),
+        };
+        header(render_append(Ok(outcome)))
+    };
+    let refused = |segment, next_offset, materialized| {
+        let closed = crate::shard::AppendErr::Closed { next_offset };
+        let failure =
+            crate::application::append::AppendFailure::from_commit(segment, materialized, closed);
+        header(render_append(Err(failure)))
+    };
+    for next in [0, 1, 42] {
+        for token in [appended(0, next, false), refused(0, next, false)] {
+            let scalar = crate::offsets::parse_scalar(&token).unwrap();
+            assert_eq!(scalar, next, "unsplit position {token}");
+        }
+        for token in [appended(3, next, true), refused(3, next, true)] {
+            let position = crate::offsets::parse(&token).unwrap();
+            assert_eq!(position, (3, next), "{token}");
+        }
+    }
+}
+
 /// The raw surface's position tokens and fork-offset refusals, pinned as
 /// bytes: clients store the tokens and read the refusal words, so no codec
 /// refactor may move a byte of either.

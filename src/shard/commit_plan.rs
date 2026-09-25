@@ -153,6 +153,9 @@ pub(super) fn seal_authorized(generation: Option<u64>, closing: bool, fence: u64
     }
 }
 
+#[cfg(kani)]
+mod proofs;
+
 /// What one absorbed advance copied: `len` stored frame bytes of the
 /// stream's records, starting at offset `from` (the gather's `chunk_cost`
 /// over the same rows the append path counted). The committer retires

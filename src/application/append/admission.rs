@@ -12,12 +12,12 @@ pub(super) fn admit_usage(
     desc: &StreamDesc,
     close_only: bool,
     valid_content: bool,
-    body_bytes: usize,
+    stored_bytes: usize,
     record_count: usize,
 ) -> Result<Arc<crate::usage::Counters>, AppendFailure> {
     let name_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let counters = if !close_only && valid_content {
-        match usage.admit_append(&name_hash, body_bytes as u64, record_count as u64) {
+        match usage.admit_append(&name_hash, stored_bytes as u64, record_count as u64) {
             Err(hit) => {
                 // Every refusal here is transient: parse_content has already
                 // answered 413 for anything larger than a fresh bucket, so
@@ -36,7 +36,7 @@ pub(super) fn admit_usage(
                 c.records
                     .fetch_add(record_count as u64, std::sync::atomic::Ordering::Relaxed);
                 c.bytes_in
-                    .fetch_add(body_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+                    .fetch_add(stored_bytes as u64, std::sync::atomic::Ordering::Relaxed);
                 c
             }
         }

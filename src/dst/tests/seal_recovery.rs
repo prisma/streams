@@ -243,7 +243,7 @@ async fn an_impossible_final_never_publishes_an_intent() {
     untouched("a partial producer trio").await;
 
     // A final no FRESH per-stream bucket admits (external review §5):
-    // the 413 names its limit, measured on the `[value]` wire body.
+    // the 413 names its limit, measured on the stored final record.
     let body = format!(r#"{{"final":"{}"}}"#, "x".repeat(10_000_000));
     let (st, _, b) = preq(
         addr,
@@ -262,7 +262,7 @@ async fn an_impossible_final_never_publishes_an_intent() {
             d["capacity"].as_u64(),
             d["requested"].as_u64()
         ),
-        (413, Some("bytes"), Some(10_000_000), Some(10_000_004)),
+        (413, Some("bytes"), Some(10_000_000), Some(10_000_002)),
         "{b}"
     );
     untouched("an over-capacity final").await;

@@ -1,0 +1,51 @@
+Per-step view of evidence/TLA-002_nc-no-newest-reservation.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = ( <<"rawseal", C0>> :> [seq |-> -1, hash |-> NONE] @@ <<"rawseal", C1>> :> [seq |-> -1, hash |-> NONE] )
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [claim |-> NONE, counter |-> 0, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [ held |-> 0, crash |-> 1, retire |-> 0, cancel |-> 0, timeout |-> 0, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      bud = (P0 :> 2 @@ T1 :> 1 @@ T2 :> 1)
+      owner = A
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]
+ 2 Issue
+      h[P0/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 3 FClaim
+      h[P0/1]: pc="check" gen=1 rep=NONE rej=FALSE
+      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> FALSE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
+ 4 Issue
+      h[T1/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 5 Lapse
+      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 1, sealed |-> FALSE, sealOp |-> NONE ]
+ 6 FClaim
+      h[T1/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+ 7 TReserve
+      h[T1/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 2, sealed |-> FALSE, sealOp |-> NONE ]
+ 8 TFence
+      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T1/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+ 9 Issue
+      h[T2/1]: pc="rs_prep" gen=NONE rep=NONE rej=FALSE
+10 RsPrep
+      h[T2/1]: pc="reserve" gen=NONE rep=NONE rej=FALSE
+11 TReserve
+      h[T2/1]: pc="fence" gen=NONE rep=NONE rej=FALSE
+      desc = [ claim |-> [ op |-> <<"product", C0, NONE, 0>>, gen |-> 1, fin |-> TRUE, com |-> FALSE, lap |-> TRUE ], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
+12 TFence
+      eng = [ fence |-> 0, q |-> << [ op |-> NONE, gen |-> 2, hid |-> <<T1, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ], [ op |-> NONE, gen |-> 3, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T2/1]: pc="fwait" gen=NONE rep=NONE rej=FALSE
+13 ProcessFence
+      eng = [ fence |-> 2, q |-> << [ op |-> NONE, gen |-> 3, hid |-> <<T2, 1>>, rej |-> FALSE, kind |-> "fence", dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[T1/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+      seg = [fence |-> 2, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+14 ProcessFence
+      eng = [fence |-> 3, q |-> <<>>, held |-> NONE]
+      h[T2/1]: pc="fwait" gen=NONE rep=[err |-> NONE, closed |-> FALSE, dup |-> FALSE] rej=FALSE
+      seg = [fence |-> 3, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+15 TInstall
+      eng = [fence |-> 3, q |-> << >>, held |-> NONE]
+      h[T1/1]: pc="check" gen=2 rep=NONE rej=FALSE
+      desc = [ claim |-> [ op |-> <<"product", C1, NONE, 0>>, gen |-> 2, fin |-> TRUE, com |-> FALSE, lap |-> FALSE ], counter |-> 3, sealed |-> FALSE, sealOp |-> NONE ]
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 2, staleEffect |-> FALSE, badInstall |-> TRUE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE ]

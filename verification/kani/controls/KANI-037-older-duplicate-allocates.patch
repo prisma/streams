@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -98,7 +98,7 @@
+                 current_epoch: epoch,
+             });
+         }
+-        if request.epoch == epoch && request.seq <= seq {
++        if request.epoch == epoch && request.seq == seq {
+             if request.seq == seq
+                 && request_hash != [0; 16]
+                 && request

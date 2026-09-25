@@ -102,6 +102,7 @@ impl ReadPage {
 }
 
 pub(crate) use super::read_batch::{PlainBatch, PlainRec};
+pub(crate) use super::read_continuation::{Continuation, ObservationKey, WriterHistory};
 use super::read_decode::decode_frames_into;
 pub(crate) use super::read_range::ReadRange;
 
@@ -120,11 +121,11 @@ pub(crate) struct ReadPage {
 // production does.
 #[expect(
     clippy::too_many_lines,
-    reason = "execute_segment; the ring, history and tail legs of one segment read share the boundary the plan fixed; splitting them would separate the legs from the boundary that orders them"
+    reason = "execute_segment; the ring, history and tail legs of one segment read share the boundary the plan fixed, which the tail leg revalidates at the plan visibility; splitting them would separate the legs from the boundary that orders them"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "execute_segment; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a page past a length never made durable"
+    reason = "execute_segment; a poisoned stream state may hold a half-advanced durable or applied frontier; recovering it could serve a page past a length never made durable or applied"
 )]
 async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let ReadPlan {
@@ -174,8 +175,9 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let mut subkeys = ReadKeys::new(key, epoch, hash);
 
     // The absorbed snapshot above and the tail scan below are a TOCTOU
-    // pair: the absorber can advance the boundary AND durably trim the
-    // shard log between them, leaving the tail scan a hole at
+    // pair: the absorber can advance the boundary AND trim the shard log
+    // between them (an applied scan sees the trim before it is durable,
+    // TLA-018-F1), leaving the tail scan a hole at
     // `[cursor, new_boundary)` that this loop would otherwise emit as a
     // "complete" page — permanently skipping records for a paginating
     // client (2026-07-27 boundary-race DST failure). Everything trim can
@@ -243,17 +245,25 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         .map_err(|e| e.to_string())?;
         // Revalidate the scan against concurrent absorption before
         // trusting it.
-        let raced_boundary =
-            absorption_race(engine, hash, &part, cursor, read_end, key_filter.is_none()).await?;
-        if let Some((durable, remote_v2)) = raced_boundary {
-            if durable > boundary {
-                // Adopt the remote LAYOUT FLAG with the remote boundary:
+        let raced_boundary = absorption_race(
+            engine,
+            hash,
+            &part,
+            cursor,
+            read_end,
+            key_filter.is_none(),
+            deliver,
+        )
+        .await?;
+        if let Some((raced, raced_v2)) = raced_boundary {
+            if raced > boundary {
+                // Adopt the stored LAYOUT FLAG with the stored boundary:
                 // in the first absorption's flush-to-dispatch window the
                 // in-memory snapshot still says v1 while the row that
                 // moved the boundary already says v2 — mixing the two
                 // refused a perfectly readable v2 range as v1.
-                boundary = durable;
-                hist_v2 = hist_v2 || remote_v2;
+                boundary = raced;
+                hist_v2 = hist_v2 || raced_v2;
                 continue; // the gap is in history now; re-serve from there
             }
             // A hole the boundary does not explain: never emit it as
@@ -695,7 +705,7 @@ mod read_contract_tests {
 #[path = "read_request.rs"]
 mod request;
 pub(crate) use request::{
-    ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart,
+    ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart, ScanStart,
 };
 
 /// One history range retains its physical identity and proven boundary while
@@ -768,12 +778,14 @@ async fn decode_history_range(
     Ok(decoded_all && completed && upto == range.upto)
 }
 
-/// A tail page is accepted only after ruling out a concurrent durable trim.
+/// A tail page is accepted only after ruling out a concurrent trim it saw.
 /// A retained dense durable-ring interval already proves what was inspected.
-/// Other filtered scans still need the remotely durable boundary/layout tuple.
+/// Other scans need the boundary/layout tuple at the scan's own visibility:
+/// an applied scan sees trims whose advance is not yet Remote-durable, so a
+/// Remote boundary would accept its hole as consumed (TLA-018-F1).
 #[expect(
     clippy::too_many_arguments,
-    reason = "absorption_race; the race check takes the engine, hash, page, cursor, end and filter flag the read loop already holds; a context struct would exist only for this signature"
+    reason = "absorption_race; the race check takes the engine, hash, page, cursor, end, filter flag and visibility the read loop already holds; a context struct would exist only for this signature"
 )]
 async fn absorption_race(
     engine: &Arc<ShardEngine>,
@@ -782,6 +794,7 @@ async fn absorption_race(
     cursor: u64,
     end: u64,
     unfiltered: bool,
+    visibility: Deliver,
 ) -> Result<Option<(u64, bool)>, String> {
     if part.proves_durable_ring(engine, hash, cursor) {
         return Ok(None);
@@ -812,7 +825,7 @@ async fn absorption_race(
         if gap {
             Some(
                 engine
-                    .durable_absorbed(&hash)
+                    .visible_absorbed(&hash, visibility)
                     .await
                     .map_err(|e| e.to_string())?,
             )
@@ -821,12 +834,12 @@ async fn absorption_race(
         }
     } else {
         // A filtered scan cannot distinguish "trimmed" from "did not
-        // match", so always ask the remotely-durable tracker.
-        let (durable, remote_v2) = engine
-            .durable_absorbed(&hash)
+        // match", so always ask the tracker at the scan's visibility.
+        let (absorbed, v2) = engine
+            .visible_absorbed(&hash, visibility)
             .await
             .map_err(|e| e.to_string())?;
-        (durable > cursor).then_some((durable, remote_v2))
+        (absorbed > cursor).then_some((absorbed, v2))
     })
 }
 

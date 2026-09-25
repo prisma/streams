@@ -282,6 +282,17 @@ fn delete_lifecycle(
         //
         // The debt is recorded in the SAME write as the tombstone, so a
         // crash between them is impossible.
+        // TLA-019-F4: index the parent debt this delete may create BEFORE
+        // the write that creates it. A request that dies after the
+        // tombstone, or one whose release below is inconclusive, leaves a
+        // marker the background reconciler settles; the client need not
+        // repeat a delete that answered success. A failed index write fails
+        // the delete before anything changed.
+        state
+            .registry
+            .record_fork_debt(&d)
+            .await
+            .map_err(|error| error.to_string())?;
         #[cfg(test)]
         crate::failpoints::pause_delete_before_decision(sref.name().as_str()).await;
         let epoch = d.stream_epoch.clone();
@@ -336,10 +347,11 @@ fn delete_lifecycle(
             // by design — which is exactly why the debt has to be
             // recorded ON the tombstone and cleared this way. An
             // absent-on-live-source release keeps the debt: the
-            // child's creator may still install the reference, and the
-            // next DELETE of this tombstone retries and removes it.
+            // child's creator may still install the reference, so the
+            // marker stays for the reconciler (or a repeated DELETE).
             if release_fork_ref(&state, d.ref_in_project(&src), &fid, &sep).await? {
                 clear_parent_debt(&state, &d.sref(), &epoch, Some((&src, &fid))).await?;
+                settle_marker(&state, &d).await;
             }
         }
         Ok(())
@@ -354,9 +366,10 @@ enum DeleteTransition {
 }
 /// Pay a tombstone's unpaid parent debt, then walk UP the fork chain: a
 /// crashed cascade leaves the debt on a hidden intermediate generation, and
-/// the only request a client will ever retry is the original delete of the
-/// leaf, so repairing only its descriptor left the ancestor pinned.
-async fn repair_tombstone(
+/// the only record of it is the leaf's (its repeated delete, or its marker in
+/// the fork-debt index, which the background reconciler pays through here),
+/// so repairing only its descriptor left the ancestor pinned.
+pub(super) async fn repair_tombstone(
     state: &Arc<CreationService>,
     d: &StreamDesc,
     parent_ref_pending: bool,
@@ -368,17 +381,18 @@ async fn repair_tombstone(
     if parent_ref_pending && let Some((src, fid, sep)) = parent {
         // Clear the debt only on a CONCLUSIVE release: an
         // absent reference on a live source may still be
-        // installed by a creator in flight, and this very
-        // retry is what repairs that crash later. A source
+        // installed by a creator in flight, and a later pass of
+        // this repair (the reconciler's) removes it. A source
         // recreated since the fork is conclusive too — the
         // incarnation this debt was owed to is gone.
         if release_fork_ref(state, d.ref_in_project(&src), &fid, &sep).await? {
             clear_parent_debt(state, &d.sref(), &d.stream_epoch, Some((&src, &fid))).await?;
+            settle_marker(state, d).await;
         }
     }
     // Then walk UP. A crashed cascade leaves the debt on a
-    // hidden intermediate generation, and the only request a
-    // client will ever retry is the original delete of the leaf.
+    // hidden intermediate generation, and the only record of it
+    // is the leaf's: its repeated delete or its index marker.
     // Repairing only this descriptor left the ancestor pinned
     // and reported success.
     // Each hop resolves in the project of the descriptor that
@@ -429,6 +443,19 @@ async fn repair_tombstone(
             .map(|g| anc.ref_in_project(&g.source));
     }
     Ok(())
+}
+
+/// Drop a debt's index marker once the release was conclusive. Best effort:
+/// a marker left behind names a tombstone that owes nothing, which the
+/// reconciler settles on its next visit.
+async fn settle_marker(state: &Arc<CreationService>, d: &StreamDesc) {
+    if let Err(error) = state
+        .registry
+        .settle_fork_debt(&d.sref(), &d.stream_epoch)
+        .await
+    {
+        tracing::warn!(stream = %d.sref(), "fork-debt marker left for the reconciler: {error}");
+    }
 }
 
 /// Advance every segment's storage clock to the persisted close stamp and

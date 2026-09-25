@@ -453,6 +453,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "STREAMS_AUTH_REFRESH_SECS",
         "30",
     ),
+    ("fork-debt-sweep-secs", "FORK_DEBT_SWEEP_SECS", "300"),
     ("streams-cursor-key", "STREAMS_CURSOR_KEY", ""),
     ("fleet-internal-token", "FLEET_INTERNAL_TOKEN", ""),
     ("fleet-auth-mode", "FLEET_AUTH_MODE", "static"),

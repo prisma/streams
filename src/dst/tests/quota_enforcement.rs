@@ -946,7 +946,7 @@ async fn max_streams_transition_seeds_from_reality() {
 }
 
 /// External review §5: a product append no fresh per-stream bucket admits
-/// (9,999,999 bytes; 10,000,001 as its `[value]` wire body) is refused 413
+/// (a 10,000,001-byte value, measured as the bytes it would store) is refused 413
 /// BEFORE the project's append volume (1 byte/s here) is charged, by the
 /// handler or, for a producer request, by the core; the next valid append
 /// owes nothing, and while the bucket refills the refusal is still the
@@ -974,7 +974,7 @@ async fn an_unadmittable_append_leaves_the_project_volume_quota_untouched() {
     ];
     let (path, big) = (
         "/v1/streams/c/records",
-        format!("\"{}\"", "x".repeat(9_999_997)),
+        format!("\"{}\"", "x".repeat(9_999_999)),
     );
     for headers in [&h[..], &producer[..]] {
         let (st, _, b) = preq(addr, "POST", path, headers, big.as_bytes()).await;

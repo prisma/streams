@@ -462,6 +462,20 @@
     }
   },
   {
+    "id": "HIS-019",
+    "owner": "src/history.rs and src/history/postings_read.rs",
+    "state": "partial",
+    "mechanism": "corrupt/missing page; canonical envelope scan, exact frames, honest incomplete/error.",
+    "disposition": "The corrupt-page leg is tested and enforced (read_history2_keyed falls back to the envelope scan). A postings page or canonical row lost after it was durable is not detected by the reader: zero pages read as absence, and a missing canonical row still completes its span. H11 stays as adopted; the owner must choose between a coverage mechanism and a deliberately revised contract (docs/dst/DST-EXPANSION-SPEC.md \u00a79.12.2, TLA-018-F2).",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/reads_history.rs::corrupt_postings_fall_back_to_the_envelope"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: a durable postings page or canonical row lost after absorption yields an honest partial or error, never a false complete page (or a recorded owner decision revising H11)."
+    }
+  },
+  {
     "id": "HIS-022",
     "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
     "state": "pending",

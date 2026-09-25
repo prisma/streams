@@ -68,6 +68,12 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(name: &str) -> Self {
+        Self::with_failpoints(name, Default::default()).await
+    }
+    async fn with_failpoints(
+        name: &str,
+        failpoints: Arc<fail_parallel::FailPointRegistry>,
+    ) -> Self {
         let store = crate::dst::FaultStore::new(
             Arc::new(object_store::memory::InMemory::new()),
             1718,
@@ -79,6 +85,7 @@ impl Fixture {
                     flush_interval: Some(Duration::from_millis(5)),
                     ..Default::default()
                 })
+                .with_fp_registry(failpoints)
                 .build()
                 .await
                 .unwrap(),
@@ -559,4 +566,154 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
         1u64.to_le_bytes()
     );
     replacement.close().await.unwrap();
+}
+
+/// TLA-005-F5 window. After SlateDB's batch writer answers a failed write,
+/// `run_lifecycle` logs the task's exit and only then records `closed_result`
+/// (slatedb 0717cc1 dispatcher.rs:337-358). The executor's own failpoint
+/// registry is private, so that log call is the one point of the window a
+/// caller can reach; production writes it through the tracing subscriber's
+/// synchronous writer. Parking it holds the window open.
+type ExitSlot = Arc<std::sync::Mutex<Option<(Arc<Semaphore>, std::sync::mpsc::Receiver<()>)>>>;
+struct WriterExit(ExitSlot);
+impl log::Log for WriterExit {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() == log::Level::Error
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        let text = record.args().to_string();
+        if !text.contains("task_name=writer") || !text.contains("oops") {
+            return;
+        }
+        let Some((entered, resume)) = self.0.lock().unwrap().take() else {
+            return;
+        };
+        entered.add_permits(1);
+        // The test closes the window by dropping its sender.
+        let parked = tokio::task::block_in_place(|| resume.recv_timeout(Duration::from_secs(30)));
+        if parked == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            eprintln!("TLA-005-F5: the batch-writer exit window timed out");
+        }
+    }
+    fn flush(&self) {}
+}
+struct ExitWindow {
+    entered: Arc<Semaphore>,
+    slot: ExitSlot,
+    _resume: std::sync::mpsc::Sender<()>,
+}
+impl ExitWindow {
+    fn arm(slot: &ExitSlot) -> Self {
+        let entered = Arc::new(Semaphore::new(0));
+        let (resume, parked) = std::sync::mpsc::channel();
+        *slot.lock().unwrap() = Some((entered.clone(), parked));
+        Self {
+            entered,
+            slot: slot.clone(),
+            _resume: resume,
+        }
+    }
+    async fn entered(&self) {
+        tokio::time::timeout(Duration::from_secs(10), self.entered.acquire())
+            .await
+            .expect("SlateDB's batch writer never logged its exit")
+            .unwrap()
+            .forget();
+    }
+}
+impl Drop for ExitWindow {
+    fn drop(&mut self) {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+/// TLA-005-F5: the first append's `db.write` fails after SlateDB applied the
+/// batch and made it visible to default reads. The retry (the same producer
+/// tuple, carrying `retry_hash`) arrives after that failure was answered and
+/// before the Db reports closed. Nothing durable justifies a duplicate success
+/// or a reused-sequence refusal for it.
+async fn post_apply_write_error(
+    name: &str,
+    exit: &ExitSlot,
+    retry_hash: [u8; 16],
+) -> Result<(), String> {
+    let failpoints = Arc::new(fail_parallel::FailPointRegistry::new());
+    let fixture = Fixture::with_failpoints(name, failpoints.clone()).await;
+    let engine = &fixture.engine;
+    let handle = engine.stream_handle(HASH).await.unwrap();
+    let status = engine.db.subscribe();
+    let durable_before = status.borrow().durable_seq;
+    let (put, wal) = (crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal);
+    let wal_parked = fixture.store.hold_class(put, wal, 1);
+    let window = ExitWindow::arm(exit);
+    fail_parallel::cfg(failpoints, "write-batch-post-commit", "1*return").unwrap();
+    let (request, first) = fixture.append();
+    engine.try_enqueue(request).unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), first)
+        .await
+        .unwrap()
+        .unwrap();
+    window.entered().await;
+    let row = producer_key(&HASH, &[7; 16], "writer");
+    let applied = engine.db.get(&row).await.map(|row| row.is_some());
+    let (mut request, retry) = fixture.append();
+    request.producer.as_mut().unwrap().request_hash = Some(retry_hash);
+    let admitted = engine.try_enqueue(request);
+    let retry = match admitted {
+        Ok(()) => Some(tokio::time::timeout(Duration::from_secs(2), retry).await),
+        Err(_) => None,
+    };
+    let durable_at_reply = status.borrow().durable_seq;
+    let remote = engine
+        .db
+        .get_with_options(
+            &row,
+            &ReadOptions {
+                durability_filter: DurabilityLevel::Remote,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|row| row.is_some());
+    eprintln!(
+        "TLA-005-F5 {name}: first={first:?} failed_row_readable={applied:?} \
+         retry_admitted={} retry={retry:?} durable_seq={durable_before}->{durable_at_reply} \
+         original_remote={remote:?} wal_puts_parked={} handle_applied_next={}",
+        retry.is_some(),
+        wal_parked.load(Ordering::SeqCst),
+        handle.state.lock().unwrap().applied.next,
+    );
+    drop(window);
+    fixture.finish().await;
+    assert!(
+        matches!(&first, Err(AppendErr::Internal(message)) if message.contains("oops")),
+        "the post-apply failpoint answers the original: {first:?}"
+    );
+    let verdict = retry.and_then(Result::ok).and_then(Result::ok);
+    let from_failed_batch = matches!(&verdict, Some(Ok(ack)) if ack.duplicate)
+        || matches!(&verdict, Some(Err(AppendErr::ProducerSeqReused)));
+    if from_failed_batch && !matches!(remote, Ok(true)) {
+        return Err(format!(
+            "{name}: the retry was decided from a failed batch that is not durable: \
+             {verdict:?} (durable_seq {durable_before}->{durable_at_reply}, \
+             original_remote={remote:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// One test owns the process log facade, and runs both forms through it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tla005_f5_a_failed_write_answers_nothing_from_its_batch() {
+    let exit = ExitSlot::default();
+    log::set_boxed_logger(Box::new(WriterExit(exit.clone())))
+        .expect("the lib tests install no other logger");
+    log::set_max_level(log::LevelFilter::Error);
+    // D2: the exact retry. D4: the same producer tuple with another body.
+    let duplicate = post_apply_write_error("tla005-f5-duplicate", &exit, [5; 16]).await;
+    let reuse = post_apply_write_error("tla005-f5-reuse", &exit, [6; 16]).await;
+    assert!(
+        duplicate.is_ok() && reuse.is_ok(),
+        "TLA-005-F5: {duplicate:?} {reuse:?}"
+    );
 }

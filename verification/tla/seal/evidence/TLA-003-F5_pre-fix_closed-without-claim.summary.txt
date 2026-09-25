@@ -1,0 +1,46 @@
+Per-step view of evidence/TLA-003-F5_pre-fix_closed-without-claim.txt (action, then the variables it changed; handlers: changed slots only).
+
+ 1 Initial predicate
+      lanes = (<<"rawseal", CX>> :> [seq |-> -1, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [fence |-> 0, closed |-> FALSE, finalRec |-> NONE, closer |-> NONE]
+      desc = [counter |-> 0, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      faults = [ held |-> 0, crash |-> 0, retire |-> 1, cancel |-> 1, timeout |-> 0, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      bud = (X :> 3 @@ S :> 1)
+      owner = B
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> FALSE, invalidIntent |-> FALSE, installOverMarked |-> FALSE, sealingAdmitted |-> FALSE ]
+ 2 Issue
+      bud = (X :> 2 @@ S :> 1)
+      h[X/1]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 3 FValidate
+      h[X/1]: pc="claim" gen=NONE rep=NONE rej=FALSE
+ 4 FClaim
+      desc = [ counter |-> 1, claim |-> [ lap |-> FALSE, fin |-> TRUE, com |-> FALSE, op |-> <<"raw", CX, NONE, 0>>, gen |-> 1 ], sealed |-> FALSE, sealOp |-> NONE ]
+      h[X/1]: pc="enqueue" gen=1 rep=NONE rej=FALSE inst=TRUE
+ 5 Issue
+      bud = (X :> 1 @@ S :> 1)
+      h[X/2]: pc="validate" gen=NONE rep=NONE rej=FALSE
+ 6 FValidate
+      h[X/2]: pc="enqueue" gen=1 rep=NONE rej=FALSE
+ 7 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 2>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", adm |-> FALSE, dfr |-> TRUE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/2]: pc="await" gen=1 rep=NONE rej=FALSE
+ 8 ProcessAppend
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      h[X/2]: pc="await" gen=1 rep=[err |-> "BadBody", closed |-> FALSE, dup |-> FALSE] rej=FALSE
+ 9 FRelease
+      desc = [counter |-> 1, claim |-> NONE, sealed |-> FALSE, sealOp |-> NONE]
+      h[X/2]: pc="idle" gen=NONE rep=NONE rej=FALSE
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE, installOverMarked |-> FALSE, sealingAdmitted |-> FALSE ]
+10 Replace
+      faults = [ held |-> 0, crash |-> 0, retire |-> 0, cancel |-> 1, timeout |-> 0, reg |-> 0, enq |-> 0, fread |-> 0 ]
+      owner = A
+11 Enqueue
+      eng = [ fence |-> 0, q |-> << [ hid |-> <<X, 1>>, op |-> X, gen |-> 1, rej |-> FALSE, kind |-> "append", adm |-> FALSE, dfr |-> FALSE, ahead |-> {} ] >>, held |-> NONE ]
+      h[X/1]: pc="await" gen=1 rep=NONE rej=FALSE inst=TRUE
+12 ProcessAppend
+      lanes = (<<"rawseal", CX>> :> [seq |-> 0, hash |-> NONE])
+      eng = [fence |-> 0, q |-> <<>>, held |-> NONE]
+      seg = [ fence |-> 0, closed |-> TRUE, finalRec |-> X, closer |-> <<"raw", CX, NONE, 0>> ]
+      h[X/1]: pc="await" gen=1 rep=[err |-> NONE, closed |-> TRUE, dup |-> FALSE] rej=FALSE inst=TRUE
+      hist = [ badClosed |-> FALSE, badSuccess |-> FALSE, fenceSeen |-> 0, staleEffect |-> FALSE, badInstall |-> FALSE, liveFenced |-> FALSE, earlyInstall |-> FALSE, badRelease |-> TRUE, invalidIntent |-> FALSE, installOverMarked |-> FALSE, sealingAdmitted |-> FALSE ] 18992 states generated, 5207 distinct states found, 1739 states left on queue. The depth of the complete state graph search is 12.

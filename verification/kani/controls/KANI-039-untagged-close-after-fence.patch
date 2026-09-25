@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -145,7 +145,7 @@
+ pub(super) fn seal_authorized(generation: Option<u64>, closing: bool, fence: u64) -> bool {
+     match generation {
+         Some(g) => g >= fence,
+-        None => !closing || fence == 0,
++        None => !closing || fence == 0 || closing,
+     }
+ }
+ 

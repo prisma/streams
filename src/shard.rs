@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use slatedb::config::{DurabilityLevel, WriteOptions};
+use slatedb::config::WriteOptions;
 use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -64,9 +64,9 @@ pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 /// hash), trim_safe_to and unabsorbed_bytes are backward-compatible
 /// extensions: v3 decoders read exactly `seq_len` seq bytes and ignore
 /// trailing bytes. `trim_safe_to` is the highest offset physical
-/// trimming may reach (the absorbed boundary as of the PREVIOUS
-/// advance — one advance of lag so in-flight readers holding a stale
-/// absorbed snapshot never lose their range); `unabsorbed_bytes` is the
+/// trimming may reach (the absorbed boundary before the latest advance:
+/// a snapshot at most one advance stale keeps its range; see
+/// `TailFields::trim_safe_to`); `unabsorbed_bytes` is the
 /// exact stored frame bytes in [absorbed, next), maintained by the
 /// committer so restart rediscovery sizes pending work truthfully
 /// instead of estimating (a single 32 MiB record used to estimate as
@@ -185,6 +185,14 @@ pub(crate) fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
     k.extend_from_slice(hash);
     k.push(b's');
     k.extend_from_slice(key_hash);
+    k
+}
+
+/// A segment's durable seal fence (tag `G`, u64 LE): the highest takeover generation fenced.
+pub(crate) fn seal_fence_key(hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17);
+    k.extend_from_slice(hash);
+    k.push(b'G');
     k
 }
 
@@ -587,12 +595,12 @@ pub(crate) struct TailFields {
     /// written by callers without a name identity or by older binaries.
     pub route: [u8; 16],
     /// Highest offset physical trimming may reach: the absorbed boundary
-    /// as of the PREVIOUS advance (one advance of lag, so in-flight
-    /// readers holding a stale absorbed snapshot never lose their
-    /// range). Trim maintenance moves `trimmed` toward this under a
-    /// GLOBAL per-commit delete budget — boundary publication and
-    /// physical trimming are decoupled so a 1,024-stream second
-    /// absorption wave can never build one multi-gigabyte delete batch.
+    /// before the latest advance. That lag keeps the range of a reader at
+    /// most one advance stale; a staler reader relies on `absorption_race`,
+    /// which revalidates each tail page against the absorbed boundary at
+    /// its scan's visibility (TLA-016-F2). `TrimTick` moves `trimmed` here
+    /// under a GLOBAL per-commit delete budget, so no absorption wave
+    /// builds one multi-gigabyte delete batch.
     pub trim_safe_to: u64,
     /// Exact stored frame bytes in [absorbed, next), maintained by the
     /// committer (appends add frame lengths; absorb advances subtract
@@ -937,7 +945,7 @@ pub(crate) enum CommitOp {
     TrimTick,
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
-    /// (deferred one round so in-flight readers never lose their range).
+    /// (one advance behind; `TailFields::trim_safe_to` says what that covers).
     /// `v2` marks the range as living in the SHARED per-shard partition
     /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
     /// history_v2 flag, which gates the read path's history source. Only
@@ -1119,6 +1127,8 @@ struct InFlightGroup {
 
 pub(crate) struct ShardEngine {
     pub prefix: String,
+    /// SlateDB writer epoch this engine claimed at open: the history its applied reads serve.
+    pub writer_epoch: u64,
     pub db: Arc<Db>,
     /// R29: whether the billing sweep may close this engine — the
     /// scheduler's custody and the external stamp that revokes it, owned
@@ -1133,34 +1143,23 @@ pub(crate) struct ShardEngine {
     maintenance: std::sync::RwLock<ShardMaintenance>,
     /// Per-shard backpressure latch (hysteresis lives with the shard).
     pub maintenance_shard_shed: std::sync::atomic::AtomicBool,
-    /// Object store the shard's DBs live on — held so the engine can
-    /// lazily open its shared history v2 partition.
+    /// Object store of the shard's DBs, held to lazily open the history v2 partition.
     data_store: Arc<dyn object_store::ObjectStore>,
-    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db
-    /// per shard at `{prefix}/history2`, opened lazily by whoever needs
-    /// it first (absorber gather lane or a v2 history read) and shared —
-    /// two independent opens would fence each other. Closed with the
-    /// engine; a new shard owner's open fences this one at the slatedb
-    /// layer, same dynamics as the per-stream v1 DBs.
+    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db per shard at
+    /// `{prefix}/history2`, opened lazily by whoever needs it first (absorber gather lane or
+    /// a v2 history read) and shared — two independent opens would fence each other. Closed with
+    /// the engine; a new shard owner's open fences this one, like the per-stream v1 DBs.
     history2: Arc<history_partition::HistoryPartition>,
     /// Pre-built SlateDB settings for `history2` (history knobs + the
     /// ONE process-wide compactor profile, from the engine's ShardConfig).
     history2_settings: slatedb::config::Settings,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
-    /// Seal fences by segment identity — ENGINE-level, deliberately
-    /// outside the evictable [`StreamHandle`], and deliberately WITHOUT
-    /// any expiry: an AppendReq has no maximum queue residence (a
-    /// timed-out HTTP handler drops only its receiver, and backpressure
-    /// can hold the queue arbitrarily long), so no wall-clock bound on
-    /// a fence is a proof about the request it exists to stop. One u64
-    /// per ever-fenced segment, for the engine's lifetime, is the
-    /// price of that proof; the map dies with the queue it protects. an AppendReq waiting in
-    /// the committer channel holds only the stream hash, so a handle
-    /// can be idle-evicted (or displaced by the resident cap) while a
-    /// stale claim-authorized write is still queued, and a fence that
-    /// lived in the handle would be reborn as zero when the committer
-    /// reloaded it. This map dies with the engine and its queue —
-    /// which is the exact lifetime the fence protects.
+    /// Seal fences by segment identity: a cache of the durable
+    /// [`seal_fence_key`] rows, ENGINE-level because a queued AppendReq
+    /// holds only the stream hash (an evictable handle would forget it)
+    /// and never expiring (a queue has no residence bound). A fresh engine
+    /// reloads the row, so a request that passed its claim check before an
+    /// engine replacement still meets the takeover's fence (TLA-002-F1).
     seal_fences: Mutex<HashMap<[u8; 16], u64>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<CommitHandoff>,
@@ -1321,24 +1320,20 @@ pub(crate) fn now_ms() -> i64 {
 impl ShardEngine {
     #[expect(
         clippy::too_many_lines,
-        reason = "ShardEngine::start; the committer, acker, pump and trim tickers are spawned from one place so their channels and handles are wired in one visible order; splitting it would hide which task owns each channel end"
+        reason = "ShardEngine::start; the committer, acker, pump and trim tickers are spawned from one place so their channels and handles are wired in one visible order; splitting it would hide which task owns each channel end. The engine value it builds also records the writer epoch the opened database claimed, one field line that spawns and wires nothing"
     )]
     #[expect(
         clippy::too_many_arguments,
-        reason = "ShardEngine::start; the engine takes its prefix, database, store, config, signal channel, park and maintenance row separately as the opener resolved them; a builder would exist for this single call site"
-    )]
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::start; a trim tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
+        reason = "ShardEngine::start; the engine takes its prefix, database, store, config, signal channel, park and maintenance row separately as the opener resolved them; a builder would exist for this single call site. The writer epoch is read from the database argument, so the argument list is unchanged"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "ShardEngine::start; the pump and trim tickers unwrap only the in-flight queue and trim-debt locks, and a poisoned one may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data"
+        reason = "ShardEngine::start; the pump and trim tickers unwrap only the in-flight queue and trim-debt locks, and a poisoned one may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data. The writer-epoch initializer calls two manifest accessors and adds no unwrap site"
     )]
     #[expect(
         clippy::cast_possible_truncation,
         clippy::excessive_nesting,
-        reason = "ShardEngine::start; the pump and ticker loops nest each flush, eviction and trim verdict inside the tick that produced it and stamp their gaps in whole milliseconds and microseconds that fit u64; flattening them or checking the stamps would separate the verdicts from the tick and restate the clock"
+        reason = "ShardEngine::start; the pump and ticker loops nest each flush, eviction and trim verdict inside the tick that produced it and stamp their gaps in whole milliseconds and microseconds that fit u64; flattening them or checking the stamps would separate the verdicts from the tick and restate the clock. The writer-epoch initializer adds neither a cast nor a nested block"
     )]
     pub(crate) fn start(
         prefix: String,
@@ -1363,6 +1358,7 @@ impl ShardEngine {
             crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
         let engine = Arc::new(ShardEngine {
             prefix,
+            writer_epoch: db.manifest().writer_epoch(),
             db,
             sweep_custody: crate::billing::SweepCustody::default(),
             maintenance: std::sync::RwLock::new(initial_maintenance),
@@ -1725,6 +1721,10 @@ impl ShardEngine {
                 // tick retries; trim work is never urgent enough to
                 // block behind.
                 if !ticker.trim_debt.lock().unwrap().is_empty() {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "ShardEngine::start; the trim-tick send: a tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
+                    )]
                     let _ = ticker.tx.try_send(CommitOp::TrimTick);
                 }
             }
@@ -2201,41 +2201,13 @@ impl ShardEngine {
         )
     }
 
-    /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
-    /// the strongest boundary any `DurabilityLevel::Remote` scan of the
-    /// shard log can have observed trims for. The published handle state is
-    /// NOT enough for that purpose: trim deletes become scan-visible when
-    /// their batch is durable, while `handle.state.durable` advances only
-    /// at dispatch, which can lag durability arbitrarily under load
-    /// (2026-07-27 boundary-race DST failure). Readers revalidating a tail
-    /// scan against concurrent absorption must consult this.
-    /// Remotely-durable `(absorbed, history_v2)` from the stored tail
-    /// row. Returned TOGETHER because they must be read consistently: a
-    /// reader that adopts a remote boundary while keeping a stale
-    /// in-memory layout flag would refuse a v2 history range as v1
-    /// (observed in the first-absorption flush-to-dispatch window).
+    /// The Remote-durable `(absorbed, history_v2)`: `visible_absorbed`
+    /// (`shard/record.rs`) at `Deliver::Durable`, for durable-only callers.
     pub(crate) async fn durable_absorbed(
         &self,
         hash: &[u8; 16],
     ) -> Result<(u64, bool), slatedb::Error> {
-        #[cfg(test)]
-        if let Ok((entered, release)) = record::TEST_MARKER_HOLD.try_with(Clone::clone) {
-            entered.notify_one();
-            release.notified().await;
-        }
-        let v = self
-            .db
-            .get_with_options(
-                tail_key(hash),
-                &slatedb::config::ReadOptions {
-                    durability_filter: DurabilityLevel::Remote,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(v.map(|b| stored_tail(&b))
-            .transpose()?
-            .map_or((0, false), |t| (t.absorbed, t.history_v2)))
+        self.visible_absorbed(hash, Deliver::Durable).await
     }
 
     /// Durable consumer-cursor hint for the pull pre-read window. A

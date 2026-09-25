@@ -93,12 +93,15 @@ pub(super) async fn open_engine_with_absorber(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    open_engine_with_absorber_layout(store, prefix).await
+    open_engine_with_absorber_cfg(store, prefix, crate::shard::ShardConfig::default()).await
 }
 
-pub(super) async fn open_engine_with_absorber_layout(
+/// The absorber rig over an explicit engine configuration (history cache,
+/// compactor cadence) for scenarios about the history partition itself.
+pub(super) async fn open_engine_with_absorber_cfg(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
+    cfg: crate::shard::ShardConfig,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
     let db = slatedb::Db::builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
@@ -120,7 +123,7 @@ pub(super) async fn open_engine_with_absorber_layout(
         prefix.to_string(),
         Arc::new(db),
         store.clone(),
-        crate::shard::ShardConfig::default(),
+        cfg,
         absorb_tx,
         None,
         __maint,
