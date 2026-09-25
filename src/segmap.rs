@@ -172,7 +172,7 @@ fn tiles_keyspace(ranges: &mut [(u64, u64)]) -> bool {
 }
 
 /// Why a persisted topology is refused. Typed rather than formatted where it
-/// is found, so validation allocates nothing and the KANI-028 proof need
+/// is found, so validation allocates nothing and a Kani harness over it need
 /// not model formatting; `Display` gives the registry's message.
 #[derive(Debug, PartialEq)]
 pub(crate) enum TopologyError {
@@ -291,7 +291,7 @@ impl SegmentMap {
         }
         // A linear scan, like each `get` the lineage check makes: a map holds
         // tens of segments, and a hashed set seeds from the OS random source,
-        // which the KANI-028 proof cannot model.
+        // which Kani cannot model (for a harness over validation, KANI-031).
         for (i, segment) in self.segments.iter().enumerate() {
             if self
                 .segments
