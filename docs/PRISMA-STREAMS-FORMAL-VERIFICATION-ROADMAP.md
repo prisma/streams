@@ -226,6 +226,33 @@ an owner that is not yet upgraded still treats a forwarded 2^64−1 as its tail
 | Expired, never-deleted fork child | open obligation (owner decision) | Expiry releases nothing: `DELETE` of an expired fork answers gone and there is no expiry sweep, so a source soft-deleted while an expired fork holds its reference stays retained. A recreation of the fork's name now indexes the reference it overwrites ("A recreation over an expired fork child indexes the reference it held"); whether expiry itself should release fork references needs the owner's decision. Real-code regression only; expiry is not modelled. |
 | TLA-019-F1 timing lapse | evidence gap | The model covers the lapse; no real-code test does. |
 
+### 0.8 Questions for the owner (future work)
+
+Each answer unblocks the §0.7 row named in brackets. Until then, the item
+stays open and is not counted as met.
+
+1. **T11.** Is the reconciled wording in DST-EXPANSION-SPEC §9.12.1 the
+   intended requirement? [Owner decisions]
+2. **H11.** Keep H11 and add a per-chunk coverage record the reader checks
+   (option A), or deliberately revise the contract under §2.10 with
+   compensating checks (option B)? [Owner decisions; service obligations]
+3. **H14.** What convergence bound should GC meet on a partition that stops
+   receiving writes (candidate `min_age + 2 × gc_interval`), and by which
+   mechanism? [Owner decisions; service obligations]
+4. **Reclamation.** What policy deletes a hard-deleted incarnation's rows:
+   which rows, after what delay, and behind which prerequisites?
+   [Service obligations]
+5. **Expired forks.** Should a fork's expiry release its reference on the
+   source, for example through a TTL sweep or the reconciler, given that a
+   TTL renewal can revive an expired incarnation? [Expired, never-deleted
+   fork child]
+6. **Real-provider qualification.** When can the provider contract suite run
+   against the production provider with owner credentials, so that
+   ASM-OBJSTORE-CAS can be established? [Real-provider qualification]
+7. **Follow-ups to schedule.** The SDK's rewind on 400 `invalid_cursor`, the
+   remaining `SealError` variants that answer 500, `src/bin/verify.rs`'s
+   retrying client, and filing the foyer-memory issue upstream. [their rows]
+
 ## 1. Purpose, value, and verification boundaries
 
 ### 1.1 What we are trying to achieve
