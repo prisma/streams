@@ -1289,6 +1289,17 @@
     "scenarios": []
   },
   {
+    "name": "a_signed_month_is_refused_on_both_usage_routes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3ff987de71b8185ab578a38a8f252b5188ed59304f3d0b8f645b53fc2ff3836e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_usage.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

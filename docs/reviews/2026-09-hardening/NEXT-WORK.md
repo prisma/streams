@@ -539,9 +539,9 @@ before marking it complete."
   tails loop, and make `shard::maintenance_tests` R5a assert on the first
   observation of `settled` that the durable boundary is already published.
   `src/shard.rs` is at its ceiling, so offset the line.
-- **`parse_month`** (`src/billing.rs`) accepts a `+` sign ("2026-+9") and
-  answers a zero row instead of 400 `invalid_month`. Require ASCII digits.
-  It is an edge change (a 200 becomes a 400); record it.
+- **`parse_month` (done, edge change #59):** a signed month ("2026-+9")
+  answered a zero row; it now requires ASCII digits and answers 400
+  `invalid_month`.
 - **Flaky test.**
   `dst::dst_tests::admission_maintenance::first_request_waits_for_restoration_then_sees_the_restored_ledger`
   orders its request with fixed 300/400 ms sleeps; wait on an observable

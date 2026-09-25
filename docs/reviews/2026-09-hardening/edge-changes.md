@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 2 | 0 | 0 | 0 | 8 |
 | medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
-| low | 5 | 2 | 8 | 9 | 10 | 4 | 38 |
-| **Total** | **15** | **4** | **16** | **9** | **10** | **4** | **58** |
+| low | 6 | 2 | 8 | 9 | 10 | 4 | 39 |
+| **Total** | **16** | **4** | **16** | **9** | **10** | **4** | **59** |
 
-58 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#57 have not been checked against their commits by an independent pass.
+59 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#59 have not been checked against their commits by an independent pass.
 
 ### Index
 
@@ -80,9 +80,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 53 | 7549e28a, e347fb1a | Usage `?streamId=` is served only for an incarnation of the URL's name | product | high | ratified |
 | 54 | 0f4cd8c1 | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | ratified |
 | 55 | 839135a4, this batch | A raw close whose seal intent failed transiently answers retryable, not sealed | raw | medium | ratified |
-| 56 | this record's commit | Project usage totals need an unrestricted stream grant | product | high | owner decision |
+| 56 | 1d4d8660 | Project usage totals need an unrestricted stream grant | product | high | owner decision |
 | 57 | 1d4d8660 | A seal carrying a final record needs records.append as well as lifecycle.manage | product | high | owner decision |
-| 58 | this record's commit | An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500 | both | low | owner-directed (typed classification) |
+| 58 | 7499ec19 | An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500 | both | low | owner-directed (typed classification) |
+| 59 | this record's commit | A usage month with a sign is refused as `invalid_month` | product | low | handoff item (NEXT-WORK §10) |
 
 ## High risk (8)
 
@@ -455,7 +456,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** Medium: a status and code on an error case that raw clients may branch on changes (409 sealed becomes 503 seal_incomplete), as record #8 did for the append's refresh read (409 becomes 503). The earlier 409 was wrong, because the collection was not sealed. No code is new: seal_incomplete is already a raw append answer.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**, with one follow-up done in the same batch as #56/#57: a close resuming an owed final whose claim renewal cannot be written (only a registry read or write failure) answered 503 `internal`; it now answers 503 `seal_incomplete` like the rest of the close step (src/application/append/close.rs::install_intent; no dedicated test: the renewal's store failure needs an owed final whose operation matches the close's own).
 
-## Low risk (38)
+## Low risk (39)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1119,7 +1120,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** Low: the answer to a request that committed nothing moves from a non-retryable 500 to the retryable 503 that the same loop already gives the neighbouring read. No status, code or header is new to either surface, and the message text (the store error) is the same.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**: keep the retryable 503 for a refusal before any write; it is not a licence to retry appends after an uncertain write outcome. The first registry read's 500 on a transient store failure is the next fix (typed classification with its own regression).
 
-### #58 (this record's commit) — An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500
+### #58 (7499ec19) — An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500
 
 - **Program item:** owner direction when ratifying #54 (second external review): "Fix it next with typed error classification and its own regression rather than broadening every internal error into a retryable response."
 - **Surface:** both
@@ -1131,6 +1132,20 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Who is affected:** clients appending while the descriptor store fails transiently.
 - **Pinning tests:** src/dst/tests/append_application.rs::r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_is_not (red: the store failure answered (Internal, Internal, None); it also pins that a corrupt stored descriptor stays (Internal, Internal, None)).
 - **Risk reason:** low: a 500 on a transient failure becomes the retryable 503 its neighbouring reads (#8, #54) already answer; corruption is unchanged. The raw code stays `internal` (no new wire code); the product handler's own descriptor reads (for example `product_seal`'s) are not changed here.
+- **Check against commit:** written with the change.
+
+### #59 (this record's commit) — A usage month with a sign is refused as `invalid_month`
+
+- **Program item:** NEXT-WORK §10, "`parse_month` accepts a `+` sign".
+- **Surface:** product
+- **Endpoint:** GET /v1/streams/{name}/usage and /v1/projects/{project}/usage with `?month=`.
+- **Condition:** a month whose year or month field carries a sign, such as `2026-+9`, `+026-09` or `-026-09`. `parse_month` checked only the field lengths and then used `str::parse`, which accepts a leading sign.
+- **Before:** 200 with a zero usage row whose `month` echoed the malformed value (no stored row has that key).
+- **After:** 400 `invalid_month` ("month must be YYYY-MM"), as for any other malformed month. Well-formed months are unchanged; the rollup's own month keys are written as `YYYY-MM` and still parse.
+- **Retry semantics:** none; a permanent 400 for a malformed request.
+- **Who is affected:** callers that send a signed month; they received an empty row, never another month's data.
+- **Pinning tests:** src/dst/tests/security_usage.rs::a_signed_month_is_refused_on_both_usage_routes (red: 200 for `2026-+9`); src/billing/tests.rs::month_math_round_trips.
+- **Risk reason:** low: only malformed input changes, from an empty 200 to the documented 400.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

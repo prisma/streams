@@ -289,3 +289,32 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     assert_eq!(mine["ingestRecords"].as_u64(), Some(1), "{mine}");
     engine_shutdown(&state).await;
 }
+
+/// A month is four ASCII digits, a dash and two: a signed field ("2026-+9",
+/// "+026-09", "-026-09") parsed as a number and answered a zero row (200).
+/// Now both usage routes answer 400 `invalid_month`, as for "2026-13".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signed_month_is_refused_on_both_usage_routes() {
+    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
+        .await
+        .unwrap();
+    install_rollup(&state, rollup);
+    let (full, _) = bearers(&svc);
+    stream_with(addr, &full, "a/mine", 0).await;
+    let routes = [
+        "/v1/streams/a/mine/usage",
+        &format!("/v1/projects/{}/usage", PROJECT.0),
+    ];
+    for route in routes {
+        for month in ["2026-+9", "+026-09", "-026-09", "2026-13"] {
+            let (st, body) = usage(addr, &full, &format!("{route}?month={month}")).await;
+            assert_eq!(
+                (st, &body["error"]["code"]),
+                (400, &"invalid_month".into()),
+                "{route}?month={month}: {body}"
+            );
+        }
+    }
+    engine_shutdown(&state).await;
+}

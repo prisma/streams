@@ -33,6 +33,9 @@ fn month_math_round_trips() {
     assert_eq!(parse_month("2026-08"), Some((2026, 8)));
     assert_eq!(parse_month("2026-13"), None);
     assert_eq!(parse_month("junk"), None);
+    for signed in ["2026-+9", "+026-09", "-026-09"] {
+        assert_eq!(parse_month(signed), None, "{signed}");
+    }
 }
 
 #[expect(

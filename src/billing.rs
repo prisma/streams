@@ -156,10 +156,10 @@ pub(crate) fn month_str(year: i32, month: u32) -> String {
     format!("{year:04}-{month:02}")
 }
 
-/// Parse "YYYY-MM". Strict: exactly 7 chars, month 1..=12.
+/// Parse "YYYY-MM". Strict: digits only (`parse` takes a sign), month 1..=12.
 pub(crate) fn parse_month(s: &str) -> Option<(i32, u32)> {
     let (y, m) = s.split_once('-')?;
-    if y.len() != 4 || m.len() != 2 {
+    if y.len() != 4 || m.len() != 2 || !y.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit()) {
         return None;
     }
     let year: i32 = y.parse().ok()?;
