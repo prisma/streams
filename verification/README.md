@@ -19,22 +19,102 @@ of it says that Prisma Streams as a whole is verified.
 | `src/**/proofs.rs` | Kani harnesses, colocated with the production owner as `#[cfg(kani)] mod proofs;` |
 | `../scripts/quality/formal.py` | The driver: validation, selection, execution, receipts, self-test |
 
-## Tools
+## Setting up the toolchain
 
-Tool versions and checksums are pinned in `quality-tools.toml` under `[formal]`.
-To install them:
+The tools are pinned in `quality-tools.toml` (under `[formal]`) and installed by
+`scripts/install-formal-tools.py`, all under `target/quality-tools/`. Nothing is
+installed globally.
+
+### Prerequisites
+
+- Java 11 or newer, needed by TLC. Check with `java -version`.
+- rustup. The repo's `rust-toolchain.toml` pins the build toolchain (1.98.1).
+  Kani also installs its own dated nightly (`nightly-2026-08-21`) through
+  rustup. That nightly is used only for the proofs; normal builds keep the
+  pinned 1.98.1.
+- Python 3.11 or newer, because the driver uses `tomllib`.
+- Network access for the first install.
+- A supported host: macOS on arm64 or x86_64, or Linux on x86_64 or aarch64.
+
+### Install
+
+Run from the repository root:
 
 ```bash
 python3 scripts/install-formal-tools.py
 ```
 
-That installs `target/quality-tools/tla2tools.jar` (TLA+ tools 1.7.4, TLC
-2.19; Java 11 or newer is required) and Kani 0.68.0 with CBMC 6.11.0. Kani
-compiles with its own nightly (`nightly-2026-08-21`), which is a separate
-analysis configuration. Ordinary builds and every production gate keep the
-root `rust-toolchain.toml` pin. A harness is `#[cfg(kani)]` code, so the
-production compiler never builds it. `build.rs` declares the cfg name so that
-ordinary builds check it.
+This installs:
+
+- `target/quality-tools/tla2tools.jar`: TLA+ tools 1.7.4 (TLC 2.19), checked
+  against its pinned sha256;
+- Kani 0.68.0, built from its pinned crates.io release and set up from a
+  checksum-verified bundle, with CBMC 6.11.0;
+- Kani's nightly compiler, installed through rustup.
+
+Then put the tool binaries on your `PATH` for the session:
+
+```bash
+export PATH="$PWD/target/quality-tools/bin:$HOME/.cargo/bin:$PATH"
+```
+
+A harness is `#[cfg(kani)]` code, so the production compiler never builds it,
+and Kani's nightly is a separate analysis configuration: ordinary builds and
+every production gate keep the root `rust-toolchain.toml` pin. `build.rs`
+declares the cfg name so that ordinary builds check it.
+
+### Verify the setup
+
+```bash
+python3 scripts/quality/formal.py self-test
+python3 scripts/quality/formal.py check
+```
+
+`check` validates the manifest, the models and configurations, and the
+receipts; stale receipts are reported without failing. `check --fresh` also
+fails on stale receipts, as the release gate requires.
+
+### Run the obligations
+
+Run one obligation:
+
+```bash
+python3 scripts/quality/formal.py run --id TLA-016 --out target/formal/tla-016
+```
+
+Run only what a diff affects:
+
+```bash
+python3 scripts/quality/formal.py run --changed-from origin/slate --out target/formal/changed
+```
+
+To write or refresh `verification/receipts/<ID>.json`, add `--record`. Do that
+only on a clean tree that will not change during the run: the driver fails a
+run whose inputs change mid-run.
+
+### Practical notes
+
+- Do not set `RUSTUP_TOOLCHAIN` for Kani runs. Kani selects its own nightly,
+  and forcing 1.98.1 breaks it.
+- Parallel runs are fine if each has its own `--out` directory. The driver
+  gives every TLC process its own temporary directory.
+- Git worktrees do not share `target/`. In a new worktree, link the tools
+  before running:
+
+  ```bash
+  mkdir -p target && ln -s /path/to/main/checkout/target/quality-tools target/quality-tools
+  ```
+
+- Cost: on a busy 8-core laptop the full set takes about 1.7 hours of Kani and
+  3-6 hours of TLC. The slowest single checks are KANI-001 (about 30 minutes)
+  and the TLA-016 and TLA-018 baselines (15-30 minutes each).
+- CI: the `formal` job in `.github/workflows/rust-quality.yml` installs the
+  same pins with the same script and runs the affected obligations across six
+  shards.
+
+For more detail on the three enforcement levels and the receipt format, see
+the sections below; for each model group, the READMEs under `tla/`; and for
+the plan, the roadmap `docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md` §0.
 
 ## Commands
 

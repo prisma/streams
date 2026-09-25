@@ -68,6 +68,11 @@ scripts/quality/mutations.sh
 ```
 
 `scripts/quality.sh` needs Python 3.11 or newer as `python3` on `PATH`.
+It also runs the formal-verification check (`formal.py check`: an invalid
+or mismatched receipt fails, a stale one is reported). A change to code a
+Kani proof or TLA+ model maps makes its receipt stale; the release gate
+requires them fresh. The toolchain setup and the commands to run or refresh
+an obligation are in `verification/README.md`, "Setting up the toolchain".
 
 **Ratchet rules that shape the code** (the gates enforce them; plan for them
 before writing):

@@ -27,6 +27,12 @@ a normal merge. Performance, cryptographic, deployment and raw-evidence upload
 holds remain independent; source integration and local quality results do not
 lift those holds. See docs/quality/pr19-merge-review.md.
 
+Formal verification (Kani proofs and TLA+ models) lives in `verification/`.
+`scripts/quality.sh` runs `formal.py check`, which fails on an invalid or
+missing receipt and reports stale ones. To install the pinned toolchain and
+run or refresh obligations, follow
+[verification/README.md, "Setting up the toolchain"](verification/README.md#setting-up-the-toolchain).
+
 Read optimisations have one permanent production path. Keep experiments in
 isolated source revisions rather than adding runtime on/off switches. The
 current decisions are in [docs/read-experiments/final-disposition.md](docs/read-experiments/final-disposition.md).
