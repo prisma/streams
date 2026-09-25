@@ -643,6 +643,19 @@ the roadmap's unimplemented list
   `rollup/storage.rs`, and `application/read_{batch,budget,retention_probe}.rs`.
   Those crates also needed a `build.rs` declaring `cfg(kani)` and
   `#[rustfmt::skip]` on their by-path `mod postings;` (both on the branch).
+- **CI: formal shard 0 dies whenever `verification/manifest.json` changes
+  (owner decision).** A manifest change selects every obligation
+  (`SELECTION_INPUTS` in `scripts/quality/formal.py`), so shard 0 runs
+  KANI-001's round trip, whose CBMC process peaks near 15 GB resident
+  (measured locally 2026-09-26: 7.8 GB after 6 minutes, 14.95 GB at 8
+  minutes, 780 s to verify). GitHub's `ubuntu-latest` runner has 16 GB: the
+  formal (0) jobs of 9b7a3874, 4a0a9e52 (twice) and 87de5284 ended with "the
+  runner has received a shutdown signal", "the hosted runner lost
+  communication" or "the operation was canceled", with no check reported.
+  Every other job of those runs passed. Options: a larger runner for the
+  formal job (or for KANI-001 alone); selecting only the obligations whose
+  manifest entry changed (a driver change, which makes every receipt stale);
+  or a KANI-001 harness split that bounds its memory.
 - **KANI-004 (not started):** the offset parser's alphabet and aliases depends
   on the pending wire decision on lax token reading (review item 88 step 2,
   pinned by `offsets::tests::non_canonical_tokens_keep_their_lax_reading`).
