@@ -21,6 +21,7 @@ Contents:
 - [9. Release-wide mutation campaign (work package 4)](#9-release-wide-mutation-campaign-work-package-4)
 - [10. Smaller items](#10-smaller-items)
 - [11. Deployment gates (need the owner or the Compute owner)](#11-deployment-gates-need-the-owner-or-the-compute-owner)
+- [12. Formal verification: new obligations and what blocks them](#12-formal-verification-new-obligations-and-what-blocks-them)
 
 ---
 
@@ -572,3 +573,48 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
 - Bug #7 rehearsal on a consistent copy of a real rollup database.
 - The 14 staged wrapper copies under `~/.streams-soak` hold the pre-39
   wrapper until each campaign script next runs `bench/stage-app.sh`.
+
+---
+
+## 12. Formal verification: new obligations and what blocks them
+
+Owner direction (2026-09-25): when the work allows, implement obligations from
+the roadmap's unimplemented list
+(`docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md`); toolchain setup is in
+`verification/README.md`.
+
+- **KANI-005 (done):** `locate_in_spans` positioning, `src/sse/source/proofs.rs`,
+  assumption ASM-LINEAGE-CONTRACT (the lineage constructor's unchecked
+  `logical += c` is assumed not to overflow).
+- **KANI-006 (ready, held for the owner):** the postings varint codec, on branch
+  `formal/kani-006` (FORMAL_OK, 4 checks, no finding). It cannot land without
+  an owner decision: `src/postings.rs` is compiled by path into
+  `tools/quality-invariants`, and three owner-approved exact-state rows in
+  `docs/quality/exception-growth.json` (`tools/quality-invariants/src/lib.rs`,
+  `crate::postings`, `dead_code`/`unreachable_pub`/`unused_imports`:
+  nested_items 126, scope_lines 1397, syntax_facts 2601) measure that whole
+  file. Declaring `#[cfg(kani)] mod proofs;` there changes those values, and
+  an agent may not update the rows. The branch also lacks the
+  `docs/quality/owners.json` macro-dsl rows for its `kani::cover!` sites (see
+  KANI-005's row). The same holds for any harness over a module the
+  invariants or fuzz crates include by path: `postings.rs` (so KANI-007 to
+  KANI-015's postings owners), `crypto.rs`, `tenant.rs`, `product_cursor.rs`,
+  `queue.rs`, `quota/bucket.rs`, `retained_bytes.rs`, `rollup/allocation.rs`,
+  `rollup/storage.rs`, and `application/read_{batch,budget,retention_probe}.rs`.
+  Those crates also needed a `build.rs` declaring `cfg(kani)` and
+  `#[rustfmt::skip]` on their by-path `mod postings;` (both on the branch).
+- **KANI-004 (not started):** the offset parser's alphabet and aliases depends
+  on the pending wire decision on lax token reading (review item 88 step 2,
+  pinned by `offsets::tests::non_canonical_tokens_keep_their_lax_reading`).
+- **Driver flake on macOS (not fixed):** `scripts/quality/formal.py` `stop_group`
+  raises `PermissionError` from `os.killpg(pgid, 0)` when macOS answers EPERM
+  for a group whose only members are killed, unreaped children, so
+  `test_formal.TlcIsolation.test_6_a_{timeout,cancellation}_kills_the_whole_process_tree`
+  fail intermittently in `scripts/quality.sh` on macOS (Linux CI answers
+  ESRCH). The fix is one `except PermissionError: pass` in that loop (13 of 13
+  runs passed with it), but the driver is an input to every receipt, so
+  changing it makes all receipts stale and CI's formal job re-runs every
+  obligation. Leave it to the formal program's owner.
+- **Stale receipts:** re-recorded on 2026-09-25 for the twelve obligations
+  whose inputs slate's changes had moved (see the receipts commit).
+
