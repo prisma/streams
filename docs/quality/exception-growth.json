@@ -6,12 +6,12 @@
       "scope": "module",
       "lint": "dead_code",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires, and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "fuzz/fuzz_targets/postings.rs",
@@ -19,12 +19,12 @@
       "scope": "module",
       "lint": "unreachable_pub",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires, and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "fuzz/fuzz_targets/postings.rs",
@@ -32,12 +32,12 @@
       "scope": "module",
       "lint": "unused_imports",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The postings fuzz target includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), which slate's own residual (882004d9) requires, and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "src/application/append/close.rs",
@@ -695,12 +695,12 @@
       "scope": "module",
       "lint": "dead_code",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "tools/quality-invariants/src/lib.rs",
@@ -708,12 +708,12 @@
       "scope": "module",
       "lint": "unreachable_pub",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "tools/quality-invariants/src/lib.rs",
@@ -721,12 +721,12 @@
       "scope": "module",
       "lint": "unused_imports",
       "metrics": {
-        "nested_items": 126,
-        "scope_lines": 1397,
-        "syntax_facts": 2601
+        "nested_items": 131,
+        "scope_lines": 1466,
+        "syntax_facts": 2716
       },
-      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The quality-invariants harness includes src/postings.rs verbatim; the included owner grew with the reader admission of overlapping pages that agree (keep_past, d16559b3), and with KANI-006's harness (#[cfg(kani)] mod proofs; and src/postings/proofs.rs), which no build of this target compiles.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-27 in the implementing session: replace the six crate::postings rows with nested_items 131, scope_lines 1466, syntax_facts 2716 for KANI-006"
     },
     {
       "path": "tools/quality-invariants/src/lib.rs",

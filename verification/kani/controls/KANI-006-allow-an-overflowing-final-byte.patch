@@ -1,0 +1,13 @@
+diff --git a/src/postings.rs b/src/postings.rs
+--- a/src/postings.rs
++++ b/src/postings.rs
+@@ -112,9 +112,6 @@
+     for shift in (0..=63).step_by(7) {
+         let (&byte, rest) = input.split_first()?;
+         *input = rest;
+-        if shift == 63 && byte & 0x7f > 1 {
+-            return None;
+-        }
+         out |= u64::from(byte & 0x7f) << shift;
+         if byte & 0x80 == 0 {
+             return Some(out);

@@ -707,3 +707,6 @@ mod tests;
 #[cfg(test)]
 #[path = "postings/codec_tests.rs"]
 mod codec_tests;
+
+#[cfg(kani)]
+mod proofs;

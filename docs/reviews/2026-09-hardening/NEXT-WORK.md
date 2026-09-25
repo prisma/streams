@@ -652,42 +652,17 @@ the roadmap's unimplemented list
   `seal_gen_counter += 1`, which would wrap after 2^64 claims; a checked
   allocator would need a decline path at each site, all inside excepted
   scopes.
-- **KANI-006 (ready, held for the owner; rechecked 2026-09-26):** the postings
-  varint codec, on branch `formal/kani-006` (1496cbd9, FORMAL_OK, 4 checks, no
-  finding). The blocker still holds. `src/postings.rs` is compiled by path
-  into both `tools/quality-invariants/src/lib.rs` and
-  `fuzz/fuzz_targets/postings.rs`, and six owner-approved exact-state rows in
-  `docs/quality/exception-growth.json` (both files, owner `crate::postings`,
-  each of `dead_code`, `unreachable_pub`, `unused_imports`) pin that module's
-  measure at nested_items 126, scope_lines 1397, syntax_facts 2601. The
-  branch's `#[cfg(kani)] mod proofs;` makes the gate report 131/1466/2716
-  (18 growth failures, 6 stale rows). `put_varint`/`get_varint` are private,
-  so no harness outside `crate::postings` can reach them, and every
-  descendant of the by-path module is measured whatever its cfg. Options for
-  the owner:
-  (a) a narrow gate rule: an exception's scope does not include a Kani
-      harness declared exactly as `#[cfg(kani)] mod proofs;` (the
-      `harness_layout` shape) nor its `proofs.rs`, since no lint build
-      compiles them; it changes no contract at HEAD and would also unblock
-      the other by-path owners below. An agent attempt at this change was
-      refused by the session's safety classifier as a CI bypass, so it
-      needs the owner to make or authorize it;
-  (b) the owner replaces the six rows with 131/1466/2716 and a rationale
-      naming KANI-006;
-  (c) a weaker harness through the pub(crate) page API (`encode_page`,
-      `decode_page`) hosted outside `crate::postings`, which needs no
-      decision but proves the codec only indirectly.
-  After (a) or (b): rebase the branch (conflicts only in the roadmap table
-  and the manifest; keep KANI-006's entry values unchanged and its receipt
-  stays valid), add two `docs/quality/owners.json` macro-dsl rows
-  (`crate::kani_006_every_u64_round_trips_and_consumes_its_encoding` and
-  `crate::kani_006_decoding_matches_the_wide_oracle`, 3 `kani::cover` each),
-  re-record TLA-016 (its source paths include `src/postings.rs`). The same
-  blocker applies to any harness over a module the invariants or fuzz
-  crates include by path: `postings.rs` (so KANI-007 to KANI-015's postings
-  owners), `crypto.rs`, `tenant.rs`, `product_cursor.rs`, `queue.rs`,
-  `quota/bucket.rs`, `retained_bytes.rs`, `rollup/allocation.rs`,
-  `rollup/storage.rs`, and `application/read_{batch,budget,retention_probe}.rs`.
+- **KANI-006 (done 2026-09-27):** the postings varint codec,
+  `src/postings/proofs.rs`. The owner chose option (b): the six
+  `crate::postings` rows in `docs/quality/exception-growth.json` (both by-path
+  includes, `dead_code`, `unreachable_pub`, `unused_imports`) now pin
+  nested_items 131, scope_lines 1466, syntax_facts 2716. Any further harness
+  over a module the invariants or fuzz crates include by path (`postings.rs`
+  for KANI-007 to KANI-015, `crypto.rs`, `tenant.rs`, `product_cursor.rs`,
+  `queue.rs`, `quota/bucket.rs`, `retained_bytes.rs`, `rollup/allocation.rs`,
+  `rollup/storage.rs`, `application/read_{batch,budget,retention_probe}.rs`)
+  moves such rows again and needs the same owner decision, unless the gate
+  stops counting `#[cfg(kani)] mod proofs;` (the rejected option (a)).
 - **CI: formal shard 0 died whenever `verification/manifest.json` changed
   (resolved 2026-09-26 by the owner's choice, a smaller KANI-001: its two
   properties are separate harnesses and alphabet membership no longer goes

@@ -1,0 +1,13 @@
+diff --git a/src/postings.rs b/src/postings.rs
+--- a/src/postings.rs
++++ b/src/postings.rs
+@@ -116,9 +116,6 @@
+             return None;
+         }
+         out |= u64::from(byte & 0x7f) << shift;
+-        if byte & 0x80 == 0 {
+-            return Some(out);
+-        }
+     }
+     None
+ }
