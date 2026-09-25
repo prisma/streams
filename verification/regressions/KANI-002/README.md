@@ -6,6 +6,12 @@ plus one tracked domain decision.
 **Fixed by:** the commit "Offset tokens carry the whole segment ordinal, and a read
 position cannot overflow".
 
+**Status since the slate merge.** Slate's codec has no `Offset` type or successor
+arithmetic, so item 1 cannot recur. Item 2 is open: slate pins the multibyte
+reading as lax (`offsets::tests::non_canonical_tokens_keep_their_lax_reading`)
+until review item 88 decides, and the regression named in item 2 is not on the
+merged branch.
+
 ## 1. `Offset(Some(u64::MAX))` overflowed its successor
 
 The pre-fix `Offset(pub Option<u64>)` stored "after entry n" and computed

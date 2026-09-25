@@ -28,39 +28,42 @@
         "ASM-KANI-COMPILER",
         "ASM-OFFSET-DOMAIN"
       ],
-      "input_scope": "every u32 epoch and every u64 scan index through token_digits/parse_digits (the core encode_ep/parse_ep wrap); fixed 26 digits, loops unwound to 40 with unwinding checks on",
+      "input_scope": "every epoch below 2^30 (the documented round-trip domain) and every u64 next through digits, the bytes encode collects, and read, the value computation parse runs after its \"-1\" and length gates; fixed 26 digits, loops unwound to 40 with unwinding checks on",
       "checks": [
         {
           "id": "KANI-001/round-trip",
           "role": "baseline",
-          "harness": "offsets::proofs::kani_001_every_epoch_and_position_round_trips",
+          "harness": "offsets::proofs::kani_001_every_admitted_epoch_and_next_round_trips",
           "expect": {
             "result": "pass"
           },
           "timeout_seconds": 7200
         },
         {
-          "id": "KANI-001/nc-truncate-high-epoch-bits",
+          "id": "KANI-001/nc-drop-top-admitted-epoch-bit",
           "role": "negative-control",
-          "harness": "offsets::proofs::kani_001_every_epoch_and_position_round_trips",
-          "patch": "verification/kani/controls/KANI-001-truncate-high-epoch-bits.patch",
+          "harness": "offsets::proofs::kani_001_every_admitted_epoch_and_next_round_trips",
+          "patch": "verification/kani/controls/KANI-001-drop-top-admitted-epoch-bit.patch",
           "expect": {
             "result": "fail",
-            "property": "epoch and position survive the round trip"
+            "property": "epoch and next survive the round trip"
           },
           "timeout_seconds": 7200
         }
       ],
       "regressions": [
-        "golden_tests::cursors::golden_layout4_raw_high_epoch_offset_tokens",
-        "offsets::tests::quality_every_epoch_and_position_round_trips",
+        "offsets::tests::round_trip",
+        "offsets::tests::epoch_round_trip",
+        "offsets::tests::quality_offsets_every_position_has_one_ordered_token",
+        "golden_tests::cursors::golden_layout4_raw_offset_tokens",
+        "golden_tests::cursors::golden_layout4_raw_epoch_offset_token",
         "verification/regressions/KANI-001/README.md"
       ]
     },
     {
       "id": "KANI-002",
       "kind": "kani",
-      "title": "Offset successor, START sentinel, and exhaustion",
+      "title": "Offset start-of-stream and resume index",
       "status": "pass-with-recorded-scope",
       "owner": "offset codec",
       "source_paths": [
@@ -84,44 +87,34 @@
         "ASM-KANI-COMPILER",
         "ASM-OFFSET-DOMAIN"
       ],
-      "input_scope": "START and every u64 scan index including u64::MAX, with every u32 epoch through the digit codec",
+      "input_scope": "the literal \"-1\" through parse, next 0, and every u64 next including u64::MAX with every u32 epoch through digits and read",
       "checks": [
         {
-          "id": "KANI-002/successor-indices",
+          "id": "KANI-002/start-and-resume-index",
           "role": "baseline",
-          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
+          "harness": "offsets::proofs::kani_002_start_and_resume_index",
           "expect": {
             "result": "pass"
           },
           "timeout_seconds": 7200
         },
         {
-          "id": "KANI-002/nc-start-token-skips-entry-zero",
+          "id": "KANI-002/nc-exhausted-next-wraps-to-start",
           "role": "negative-control",
-          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
-          "patch": "verification/kani/controls/KANI-002-start-token-skips-entry-zero.patch",
+          "harness": "offsets::proofs::kani_002_start_and_resume_index",
+          "patch": "verification/kani/controls/KANI-002-exhausted-next-wraps-to-start.patch",
           "expect": {
             "result": "fail",
-            "property": "a token resumes at the index it was issued for"
-          },
-          "timeout_seconds": 7200
-        },
-        {
-          "id": "KANI-002/nc-exhausted-index-wraps-to-start",
-          "role": "negative-control",
-          "harness": "offsets::proofs::kani_002_start_and_successor_indices",
-          "patch": "verification/kani/controls/KANI-002-exhausted-index-wraps-to-start.patch",
-          "expect": {
-            "result": "fail",
-            "property": "a position resumes at its own index"
+            "property": "a token resumes at the next it was issued for"
           },
           "timeout_seconds": 7200
         }
       ],
       "regressions": [
         "offsets::tests::round_trip",
-        "offsets::tests::a_multibyte_char_is_not_a_digit",
-        "offsets::tests::quality_a_parsed_token_is_its_position",
+        "offsets::tests::non_canonical_tokens_keep_their_lax_reading",
+        "offsets::tests::quality_offsets_any_accepted_token_names_one_canonical_position",
+        "http::tests::raw_position_tokens_and_fork_refusals_are_exact",
         "verification/regressions/KANI-002/README.md"
       ]
     },
@@ -150,7 +143,7 @@
         "ASM-KANI-COMPILER",
         "ASM-OFFSET-DOMAIN"
       ],
-      "input_scope": "two symbolic (u32 epoch, u64 scan index) tuples; byte order of the 26 digits (which is String order) against tuple order",
+      "input_scope": "two symbolic (epoch below 2^30, u64 next) positions; byte order of the 26 digits (which is String order) against position order",
       "checks": [
         {
           "id": "KANI-003/injective-ordered",
@@ -161,29 +154,19 @@
           }
         },
         {
-          "id": "KANI-003/nc-swap-sequence-halves",
+          "id": "KANI-003/nc-reverse-digit-order",
           "role": "negative-control",
           "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
-          "patch": "verification/kani/controls/KANI-003-swap-sequence-halves.patch",
+          "patch": "verification/kani/controls/KANI-003-reverse-digit-order.patch",
           "expect": {
             "result": "fail",
-            "property": "token order is tuple order"
-          }
-        },
-        {
-          "id": "KANI-003/nc-drop-an-epoch-bit",
-          "role": "negative-control",
-          "harness": "offsets::proofs::kani_003_tokens_are_injective_and_ordered",
-          "patch": "verification/kani/controls/KANI-003-drop-an-epoch-bit.patch",
-          "expect": {
-            "result": "fail",
-            "property": "distinct tuples have distinct tokens"
+            "property": "token byte order is position order"
           }
         }
       ],
       "regressions": [
         "offsets::tests::epoch_round_trip",
-        "golden_tests::cursors::golden_layout4_raw_high_epoch_offset_tokens"
+        "offsets::tests::quality_offsets_every_position_has_one_ordered_token"
       ]
     },
     {

@@ -5,6 +5,12 @@
 **Fixed by:** the commit "Offset tokens carry the whole segment ordinal, and a read
 position cannot overflow".
 
+**Status since the slate merge: open.** The merge kept slate's `src/offsets.rs`,
+which documents only ordinals below 2^30 as round-tripping, so this collision is
+present again and waits on slate's review item 88 wire decision. The harnesses
+now prove the domain below 2^30, and the tests named below are not on the
+merged branch.
+
 ## Minimized input
 
 `encode_ep(epoch, Offset(Some(0)))` for `epoch = 0` and `epoch = 1 << 30`.

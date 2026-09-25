@@ -106,9 +106,9 @@ design check (§7.7).
 
 | Obligation | Status | Checks (baseline / control / witness) | Scope | Receipt | Conditional on |
 |---|---|---|---|---|---|
-| KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every `u32` segment ordinal and `u64` scan index (`src/offsets/proofs.rs`). The `String` wrappers and `-1` stay with the unit tests (ASM-OFFSET-DOMAIN). | `3f386070`, 2/2 | — |
-| KANI-002 | pass-with-recorded-scope | 1 / 2 / 0 | START, the successor index and exhaustion. | `3f386070`, 3/3 | — |
-| KANI-003 | pass-with-recorded-scope | 1 / 2 / 0 | Token injectivity and order. | `3f386070`, 3/3 | — |
+| KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every segment ordinal below 2^30 and every `u64` `next` (`src/offsets/proofs.rs`), retargeted to slate's codec at the merge; the full-width finding is open (§0.4). The `String` wrapper stays with the unit tests (ASM-OFFSET-DOMAIN). | `3f386070`, 2/2; to be re-recorded | — |
+| KANI-002 | pass-with-recorded-scope | 1 / 1 / 0 | `-1` and `next` 0 name start-of-stream; a token resumes at its `next`, `u64::MAX` included. | `3f386070`, 3/3; to be re-recorded | — |
+| KANI-003 | pass-with-recorded-scope | 1 / 1 / 0 | Token injectivity and order below 2^30. | `3f386070`, 3/3; to be re-recorded | — |
 | KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | `3f386070`, 3/3 | — |
 | KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | `3f386070`, 4/4 | — |
 | KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | `3f386070`, 4/4 | — |
@@ -131,9 +131,9 @@ controls, 132 witnesses and no known defect.
 
 | Finding | Classification | Disposition | Commit |
 |---|---|---|---|
-| KANI-001/003: a segment ordinal at or above 2^30 aliased the ordinal mod 2^30 | production defect (the §5 seed, confirmed on real code) | fixed | `fd8a5fca` "Offset tokens carry the whole segment ordinal, and a read position cannot overflow" |
-| KANI-002: the successor of `Offset(Some(u64::MAX))` overflowed (a panic in debug, a wrap to START in release) | production defect | fixed | `fd8a5fca` |
-| KANI-002: a 26-byte token with a multi-byte character parsed as START | production defect | fixed | `fd8a5fca` |
+| KANI-001/003: a segment ordinal at or above 2^30 aliased the ordinal mod 2^30 | production defect (the §5 seed, confirmed on real code) | **open**: the merge kept slate's codec, which documents only ordinals below 2^30 as round-tripping; the fix waits on slate's review item 88 wire decision. The proofs cover the domain below 2^30. | `fd8a5fca` (not on the merged branch) |
+| KANI-002: the successor of `Offset(Some(u64::MAX))` overflowed (a panic in debug, a wrap to START in release) | production defect | fixed; slate's codec carries `next` itself, with no successor arithmetic | `fd8a5fca`; slate |
+| KANI-002: a 26-byte token with a multi-byte character parsed as START | production defect | **open**: slate pins it, a high leading digit and nonzero pad and `in_block` bits as lax readings (`non_canonical_tokens_keep_their_lax_reading`) until review item 88 decides; KANI-004 | `fd8a5fca` (not on the merged branch) |
 | KANI-002: scan index `u64::MAX` was also the planner's "now" (ASM-READ-NOW-SENTINEL) | domain question (§2.7) | resolved; see §0.6 | `ec55262f` |
 | KANI-042: the wildcard arm gave every unlisted refusal the retaining verdict | design hazard | fixed; no existing verdict changed | `241eb282` "The final-append disposition names every refusal instead of defaulting" |
 | TLA-002-F1: the seal fence lived only in the engine | production defect, reproduced | fixed | `234f69ab` "A seal takeover's fence outlives the engine that recorded it" |
@@ -249,7 +249,11 @@ stays open and is not counted as met.
 6. **Real-provider qualification.** When can the provider contract suite run
    against the production provider with owner credentials, so that
    ASM-OBJSTORE-CAS can be established? [Real-provider qualification]
-7. **Follow-ups to schedule.** The SDK's rewind on 400 `invalid_cursor`, the
+7. **Offset wire decision (review item 88 step 2).** Admit segment ordinals
+   at or above 2^30 (the KANI-001 collision), and refuse multibyte,
+   high-leading-digit and nonzero pad or `in_block` tokens? Until then
+   KANI-001–003 prove only the domain below 2^30. [KANI-001 finding, §0.4]
+8. **Follow-ups to schedule.** The SDK's rewind on 400 `invalid_cursor`, the
    remaining `SealError` variants that answer 500, `src/bin/verify.rs`'s
    retrying client, and filing the foyer-memory issue upstream. [their rows]
 
@@ -1216,7 +1220,7 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/offsets.rs`](src/offsets.rs)
 
-**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)), over epochs below 2^30 since the merge took slate's `encode`/`parse`. The full-width finding (ordinals 2^30 apart collided) is open under slate's review item 88 wire decision, not fixed; multibyte and non-canonical readings are pinned as lax.
 
 **Validate.** `parse_ep(encode_ep(epoch, position))` returns the admitted epoch and position without losing high bits; epoch-zero encoding remains compatible with the raw codec. Specify START separately.
 

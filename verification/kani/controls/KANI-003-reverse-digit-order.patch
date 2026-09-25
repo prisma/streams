@@ -1,0 +1,12 @@
+diff --git a/src/offsets.rs b/src/offsets.rs
+--- a/src/offsets.rs
++++ b/src/offsets.rs
+@@ -45,7 +45,7 @@ fn digits(epoch: u32, next: u64) -> [u8; 26] {
+     let padded = n << 2; // 128 -> 130 bits
+     let mut out = [0u8; 26];
+     for (i, digit) in out.iter_mut().enumerate() {
+-        let shift = 5 * (25 - i);
++        let shift = 5 * i;
+         let idx = ((padded >> shift) & 31) as usize;
+         *digit = ALPHABET[idx];
+     }

@@ -1,87 +1,93 @@
-//! Kani proofs for the offset codec: KANI-001 (epoch-aware round trip),
-//! KANI-002 (START and the successor index) and KANI-003 (injectivity and
-//! order). The harnesses call the production digit codec that `encode_ep`
-//! and `parse_ep` wrap, over full-width `u32` epochs and `u64` positions.
-//! The wrappers only add the "-1" literal and the byte-for-char `String`
-//! conversion of ASCII digits; symbolic `String` growth is out of scope
-//! for CBMC here, and the unit and property tests exercise those wrappers.
+//! Kani proofs for the offset codec: KANI-001 (round trip), KANI-002
+//! (start-of-stream and the resume index) and KANI-003 (injectivity and
+//! order). The harnesses call the production `digits`, whose bytes `encode`
+//! collects into its `String`, and `read`, the value computation `parse`
+//! runs after its "-1" and length gates; symbolic `String` growth is out of
+//! scope for CBMC here, and the unit and property tests exercise the
+//! wrappers. Epochs stay in the documented domain below 2^30 (the module
+//! doc of `src/offsets.rs`); what the codec does above it, and its lax
+//! reading of non-canonical tokens, await review item 88's wire decision.
 //! Loops are fixed at 26 digits and a 32-symbol alphabet, so `unwind(40)`
 //! covers them with Kani's unwinding checks left on.
-use super::{DIGITS, Offset, parse_digits, token_digits};
+use super::{ALPHABET, OffsetError, digits, parse, read};
 
-/// KANI-001: every admitted epoch and position survives the codec, as
-/// exactly 26 alphabet digits.
-#[kani::proof]
-#[kani::unwind(40)]
-fn kani_001_every_epoch_and_position_round_trips() {
-    let epoch: u32 = kani::any();
-    let offset = Offset::before(kani::any());
-    let digits = token_digits(epoch, offset);
-    assert!(digits.len() == DIGITS, "a token is 26 digits");
-    assert!(
-        digits
-            .iter()
-            .all(|digit| super::ALPHABET.iter().any(|symbol| symbol == digit)),
-        "every digit is a canonical alphabet symbol"
-    );
-    assert!(
-        parse_digits(&digits) == Ok((epoch, offset)),
-        "epoch and position survive the round trip"
-    );
-    kani::cover!(epoch >= 1 << 30, "an epoch with a top bit set round-trips");
-    kani::cover!(
-        offset.scan_from() == u64::MAX,
-        "the last position round-trips"
-    );
+/// The epochs that round-trip: the padding shifts the top two bits out.
+const EPOCHS: u32 = 1 << 30;
+
+fn admitted_epoch() -> u32 {
+    kani::any_where(|epoch: &u32| *epoch < EPOCHS)
 }
 
-/// KANI-002: START is scan index 0 and position 0 of its epoch; every
-/// position resumes exactly at its own index, so none wraps into START or
-/// below itself, including the last `u64`.
+fn read_token(token: [u8; 26]) -> Result<(u32, u64), OffsetError> {
+    read(token.into_iter().map(char::from))
+}
+
+/// KANI-001: every admitted epoch and every `next` survive the codec, as
+/// exactly 26 alphabet chars.
 #[kani::proof]
 #[kani::unwind(40)]
-fn kani_002_start_and_successor_indices() {
-    assert!(Offset::START.scan_from() == 0, "START scans from index 0");
+fn kani_001_every_admitted_epoch_and_next_round_trips() {
+    let epoch = admitted_epoch();
     let next: u64 = kani::any();
-    let offset = Offset::before(next);
+    let token = digits(epoch, next);
     assert!(
-        offset.scan_from() == next,
-        "a position resumes at its own index"
+        token.iter().all(|digit| ALPHABET.contains(digit)),
+        "every char is a canonical alphabet symbol"
     );
     assert!(
-        (offset == Offset::START) == (next == 0),
-        "only index 0 is START"
+        read_token(token) == Ok((epoch, next)),
+        "epoch and next survive the round trip"
+    );
+    kani::cover!(epoch == EPOCHS - 1, "the top admitted epoch round-trips");
+    kani::cover!(next == u64::MAX, "the last next round-trips");
+    kani::cover!(epoch == 0 && next == 0, "start-of-stream round-trips");
+}
+
+/// KANI-002: "-1" and `next == 0` both name start-of-stream, and a token
+/// resumes at exactly the `next` it was issued for, u64::MAX included, so
+/// nothing wraps. The resume index survives every `u32` epoch: the bits
+/// the padding drops are the epoch's, never `next`'s.
+#[kani::proof]
+#[kani::unwind(40)]
+fn kani_002_start_and_resume_index() {
+    assert!(parse("-1") == Ok((0, 0)), "-1 names start-of-stream");
+    assert!(
+        read_token(digits(0, 0)) == Ok((0, 0)),
+        "next 0 names start-of-stream"
     );
     let epoch: u32 = kani::any();
-    let resumed = parse_digits(&token_digits(epoch, offset)).map(|(_, offset)| offset.scan_from());
+    let next: u64 = kani::any();
+    let resumed = read_token(digits(epoch, next)).map(|(_, next)| next);
     assert!(
         resumed == Ok(next),
-        "a token resumes at the index it was issued for"
+        "a token resumes at the next it was issued for"
     );
-    kani::cover!(next == 0, "an empty stream's position is START");
-    kani::cover!(next == u64::MAX, "the exhausted index round-trips");
+    kani::cover!(next == 0, "a token resumes at the start");
+    kani::cover!(next == u64::MAX, "the last next resumes without wrapping");
+    kani::cover!(epoch == EPOCHS - 1, "the top admitted epoch resumes");
 }
 
-/// KANI-003: distinct (epoch, position) tuples have distinct tokens, and
-/// byte order (which is `String` order) is tuple order. START is position 0
-/// of its epoch; "-1" is never emitted, so no order is assumed for it.
+/// KANI-003: distinct admitted (epoch, next) positions have distinct
+/// tokens, and token byte order (which is `String` order) is position
+/// order. "-1" is never emitted, so no order is assumed for it.
 #[kani::proof]
 #[kani::unwind(40)]
 fn kani_003_tokens_are_injective_and_ordered() {
-    let (left_epoch, left_next): (u32, u64) = (kani::any(), kani::any());
-    let (right_epoch, right_next): (u32, u64) = (kani::any(), kani::any());
-    let left = token_digits(left_epoch, Offset::before(left_next));
-    let right = token_digits(right_epoch, Offset::before(right_next));
-    let tuples = (left_epoch, left_next).cmp(&(right_epoch, right_next));
-    // Injectivity first: once order holds it implies injectivity, so a
-    // collision must be caught here for its own control to break it.
+    let left: (u32, u64) = (admitted_epoch(), kani::any());
+    let right: (u32, u64) = (admitted_epoch(), kani::any());
+    let (left_token, right_token) = (digits(left.0, left.1), digits(right.0, right.1));
+    let positions = left.cmp(&right);
+    // Injectivity first: order implies it, so a collision is reported
+    // under its own name as well.
     assert!(
-        (left == right) == tuples.is_eq(),
-        "distinct tuples have distinct tokens"
+        (left_token == right_token) == positions.is_eq(),
+        "distinct positions have distinct tokens"
     );
-    assert!(left.cmp(&right) == tuples, "token order is tuple order");
-    kani::cover!(
-        left_epoch != right_epoch && left_epoch & 0x3fff_ffff == right_epoch & 0x3fff_ffff,
-        "epochs that differ only in their top two bits are compared"
+    assert!(
+        left_token.cmp(&right_token) == positions,
+        "token byte order is position order"
     );
+    kani::cover!(left.0 == EPOCHS - 1, "the top admitted epoch is compared");
+    kani::cover!(left.1 == u64::MAX, "the last next is compared");
+    kani::cover!(right == (0, 0), "start-of-stream is compared");
 }

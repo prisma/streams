@@ -2242,23 +2242,23 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::kani_001_every_epoch_and_position_round_trips",
+      "count": 3,
+      "owner": "crate::kani_001_every_admitted_epoch_and_next_round_trips",
       "path": "src/offsets/proofs.rs",
       "reason": "Kani proof harness for KANI-001 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::kani_002_start_and_successor_indices",
+      "count": 3,
+      "owner": "crate::kani_002_start_and_resume_index",
       "path": "src/offsets/proofs.rs",
       "reason": "Kani proof harness for KANI-002 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 3,
       "owner": "crate::kani_003_tokens_are_injective_and_ordered",
       "path": "src/offsets/proofs.rs",
       "reason": "Kani proof harness for KANI-003 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",

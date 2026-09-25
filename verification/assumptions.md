@@ -47,17 +47,22 @@ defined here.
 
 - **Scope:** KANI-001, KANI-002, KANI-003.
 - **Statement:** an offset token is `(epoch: u32, rawSeq: u64)`, where the epoch
-  is the segment ordinal and `rawSeq` is the scan index `next`. Every value of
-  both is admitted. The unused `in_block` word and the two pad bits are written
-  as zero. The parser ignores them. Canonical-token (alias) rejection is
-  KANI-004, which is still planned.
+  is the segment ordinal and `rawSeq` is the scan index `next`. Every `next` is
+  admitted; only epochs below 2^30 round-trip, because the two pad bits shift
+  the epoch's top two bits out (the `src/offsets.rs` module doc). The unused
+  `in_block` word and the pad bits are written as zero, and the parser reads
+  rather than refuses them. Refusing them, multibyte chars and a high leading
+  digit is slate's pending wire decision (review item 88 step 2) and KANI-004.
 - **Origin:** `src/offsets.rs`, `docs/PER-KEY-ORDERING.md` §3, `src/segmap.rs`
   (ordinals allocated up to `u32::MAX` with `checked_add` on split).
-- **Enforcement / evidence:** the `Offset` field is private and
-  `Offset::before` is total. The harnesses quantify over the full domain.
-- **Invalidation:** a wider segment ordinal, a nonzero `in_block`, or a change
-  to the token layout.
-- **Standing:** established.
+- **Enforcement / evidence:** KANI-001 and KANI-003 quantify over epochs below
+  2^30 and every `u64`; KANI-002 over every `u32` epoch. Nothing in the code
+  keeps a segment ordinal below 2^30: an ordinal at or above it aliases the
+  ordinal mod 2^30 (KANI-001 finding, open).
+- **Invalidation:** a segment ordinal at or above 2^30, a nonzero `in_block`,
+  or a change to the token layout.
+- **Standing:** established for the domain below 2^30; the full `u32` domain
+  awaits the wire decision.
 
 ### ASM-PRODUCER-ROW
 
