@@ -928,7 +928,7 @@
         "worker_threads": 4,
         "settlement_buckets": 1024
       },
-      "limitations": "In-memory FaultStore engines driven by manual gathers and direct commit groups; the capacity-rate race is covered by the post_split_throughput_scales acceptance loop, not by these tests.",
+      "limitations": "In-memory FaultStore engines driven by manual gathers and direct commit groups; the capacity-rate race is covered by the post_split_throughput_scales acceptance loop, not by these tests. The rollback deletes no postings pages: a refused group that carried a stream advance with a later advance of that stream chained behind it heals into overlapping pages (ledger exact, envelope fallback for that key's page bucket); the same holds for a bucket-sharing stream's dropped gather and for an engine retirement that drops two chained advances (docs/HISTORY-V2.md, follow-up). That a receipt settles only after dispatch_durable has published the group's tails rests on the receipts dropping at the end of that loop's iteration, after the tails; no test isolates that order, and the Loom models pass with the orderings weakened to Relaxed, so they do not test the Acquire/Release pairing either.",
       "execution": "requires_final_head_receipt",
       "tests": [
         {

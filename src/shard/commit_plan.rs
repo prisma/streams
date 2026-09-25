@@ -214,7 +214,7 @@ impl SettlementWord for AtomicU64 {
 
 /// Stream buckets of an absorber's settlement counters: 1,024 words of
 /// 8 bytes, 8 KiB per absorber (one per engine). Streams share a word only
-/// when the last ten bits of their hashes agree, and sharing only delays a
+/// when the ten bits `bucket` reads agree, and sharing only delays a
 /// rollback, never permits one.
 pub(crate) const SETTLEMENT_BUCKETS: usize = 1024;
 
@@ -238,9 +238,9 @@ impl<W: SettlementWord, const N: usize> Default for Submissions<W, N> {
 }
 
 impl<W: SettlementWord, const N: usize> Submissions<W, N> {
-    /// A stream's counter, from the last two bytes of its hash: shard
-    /// placement consumes the leading bits, so these stay uniform within
-    /// one engine.
+    /// A stream's counter: all of hash byte 14 and the low two bits of byte
+    /// 15. The hash is a SHA-256 prefix independent of the placement route,
+    /// so any ten of its bits are uniform; the tail is a convention.
     fn bucket(hash: &[u8; 16]) -> usize {
         usize::from(u16::from_le_bytes([hash[14], hash[15]])) % N
     }

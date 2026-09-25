@@ -160,7 +160,18 @@ therefore gathers from its submitted high-water mark and rolls a mark
 back only when no advance of that stream can still land: every
 submitted advance carries a receipt, counted per stream bucket, that
 the committer drops at staging, with a refused group, or after durable
-dispatch (release hold HOLD-SPLIT-500).
+dispatch (release hold HOLD-SPLIT-500). Known residual (review of the
+fix, low): the rollback does not delete pages. A refused group that held
+a stream's advance with a later advance of the same stream chained
+behind it (the committer lagging one absorber tick) heals by
+regathering from the durable boundary, and the chained advance's pages,
+flushed before submit, overlap the heal's. So do a bucket-sharing
+stream's dropped gather and an engine retirement that drops two chained
+advances before the next owner regathers. Records and the maintenance
+ledger stay exact; that key's page bucket reads through the envelope
+fallback (POSTINGS_CORRUPT) until its pages are rewritten. The fix, a
+heal that deletes the stream's pages in [durable, mark) in its own
+WriteBatch, is recorded as follow-up work.
 
 **Read through the already-open partition.** The shard owner serves
 history reads from its own open Db — no per-stream DbReader, no
