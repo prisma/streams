@@ -21,6 +21,10 @@ struct Inner {
     read_spool: OnceLock<Arc<ReadSpool>>,
     sweep: SweepSched,
     drain_progress: std::sync::Mutex<DrainProgress>,
+    /// The closure-debt settlement pass's resume point: the last debt key
+    /// it finished, so debts that keep waiting cannot starve later ones
+    /// (`billing::replaced`). An async lock: nothing to poison.
+    debt_cursor: tokio::sync::Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -74,6 +78,7 @@ impl BillingService {
                 read_spool: OnceLock::new(),
                 sweep: SweepSched::default(),
                 drain_progress: Default::default(),
+                debt_cursor: tokio::sync::Mutex::new(None),
             }),
         }
     }
@@ -379,6 +384,16 @@ impl BillingService {
     )]
     pub(crate) fn sweep_walk_cursor(&self) -> Option<String> {
         self.inner.sweep.walk_cursor.lock().unwrap().clone()
+    }
+
+    /// The closure-debt pass's resume point (`None`: from the start).
+    pub(crate) async fn debt_cursor(&self) -> Option<String> {
+        self.inner.debt_cursor.lock().await.clone()
+    }
+
+    /// Set (or clear, on a full circle) the closure-debt pass's resume point.
+    pub(crate) async fn set_debt_cursor(&self, after: Option<String>) {
+        *self.inner.debt_cursor.lock().await = after;
     }
 
     /// Set (or clear, on a full circle) the walk's resume point.

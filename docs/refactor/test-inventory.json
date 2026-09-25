@@ -988,7 +988,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "47ed5b4b0d32113053f746e7bad2dc9be8a9e1c8c0bb053876463d120e81e816",
+    "function_sha256": "c952c8000094a0aa230d9f5ce9187cf4fe4d72115538c08785ce90348b511830",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
@@ -6845,6 +6845,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fork_debt.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_closure_debt_pass_reaches_a_debt_behind_waiting_ones",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1f9d1fa1481698354563dcaf52508b7ce37f2c2f86e265656da2240b87758ffa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
     "scenarios": []
   },
   {

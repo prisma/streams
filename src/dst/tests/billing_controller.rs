@@ -504,7 +504,7 @@ async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage(
     let mut debts = usize::MAX;
     for _ in 0..20 {
         crate::billing::replaced::settle_replaced(&state).await;
-        debts = state.registry.replaced_page(64).await.unwrap().len();
+        debts = state.registry.replaced_page(None, 64).await.unwrap().len();
         if debts == 0 {
             break;
         }
@@ -520,6 +520,104 @@ async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage(
             "{what}'s gauge is not the debt's to close"
         );
     }
+    engine_shutdown(&state).await;
+}
+
+/// Whether `identity`'s storage gauge reads zero within ~400 ms: a close is
+/// a committer op, so it lands shortly after it is submitted.
+async fn gauge_closes(engine: &crate::shard::ShardEngine, identity: [u8; 16]) -> bool {
+    for _ in 0..20 {
+        let meta = engine.billing_meta(identity).await;
+        if meta.map_or(0, |m| m.owned_frame_bytes_current) == 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// The settlement pass examines 64 debts per sweep. Debts that keep
+/// waiting (their incarnation is still stored and dead, so the walk closes
+/// it) used to occupy those 64 slots on every sweep, because each pass
+/// listed from the start: a debt sorted after them never settled. Red
+/// before the cursor: the replaced incarnation behind 65 waiting debts kept
+/// its gauge through every pass. Now each pass resumes after the last debt
+/// it finished and wraps at the end, so it is reached on the next sweep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_closure_debt_pass_reaches_a_debt_behind_waiting_ones() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (_svc, state, addr) = auth_rig("proj-starve", "ws_starve", &["c_st"], None).await;
+    let bearer = mint_token("c_st", "proj-starve", "ws_starve", 1, 1, "st-1", 600);
+    let project = crate::tenant::ProjectId::new("proj-starve").unwrap();
+    rig_create(addr, "z-idle", &bearer).await;
+    assert_eq!(rig_append(addr, "z-idle", &bearer, r#"{"n":1}"#).await, 200);
+    let sref = project.stream_ref("z-idle");
+    let old = state.registry.get(&sref).await.unwrap().unwrap();
+    // 65 dead incarnations whose debts sort first and keep waiting.
+    let expired_at = crate::billing::billing_now_ms();
+    for index in 0..65 {
+        let mut row = old.to_persisted();
+        row.name = format!("a-{index:03}");
+        row.expires_at_ms = Some(expired_at);
+        assert!(state.registry.create(row).await.unwrap().0);
+        let dead = state
+            .registry
+            .get(&project.stream_ref(&format!("a-{index:03}")))
+            .await;
+        state
+            .registry
+            .record_replaced(&dead.unwrap().unwrap())
+            .await
+            .unwrap();
+    }
+    let engine = state
+        .shards
+        .open(
+            &state
+                .shards
+                .prefix_for(&old.segment_route_by_id(0).unwrap()),
+        )
+        .expect("the stream's shard is open");
+    let identity = old.resolve_segment("").identity;
+    let mut clean = false;
+    for _ in 0..200 {
+        crate::billing::drain_once(&state).await.expect("drain");
+        let dirty = engine.usage_dirty_scan().await.unwrap();
+        clean = dirty.iter().all(|(hash, _)| *hash != identity);
+        if clean {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(clean, "the row must be acked clean first");
+    assert!(
+        engine
+            .billing_meta(identity)
+            .await
+            .is_some_and(|m| m.owned_frame_bytes_current > 0)
+    );
+    assert!(
+        state
+            .registry
+            .cas_update(&sref, |d| {
+                d.expires_at_ms = Some(expired_at);
+                true
+            })
+            .await
+            .unwrap()
+    );
+    state.registry.invalidate(&sref);
+    rig_create(addr, "z-idle", &bearer).await;
+
+    let mut closed = false;
+    for _ in 0..6 {
+        crate::billing::replaced::settle_replaced(&state).await;
+        closed = gauge_closes(&engine, identity).await;
+        if closed {
+            break;
+        }
+    }
+    assert!(closed, "the debt behind 65 waiting ones was never reached");
     engine_shutdown(&state).await;
 }
 

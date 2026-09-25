@@ -152,21 +152,27 @@ impl Registry {
         Err(debt_error("closure debt retries exhausted"))
     }
 
-    /// Up to `limit` closure debts of the cell, in key order.
+    /// Up to `limit` closure debts of the cell after key `after` (from the
+    /// start when `None`), in key order. Only that many keys are listed.
     pub(crate) async fn replaced_page(
         &self,
+        after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<DebtEntry>, object_store::Error> {
-        use futures_util::TryStreamExt;
+        use futures_util::{StreamExt, TryStreamExt};
         let prefix = ObjPath::from(REPLACED_ROOT.trim_end_matches('/'));
-        let mut keys: Vec<ObjPath> = self
-            .store
-            .list(Some(&prefix))
+        let listing = match after {
+            Some(key) => self
+                .store
+                .list_with_offset(Some(&prefix), &ObjPath::from(key)),
+            None => self.store.list(Some(&prefix)),
+        };
+        let mut keys: Vec<ObjPath> = listing
             .map_ok(|meta| meta.location)
+            .take(limit)
             .try_collect()
             .await?;
         keys.sort();
-        keys.truncate(limit);
         let mut page = Vec::with_capacity(keys.len());
         for key in keys {
             if let Some((_, debt)) = self.read_debt(&key).await? {

@@ -34,18 +34,33 @@ pub(crate) async fn settle_replaced(state: &Arc<AppState>) {
     if state.billing.usage_key().is_none() {
         return;
     }
-    let page = match state.registry.replaced_page(DEBTS_PER_SWEEP).await {
+    let after = state.billing.debt_cursor().await;
+    let page = match state
+        .registry
+        .replaced_page(after.as_deref(), DEBTS_PER_SWEEP)
+        .await
+    {
         Ok(page) => page,
         Err(error) => {
             tracing::warn!("closure-debt pass paused (registry list): {error}");
             return;
         }
     };
+    // Resume after the last debt this pass finished; a short page is the
+    // end of the listing, so the next sweep wraps to the start.
+    let full = page.len() == DEBTS_PER_SWEEP;
+    let mut done = after;
     for entry in page {
         if settle_debt(state, &entry).await == Pass::Stop {
+            state.billing.set_debt_cursor(done).await;
             return;
         }
+        done = Some(entry.key);
     }
+    state
+        .billing
+        .set_debt_cursor(if full { done } else { None })
+        .await;
 }
 
 async fn settle_debt(state: &Arc<AppState>, entry: &DebtEntry) -> Pass {
