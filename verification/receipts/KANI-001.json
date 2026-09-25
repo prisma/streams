@@ -2,32 +2,32 @@
   "checks": [
     {
       "check": "KANI-001/round-trip",
-      "covers": 2,
-      "covers_satisfied": 2,
+      "covers": 3,
+      "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "62881de5fa02d93e6ad34e38c747aea89ebd410f49ba13b4c869c7e380de36ec",
+      "log_sha256": "4d1f9c4a6c907010a5f5f8e9997e56fe2fc439c77f3095ee72c4373e72a4bca0",
       "role": "baseline",
-      "seconds": 2238.3,
+      "seconds": 1647.0,
       "verdict": "pass"
     },
     {
-      "check": "KANI-001/nc-truncate-high-epoch-bits",
-      "covers": 2,
-      "covers_satisfied": 1,
-      "expected": "fail:epoch and position survive the round trip",
+      "check": "KANI-001/nc-drop-top-admitted-epoch-bit",
+      "covers": 3,
+      "covers_satisfied": 2,
+      "expected": "fail:epoch and next survive the round trip",
       "failed_checks": [
-        "\"epoch and position survive the round trip\""
+        "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "a337abf6e052e18970916d405e2d7f1c6f141ff77d304da5785dd0cdc34e216d",
+      "log_sha256": "56be7c4457905fb977e2f41f5bc140e7d51894831854862f04fb0ea830d42333",
       "mutated": {
         "src/offsets.rs": {
-          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-          "control": "174e572bd43e3246e12b5d0f2666e0570081dc305761103c3398fbe4373957a5"
+          "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+          "control": "bfb9745cc3fb212c5fdd08cb52771727c003bf0c2565cb717e2a466a9dc0d816"
         }
       },
       "role": "negative-control",
-      "seconds": 1806.0,
+      "seconds": 1022.8,
       "verdict": "fail"
     }
   ],
@@ -37,7 +37,7 @@
     "assumptions": {
       "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
-      "ASM-OFFSET-DOMAIN": "6230ea5c9d5b7adf8d65021741845c17dc6d8003ab216a3e0cffb3a79e5d5de2"
+      "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
       "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
@@ -45,11 +45,11 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/offsets.rs": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-      "src/offsets/proofs.rs": "d33cc88fcf9bc1d835feec80035976f433b0391bf8103fe3db73e0f46638540c",
-      "verification/kani/controls/KANI-001-truncate-high-epoch-bits.patch": "9971db4bd5c6b9b2810301ae5488a955c6a7729336768d281d6dc6a4081b262f"
+      "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+      "src/offsets/proofs.rs": "24cd67416837a468ba4d0e735e360c2bc031b71c77b599ca63e7512845da8fa3",
+      "verification/kani/controls/KANI-001-drop-top-admitted-epoch-bit.patch": "cf0e1dfa44732818bd7ed43372deb76cc97427424629ea7894568b017186d012"
     },
-    "manifest_entry": "7913ea11b2aba34ec573d2b2a1a0aa6de095a9855b5620e9664376f325d7876d",
+    "manifest_entry": "4a1796aaa4d20c47b6cba1c595ff116c93c788627c469c78474935bbd37091c4",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -71,10 +71,10 @@
       }
     }
   },
-  "inputs_sha256": "5eb7656eb30d514d0295a05b5c8f21dafc4dd956b0f67f7a46aae9680bf2aa09",
+  "inputs_sha256": "ed2d3e6d3936a5825b4d09a9562fe0b9568044cac6a34fb9fd47907a4e9a94f2",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "f10b997e53fd8881972e5eaafffa7dc6c6c7ad30"
   },
   "schema": 2,
   "tools": {

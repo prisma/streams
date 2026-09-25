@@ -1,52 +1,33 @@
 {
   "checks": [
     {
-      "check": "KANI-002/successor-indices",
-      "covers": 2,
-      "covers_satisfied": 2,
+      "check": "KANI-002/start-and-resume-index",
+      "covers": 3,
+      "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e960e342b98d1c29d23f4c7113f736efee0c6b5a327d0f3971e384ba3584490a",
+      "log_sha256": "2d26027643d0d49422814ccc0fe1fca12ab1446e5f7d244bf98bcd576c5cbb40",
       "role": "baseline",
-      "seconds": 430.7,
+      "seconds": 514.5,
       "verdict": "pass"
     },
     {
-      "check": "KANI-002/nc-start-token-skips-entry-zero",
-      "covers": 2,
-      "covers_satisfied": 1,
-      "expected": "fail:a token resumes at the index it was issued for",
+      "check": "KANI-002/nc-exhausted-next-wraps-to-start",
+      "covers": 3,
+      "covers_satisfied": 2,
+      "expected": "fail:a token resumes at the next it was issued for",
       "failed_checks": [
-        "\"a token resumes at the index it was issued for\""
+        "\"a token resumes at the next it was issued for\""
       ],
-      "log_sha256": "cd203d4843636e1d1f8d8f5927d5b2af70c2b0271750f17ee731c54a8e2cb510",
+      "log_sha256": "b99e84e3aae274e88d1f73f863c6b21bd34a58a94ce3631efecd561ebf4ceedf",
       "mutated": {
         "src/offsets.rs": {
-          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-          "control": "ad130d36076768d66039b1638641ac719299f6dca96a38fa028d03dc826d24d8"
+          "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+          "control": "69336df52fce202b01e37992a82d819ac3480486134b1022f70aa8b30aa7734e"
         }
       },
       "role": "negative-control",
-      "seconds": 449.0,
-      "verdict": "fail"
-    },
-    {
-      "check": "KANI-002/nc-exhausted-index-wraps-to-start",
-      "covers": 2,
-      "covers_satisfied": 1,
-      "expected": "fail:a position resumes at its own index",
-      "failed_checks": [
-        "\"a position resumes at its own index\""
-      ],
-      "log_sha256": "ce744317f2c5d4668a6981b726c439ef60a7601533430c2f034144e7c64be96c",
-      "mutated": {
-        "src/offsets.rs": {
-          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-          "control": "c66b25e31dbda5daffb36ce2c29a079a88b3be7d25b20fb401563881cefe2b7e"
-        }
-      },
-      "role": "negative-control",
-      "seconds": 480.3,
+      "seconds": 616.2,
       "verdict": "fail"
     }
   ],
@@ -56,7 +37,7 @@
     "assumptions": {
       "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
-      "ASM-OFFSET-DOMAIN": "6230ea5c9d5b7adf8d65021741845c17dc6d8003ab216a3e0cffb3a79e5d5de2"
+      "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
       "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
@@ -65,12 +46,11 @@
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
       "src/application/read_range.rs": "83fbc175a94f531938aea356347dc905d7ecbae85a30133130de0d2117786cd5",
-      "src/offsets.rs": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-      "src/offsets/proofs.rs": "d33cc88fcf9bc1d835feec80035976f433b0391bf8103fe3db73e0f46638540c",
-      "verification/kani/controls/KANI-002-exhausted-index-wraps-to-start.patch": "19c4a4ccd3c2e86b420d59750f4ebe8fa5512935d0e3dbccdcb0da4248bc9ce0",
-      "verification/kani/controls/KANI-002-start-token-skips-entry-zero.patch": "a95bb6e9e619d3218ca75c7e149fffeabb5b4ae218026fcd1a2adc451b16743e"
+      "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+      "src/offsets/proofs.rs": "24cd67416837a468ba4d0e735e360c2bc031b71c77b599ca63e7512845da8fa3",
+      "verification/kani/controls/KANI-002-exhausted-next-wraps-to-start.patch": "a3ebac73dee1b3ddd6b9687d399936cade139b5a31cf802d65f3e95987ff7e91"
     },
-    "manifest_entry": "c5231aee190eb283439cc58876fdd2f76427e28352cd57ed67c5d0cf81717a07",
+    "manifest_entry": "ce287f788fbd4d7c0b7b7c1e3e8f619adffa6d3df3ab82b05958a445abc2002c",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -92,10 +72,10 @@
       }
     }
   },
-  "inputs_sha256": "99a0db8599b929d6d9d226fe14251da24c84f9987bafc86b090aaaf74c8bcbe6",
+  "inputs_sha256": "a279410dfeeb109ba0519c0d41a360127ef9e03077649c381e433ebc2c5ba2a4",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "f10b997e53fd8881972e5eaafffa7dc6c6c7ad30"
   },
   "schema": 2,
   "tools": {
