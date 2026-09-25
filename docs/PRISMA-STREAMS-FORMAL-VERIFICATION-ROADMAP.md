@@ -90,10 +90,11 @@ Each case now has a negative test in `scripts/quality/test_formal.py`.
 - **Receipts.** All 17 receipts were recorded once on the frozen source, with
   `run --record` on clean trees: TLA-001 and TLA-019 on `1d20f76f` (which adds
   the expired-fork-child fix of §0.7 to `3f386070`), the other 15 on
-  `3f386070`. All 317 checks matched their expected verdicts. The inputs of
-  all 17 are unchanged at `74294069` ("Every obligation's receipt is recorded
-  once on the frozen source"), where `check --fresh` reports no problem and no
-  stale receipt.
+  `3f386070`. All 317 checks matched their expected verdicts. TLA-018 was
+  recorded again on `cb4c6b47` (29/29) after a mutation-lane test landed in
+  `read_continuation.rs`, one of its inputs; the other 16 inputs are
+  unchanged there, and `check --fresh` reports no problem and no stale
+  receipt.
 
 ### 0.3 Obligation status
 
@@ -120,7 +121,7 @@ design check (§7.7).
 | TLA-006 | pass-with-recorded-scope | 3 / 6 / 9 | `HandoffRetirement.tla`: one terminal owner per batch, and late success only for work decided live. | `3f386070`, 18/18 | ASM-DURABILITY-10, for liveness only |
 | TLA-011 | pass-with-recorded-scope | 3 / 4 / 11 | `ServingOwnership.tla`: two nodes, stale views, an override move, crashes and ambiguous WAL PUTs, in fleet and single-node modes. | `3f386070`, 18/18 | ASM-OBJSTORE-CAS (unestablished), through ASM-SLATEDB-FENCE |
 | TLA-016 | pass-with-recorded-scope | 11 / 14 / 21 | `HistoryAbsorb.tla`: absorption, trims and the byte ledger; since `f1de3dcb` also submission receipts, replay-limited lane marks and postings pages with overlap admission. | `3f386070`, 46/46 | — |
-| TLA-018 | pass-with-recorded-scope | 8 / 8 / 13 | `ReadCompose.tla`: durable and applied, keyed and unfiltered reads, with the provisional continuation and explicit resync. H11 is claimed only in the scope of TLA-018-F2. | `3f386070`, 29/29 | — |
+| TLA-018 | pass-with-recorded-scope | 8 / 8 / 13 | `ReadCompose.tla`: durable and applied, keyed and unfiltered reads, with the provisional continuation and explicit resync. H11 is claimed only in the scope of TLA-018-F2. | `cb4c6b47`, 29/29 | — |
 | TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 (at `3f386070`; 10 / 15 / 20 at `f1de3dcb`) | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | `1d20f76f`, 50/50 | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
 
 The manifest holds 317 checks at `3f386070`: 80 baselines, 105 negative
@@ -172,6 +173,7 @@ These were found outside the models, while implementing the closure.
 | **Scan-option regression and recount lag.** `da4e056f` "The absorbed-byte recount reads with default scan options" removed the read-ahead because mutants survived. A cold recount then stalled the shard's commit path for 57.5 s (2 chunks) to 491 s (17 chunks). The read-ahead is restored. The "at most one gather chunk" comment was false: every consecutive refused group added a chunk. Refused groups now roll their lane marks back and replay. | `21c5e618` "The absorbed-byte recount reads ahead again: the default scan stalls the shard for minutes"; `d9aeaeff` "A refused absorption group rolls its lane marks back, so a recount covers only chunks in flight" | `history_absorption::mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing`; `refused_absorbed_groups_do_not_widen_the_next_recount`. The remaining bound is TLA-016-F4. |
 | **Overlapping postings pages.** A rescan rollback, or a new owner's re-gather, cut the same rows into different chunks. The cold index load then refused the overlapping pages as corrupt, and the key went to the envelope scan for good. A reader now admits an overlap that lists exactly the offsets already admitted. | `d16559b3` "Overlapping postings pages from a re-gather admit when they agree"; model `f1de3dcb` | two regressions through the real absorber, committer, rescan and reopen; `baseline-pages-regather` |
 | **DST timing.** After `d9aeaeff` a refused group replays on the next absorber tick, so the atomic-retirement test's 20 ms tick let the retry land before its check. It failed 10 of 12 runs. The tick is now one second. | `29fcacf1` "The atomic-retirement DST test checks the refused group before its replay"; inventory hash `8e16bde3` | 12 of 12 runs pass, as the commit reports |
+| **Mutation owners that reached no test.** An owner's filter is its whole test scope. `read_request`'s `application::read_request::` and `http_read`'s `http::read::` named modules that do not exist (the files compile as `application::read::request` and `http::read_adapter`), and the `ops` and `transaction_maintenance` filters left out the DST tests that assert their alerts and the recount's scan settings, so the closure's mutants in them survived. The filters now name the tests that reach the code, and new tests cover what those did not. `read_continuation` and `service_runtime` had no owner. One survivor is equivalent: `> 1` to `>= 1` in the raw read's segmented-offset rule, since the only one-segment map holds segment 0 and a segment-0 offset encodes identically either way. | `595fe266`, `0c5aef81`, `b054970b`, `15f700ad`, `1948942e`, `cb4c6b47` | every other changed owner's mutants caught or unviable in per-owner runs on the lane's arguments |
 
 **Measured costs, not yet accepted.** Workload acceptance is separate from
 correctness (`docs/OPS-RELEASE.md` §6).
@@ -730,7 +732,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P0 · **Requirement anchors:** H1–H2, H9–H11, D8–D9  
 **Source owners:** [`src/application/read_batch.rs`](src/application/read_batch.rs); [`src/application/read_scan.rs`](src/application/read_scan.rs); [`src/application/read_keys.rs`](src/application/read_keys.rs); [`src/history/postings_read.rs`](src/history/postings_read.rs); [`src/shard/record.rs`](src/shard/record.rs)
 
-**Status:** pass-with-recorded-scope, since the closure fixed TLA-018-F3; its receipt was recorded on `3f386070`. H11 is claimed only in the scope of the open obligation TLA-018-F2 (see [§0](#0-implementation-record)).
+**Status:** pass-with-recorded-scope, since the closure fixed TLA-018-F3; its receipt was recorded on `cb4c6b47`. H11 is claimed only in the scope of the open obligation TLA-018-F2 (see [§0](#0-implementation-record)).
 
 **Validate.** A permitted read view combines the history prefix and hot suffix with exact coverage: no fabricated records, missing eligible offsets, or duplicate delivery caused by a moving boundary. Data corruption or missing required postings cannot become a false complete page. Visibility must be modeled per API: distinguish any permitted applied-state read from a durability promise.
 
