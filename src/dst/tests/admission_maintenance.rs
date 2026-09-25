@@ -4,8 +4,9 @@ use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{HttpRigOptions, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
-use super::fixture_storage::{mem, open_engine, skey};
+use super::fixture_storage::{eventually, mem, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
+use crate::shard::{encode_shard_maint, shard_maint_key};
 use object_store::ObjectStore;
 use std::sync::Arc;
 
@@ -541,21 +542,11 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
     );
 }
 
-/// R26-5d: the first request CANNOT pass while backlog restoration is
-/// parked — and when restoration completes, admission sees the restored
-/// ledger, not a default. Rig 1 persists an over-bound durable row;
-/// rig 2 opens the same namespace with restoration parked: the request
-/// stays unanswered while parked, then gets the typed 503 from the
-/// restored state. At no point does an append slip through against an
-/// unknown backlog.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
-    let store = mem();
+/// Rig 1 of R26-5d: after restore-x's first append settles (which rewrites the
+/// maintenance row), persist an over-bound row and hand the shard over.
+async fn hand_over_an_over_bound_row(store: Arc<dyn ObjectStore>) -> String {
     let ct = [("content-type", "application/json")];
-
-    // Rig 1: create the stream, then persist a fat durable row through
-    // the engine's own DB and hand the namespace over.
-    let (state1, addr1) = http_rig(store.clone()).await;
+    let (state1, addr1) = http_rig(store).await;
     let (st, _, _) = hreq(addr1, "PUT", "/v1/stream/restore-x", &ct, b"").await;
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr1, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":1}]"#).await;
@@ -572,6 +563,8 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         .engine_for_scaler(&seg.shard_route)
         .await
         .expect("engine");
+    let settled = || engine1.maintenance_snapshot().unabsorbed_frame_bytes == 0;
+    eventually("the append's settlement", settled).await;
     let fat = crate::shard::ShardMaintenance {
         version: 99,
         unabsorbed_frame_bytes: 300 * 1024 * 1024,
@@ -579,15 +572,8 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         last_progress_ms: 1,
     };
     let mut wb = slatedb::WriteBatch::new();
-    wb.put(
-        crate::shard::shard_maint_key(),
-        crate::shard::encode_shard_maint(&fat),
-    );
-    engine1
-        .db
-        .write_with_options(wb, &slatedb::config::WriteOptions::default())
-        .await
-        .unwrap();
+    wb.put(shard_maint_key(), encode_shard_maint(&fat));
+    engine1.db.write(wb).await.unwrap();
     engine1.db.flush().await.unwrap();
     state1.shards.retire(
         &prefix,
@@ -595,12 +581,24 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         |_, _| true,
     );
     state1.shards.clear_holdoff(&prefix); // the fixture reopens at once
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    eventually("engine 1 closing", || engine1.is_closed()).await;
+    prefix
+}
+
+/// R26-5d: the first request CANNOT pass while backlog restoration is
+/// parked, and then sees the restored ledger, not a default. Rig 1 persists
+/// an over-bound durable row; rig 2 reopens the namespace with restoration
+/// parked: the request stays unanswered, then gets the restored state's 503.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
+    let store = mem();
+    let ct = [("content-type", "application/json")];
+    let prefix = hand_over_an_over_bound_row(store.clone()).await;
 
     // Rig 2: fresh gate over the same store, restoration parked.
     let park = Arc::new(tokio::sync::Mutex::new(()));
     let held = park.clone().lock_owned().await;
-    let (_state2, addr2) = http_rig_park(store, park.clone(), RigRuntime::incarnation(1)).await;
+    let (state2, addr2) = http_rig_park(store, park.clone(), RigRuntime::incarnation(1)).await;
     #[expect(
         clippy::disallowed_methods,
         reason = "Restoration fixture owns its blocked HTTP request; the handle is retained and joined after releasing the opener; synchronous execution cannot verify that the request stays pending"
@@ -608,7 +606,9 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     let req = tokio::spawn(async move {
         hreq(addr2, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":2}]"#).await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let shards = &state2.shards;
+    let opening = || shards.describe_for_test(&prefix).contains("inflight=true");
+    eventually("the request's shard open", opening).await;
     assert!(
         !req.is_finished(),
         "a request must not be answered while the durable backlog is unrestored"

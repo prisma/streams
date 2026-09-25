@@ -245,6 +245,17 @@ pub(super) async fn append_sized(
     rx.await.expect("resp").expect("ack").last_offset
 }
 
+/// Poll `ready` every 5 ms until it holds; fail after 10 s naming `what`.
+pub(super) async fn eventually(what: &str, ready: impl Fn() -> bool) {
+    for _ in 0..2_000 {
+        if ready() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("{what} did not happen within 10 s");
+}
+
 pub(super) async fn wait_all_absorbed(
     engine: &Arc<crate::shard::ShardEngine>,
     hashes: &[[u8; 16]],

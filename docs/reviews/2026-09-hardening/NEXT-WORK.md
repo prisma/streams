@@ -542,10 +542,12 @@ before marking it complete."
 - **`parse_month` (done, edge change #59):** a signed month ("2026-+9")
   answered a zero row; it now requires ASCII digits and answers 400
   `invalid_month`.
-- **Flaky test.**
+- **Flaky test (done).**
   `dst::dst_tests::admission_maintenance::first_request_waits_for_restoration_then_sees_the_restored_ledger`
-  orders its request with fixed 300/400 ms sleeps; wait on an observable
-  event instead.
+  failed 1 in 64 under load (a restored 204): the absorber's settlement of
+  the first append rewrote the maintenance row after the test's fat row. It
+  now waits on observable events (the settlement, engine 1 closed, the
+  request's shard open in flight) instead of fixed sleeps.
 - **SIGTERM on a fully wedged executor** is never observed (the signal task
   runs on that executor), so it arms no stop bound; documented in WIRE-MATRIX
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
