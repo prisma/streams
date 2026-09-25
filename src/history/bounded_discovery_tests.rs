@@ -132,10 +132,10 @@ async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
 // ("maintenance accounting diverged"), and every append in it answers
 // Internal: HTTP 500 on both append surfaces.
 
-type AppendAnswer = Result<crate::shard::AppendAck, crate::shard::AppendErr>;
+pub(super) type AppendAnswer = Result<crate::shard::AppendAck, crate::shard::AppendErr>;
 
 /// One 100-byte record for `hash`, enqueued; the receiver is its answer.
-fn enqueue_record(
+pub(super) fn enqueue_record(
     engine: &ShardEngine,
     hash: [u8; 16],
 ) -> tokio::sync::oneshot::Receiver<AppendAnswer> {
@@ -168,7 +168,7 @@ fn enqueue_record(
     answer
 }
 
-async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+pub(super) async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !ready() {
         assert!(Instant::now() < deadline, "{what} never happened");
@@ -214,14 +214,14 @@ fn assert_ledger_is_exact(regather: &Regather) {
 }
 
 /// Stored frame bytes of one record, if it is stored.
-async fn stored_len(engine: &ShardEngine, hash: &[u8; 16], offset: u64) -> Option<u64> {
+pub(super) async fn stored_len(engine: &ShardEngine, hash: &[u8; 16], offset: u64) -> Option<u64> {
     let row = engine.db.get(crate::shard::record_key(hash, offset)).await;
     row.unwrap().map(|value| value.len() as u64)
 }
 
 /// An engine over a fault store whose WAL puts a test can hold, with an
 /// absorber whose gathers the test drives.
-async fn rig(name: &str) -> (Arc<ShardEngine>, Absorber, Arc<crate::dst::FaultStore>) {
+pub(super) async fn rig(name: &str) -> (Arc<ShardEngine>, Absorber, Arc<crate::dst::FaultStore>) {
     let store = crate::dst::FaultStore::uniform(
         Arc::new(object_store::memory::InMemory::new()),
         0x47,
@@ -352,13 +352,13 @@ async fn a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark()
 }
 
 /// Append one record, wait for its answer and note its stored bytes.
-async fn append_stored(engine: &ShardEngine, hash: [u8; 16], stored: &mut Vec<u64>) {
+pub(super) async fn append_stored(engine: &ShardEngine, hash: [u8; 16], stored: &mut Vec<u64>) {
     enqueue_record(engine, hash).await.unwrap().unwrap();
     let offset = u64::try_from(stored.len()).unwrap();
     stored.push(stored_len(engine, &hash, offset).await.unwrap());
 }
 
-async fn applied_tail(engine: &ShardEngine, hash: [u8; 16]) -> crate::shard::TailFields {
+pub(super) async fn applied_tail(engine: &ShardEngine, hash: [u8; 16]) -> crate::shard::TailFields {
     let handle = engine.stream_handle(hash).await.unwrap();
     let state = handle.state.lock().unwrap();
     state.applied.clone()
@@ -367,7 +367,7 @@ async fn applied_tail(engine: &ShardEngine, hash: [u8; 16]) -> crate::shard::Tai
 /// The stream's postings pages for its (empty) routing key tile: every
 /// page decodes and none overlaps another, so keyed reads never fall back
 /// to the envelope scan.
-async fn pages_tile(engine: &ShardEngine, hash: [u8; 16]) -> bool {
+pub(super) async fn pages_tile(engine: &ShardEngine, hash: [u8; 16]) -> bool {
     let part = engine.history_partition().await.unwrap();
     let (route, inc, key) = (
         RouteHash(hash),
@@ -997,138 +997,4 @@ async fn a_warm_bridge_never_crosses_an_unadmitted_install() {
     );
     engine.begin_close();
     let _ = db.close().await;
-}
-
-/// Builds the refused-chain state the absorber review found (NEXT-WORK
-/// item 1): G1 [0,4) waits at the held commit gate while G2 chains [4,8)
-/// from the mark and flushes its pages; the group carrying both is refused;
-/// the heal G3 regathers [0,9) from the durable boundary. Returns the
-/// engine and each record's stored bytes (offsets 0..=9).
-async fn refused_chain(name: &str, hash: [u8; 16]) -> (Arc<ShardEngine>, Vec<u64>) {
-    let (engine, absorber, store) = rig(name).await;
-    let handle = engine.stream_handle(hash).await.unwrap();
-    let mut stored = Vec::new();
-    for _ in 0..4 {
-        append_stored(&engine, hash, &mut stored).await;
-    }
-    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
-    let held: Vec<_> = (0..4).map(|_| enqueue_record(&engine, hash)).collect();
-    wait_until("four records applied behind a held WAL write", || {
-        engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1
-            && handle.state.lock().unwrap().applied.next == 8
-    })
-    .await;
-    let gate = engine.test_hold_commit().await;
-    let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
-    assert_eq!(
-        g1.advanced.first().map(|a| a.1),
-        Some(4),
-        "G1 gathers [0, 4)"
-    );
-    store.release_hold();
-    for answer in held {
-        answer.await.unwrap().unwrap();
-    }
-    for offset in 4..8 {
-        stored.push(stored_len(&engine, &hash, offset).await.unwrap());
-    }
-    let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
-    assert_eq!(
-        g2.advanced.first().map(|a| a.1),
-        Some(8),
-        "G2 chains [4, 8)"
-    );
-    engine.fail_next_absorbed_group();
-    drop(gate);
-    wait_until("the chained group refused", || {
-        engine.group_failures_tripped() >= 1
-    })
-    .await;
-    append_stored(&engine, hash, &mut stored).await;
-    absorber.absorb_gather_v2(&[hash]).await.unwrap();
-    append_stored(&engine, hash, &mut stored).await;
-    let tail = applied_tail(&engine, hash).await;
-    assert_eq!(tail.absorbed, 9, "the refused chain was healed");
-    assert_eq!(
-        tail.unabsorbed_bytes, stored[9],
-        "the healed ledger is exact"
-    );
-    (engine, stored)
-}
-
-/// The offsets of `frames`.
-fn offsets(frames: &[crate::shard::record::CheckedFrame]) -> Vec<u64> {
-    frames.iter().map(|f| f.view().header.offset).collect()
-}
-
-/// HOLD-SPLIT-500 closure (owner decision, second external review): a
-/// refused chain's heal re-gathers rows its chained advance had already
-/// paged, so the stream's postings pages overlap. Readers admit an
-/// overlapping page whose offsets agree with those already admitted
-/// (d16559b3), so no read falls back to the envelope scan. Composed with
-/// the public read: both keyed read paths (the plain one and the cached one
-/// the public read calls) answer exactly offsets 0..9, each once, in order,
-/// (the counted corruption fallback is a process-wide counter, so the
-/// admission is pinned by the pages tiling instead); and a paged read under
-/// a small byte budget
-/// continues honestly from each returned cursor, never skipping or
-/// repeating a record and never reading far past its budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_refused_chains_overlapping_pages_still_read_exactly() {
-    let hash = [0x4b; 16];
-    let (engine, stored) = refused_chain("refused-chain-read", hash).await;
-    assert!(
-        pages_tile(&engine, hash).await,
-        "the agreeing overlap is admitted"
-    );
-    let part = engine.history_partition().await.unwrap();
-    let (route, inc) = (RouteHash(hash), SegmentHash(hash));
-    let all: Vec<u64> = (0..9).collect();
-    for cached in [false, true] {
-        let read = if cached {
-            read_history2_keyed_cached(
-                &engine.postings_cache,
-                &part,
-                route,
-                inc,
-                "",
-                0,
-                9,
-                9,
-                1 << 20,
-            )
-            .await
-        } else {
-            read_history2(&part, route, inc, 0, 9, Some(""), 1 << 20).await
-        };
-        let (frames, _, completed) = read.unwrap();
-        assert_eq!(
-            (offsets(&frames), completed),
-            (all.clone(), true),
-            "cached={cached}"
-        );
-    }
-    // Two records' bytes per page: every page but the last stops on its
-    // budget and names the last offset it scanned.
-    let budget = usize::try_from(stored[0] * 2).unwrap();
-    let (mut from, mut seen, mut pages) = (0, Vec::new(), 0);
-    loop {
-        pages += 1;
-        assert!(pages <= 9, "the paged read did not finish");
-        let (frames, last, completed) = read_history2(&part, route, inc, from, 9, Some(""), budget)
-            .await
-            .unwrap();
-        let bytes: usize = frames.iter().map(|f| f.len()).sum();
-        assert!(
-            bytes <= budget + usize::try_from(stored[0]).unwrap(),
-            "a page read past its budget"
-        );
-        seen.extend(offsets(&frames));
-        if completed {
-            break;
-        }
-        from = last.expect("a partial page names where it stopped") + 1;
-    }
-    assert_eq!(seen, all, "the paged read skipped or repeated a record");
-    engine.begin_close();
 }

@@ -991,7 +991,7 @@
         {
           "file": "src/history/bounded_discovery_tests.rs",
           "name": "rig",
-          "sha256": "c6c43b11751fb52d6ed1609b705fdd23b813afa36384a037a77efd6cde9197b2"
+          "sha256": "be57d2b32b90c05574f76941cc57f488d05b05764988d1aa39a9f780019b6da2"
         },
         {
           "file": "src/shard/maintenance_tests.rs",
@@ -1006,17 +1006,17 @@
         {
           "file": "src/history/bounded_discovery_tests.rs",
           "name": "pages_tile",
-          "sha256": "f4f25b211ea30bc000da35eb031aafcf3769520067245da8b7213c613672c746"
+          "sha256": "74c77c2c3d1cfd7167754f729aa0f98ae23660744a03898af8833e6313760921"
         },
         {
           "file": "src/history/bounded_discovery_tests.rs",
           "name": "append_stored",
-          "sha256": "1f698dfae5f6eb32401b38e4cc72e1edeceb180b4077ad7d769866aa43d6737c"
+          "sha256": "342142e98ca943a525b3a86a251c80189fe01e477a4405baa61b45ef05cac501"
         },
         {
           "file": "src/history/bounded_discovery_tests.rs",
           "name": "applied_tail",
-          "sha256": "0477c5d229e5feb80271765095e050aebf450659f35996712be9c954f63111f0"
+          "sha256": "3172ff584667501f2085cb7b7bd6f04a7761b65e2589e0251784ee0423171861"
         },
         {
           "file": "src/shard/maintenance_tests.rs",

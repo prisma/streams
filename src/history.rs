@@ -1645,11 +1645,10 @@ mod tests {
 
 #[cfg(test)]
 mod bounded_discovery_tests;
-
-#[cfg(test)]
-mod record_validation_tests;
-
-mod worker;
-
 #[cfg(test)]
 mod postings_validation_tests;
+#[cfg(test)]
+mod record_validation_tests;
+#[cfg(test)]
+mod refused_chain_read_tests;
+mod worker;
