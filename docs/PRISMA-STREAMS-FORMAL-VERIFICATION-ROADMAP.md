@@ -110,6 +110,7 @@ design check (§7.7).
 | KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every segment ordinal below 2^30 and every `u64` `next` (`src/offsets/proofs.rs`), retargeted to slate's codec at the merge; the full-width finding is open (§0.4). The `String` wrapper stays with the unit tests (ASM-OFFSET-DOMAIN). | to be recorded at `d83af9a4` | — |
 | KANI-002 | pass-with-recorded-scope | 1 / 1 / 0 | `-1` and `next` 0 name start-of-stream; a token resumes at its `next`, `u64::MAX` included. | to be recorded at `d83af9a4` | — |
 | KANI-003 | pass-with-recorded-scope | 1 / 1 / 0 | Token injectivity and order below 2^30. | to be recorded at `d83af9a4` | — |
+| KANI-006 | pass-with-recorded-scope | 2 / 2 / 0 | Postings varint codec (`src/postings/proofs.rs`): every `u64` round-trips in at most ten bytes and decoding consumes exactly its encoding; `get_varint` over every input of 0 to 11 symbolic bytes matches an independent `u128` oracle of the continuation rule, refuses an unterminated or overflowing run, and never reads past the terminator. Overlong in-range encodings decode (the format promises no canonical rejection). | recorded with its commit | — |
 | KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | to be recorded at `d83af9a4` | — |
 | KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | to be recorded at `d83af9a4` | — |
 | KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | to be recorded at `d83af9a4` | — |
@@ -1317,6 +1318,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 <a id="kani-006"></a>
 ### KANI-006 — Varint codec and consumed-input boundaries
+
+**Status:** pass-with-recorded-scope (implemented 2026-09-25; manifest entry KANI-006, 2 baselines and 2 negative controls: an overflowing tenth byte, and a removed termination check). No finding: the codec matches the oracle.
 
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/postings.rs`](src/postings.rs)

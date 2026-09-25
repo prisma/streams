@@ -17,6 +17,10 @@ mod crypto;
     reason = "postings fuzz target; compile the entire actual index owner; unused planner entry points are verified by their ordinary unit tests"
 )]
 #[path = "../../src/postings.rs"]
+// rustfmt resolves every module regardless of cfg, and postings.rs declares
+// its `#[cfg(kani)] mod proofs;` relative to its own directory, which a
+// by-path include cannot follow; the main crate formats postings.rs.
+#[rustfmt::skip]
 mod postings;
 #[allow(
     dead_code,

@@ -1,0 +1,117 @@
+{
+  "checks": [
+    {
+      "check": "KANI-006/round-trip",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "7a56339a803876d22cf98126d7e8fa235d0cd30771df828338ac11e5388a6e46",
+      "role": "baseline",
+      "seconds": 43.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-006/wide-oracle",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "0d46a38d5770bc78a9bf1a8faaa2f2a6f2da2630354ea199405e40cbb484fc47",
+      "role": "baseline",
+      "seconds": 41.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-006/nc-allow-an-overflowing-final-byte",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:an unterminated or overflowing run is refused",
+      "failed_checks": [
+        "\"an unterminated or overflowing run is refused\""
+      ],
+      "log_sha256": "17505df4ebe259ec588b207d24e0336fbedcd48433968298166a2293cbf7ac47",
+      "mutated": {
+        "src/postings.rs": {
+          "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
+          "control": "1357df597177b8267a154922dd1f9e522b5d6edcfe929f50bbbea11097462012"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 47.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-006/nc-remove-the-termination-check",
+      "covers": 3,
+      "covers_satisfied": 0,
+      "expected": "fail:the value survives the round trip",
+      "failed_checks": [
+        "\"the value survives the round trip\""
+      ],
+      "log_sha256": "1dc37cb323bde9985f0d470a412fffde89ca3fb79d45c259597438099de22c88",
+      "mutated": {
+        "src/postings.rs": {
+          "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
+          "control": "40c83c28538c27a5aa7b0fd1a0ff2ba9ffe6bcd2cda736e53d66eb3831f4b62f"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 41.1,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-006",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/postings.rs": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
+      "src/postings/proofs.rs": "36ed31a0655ced4f497cc745f0d200d5867acf5463964841242fb0d6c9ee5845",
+      "verification/kani/controls/KANI-006-allow-an-overflowing-final-byte.patch": "4b559eef1bc26d5433771081ebb16cea8b333e7fe4b72c51361263127d4c0ba7",
+      "verification/kani/controls/KANI-006-remove-the-termination-check.patch": "2985e3071e18a9344719cc96fe4d7afa515c733f24beee0d409243f99b7cf6d3"
+    },
+    "manifest_entry": "6d085b3d43df726b815064d4a073a3b36ff42cd0b84a31e67b6624dbd1ac185d",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "bf036001ba13fd0a2a692c5d542205257d8b2072fb822a32d577b78492603968",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "01851b262f7ba992e218e2e7eec5388072338b45"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

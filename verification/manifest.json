@@ -170,6 +170,72 @@
       ]
     },
     {
+      "id": "KANI-006",
+      "kind": "kani",
+      "title": "Varint codec and consumed-input boundaries",
+      "status": "pass-with-recorded-scope",
+      "owner": "postings codec",
+      "source_paths": [
+        "src/postings.rs"
+      ],
+      "verification_paths": [
+        "src/postings/proofs.rs"
+      ],
+      "requirements": [
+        "H11"
+      ],
+      "models": [
+        "TLA-016",
+        "TLA-018"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "put_varint over every u64; get_varint over every symbolic input of 0 to 11 bytes (the ten-byte maximum representation plus one overlong byte), against an independent u128 oracle of the continuation rule; overlong in-range encodings decode (the format promises no canonical rejection)",
+      "checks": [
+        {
+          "id": "KANI-006/round-trip",
+          "role": "baseline",
+          "harness": "postings::proofs::kani_006_every_u64_round_trips_and_consumes_its_encoding",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-006/wide-oracle",
+          "role": "baseline",
+          "harness": "postings::proofs::kani_006_decoding_matches_the_wide_oracle",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-006/nc-allow-an-overflowing-final-byte",
+          "role": "negative-control",
+          "harness": "postings::proofs::kani_006_decoding_matches_the_wide_oracle",
+          "patch": "verification/kani/controls/KANI-006-allow-an-overflowing-final-byte.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an unterminated or overflowing run is refused"
+          }
+        },
+        {
+          "id": "KANI-006/nc-remove-the-termination-check",
+          "role": "negative-control",
+          "harness": "postings::proofs::kani_006_every_u64_round_trips_and_consumes_its_encoding",
+          "patch": "verification/kani/controls/KANI-006-remove-the-termination-check.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the value survives the round trip"
+          }
+        }
+      ],
+      "regressions": [
+        "postings::tests::varint_roundtrip_edges"
+      ]
+    },
+    {
       "id": "KANI-036",
       "kind": "kani",
       "title": "Producer stale-epoch and new-epoch admission",
