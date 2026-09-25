@@ -45,13 +45,11 @@ impl AppendService {
         sref: &crate::tenant::TenantStreamRef,
         key: AppendKey,
     ) -> Result<AuthorizedAppend, AppendFailure> {
-        let fetched = self.registry.get(sref).await.map_err(|error| {
-            AppendFailure::new(
-                FailureClass::Internal,
-                AppendCode::Internal,
-                error.to_string(),
-            )
-        })?;
+        let fetched = self
+            .registry
+            .get(sref)
+            .await
+            .map_err(|error| read_failure(&error))?;
         self.authorize(fetched, key).await
     }
     /// Everything preparation decides from a descriptor it could read:
@@ -246,6 +244,27 @@ impl AppendService {
         }
         let seg = desc.resolve_segment(&command.routing_key);
         Ok(seg.seg_id == attempted && !seg.sealed)
+    }
+}
+
+/// An append's first registry read failed. A corrupt descriptor is final:
+/// 500, fail closed (a retry reads the same bytes). Any other failure is the
+/// store's and nothing was written, so the writer is told to retry: 503,
+/// `Retry-After: 1` (NEXT-WORK item 3, the owner's typed classification).
+fn read_failure(error: &object_store::Error) -> AppendFailure {
+    if crate::registry::cache::is_corrupt_descriptor(error) {
+        AppendFailure::new(
+            FailureClass::Internal,
+            AppendCode::Internal,
+            error.to_string(),
+        )
+    } else {
+        AppendFailure::new(
+            FailureClass::Unavailable,
+            AppendCode::Internal,
+            error.to_string(),
+        )
+        .retry(1)
     }
 }
 

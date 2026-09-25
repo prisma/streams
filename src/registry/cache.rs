@@ -344,7 +344,7 @@ impl Registry {
                     })),
                     Err(e) => Err(object_store::Error::Generic {
                         store: "registry",
-                        source: format!("descriptor for {sref}: {e}").into(),
+                        source: Box::new(CorruptDescriptor(format!("descriptor for {sref}: {e}"))),
                     }),
                 }
             }
@@ -369,3 +369,27 @@ impl Registry {
 
 #[cfg(test)]
 mod tests;
+
+/// A descriptor that was read but does not decode or validate: corruption,
+/// never a transient store failure. A read failing with it is final (a
+/// retry reads the same bytes), so callers fail closed; any other registry
+/// read failure is the store's, and may pass on retry.
+#[derive(Debug)]
+pub(crate) struct CorruptDescriptor(String);
+
+impl std::fmt::Display for CorruptDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CorruptDescriptor {}
+
+/// Whether a registry read failed on a corrupt descriptor rather than on
+/// the store.
+pub(crate) fn is_corrupt_descriptor(error: &object_store::Error) -> bool {
+    matches!(
+        error,
+        object_store::Error::Generic { source, .. } if source.downcast_ref::<CorruptDescriptor>().is_some()
+    )
+}

@@ -789,6 +789,34 @@ async fn corrupt_descriptor_fails_closed() {
     assert!(reg.update(&ts("s1"), |_| {}).await.is_err());
 }
 
+/// A corrupt descriptor's read failure is typed, so a caller can fail
+/// closed on it and retry a store failure (NEXT-WORK item 3): only a
+/// descriptor that was read but does not decode is `CorruptDescriptor`.
+#[tokio::test]
+async fn only_a_corrupt_descriptor_reads_as_corrupt() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let reg = Registry::new(
+        store.clone(),
+        &crate::tenant::CellId::new("test-cell").unwrap(),
+    );
+    put_raw(&store, "s1", b"{ not json").await;
+    let corrupt = reg.get(&ts("s1")).await.unwrap_err();
+    assert!(super::cache::is_corrupt_descriptor(&corrupt), "{corrupt}");
+    reg.create(desc("s2", "00000000000000000000000000000002", false))
+        .await
+        .unwrap();
+    reg.fail_next_get("s2");
+    let store_failure = reg.get(&ts("s2")).await.unwrap_err();
+    assert!(
+        !super::cache::is_corrupt_descriptor(&store_failure),
+        "{store_failure}"
+    );
+    assert!(
+        reg.get(&ts("s2")).await.unwrap().is_some(),
+        "the next read succeeds"
+    );
+}
+
 /// WP-03/PR 5 decode invariants: a descriptor whose stored
 /// identities do not decode REFUSES at the boundary — never a
 /// downstream `expect` panic, never a silent repair. Each case

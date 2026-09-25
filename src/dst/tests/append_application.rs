@@ -414,3 +414,76 @@ async fn r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_seal
     assert!(state.registry.get(&sref).await.unwrap().unwrap().sealed);
     engine_shutdown(&state).await;
 }
+
+/// NEXT-WORK item 3 (the owner's typed classification, ratifying #54): an
+/// append's FIRST registry read that fails on the store has written
+/// nothing, so it answers the retryable 503 (raw `internal`, product
+/// `temporarily_unavailable` retryable) with `Retry-After: 1`; a descriptor
+/// that was read but is corrupt stays a fail-closed 500, since a retry
+/// reads the same bytes. Red before: the store failure answered
+/// `(Internal, Internal, None)` like corruption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_is_not() {
+    use crate::application::append::FailureClass;
+    use object_store::ObjectStoreExt;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "typed-first-read";
+    let create = br#"{"format":{"kind":"json"}}"#;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    let (status, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/typed-first-read",
+        &headers,
+        create,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let app = state.append_service();
+
+    state.registry.fail_next_get(name);
+    let transient = app
+        .prepare(&sref, AppendKey::Provided(skey()))
+        .await
+        .err()
+        .expect("the store failure refuses the append");
+    assert!(
+        transient.message.contains("injected registry get failure"),
+        "{transient:?}"
+    );
+    assert_eq!(
+        (transient.class, transient.code, transient.retry_after),
+        (FailureClass::Unavailable, AppendCode::Internal, Some(1)),
+        "{transient:?}"
+    );
+
+    // Corrupt the stored descriptor itself: the same read is final.
+    let path = format!(
+        "registry/v4/projects/{}/streams/{}.json",
+        crate::crypto::hex(sref.project_id().as_bytes()),
+        crate::crypto::hex(name.as_bytes())
+    );
+    let path = object_store::path::Path::from(path);
+    assert!(
+        state.data_store.head(&path).await.is_ok(),
+        "the descriptor's path"
+    );
+    state
+        .data_store
+        .put(&path, bytes::Bytes::from_static(b"{ not json").into())
+        .await
+        .unwrap();
+    state.registry.invalidate(&sref);
+    let corrupt = app
+        .prepare(&sref, AppendKey::Provided(skey()))
+        .await
+        .err()
+        .expect("a corrupt descriptor refuses the append");
+    assert_eq!(
+        (corrupt.class, corrupt.code, corrupt.retry_after),
+        (FailureClass::Internal, AppendCode::Internal, None),
+        "{corrupt:?}"
+    );
+    engine_shutdown(&state).await;
+}

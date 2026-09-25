@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 2 | 0 | 0 | 0 | 8 |
 | medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
-| low | 5 | 2 | 7 | 9 | 10 | 4 | 37 |
-| **Total** | **15** | **4** | **15** | **9** | **10** | **4** | **57** |
+| low | 5 | 2 | 8 | 9 | 10 | 4 | 38 |
+| **Total** | **15** | **4** | **16** | **9** | **10** | **4** | **58** |
 
-57 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#57 have not been checked against their commits by an independent pass.
+58 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#57 have not been checked against their commits by an independent pass.
 
 ### Index
 
@@ -81,7 +81,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 54 | 0f4cd8c1 | The transition retry's re-preparation answers an unreadable registry as retryable | both | low | ratified |
 | 55 | 839135a4, this batch | A raw close whose seal intent failed transiently answers retryable, not sealed | raw | medium | ratified |
 | 56 | this record's commit | Project usage totals need an unrestricted stream grant | product | high | owner decision |
-| 57 | this record's commit | A seal carrying a final record needs records.append as well as lifecycle.manage | product | high | owner decision |
+| 57 | 1d4d8660 | A seal carrying a final record needs records.append as well as lifecycle.manage | product | high | owner decision |
+| 58 | this record's commit | An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500 | both | low | owner-directed (typed classification) |
 
 ## High risk (8)
 
@@ -201,7 +202,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** High by the rubric's letter: a request that used to return 200 now fails permanently. The earlier 200 was an authorization bypass across names and prefix grants, so no correct behaviour is lost. The round-21 delete/recreate lookup is unchanged for every incarnation of the name in every month.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25** (second external review): keep the reworked historical-incarnation check; do not revert to "the id must equal the current descriptor's".
 
-### #56 (this record's commit) — Project usage totals need an unrestricted stream grant
+### #56 (1d4d8660) — Project usage totals need an unrestricted stream grant
 
 - **Program item:** owner decision, second external review of 9813d1cb (a pre-existing gap found by the review of #53).
 - **Surface:** product
@@ -216,7 +217,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** High by the rubric's letter (a 200 now fails permanently); the earlier 200 disclosed usage outside the credential's grant. The endpoint is deliberately not redefined as a prefix-filtered aggregate.
 - **Check against commit:** Owner decision; written with the change.
 
-### #57 (this record's commit) — A seal carrying a final record needs records.append as well as lifecycle.manage
+### #57 (1d4d8660) — A seal carrying a final record needs records.append as well as lifecycle.manage
 
 - **Program item:** owner decision, second external review of 9813d1cb (the `:seal` gap item 73's review found).
 - **Surface:** product
@@ -454,7 +455,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** Medium: a status and code on an error case that raw clients may branch on changes (409 sealed becomes 503 seal_incomplete), as record #8 did for the append's refresh read (409 becomes 503). The earlier 409 was wrong, because the collection was not sealed. No code is new: seal_incomplete is already a raw append answer.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**, with one follow-up done in the same batch as #56/#57: a close resuming an owed final whose claim renewal cannot be written (only a registry read or write failure) answered 503 `internal`; it now answers 503 `seal_incomplete` like the rest of the close step (src/application/append/close.rs::install_intent; no dedicated test: the renewal's store failure needs an owed final whose operation matches the close's own).
 
-## Low risk (37)
+## Low risk (38)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1117,6 +1118,20 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/dst/tests/append_application.rs::r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final (the closure check's read, unchanged)
 - **Risk reason:** Low: the answer to a request that committed nothing moves from a non-retryable 500 to the retryable 503 that the same loop already gives the neighbouring read. No status, code or header is new to either surface, and the message text (the store error) is the same.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**: keep the retryable 503 for a refusal before any write; it is not a licence to retry appends after an uncertain write outcome. The first registry read's 500 on a transient store failure is the next fix (typed classification with its own regression).
+
+### #58 (this record's commit) — An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500
+
+- **Program item:** owner direction when ratifying #54 (second external review): "Fix it next with typed error classification and its own regression rather than broadening every internal error into a retryable response."
+- **Surface:** both
+- **Endpoint:** raw POST /v1/stream/{name}; product POST /v1/streams/{name}/records, /records:batch and the `:seal` final record, wherever `AppendService::prepare` does the append's first descriptor read.
+- **Condition:** that read fails on the store (object-store error, timeout, the test failpoint). A descriptor that was read but does not decode or validate is not this condition: the registry now marks it with a typed source, `registry::cache::CorruptDescriptor`.
+- **Before:** raw 500 `internal`; product 500 `append_failed` retryable:false. The SDK does not retry a 500.
+- **After:** raw 503 `internal` with `Retry-After: 1`; product 503 `temporarily_unavailable` retryable:true with `Retry-After: 1`. Nothing was written, so the retry is safe. A corrupt descriptor still answers raw 500 `internal` and product 500 `append_failed` retryable:false (fail closed; a retry reads the same bytes).
+- **Retry semantics:** a permanent-looking 500 becomes a retryable 503 for store failures only.
+- **Who is affected:** clients appending while the descriptor store fails transiently.
+- **Pinning tests:** src/dst/tests/append_application.rs::r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_is_not (red: the store failure answered (Internal, Internal, None); it also pins that a corrupt stored descriptor stays (Internal, Internal, None)).
+- **Risk reason:** low: a 500 on a transient failure becomes the retryable 503 its neighbouring reads (#8, #54) already answer; corruption is unchanged. The raw code stays `internal` (no new wire code); the product handler's own descriptor reads (for example `product_seal`'s) are not changed here.
+- **Check against commit:** written with the change.
 
 ## Discrepancies
 

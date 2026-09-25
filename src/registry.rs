@@ -1440,7 +1440,7 @@ pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
     hash_bits(hash).starts_with(prefix)
 }
 
-mod cache;
+pub(crate) mod cache;
 mod catalog;
 #[cfg(test)]
 mod failpoints;

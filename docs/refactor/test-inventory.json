@@ -5260,6 +5260,17 @@
     "scenarios": []
   },
   {
+    "name": "r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_is_not",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3650771ba9ca74fd3e2f9877594dcea8727b3f1b71ee186ce2012197dde7a3df",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
