@@ -39,11 +39,17 @@ use crate::tenant::ProjectId;
 /// rotation with typed TrackerCapacity (2026-08-19 churn rung; the
 /// cert_rotation test below pins the shape). 16,384 holds the 10k
 /// population outright with headroom, at ~8 MiB worst-case tracker
-/// memory (~500 B/entry). Still a deliberate HARD ceiling: refusing
-/// to track (never merging strangers into shared buckets) remains
-/// the fail-closed choice; the churn test pins evict-idle-first,
+/// memory (~500 B/entry). Item 50 (owner decision, option (a)): an entry
+/// any holder still has is never evicted, and a resident stream's
+/// binding holds its project's entry for at least ~905 s after a small
+/// last append, so the cap is 32,768 (~16 MiB): the certified 20/s
+/// first-seen pacing holds 18,100 entries, and sustained first-seen
+/// churn of appending projects saturates near 32,768/905 = 36/s (an
+/// estimate, not a benchmark). Still a deliberate HARD ceiling: refusing
+/// to track (never merging strangers into shared buckets) remains the
+/// fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation.
-pub(crate) const MAX_TRACKED_PROJECTS: usize = 16_384;
+pub(crate) const MAX_TRACKED_PROJECTS: usize = 32_768;
 
 /// A tracked project with no admission attempts for this long, and
 /// nothing in use (`ProjectAdmission::in_use`), may be evicted under
@@ -164,9 +170,15 @@ impl ProjectAdmission {
     /// admission in progress or a request in flight, a live subscription
     /// and outstanding memory pressure all hold the Arc an eviction would
     /// orphan (Round-13: feed/body/frame attribution); an idle one has
-    /// admitted nothing for `IDLE_EVICT_MS`.
-    fn in_use(&self, now_ms: i64) -> bool {
-        self.counters.active()
+    /// admitted nothing for `IDLE_EVICT_MS`. Item 50: so does ANY other
+    /// holder, whatever its counters read: a resident stream's pressure
+    /// binding binds once and never rebinds, so evicting its entry at zero
+    /// debt would send that stream's later frame debt to an orphan the
+    /// project's live entry never reads. Every clone is minted under this
+    /// lock or from a counted holder, so a count read here is final.
+    fn in_use(self: &Arc<Self>, now_ms: i64) -> bool {
+        Arc::strong_count(self) > 1
+            || self.counters.active()
             || self.live_subs.load(Ordering::Relaxed) > 0
             || self.has_pressure()
             || now_ms - self.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS

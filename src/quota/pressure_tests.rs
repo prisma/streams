@@ -189,6 +189,42 @@ fn eviction_cannot_remove_a_project_with_pressure() {
     );
 }
 
+/// Battery 12b (review item 50, owner decision option (a)): a resident
+/// stream's pressure binding holds its entry even at zero debt. Its handle
+/// binds once and never rebinds, so an evicted entry would keep taking that
+/// stream's frame debt after the project returns: debt its live entry's
+/// memory gate never reads. The sweep runs exactly at the idle horizon,
+/// where idle peers are already evictable.
+#[test]
+fn eviction_cannot_orphan_a_zero_debt_stream_binding() {
+    let r = QuotaRegistry::default();
+    let old_ms = 1_000;
+    for i in 0..MAX_TRACKED_PROJECTS {
+        drop(
+            r.admit(&pid(&format!("f{i}")), &ProjectQuotas::default(), old_ms)
+                .expect("seed every tracker entry"),
+        );
+    }
+    // f7's resident stream, bound with nothing unabsorbed.
+    let binding = StreamPressureBinding::bind(r.pressure_handle(&pid("f7")).unwrap(), 0);
+    let horizon = old_ms + IDLE_EVICT_MS;
+    drop(
+        r.admit(&pid("fresh"), &ProjectQuotas::default(), horizon)
+            .expect("the sweep evicts idle peers at the horizon"),
+    );
+    drop(
+        r.admit(&pid("f7"), &ProjectQuotas::default(), horizon)
+            .expect("f7 is admitted after the sweep"),
+    );
+    binding.frames_added(65_536);
+    let live = r.pressure_handle(&pid("f7")).expect("f7 is tracked");
+    assert_eq!(
+        live.unabsorbed_frame_bytes_now(),
+        65_536,
+        "frame debt the bound stream commits must reach f7's live entry"
+    );
+}
+
 /// Battery 13: project A engaging its latch never rejects
 /// project B (isolation is the whole point).
 #[test]

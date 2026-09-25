@@ -264,9 +264,9 @@ pub struct CliArgs {
     pub(crate) absorb_small_bytes: Option<u64>,
 
     /// Evict resident per-stream handles idle at least this long
-    /// (seconds; 0 = never). Handles reload from the shard DB on next
-    /// touch; the durable dirty-stream index keeps unabsorbed evictees
-    /// discoverable, so this only trades a tail-row read for memory.
+    /// (seconds; 0 = never, refused under STREAMS_AUTH_MODE=enforce, item
+    /// 50). Handles reload from the shard DB on next touch; the durable
+    /// dirty-stream index keeps unabsorbed evictees discoverable.
     #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
     pub(crate) handle_idle_evict_secs: u64,
 

@@ -443,7 +443,9 @@ proptest::proptest! {
             let expected = u64::try_from(held.len()).unwrap();
             proptest::prop_assert_eq!(r.stats(), (1, expected));
             let idle = now + 1_500 * 64 + IDLE_EVICT_MS;
-            proptest::prop_assert_eq!(r.tracked(&p).unwrap().in_use(idle), !held.is_empty());
+            // Probed on the map's own Arc: a probe's clone would itself hold it.
+            let in_use = r.projects.lock().unwrap().get(&p).unwrap().in_use(idle);
+            proptest::prop_assert_eq!(in_use, !held.is_empty());
         }
     }
 }

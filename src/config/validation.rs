@@ -724,6 +724,16 @@ impl crate::config::ServerConfig {
                  set >= 1 or unset (default 2)",
             );
         }
+        // Item 50 (owner decision, option (a)): the bounded project tracker
+        // never evicts an entry a resident stream's binding holds, and 0
+        // keeps every handle (and so every binding) resident until restart,
+        // so under enforce, where requests admit, the tracker would only grow.
+        if self.cli.handle_idle_evict_secs == 0 && self.cli.streams_auth_mode == "enforce" {
+            f.err(
+                "HANDLE_IDLE_EVICT_SECS=0 with STREAMS_AUTH_MODE=enforce holds every appending \
+                 project's tracker entry until restart; set >= 1 or unset (default 600)",
+            );
+        }
         // A certified survival deploy must fail at boot, not OOM at
         // +28 min, if any memory knob was dropped or overridden.
         let profile_errors = certified_memprofile_errors(self, &mut f.notices);
