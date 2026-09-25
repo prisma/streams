@@ -841,7 +841,9 @@ async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
             storage_byte_ms_delta: "0".into(),
         }),
     };
-    r.apply_page(&[corr.clone()], "c1").await.unwrap();
+    r.apply_page(std::slice::from_ref(&corr), "c1")
+        .await
+        .unwrap();
     let row = r
         .month_row("2026-06", "acct", "proj", &id().stream_id)
         .await

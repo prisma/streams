@@ -226,10 +226,10 @@ fn exit_failed(line: String) -> ! {
         .name("stop-deadline-line".into())
         .spawn(move || {
             drop(writeln!(std::io::stderr(), "{line}"));
-            drop(written.send(()));
+            written.send(()).ok();
         });
     if writer.is_ok() {
-        drop(heard.recv_timeout(LAST_LINE_WAIT));
+        heard.recv_timeout(LAST_LINE_WAIT).ok();
     }
     std::process::exit(1)
 }
