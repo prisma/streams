@@ -79,7 +79,6 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
                            '.github/workflows/rust-quality.yml') for p in paths)
     codec = any(p.startswith(CODEC_PREFIXES) for p in implementation)
     quota = any(p.startswith(QUOTA_PREFIXES) for p in implementation)
-    lifecycle = any(p.startswith(LIFECYCLE_PREFIXES) for p in implementation)
     buffers = any(p.startswith(BUFFER_PREFIXES) for p in implementation)
     mutation_source = [p for p in implementation if p not in formatted_visibility]
     by_source = source_map(owners)
@@ -95,8 +94,9 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
         and (p in forced or p in by_source or p.startswith(CRITICAL_PREFIXES))
     )
     mutants = bool(selection.changed_sources)
-    return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or quota or tooling,
-            'loom': lifecycle or tooling, 'miri': buffers or tooling,
+    # Each check gates one rust-quality step. Compiler, Clippy and the
+    # quality_ leg's property and Loom models run on every change.
+    return {'properties_fuzz': codec or quota or tooling, 'miri': buffers or tooling,
             'mutants': mutants, 'changed_rust_files': source,
             **selection.receipt(),
             'deleted_critical_files': deleted_critical,
@@ -111,9 +111,7 @@ def plan_schedule(slot, owners=OWNERS):
     paths = sorted(path for entry in selected for path in entry.sources)
     result = plan(paths, owners=owners)
     result.update({
-        'compiler': True,
         'properties_fuzz': True,
-        'loom': True,
         'miri': True,
         'mutants': True,
         'changed_rust_files': [],

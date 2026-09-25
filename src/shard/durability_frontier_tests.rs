@@ -539,21 +539,23 @@ async fn durable_reads_see_only_the_remote_frontier() {
         let row = engine.db.get(super::record_key(&hash, offset)).await;
         frames.push(row.unwrap().unwrap().len() as u64);
     }
+    let copied = super::CopiedBytes::new(0, frames[0] + frames[1]);
     engine
-        .submit_absorbed(hash, 0, 2, frames[0] + frames[1])
+        .submit_absorbed_batch_v2(vec![(hash, 2, copied)])
         .await;
-    durable_absorbed_reaches(&engine, &hash, (2, false)).await;
+    durable_absorbed_reaches(&engine, &hash, (2, true)).await;
 
     let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+    let copied = super::CopiedBytes::new(2, frames[2] + frames[3]);
     engine
-        .submit_absorbed(hash, 2, 4, frames[2] + frames[3])
+        .submit_absorbed_batch_v2(vec![(hash, 4, copied)])
         .await;
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while engine
             .visible_absorbed(&hash, super::Deliver::Applied)
             .await
             .unwrap()
-            != (4, false)
+            != (4, true)
         {
             tokio::task::yield_now().await;
         }
@@ -569,7 +571,7 @@ async fn durable_reads_see_only_the_remote_frontier() {
     .expect("the advance's WAL write is parked");
     assert_eq!(
         engine.durable_absorbed(&hash).await.unwrap(),
-        (2, false),
+        (2, true),
         "a durable read adopted an advance that is only applied"
     );
     let handle = engine.stream_handle(hash).await.unwrap();
@@ -595,7 +597,7 @@ async fn durable_reads_see_only_the_remote_frontier() {
         "a durable scan saw trims that are only applied"
     );
     store.release_hold();
-    durable_absorbed_reaches(&engine, &hash, (4, false)).await;
+    durable_absorbed_reaches(&engine, &hash, (4, true)).await;
     engine.begin_close();
     engine
         .await_terminated(std::time::Duration::from_secs(5))

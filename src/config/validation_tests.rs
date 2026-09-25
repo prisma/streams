@@ -599,6 +599,24 @@ mod validate_boundary_tests {
         );
     }
 
+    /// Item 50 (owner decision, option (a)): enforce refuses a handle idle
+    /// eviction of 0, which would keep every resident stream's binding, and
+    /// so its project's tracker entry, until restart. Off mode admits no
+    /// request through the tracker, so 0 stays valid there.
+    #[test]
+    fn validation_rejects_never_evicting_handles_under_enforce() {
+        rejects(
+            |c| {
+                c.streams_auth_mode = "enforce".into();
+                c.handle_idle_evict_secs = 0;
+            },
+            &[],
+            "HANDLE_IDLE_EVICT_SECS=0 with STREAMS_AUTH_MODE=enforce",
+        );
+        validate_with(|c| c.handle_idle_evict_secs = 0, &[])
+            .expect("off mode keeps HANDLE_IDLE_EVICT_SECS=0 valid");
+    }
+
     #[test]
     fn validation_rejects_bad_cursor_key() {
         rejects(

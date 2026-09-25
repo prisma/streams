@@ -1,0 +1,33 @@
+//! INJECTED by scripts/effective-config/effective_config.py into a
+//! temporary worktree of 6bcaff69 (WP-01 PR 3, the first revision that
+//! holds v0.2.0-rc.4's configuration as one value). Never committed there.
+//!
+//! Prints rc.4's configuration model for this process's argv and
+//! environment: the clap `Args` (E1: byte-identical to rc.4's), the
+//! `AppConfig` environment graph (E2/E3: PR 3's transcription of rc.4's
+//! reads), and TOKIO_WORKERS, the one reader AppConfig did not own. The
+//! old side has no single validation function, so the verdict is
+//! `not-evaluated`; rc.4's refusals come from booting the real binary.
+use clap::Parser;
+
+pub fn dump() {
+    let argv = std::iter::once(String::from("streams-slate")).chain(std::env::args().skip(1));
+    let args = match crate::bootstrap::Args::try_parse_from(argv) {
+        Ok(args) => args,
+        Err(refusal) => {
+            println!("@@ verdict\nargv-refused\n{refusal}");
+            return;
+        }
+    };
+    println!("@@ cli\n{args:#?}");
+    let config = crate::config::AppConfig::load();
+    println!("@@ root\n{config:#?}");
+    // Verbatim from 6bcaff69 src/main.rs:45-47 == v0.2.0-rc.4 src/main.rs:1699-1701
+    // (E2 anchor-checks both); the unwrap_or_else/max(2) tail is consumer
+    // semantics, not configuration, and is left out on both sides.
+    let tokio_workers: Option<usize> = std::env::var("TOKIO_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    println!("@@ runtime.tokio_workers\n{tokio_workers:#?}");
+    println!("@@ verdict\nnot-evaluated");
+}

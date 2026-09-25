@@ -2,6 +2,7 @@
 #![cfg(test)]
 
 mod fixture;
+mod read_error;
 mod retry;
 use super::*;
 use std::sync::atomic::AtomicBool;
@@ -46,6 +47,8 @@ pub(crate) struct FakeSource {
     pub(crate) closed: AtomicBool,
     pub(crate) notify: tokio::sync::Notify,
     pub(crate) fail_reads: AtomicBool,
+    /// Some(reason): every read is that fatal cutoff.
+    pub(crate) cut_reads: Mutex<Option<SourceCutoff>>,
     pub(crate) empty_pages: AtomicBool,
     pub(crate) block_reads: AtomicBool,
     pub(crate) read_started: tokio::sync::Notify,
@@ -55,6 +58,9 @@ pub(crate) struct FakeSource {
     /// and the maximum ever observed concurrently.
     pub(crate) reads_in_flight: AtomicU64,
     pub(crate) max_concurrent_reads: AtomicU64,
+    /// Every read, counted at entry: the pacing legs' clock-free witness
+    /// that a read which advanced nothing is not re-issued in a loop.
+    pub(crate) reads: AtomicU64,
     /// `next_source()` control: park between `next_started` and
     /// `next_release` when blocked; return `NewSource` of
     /// `next_result` when set (else the default GenuineClose).
@@ -77,6 +83,7 @@ impl FakeSource {
             closed: AtomicBool::new(false),
             notify: tokio::sync::Notify::new(),
             fail_reads: AtomicBool::new(false),
+            cut_reads: Mutex::new(None),
             empty_pages: AtomicBool::new(false),
             block_reads: AtomicBool::new(false),
             read_started: tokio::sync::Notify::new(),
@@ -84,6 +91,7 @@ impl FakeSource {
             payload,
             reads_in_flight: AtomicU64::new(0),
             max_concurrent_reads: AtomicU64::new(0),
+            reads: AtomicU64::new(0),
             next_source_block: AtomicBool::new(false),
             next_started: tokio::sync::Notify::new(),
             next_release: tokio::sync::Notify::new(),
@@ -105,12 +113,22 @@ impl Drop for ReadInFlight<'_> {
 
 #[async_trait::async_trait]
 impl FeedSourceRead for FakeSource {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+    async fn read_batch(
+        &self,
+        from: u64,
+        max_bytes: usize,
+    ) -> Result<SourceBatch, SourceReadError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let cur = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_concurrent_reads.fetch_max(cur, Ordering::SeqCst);
         let _in_flight = ReadInFlight(self);
+        if let Some(cut) = *self.cut_reads.lock().unwrap() {
+            return Err(SourceReadError::Fatal(cut));
+        }
         if self.fail_reads.load(Ordering::Relaxed) {
-            anyhow::bail!("injected source failure");
+            return Err(SourceReadError::Retryable(anyhow::anyhow!(
+                "injected source failure"
+            )));
         }
         if self.block_reads.load(Ordering::Relaxed) {
             fixture::hold_until_release(&self.read_started, &self.read_release).await;
@@ -199,13 +217,7 @@ pub(crate) fn feed_with(
     // The feed captures `frontier()` as its initial head — create
     // EMPTY, then advance: that is the live-append shape.
     let src = Arc::new(FakeSource::new(0, payload));
-    let feed = LiveFeed::new_with_budget(
-        FeedKey::default_lane([7u8; 16]),
-        src.clone(),
-        ring,
-        budget.clone(),
-        tpid(),
-    );
+    let feed = LiveFeed::new_with_budget(src.clone(), ring, budget.clone(), tpid());
     src.frontier.store(frontier, Ordering::Relaxed);
     (feed, src)
 }
@@ -220,6 +232,25 @@ fn leave_locked_returns_post_decrement_count() {
     feed.subscribe_locked();
     assert_eq!(feed.leave_locked(), 1, "2 -> 1 reports one remaining");
     assert_eq!(feed.leave_locked(), 0, "1 -> 0 reports zero remaining");
+}
+
+/// The driver's read bound is two thirds of the ring, so an ordinary
+/// prepared batch (base64 plus per-record overhead) still fits the ring;
+/// tiny and huge rings take the floor and ceiling instead.
+#[test]
+fn read_cap_is_two_thirds_of_the_ring_within_its_bounds() {
+    let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+    for (ring, cap) in [
+        (4096, 2730),
+        (1_000, 1024),
+        (1 << 20, MAX_DRIVER_BATCH_BYTES),
+    ] {
+        assert_eq!(
+            feed_with(0, 8, ring, &budget).0.read_cap,
+            cap,
+            "ring {ring}"
+        );
+    }
 }
 
 /// Budget model B (red): retention reserves the ACTUAL retained
@@ -635,7 +666,6 @@ async fn project_retention_tracker_is_bounded_under_churn() {
     // A long-lived feed pins its project's entry across the churn.
     let pinned_src = Arc::new(FakeSource::new(0, 8));
     let pinned = LiveFeed::new_with_budget(
-        FeedKey::default_lane([9u8; 16]),
         pinned_src,
         4096,
         budget.clone(),
@@ -646,7 +676,6 @@ async fn project_retention_tracker_is_bounded_under_churn() {
     for i in 0..300u16 {
         let src = Arc::new(FakeSource::new(0, 8));
         let feed = LiveFeed::new_with_budget(
-            FeedKey::default_lane([i.to_le_bytes()[0]; 16]),
             src,
             4096,
             budget.clone(),
@@ -764,22 +793,10 @@ async fn external_exhaustion_clears_unreachable_ring() {
     // Room for exactly two 340 batches, held by two DIFFERENT feeds.
     let budget = Arc::new(FeedMemoryBudget::new_for_test(680));
     let src_a = Arc::new(FakeSource::new(0, 8));
-    let feed_a = LiveFeed::new_with_budget(
-        FeedKey::default_lane([1u8; 16]),
-        src_a.clone(),
-        1 << 20,
-        budget.clone(),
-        tpid(),
-    );
+    let feed_a = LiveFeed::new_with_budget(src_a.clone(), 1 << 20, budget.clone(), tpid());
     src_a.frontier.store(1, Ordering::Relaxed);
     let src_b = Arc::new(FakeSource::new(0, 8));
-    let feed_b = LiveFeed::new_with_budget(
-        FeedKey::default_lane([2u8; 16]),
-        src_b.clone(),
-        1 << 20,
-        budget.clone(),
-        tpid(),
-    );
+    let feed_b = LiveFeed::new_with_budget(src_b.clone(), 1 << 20, budget.clone(), tpid());
     src_b.frontier.store(1, Ordering::Relaxed);
     for f in [&feed_a, &feed_b] {
         f.subscribe_locked();

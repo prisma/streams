@@ -11,7 +11,7 @@
 //! `transition_pending` and can reach `tail()` alone.
 use super::{
     DriveOutcome, FeedSourceRead, InstallOutcome, Lifecycle, LiveFeed, SourceCutoff,
-    SourceTransition,
+    SourceReadError, SourceTransition,
 };
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -210,5 +210,31 @@ impl LiveFeed {
         };
         crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
         let _ = self.changed.send(ver);
+    }
+}
+
+/// A failed read's verdict sits outside the poisoned-state exception
+/// above: it touches feed state only through `retire`.
+impl LiveFeed {
+    /// What a failed read owes the feed (item 87). A cutoff retires the
+    /// lifecycle with its typed reason, bumping the version once at the
+    /// transition like every other retirement, so parked sessions wake to
+    /// disconnect; a transient failure changes nothing, and the driving
+    /// session retries on its own bounded backoff.
+    pub(super) fn read_failed(&self, error: SourceReadError) -> DriveOutcome {
+        match error {
+            SourceReadError::Fatal(reason) => {
+                self.retire(Lifecycle::Gone(reason));
+                DriveOutcome::IncarnationClosed(reason)
+            }
+            SourceReadError::Retryable(cause) => {
+                crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    error = %format_args!("{cause:#}"),
+                    "livefeed source read failed; the driving session retries on its backoff"
+                );
+                DriveOutcome::SourceFailed
+            }
+        }
     }
 }

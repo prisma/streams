@@ -125,11 +125,11 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 )]
 #[expect(
     clippy::expect_used,
-    reason = "run; covers exactly one site, the maintenance-worker spawn, which the fork-debt reconciler start does not add to: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
+    reason = "run; covers exactly one site, the maintenance-worker spawn, and none in the shard opener or the fork-debt reconciler start: the runtime's task supervisor is fresh at boot, so it accepts that worker; a fallible spawn would leave the process serving without maintenance"
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths, which the fork-debt reconciler start does not add to: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
+    reason = "run; covers exactly four sites, the shared-cache lock and the three auth file paths, and none in the shard opener or the fork-debt reconciler start: a poisoned cache lock at boot would mean a half-built shared cache, and those paths were validated by the CLI parser before boot began; recovering the former or re-checking the latter would boot on state the parser already rejected"
 )]
 #[expect(
     clippy::excessive_nesting,
@@ -290,7 +290,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // passed (stores, topology, required billing opens, the listener
     // bind), so an early `?` never strands a running loop; the watchdog
     // that used to start here now starts with the others below.
-    let tasks = crate::tasks::TaskSupervisor::new();
+    let tasks = crate::tasks::TaskSupervisor::new().process_root();
 
     let registry = Registry::new(ops_store.clone(), &cell_id);
     // WP-02 / PR 6-D: the deployment identity, from the PROVEN parts.
@@ -377,7 +377,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     let opener = |notifier: crate::shard_directory::ShardCloseNotifier| -> crate::sharddir::OpenFn {
         let shard_store = shard_store.clone();
         let data_store = data_store.clone();
-        let keys = keys.clone();
         let touch = touch.clone();
         let settings = shard_settings(&config.cli, &config.engine);
         // §1.1: one block cache for the whole process, not one per DB
@@ -454,7 +453,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 let shared_postings = shared_postings.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
-                let keys = keys.clone();
                 let touch = touch.clone();
                 let absorber_config = absorber_config.clone();
                 let mut settings = settings.clone();
@@ -539,13 +537,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                         Some(on_close),
                         maintenance,
                     );
-                    Absorber::start_owned(
-                        data_store,
-                        engine.clone(),
-                        keys,
-                        absorber_config,
-                        absorb_rx,
-                    );
+                    Absorber::start_owned(engine.clone(), absorber_config, absorb_rx);
                     Ok(engine)
                 })
             },
@@ -905,19 +897,16 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
 
     // #269 / head deadline: the h1 posture is the HTTP config's.
     let served = crate::http::serve_h1(listener, app, &config.http, tasks.clone()).await;
-    // PR 6-F / 6.1-A: the accept loop returned because shutdown was
-    // requested — its connections are already gone; now every supervised
-    // loop is cancelled, joined and reported (WP-15 §9 sequences
-    // admission, engines and stores ahead of this in its remaining slice).
-    let report = tasks.shutdown(std::time::Duration::from_secs(10)).await;
-    tracing::info!(
-        finished = ?report.finished(),
-        aborted = ?report.aborted,
-        panicked = ?report.panicked(),
-        "supervised loops stopped"
-    );
-    shards
-        .shutdown(std::time::Duration::from_secs(10))
+    // PR 6-F / 6.1-A: the accept loop returned because a stop was requested
+    // (a termination signal, or item 38: the process root's own answer to a
+    // critical loop's exit) — its connections are already gone. Every
+    // supervised loop is joined and reported, then the shards close; a
+    // critical exit then fails the process (`TaskSupervisor::ordered_stop`).
+    tasks
+        .ordered_stop(
+            std::time::Duration::from_secs(10),
+            shards.shutdown(std::time::Duration::from_secs(10)),
+        )
         .await
         .map_err(anyhow::Error::msg)?;
     served?;

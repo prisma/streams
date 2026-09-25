@@ -396,9 +396,7 @@ async fn oversized_keyed_record_pages_through() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -477,9 +475,7 @@ async fn long_keyed_run_pages_with_progress() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),

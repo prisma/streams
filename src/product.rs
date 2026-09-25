@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::json;
@@ -436,17 +436,8 @@ pub(crate) enum ProductRoute {
 }
 
 /// Split a trailing `:verb` off the final segment. Only the known verbs
-/// count — a colon is legal inside a collection name.
+/// (`VERBS`) count — a colon is legal inside a collection name.
 pub(crate) fn strip_verb(path: &str) -> (&str, Option<&str>) {
-    const VERBS: [&str; 7] = [
-        "batch",
-        "long-poll",
-        "sse",
-        "pull",
-        "settle",
-        "seal",
-        "scan",
-    ];
     match path.rsplit_once(':') {
         Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => (p, Some(v)),
         _ => (path, None),
@@ -579,70 +570,6 @@ pub(crate) fn shadow_observe_request(
         .shadow_observe(bearer, crate::shard::now_ms() / 1000);
 }
 
-/// §6.1: the route/method -> required-scope matrix. `None` only for
-/// the watch-wait route, which authorizes itself with a §15
-/// capability. Compound rules (fork creation adds forks.create +
-/// source read; DLQ configuration adds dlq.configure on the target)
-/// are enforced where those requests are RECOGNIZED — the gate cannot
-/// see a request body — and land with Stage 5c.
-pub(crate) fn required_scope(
-    route: &ProductRoute,
-    verb: Option<&str>,
-    method: &Method,
-) -> Option<crate::tenant::Scope> {
-    use crate::tenant::Scope as S;
-    let read = *method == Method::GET || *method == Method::HEAD;
-    Some(match route {
-        ProductRoute::Collection { .. } => {
-            if *method == Method::PUT {
-                S::Create
-            } else if *method == Method::DELETE || verb == Some("seal") {
-                S::LifecycleManage
-            } else if verb == Some("scan") {
-                // :scan pages back DECRYPTED record bodies — a bulk
-                // record read, so it takes records.read, NOT the
-                // metadata scope the other Collection GETs use (§6.1).
-                // Without this, a metadata-only credential (which a
-                // create/monitor service legitimately holds, along with
-                // the stream key) could export every record, and
-                // revoking records.read would not cut off record access.
-                S::RecordsRead
-            } else {
-                S::MetadataRead
-            }
-        }
-        ProductRoute::Records { .. } => {
-            if *method == Method::POST {
-                S::RecordsAppend
-            } else {
-                S::RecordsRead
-            }
-        }
-        ProductRoute::Consumer { .. } => {
-            if verb == Some("pull") {
-                S::ConsumersPull
-            } else if verb == Some("settle") {
-                S::ConsumersSettle
-            } else if read {
-                // Reading a consumer's config/positions is stream
-                // metadata; mutation is configuration.
-                S::MetadataRead
-            } else {
-                S::ConsumersConfigure
-            }
-        }
-        ProductRoute::Watches { .. } | ProductRoute::Watch { .. } => {
-            if read {
-                S::MetadataRead
-            } else {
-                S::WatchesManage
-            }
-        }
-        ProductRoute::Usage { .. } => S::UsageRead,
-        ProductRoute::WatchWait { .. } => return None,
-    })
-}
-
 fn route_stream_name(route: &ProductRoute) -> &str {
     match route {
         ProductRoute::Collection { name }
@@ -655,45 +582,45 @@ fn route_stream_name(route: &ProductRoute) -> &str {
     }
 }
 
-/// One response per fail-closed reason class (§7.1/§8.1):
+/// One response per refusal class (§7.1/§8.1, `AuthError::refusal`):
 /// 421 wrong_cell (placement — the credential is FINE, so never 401,
 /// which would make clients refresh it), 503 for the cell's OWN feed
-/// staleness (retryable, not the client's fault), 403 for verified-
-/// but-denied (suspension, revocation, scope, prefix), 401 for
-/// everything a fresh token could fix.
+/// staleness (retryable), 403 for verified-but-denied (suspension,
+/// revocation, scope, prefix), 401 for everything a fresh token fixes.
 pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
-    use crate::auth::AuthError as E;
-    let (status, msg, retryable) = match e {
-        E::WrongCell => (
+    use crate::auth::{Denial as D, Refusal as R};
+    let refusal = e.refusal();
+    let (status, msg, retryable) = match refusal {
+        R::WrongCell => (
             StatusCode::MISDIRECTED_REQUEST,
             "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
             false,
         ),
-        E::PolicyStale | E::GrantsStale | E::KeysStale => (
+        R::FeedStale => (
             StatusCode::SERVICE_UNAVAILABLE,
             "this cell's authorization data is stale; retry",
             true,
         ),
-        E::ProjectNotActive(_) => (StatusCode::FORBIDDEN, "the project is not active", false),
-        E::CredentialNotActive(_) => (StatusCode::FORBIDDEN, "the credential is not active", false),
-        E::MissingScope(_) => (
+        R::Denied(D::Project) => (StatusCode::FORBIDDEN, "the project is not active", false),
+        R::Denied(D::Credential) => (StatusCode::FORBIDDEN, "the credential is not active", false),
+        R::Denied(D::Scope) => (
             StatusCode::FORBIDDEN,
             "the credential does not grant the scope this operation requires",
             false,
         ),
-        E::PrefixDenied => (
+        R::Denied(D::Prefix) => (
             StatusCode::FORBIDDEN,
             "the credential's stream grant does not cover this stream",
             false,
         ),
-        _ => (
+        R::Unverified => (
             StatusCode::UNAUTHORIZED,
             "the bearer token failed verification",
             false,
         ),
     };
     let mut r = perr(status, e.kind(), msg, None, retryable);
-    if matches!(e, E::WrongCell) {
+    if refusal == R::WrongCell {
         // §8.1 fallback form: the header survives body-less handling.
         r.headers_mut().insert(
             "prisma-error-code",
@@ -705,9 +632,9 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
     // feed health — neither is a denial of the caller. Journaling
     // them would let placement churn or a feed outage flood the
     // bounded queue and evict real security events.
-    match e {
-        E::WrongCell | E::PolicyStale | E::GrantsStale | E::KeysStale => r,
-        _ => crate::audit::tag(r, e.kind()),
+    match refusal {
+        R::WrongCell | R::FeedStale => r,
+        R::Denied(_) | R::Unverified => crate::audit::tag(r, e.kind()),
     }
 }
 
@@ -960,12 +887,15 @@ pub(crate) fn product_auth_gate(
     if state.auth.mode == crate::auth::AuthMode::Enforce {
         // §9 order: the exact route parses FIRST (grammar errors are
         // not authentication outcomes), then authenticate, then
-        // authorize scope + prefix. No legacy fallback: in enforce the
-        // customer token is the only product credential.
+        // authorize the scope of the operation the request names, then
+        // the prefix. A request that names no operation has no scope to
+        // lack: the entry refuses it (404/405) only after this
+        // authentication and prefix check. No legacy fallback: in
+        // enforce the customer token is the only product credential.
         let route = classify_route(path)?;
         let principal = enforce_customer(state, headers)?;
         let (_, verb) = strip_verb(path);
-        if let Some(scope) = required_scope(&route, verb, method)
+        if let Some(scope) = ProductOperation::demanded_scope(&route, verb, method)
             && let Err(e) = principal.require(scope)
         {
             return Err(crate::audit::tag_project(
@@ -1020,32 +950,6 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
 /// explicit matching before wildcard interpretation).
-/// Operation-count metering at the dispatch choke point (§4.5's
-/// non-priced dimensions). Bytes are metered where payloads are in
-/// hand; OPERATIONS are counted here so no handler forgets them. The
-/// registry read is a warm cache hit for a request that just succeeded.
-enum OpKind {
-    Append,
-    Queue,
-}
-
-async fn meter_op_if_ok(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    ok: bool,
-    kind: OpKind,
-) {
-    if !ok {
-        return;
-    }
-    if let Ok(Some(desc)) = state.registry.get(sref).await {
-        match kind {
-            OpKind::Append => crate::billing::meter_append_request(state, &desc),
-            OpKind::Queue => crate::billing::meter_queue_op(state, &desc),
-        }
-    }
-}
-
 #[expect(
     clippy::unwrap_used,
     reason = "product_entry; the preflight response builder holds a fixed status and literal ASCII header values, so building it cannot fail, and every handler the entry dispatches to (the consumer pull now with its identity resolved here) decides its own wire status; mapping a builder error into a substitute response would report a status the handler never decided"
@@ -1115,7 +1019,7 @@ pub(crate) async fn product_entry(
         ProductRoute::Records { name } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::POST, None) => {
-                    let r = product_append(
+                    product_append(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1124,13 +1028,10 @@ pub(crate) async fn product_entry(
                         false,
                         principal.as_ref(),
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Append).await;
-                    r
+                    .await
                 }
                 (Method::POST, Some("batch")) => {
-                    let r = product_append(
+                    product_append(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1139,10 +1040,7 @@ pub(crate) async fn product_entry(
                         true,
                         principal.as_ref(),
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Append).await;
-                    r
+                    .await
                 }
                 (Method::GET, live @ (None | Some("long-poll"))) => {
                     // §17.2: a page route is admitted only while the
@@ -1239,7 +1137,7 @@ pub(crate) async fn product_entry(
                     product_consumer_pull(state, sref, cname, headers, body, access).await
                 }
                 (Method::POST, Some("settle")) => {
-                    let r = product_consumer_settle(
+                    product_consumer_settle(
                         state.clone(),
                         &tenant,
                         name.clone(),
@@ -1248,10 +1146,7 @@ pub(crate) async fn product_entry(
                         body,
                         access,
                     )
-                    .await;
-                    let ok = r.status().is_success();
-                    meter_op_if_ok(&state, &tenant.stream_ref(&name), ok, OpKind::Queue).await;
-                    r
+                    .await
                 }
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
@@ -1629,29 +1524,11 @@ async fn product_seal(
     };
     let validated_epoch = validated.stream_epoch.clone();
     if !body.is_empty() {
-        #[derive(serde::Deserialize, Default)]
-        #[serde(deny_unknown_fields, rename_all = "camelCase")]
-        struct SealDoc {
-            // A PRESENT `null` is the record `null`: a plain Option drops
-            // the valid JSON null the SDK sends whenever T admits it.
-            #[serde(default, deserialize_with = "stored_final")]
-            r#final: Option<Bytes>,
-            #[serde(default)]
-            routing_key: Option<String>,
-        }
-        let doc: SealDoc = match serde_json::from_slice(&body) {
-            Ok(d) => d,
-            Err(e) => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_body",
-                    &format!("seal request: {e}"),
-                    None,
-                    false,
-                );
-            }
+        let doc = match seal_request(&state, &headers, &body) {
+            Ok(doc) => doc,
+            Err(refused) => return *refused,
         };
-        if let Some(record) = doc.r#final {
+        if let Some(record) = doc.final_record() {
             // EVERY deterministic error first. Publishing the intent
             // before validating let a request that could never complete
             // — no key, wrong key, unusable routing key — leave the
@@ -1686,7 +1563,7 @@ async fn product_seal(
             // that names a record the append path will always reject
             // leaves the collection sealing forever, owing something
             // undeliverable.
-            let rk = doc.routing_key.as_deref().unwrap_or_default();
+            let rk = doc.routing_key();
             let routing_key = match parse_routing_key(rk.as_bytes()) {
                 Ok(key) => key,
                 Err(why) => {
@@ -1733,18 +1610,12 @@ async fn product_seal(
             // insignificant whitespace, the bytes its operation id and
             // producer hash cover), or a value on a boundary would pass here
             // and be refused there, leaving the intent behind.
-            if let Some(kind) = state
+            if let Some(refusal) = state
                 .runtime
                 .usage
                 .permanently_unadmittable(record.len() as u64, 1)
             {
-                return perr(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "payload_too_large",
-                    &format!("the final record exceeds the per-stream ingest {kind} capacity"),
-                    None,
-                    false,
-                );
+                return capacity_refused(&refusal);
             }
             let wire = if validated.is_json() {
                 Bytes::from([b"[", record.as_ref(), b"]"].concat())
@@ -1833,16 +1704,6 @@ async fn product_seal(
     product_seal_only(state, tenant, name, headers, validated_epoch).await
 }
 
-/// An ABSENT final is `None`; a present one, `null` included, is the record
-/// the seal stores: the client's own text, validated and without whitespace
-/// (`creation::json_record`), never re-serialised.
-fn stored_final<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Bytes>, D::Error> {
-    let text = Box::<serde_json::value::RawValue>::deserialize(d)?;
-    crate::application::creation::json_record(text.get().as_bytes())
-        .map(Some)
-        .map_err(serde::de::Error::custom)
-}
-
 #[expect(
     clippy::unwrap_used,
     reason = "product_seal_only; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
@@ -1907,7 +1768,6 @@ pub(crate) fn seal_error_response(
 
 // ---- Stage 4: append and appendMany ---------------------------------
 
-const MAX_BATCH_RECORDS: usize = 10_000;
 const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 
 /// The ONE routing-key rule both writers share: at most 1,024 bytes of the
@@ -2065,88 +1925,30 @@ async fn product_append_inner(
     if let Some(r) = refuse_if_sealed(&desc, seal_after) {
         return r;
     }
-    let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
-    if batch && !is_json {
-        // Spec Stage 4 §2.3: no framed byte-batch format is standardized.
-        return perr(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "batch_unsupported_format",
-            "records:batch requires a JSON stream",
-            None,
-            false,
-        );
-    }
-    // Validation order (Stage 4 §5): JSON syntax and batch shape are
-    // checked BEFORE enqueue; the shared path handles producer
-    // duplicate recognition ahead of later-validation rejections.
-    let (wire_body, count): (Bytes, usize) = if is_json {
-        if batch {
-            let elems: Vec<&serde_json::value::RawValue> = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return perr(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_body",
-                        &format!("batch must be a JSON array: {e}"),
-                        None,
-                        false,
-                    );
-                }
-            };
-            if elems.is_empty() {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "empty_batch",
-                    "appendMany requires at least one record",
-                    None,
-                    false,
-                );
-            }
-            if elems.len() > MAX_BATCH_RECORDS {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "batch_too_large",
-                    "appendMany accepts at most 10,000 records",
-                    None,
-                    false,
-                );
-            }
-            (body.clone(), elems.len())
-        } else {
-            if serde_json::from_slice::<&serde_json::value::RawValue>(&body).is_err() {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_body",
-                    "append requires one JSON value",
-                    None,
-                    false,
-                );
-            }
-            // [value]: one-level flattening stores exactly one message,
-            // preserving array-valued records, as the value's own text.
-            let mut w = Vec::with_capacity(body.len() + 2);
-            w.push(b'[');
-            w.extend_from_slice(&body);
-            w.push(b']');
-            (Bytes::from(w), 1)
-        }
-    } else {
-        if body.is_empty() {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "empty_body",
-                "append requires a non-empty body",
-                None,
-                false,
-            );
-        }
-        (body.clone(), 1)
+    // The body contract and its capacity verdict are decided BEFORE the
+    // §17.2 debit below (external review §5), so a refusal leaves no quota
+    // debt. A producer request over capacity is the core's to refuse after
+    // its duplicate check, and it is never charged: it can only end as that
+    // duplicate or that refusal.
+    let AppendBody {
+        wire: wire_body,
+        count,
+        over_capacity,
+    } = match parse_append_body(&state.runtime.usage, &desc, &body, batch) {
+        Ok(parsed) => parsed,
+        Err(refused) => return *refused,
     };
-    // §17.2 append-volume backstop: the client body (never less than the
-    // records it stores) and the true record count (batch-aware). Internal
-    // writers (DLQ delivery, the seal's final record) carry no principal
-    // and are bounded by their own mechanisms.
+    if let Some(refusal) = &over_capacity
+        && !names_a_producer(&headers)
+    {
+        return capacity_refused(refusal);
+    }
+    // §17.2 append-volume backstop, with the EXACT parsed shape: the
+    // request payload size and the true record count (batch-aware).
+    // Internal writers (DLQ delivery, the seal's final record) carry
+    // no principal and are bounded by their own mechanisms.
     if let Some(p) = principal
+        && over_capacity.is_none()
         && let Err(refusal) = state.quotas.admit_append(
             &p.project_id,
             &p.quotas,
@@ -2187,7 +1989,7 @@ async fn product_append_inner(
         seal_auth,
     )
     .await;
-    render_product_append(&desc, &key, routing_key, count, result)
+    render_product_append(&state, &key, routing_key, count, result)
 }
 
 /// Both product append routes compile to the ONE committer command the
@@ -2278,15 +2080,14 @@ async fn submit_product_append(
         .await
 }
 
-/// Map the shared path's protocol response into the product contract:
+/// Map the shared path's typed outcome into the product contract:
 /// {cursor, count, duplicate, sealed} on success, the stable product
-/// error schema otherwise.
-#[expect(
-    clippy::unwrap_used,
-    reason = "render_product_append; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
-)]
+/// error schema otherwise. An accepted request (applied, or a producer
+/// duplicate answered from the dedup window) is one `append_requests`
+/// (§4.5), counted against the incarnation the outcome committed to
+/// before the answer exists; a refusal counts nothing.
 fn render_product_append(
-    desc: &StreamDesc,
+    state: &AppState,
     key: &crate::crypto::StreamKey,
     routing_key: &str,
     count: usize,
@@ -2296,28 +2097,36 @@ fn render_product_append(
         Ok(out) => out,
         Err(error) => return render_product_append_error(error),
     };
+    crate::billing::meter_append_request(state, &out.descriptor);
     let next = if out.duplicate {
         out.last_offset.saturating_add(1).min(out.next_offset)
     } else {
         out.next_offset
     };
     let cursor = crate::product_cursor::KeyCursor {
-        epoch: desc.epoch(),
+        epoch: out.descriptor.epoch(),
         key_hash: crate::crypto::stream_hash(routing_key),
         seg_id: out.seg_id,
         offset: next,
     }
-    .encode(&desc.project_id, key);
-    Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE,"application/json").header(header::CACHE_CONTROL,"no-store")
-        .body(Body::from(json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string())).unwrap()
+    .encode(&out.descriptor.project_id, key);
+    let body = json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "render_product_append_error; a retry-after delay renders as decimal digits, which are always a valid header value; treating the conversion as fallible would drop the retry hint the client is owed"
-)]
 fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {
     use crate::application::append::{AppendCode as C, FailureClass as F};
+    if let Some(refusal) = error.capacity_refusal() {
+        return capacity_refused(refusal);
+    }
     let status = crate::http::append_failure_status(&error);
     let (code, message, details, retryable) = match error.code {
         C::NotOwner => (
@@ -2385,10 +2194,8 @@ fn render_product_append_error(error: crate::application::append::AppendFailure)
     };
     let mut r = perr(status, code, message, details, retryable);
     if let Some(retry) = error.retry_after {
-        r.headers_mut().insert(
-            "retry-after",
-            axum::http::HeaderValue::from_str(&retry.to_string()).unwrap(),
-        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from(retry));
     }
     if let Some(owner) = error.owner
         && let Ok(owner) = axum::http::HeaderValue::from_str(&owner)
@@ -3222,7 +3029,7 @@ pub(crate) fn verify_internal_target(
             false,
         ));
     };
-    if desc.epoch_bytes() != Some(want_epoch) {
+    if desc.epoch() != want_epoch {
         return Err(stale("epoch"));
     }
     // §16: the loaded descriptor must belong to the project the sender
@@ -3632,10 +3439,6 @@ async fn product_consumer_delete(
 }
 
 #[expect(
-    clippy::expect_used,
-    reason = "product_consumer_settle; the outcome derives Serialize with plain fields, so converting it to a JSON value cannot fail; a fallible conversion would turn a completed operation into a spurious wire error"
-)]
-#[expect(
     clippy::too_many_arguments,
     reason = "product_consumer_settle; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
 )]
@@ -3670,7 +3473,20 @@ async fn product_consumer_settle(
         Ok(c) => c,
         Err(e) => return consumer_failure_response(e),
     };
-    let doc = match serde_json::from_slice::<crate::application::consumer::SettleInput>(&body) {
+    settle_authorized(&state, context, &body).await
+}
+
+/// The settle under an authorized, active consumer context. An accepted
+/// settle, one whose tokens were all stale included, is one queue
+/// operation (§4.5), counted against the incarnation the context was
+/// authorized for, with no second descriptor read and before the answer
+/// exists; a refusal counts nothing.
+async fn settle_authorized(
+    state: &AppState,
+    context: crate::application::consumer::AuthorizedConsumerContext,
+    body: &[u8],
+) -> Response {
+    let doc = match serde_json::from_slice::<crate::application::consumer::SettleInput>(body) {
         Ok(d) => d,
         Err(e) => {
             return perr(
@@ -3682,8 +3498,12 @@ async fn product_consumer_settle(
             );
         }
     };
+    let desc = context.descriptor().clone();
     match crate::application::consumer::settle(context, doc).await {
-        Ok(out) => json_ok(&serde_json::to_value(out).expect("settle outcome serializable")),
+        Ok(out) => {
+            crate::billing::meter_queue_op(state, &desc);
+            json_ok(&out.to_json())
+        }
         Err(e) => consumer_failure_response(e),
     }
 }
@@ -3965,12 +3785,18 @@ pub(crate) async fn product_list(
         .unwrap()
 }
 
+mod append_body;
+use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_body};
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
+mod operation;
+pub(crate) use operation::{ProductOperation, VERBS};
 mod read_cursor;
 mod scan;
 use scan::product_scan;
+mod seal_request;
+use seal_request::seal_request;
 mod usage;
 use usage::product_usage;
 pub(crate) use usage::project_usage;

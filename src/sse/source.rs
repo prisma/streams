@@ -9,8 +9,8 @@
 //! for the wire.
 
 use super::feed::{
-    CursorCapability, FeedSourceRead, SourceBatch, SourceCutoff, SourceTransition, WirePosition,
-    sig_compatible,
+    CursorCapability, FeedSourceRead, SourceBatch, SourceCutoff, SourceReadError, SourceTransition,
+    WirePosition, sig_compatible,
 };
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
@@ -39,17 +39,17 @@ impl SingleSource {
     }
 }
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "SingleSource; a poisoned stream state may hold a half-advanced durable frontier and the live tail pins one engine incarnation whose close is a typed cutoff; recovering the state could serve a length never made durable and a stale read could serve a retired engine"
-)]
 #[async_trait::async_trait]
 impl FeedSourceRead for SingleSource {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+    async fn read_batch(
+        &self,
+        from: u64,
+        max_bytes: usize,
+    ) -> Result<SourceBatch, SourceReadError> {
         // Round-11.2: a moved live tail is a typed cutoff, never a
         // stale local read; nor is a tail whose engine retired here.
         if let Some(cut) = live_tail_cutoff(owned_here(&self.state, &self.route), &self.engine) {
-            return Err(anyhow::Error::new(FatalSpanCutoff(cut)));
+            return Err(SourceReadError::Fatal(cut));
         }
         // FORKS: stitched reads traverse the ancestor chain and return
         // records in the CHILD's logical offset space — the same cursor
@@ -63,7 +63,7 @@ impl FeedSourceRead for SingleSource {
                     max_bytes,
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!(e))?
+                .map_err(|e| SourceReadError::Retryable(anyhow::anyhow!(e)))?
         } else {
             crate::application::read::read_merged(
                 &self.key,
@@ -76,7 +76,7 @@ impl FeedSourceRead for SingleSource {
                 crate::shard::Deliver::Durable,
             )
             .await
-            .map_err(|e| anyhow::anyhow!(e))?
+            .map_err(|e| SourceReadError::Retryable(anyhow::anyhow!(e)))?
         };
         // HONEST scanned progress (finding 2): `last` advances over
         // NON-MATCHING ranges for filtered lanes — it is the consumed
@@ -105,10 +105,18 @@ impl FeedSourceRead for SingleSource {
         })
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "SingleSource::frontier; a poisoned stream state may hold a half-advanced durable frontier; recovering it could serve a length never made durable"
+    )]
     fn frontier(&self) -> u64 {
         self.handle.state.lock().unwrap().durable.next
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "SingleSource::closed; a poisoned stream state may hold a half-applied durable close; recovering it could report a close never made durable"
+    )]
     fn closed(&self) -> bool {
         self.handle.state.lock().unwrap().durable.closed
     }
@@ -406,15 +414,13 @@ impl LineageSource {
     /// resident engine and the engine's resident handle, resolved on
     /// EVERY page so the page reads through the engine's current
     /// incarnation; otherwise the typed remote protocol with at most
-    /// one verified redirect. Fatal outcomes ride `FatalSpanCutoff`;
-    /// retryables stay anyhow errors (the session's bounded-backoff
-    /// retry).
+    /// one verified redirect. A remote refusal is typed by
+    /// `remote_span_verdict`; every local failure retries.
     #[expect(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         clippy::excessive_nesting,
         clippy::unwrap_used,
-        reason = "LineageSource::sealed_span_page; a sealed span's page resolves the current owner on every read and serves through the directory's resident engine or through one redirect, and a poisoned hint may hold a half-recorded owner that could route the next page to the wrong instance; a request struct, a split, a flattened resolution, a reader cached across pages or a recovered hint would separate the page from the owner resolution it must repeat"
+        reason = "LineageSource::sealed_span_page; a sealed span's page resolves the current owner on every read and serves through the directory's resident engine or through one redirect, and a poisoned hint may hold a half-recorded owner that could route the next page to the wrong instance; a request struct, a flattened resolution, a reader cached across pages or a recovered hint would separate the page from the owner resolution it must repeat"
     )]
     async fn sealed_span_page(
         &self,
@@ -424,8 +430,7 @@ impl LineageSource {
         owner_hint: &std::sync::RwLock<Option<String>>,
         local_from: u64,
         budget: usize,
-    ) -> anyhow::Result<crate::application::read::ReadPage> {
-        use super::feed::SourceCutoff;
+    ) -> Result<crate::application::read::ReadPage, SourceReadError> {
         if owned_here(&self.state, route) {
             match self
                 .state
@@ -434,10 +439,9 @@ impl LineageSource {
                 .await
             {
                 Ok(engine) => {
-                    let handle = engine
-                        .stream_handle(span.identity)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("stream handle: {e}"))?;
+                    let handle = engine.stream_handle(span.identity).await.map_err(|e| {
+                        SourceReadError::Retryable(anyhow::anyhow!("stream handle: {e}"))
+                    })?;
                     self.state
                         .keys
                         .put(span.identity, self.key.clone(), self.epoch);
@@ -456,13 +460,15 @@ impl LineageSource {
                     )
                     .execute()
                     .await
-                    .map_err(|e| anyhow::anyhow!(e));
+                    .map_err(|e| SourceReadError::Retryable(anyhow::anyhow!(e)));
                 }
                 // Ownership raced away between the check and the
                 // open: fall through to the remote path below.
                 Err(crate::shard_directory::ResolveError::NotOwner { .. }) => {}
                 Err(error) => {
-                    anyhow::bail!("sealed span engine unavailable: {error:?}")
+                    return Err(SourceReadError::Retryable(anyhow::anyhow!(
+                        "sealed span engine unavailable: {error:?}"
+                    )));
                 }
             }
         }
@@ -478,10 +484,10 @@ impl LineageSource {
                         .effective_owner(&prefix)
                         .filter(|o| *o != self.state.ownership.instance())
                         .ok_or_else(|| {
-                            anyhow::anyhow!(
+                            SourceReadError::Retryable(anyhow::anyhow!(
                                 "sealed span {} ownership indeterminate; retrying",
                                 span.seg_id
-                            )
+                            ))
                         })?
                 }
             }
@@ -513,41 +519,7 @@ impl LineageSource {
                 }
                 Ok(out)
             }
-            Err(crate::application::read_remote::RemoteSpanError::Retryable { status, code }) => {
-                anyhow::bail!("remote span {}: retryable {status} {code:?}", span.seg_id)
-            }
-            Err(crate::application::read_remote::RemoteSpanError::Transport(m)) => {
-                anyhow::bail!("remote span {}: transport {m}", span.seg_id)
-            }
-            Err(crate::application::read_remote::RemoteSpanError::InvalidResponse(m)) => {
-                anyhow::bail!("remote span {}: invalid response {m}", span.seg_id)
-            }
-            Err(crate::application::read_remote::RemoteSpanError::Unauthorized) => {
-                Err(anyhow::Error::new(FatalSpanCutoff(SourceCutoff::FleetAuth)))
-            }
-            Err(crate::application::read_remote::RemoteSpanError::TargetGone) => Err(
-                anyhow::Error::new(FatalSpanCutoff(SourceCutoff::IncarnationChanged)),
-            ),
-            Err(crate::application::read_remote::RemoteSpanError::TargetMismatch) => Err(
-                anyhow::Error::new(FatalSpanCutoff(SourceCutoff::TargetMismatch)),
-            ),
-            Err(crate::application::read_remote::RemoteSpanError::RedirectLoop {
-                first,
-                second,
-            }) => {
-                tracing::warn!(
-                    span = span.seg_id,
-                    %first,
-                    %second,
-                    "sealed span redirect loop refused"
-                );
-                Err(anyhow::Error::new(FatalSpanCutoff(
-                    SourceCutoff::RedirectLoop,
-                )))
-            }
-            Err(crate::application::read_remote::RemoteSpanError::WrongOwner { owner }) => {
-                anyhow::bail!("remote span {}: unresolved owner {owner}", span.seg_id)
-            }
+            Err(refusal) => Err(remote_span_verdict(span.seg_id, refusal)),
         }
     }
 
@@ -563,11 +535,15 @@ impl LineageSource {
 #[expect(
     clippy::too_many_lines,
     clippy::unwrap_used,
-    reason = "LineageSource; one batch walks the span chain until the budget or the frontier stops it, the live tail pins one engine incarnation whose close is a typed cutoff, and a poisoned stream state may hold a half-advanced durable frontier; splitting the walk would separate it from its budget, a stale read could serve a retired engine and recovering the state could serve a length never made durable"
+    reason = "LineageSource; one batch walks the span chain until the budget or the frontier stops it and names each failure's typed verdict, and a poisoned stream state may hold a half-advanced durable frontier; splitting the walk would separate it from its budget and recovering the state could serve a length never made durable"
 )]
 #[async_trait::async_trait]
 impl FeedSourceRead for LineageSource {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+    async fn read_batch(
+        &self,
+        from: u64,
+        max_bytes: usize,
+    ) -> Result<SourceBatch, SourceReadError> {
         let mut cursor = from;
         let mut recs = crate::application::read::PlainBatch::default();
         let mut budget = crate::application::read_budget::PageBudget::new(max_bytes);
@@ -591,7 +567,7 @@ impl FeedSourceRead for LineageSource {
                     // typed cutoff (resumable EOF; the gateway reroutes
                     // or the route reopens).
                     if let Some(cut) = live_tail_cutoff(owned_here(&self.state, route), engine) {
-                        return Err(anyhow::Error::new(FatalSpanCutoff(cut)));
+                        return Err(SourceReadError::Fatal(cut));
                     }
                     crate::application::read::ReadPlan::segment(
                         &self.key,
@@ -608,7 +584,7 @@ impl FeedSourceRead for LineageSource {
                     )
                     .execute()
                     .await
-                    .map_err(|e| anyhow::anyhow!(e))?
+                    .map_err(|e| SourceReadError::Retryable(anyhow::anyhow!(e)))?
                 }
                 SpanReader::Sealed {
                     route,
@@ -654,7 +630,9 @@ impl FeedSourceRead for LineageSource {
             }
             let drained = span_end.is_some_and(|e| cursor >= e);
             if part.completed && !drained {
-                anyhow::bail!("lineage span ended below its cap");
+                return Err(SourceReadError::Retryable(anyhow::anyhow!(
+                    "lineage span ended below its cap"
+                )));
             }
             if !drained {
                 // Partial page inside this span: honest stop.
@@ -973,8 +951,7 @@ pub(crate) async fn refresh_transition(
 
 #[path = "source/spans.rs"]
 mod spans;
-pub(crate) use spans::FatalSpanCutoff;
-use spans::locate_in_spans;
+use spans::{locate_in_spans, remote_span_verdict};
 
 #[cfg(test)]
 #[path = "source/tests.rs"]

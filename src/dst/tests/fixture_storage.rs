@@ -92,17 +92,8 @@ pub(super) async fn open_engine_with_settings(
 pub(super) async fn open_engine_with_absorber(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
-    hash: [u8; 16],
-    key: &crate::crypto::StreamKey,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    open_engine_with_absorber_cfg(
-        store,
-        prefix,
-        hash,
-        key,
-        crate::shard::ShardConfig::default(),
-    )
-    .await
+    open_engine_with_absorber_cfg(store, prefix, crate::shard::ShardConfig::default()).await
 }
 
 /// The absorber rig over an explicit engine configuration (history cache,
@@ -110,8 +101,6 @@ pub(super) async fn open_engine_with_absorber(
 pub(super) async fn open_engine_with_absorber_cfg(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
-    hash: [u8; 16],
-    key: &crate::crypto::StreamKey,
     cfg: crate::shard::ShardConfig,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
     let db = slatedb::Db::builder(prefix, store.clone())
@@ -139,17 +128,13 @@ pub(super) async fn open_engine_with_absorber_cfg(
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    // The absorber derives subkeys from (key, epoch); the workload uses the
-    // stream hash as the epoch, so the cache must agree or nothing decodes.
-    keys.put(hash, key.clone(), hash);
     let cfg = crate::history::AbsorberConfig {
         threshold_bytes: 1,
         threshold_age: std::time::Duration::from_millis(1),
         tick: std::time::Duration::from_millis(20),
         ..Default::default()
     };
-    let handle = crate::history::Absorber::start(store, engine.clone(), keys, cfg, absorb_rx);
+    let handle = crate::history::Absorber::start(engine.clone(), cfg, absorb_rx);
     (engine, handle)
 }
 
@@ -205,6 +190,25 @@ pub(super) async fn drain_filtered(
 
 /// Direct append of a payload of chosen size (the workload helper only
 /// sends tiny JSON bodies; the gather-budget tests need real volume).
+/// Stages one stream's absorbed-boundary advance the way one gather
+/// confirms it, so a fixture can put a stream into a maintenance state
+/// without running the absorber. The copy starts at the stream's applied
+/// boundary as of this call, not as of staging: a caller must let any
+/// earlier advance apply first, or the committer drops this one whole.
+pub(super) async fn absorb_through(
+    engine: &crate::shard::ShardEngine,
+    hash: [u8; 16],
+    upto: u64,
+    retired_bytes: u64,
+) {
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let from = handle.state.lock().unwrap().applied.absorbed;
+    let copied = crate::shard::CopiedBytes::new(from, retired_bytes);
+    engine
+        .submit_absorbed_batch_v2(vec![(hash, upto, copied)])
+        .await;
+}
+
 pub(super) async fn append_sized(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],

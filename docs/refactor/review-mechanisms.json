@@ -159,7 +159,7 @@
         {
           "file": "src/dst/review_security.rs",
           "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
-          "sha256": "00e28c0916562954d9b107952969b64161b0335fe11b1e75e03a1a90a2144e11"
+          "sha256": "16708a70a246702e02b95816eb2b49f98062a7c1f000ed2b45cf22da9cc29069"
         }
       ]
     },
@@ -179,7 +179,7 @@
           "panic"
         ]
       },
-      "limitations": "Process drain/restart policy in live fleet remains pending.",
+      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root is bounded at 30 s off the executor once it is requested (item 38). A termination signal requests it only through the signal task, which runs on that executor: a SIGTERM that arrives when every executor worker is already blocked is never observed, arms no bound, and the process waits for the platform's SIGKILL, as before item 38. The deadline's own stderr line names the stop's cause (the critical exit, or a signal's request) and is waited for at most 250 ms on a thread of its own, so a closed or full stderr cannot hold the exit: the bound is 30 s plus up to 250 ms. The deploy wrapper forwards SIGTERM/SIGINT to the binary and kills it 35 s after the first forwarded signal. The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
       "execution": "requires_final_head_receipt",
       "tests": [
         {
@@ -191,6 +191,58 @@
           "file": "src/tasks/tests.rs",
           "name": "critical_exits_failures_and_panics_are_reported",
           "sha256": "13b4991686073b3e5db3b1e40ef6862bc110617df596f4647eaaedfb1714f90f"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "a_critical_exit_stops_the_process_root_and_names_its_cause",
+          "sha256": "a7c90a245e1a41f2af8b34f69a39cd9f9110787bc6f498beb045e65b3a67e698"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_process_root_bounds_its_stop_off_the_executor",
+          "sha256": "d7c6beacafdae397a9fc96a2c49aa51d746b1cb88f273787b305e6e5551e4c97"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "a_requested_stop_of_the_process_root_is_bounded_off_the_executor",
+          "sha256": "adb378cec2fa3503154820658d6aefa7e973f6600d6bca11e288549eded385c6"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_stop_deadline_exits_even_when_stderr_is_closed",
+          "sha256": "d7af0438bebbd9b6cf138b82ee5d88abe25331436d5557b1e02c05d6d92cd584"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_stop_deadline_exits_even_when_stderr_is_full",
+          "sha256": "e4b4a7040dc6d72cc7e479225e20f62b388b130231c98d79438a687138a52e87"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "stop_deadline_helper",
+          "sha256": "9c6577977526417a1f4c56dc97b31b86de3d4b2138216cfd1cba5b84c4a7e9f0"
+        }
+      ],
+      "support_functions": [
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "test_root",
+          "sha256": "a3ff3484c0d0e48479f483fc3a5a561356bf56fecd2403a25bb09a992b43d485"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "stop_requested",
+          "sha256": "3537aaa361fd8c65120b8954a74c9cd1bfdfee3716dc4f771fbc341b87ae8ca3"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "helper_exit",
+          "sha256": "f44f6303a27b120c5084ea48afbfdedf1b683745fc739bdd60c63b02a8bb0220"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "drained",
+          "sha256": "659160684e8f675bd82f1885bddbb00653b139fbd359612085e43c5597eaa873"
         }
       ]
     },
@@ -510,7 +562,7 @@
         {
           "file": "src/usage/runtime_tests.rs",
           "name": "r10_runtime_usage_limits_counters_and_backlog_are_isolated",
-          "sha256": "477db244affbac21179a6e08ba58e5faad1e0e7ba40eaa4043b7714b459c1d8f"
+          "sha256": "e14af8873d16302f2c0013f5a36df50aafbb14686e67fe0b26be8b66f6392e1a"
         },
         {
           "file": "src/usage/runtime_tests.rs",
@@ -632,7 +684,7 @@
         {
           "file": "src/history/controller_tests.rs",
           "name": "active_absorber_cancel",
-          "sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867"
+          "sha256": "8c23ffb4352ba4039a03706c8eaee18e81b8c3f90ee5a68bf6b27dc632da67d9"
         }
       ]
     },
@@ -859,6 +911,119 @@
           "sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a"
         }
       ]
+    },
+    {
+      "id": "absorb-retirement-settlement",
+      "obligations": [
+        "HOLD-SPLIT-500"
+      ],
+      "owner": "ShardEngine committer absorbed-boundary retirement; history Absorber lane marks and per-bucket settlement receipts",
+      "mechanism": "Held commit gate with a queued gathered advance, a held WAL put under applied records, the dirty-index rescan, a refused absorbed group (fail_next_absorbed_group), and a second stream kept in flight behind the held gate while the refused stream regathers",
+      "entered_proof": "WAL hold engaged with applied.next == 8; G1 gathered before the gate releases; group_failures_tripped >= 1 and a sentinel answered after the refused group; at each of the refused stream's regathers the busy stream's advance is queued unapplied behind the held gate",
+      "oracle": "Co-grouped append Ok; boundary and stream ledger equal the exact stored bytes of [absorbed, next) and the shard ledger agrees; an advance that does not start at the boundary moves nothing; the regather starts at the submitted mark; a refused advance is regathered from the durable boundary at its next gather, with every advance landing and postings pages that tile; a receipt settles only after its group is durable or refused",
+      "configuration": {
+        "records": 8,
+        "payload_bytes": 100,
+        "flush_interval_ms": 5,
+        "worker_threads": 4,
+        "settlement_buckets": 1024
+      },
+      "limitations": "In-memory FaultStore engines driven by manual gathers and direct commit groups; the capacity-rate race is covered by the post_split_throughput_scales acceptance loop, not by these tests. The rollback deletes no postings pages: a refused group that carried a stream advance with a later advance of that stream chained behind it heals into overlapping pages (ledger exact, envelope fallback for that key's page bucket); the same holds for a bucket-sharing stream's dropped gather and for an engine retirement that drops two chained advances (docs/HISTORY-V2.md, follow-up). That a receipt settles only after dispatch_durable has published the group's tails rests on the receipts dropping at the end of that loop's iteration, after the tails; no test isolates that order, and the Loom models pass with the orderings weakened to Relaxed, so they do not test the Acquire/Release pairing either.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "a_rescan_during_an_inflight_advance_never_fails_an_append",
+          "sha256": "e8f4ca4ffb700b4d080dbd18db845e6f0cff91b01dbd7905659b3f1afe4214cc"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
+          "sha256": "94a57bccbcce40ea332a33541633a101aa654263d68392877b9b8e01ca03f668"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "an_advance_that_skips_offsets_is_dropped_whole",
+          "sha256": "0a0bd93cc3bd237e55356e4d43bfe450c7f6e302bd1a88300db84c7812053fb4"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark",
+          "sha256": "aaee26f0bc28196a466690e6a67e50631ac9fac5a94e849bcfc822395aff91bc"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "a_refused_advance_is_regathered_from_the_durable_boundary",
+          "sha256": "040de74d8400bc461b81d9d3e695ab55246124d1fb3aff786b39962c258b7eef"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber",
+          "sha256": "8a01328b06ed99fb0fef4e18c4ce3171a9ec44d44db6ca47e788e110a7b937ca"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "a_receipted_advance_settles_only_after_its_group_is_durable",
+          "sha256": "59a946c996533694c358718727472b07c9a571ba067233044d454e4251dceea5"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "a_refused_advance_settles_with_its_group",
+          "sha256": "2ca413b1a7505a3f6d5554e116547850b83ea6df7b207dc5e96b32906524ca5d"
+        }
+      ],
+      "support_functions": [
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "append_behind_a_regather",
+          "sha256": "2dd8fa57b61c25dfea458f98140db721fabf724f3d7524befe374eaca896c442"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "assert_ledger_is_exact",
+          "sha256": "62be4252416f5d051bd63ecf161f150bb8de2214038f155b9d3ec89810ba787b"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "exact_ledger",
+          "sha256": "49d497807f9d146e5c3c332899217ccf0464b3997d3198b05e34ed196f5299ed"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "rig",
+          "sha256": "c6c43b11751fb52d6ed1609b705fdd23b813afa36384a037a77efd6cde9197b2"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "advance",
+          "sha256": "d1f0a0e7e04a260d863a65e6a9c85e7f65badffa162f7ffb6522538f15ee92ec"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "submit_advance",
+          "sha256": "139b8f295606af48a4636d06f31815c13e9d86f3eee5b1925c6feb34d37dcdcc"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "pages_tile",
+          "sha256": "f4f25b211ea30bc000da35eb031aafcf3769520067245da8b7213c613672c746"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "append_stored",
+          "sha256": "1f698dfae5f6eb32401b38e4cc72e1edeceb180b4077ad7d769866aa43d6737c"
+        },
+        {
+          "file": "src/history/bounded_discovery_tests.rs",
+          "name": "applied_tail",
+          "sha256": "0477c5d229e5feb80271765095e050aebf450659f35996712be9c954f63111f0"
+        },
+        {
+          "file": "src/shard/maintenance_tests.rs",
+          "name": "wait_for",
+          "sha256": "e187454512677e08b5b5a89e518608d27065a97ad99ab262932a1a3bc4c7f78a"
+        }
+      ]
     }
   ],
   "external_legs": [
@@ -919,8 +1084,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "7a349763f34eaaf750647c546ddcbabcbbe220ce7f2cd886f5c929ffa24eb2d9",
-      "after_sha256": "1faf886fde5b821f9f7f43d5a5827ac898d7dcacd2c6cb164fbdbc5c79c36f8b",
-      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged."
+      "after_sha256": "9e53237976541d67f7b403ce6baa86ef32bcd886517501d61796c85d2e37460f",
+      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. Item 32 adds a no-op command-line edit (|_| {}); ordinary rigs keep the hermetic fixture CLI."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -928,8 +1093,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
-      "after_sha256": "c17c745528ba60742cdfe78462c04cfe78ec764636773f2101f039a05b36a0f0",
-      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. The rig serves the production h1 loop with its own loaded HttpConfig (buffer ceiling and request-head deadline) instead of a literal buffer size, and no longer restates the heartbeat default that from_config already applied; no assertion or constructor value changed."
+      "after_sha256": "32ea64dab629d115bb5cfc3679585c78a5476fe45811d9324de4ba9e6ceca572",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. The rig serves the production h1 loop with its own loaded HttpConfig (buffer ceiling and request-head deadline) instead of a literal buffer size, and no longer restates the heartbeat default that from_config already applied; no assertion or constructor value changed. Item 32 threads the scenario's command-line edit into the hermetic configuration factory; no other value or assertion changed. Item 76 stops handing the opener a key cache the absorber never read; the rig's own key cache and every value and assertion are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -937,8 +1102,8 @@
       "finding": "R09",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "8bc4055ac728dca0543aa1e5742b7550840152476e39a32ff794c7889b16b0df",
-      "after_sha256": "1d2bc61cbf3ecd04938cbab3723d6f878cb6d8805f82d65e2dd7c92f0710bf86",
-      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged."
+      "after_sha256": "c2ab263bf970c6c380094f2b6a826f5e17b5dd607e6a579c40c9e130b210f6e8",
+      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged. Item 76 drops the key cache the absorber never read (and the store start_owned no longer takes) from the opener's inputs; absorption settings and scheduling unchanged."
     },
     {
       "file": "src/dst/tests/fixture_livefeed.rs",
@@ -1001,9 +1166,9 @@
       "name": "active_absorber_cancel",
       "before_commit": "93f77ecfdb053850773bb698b3512e3777ce3354",
       "before_sha256": "e9cdb62c69ba22f3c357d76e3e70aee900685a21b2fcea6b4b1a54af05b29405",
-      "after_sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867",
+      "after_sha256": "8c23ffb4352ba4039a03706c8eaee18e81b8c3f90ee5a68bf6b27dc632da67d9",
       "finding": "R17-A",
-      "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call."
+      "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call. Item 76 starts both absorbers without the store and key cache they never read; no assertion changed."
     },
     {
       "file": "src/application/creation.rs",
@@ -1037,9 +1202,9 @@
       "name": "cut_resume_never_skips_a_durable_record",
       "before_commit": "b08c097aceee85dea3c8831c1063def6528deab1",
       "before_sha256": "ffc97e75a490301e88a1297e283a5e4a76be5b903bd88e51e97b54f259233b5e",
-      "after_sha256": "6708f111b7104fefb8f112938090e6747df775ad57c99eddb4efabbd4d620342",
+      "after_sha256": "b895148d415a48f2aef9deec90005a0ede1adc47a89d835c68000791e82309a9",
       "finding": "CI verification: cut/resume readiness",
-      "reason": "1a4c661: the failed b08c097 run captured an initial cursor=now at offset 1 and then falsely required record 0. Replace the unverified 500 ms startup sleep with both real subscriptions observing authenticated offset-zero upToDate controls before appending. The 1200 records, fault plan, retention cuts, absorb schedule and exact acknowledged-record reconciliation remain unchanged. The readiness guard uses the equivalent chained condition required by Clippy; readiness is still consumed only after upToDate. Warning cleanup: the two resuming subscribers now run through a cursor subscriber owner (reconnect loop, one connection's drain, per-line observation) with the same cursor and record parsing, and the swinger and subscribers are joined with their dispositions checked; the readiness handshake, the 1200 records, the fault plan, the absorb schedule and the reconciliation are unchanged."
+      "reason": "1a4c661: the failed b08c097 run captured an initial cursor=now at offset 1 and then falsely required record 0. Replace the unverified 500 ms startup sleep with both real subscriptions observing authenticated offset-zero upToDate controls before appending. The 1200 records, fault plan, retention cuts, absorb schedule and exact acknowledged-record reconciliation remain unchanged. The readiness guard uses the equivalent chained condition required by Clippy; readiness is still consumed only after upToDate. Warning cleanup: the two resuming subscribers now run through a cursor subscriber owner (reconnect loop, one connection's drain, per-line observation) with the same cursor and record parsing, and the swinger and subscribers are joined with their dispositions checked; the readiness handshake, the 1200 records, the fault plan, the absorb schedule and the reconciliation are unchanged. Item 62: the initial-cursor decode reads the epoch through StreamDesc::epoch() instead of the deleted Option-returning epoch_bytes(); the decoded position and every assertion are unchanged."
     }
   ]
 }

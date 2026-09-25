@@ -21,6 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Instant;
+mod capacity;
+pub(crate) use capacity::CapacityRefusal;
 
 /// Bound on distinct streams tracked (same discipline as the per-stream
 /// admission map). Beyond the cap the module must NEVER fail open
@@ -318,23 +320,25 @@ impl UsageService {
         evict_one_idle_at(&mut self.map.lock().unwrap(), idle, self.clock.monotonic())
     }
 
-    /// A request larger than a FRESH bucket can never be admitted, so the
-    /// content owner refuses it 413 before any lifecycle intent instead of
-    /// a 429 whose Retry-After no wait can honour. Only the request's own
-    /// size is decided here: `ServerConfig::validate` has proven every
+    /// A request larger than a FRESH bucket can never be admitted, so every
+    /// append surface refuses it 413 before any side effect, naming its limit,
+    /// instead of a 429 whose Retry-After no wait can honour. Only the request's
+    /// own size is decided here: `ServerConfig::validate` has proven every
     /// enabled bucket holds at least one token (`config::admission_limits`),
     /// so the request bucket needs no arm.
     pub(crate) fn permanently_unadmittable(
         &self,
         bytes: u64,
         records: u64,
-    ) -> Option<&'static str> {
+    ) -> Option<CapacityRefusal> {
         let l = self.limits();
-        if l.bytes_per_sec > 0.0 && bytes as f64 > l.bytes_per_sec * l.burst_secs {
-            return Some("bytes");
+        let bytes_cap = l.bytes_per_sec * l.burst_secs;
+        if l.bytes_per_sec > 0.0 && bytes as f64 > bytes_cap {
+            return Some(CapacityRefusal::new("bytes", bytes_cap, bytes));
         }
-        if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
-            return Some("records");
+        let recs_cap = l.recs_per_sec * l.burst_secs;
+        if l.recs_per_sec > 0.0 && records as f64 > recs_cap {
+            return Some(CapacityRefusal::new("records", recs_cap, records));
         }
         None
     }

@@ -205,8 +205,7 @@ fn raw_control(frame: &Bytes) -> serde_json::Map<String, serde_json::Value> {
 /// The (segment, resume offset) a raw control's `streamNextOffset` names.
 fn raw_resume(control: &serde_json::Map<String, serde_json::Value>) -> (u32, u64) {
     let token = control["streamNextOffset"].as_str().unwrap();
-    let (seg_id, offset) = crate::offsets::parse_ep(token).unwrap();
-    (seg_id, offset.scan_from())
+    crate::offsets::parse(token).unwrap()
 }
 
 /// The RAW surface's controls name the segment and the offset a reader
@@ -249,5 +248,56 @@ fn raw_controls_name_the_resume_position_cursor_and_flags() {
     assert!(
         !closed.contains_key("streamCursor"),
         "a closed stream names no cursor: {closed:?}"
+    );
+}
+
+/// Item 86: a catch-up read that advanced nothing is answered at one
+/// owner. A fatal cutoff ends the session at once; a failed read and an
+/// empty page each wait the bounded retry before the next read.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
+    let empty = crate::sse::feed::SourceBatch {
+        scan_from: 4,
+        scan_to: 4,
+        records: crate::application::read::PlainBatch::default(),
+        completed: false,
+    };
+    use crate::sse::feed::{SourceCutoff, SourceReadError};
+    for (leg, read, owed, waited) in [
+        (
+            "cutoff",
+            Err(SourceReadError::Fatal(SourceCutoff::TargetMismatch)),
+            Stall::Cutoff,
+            0,
+        ),
+        (
+            "failed",
+            Err(SourceReadError::Retryable(anyhow::anyhow!("injected"))),
+            Stall::Failed,
+            100,
+        ),
+        ("empty", Ok(empty), Stall::NoProgress, 100),
+    ] {
+        let start = tokio::time::Instant::now();
+        assert_eq!(catch_up::stalled(read).await, owed, "{leg}");
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_millis(waited),
+            "{leg}: the wait owed before the next read"
+        );
+    }
+}
+
+/// Item 87 (red on eb742c42: the retried cause was dropped): a failed
+/// catch-up read logs its cause before the bounded wait.
+#[tokio::test(start_paused = true)]
+async fn a_failed_catch_up_read_logs_its_cause() {
+    let log = crate::sse::test_log::ErrorLog::capture();
+    let failed = crate::sse::feed::SourceReadError::Retryable(anyhow::anyhow!("injected"));
+    assert_eq!(catch_up::stalled(Err(failed)).await, Stall::Failed);
+    assert_eq!(
+        log.causes(),
+        ["injected"],
+        "the retried catch-up read names its cause"
     );
 }

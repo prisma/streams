@@ -30,10 +30,12 @@ mod lane_rows;
 mod lifecycle;
 mod tail_ring;
 mod transaction;
-pub(crate) use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
-    BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
-    decide_consumer_generation, decide_producer, seal_authorized,
+    AbsorbedAdvance, BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision,
+    decide_billing_ack, decide_consumer_generation, decide_producer, seal_authorized,
+};
+pub(crate) use commit_plan::{
+    AppendFinish, CloseReq, CopiedBytes, EnqueueError, SealFenceReq, Submissions, UsageAckScope,
 };
 use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;
@@ -428,13 +430,7 @@ pub(crate) fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> 
 /// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
 /// is an error here — callers that can meet one go through
 /// `decode_shard_maint_row` and the rebuild path.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "decode_shard_maint; the maintenance row decoder is the DST billing fixtures' witness of what the committer staged; deleting it would strip the decode those fixtures pin"
-    )
-)]
+#[cfg(test)]
 pub(crate) fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
     match decode_shard_maint_row(v)? {
         ShardMaintRow::Exact(m) => Ok(m),
@@ -606,11 +602,11 @@ pub(crate) struct TailFields {
     /// under a GLOBAL per-commit delete budget, so no absorption wave
     /// builds one multi-gigabyte delete batch.
     pub trim_safe_to: u64,
-    /// Exact stored frame bytes in [absorbed, next), kept by the committer:
-    /// appends add frame lengths; an advance subtracts the stored bytes of
-    /// the range it moves over (the chunk's count when it starts at the
-    /// boundary, else a recount); a refused group retires nothing (TLA-016-F1).
-    /// Restart rediscovery reads this rather than estimating records × 1 KiB.
+    /// Exact stored frame bytes in [absorbed, next), maintained by the
+    /// committer (appends add frame lengths; absorb advances subtract
+    /// the bytes the absorber actually copied). Restart rediscovery
+    /// reads this instead of estimating records × 1 KiB, so the default
+    /// absorption policy's byte thresholds see the truth.
     pub unabsorbed_bytes: u64,
 }
 
@@ -884,7 +880,7 @@ type ConsumerFences = Mutex<HashMap<([u8; 16], String), u64>>;
 
 #[expect(
     clippy::large_enum_variant,
-    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op, and the absorbed chunk start and batch receipt sit far below it; boxing it would add a heap hop to the hottest path"
+    reason = "CommitOp; the append variant carries the request body and reply inline so the committer queue moves one allocation per op; boxing it would add a heap hop to the hottest path"
 )]
 pub(crate) enum CommitOp {
     Append(AppendReq),
@@ -930,16 +926,15 @@ pub(crate) enum CommitOp {
         op: crate::queue::QueueOp,
         resp: oneshot::Sender<Result<crate::queue::QueueOut, String>>,
     },
-    /// One gather's absorber confirmations as ONE committer message, so every
-    /// covered boundary lands in the same write batch. Entries are (hash, chunk
-    /// start, new upto, frame bytes copied; the committer retires the exact
-    /// bytes of the range it advances over), expanded into `Absorbed` ops at
-    /// commit_group entry. `landed` is answered once the group is written; a
-    /// refusal drops it unanswered, and the absorber rolls its lane marks back.
+    /// One gather's worth of absorber confirmations, carried as a SINGLE
+    /// committer message so every covered boundary lands in the same
+    /// write batch deterministically (the per-stream sends only
+    /// coalesced opportunistically). Each entry names the stream, its new
+    /// upto and the bytes copied to reach it, retired from the tail's
+    /// ledger only from its boundary. Expanded into `Absorbed` ops.
     AbsorbedBatch {
-        streams: Vec<([u8; 16], u64, u64, u64)>,
+        streams: Vec<AbsorbedAdvance>,
         v2: bool,
-        landed: oneshot::Sender<()>,
     },
     /// Trim maintenance pulse (flush ticker, whenever the trim-debt set
     /// is non-empty): round-robins streams with `trimmed <
@@ -953,14 +948,15 @@ pub(crate) enum CommitOp {
     /// (one advance behind; `TailFields::trim_safe_to` says what that covers).
     /// `v2` marks the range as living in the SHARED per-shard partition
     /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
-    /// history_v2 flag, which gates the read path's history source.
+    /// history_v2 flag, which gates the read path's history source. Only
+    /// the AbsorbedBatch expansion builds this op, and its one producer
+    /// always sets `v2`: the per-stream lane is deleted, and the seal keeps
+    /// the tails it absorbed out of the shared partition.
     Absorbed {
         hash: [u8; 16],
-        /// The chunk `[from, upto)` the absorber copied and its stored frame
-        /// bytes, which settle an advance only from `from` (TLA-016-F1).
-        from: u64,
         upto: u64,
-        bytes: u64,
+        /// Copied bytes; retired only when they start at the absorbed boundary.
+        bytes: CopiedBytes,
         v2: bool,
     },
     /// TrimTick expansion product (commit_group entry): one stream's
@@ -1134,19 +1130,10 @@ pub(crate) struct ShardEngine {
     /// SlateDB writer epoch this engine claimed at open: the history its applied reads serve.
     pub writer_epoch: u64,
     pub db: Arc<Db>,
-    /// R29 custody model. `last_external_seq`: the global adoption
-    /// sequence value of the most recent EXTERNAL resolution of this
-    /// engine (customer request paths only — never the sweep, walk or
-    /// scaler). `sweep_custody`: 0 = not scheduler-held, otherwise the
-    /// adoption-sequence value at which the sweep installed custody.
-    /// Invariants enforced in billing.rs: custody installs only onto an
-    /// engine with last_external_seq == 0 (any earlier external use —
-    /// including a customer who coalesced into the sweep's own open —
-    /// declines custody), an external resolution atomically revokes
-    /// custody, and a close requires the installer's exact custody
-    /// value with no newer external stamp.
-    pub last_external_seq: std::sync::atomic::AtomicU64,
-    pub sweep_custody: std::sync::atomic::AtomicU64,
+    /// R29: whether the billing sweep may close this engine — the
+    /// scheduler's custody and the external stamp that revokes it, owned
+    /// by `crate::billing::SweepCustody` so no caller can reorder them.
+    pub(crate) sweep_custody: crate::billing::SweepCustody,
     /// Engine-owned maintenance state (R25-A). The durable row in this
     /// shard's DB is authoritative; this is the published mirror,
     /// updated ONLY after the write carrying the row succeeds. Owned by
@@ -1277,10 +1264,10 @@ pub(crate) struct ShardEngine {
     pub trim_deletes_last: AtomicU64,
     pub trim_deletes_max_batch: AtomicU64,
     pub trim_deletes_total: AtomicU64,
-    /// Advances rejected by the layout seal (cross-lane absorb after the
-    /// stream's history layout was decided). Nonzero means the absorber
-    /// raced its own lane classification — harmless with the seal, but
-    /// worth seeing.
+    /// Advances rejected by the layout seal: a shared-partition advance
+    /// over a tail the deleted per-stream lane absorbed. Nonzero means the
+    /// namespace still carries such a tail; the seal keeps its boundary,
+    /// but it is worth seeing.
     pub absorb_lane_dropped: AtomicU64,
     /// Decoded postings-slice cache (spec §7): keyed historical reads
     /// pay the index once per active window.
@@ -1341,7 +1328,7 @@ impl ShardEngine {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "ShardEngine::start; a poisoned in-flight queue or trim-debt set may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data. The writer-epoch initializer calls two manifest accessors and adds no unwrap site"
+        reason = "ShardEngine::start; the pump and trim tickers unwrap only the in-flight queue and trim-debt locks, and a poisoned one may hold a half-recorded group or debt; recovering either could acknowledge a group that never committed or trim a stream that still owes data. The writer-epoch initializer calls two manifest accessors and adds no unwrap site"
     )]
     #[expect(
         clippy::cast_possible_truncation,
@@ -1373,8 +1360,7 @@ impl ShardEngine {
             prefix,
             writer_epoch: db.manifest().writer_epoch(),
             db,
-            last_external_seq: std::sync::atomic::AtomicU64::new(0),
-            sweep_custody: std::sync::atomic::AtomicU64::new(0),
+            sweep_custody: crate::billing::SweepCustody::default(),
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,
@@ -1777,13 +1763,7 @@ impl ShardEngine {
 
     /// Observe the engine's one owned shutdown. Timeout/cancellation only
     /// stops this observer; workers and storage closure retain their owner.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::await_terminated; the termination wait is the lifecycle fixtures' join point and the service does not block on it; deleting it would strip the join those fixtures pin"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn await_terminated(
         &self,
         timeout: std::time::Duration,
@@ -1979,47 +1959,22 @@ impl ShardEngine {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
     }
 
+    /// One gather's boundary advances as a SINGLE committer message:
+    /// every covered stream lands in the same write batch by
+    /// construction (per-stream sends only coalesced opportunistically).
+    /// Entries are (hash, new upto, copied bytes).
     #[expect(
         clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed; a chunk advance the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
+        reason = "ShardEngine::submit_absorbed_batch_v2; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::submit_absorbed; the single-stream absorbed submit is the DST fixtures' way to stage maintenance state from a chunk start they name, and the service submits batches; deleting it would strip the submit those fixtures pin"
-        )
-    )]
-    pub(crate) async fn submit_absorbed(&self, hash: [u8; 16], from: u64, upto: u64, bytes: u64) {
+    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<AbsorbedAdvance>) {
+        if streams.is_empty() {
+            return;
+        }
         let _ = self
             .tx
-            .send(CommitOp::Absorbed {
-                hash,
-                from,
-                upto,
-                bytes,
-                v2: false,
-            })
+            .send(CommitOp::AbsorbedBatch { streams, v2: true })
             .await;
-    }
-
-    /// Submits one gather's `CommitOp::AbsorbedBatch`; returns its receipt.
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed_batch_v2; a batch the closed committer queue refuses drops its receipt unanswered, which the absorber reads as a refused group; a handled send would only restate that refusal"
-    )]
-    pub(crate) async fn submit_absorbed_batch_v2(
-        &self,
-        streams: Vec<([u8; 16], u64, u64, u64)>,
-    ) -> oneshot::Receiver<()> {
-        let (landed, receipt) = oneshot::channel();
-        let batch = CommitOp::AbsorbedBatch {
-            streams,
-            v2: true,
-            landed,
-        };
-        let _ = self.tx.send(batch).await;
-        receipt
     }
 
     /// The history partition ONLY IF already open — the metrics path
@@ -2225,13 +2180,7 @@ impl ShardEngine {
         clippy::let_underscore_must_use,
         reason = "ShardEngine::pump_trim_tick; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
     )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::pump_trim_tick; the manual trim tick is the DST recovery fixture's way to drive maintenance and the service ticks from its own timer; deleting it would strip the tick that fixture pins"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn pump_trim_tick(&self) {
         let _ = self.tx.try_send(CommitOp::TrimTick);
     }
@@ -2625,13 +2574,7 @@ impl ShardEngine {
             .map_err(|e| e.to_string())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ShardEngine::count_consumer_state_rows; the row count is the consumer fixtures' witness of what the committer retired and the service never scans for it; deleting it would strip the count those fixtures pin"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],

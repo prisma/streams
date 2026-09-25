@@ -1,0 +1,17 @@
+defaults: rc.4=BOOTED head=BOOTED
+fleet-server-1: rc.4=BOOTED head=BOOTED
+fleet-server-n: rc.4=BOOTED head=BOOTED
+fra-ab-server: rc.4=BOOTED head=BOOTED
+livefeed-canary: rc.4=BOOTED head=BOOTED
+mt-tenants-enforce: rc.4=BOOTED head=BOOTED
+mt-tenants-off: rc.4=BOOTED head=BOOTED
+platform-e2e: rc.4=BOOTED head=BOOTED
+region-server-scale: rc.4=BOOTED head=BOOTED
+region-server: rc.4=BOOTED head=BOOTED
+wc-ladder-diet: rc.4=BOOTED head=BOOTED
+wc-ladder: rc.4=BOOTED head=BOOTED
+k10-sweep-resident-0: rc.4=REFUSED head=REFUSED
+probe-region-server+rc4-era-ABSORB_PASS_BYTES: rc.4=BOOTED head=BOOTED
+PASS K10 boot refusal: defaults+SWEEP_MAINT_RESIDENT=0 -> rc.4 REFUSED exit 1 'Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; set >= 1 or unset (default 2)'; head REFUSED exit 1 'Error: configuration invalid (1 problem(s)): /   - SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; set >= 1 or unset (default 2)'
+PASS K11 agreement: every family's head boot verdict is BOOTED iff its head validate verdict is accepted
+PASS K12 positive: defaults BOOTED on rc.4 and head within 120 s (rc.4 0.77 s, head 0.77 s)

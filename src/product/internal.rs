@@ -4,7 +4,7 @@
 //! incarnation is gone; the sender may cut over) or this instance could not
 //! read its registry (nothing is known; the sender must try again). One 404
 //! for both let a registry blip read as "gone" — the sealed-span SSE sender
-//! made it `FatalSpanCutoff(IncarnationChanged)` and disconnected every
+//! made it a fatal `IncarnationChanged` cutoff and disconnected every
 //! subscriber of a feed whose stream still existed (review item 30).
 use axum::http::StatusCode;
 use axum::response::Response;

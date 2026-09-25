@@ -1,20 +1,7 @@
-//! The lineage's engine-free pieces: the linearization rule and the fatal
-//! cutoff that rides through anyhow.
+//! The lineage's engine-free pieces: the linearization rule and which
+//! remote span refusals end a feed here.
 use super::*;
-
-/// Round-11.2: a FATAL span error carried through anyhow — the feed
-/// downcasts it and turns the source's lifecycle into the typed
-/// cutoff instead of retrying forever.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FatalSpanCutoff(pub(crate) crate::sse::feed::SourceCutoff);
-
-impl std::fmt::Display for FatalSpanCutoff {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fatal span cutoff: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for FatalSpanCutoff {}
+use crate::application::read_remote::RemoteSpanError;
 
 /// The linearization rule (engine-free, so the mapping itself is
 /// unit-testable): a linearized one-past offset maps to the span
@@ -44,5 +31,34 @@ pub(super) fn locate_in_spans(
     WirePosition {
         seg_id,
         local_after: logical_after.saturating_sub(start),
+    }
+}
+
+/// A remote owner's refusal of one sealed-span page, as the verdict the
+/// feed owes it (round-11.2): fleet auth after the forced refresh, a gone
+/// or mismatched target and a second redirect are not fixed by reading
+/// the same bound again, so they are typed cutoffs; everything else is
+/// the owner's transient state, retried on the session's backoff.
+pub(super) fn remote_span_verdict(seg_id: u32, refusal: RemoteSpanError) -> SourceReadError {
+    match refusal {
+        RemoteSpanError::Unauthorized => SourceReadError::Fatal(SourceCutoff::FleetAuth),
+        RemoteSpanError::TargetGone => SourceReadError::Fatal(SourceCutoff::IncarnationChanged),
+        RemoteSpanError::TargetMismatch => SourceReadError::Fatal(SourceCutoff::TargetMismatch),
+        RemoteSpanError::RedirectLoop { first, second } => {
+            tracing::warn!(span = seg_id, %first, %second, "sealed span redirect loop refused");
+            SourceReadError::Fatal(SourceCutoff::RedirectLoop)
+        }
+        RemoteSpanError::Retryable { status, code } => SourceReadError::Retryable(anyhow::anyhow!(
+            "remote span {seg_id}: retryable {status} {code:?}"
+        )),
+        RemoteSpanError::Transport(m) => {
+            SourceReadError::Retryable(anyhow::anyhow!("remote span {seg_id}: transport {m}"))
+        }
+        RemoteSpanError::InvalidResponse(m) => SourceReadError::Retryable(anyhow::anyhow!(
+            "remote span {seg_id}: invalid response {m}"
+        )),
+        RemoteSpanError::WrongOwner { owner } => SourceReadError::Retryable(anyhow::anyhow!(
+            "remote span {seg_id}: unresolved owner {owner}"
+        )),
     }
 }

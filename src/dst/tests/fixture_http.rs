@@ -35,6 +35,9 @@ pub(super) struct HttpRigOptions {
     /// (static fleet token, workload token source); None = the default
     /// static-bridge rig posture.
     pub(super) fleet_auth: Option<(Option<String>, Option<crate::peer::FleetTokenSource>)>,
+    /// The scenario's own command line over the hermetic fixture: a flag
+    /// given on argv, which clap resolves ahead of its variable.
+    pub(super) cli: fn(&mut crate::config::CliArgs),
 }
 
 impl Default for HttpRigOptions {
@@ -52,6 +55,7 @@ impl Default for HttpRigOptions {
             absorber: None,
             auth_service: None,
             fleet_auth: None,
+            cli: |_| {},
         }
     }
 }
@@ -242,16 +246,11 @@ pub(super) async fn http_rig_with_auth_service(
 /// the anti-flap holdoff) instead of a rig-only shape with no close
 /// callback at all.
 #[expect(
-    clippy::too_many_arguments,
-    reason = "rig_opener; the rig opener takes the store, keys, shard config, park, absorber config and close notifier the rig assembles separately; a rig struct would restate the rig itself"
-)]
-#[expect(
     clippy::excessive_nesting,
     reason = "rig_opener; the opener nests the close callback inside the engine construction it must outlive; flattening it would separate the callback from the incarnation it reports"
 )]
 pub(super) fn rig_opener(
     store: Arc<dyn ObjectStore>,
-    keys: Arc<crate::history::KeyCache>,
     shard_cfg: crate::shard::ShardConfig,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
@@ -261,7 +260,6 @@ pub(super) fn rig_opener(
         move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
             let notifier = notifier.clone();
             let store = store.clone();
-            let keys = keys.clone();
             let shard_cfg = shard_cfg.clone();
             let open_park = open_park.clone();
             let absorber_cfg = absorber_cfg.clone();
@@ -306,9 +304,7 @@ pub(super) fn rig_opener(
                     __maint,
                 );
                 crate::history::Absorber::start_owned(
-                    store,
                     engine.clone(),
-                    keys,
                     absorber_cfg
                         .clone()
                         .unwrap_or(crate::history::AbsorberConfig {
@@ -330,6 +326,7 @@ pub(super) fn rig_opener(
 /// Resolve the fixture's hermetic CLI and admission inputs before any runtime
 /// owner is constructed, so its configured limits agree with the HTTP surface.
 fn fixture_config(
+    cli_edit: fn(&mut crate::config::CliArgs),
     max_request_body_bytes: Option<usize>,
     instance_name: Option<&str>,
     admission: Option<crate::config::AdmissionConfig>,
@@ -337,6 +334,7 @@ fn fixture_config(
     let mut rig_config = crate::config::ServerConfig::load(
         {
             let mut cli = crate::config::CliArgs::deterministic();
+            cli_edit(&mut cli);
             if let Some(limit) = max_request_body_bytes {
                 cli.max_request_body_bytes = limit;
             }
@@ -356,11 +354,11 @@ fn fixture_config(
 /// Build a rig from ONE process runtime and the focused options.
 #[expect(
     clippy::too_many_lines,
-    reason = "HTTP rig builder; every runtime owner is wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
+    reason = "HTTP rig builder; every runtime owner and the scenario's command-line edit are wired in one place so the fixture's dependency order stays visible to scenario authors; pass-through steps would hide which owner a scenario option changed"
 )]
 #[expect(
     clippy::let_underscore_must_use,
-    reason = "http_rig_build; the supervisor rejects a spawn only while it is stopping, when the rig is being torn down; a rejected rig task has nothing left to serve"
+    reason = "http_rig_build; the supervisor rejects a spawn only while it is stopping, when the rig is being torn down, whatever command line the scenario configured; a rejected rig task has nothing left to serve"
 )]
 pub(super) async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
@@ -380,6 +378,7 @@ pub(super) async fn http_rig_build(
         absorber: absorber_cfg,
         auth_service,
         fleet_auth,
+        cli,
     } = opts;
     let registry = crate::registry::Registry::new(
         store.clone(),
@@ -399,7 +398,6 @@ pub(super) async fn http_rig_build(
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let opener_store = store.clone();
-    let opener_keys = keys.clone();
     let opener_absorber = absorber_cfg.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
@@ -412,7 +410,12 @@ pub(super) async fn http_rig_build(
     // so a rig's config claimed to be "streams" whatever the test called
     // it — and any assembly reading the config disagreed with the
     // runtime it was assembling.
-    let rig_config = fixture_config(max_request_body_bytes, instance_name.as_deref(), admission);
+    let rig_config = fixture_config(
+        cli,
+        max_request_body_bytes,
+        instance_name.as_deref(),
+        admission,
+    );
     let mut rig_runtime = rig_runtime.with_config(&rig_config);
     let protocol_clock: Arc<dyn crate::runtime::Clock> =
         Arc::new(crate::runtime::SystemClock::default());
@@ -489,7 +492,6 @@ pub(super) async fn http_rig_build(
             |notifier| {
                 rig_opener(
                     opener_store,
-                    opener_keys,
                     opener_shard_cfg,
                     open_park,
                     opener_absorber,

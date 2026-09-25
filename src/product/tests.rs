@@ -333,3 +333,233 @@ fn a_routing_key_is_admitted_exactly_when_a_header_reads_it_back() {
     }
     assert_eq!(cases, 1_024);
 }
+
+/// Item 65: every request refusal keeps its status, body, retry hint,
+/// placement header and journal tag, whichever owner classifies it.
+#[tokio::test]
+async fn every_auth_refusal_keeps_its_response() {
+    use crate::auth::AuthError as E;
+    use crate::project_policy::{CredentialStatus, ProjectStatus};
+    const UNVERIFIED: (StatusCode, &str) = (
+        StatusCode::UNAUTHORIZED,
+        "the bearer token failed verification",
+    );
+    const STALE: (StatusCode, &str) = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "this cell's authorization data is stale; retry",
+    );
+    const WRONG_CELL: (StatusCode, &str) = (
+        StatusCode::MISDIRECTED_REQUEST,
+        "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
+    );
+    let denied = |message| (StatusCode::FORBIDDEN, message);
+    let rows = [
+        (E::TokenTooLarge, UNVERIFIED),
+        (E::Malformed("x"), UNVERIFIED),
+        (E::KidMissing, UNVERIFIED),
+        (E::KidUnknown, UNVERIFIED),
+        (E::AlgNotAllowed, UNVERIFIED),
+        (E::BadSignature, UNVERIFIED),
+        (E::WrongIssuer, UNVERIFIED),
+        (E::WrongAudience, UNVERIFIED),
+        (E::WrongCell, WRONG_CELL),
+        (E::Expired, UNVERIFIED),
+        (E::NotYetValid, UNVERIFIED),
+        (E::LifetimeTooLong, UNVERIFIED),
+        (E::ClaimInvalid("x"), UNVERIFIED),
+        (E::EmptyPrefixArray, UNVERIFIED),
+        (
+            E::ProjectNotActive(ProjectStatus::Suspended),
+            denied("the project is not active"),
+        ),
+        (E::OwnershipVersionMismatch, UNVERIFIED),
+        (E::WorkspaceMismatch, UNVERIFIED),
+        (E::CredentialUnknown, UNVERIFIED),
+        (
+            E::CredentialNotActive(CredentialStatus::Revoked),
+            denied("the credential is not active"),
+        ),
+        (E::CredentialExpired, UNVERIFIED),
+        (E::CredentialProjectMismatch, UNVERIFIED),
+        (E::GrantVersionMismatch, UNVERIFIED),
+        (E::PolicyStale, STALE),
+        (E::GrantsStale, STALE),
+        (E::KeysStale, STALE),
+        (
+            E::MissingScope(crate::tenant::Scope::RecordsRead),
+            denied("the credential does not grant the scope this operation requires"),
+        ),
+        (
+            E::PrefixDenied,
+            denied("the credential's stream grant does not cover this stream"),
+        ),
+    ];
+    for (error, (status, message)) in rows {
+        let kind = error.kind();
+        let response = auth_failure_response(&error);
+        assert_eq!(response.status(), status, "{kind}");
+        let journaled = response
+            .extensions()
+            .get::<crate::audit::DenialTag>()
+            .is_some();
+        let caller_denied = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
+        assert_eq!(
+            journaled, caller_denied,
+            "{kind}: only caller denials are journaled"
+        );
+        let placement = status == StatusCode::MISDIRECTED_REQUEST;
+        assert_eq!(
+            response.headers().contains_key("prisma-error-code"),
+            placement,
+            "{kind}"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], kind);
+        assert_eq!(body["error"]["message"], message, "{kind}");
+        let retryable = status == StatusCode::SERVICE_UNAVAILABLE;
+        assert_eq!(body["error"]["retryable"], retryable, "{kind}");
+    }
+}
+
+/// A transient append refusal keeps its wait on the product surface: the
+/// per-stream limiter's 429 carries `retry-after` in decimal seconds and
+/// `retryable: true` (pins `render_product_append_error`'s header value).
+#[tokio::test]
+async fn a_transient_append_refusal_keeps_its_retry_after() {
+    use crate::application::append::{AppendCode, AppendFailure, FailureClass};
+    let code = AppendCode::RateLimited("limit_bytes_per_sec");
+    let refused = AppendFailure::new(FailureClass::Capacity, code, "x").retry(7);
+    let response = render_product_append_error(refused);
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry = response.headers().get("retry-after");
+    assert_eq!(retry.and_then(|v| v.to_str().ok()), Some("7"));
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let error = &body["error"];
+    assert_eq!(
+        (error["code"].as_str(), error["retryable"].as_bool()),
+        (Some("rate_limited"), Some(true))
+    );
+}
+
+/// The core's permanent capacity refusal renders as the ONE product 413:
+/// `payload_too_large` with its limit in `details`, not retryable, no
+/// `retry-after` (external review §5). This is the backstop arm a producer
+/// request reaches, and the only renderer of the seal's final record.
+#[tokio::test]
+async fn a_core_capacity_refusal_renders_the_stable_413() {
+    use crate::application::append::AppendFailure;
+    let refusal = crate::usage::CapacityRefusal::new("records", 100.0, 101);
+    let response = render_product_append_error(AppendFailure::from_capacity(refusal));
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.headers().get("retry-after"), None);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let (error, d) = (&body["error"], &body["error"]["details"]);
+    assert_eq!(
+        (
+            error["code"].as_str(),
+            error["retryable"].as_bool(),
+            d["capacity"].as_u64(),
+            d["requested"].as_u64()
+        ),
+        (Some("payload_too_large"), Some(false), Some(100), Some(101)),
+        "{body}"
+    );
+}
+
+/// Generated JSON values: every scalar kind, strings that need escaping and
+/// nested arrays and objects.
+fn json_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+    use proptest::strategy::{Just, Strategy, Union};
+    let leaf = Union::new([
+        Just(serde_json::Value::Null).boxed(),
+        proptest::arbitrary::any::<bool>()
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+        proptest::arbitrary::any::<i64>()
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+        (-1.0e9f64..1.0e9).prop_map(serde_json::Value::from).boxed(),
+        "[a-z\"\\\\\u{e9} ]{0,12}"
+            .prop_map(serde_json::Value::from)
+            .boxed(),
+    ]);
+    leaf.prop_recursive(3, 24, 4, |inner| {
+        let array = proptest::collection::vec(inner.clone(), 0..4);
+        let object = proptest::collection::btree_map("[a-z]{1,3}", inner, 0..4);
+        Union::new([
+            array.prop_map(serde_json::Value::Array).boxed(),
+            object
+                .prop_map(|m| serde_json::Value::Object(m.into_iter().collect()))
+                .boxed(),
+        ])
+    })
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 1024, ..proptest::prelude::ProptestConfig::default() })]
+    /// External review §5: the product handler's capacity verdict, decided
+    /// before the project's volume debit, is exactly the append core's,
+    /// because it measures what the core measures: the records the core's own
+    /// parser finds in the wire body the handler hands on (a single value
+    /// travels as `[value]`), counted and measured as they are stored. Single
+    /// values, batches and opaque
+    /// bytes, compact or pretty, against buckets a few units either side of
+    /// the request.
+    #[test]
+    fn the_product_capacity_verdict_is_the_cores(
+        kind in 0u8..3,
+        value in json_value(),
+        values in proptest::collection::vec(json_value(), 1..6),
+        raw in proptest::collection::vec(proptest::arbitrary::any::<u8>(), 1..48),
+        pretty in proptest::arbitrary::any::<bool>(),
+        bytes_slack in 0u64..8,
+        recs_slack in 0u64..4,
+    ) {
+        let render = |v: &serde_json::Value| {
+            if pretty { serde_json::to_vec_pretty(v) } else { serde_json::to_vec(v) }.unwrap()
+        };
+        let mut desc = desc_with("cap", &"11".repeat(16));
+        let (body, batch, records) = match kind {
+            0 => (render(&value), false, 1),
+            1 => (render(&serde_json::Value::Array(values.clone())), true, values.len()),
+            _ => {
+                let mut bytes = desc.to_persisted();
+                bytes.content_type = "application/octet-stream".to_string();
+                desc = bytes.try_into().unwrap();
+                (raw, false, 1)
+            }
+        };
+        // Bucket capacities straddle the request: the stored bytes and the
+        // record count decide the verdict at the boundary.
+        let limits = crate::config::AdmissionConfig {
+            limit_bytes_per_sec: (body.len() as u64 + bytes_slack).saturating_sub(4).max(1) as f64,
+            limit_recs_per_sec: (records as u64 + recs_slack).saturating_sub(2).max(1) as f64,
+            limit_burst_secs: 1.0,
+            ..Default::default()
+        };
+        let usage = crate::usage::UsageService::new(&limits, Arc::new(crate::runtime::ManualClock::at(0)));
+        let Ok(parsed) = parse_append_body(&usage, &desc, &Bytes::from(body), batch) else {
+            panic!("a generated body is well formed");
+        };
+        // content.rs::parse_content: the core counts the entries it stores
+        // from the wire body and measures their stored bytes.
+        let entries = if desc.is_json() {
+            crate::application::creation::json_entries(&parsed.wire, false).unwrap()
+        } else {
+            vec![parsed.wire.clone()]
+        };
+        proptest::prop_assert_eq!(parsed.count, entries.len());
+        let stored = entries.iter().map(|entry| entry.len() as u64).sum();
+        let core = usage.permanently_unadmittable(stored, entries.len() as u64);
+        proptest::prop_assert_eq!(parsed.over_capacity, core);
+    }
+}

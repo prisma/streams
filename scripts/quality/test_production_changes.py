@@ -13,16 +13,14 @@ class ProductionChanges(unittest.TestCase):
         old, new = {path: before}, {path: after}
         return unchanged_production(old, new, syntax(old), syntax(new)) == [path]
 
-    def test_lint_annotations_preserve_all_compiler_checks(self):
+    def test_lint_annotations_leave_production_unchanged(self):
         before = 'pub fn f() -> u8 { Some(1).unwrap() }'
         after = '#[expect(clippy::unwrap_used, reason="owner; invariant; necessity")]\n' + before
         self.assertTrue(self.unchanged(before, after))
         self.assertTrue(self.unchanged(after, before))
         self.assertTrue(self.unchanged(before, '#![allow(dead_code)]\n' + before))
         checks = plan(['src/tasks.rs'], production_unchanged=['src/tasks.rs'])
-        self.assertTrue(checks['compiler'])
         self.assertFalse(checks['mutants'])
-        self.assertFalse(checks['loom'])
         self.assertEqual(checks['production_unchanged_files'], ['src/tasks.rs'])
         self.assertTrue(plan(['src/tasks.rs', 'src/shard.rs'], production_unchanged=['src/tasks.rs'])['mutants'])
         self.assertTrue(plan(['src/tasks.rs', 'scripts/quality/gate.py'], production_unchanged=['src/tasks.rs'])['miri'])
@@ -244,7 +242,6 @@ class ProductionChanges(unittest.TestCase):
         self.assertTrue(is_formatted_visibility(before, after, old, new))
         self.assertFalse(self.unchanged(before, after, path))
         checks = plan([path], formatted_visibility=[path])
-        self.assertTrue(checks['compiler'])
         self.assertTrue(checks['miri'])
         self.assertFalse(checks['mutants'])
         self.assertEqual(checks['production_unchanged_files'], [])

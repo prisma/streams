@@ -60,12 +60,11 @@ impl LiveFeedService {
     ) -> Result<super::registry::FeedSubscription, super::registry::CapacityRejected> {
         let ring = self.ring_bytes();
         let budget = self.inner.budget.clone();
-        let k2 = key.clone();
         let s2 = src.clone();
         self.inner.registry.subscribe(
             key,
             move || {
-                let feed = super::feed::LiveFeed::new_with_budget(k2, s2, ring, budget, project);
+                let feed = super::feed::LiveFeed::new_with_budget(s2, ring, budget, project);
                 bind(&feed);
                 feed
             },

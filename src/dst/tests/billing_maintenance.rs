@@ -2,7 +2,7 @@
 
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
-use super::fixture_storage::{mem, open_engine, skey};
+use super::fixture_storage::{absorb_through, mem, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
 use std::sync::Arc;
 
@@ -266,17 +266,13 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
 
     // Arm the absorbed-group failpoint, then start the absorber. Its
     // first boundary-advancing group must fail; the backlog must remain.
-    // The refused group replays on the next tick, so the tick is long
-    // enough for the check below to run before that retry.
     engine.fail_next_absorbed_group();
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_secs(1),
+            tick: std::time::Duration::from_millis(20),
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -345,11 +341,14 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     db2.close().await.unwrap();
 }
 
-/// TLA-016-F1 (under-retirement): the first advancing group is refused.
-/// The next gather replays the refused chunk once the refusal is settled,
-/// or, if it planned first, starts from the lane mark that chunk raised; that
-/// advance must not move the boundary over the refused chunk while retiring
-/// only its own bytes. Once the boundary reaches the end, the tail gauge and
+/// TLA-016-F1 (under-retirement): the first advancing group is refused. A
+/// gather planned before that refusal settled starts from the lane mark the
+/// refused chunk raised, and its advance, which no longer starts at the
+/// boundary, is dropped as detached instead of moving the boundary over the
+/// refused chunk. Once no advance of the stream can still land, its next
+/// plan (a later tick's, or the dirty-index rescan's once the stream is no
+/// longer pending) rolls the stranded mark back and regathers from the
+/// durable boundary. Once the boundary reaches the end, the tail gauge and
 /// the durable shard row must both be zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_absorbed_chunk_leaves_no_phantom_backlog() {
@@ -384,9 +383,7 @@ async fn refused_absorbed_chunk_leaves_no_phantom_backlog() {
     // record its own chunk.
     engine.fail_next_absorbed_group();
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -491,7 +488,7 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine.submit_absorbed(hash, 0, tail0.next, backlog0).await;
+    absorb_through(&engine, hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -595,7 +592,7 @@ async fn balanced_append_absorb_group_still_writes_progress() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine.submit_absorbed(hash, 0, tail0.next, backlog0).await;
+    absorb_through(&engine, hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -678,9 +675,7 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine
-        .submit_absorbed(hash, 0, tail0.next, backlog0 + 999)
-        .await;
+    absorb_through(&engine, hash, tail0.next, backlog0 + 999).await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -713,9 +708,7 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
         "engine wedged: {out:?}"
     );
     let tail2 = engine.tail_fields(&hash).await.unwrap().unwrap();
-    engine
-        .submit_absorbed(hash, 0, tail2.next, tail2.unabsorbed_bytes)
-        .await;
+    absorb_through(&engine, hash, tail2.next, tail2.unabsorbed_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -817,9 +810,7 @@ async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
         None,
         maint,
     );
-    engine2
-        .submit_absorbed(hash, repaired.absorbed, repaired.next, exact_bytes)
-        .await;
+    absorb_through(&engine2, hash, repaired.next, exact_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

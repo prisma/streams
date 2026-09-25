@@ -86,8 +86,9 @@ fn load_with_empty_environment_equals_knob_defaults() {
     let a = load_with(&[]);
     let b = ServerConfig::load(test_cli(), &MapEnvironment::empty());
     assert_eq!(a, b);
-    // And a different CLI changes only the CLI segment — knob defaults
-    // are environment-independent.
+    // And a different CLI changes only the CLI segment and the engine
+    // knob clap owns (the compactor poll interval) — knob defaults are
+    // environment-independent.
     let c = CliArgs::try_parse_from([
         "streams-slate",
         "--s3-endpoint",
@@ -99,7 +100,102 @@ fn load_with_empty_environment_equals_knob_defaults() {
     let c = ServerConfig::load(c, &MapEnvironment::empty());
     assert_eq!(a.storage, c.storage);
     assert_eq!(a.billing, c.billing);
+    assert_eq!(a.engine, c.engine);
     assert_eq!(c.cli.flush_interval_ms, 99);
+}
+
+/// Item 32: `--compactor-poll-ms` is clap-owned. A value given only on
+/// argv must reach the options every DB family opens with; the overlay
+/// used to re-read the environment and drop it.
+#[test]
+fn compactor_poll_given_on_argv_reaches_the_compactor_options() {
+    let mut cli = test_cli();
+    cli.compactor_poll_ms = 500;
+    let options = ServerConfig::load(cli, &MapEnvironment::empty())
+        .engine
+        .compactor_options();
+    assert_eq!(
+        options.poll_interval,
+        std::time::Duration::from_millis(500),
+        "--compactor-poll-ms on argv must reach the compactor"
+    );
+}
+
+/// Subject of `clap_owned_names_keep_their_environment_channel`: inert
+/// unless the parent set the marker and the five values under test.
+#[test]
+fn clap_owned_environment_helper() {
+    if ProcessEnvironment
+        .get("STREAMS_CLAP_OWNED_ENV_CHECK")
+        .is_none()
+    {
+        return;
+    }
+    let cli =
+        CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap();
+    assert_eq!(
+        (
+            cli.billing_mode.as_str(),
+            cli.rollup.as_str(),
+            cli.path_prefix.as_deref()
+        ),
+        ("required", "1", Some("pp"))
+    );
+    let options = ServerConfig::load(cli, &ProcessEnvironment)
+        .engine
+        .compactor_options();
+    assert_eq!(
+        (options.poll_interval, options.max_concurrent_compactions),
+        (std::time::Duration::from_millis(700), 2)
+    );
+}
+
+/// Item 32 pin: an environment-only deployment keeps every value of the
+/// five names clap and the overlay both read (BILLING_MODE, ROLLUP,
+/// PATH_PREFIX, COMPACTOR_POLL_MS, COMPACTOR_MAX_CONCURRENT): clap reads
+/// the process environment whenever argv is silent.
+#[test]
+fn clap_owned_names_keep_their_environment_channel() {
+    let out = run_helper_test(
+        "config::tests::clap_owned_environment_helper",
+        &[
+            ("STREAMS_CLAP_OWNED_ENV_CHECK", "1"),
+            ("BILLING_MODE", "required"),
+            ("ROLLUP", "1"),
+            ("PATH_PREFIX", "pp"),
+            ("COMPACTOR_POLL_MS", "700"),
+            ("COMPACTOR_MAX_CONCURRENT", "2"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "clap-owned environment parse failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "clap-owned environment helper did not run"
+    );
+}
+
+/// Item 32: the one reading of each selector keeps today's exact words;
+/// refusing the others instead of reading them as off is decision D-32a.
+#[test]
+fn billing_selectors_keep_their_exact_words() {
+    let mut cli = test_cli();
+    assert!(!cli.billing_required() && !cli.runs_rollup());
+    for (mode, rollup) in [("Required", "true"), ("required ", "yes"), ("", "")] {
+        cli.billing_mode = mode.into();
+        cli.rollup = rollup.into();
+        assert!(
+            !cli.billing_required() && !cli.runs_rollup(),
+            "{mode:?} / {rollup:?}"
+        );
+    }
+    cli.billing_mode = "required".into();
+    cli.rollup = "1".into();
+    assert!(cli.billing_required() && cli.runs_rollup());
 }
 
 #[test]
@@ -108,6 +204,7 @@ fn default_values_are_pinned() {
     // the pre-WP-01 default, moved not changed; a PR that edits one
     // must justify a configuration behavior change.
     let c = load_with(&[]);
+    assert_eq!(c.runtime.tokio_workers, None);
     assert_eq!(c.storage.pool_idle_secs, 4);
     assert_eq!(c.storage.store_max_concurrent, 0);
     assert_eq!(c.storage.bulk_inflight_max_bytes, 0);
@@ -123,8 +220,8 @@ fn default_values_are_pinned() {
     assert_eq!(c.shard.open_wait_ms, 10_000);
     assert_eq!(c.shard.unready_exit_after_secs, 300);
     assert!(!c.history.absorb_pause_initial);
-    assert_eq!(c.history.absorb_global_budget_bytes, 4 * 1024 * 1024 * 1024); // cfg(test)
-    assert_eq!(c.history.absorb_global_gathers, 64); // cfg(test)
+    assert_eq!(c.history.absorb_global_budget_bytes, 64 * 1024 * 1024);
+    assert_eq!(c.history.absorb_global_gathers, 2);
     assert_eq!(c.history.cache_bytes, 32 * 1024 * 1024);
     assert!(!c.history.compactor_off);
     assert_eq!(
@@ -145,9 +242,9 @@ fn default_values_are_pinned() {
         c.http.h1_header_timeout,
         std::time::Duration::from_secs(120)
     );
-    assert_eq!(c.billing.mode_env, None);
+    assert!(!c.cli.billing_required());
     assert!(c.billing.meter_enabled);
-    assert_eq!(c.billing.rollup_env, None);
+    assert!(!c.cli.runs_rollup());
     assert_eq!(c.billing.path_prefix_env, None);
     assert_eq!(c.billing.outbox_sweep_secs, 300);
     assert_eq!(c.billing.telemetry_drain_secs, 2);
@@ -185,6 +282,28 @@ fn default_values_are_pinned() {
     assert_eq!(c.runtime.memprofile_cert, None);
     assert_eq!(c.runtime.cert_sealed_publish_delay_ms_raw, None);
     assert_eq!(c.runtime.certification_mode, None);
+}
+
+/// The shipped absorber posture, built the way bootstrap builds it
+/// (`RuntimeCaps::production(..).with_config`). The 64 MiB default is
+/// below one worst-frame build, so the budget floors to exactly that
+/// build, (32 MiB + 64 KiB) x3, the value deploy/profiles/compute-1g.env
+/// pins, and admits one worst-case gather at a time.
+#[test]
+fn shipped_absorber_budget_floors_to_one_worst_frame_gather() {
+    let c = load_with(&[]);
+    let caps = crate::runtime::RuntimeCaps::production("absorber-defaults").with_config(&c);
+    let history = &caps.history;
+    assert_eq!(
+        history.budget.capacity(),
+        100_859_904,
+        "the 64 MiB default must floor to one worst-frame build"
+    );
+    assert_eq!(history.worst_frame_transient, 100_859_904);
+    assert_eq!(history.budget.gather_slots(), 2);
+    assert_eq!(history.packing_bytes, 32 * 1024 * 1024);
+    assert_eq!(history.per_gather_reservation_bytes(), 100_859_904);
+    assert_eq!(history.effective_gather_concurrency(), 1);
 }
 
 #[test]

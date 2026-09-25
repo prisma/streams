@@ -121,7 +121,7 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
 
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr2?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
@@ -350,7 +350,7 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected = crate::product_cursor::KeyCursor {
         epoch,
@@ -470,7 +470,7 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected = crate::product_cursor::KeyCursor {
         epoch,
@@ -635,7 +635,7 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let child_seg = desc.resolve_segment("").seg_id;
     let expected_terminal = crate::product_cursor::KeyCursor {
         epoch,
@@ -689,7 +689,7 @@ async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
     crate::failpoints::arm(crate::failpoints::Fp::SseBeforeLeaseGate, "lfr3");
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr3?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
@@ -787,7 +787,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     }
 
     // The child engine must carry the external adoption stamp from the
-    // LiveFeed build (last_external_seq > 0), and sweeps must neither
+    // LiveFeed build (an external stamp), and sweeps must neither
     // close it nor install custody.
     let child_route = desc
         .segment_route_by_id(desc.resolve_segment("").seg_id)
@@ -798,10 +798,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         .open(&prefix)
         .expect("the child engine is resident after the swap");
     assert!(
-        engine
-            .last_external_seq
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0,
+        engine.sweep_custody.externally_resolved(),
         "the LiveFeed build itself must stamp external adoption — no customer request touched the child"
     );
     for _ in 0..6 {
@@ -812,9 +809,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         "an engine serving a customer LiveFeed must never be sweep-closed"
     );
     assert_eq!(
-        engine
-            .sweep_custody
-            .load(std::sync::atomic::Ordering::Relaxed),
+        engine.sweep_custody.value(),
         0,
         "custody must never be installed over a customer LiveFeed engine"
     );
@@ -845,7 +840,7 @@ async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
     crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeSubscribe, "lfr5");
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     raw.write_all(
         format!(
             "GET /v1/stream/lfr5?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
@@ -913,7 +908,7 @@ async fn livefeed_refresh_installs_after_external_completion() {
 
     // Refresh with the stale descriptor + old span signature: the
     // re-read must install the longer compatible lineage.
-    let epoch = old_desc.epoch_bytes().unwrap();
+    let epoch = old_desc.epoch();
     let outcome = crate::sse::source::refresh_transition(
         &state.read_service(),
         &old_desc,

@@ -1,0 +1,112 @@
+# MT-TENANTS campaign, stages >= 1: the server redeployed to ENFORCE with
+# the 1000-project feeds. The project already holds stage 0's server env
+# (STREAMS_AUTH_MODE=off, overridden here) and the stage-0 generator's env
+# (RUNBOOK §7.3 project merge).
+source bench/soak/mt-tenants.sh "--env STREAMS_AUTH_MODE=enforce"
+note SOAK_RUN_ID / BIN_TAG / SOAK_PREFIX are mtten-<UTC timestamp>; a fixed stand-in is used.
+note STREAMS_AUTH_*_FILE paths are materialized by the supervisor from FEEDS_S3_KEY before the binary starts; Leg C boots without them.
+argv --listen 0.0.0.0:8080
+platform PORT=8080
+omit BENCH_MT stage >= 1 generator env, deployed after this server version
+omit BENCH_PROJECTS_ACTIVE stage >= 1 generator env, deployed after this server version
+omit TOKENS_S3_KEY stage >= 1 generator env, deployed after this server version
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-mtten-20260924T000000Z-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+env PATH_PREFIX=mtten-20260924T000000Z
+env INSTANCE_NAME=streams-1
+env INITIAL_SHARDS=4
+env WAL_GROUP_COMMIT=1
+env WAL_FLUSH_GAP_MS=10
+env FLUSH_INTERVAL_MS=25
+env WAL_POST_ACK_GATHER_MS=6
+env FRAME_COMPRESS=1
+env ADMIT_MAX_INFLIGHT=512
+env ADMIT_MAX_INFLIGHT_PER_STREAM=256
+env LIMIT_RECS_PER_SEC=100000
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=60
+env TRIM_PER_OP=65536
+env POOL_IDLE_SECS=4
+supervisor KEEP_AWAKE=1
+env CELL_ID=mt-cell-1
+env PROJECT_ID=proj-mt-deploy
+env STREAMS_AUTH_MODE=off
+include deploy/profiles/compute-1g.env
+
+role gen
+env AWSBENCH_S3_KEY=bin/awsbench-mtten-20260924T000000Z-x64
+env S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+env S3_BUCKET=placeholder-artifact-bucket
+env S3_REGION=auto
+env S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+env S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env BENCH_SYSTEM=prisma
+env BENCH_SHAPE=wide
+env BENCH_TARGET=https://placeholder-soak-server.invalid
+env BENCH_WIDE_STREAMS=1000
+env BENCH_WIDE_ACTIVE=1000
+env BENCH_WIDE_SECS=300
+env BENCH_WIDE_APPEND_INTERVAL_MS=167
+env BENCH_WIDE_SCAN_RPS=0
+env BENCH_WIDE_SETUP_CONC=64
+env BENCH_RECORD_BYTES=1024
+env BENCH_BATCH=1
+env BENCH_HOLD=1
+env BENCH_START_GATED=false
+env AUTH_TOKEN=placeholder-auth-token
+env STREAM_KEY=placeholder-stream-key
+env BENCH_STREAM=mt0x-
+supervisor KEEP_AWAKE=1
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-mtten-20260924T000000Z-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+env PATH_PREFIX=mtten-20260924T000000Z
+env INSTANCE_NAME=streams-1
+env INITIAL_SHARDS=4
+env WAL_GROUP_COMMIT=1
+env WAL_FLUSH_GAP_MS=10
+env FLUSH_INTERVAL_MS=25
+env WAL_POST_ACK_GATHER_MS=6
+env FRAME_COMPRESS=1
+env ADMIT_MAX_INFLIGHT=512
+env ADMIT_MAX_INFLIGHT_PER_STREAM=256
+env LIMIT_RECS_PER_SEC=100000
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=60
+env TRIM_PER_OP=65536
+env POOL_IDLE_SECS=4
+supervisor KEEP_AWAKE=1
+env CELL_ID=mt-cell-1
+env PROJECT_ID=proj-mt-deploy
+env STREAMS_AUTH_MODE=enforce
+env STREAMS_AUTH_ISSUER=https://auth.prisma.io
+env STREAMS_AUTH_KEYS_FILE=/tmp/feeds/keys.json
+env STREAMS_AUTH_POLICY_FILE=/tmp/feeds/policies.json
+env STREAMS_AUTH_GRANTS_FILE=/tmp/feeds/grants.json
+env STREAMS_AUTH_REFRESH_SECS=60
+supervisor FEEDS_S3_KEY=mt/mtten-20260924T000000Z/feeds.json
+include deploy/profiles/compute-1g.env
+supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

@@ -39,20 +39,28 @@ use crate::tenant::ProjectId;
 /// rotation with typed TrackerCapacity (2026-08-19 churn rung; the
 /// cert_rotation test below pins the shape). 16,384 holds the 10k
 /// population outright with headroom, at ~8 MiB worst-case tracker
-/// memory (~500 B/entry). Still a deliberate HARD ceiling: refusing
-/// to track (never merging strangers into shared buckets) remains
-/// the fail-closed choice; the churn test pins evict-idle-first,
+/// memory (~500 B/entry). Item 50 (owner decision, option (a)): an entry
+/// any holder still has is never evicted, and a resident stream's
+/// binding holds its project's entry for at least ~905 s after a small
+/// last append, so the cap is 32,768 (~16 MiB): the certified 20/s
+/// first-seen pacing holds 18,100 entries, and sustained first-seen
+/// churn of appending projects saturates near 32,768/905 = 36/s (an
+/// estimate, not a benchmark). Still a deliberate HARD ceiling: refusing
+/// to track (never merging strangers into shared buckets) remains the
+/// fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation.
-pub(crate) const MAX_TRACKED_PROJECTS: usize = 16_384;
+pub(crate) const MAX_TRACKED_PROJECTS: usize = 32_768;
 
-/// A tracked project with no admission attempts for this long (and no
-/// inflight work) may be evicted under tracker pressure. Its buckets
-/// restart full — an idle project lost no accumulated debt worth
-/// keeping at this horizon.
+/// A tracked project with no admission attempts for this long, and
+/// nothing in use (`ProjectAdmission::in_use`), may be evicted under
+/// tracker pressure. Its buckets restart full — an idle project lost no
+/// accumulated debt worth keeping at this horizon.
 pub(crate) const IDLE_EVICT_MS: i64 = 300_000;
 
 mod bucket;
 use bucket::Bucket;
+mod pin;
+use pin::AdmissionCounters;
 
 pub(crate) struct ProjectAdmission {
     ops: Arc<crate::ops::OpsService>,
@@ -66,7 +74,8 @@ pub(crate) struct ProjectAdmission {
     /// only after serving), so this bucket runs negative and reads are
     /// refused while it is in debt.
     read_bytes: Mutex<Bucket>,
-    inflight: AtomicU64,
+    /// Admissions in progress and admitted requests in flight.
+    counters: AdmissionCounters,
     live_subs: AtomicU64,
     /// SR2-4 max_streams accounting. Seeded LAZILY from the durable
     /// catalog on the first limited create after boot (the count is
@@ -155,6 +164,24 @@ impl ProjectAdmission {
             || self.queued_bytes.load(Ordering::Relaxed) > 0
             || self.unabsorbed_frame_bytes.load(Ordering::Relaxed) > 0
             || self.dirty_streams.load(Ordering::Relaxed) > 0
+    }
+
+    /// Under the tracker lock: an entry in use is never evicted. An
+    /// admission in progress or a request in flight, a live subscription
+    /// and outstanding memory pressure all hold the Arc an eviction would
+    /// orphan (Round-13: feed/body/frame attribution); an idle one has
+    /// admitted nothing for `IDLE_EVICT_MS`. Item 50: so does ANY other
+    /// holder, whatever its counters read: a resident stream's pressure
+    /// binding binds once and never rebinds, so evicting its entry at zero
+    /// debt would send that stream's later frame debt to an orphan the
+    /// project's live entry never reads. Every clone is minted under this
+    /// lock or from a counted holder, so a count read here is final.
+    fn in_use(self: &Arc<Self>, now_ms: i64) -> bool {
+        Arc::strong_count(self) > 1
+            || self.counters.active()
+            || self.live_subs.load(Ordering::Relaxed) > 0
+            || self.has_pressure()
+            || now_ms - self.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS
     }
 
     /// Evaluate the memory latch for a WRITE from this project.
@@ -474,12 +501,12 @@ pub(crate) enum QuotaRefusal {
 /// long-lived cost is the live-subscription dimension, not this
 /// counter.)
 pub(crate) struct QuotaGuard {
-    admission: Arc<ProjectAdmission>,
+    admission: pin::AdmissionPin,
 }
 
 impl Drop for QuotaGuard {
     fn drop(&mut self) {
-        self.admission.inflight.fetch_sub(1, Ordering::Relaxed);
+        self.admission.counters.discharge();
     }
 }
 
@@ -510,6 +537,30 @@ impl QuotaRegistry {
         }
     }
 
+    /// A first-seen project's entry, its buckets full at `now_ms`.
+    fn new_admission(&self, quotas: &ProjectQuotas, now_ms: i64) -> Arc<ProjectAdmission> {
+        Arc::new(ProjectAdmission {
+            ops: self.ops.clone(),
+            last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
+            bucket: Mutex::new(Bucket::full(quotas.requests_per_sec, now_ms)),
+            append_bytes: Mutex::new(Bucket::full(quotas.append_bytes_per_sec, now_ms)),
+            append_records: Mutex::new(Bucket::full(quotas.append_records_per_sec, now_ms)),
+            read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
+            counters: AdmissionCounters::default(),
+            live_subs: AtomicU64::new(0),
+            streams: Mutex::new(StreamCount::default()),
+            queued_bytes: AtomicU64::new(0),
+            live_feeds: AtomicU64::new(0),
+            retained_sse_bytes: AtomicU64::new(0),
+            buffered_body_bytes: AtomicU64::new(0),
+            unabsorbed_frame_bytes: AtomicU64::new(0),
+            dirty_streams: AtomicU64::new(0),
+            memory_latch: std::sync::atomic::AtomicU8::new(0),
+            memory_shed_count: AtomicU64::new(0),
+            memory_engage_count: AtomicU64::new(0),
+        })
+    }
+
     /// Acquire admission for one request of `project` under `quotas`
     /// (from the CURRENT policy snapshot — never token claims, §17.2).
     /// Quota value 0 = not configured at this level (cell safety
@@ -531,24 +582,13 @@ impl QuotaRegistry {
         let admission = {
             let mut m = self.projects.lock().unwrap();
             match m.get(project) {
-                Some(a) => a.clone(),
+                Some(a) => a.pin(),
                 None => {
                     if m.len() >= MAX_TRACKED_PROJECTS {
                         // Review item 5: EVICT idle entries before
                         // refusing — a tracker that filled once must
                         // not refuse project 1,025 until restart.
-                        // Never evict a project with inflight requests
-                        // or live subscriptions; their guards point at
-                        // the Arc we would orphan.
-                        m.retain(|_, a| {
-                            a.inflight.load(Ordering::Relaxed) > 0
-                                || a.live_subs.load(Ordering::Relaxed) > 0
-                                // Round-13: outstanding memory pressure
-                                // pins the entry — eviction would
-                                // orphan feed/body/frame attribution.
-                                || a.has_pressure()
-                                || now_ms - a.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS
-                        });
+                        m.retain(|_, a| a.in_use(now_ms));
                         if m.len() >= MAX_TRACKED_PROJECTS {
                             // Refuse to TRACK, never to merge: an
                             // untracked project sharing a bucket with
@@ -556,31 +596,9 @@ impl QuotaRegistry {
                             return Err(QuotaRefusal::TrackerCapacity);
                         }
                     }
-                    let a = Arc::new(ProjectAdmission {
-                        ops: self.ops.clone(),
-                        last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
-                        bucket: Mutex::new(Bucket::full(quotas.requests_per_sec, now_ms)),
-                        append_bytes: Mutex::new(Bucket::full(quotas.append_bytes_per_sec, now_ms)),
-                        append_records: Mutex::new(Bucket::full(
-                            quotas.append_records_per_sec,
-                            now_ms,
-                        )),
-                        read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
-                        inflight: AtomicU64::new(0),
-                        live_subs: AtomicU64::new(0),
-                        streams: Mutex::new(StreamCount::default()),
-                        queued_bytes: AtomicU64::new(0),
-                        live_feeds: AtomicU64::new(0),
-                        retained_sse_bytes: AtomicU64::new(0),
-                        buffered_body_bytes: AtomicU64::new(0),
-                        unabsorbed_frame_bytes: AtomicU64::new(0),
-                        dirty_streams: AtomicU64::new(0),
-                        memory_latch: std::sync::atomic::AtomicU8::new(0),
-                        memory_shed_count: AtomicU64::new(0),
-                        memory_engage_count: AtomicU64::new(0),
-                    });
+                    let a = self.new_admission(quotas, now_ms);
                     m.insert(project.clone(), a.clone());
-                    a
+                    a.pin()
                 }
             }
         };
@@ -606,13 +624,13 @@ impl QuotaRegistry {
             // Optimistic acquire; back out on overshoot. Relaxed is
             // fine: this is a backstop counter, not a synchronization
             // edge.
-            let prev = admission.inflight.fetch_add(1, Ordering::Relaxed);
+            let prev = admission.counters.charge();
             if prev >= quotas.max_inflight_requests {
-                admission.inflight.fetch_sub(1, Ordering::Relaxed);
+                admission.counters.discharge();
                 return Err(QuotaRefusal::Concurrency);
             }
         } else {
-            admission.inflight.fetch_add(1, Ordering::Relaxed);
+            admission.counters.charge();
         }
         Ok(QuotaGuard { admission })
     }
@@ -957,7 +975,7 @@ impl QuotaRegistry {
     )]
     pub(crate) fn stats(&self) -> (usize, u64) {
         let m = self.projects.lock().unwrap();
-        let inflight = m.values().map(|a| a.inflight.load(Ordering::Relaxed)).sum();
+        let inflight = m.values().map(|a| a.counters.inflight()).sum();
         (m.len(), inflight)
     }
 }

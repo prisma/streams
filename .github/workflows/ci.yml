@@ -30,19 +30,27 @@ jobs:
   architecture-report:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # On a push the source ratchet's base is the event's previous revision:
+    # origin/<branch> is the pushed commit itself, so without it the ratchet
+    # compared HEAD with HEAD (scripts/quality/common.py now refuses that).
+    env:
+      QUALITY_EVENT_NAME: ${{ github.event_name }}
+      QUALITY_BEFORE_SHA: ${{ github.event.before }}
+      QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           # Mechanism provenance compares immutable ancestor source, not only HEAD.
           fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
       - uses: ./.github/actions/rust-toolchain
       - name: Build pinned Rust syntax scanner
         run: cargo build --locked -p streams-quality-syntax
       - name: Scanner self-test
         run: python3 scripts/architecture-report.py --self-test
       - name: Architecture budgets and owner boundaries (hard gate)
-        env:
-          QUALITY_BASE_REF: origin/${{ github.base_ref || github.ref_name }}
         run: |
           python3 scripts/architecture-gate.py --self-test
           python3 scripts/architecture-gate.py --check
@@ -95,7 +103,14 @@ jobs:
           # the summary greps below cannot see an absent line (round-9
           # review certification hardening).
           set -o pipefail
+          # F-G: a lib test binary still alive after 15 minutes is hung
+          # (the whole suite takes ~3); dump every thread's stack and
+          # kill it so the step fails with the stuck frames, not at the
+          # job deadline. The hash keeps pgrep off the watcher itself.
+          scripts/quality/hang_dump.sh 'target/release/deps/streams_slate-[0-9a-f]{16}' 900 &
+          watcher=$!
           cargo test --release -- --skip post_split_throughput_scales 2>&1 | tee /tmp/suite.log
+          kill "$watcher" 2>/dev/null || true
           grep -E "^test result" /tmp/suite.log
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
@@ -163,6 +178,10 @@ jobs:
         run: cd sdk && npm ci && npm run build
       - name: Platform end-to-end battery
         run: node scripts/platform-e2e.mjs
+      # The battery again with two fault injections refused by the emulator:
+      # it must fail exactly the checks that prove a fault was applied.
+      - name: Platform end-to-end negative control
+        run: node scripts/platform-e2e-negative.mjs
 
   # Job: the REAL three-process LiveFeed fleet certification (round
   # 11.4). Three streams-slate processes over one shared s3lite store,
@@ -265,6 +284,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Credential-wait cancellation (Bun)
         run: bun test sdk/scripts/credential-cancellation.test.mjs
+      - name: Deploy wrapper and campaign staging (Bun)
+        run: bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts
       - name: Smoke through the package (Bun)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8092 \

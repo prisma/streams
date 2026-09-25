@@ -23,7 +23,10 @@ fn r10_runtime_usage_limits_counters_and_backlog_are_isolated() {
     assert!(early.usage.admit_append(&hash.0, 999, 1).is_ok());
     let a = runtime(10.0, Arc::new(ManualClock::at(0)));
     let b = runtime(20.0, Arc::new(ManualClock::at(0)));
-    assert_eq!(a.usage.permanently_unadmittable(11, 1), Some("bytes"));
+    assert_eq!(
+        a.usage.permanently_unadmittable(11, 1).map(|r| r.dimension),
+        Some("bytes")
+    );
     assert_eq!(b.usage.permanently_unadmittable(11, 1), None);
     let admitted = a
         .usage
@@ -110,8 +113,22 @@ fn the_runtime_owner_decides_only_the_requests_own_size() {
         None,
         "the request-token floor is a boot decision, not a per-append verdict"
     );
-    assert_eq!(usage.permanently_unadmittable(10_000_001, 1), Some("bytes"));
-    assert_eq!(usage.permanently_unadmittable(1, 10_001), Some("records"));
+    assert_eq!(
+        usage.permanently_unadmittable(10_000_001, 1),
+        Some(CapacityRefusal {
+            dimension: "bytes",
+            capacity: 10_000_000,
+            requested: 10_000_001
+        })
+    );
+    assert_eq!(
+        usage.permanently_unadmittable(1, 10_001),
+        Some(CapacityRefusal {
+            dimension: "records",
+            capacity: 10_000,
+            requested: 10_001
+        })
+    );
     assert_eq!(
         usage.permanently_unadmittable(10_000_000, 10_000),
         None,
@@ -123,7 +140,8 @@ proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 1024, ..proptest::prelude::ProptestConfig::default() })]
     /// Permanent refusal is exactly fresh-bucket refusal, kind for kind, for
     /// every posture validation accepts — including disabled buckets, the
-    /// exact capacity, one over it, zero and u64::MAX. Validation is proven
+    /// exact capacity, one over it, zero and u64::MAX — and names the exact
+    /// capacity and the size requested. Validation is proven
     /// sufficient for the request bucket by its own unit tests; every
     /// generated posture here holds at least one request token.
     #[test]
@@ -167,6 +185,11 @@ proptest::proptest! {
             Err(LimitHit::Records { .. }) => Some("records"),
             Err(LimitHit::Requests { .. }) => Some("requests"),
         };
-        proptest::prop_assert_eq!(usage.permanently_unadmittable(bytes, records), fresh);
+        let refusal = usage.permanently_unadmittable(bytes, records);
+        proptest::prop_assert_eq!(refusal.map(|r| r.dimension), fresh);
+        if let Some(r) = refusal {
+            let (rate, size) = if r.dimension == "bytes" { (bytes_rate, bytes) } else { (recs_rate, records) };
+            proptest::prop_assert_eq!((r.capacity, r.requested), (u64::from(rate) * u64::from(burst), size));
+        }
     }
 }

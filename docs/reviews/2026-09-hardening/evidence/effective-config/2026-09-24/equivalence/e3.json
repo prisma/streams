@@ -1,0 +1,1427 @@
+[
+  {
+    "knob": "POOL_IDLE_SECS",
+    "rc4_sites": [
+      "src/main.rs:619"
+    ],
+    "rc4_read": "std::env::var(\"POOL_IDLE_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(4), )),",
+    "old_sites": [
+      "src/config/mod.rs:363"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"POOL_IDLE_SECS\") { self.storage.pool_idle_secs = v; }",
+    "fields": [
+      "storage.pool_idle_secs"
+    ],
+    "old_model_default": [
+      "4"
+    ],
+    "rc4_default_literal": "4",
+    "rc4_default_evaluated": 4,
+    "auto": "equal"
+  },
+  {
+    "knob": "STORE_MAX_CONCURRENT",
+    "rc4_sites": [
+      "src/store_timing.rs:85"
+    ],
+    "rc4_read": "let n: usize = std::env::var(\"STORE_MAX_CONCURRENT\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(0);",
+    "old_sites": [
+      "src/config/mod.rs:366"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"STORE_MAX_CONCURRENT\") { self.storage.store_max_concurrent = v; }",
+    "fields": [
+      "storage.store_max_concurrent"
+    ],
+    "old_model_default": [
+      "0"
+    ],
+    "rc4_default_literal": "0",
+    "rc4_default_evaluated": 0,
+    "auto": "equal"
+  },
+  {
+    "knob": "STORE_BULK_INFLIGHT_MAX_BYTES",
+    "rc4_sites": [
+      "src/main.rs:723",
+      "src/store_timing.rs:223"
+    ],
+    "rc4_read": "\"store_bulk_inflight_max_bytes\": std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\") .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0), }) || let n: u64 = std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(0);",
+    "old_sites": [
+      "src/config/mod.rs:369"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"STORE_BULK_INFLIGHT_MAX_BYTES\") { self.storage.bulk_inflight_max_bytes = v; }",
+    "fields": [
+      "storage.bulk_inflight_max_bytes"
+    ],
+    "old_model_default": [
+      "0"
+    ],
+    "rc4_default_literal": "0",
+    "rc4_default_evaluated": 0,
+    "auto": "equal"
+  },
+  {
+    "knob": "COMPACT_MAX_SST_SIZE_BYTES",
+    "rc4_sites": [
+      "src/main.rs:702",
+      "src/store_timing.rs:213"
+    ],
+    "rc4_read": "w.max_sst_size = env_usize(\"COMPACT_MAX_SST_SIZE_BYTES\", 256 * 1024 * 1024); || std::env::var(\"COMPACT_MAX_SST_SIZE_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(8 * 1024 * 1024) })",
+    "old_sites": [
+      "src/config/mod.rs:372",
+      "src/config/mod.rs:378"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<u64>(\"COMPACT_MAX_SST_SIZE_BYTES\") { // One env name feeds BOTH knobs, with different defaults // (256 MiB compactor roll vs 8 MiB nominal GET weight) \u2014 // preserved divergence, do not \"fix\" here. self.storage.bulk_nominal_get_bytes = v; } || if let Some(v) = env_parse::<usize>(\"COMPACT_MAX_SST_SIZE_BYTES\") { self.engine.compact_max_sst_size = v; }",
+    "fields": [
+      "engine.compact_max_sst_size",
+      "storage.bulk_nominal_get_bytes"
+    ],
+    "old_model_default": [
+      "268435456",
+      "8388608"
+    ],
+    "rc4_default_literal": "256 * 1024 * 1024",
+    "rc4_default_evaluated": 268435456,
+    "auto": "review"
+  },
+  {
+    "knob": "COMPACTOR_POLL_MS",
+    "rc4_sites": [
+      "src/main.rs:692"
+    ],
+    "rc4_read": "co.poll_interval = Duration::from_millis(env_u64( \"COMPACTOR_POLL_MS\", crate::DEFAULT_COMPACTOR_POLL_MS, ));",
+    "old_sites": [
+      "src/config/mod.rs:383"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"COMPACTOR_POLL_MS\") { self.engine.compactor_poll_ms = v; }",
+    "fields": [
+      "engine.compactor_poll_ms"
+    ],
+    "old_model_default": [
+      "2500"
+    ],
+    "rc4_default_literal": "crate::DEFAULT_COMPACTOR_POLL_MS",
+    "rc4_default_evaluated": 2500,
+    "auto": "equal"
+  },
+  {
+    "knob": "COMPACTOR_MAX_CONCURRENT",
+    "rc4_sites": [
+      "src/main.rs:690"
+    ],
+    "rc4_read": "let conc = env_usize(\"COMPACTOR_MAX_CONCURRENT\", 4);",
+    "old_sites": [
+      "src/config/mod.rs:386"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"COMPACTOR_MAX_CONCURRENT\") { self.engine.compactor_max_concurrent = v; }",
+    "fields": [
+      "engine.compactor_max_concurrent"
+    ],
+    "old_model_default": [
+      "4"
+    ],
+    "rc4_default_literal": "4",
+    "rc4_default_evaluated": 4,
+    "auto": "equal"
+  },
+  {
+    "knob": "COMPACT_MAX_SUBCOMPACTIONS",
+    "rc4_sites": [
+      "src/main.rs:699"
+    ],
+    "rc4_read": "w.max_subcompactions = env_usize(\"COMPACT_MAX_SUBCOMPACTIONS\", 4);",
+    "old_sites": [
+      "src/config/mod.rs:389"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"COMPACT_MAX_SUBCOMPACTIONS\") { self.engine.compact_max_subcompactions = v; }",
+    "fields": [
+      "engine.compact_max_subcompactions"
+    ],
+    "old_model_default": [
+      "4"
+    ],
+    "rc4_default_literal": "4",
+    "rc4_default_evaluated": 4,
+    "auto": "equal"
+  },
+  {
+    "knob": "COMPACT_MAX_FETCH_TASKS",
+    "rc4_sites": [
+      "src/main.rs:700"
+    ],
+    "rc4_read": "w.max_fetch_tasks = env_usize(\"COMPACT_MAX_FETCH_TASKS\", 4);",
+    "old_sites": [
+      "src/config/mod.rs:392"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"COMPACT_MAX_FETCH_TASKS\") { self.engine.compact_max_fetch_tasks = v; }",
+    "fields": [
+      "engine.compact_max_fetch_tasks"
+    ],
+    "old_model_default": [
+      "4"
+    ],
+    "rc4_default_literal": "4",
+    "rc4_default_evaluated": 4,
+    "auto": "equal"
+  },
+  {
+    "knob": "COMPACT_BYTES_TO_FETCH",
+    "rc4_sites": [
+      "src/main.rs:701"
+    ],
+    "rc4_read": "w.bytes_to_fetch = env_usize(\"COMPACT_BYTES_TO_FETCH\", 2 * 1024 * 1024);",
+    "old_sites": [
+      "src/config/mod.rs:395"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"COMPACT_BYTES_TO_FETCH\") { self.engine.compact_bytes_to_fetch = v; }",
+    "fields": [
+      "engine.compact_bytes_to_fetch"
+    ],
+    "old_model_default": [
+      "2097152"
+    ],
+    "rc4_default_literal": "2 * 1024 * 1024",
+    "rc4_default_evaluated": 2097152,
+    "auto": "equal"
+  },
+  {
+    "knob": "SLATEDB_RT_THREADS",
+    "rc4_sites": [
+      "src/main.rs:836",
+      "src/main.rs:2454"
+    ],
+    "rc4_read": "let threads: usize = std::env::var(\"SLATEDB_RT_THREADS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(2); || let rt_threads = genv(\"SLATEDB_RT_THREADS\", 2);",
+    "old_sites": [
+      "src/config/mod.rs:398"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"SLATEDB_RT_THREADS\") { self.engine.slatedb_rt_threads = v; }",
+    "fields": [
+      "engine.slatedb_rt_threads"
+    ],
+    "old_model_default": [
+      "2"
+    ],
+    "rc4_default_literal": "2",
+    "rc4_default_evaluated": 2,
+    "auto": "equal"
+  },
+  {
+    "knob": "SHARD_OPEN_DEADLINE_MS",
+    "rc4_sites": [
+      "src/sharddir.rs:283"
+    ],
+    "rc4_read": "let open_deadline = std::env::var(\"SHARD_OPEN_DEADLINE_MS\") .ok() .and_then(|v| v.parse::<u64>().ok()) .map(Duration::from_millis) .unwrap_or(OPEN_DEADLINE_DEFAULT);",
+    "old_sites": [
+      "src/config/mod.rs:403"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<u64>(\"SHARD_OPEN_DEADLINE_MS\") { self.shard.open_deadline = Duration::from_millis(v); }",
+    "fields": [
+      "shard.open_deadline"
+    ],
+    "old_model_default": [
+      "180s"
+    ],
+    "rc4_default_literal": "OPEN_DEADLINE_DEFAULT",
+    "rc4_default_evaluated": null,
+    "auto": "equal"
+  },
+  {
+    "knob": "SHARD_OPEN_WAIT_MS",
+    "rc4_sites": [
+      "src/http.rs:656"
+    ],
+    "rc4_read": "std::env::var(\"SHARD_OPEN_WAIT_MS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(10_000), );",
+    "old_sites": [
+      "src/config/mod.rs:406"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"SHARD_OPEN_WAIT_MS\") { self.shard.open_wait_ms = v; }",
+    "fields": [
+      "shard.open_wait_ms"
+    ],
+    "old_model_default": [
+      "10000"
+    ],
+    "rc4_default_literal": "10_000",
+    "rc4_default_evaluated": 10000,
+    "auto": "equal"
+  },
+  {
+    "knob": "UNREADY_EXIT_AFTER_SECS",
+    "rc4_sites": [
+      "src/sharddir.rs:163"
+    ],
+    "rc4_read": "std::env::var(\"UNREADY_EXIT_AFTER_SECS\") .ok() .and_then(|v| v.parse().ok()) .map(Duration::from_secs) .unwrap_or(Duration::from_secs(300)) }",
+    "old_sites": [
+      "src/config/mod.rs:409"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"UNREADY_EXIT_AFTER_SECS\") { self.shard.unready_exit_after_secs = v; }",
+    "fields": [
+      "shard.unready_exit_after_secs"
+    ],
+    "old_model_default": [
+      "300"
+    ],
+    "rc4_default_literal": "Duration::from_secs(300)",
+    "rc4_default_evaluated": null,
+    "auto": "equal"
+  },
+  {
+    "knob": "ABSORB_PAUSE",
+    "rc4_sites": [
+      "src/history.rs:32"
+    ],
+    "rc4_read": "std::env::var(\"ABSORB_PAUSE\").ok().as_deref() == Some(\"1\"), )",
+    "old_sites": [
+      "src/config/mod.rs:414"
+    ],
+    "old_overlay": "if std::env::var(\"ABSORB_PAUSE\").ok().as_deref() == Some(\"1\") { self.history.absorb_pause_initial = true; }",
+    "fields": [
+      "history.absorb_pause_initial"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "ABSORB_GLOBAL_BUDGET_BYTES",
+    "rc4_sites": [
+      "src/history.rs:285"
+    ],
+    "rc4_read": "let configured: usize = std::env::var(\"ABSORB_GLOBAL_BUDGET_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(default_bytes);",
+    "old_sites": [
+      "src/config/mod.rs:417"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"ABSORB_GLOBAL_BUDGET_BYTES\") { self.history.absorb_global_budget_bytes = v; }",
+    "fields": [
+      "history.absorb_global_budget_bytes"
+    ],
+    "old_model_default": [
+      "67108864"
+    ],
+    "rc4_default_literal": "default_bytes",
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "ABSORB_GLOBAL_GATHERS",
+    "rc4_sites": [
+      "src/history.rs:300"
+    ],
+    "rc4_read": "let gathers: usize = std::env::var(\"ABSORB_GLOBAL_GATHERS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(default_gathers) .max(1);",
+    "old_sites": [
+      "src/config/mod.rs:420"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<usize>(\"ABSORB_GLOBAL_GATHERS\") { self.history.absorb_global_gathers = v.max(1); }",
+    "fields": [
+      "history.absorb_global_gathers"
+    ],
+    "old_model_default": [
+      "2"
+    ],
+    "rc4_default_literal": "default_gathers",
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "HISTORY_CACHE_BYTES",
+    "rc4_sites": [
+      "src/history.rs:481",
+      "src/main.rs:2434"
+    ],
+    "rc4_read": "let bytes = std::env::var(\"HISTORY_CACHE_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(32 * 1024 * 1024); || let history = genv(\"HISTORY_CACHE_BYTES\", 32 * 1024 * 1024);",
+    "old_sites": [
+      "src/config/mod.rs:423"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"HISTORY_CACHE_BYTES\") { self.history.cache_bytes = v; }",
+    "fields": [
+      "history.cache_bytes"
+    ],
+    "old_model_default": [
+      "33554432"
+    ],
+    "rc4_default_literal": "32 * 1024 * 1024",
+    "rc4_default_evaluated": 33554432,
+    "auto": "equal"
+  },
+  {
+    "knob": "HISTORY_COMPACTOR",
+    "rc4_sites": [
+      "src/history.rs:513"
+    ],
+    "rc4_read": "let compactor_off = std::env::var(\"HISTORY_COMPACTOR\") .map(|v| v == \"off\") .unwrap_or(false);",
+    "old_sites": [
+      "src/config/mod.rs:426"
+    ],
+    "old_overlay": "if std::env::var(\"HISTORY_COMPACTOR\") .map(|v| v == \"off\") .unwrap_or(false) { self.history.compactor_off = true; }",
+    "fields": [
+      "history.compactor_off"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": "false",
+    "rc4_default_evaluated": null,
+    "auto": "equal"
+  },
+  {
+    "knob": "HISTORY_GC_INTERVAL_SECS",
+    "rc4_sites": [
+      "src/history.rs:527"
+    ],
+    "rc4_read": "let secs: u64 = std::env::var(\"HISTORY_GC_INTERVAL_SECS\") .ok() .or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok()) .and_then(|v| v.parse().ok()) .unwrap_or(600);",
+    "old_sites": [
+      "src/config/mod.rs:434"
+    ],
+    "old_overlay": "let secs = std::env::var(\"HISTORY_GC_INTERVAL_SECS\") .ok() .or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok()) .and_then(|v| v.parse::<u64>().ok());",
+    "fields": [
+      "history.gc_interval"
+    ],
+    "old_model_default": [
+      "Some(600s)"
+    ],
+    "rc4_default_literal": "600",
+    "rc4_default_evaluated": 600,
+    "auto": "equal"
+  },
+  {
+    "knob": "HISTORY_GC_MAX_INTERVAL_SECS",
+    "rc4_sites": [
+      "src/history.rs:529"
+    ],
+    "rc4_read": ".or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok()) .and_then(|v| v.parse().ok()) .unwrap_or(600);",
+    "old_sites": [
+      "src/config/mod.rs:436"
+    ],
+    "old_overlay": ".or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok()) .and_then(|v| v.parse::<u64>().ok());",
+    "fields": [
+      "history.gc_interval"
+    ],
+    "old_model_default": [
+      "Some(600s)"
+    ],
+    "rc4_default_literal": "600",
+    "rc4_default_evaluated": 600,
+    "auto": "equal"
+  },
+  {
+    "knob": "POSTINGS_CACHE_BYTES",
+    "rc4_sites": [
+      "src/main.rs:2435",
+      "src/postings_cache.rs:53"
+    ],
+    "rc4_read": "let postings = genv(\"POSTINGS_CACHE_BYTES\", 64 * 1024 * 1024); || let bytes = std::env::var(\"POSTINGS_CACHE_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(POSTINGS_CACHE_BYTES);",
+    "old_sites": [
+      "src/config/mod.rs:444"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"POSTINGS_CACHE_BYTES\") { self.postings.cache_bytes = v; }",
+    "fields": [
+      "postings.cache_bytes"
+    ],
+    "old_model_default": [
+      "67108864"
+    ],
+    "rc4_default_literal": "64 * 1024 * 1024",
+    "rc4_default_evaluated": 67108864,
+    "auto": "equal"
+  },
+  {
+    "knob": "SSE_FEED_RING_BYTES",
+    "rc4_sites": [
+      "src/sse/budget.rs:12"
+    ],
+    "rc4_read": "*V.get_or_init(|| match std::env::var(\"SSE_FEED_RING_BYTES\") { Ok(raw) => match raw.trim().parse() { Ok(v) => v, Err(_) => { tracing::warn!( \"SSE_FEED_RING_BYTES={raw:?} does not parse as a byte count; \\ using the 1 MiB default\" ); 1024 * 1024 } }, Err(_) => 1024 * 1024, }) }",
+    "old_sites": [
+      "src/config/mod.rs:449"
+    ],
+    "old_overlay": "if let Ok(raw) = std::env::var(\"SSE_FEED_RING_BYTES\") { self.sse.feed_ring_bytes = raw.trim().parse().unwrap_or_else(|_| { tracing::warn!( \"SSE_FEED_RING_BYTES={raw:?} does not parse as a byte count; \\ using the 1 MiB default\" ); 1024 * 1024 }); }",
+    "fields": [
+      "sse.feed_ring_bytes"
+    ],
+    "old_model_default": [
+      "1048576"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "SSE_FEED_TOTAL_BYTES",
+    "rc4_sites": [
+      "src/main.rs:1909",
+      "src/sse/budget.rs:34"
+    ],
+    "rc4_read": "std::env::var(\"SSE_FEED_TOTAL_BYTES\").ok().as_deref(), &mut args.sse_max_connections, nofile_hard, )?; || *V.get_or_init(|| match std::env::var(\"SSE_FEED_TOTAL_BYTES\") { Ok(raw) => match raw.trim().parse() { Ok(v) => v, Err(_) => { tracing::warn!( \"SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count; \\ using the 16 MiB default\" ); 16 * 1024 * 1024 } }, Err(_) => 16 * 1024 * 1024, }) }",
+    "old_sites": [
+      "src/config/mod.rs:458",
+      "src/config/mod.rs:459"
+    ],
+    "old_overlay": "self.sse.feed_total_bytes_raw = std::env::var(\"SSE_FEED_TOTAL_BYTES\").ok(); || if let Ok(raw) = std::env::var(\"SSE_FEED_TOTAL_BYTES\") { self.sse.feed_total_bytes = raw.trim().parse().unwrap_or_else(|_| { tracing::warn!( \"SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count; \\ using the 16 MiB default\" ); 16 * 1024 * 1024 }); }",
+    "fields": [
+      "sse.feed_total_bytes",
+      "sse.feed_total_bytes_raw"
+    ],
+    "old_model_default": [
+      "16777216",
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "SSE_FEED_PROJECT_BYTES",
+    "rc4_sites": [
+      "src/sse/feed.rs:309"
+    ],
+    "rc4_read": "match std::env::var(\"SSE_FEED_PROJECT_BYTES\") { Err(_) => Ok(global / 4), Ok(raw) => raw .trim() .parse() .map_err(|_| format!(\"SSE_FEED_PROJECT_BYTES={raw:?} does not parse as a byte count\")), }",
+    "old_sites": [
+      "src/config/mod.rs:468"
+    ],
+    "old_overlay": "self.sse.feed_project_bytes_raw = std::env::var(\"SSE_FEED_PROJECT_BYTES\").ok();",
+    "fields": [
+      "sse.feed_project_bytes_raw"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "SSE_HEARTBEAT_MS",
+    "rc4_sites": [
+      "src/main.rs:2194"
+    ],
+    "rc4_read": "std::env::var(\"SSE_HEARTBEAT_MS\") .ok() .and_then(|v| v.parse().ok()) .filter(|v| *v > 0) .unwrap_or(15_000), ),",
+    "old_sites": [
+      "src/config/mod.rs:469"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<u64>(\"SSE_HEARTBEAT_MS\").filter(|v| *v > 0) { self.sse.heartbeat_ms = v; }",
+    "fields": [
+      "sse.heartbeat_ms"
+    ],
+    "old_model_default": [
+      "15000"
+    ],
+    "rc4_default_literal": "15_000",
+    "rc4_default_evaluated": 15000,
+    "auto": "equal"
+  },
+  {
+    "knob": "TAIL_MAX_BYTES",
+    "rc4_sites": [
+      "src/http.rs:89"
+    ],
+    "rc4_read": "std::env::var(\"TAIL_MAX_BYTES\") .ok() .and_then(|v| v.parse().ok()) .filter(|v| *v > 0) .unwrap_or(1024 * 1024) })",
+    "old_sites": [
+      "src/config/mod.rs:474"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<usize>(\"TAIL_MAX_BYTES\").filter(|v| *v > 0) { self.http.tail_max_bytes = v; }",
+    "fields": [
+      "http.tail_max_bytes"
+    ],
+    "old_model_default": [
+      "1048576"
+    ],
+    "rc4_default_literal": "1024 * 1024",
+    "rc4_default_evaluated": 1048576,
+    "auto": "equal"
+  },
+  {
+    "knob": "STREAMS_DEBUG_TIMING",
+    "rc4_sites": [
+      "src/http.rs:83"
+    ],
+    "rc4_read": "*V.get_or_init(|| std::env::var(\"STREAMS_DEBUG_TIMING\").as_deref() == Ok(\"1\")) }",
+    "old_sites": [
+      "src/config/mod.rs:477"
+    ],
+    "old_overlay": "self.http.debug_timing = std::env::var(\"STREAMS_DEBUG_TIMING\").as_deref() == Ok(\"1\");",
+    "fields": [
+      "http.debug_timing"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "STREAMS_DEBUG_EXIT",
+    "rc4_sites": [
+      "src/http.rs:1653"
+    ],
+    "rc4_read": "if std::env::var(\"STREAMS_DEBUG_EXIT\").as_deref() != Ok(\"1\") { return err_resp( StatusCode::FORBIDDEN, \"disabled\", \"STREAMS_DEBUG_EXIT=1 not set on this deploy\", ); }",
+    "old_sites": [
+      "src/config/mod.rs:478"
+    ],
+    "old_overlay": "self.http.debug_exit = std::env::var(\"STREAMS_DEBUG_EXIT\").as_deref() == Ok(\"1\");",
+    "fields": [
+      "http.debug_exit"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "APP_BINARY_SHA256",
+    "rc4_sites": [
+      "src/http.rs:1177"
+    ],
+    "rc4_read": "\"binary_sha256\": std::env::var(\"APP_BINARY_SHA256\") .unwrap_or_else(|_| \"unknown\".into()), // R28: full build/boot identity \u2014 the campaign verifier compares // ALL of these against its manifest (stale-build platform trap). \"git_commit\": env!(\"STREAMS_GIT_COMMIT\"), \"build_unix\": env!(\"STREAMS_BUILD_UNIX\"), \"boot_id\": crate::billing::boot_id(), \"compactor_profile\": crate::compactor_profile_json(), // R29: the KERNEL's high-water mark, not sampled RSS \u2014 sampled // peaks missed the 5 s kill waves entirely. cgroup v2 first, // v1 fallback; null off-Linux. \"now_unix_ms\": std::time::SystemTime::now() .duration_since(std::time::UNIX_EPOCH) .map(|d| d.as_millis() as u64)",
+    "old_sites": [
+      "src/config/mod.rs:479"
+    ],
+    "old_overlay": "if let Ok(v) = std::env::var(\"APP_BINARY_SHA256\") { self.http.binary_sha256 = v; }",
+    "fields": [
+      "http.binary_sha256"
+    ],
+    "old_model_default": [
+      "\"unknown\""
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "SSE_H1_MAX_BUF",
+    "rc4_sites": [
+      "src/main.rs:2509"
+    ],
+    "rc4_read": "let max_buf: usize = std::env::var(\"SSE_H1_MAX_BUF\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(64 * 1024);",
+    "old_sites": [
+      "src/config/mod.rs:482"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"SSE_H1_MAX_BUF\") { self.http.h1_max_buf = v; }",
+    "fields": [
+      "http.h1_max_buf"
+    ],
+    "old_model_default": [
+      "65536"
+    ],
+    "rc4_default_literal": "64 * 1024",
+    "rc4_default_evaluated": 65536,
+    "auto": "equal"
+  },
+  {
+    "knob": "BILLING_MODE",
+    "rc4_sites": [
+      "src/billing.rs:1054",
+      "src/http.rs:2184"
+    ],
+    "rc4_read": "std::env::var(\"BILLING_MODE\") .map(|v| v == \"required\") .unwrap_or(false) } || \"mode\": std::env::var(\"BILLING_MODE\").unwrap_or_else(|_| \"off\".into()), \"ready\": ready, \"usageLedgerConfigured\": state.usage_key.is_some(), \"spool\": { \"open\": spool_open, \"depth\": depth, \"quarantined\": quarantined }, \"drain\": { \"lastOkMs\": last_drain, \"lastOkAgeSecs\": if last_drain > 0 { (now - last_drain) / 1000 } else { -1 }, }, \"rollup\": rollup_info, \"artifactContentMismatches\": crate::billing::ARTIFACT_MISMATCHES.load(Ordering::Relaxed), \"tombstoneWalkCloseSubmits\": crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed), \"openAlerts\": crate::ops::open_alerts(),",
+    "old_sites": [
+      "src/config/mod.rs:487"
+    ],
+    "old_overlay": "self.billing.mode_env = std::env::var(\"BILLING_MODE\").ok();",
+    "fields": [
+      "billing.mode_env"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": "false",
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "BILLING_METER",
+    "rc4_sites": [
+      "src/http.rs:5680"
+    ],
+    "rc4_read": "&& std::env::var(\"BILLING_METER\") .map(|v| v != \"off\") .unwrap_or(true))",
+    "old_sites": [
+      "src/config/mod.rs:488"
+    ],
+    "old_overlay": "self.billing.meter_enabled = std::env::var(\"BILLING_METER\") .map(|v| v != \"off\") .unwrap_or(true);",
+    "fields": [
+      "billing.meter_enabled"
+    ],
+    "old_model_default": [
+      "true"
+    ],
+    "rc4_default_literal": "true",
+    "rc4_default_evaluated": null,
+    "auto": "equal"
+  },
+  {
+    "knob": "ROLLUP",
+    "rc4_sites": [
+      "src/http.rs:2102",
+      "src/http.rs:2181"
+    ],
+    "rc4_read": "let rollup_ok = std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true) || state.rollup.get().is_some(); || && (std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true) || state.rollup.get().is_some()));",
+    "old_sites": [
+      "src/config/mod.rs:491"
+    ],
+    "old_overlay": "self.billing.rollup_env = std::env::var(\"ROLLUP\").ok();",
+    "fields": [
+      "billing.rollup_env"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": "true",
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "PATH_PREFIX",
+    "rc4_sites": [
+      "src/billing.rs:1442"
+    ],
+    "rc4_read": "&std::env::var(\"PATH_PREFIX\").unwrap_or_default(), &state.instance_name, )",
+    "old_sites": [
+      "src/config/mod.rs:492"
+    ],
+    "old_overlay": "self.billing.path_prefix_env = std::env::var(\"PATH_PREFIX\").ok();",
+    "fields": [
+      "billing.path_prefix_env"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "OUTBOX_SWEEP_SECS",
+    "rc4_sites": [
+      "src/billing.rs:1467"
+    ],
+    "rc4_read": "let sweep_secs: u64 = std::env::var(\"OUTBOX_SWEEP_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(300);",
+    "old_sites": [
+      "src/config/mod.rs:493"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"OUTBOX_SWEEP_SECS\") { self.billing.outbox_sweep_secs = v; }",
+    "fields": [
+      "billing.outbox_sweep_secs"
+    ],
+    "old_model_default": [
+      "300"
+    ],
+    "rc4_default_literal": "300",
+    "rc4_default_evaluated": 300,
+    "auto": "equal"
+  },
+  {
+    "knob": "TELEMETRY_DRAIN_SECS",
+    "rc4_sites": [
+      "src/billing.rs:1477"
+    ],
+    "rc4_read": "let secs: u64 = std::env::var(\"TELEMETRY_DRAIN_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(2);",
+    "old_sites": [
+      "src/config/mod.rs:496"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"TELEMETRY_DRAIN_SECS\") { self.billing.telemetry_drain_secs = v; }",
+    "fields": [
+      "billing.telemetry_drain_secs"
+    ],
+    "old_model_default": [
+      "2"
+    ],
+    "rc4_default_literal": "2",
+    "rc4_default_evaluated": 2,
+    "auto": "equal"
+  },
+  {
+    "knob": "METRICS_INTERVAL_SECS",
+    "rc4_sites": [
+      "src/billing.rs:1481"
+    ],
+    "rc4_read": "let metrics_secs: u64 = std::env::var(\"METRICS_INTERVAL_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(15);",
+    "old_sites": [
+      "src/config/mod.rs:499"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"METRICS_INTERVAL_SECS\") { self.billing.metrics_interval_secs = v; }",
+    "fields": [
+      "billing.metrics_interval_secs"
+    ],
+    "old_model_default": [
+      "15"
+    ],
+    "rc4_default_literal": "15",
+    "rc4_default_evaluated": 15,
+    "auto": "equal"
+  },
+  {
+    "knob": "MONTH_CLOSE_GRACE_MS",
+    "rc4_sites": [
+      "src/billing.rs:1750"
+    ],
+    "rc4_read": "let grace_ms: i64 = std::env::var(\"MONTH_CLOSE_GRACE_MS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(24 * 3_600_000);",
+    "old_sites": [
+      "src/config/mod.rs:502"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"MONTH_CLOSE_GRACE_MS\") { self.billing.month_close_grace_ms = v; }",
+    "fields": [
+      "billing.month_close_grace_ms"
+    ],
+    "old_model_default": [
+      "86400000"
+    ],
+    "rc4_default_literal": "24 * 3_600_000",
+    "rc4_default_evaluated": 86400000,
+    "auto": "equal"
+  },
+  {
+    "knob": "TELEMETRY_CACHE_BYTES",
+    "rc4_sites": [
+      "src/billing.rs:1834",
+      "src/main.rs:2436"
+    ],
+    "rc4_read": "let bytes = std::env::var(\"TELEMETRY_CACHE_BYTES\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(16 * 1024 * 1024); || let telemetry = genv(\"TELEMETRY_CACHE_BYTES\", 16 * 1024 * 1024);",
+    "old_sites": [
+      "src/config/mod.rs:505"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"TELEMETRY_CACHE_BYTES\") { self.billing.telemetry_cache_bytes = v; }",
+    "fields": [
+      "billing.telemetry_cache_bytes"
+    ],
+    "old_model_default": [
+      "16777216"
+    ],
+    "rc4_default_literal": "16 * 1024 * 1024",
+    "rc4_default_evaluated": 16777216,
+    "auto": "equal"
+  },
+  {
+    "knob": "SWEEP_DISCOVERY_MAX",
+    "rc4_sites": [
+      "src/billing.rs:2311"
+    ],
+    "rc4_read": "let discovery_cap: usize = std::env::var(\"SWEEP_DISCOVERY_MAX\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(8);",
+    "old_sites": [
+      "src/config/mod.rs:508"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"SWEEP_DISCOVERY_MAX\") { self.billing.sweep_discovery_max = v; }",
+    "fields": [
+      "billing.sweep_discovery_max"
+    ],
+    "old_model_default": [
+      "8"
+    ],
+    "rc4_default_literal": "8",
+    "rc4_default_evaluated": 8,
+    "auto": "equal"
+  },
+  {
+    "knob": "SWEEP_MAINT_RESIDENT",
+    "rc4_sites": [
+      "src/billing.rs:2386",
+      "src/main.rs:1683"
+    ],
+    "rc4_read": "std::env::var(\"SWEEP_MAINT_RESIDENT\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(2) .max(1) } || if std::env::var(\"SWEEP_MAINT_RESIDENT\") .ok() .and_then(|v| v.parse::<usize>().ok()) == Some(0) { eprintln!( \"Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \\ set >= 1 or unset (default 2)\" ); std::process::exit(1); }",
+    "old_sites": [
+      "src/config/mod.rs:511"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<usize>(\"SWEEP_MAINT_RESIDENT\") { // Stored RAW: the binary refuses 0 at boot (0 would starve // cold-debt drain); the billing adapter floors at the use // site (`sweep_resident_budget`, max(1)). self.billing.sweep_maint_resident = v; }",
+    "fields": [
+      "billing.sweep_maint_resident"
+    ],
+    "old_model_default": [
+      "2"
+    ],
+    "rc4_default_literal": "2",
+    "rc4_default_evaluated": 2,
+    "auto": "equal"
+  },
+  {
+    "knob": "SWEEP_RESIDENT_QUANTUM",
+    "rc4_sites": [
+      "src/billing.rs:2481"
+    ],
+    "rc4_read": "std::env::var(\"SWEEP_RESIDENT_QUANTUM\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(4) .max(1) }",
+    "old_sites": [
+      "src/config/mod.rs:517"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<usize>(\"SWEEP_RESIDENT_QUANTUM\") { // Raw here too; floored at the use site (max(1)). self.billing.sweep_resident_quantum = v; }",
+    "fields": [
+      "billing.sweep_resident_quantum"
+    ],
+    "old_model_default": [
+      "4"
+    ],
+    "rc4_default_literal": "4",
+    "rc4_default_evaluated": 4,
+    "auto": "equal"
+  },
+  {
+    "knob": "ALERT_USAGE_OUTBOX_DIRTY",
+    "rc4_sites": [
+      "src/ops.rs:623"
+    ],
+    "rc4_read": "std::env::var(\"ALERT_USAGE_OUTBOX_DIRTY\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(1000) }",
+    "old_sites": [
+      "src/config/mod.rs:521"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"ALERT_USAGE_OUTBOX_DIRTY\") { self.billing.alert_usage_outbox_dirty = v; }",
+    "fields": [
+      "billing.alert_usage_outbox_dirty"
+    ],
+    "old_model_default": [
+      "1000"
+    ],
+    "rc4_default_literal": "1000",
+    "rc4_default_evaluated": 1000,
+    "auto": "equal"
+  },
+  {
+    "knob": "FLEET_ALLOW_HTTP_PEERS",
+    "rc4_sites": [
+      "src/fleet.rs:138"
+    ],
+    "rc4_read": "let allow_http = std::env::var(\"FLEET_ALLOW_HTTP_PEERS\").ok().as_deref() == Some(\"1\");",
+    "old_sites": [
+      "src/config/mod.rs:527"
+    ],
+    "old_overlay": "self.fleet.allow_http_peers = std::env::var(\"FLEET_ALLOW_HTTP_PEERS\").ok().as_deref() == Some(\"1\");",
+    "fields": [
+      "fleet.allow_http_peers"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "FLEET_PEER_DOMAINS",
+    "rc4_sites": [
+      "src/fleet.rs:166"
+    ],
+    "rc4_read": "match std::env::var(\"FLEET_PEER_DOMAINS\") { Ok(list) if !list.trim().is_empty() => list .split(',') .map(str::trim) .filter(|d| !d.is_empty()) .any(|d| host == d || host.ends_with(&format!(\".{d}\"))), _ => true, }",
+    "old_sites": [
+      "src/config/mod.rs:528"
+    ],
+    "old_overlay": "self.fleet.peer_domains_raw = std::env::var(\"FLEET_PEER_DOMAINS\").ok();",
+    "fields": [
+      "fleet.peer_domains_raw"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "REBALANCE_LAG_SECS",
+    "rc4_sites": [
+      "src/fleet.rs:389"
+    ],
+    "rc4_read": "let rebalance_lag_secs: u64 = std::env::var(\"REBALANCE_LAG_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(60);",
+    "old_sites": [
+      "src/config/mod.rs:529"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"REBALANCE_LAG_SECS\") { self.fleet.rebalance_lag_secs = v; }",
+    "fields": [
+      "fleet.rebalance_lag_secs"
+    ],
+    "old_model_default": [
+      "60"
+    ],
+    "rc4_default_literal": "60",
+    "rc4_default_evaluated": 60,
+    "auto": "equal"
+  },
+  {
+    "knob": "REBALANCE_MOVE_COOLDOWN_SECS",
+    "rc4_sites": [
+      "src/fleet.rs:393"
+    ],
+    "rc4_read": "let rebalance_cooldown: u64 = std::env::var(\"REBALANCE_MOVE_COOLDOWN_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(60);",
+    "old_sites": [
+      "src/config/mod.rs:532"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"REBALANCE_MOVE_COOLDOWN_SECS\") { self.fleet.rebalance_move_cooldown_secs = v; }",
+    "fields": [
+      "fleet.rebalance_move_cooldown_secs"
+    ],
+    "old_model_default": [
+      "60"
+    ],
+    "rc4_default_literal": "60",
+    "rc4_default_evaluated": 60,
+    "auto": "equal"
+  },
+  {
+    "knob": "SELF_URL",
+    "rc4_sites": [
+      "src/fleet.rs:480"
+    ],
+    "rc4_read": "url: std::env::var(\"SELF_URL\").unwrap_or_default(), };",
+    "old_sites": [
+      "src/config/mod.rs:535"
+    ],
+    "old_overlay": "if let Ok(v) = std::env::var(\"SELF_URL\") { self.fleet.self_url = v; }",
+    "fields": [
+      "fleet.self_url"
+    ],
+    "old_model_default": [
+      "\"\""
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "FLEET_MIN",
+    "rc4_sites": [
+      "src/fleet.rs:682"
+    ],
+    "rc4_read": "let fleet_min: u64 = std::env::var(\"FLEET_MIN\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(1) .max(1);",
+    "old_sites": [
+      "src/config/mod.rs:538"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<u64>(\"FLEET_MIN\") { self.fleet.fleet_min = v.max(1); }",
+    "fields": [
+      "fleet.fleet_min"
+    ],
+    "old_model_default": [
+      "1"
+    ],
+    "rc4_default_literal": "1",
+    "rc4_default_evaluated": 1,
+    "auto": "equal"
+  },
+  {
+    "knob": "REBALANCE_RETURN_SECS",
+    "rc4_sites": [
+      "src/fleet.rs:880"
+    ],
+    "rc4_read": "let return_secs: i64 = std::env::var(\"REBALANCE_RETURN_SECS\") .ok() .and_then(|v| v.parse().ok()) .unwrap_or(300);",
+    "old_sites": [
+      "src/config/mod.rs:541"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"REBALANCE_RETURN_SECS\") { self.fleet.rebalance_return_secs = v; }",
+    "fields": [
+      "fleet.rebalance_return_secs"
+    ],
+    "old_model_default": [
+      "300"
+    ],
+    "rc4_default_literal": "300",
+    "rc4_default_evaluated": 300,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_EVAL_SECS",
+    "rc4_sites": [
+      "src/scaler3.rs:46"
+    ],
+    "rc4_read": "eval_secs: envf(\"SCALE_EVAL_SECS\", 10.0) as u64, rate_window_secs: envf(\"SCALE_RATE_WINDOW_SECS\", 120.0), hot_pct: envf(\"SCALE_HOT_PCT\", 75.0) / 100.0, cold_pct: envf(\"SCALE_COLD_PCT\", 15.0) / 100.0, hot_evals: envf(\"SCALE_HOT_EVALS\", 2.0) as u32, cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:547",
+      "src/config/mod.rs:548"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_EVAL_SECS\").is_ok() { self.scaler.eval_secs = envf(\"SCALE_EVAL_SECS\", 10.0) as u64; } || self.scaler.eval_secs = envf(\"SCALE_EVAL_SECS\", 10.0) as u64;",
+    "fields": [
+      "scaler.eval_secs"
+    ],
+    "old_model_default": [
+      "10"
+    ],
+    "rc4_default_literal": "10.0",
+    "rc4_default_evaluated": 10.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_RATE_WINDOW_SECS",
+    "rc4_sites": [
+      "src/scaler3.rs:47"
+    ],
+    "rc4_read": "rate_window_secs: envf(\"SCALE_RATE_WINDOW_SECS\", 120.0), hot_pct: envf(\"SCALE_HOT_PCT\", 75.0) / 100.0, cold_pct: envf(\"SCALE_COLD_PCT\", 15.0) / 100.0, hot_evals: envf(\"SCALE_HOT_EVALS\", 2.0) as u32, cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:550",
+      "src/config/mod.rs:551"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_RATE_WINDOW_SECS\").is_ok() { self.scaler.rate_window_secs = envf(\"SCALE_RATE_WINDOW_SECS\", 120.0); } || self.scaler.rate_window_secs = envf(\"SCALE_RATE_WINDOW_SECS\", 120.0);",
+    "fields": [
+      "scaler.rate_window_secs"
+    ],
+    "old_model_default": [
+      "120.0"
+    ],
+    "rc4_default_literal": "120.0",
+    "rc4_default_evaluated": 120.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_HOT_PCT",
+    "rc4_sites": [
+      "src/scaler3.rs:48"
+    ],
+    "rc4_read": "hot_pct: envf(\"SCALE_HOT_PCT\", 75.0) / 100.0, cold_pct: envf(\"SCALE_COLD_PCT\", 15.0) / 100.0, hot_evals: envf(\"SCALE_HOT_EVALS\", 2.0) as u32, cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:553",
+      "src/config/mod.rs:554"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_HOT_PCT\").is_ok() { self.scaler.hot_pct = envf(\"SCALE_HOT_PCT\", 75.0) / 100.0; } || self.scaler.hot_pct = envf(\"SCALE_HOT_PCT\", 75.0) / 100.0;",
+    "fields": [
+      "scaler.hot_pct"
+    ],
+    "old_model_default": [
+      "0.75"
+    ],
+    "rc4_default_literal": "(75.0) / 100.0",
+    "rc4_default_evaluated": 0.75,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_COLD_PCT",
+    "rc4_sites": [
+      "src/scaler3.rs:49"
+    ],
+    "rc4_read": "cold_pct: envf(\"SCALE_COLD_PCT\", 15.0) / 100.0, hot_evals: envf(\"SCALE_HOT_EVALS\", 2.0) as u32, cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:556",
+      "src/config/mod.rs:557"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_COLD_PCT\").is_ok() { self.scaler.cold_pct = envf(\"SCALE_COLD_PCT\", 15.0) / 100.0; } || self.scaler.cold_pct = envf(\"SCALE_COLD_PCT\", 15.0) / 100.0;",
+    "fields": [
+      "scaler.cold_pct"
+    ],
+    "old_model_default": [
+      "0.15"
+    ],
+    "rc4_default_literal": "(15.0) / 100.0",
+    "rc4_default_evaluated": 0.15,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_HOT_EVALS",
+    "rc4_sites": [
+      "src/scaler3.rs:50"
+    ],
+    "rc4_read": "hot_evals: envf(\"SCALE_HOT_EVALS\", 2.0) as u32, cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:559",
+      "src/config/mod.rs:560"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_HOT_EVALS\").is_ok() { self.scaler.hot_evals = envf(\"SCALE_HOT_EVALS\", 2.0) as u32; } || self.scaler.hot_evals = envf(\"SCALE_HOT_EVALS\", 2.0) as u32;",
+    "fields": [
+      "scaler.hot_evals"
+    ],
+    "old_model_default": [
+      "2"
+    ],
+    "rc4_default_literal": "2.0",
+    "rc4_default_evaluated": 2.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_COLD_EVALS",
+    "rc4_sites": [
+      "src/scaler3.rs:51"
+    ],
+    "rc4_read": "cold_evals: envf(\"SCALE_COLD_EVALS\", 180.0) as u32, cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:562",
+      "src/config/mod.rs:563"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_COLD_EVALS\").is_ok() { self.scaler.cold_evals = envf(\"SCALE_COLD_EVALS\", 180.0) as u32; } || self.scaler.cold_evals = envf(\"SCALE_COLD_EVALS\", 180.0) as u32;",
+    "fields": [
+      "scaler.cold_evals"
+    ],
+    "old_model_default": [
+      "180"
+    ],
+    "rc4_default_literal": "180.0",
+    "rc4_default_evaluated": 180.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "SCALE_COOLDOWN_SECS",
+    "rc4_sites": [
+      "src/scaler3.rs:52"
+    ],
+    "rc4_read": "cooldown_secs: envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64, max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:565",
+      "src/config/mod.rs:566"
+    ],
+    "old_overlay": "if std::env::var(\"SCALE_COOLDOWN_SECS\").is_ok() { self.scaler.cooldown_secs = envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64; } || self.scaler.cooldown_secs = envf(\"SCALE_COOLDOWN_SECS\", 600.0) as i64;",
+    "fields": [
+      "scaler.cooldown_secs"
+    ],
+    "old_model_default": [
+      "600"
+    ],
+    "rc4_default_literal": "600.0",
+    "rc4_default_evaluated": 600.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "MAX_SEGMENTS_PER_STREAM",
+    "rc4_sites": [
+      "src/scaler3.rs:53"
+    ],
+    "rc4_read": "max_segments: envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize, })",
+    "old_sites": [
+      "src/config/mod.rs:568",
+      "src/config/mod.rs:569"
+    ],
+    "old_overlay": "if std::env::var(\"MAX_SEGMENTS_PER_STREAM\").is_ok() { self.scaler.max_segments = envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize; } || self.scaler.max_segments = envf(\"MAX_SEGMENTS_PER_STREAM\", 64.0) as usize;",
+    "fields": [
+      "scaler.max_segments"
+    ],
+    "old_model_default": [
+      "64"
+    ],
+    "rc4_default_literal": "64.0",
+    "rc4_default_evaluated": 64.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "MAX_UNABSORBED_BYTES_PER_INSTANCE",
+    "rc4_sites": [
+      "src/backpressure.rs:75"
+    ],
+    "rc4_read": "unabsorbed_bytes_instance: v(\"MAX_UNABSORBED_BYTES_PER_INSTANCE\", 512 * 1024 * 1024), unabsorbed_bytes_shard: v(\"MAX_UNABSORBED_BYTES_PER_SHARD\", 256 * 1024 * 1024), absorb_lag_secs: v(\"MAX_ABSORB_LAG_SECS\", 900), release_pct: v(\"MAINT_BACKPRESSURE_RELEASE_PCT\", 75).min(100), }",
+    "old_sites": [
+      "src/config/mod.rs:573"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"MAX_UNABSORBED_BYTES_PER_INSTANCE\") { self.admission.unabsorbed_bytes_instance = v; }",
+    "fields": [
+      "admission.unabsorbed_bytes_instance"
+    ],
+    "old_model_default": [
+      "536870912"
+    ],
+    "rc4_default_literal": "512 * 1024 * 1024",
+    "rc4_default_evaluated": 536870912,
+    "auto": "equal"
+  },
+  {
+    "knob": "MAX_UNABSORBED_BYTES_PER_SHARD",
+    "rc4_sites": [
+      "src/backpressure.rs:76"
+    ],
+    "rc4_read": "unabsorbed_bytes_shard: v(\"MAX_UNABSORBED_BYTES_PER_SHARD\", 256 * 1024 * 1024), absorb_lag_secs: v(\"MAX_ABSORB_LAG_SECS\", 900), release_pct: v(\"MAINT_BACKPRESSURE_RELEASE_PCT\", 75).min(100), }",
+    "old_sites": [
+      "src/config/mod.rs:576"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"MAX_UNABSORBED_BYTES_PER_SHARD\") { self.admission.unabsorbed_bytes_shard = v; }",
+    "fields": [
+      "admission.unabsorbed_bytes_shard"
+    ],
+    "old_model_default": [
+      "268435456"
+    ],
+    "rc4_default_literal": "256 * 1024 * 1024",
+    "rc4_default_evaluated": 268435456,
+    "auto": "equal"
+  },
+  {
+    "knob": "MAX_ABSORB_LAG_SECS",
+    "rc4_sites": [
+      "src/backpressure.rs:77"
+    ],
+    "rc4_read": "absorb_lag_secs: v(\"MAX_ABSORB_LAG_SECS\", 900), release_pct: v(\"MAINT_BACKPRESSURE_RELEASE_PCT\", 75).min(100), }",
+    "old_sites": [
+      "src/config/mod.rs:579"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"MAX_ABSORB_LAG_SECS\") { self.admission.absorb_lag_secs = v; }",
+    "fields": [
+      "admission.absorb_lag_secs"
+    ],
+    "old_model_default": [
+      "900"
+    ],
+    "rc4_default_literal": "900",
+    "rc4_default_evaluated": 900,
+    "auto": "equal"
+  },
+  {
+    "knob": "MAINT_BACKPRESSURE_RELEASE_PCT",
+    "rc4_sites": [
+      "src/backpressure.rs:78"
+    ],
+    "rc4_read": "release_pct: v(\"MAINT_BACKPRESSURE_RELEASE_PCT\", 75).min(100), }",
+    "old_sites": [
+      "src/config/mod.rs:582"
+    ],
+    "old_overlay": "if let Some(v) = env_parse::<u64>(\"MAINT_BACKPRESSURE_RELEASE_PCT\") { self.admission.maint_release_pct = v.min(100); }",
+    "fields": [
+      "admission.maint_release_pct"
+    ],
+    "old_model_default": [
+      "75"
+    ],
+    "rc4_default_literal": "75",
+    "rc4_default_evaluated": 75,
+    "auto": "equal"
+  },
+  {
+    "knob": "LIMIT_BYTES_PER_SEC",
+    "rc4_sites": [
+      "src/usage.rs:151"
+    ],
+    "rc4_read": "bytes_per_sec: envf(\"LIMIT_BYTES_PER_SEC\", 5_000_000.0), reqs_per_sec: envf(\"LIMIT_REQS_PER_SEC\", 1_000.0), recs_per_sec: envf(\"LIMIT_RECS_PER_SEC\", 5_000.0), burst_secs: envf(\"LIMIT_BURST_SECS\", 2.0), })",
+    "old_sites": [
+      "src/config/mod.rs:585"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"LIMIT_BYTES_PER_SEC\") { self.admission.limit_bytes_per_sec = v; }",
+    "fields": [
+      "admission.limit_bytes_per_sec"
+    ],
+    "old_model_default": [
+      "5000000.0"
+    ],
+    "rc4_default_literal": "5_000_000.0",
+    "rc4_default_evaluated": 5000000.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "LIMIT_REQS_PER_SEC",
+    "rc4_sites": [
+      "src/usage.rs:152"
+    ],
+    "rc4_read": "reqs_per_sec: envf(\"LIMIT_REQS_PER_SEC\", 1_000.0), recs_per_sec: envf(\"LIMIT_RECS_PER_SEC\", 5_000.0), burst_secs: envf(\"LIMIT_BURST_SECS\", 2.0), })",
+    "old_sites": [
+      "src/config/mod.rs:588"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"LIMIT_REQS_PER_SEC\") { self.admission.limit_reqs_per_sec = v; }",
+    "fields": [
+      "admission.limit_reqs_per_sec"
+    ],
+    "old_model_default": [
+      "1000.0"
+    ],
+    "rc4_default_literal": "1_000.0",
+    "rc4_default_evaluated": 1000.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "LIMIT_RECS_PER_SEC",
+    "rc4_sites": [
+      "src/usage.rs:153"
+    ],
+    "rc4_read": "recs_per_sec: envf(\"LIMIT_RECS_PER_SEC\", 5_000.0), burst_secs: envf(\"LIMIT_BURST_SECS\", 2.0), })",
+    "old_sites": [
+      "src/config/mod.rs:591"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"LIMIT_RECS_PER_SEC\") { self.admission.limit_recs_per_sec = v; }",
+    "fields": [
+      "admission.limit_recs_per_sec"
+    ],
+    "old_model_default": [
+      "5000.0"
+    ],
+    "rc4_default_literal": "5_000.0",
+    "rc4_default_evaluated": 5000.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "LIMIT_BURST_SECS",
+    "rc4_sites": [
+      "src/usage.rs:154"
+    ],
+    "rc4_read": "burst_secs: envf(\"LIMIT_BURST_SECS\", 2.0), })",
+    "old_sites": [
+      "src/config/mod.rs:594"
+    ],
+    "old_overlay": "if let Some(v) = env_parse(\"LIMIT_BURST_SECS\") { self.admission.limit_burst_secs = v; }",
+    "fields": [
+      "admission.limit_burst_secs"
+    ],
+    "old_model_default": [
+      "2.0"
+    ],
+    "rc4_default_literal": "2.0",
+    "rc4_default_evaluated": 2.0,
+    "auto": "equal"
+  },
+  {
+    "knob": "FRAME_COMPRESS",
+    "rc4_sites": [
+      "src/crypto.rs:44"
+    ],
+    "rc4_read": "std::env::var(\"FRAME_COMPRESS\") .map(|v| v == \"1\" || v.eq_ignore_ascii_case(\"true\")) .unwrap_or(false) })",
+    "old_sites": [
+      "src/config/mod.rs:599"
+    ],
+    "old_overlay": "self.crypto.frame_compress = std::env::var(\"FRAME_COMPRESS\") .map(|v| v == \"1\" || v.eq_ignore_ascii_case(\"true\")) .unwrap_or(false);",
+    "fields": [
+      "crypto.frame_compress"
+    ],
+    "old_model_default": [
+      "false"
+    ],
+    "rc4_default_literal": "false",
+    "rc4_default_evaluated": null,
+    "auto": "equal"
+  },
+  {
+    "knob": "MEMPROFILE_CERT",
+    "rc4_sites": [
+      "src/main.rs:754",
+      "src/main.rs:1908"
+    ],
+    "rc4_read": "if std::env::var(\"MEMPROFILE_CERT\").as_deref() != Ok(\"compute-1g\") { return; } || std::env::var(\"MEMPROFILE_CERT\").ok().as_deref(), std::env::var(\"SSE_FEED_TOTAL_BYTES\").ok().as_deref(), &mut args.sse_max_connections, nofile_hard, )?;",
+    "old_sites": [
+      "src/config/mod.rs:604"
+    ],
+    "old_overlay": "self.runtime.memprofile_cert = std::env::var(\"MEMPROFILE_CERT\").ok();",
+    "fields": [
+      "runtime.memprofile_cert"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "STREAMS_CERT_SEALED_PUBLISH_DELAY_MS",
+    "rc4_sites": [
+      "src/main.rs:958"
+    ],
+    "rc4_read": "std::env::var(\"STREAMS_CERT_SEALED_PUBLISH_DELAY_MS\") .ok() .as_deref(), std::env::var(\"STREAMS_CERTIFICATION_MODE\").ok().as_deref(), )?;",
+    "old_sites": [
+      "src/config/mod.rs:606"
+    ],
+    "old_overlay": "self.runtime.cert_sealed_publish_delay_ms_raw = std::env::var(\"STREAMS_CERT_SEALED_PUBLISH_DELAY_MS\").ok();",
+    "fields": [
+      "runtime.cert_sealed_publish_delay_ms_raw"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  },
+  {
+    "knob": "STREAMS_CERTIFICATION_MODE",
+    "rc4_sites": [
+      "src/main.rs:961"
+    ],
+    "rc4_read": "std::env::var(\"STREAMS_CERTIFICATION_MODE\").ok().as_deref(), )?;",
+    "old_sites": [
+      "src/config/mod.rs:607"
+    ],
+    "old_overlay": "self.runtime.certification_mode = std::env::var(\"STREAMS_CERTIFICATION_MODE\").ok();",
+    "fields": [
+      "runtime.certification_mode"
+    ],
+    "old_model_default": [
+      "None"
+    ],
+    "rc4_default_literal": null,
+    "rc4_default_evaluated": null,
+    "auto": "review"
+  }
+]

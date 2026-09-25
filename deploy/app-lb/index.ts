@@ -34,6 +34,12 @@ await downloadBinary(process.env.LB_BINARY_S3_KEY ?? "", bin, console.log);
 await chmod(bin, 0o755);
 const mode = process.env.PILOT_MODE ?? "lb";
 console.log(`starting pilot MODE=${mode} on :${process.env.PORT ?? "8080"}`);
-// See app-server/index.ts: a dead binary serves its own diagnostic.
-const { superviseBinary } = await import("./supervise");
-await superviseBinary(bin, [], { ...process.env, MODE: mode });
+// See app-server/index.ts: a binary that dies at boot serves its own
+// diagnostic; a router (MODE=lb) that dies after it was serving ends this
+// wrapper so Compute replaces it (item 39). The load generator
+// (PILOT_MODE=gen, bench/fleet/deploy-fleet.sh) holds every death: a
+// restarted generator would re-ramp load mid-campaign and lose the stderr
+// tail that explains its failure (policyFor, pinned by
+// deploy/supervise.test.ts).
+const { superviseBinary, policyFor } = await import("./supervise");
+await superviseBinary(bin, [], { ...process.env, MODE: mode }, policyFor("app-lb", process.env));

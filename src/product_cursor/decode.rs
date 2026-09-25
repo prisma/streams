@@ -4,7 +4,7 @@
 use super::{
     CatalogCursor, KIND_CATALOG_V1, KIND_KEY_V2, KIND_KEY_V3, KIND_LEASE_V2, KIND_SCAN_V2,
     KeyCursor, LeaseToken, MAC_LEN, MessageId, ReadCursor, SCAN_CURSOR_MAX, ScanCursor,
-    SessionCursor, StreamKey, mac_key, mac16, unb64,
+    ScanCursorError, SessionCursor, StreamKey, TokenError, mac_key, mac16, unb64,
 };
 use crate::tenant::ProjectId;
 
@@ -50,11 +50,11 @@ impl KeyCursor {
         key: &StreamKey,
         expect_epoch: &[u8; 16],
         expect_key_hash: &[u8; 16],
-    ) -> Result<Self, &'static str> {
-        let invalid = "invalid_cursor";
+    ) -> Result<Self, TokenError> {
+        let invalid = TokenError::Invalid;
         let raw = unb64(s).ok_or(invalid)?;
         if raw.first() != Some(&KIND_KEY_V2) {
-            return Err("wrong_cursor_kind");
+            return Err(TokenError::WrongKind);
         }
         let raw: &[u8; 45 + MAC_LEN] = raw.as_slice().try_into().map_err(|_| invalid)?;
         let (value, _) = key_fields(raw, project, key, expect_epoch, expect_key_hash)?;
@@ -75,8 +75,8 @@ fn key_fields<'a>(
     key: &StreamKey,
     expect_epoch: &[u8; 16],
     expect_key_hash: &[u8; 16],
-) -> Result<(MessageId, &'a [u8]), &'static str> {
-    let invalid = "invalid_cursor";
+) -> Result<(MessageId, &'a [u8]), TokenError> {
+    let invalid = TokenError::Invalid;
     let payload = product_payload(raw, project, key).ok_or(invalid)?;
     let (_, fields) = payload.split_first().ok_or(invalid)?;
     let mut rest = fields;
@@ -89,7 +89,7 @@ fn key_fields<'a>(
 
 impl ReadCursor {
     /// A v2 position or a v3 continuation; any other kind is
-    /// `wrong_cursor_kind`. A v3 cursor whose recovery offset is not below
+    /// [`TokenError::WrongKind`]. A v3 cursor whose recovery offset is not below
     /// its position, or whose digest starts past it, is invalid.
     pub(crate) fn decode(
         s: &str,
@@ -97,8 +97,8 @@ impl ReadCursor {
         key: &StreamKey,
         expect_epoch: &[u8; 16],
         expect_key_hash: &[u8; 16],
-    ) -> Result<Self, &'static str> {
-        let invalid = "invalid_cursor";
+    ) -> Result<Self, TokenError> {
+        let invalid = TokenError::Invalid;
         let raw = unb64(s).ok_or(invalid)?;
         if raw.first() != Some(&KIND_KEY_V3) {
             return KeyCursor::decode(s, project, key, expect_epoch, expect_key_hash)
@@ -160,14 +160,14 @@ impl ScanCursor {
         key: &StreamKey,
         expect_epoch: &[u8; 16],
         now_ms: i64,
-    ) -> Result<Self, &'static str> {
-        let invalid = "invalid_cursor";
+    ) -> Result<Self, ScanCursorError> {
+        let invalid = ScanCursorError::Invalid;
         if s.len() > SCAN_ENCODED_MAX {
             return Err(invalid);
         }
         let raw = unb64(s).ok_or(invalid)?;
         if raw.first() != Some(&KIND_SCAN_V2) {
-            return Err("wrong_cursor_kind");
+            return Err(ScanCursorError::WrongKind);
         }
         let payload = product_payload(&raw, project, key).ok_or(invalid)?;
         let (_, mut fields) = payload.split_first().ok_or(invalid)?;
@@ -200,7 +200,7 @@ impl ScanCursor {
             return Err(invalid);
         }
         if now_ms > expires_at_ms {
-            return Err("scan_expired");
+            return Err(ScanCursorError::Expired);
         }
         Ok(Self {
             epoch,
@@ -222,11 +222,11 @@ impl MessageId {
         project: &ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
-    ) -> Result<Self, &'static str> {
-        let invalid = "invalid_message_id";
+    ) -> Result<Self, TokenError> {
+        let invalid = TokenError::Invalid;
         let raw = unb64(s).ok_or(invalid)?;
         if raw.first() != Some(&super::KIND_MSG_V2) {
-            return Err("wrong_token_kind");
+            return Err(TokenError::WrongKind);
         }
         let raw: &[u8; 45 + MAC_LEN] = raw.as_slice().try_into().map_err(|_| invalid)?;
         let payload = product_payload(raw, project, key).ok_or(invalid)?;
@@ -245,11 +245,11 @@ impl LeaseToken {
         project: &ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
-    ) -> Result<Self, &'static str> {
-        let invalid = "invalid_lease_token";
+    ) -> Result<Self, TokenError> {
+        let invalid = TokenError::Invalid;
         let raw = unb64(s).ok_or(invalid)?;
         if raw.first() != Some(&KIND_LEASE_V2) {
-            return Err("wrong_token_kind");
+            return Err(TokenError::WrongKind);
         }
         let raw: &[u8; 65 + MAC_LEN] = raw.as_slice().try_into().map_err(|_| invalid)?;
         let payload = product_payload(raw, project, key).ok_or(invalid)?;

@@ -25,7 +25,7 @@
 
 use bytes::Bytes;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Identity of a feed: stream incarnation + selector lane.
@@ -86,7 +86,8 @@ pub(crate) struct SourceBatch {
 
 #[async_trait::async_trait]
 pub(crate) trait FeedSourceRead: Send + Sync {
-    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch>;
+    async fn read_batch(&self, from: u64, max_bytes: usize)
+    -> Result<SourceBatch, SourceReadError>;
     fn frontier(&self) -> u64;
     fn closed(&self) -> bool;
     /// The DATA event for one record, formatted ONCE per lane. Cursor
@@ -148,6 +149,17 @@ pub(crate) enum SourceCutoff {
     /// The live tail's pinned engine closed under the SAME owner (fatal
     /// store, worker exit, sub-tick flap): resume through the route.
     EngineRetired,
+}
+
+/// A failed source read, typed by what its consumer owes it. No
+/// `From<anyhow::Error>` exists: each failure site names its verdict, so
+/// a `?` can never turn a cutoff into a retry or a retry into a cutoff.
+#[derive(Debug)]
+pub(crate) enum SourceReadError {
+    /// Sessions disconnect without a terminal control and resume.
+    Fatal(SourceCutoff),
+    /// The same bound is read again after a bounded backoff.
+    Retryable(anyhow::Error),
 }
 
 /// What a descriptor refresh decided about the current source.
@@ -518,7 +530,6 @@ pub(crate) struct LiveFeed {
     source_changed: tokio::sync::watch::Sender<u64>,
     driving: AtomicBool,
     subscribers: AtomicU64,
-    retained_charge: AtomicUsize,
     source_reads: AtomicU64,
     ring_budget: usize,
     /// Driver read bound: derived from the ring so a prepared batch
@@ -546,6 +557,55 @@ pub(crate) struct LiveFeed {
     /// (`Fp::FeedAfterPermitRelease`); unset = the hook is inert.
     #[cfg(test)]
     pub(crate) fp_name: std::sync::OnceLock<String>,
+}
+
+// Construction takes no lock, so it sits outside the poisoned-state exception below.
+impl LiveFeed {
+    pub(crate) fn new_with_budget(
+        src: Arc<dyn FeedSourceRead>,
+        ring_budget: usize,
+        budget: Arc<FeedMemoryBudget>,
+        project: crate::tenant::ProjectId,
+    ) -> Arc<Self> {
+        let project_reserved = budget.project_retention(&project);
+        let head = src.frontier();
+        let (changed, _) = tokio::sync::watch::channel(0u64);
+        let (source_changed, _) = tokio::sync::watch::channel(0u64);
+        Arc::new(Self {
+            src: std::sync::RwLock::new(SourceSnapshot {
+                generation: 0,
+                source: src,
+            }),
+            st: Mutex::new(FeedState {
+                head,
+                floor: head,
+                version: 0,
+                batches: VecDeque::new(),
+                charge: 0,
+                lifecycle: Lifecycle::Active,
+            }),
+            changed,
+            source_changed,
+            driving: AtomicBool::new(false),
+            subscribers: AtomicU64::new(0),
+            source_reads: AtomicU64::new(0),
+            ring_budget,
+            // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
+            // so a read bounded at 2/3 of the ring prepares a batch
+            // that fits the ring in the ordinary case.
+            read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
+            budget,
+            project,
+            project_reserved,
+            pressure_guard: std::sync::OnceLock::new(),
+            cancel: CancelFlag::new(),
+            retry_scheduled: AtomicBool::new(false),
+            #[cfg(test)]
+            retry_spawns: AtomicU64::new(0),
+            #[cfg(test)]
+            fp_name: std::sync::OnceLock::new(),
+        })
+    }
 }
 
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
@@ -620,54 +680,6 @@ impl LiveFeed {
         let _ = self
             .pressure_guard
             .set(crate::quota::FeedPressureGuard::acquire(adm));
-    }
-
-    pub(crate) fn new_with_budget(
-        _key: FeedKey,
-        src: Arc<dyn FeedSourceRead>,
-        ring_budget: usize,
-        budget: Arc<FeedMemoryBudget>,
-        project: crate::tenant::ProjectId,
-    ) -> Arc<Self> {
-        let project_reserved = budget.project_retention(&project);
-        let head = src.frontier();
-        let (changed, _) = tokio::sync::watch::channel(0u64);
-        let (source_changed, _) = tokio::sync::watch::channel(0u64);
-        Arc::new(Self {
-            src: std::sync::RwLock::new(SourceSnapshot {
-                generation: 0,
-                source: src,
-            }),
-            st: Mutex::new(FeedState {
-                head,
-                floor: head,
-                version: 0,
-                batches: VecDeque::new(),
-                charge: 0,
-                lifecycle: Lifecycle::Active,
-            }),
-            changed,
-            source_changed,
-            driving: AtomicBool::new(false),
-            subscribers: AtomicU64::new(0),
-            retained_charge: AtomicUsize::new(0),
-            source_reads: AtomicU64::new(0),
-            ring_budget,
-            // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
-            // so a read bounded at 2/3 of the ring prepares a batch
-            // that fits the ring in the ordinary case.
-            read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
-            budget,
-            project,
-            project_reserved,
-            pressure_guard: std::sync::OnceLock::new(),
-            cancel: CancelFlag::new(),
-            retry_scheduled: AtomicBool::new(false),
-            #[cfg(test)]
-            retry_spawns: AtomicU64::new(0),
-            #[cfg(test)]
-            fp_name: std::sync::OnceLock::new(),
-        })
     }
 
     /// May this feed admit a SECOND subscriber? Static configuration
@@ -761,11 +773,6 @@ impl LiveFeed {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn retained(&self) -> usize {
-        self.retained_charge.load(Ordering::Relaxed)
-    }
-
     /// Increment-only attach; called under the REGISTRY lock by
     /// `FeedRegistry::subscribe` so count, membership, captured head,
     /// version receiver, and SOURCE GENERATION all bind in one
@@ -829,7 +836,6 @@ impl LiveFeed {
         // fully passed can never be needed again — pop it and release
         // its reservation immediately instead of at feed drop.
         if self.subscribers.load(Ordering::Relaxed) == 1 {
-            let mut popped = false;
             while let Some(b) = st.batches.front() {
                 if b.scan_to > cursor {
                     break;
@@ -837,15 +843,11 @@ impl LiveFeed {
                 let b = st.batches.pop_front().expect("front checked");
                 st.charge -= b.charge;
                 self.budget.release(&self.project_reserved, b.charge);
-                popped = true;
-            }
-            if popped {
                 if st.batches.is_empty() {
                     // Nothing below the survivor's own cursor is owed
                     // to anyone: the floor may follow it.
                     st.floor = st.floor.max(cursor.min(st.head));
                 }
-                self.retained_charge.store(st.charge, Ordering::Relaxed);
             }
         }
         // ONE shared batch per hand-off; a match-free prepared range is
@@ -903,12 +905,11 @@ impl LiveFeed {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::let_underscore_must_use,
         clippy::cast_possible_truncation,
         clippy::excessive_nesting,
         clippy::wildcard_enum_match_arm,
         clippy::expect_used,
-        reason = "LiveFeed::read_and_publish; one read publishes its batch, charges retention, evicts within the ring budget from a pre-counted eviction set and answers every other reserve outcome alike, with payload lengths that fit u32 by the record ceiling; splitting it, handling the watch send, checking the length, flattening the eviction, naming every outcome or a fallible pop would separate the publication from the budget it must honour"
+        reason = "LiveFeed::read_and_publish; one read publishes its batch, charges retention, evicts within the ring budget from a pre-counted eviction set and answers every other reserve outcome alike, with payload lengths that fit u32 by the record ceiling; splitting it, checking the length, flattening the eviction, naming every outcome or a fallible pop would separate the publication from the budget it must honour"
     )]
     async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
         let read = tokio::select! {
@@ -919,23 +920,7 @@ impl LiveFeed {
         };
         let batch = match read {
             Ok(x) => x,
-            Err(e) => {
-                // Round-11.2: FATAL span outcomes become the typed
-                // lifecycle cutoff — never an endless retry.
-                if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
-                    let reason = cut.0;
-                    let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone(reason);
-                    st.version += 1;
-                    let ver = st.version;
-                    drop(st);
-                    crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
-                    let _ = self.changed.send(ver);
-                    return DriveOutcome::IncarnationClosed(reason);
-                }
-                crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
-                return DriveOutcome::SourceFailed;
-            }
+            Err(e) => return self.read_failed(e),
         };
         // No-progress partial page (finding 6): nothing scanned, nothing
         // matched — report it WITHOUT touching head/version. The driving
@@ -1001,12 +986,7 @@ impl LiveFeed {
                 ring = self.ring_budget,
                 "livefeed batch exceeds the feed ring; published without retention"
             );
-            clear_ring(
-                &self.budget,
-                &self.project_reserved,
-                &mut st,
-                &self.retained_charge,
-            );
+            st.clear_ring(&self.budget, &self.project_reserved);
             st.floor = st.head;
             return DriveOutcome::Published;
         }
@@ -1047,12 +1027,7 @@ impl LiveFeed {
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                clear_ring(
-                    &self.budget,
-                    &self.project_reserved,
-                    &mut st,
-                    &self.retained_charge,
-                );
+                st.clear_ring(&self.budget, &self.project_reserved);
                 st.floor = st.head;
                 return DriveOutcome::Published;
             }
@@ -1070,24 +1045,19 @@ impl LiveFeed {
             charge: batch_charge,
             records: prepared.into(),
         }));
-        self.retained_charge.store(st.charge, Ordering::Relaxed);
         DriveOutcome::Published
     }
 }
 
-/// Release and clear EVERY retained batch (uncached posture): nothing
-/// unreachable may keep a global reservation.
-fn clear_ring(
-    budget: &Arc<FeedMemoryBudget>,
-    proj: &ProjectRetention,
-    st: &mut FeedState,
-    gauge: &AtomicUsize,
-) {
-    for b in st.batches.drain(..) {
-        budget.release(proj, b.charge);
+impl FeedState {
+    /// Release and clear EVERY retained batch (uncached posture): nothing
+    /// unreachable may keep a global reservation.
+    fn clear_ring(&mut self, budget: &FeedMemoryBudget, proj: &ProjectRetention) {
+        for b in self.batches.drain(..) {
+            budget.release(proj, b.charge);
+        }
+        self.charge = 0;
     }
-    st.charge = 0;
-    gauge.store(0, Ordering::Relaxed);
 }
 
 impl Drop for LiveFeed {

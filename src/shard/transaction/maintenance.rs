@@ -1,4 +1,5 @@
 use super::*;
+use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed};
 impl CommitTransaction<'_> {
     pub(super) fn usage_ack(
         &mut self,
@@ -223,22 +224,21 @@ impl CommitTransaction<'_> {
     }
     #[expect(
         clippy::too_many_arguments,
-        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, the chunk the absorber copied, its bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
+        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, its new boundary, the retired bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
     )]
     #[cfg_attr(
         test,
         expect(
             clippy::disallowed_methods,
-            reason = "CommitTransaction::absorbed; the drain trace, which prints each chunk against the applied boundary, is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
+            reason = "CommitTransaction::absorbed; the drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
         )
     )]
-    pub(super) async fn absorbed(
+    pub(super) fn absorbed(
         &mut self,
         local: &mut StreamOverlay,
         hash: [u8; 16],
-        from: u64,
         upto: u64,
-        bytes: u64,
+        bytes: CopiedBytes,
         v2: bool,
     ) {
         // The first advancing boundary seals the history layout. Duplicates
@@ -247,7 +247,7 @@ impl CommitTransaction<'_> {
         #[cfg(test)]
         if std::env::var("DST_DRAIN_TRACE").is_ok() {
             eprintln!(
-                "ADVANCE {} prev={prev_absorbed} from={from} upto={upto} v2={v2} next={} trimmed={} flag={}",
+                "ADVANCE {} prev={prev_absorbed} upto={upto} v2={v2} next={} trimmed={} flag={}",
                 crate::crypto::hex(&hash[..4]),
                 local.fields.next,
                 local.fields.trimmed,
@@ -272,105 +272,73 @@ impl CommitTransaction<'_> {
             );
         }
         if lane_ok && upto > prev_absorbed {
-            // TLA-016-F1: `bytes` counts the chunk [from, upto). A chunk
-            // planned from the lane mark of a refused group starts above the
-            // boundary; one re-planned after a rescan dropped the mark of an
-            // advance still queued here starts below it. The gather flushed
-            // history for the whole chunk before submitting it, and a lane
-            // mark only ever rests on flushed chunks, so the boundary still
-            // moves, but it retires exactly the stored bytes it advances over.
-            let exact = if from == prev_absorbed {
-                Ok(bytes)
-            } else {
-                let end = upto.min(local.fields.next);
-                self.stored_frame_bytes(&hash, prev_absorbed, end).await
-            };
-            let bytes = match exact {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    self.accounting_diverged = Some(error);
-                    return;
-                }
-            };
-            let Some(remaining) = local.fields.unabsorbed_bytes.checked_sub(bytes) else {
-                self.accounting_diverged = Some(format!(
-                    "absorbed-boundary retirement exceeds the stream ledger: \
-             stream={} upto={upto} retire_bytes={bytes} ledger={}",
-                    crate::crypto::hex(&hash[..4]),
-                    local.fields.unabsorbed_bytes,
-                ));
-                return;
-            };
-            #[cfg(test)]
-            {
-                self.group_has_absorbed = true;
-            }
-            local.fields.absorbed = upto.min(local.fields.next);
-            local.fields.unabsorbed_bytes = remaining;
-            local.frames.retired_bytes += bytes;
-            if v2 {
+            let moved = self.advance_boundary(local, hash, upto, bytes);
+            if moved && v2 {
                 local.fields.history_v2 = true;
             }
-            local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
-            let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-            let trim_to = local
-                .fields
-                .trim_safe_to
-                .min(local.fields.trimmed + allowed);
-            for off in local.fields.trimmed..trim_to {
-                self.batch.delete(record_key(&hash, off));
-            }
-            self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
-            local.fields.trimmed = local.fields.trimmed.max(trim_to);
         }
     }
-    /// TLA-016-F1: the stored frame bytes of `[from, to)` at the committer's
-    /// read level, which sees every group applied before this one. Trimming
-    /// never reaches the absorbed boundary, so every offset must be present;
-    /// a missing row or a failed read settles nothing and refuses the group.
-    async fn stored_frame_bytes(&self, hash: &[u8; 16], from: u64, to: u64) -> Result<u64, String> {
-        let unreadable = |why: String| {
-            format!(
-                "absorbed-boundary retirement unreadable: stream={} range=[{from}, {to}): {why}",
-                crate::crypto::hex(&hash[..4]),
-            )
-        };
-        // The absorber rolls a refused batch's lane marks back before its
-        // next gather (`gather::Lane`), so an advance mis-starts only behind
-        // a refusal learned after it planned: two chunks while the committer
-        // answers within a tick, more only when refusals keep arriving late.
-        // The committer waits on this scan, so it reads ahead like the
-        // gather that copied the rows: the default fetches one block per
-        // request, a round trip per 4 KiB of a range no cache holds.
-        let options = slatedb::config::ScanOptions {
-            read_ahead_bytes: 2 * 1024 * 1024,
-            max_fetch_tasks: 4,
-            ..Default::default()
-        };
-        let range = record_key(hash, from)..record_key(hash, to);
-        let mut rows = self
-            .engine
-            .db
-            .scan_with_options(range, &options)
-            .await
-            .map_err(|error| unreadable(error.to_string()))?;
-        let (mut offset, mut bytes) = (from, 0u64);
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|error| unreadable(error.to_string()))?
-        {
-            if row.key != record_key(hash, offset) {
-                break;
+    /// Retire an advancing absorbed op. Only a copy that starts at the
+    /// stream's boundary moves it: the ledger loses exactly the copied
+    /// bytes and the previous boundary becomes trimmable (one advance of
+    /// lag for in-flight readers). A copy that starts elsewhere re-covers
+    /// retired bytes or leaves a gap, so it is dropped whole; one the
+    /// ledger cannot cover fails the group closed. True when it moved.
+    fn advance_boundary(
+        &mut self,
+        local: &mut StreamOverlay,
+        hash: [u8; 16],
+        upto: u64,
+        bytes: CopiedBytes,
+    ) -> bool {
+        let prev_absorbed = local.fields.absorbed;
+        match retire_absorbed(&mut local.fields, upto, &bytes) {
+            AbsorbRetirement::Exact => {}
+            AbsorbRetirement::Detached => {
+                tracing::warn!(
+                    shard = %self.engine.prefix,
+                    stream = %crate::crypto::hex(&hash[..4]),
+                    from = bytes.from,
+                    upto,
+                    prev = prev_absorbed,
+                    "dropped an absorb advance that does not start at the boundary"
+                );
+                return false;
             }
-            bytes += row.value.len() as u64;
-            offset += 1;
+            AbsorbRetirement::Diverged => {
+                self.accounting_diverged = Some(format!(
+                    "absorbed-boundary retirement exceeds the stream ledger: \
+             stream={} upto={upto} retire_bytes={} ledger={}",
+                    crate::crypto::hex(&hash[..4]),
+                    bytes.len,
+                    local.fields.unabsorbed_bytes,
+                ));
+                return false;
+            }
         }
-        if offset == to {
-            Ok(bytes)
-        } else {
-            Err(unreadable(format!("stored record {offset} is missing")))
+        #[cfg(test)]
+        {
+            self.group_has_absorbed = true;
         }
+        local.frames.retired_bytes += bytes.len;
+        local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
+        let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
+        let trim_to = local
+            .fields
+            .trim_safe_to
+            .min(local.fields.trimmed + allowed);
+        for off in local.fields.trimmed..trim_to {
+            self.batch.delete(record_key(&hash, off));
+        }
+        self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
+        local.fields.trimmed = local.fields.trimmed.max(trim_to);
+        // Only a retired advance can still land: the group holds its
+        // receipt until durable dispatch or refusal. Every other advance
+        // settled when its copy dropped above.
+        if let Some(receipt) = bytes.into_receipt() {
+            self.effects.receipts.push(receipt);
+        }
+        true
     }
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {
         let target = local.fields.trim_safe_to.min(local.fields.absorbed);

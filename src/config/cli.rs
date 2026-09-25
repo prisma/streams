@@ -264,9 +264,9 @@ pub struct CliArgs {
     pub(crate) absorb_small_bytes: Option<u64>,
 
     /// Evict resident per-stream handles idle at least this long
-    /// (seconds; 0 = never). Handles reload from the shard DB on next
-    /// touch; the durable dirty-stream index keeps unabsorbed evictees
-    /// discoverable, so this only trades a tail-row read for memory.
+    /// (seconds; 0 = never, refused under STREAMS_AUTH_MODE=enforce, item
+    /// 50). Handles reload from the shard DB on next touch; the durable
+    /// dirty-stream index keeps unabsorbed evictees discoverable.
     #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
     pub(crate) handle_idle_evict_secs: u64,
 
@@ -327,6 +327,12 @@ pub struct CliArgs {
     pub(crate) streams_auth_issuer: String,
     /// Operator-authored snapshot files (src/auth_feed.rs wire formats).
     /// All three are required when STREAMS_AUTH_MODE != off.
+    ///
+    /// A feed's age counts from the refresh pass that last read it
+    /// successfully, so an unchanged file stays fresh while it stays
+    /// readable and valid; whether its author has published a newer
+    /// generation shows only as the policy and grant `feedVersion` on
+    /// /v1/debug/auth.
     #[arg(long, env = "STREAMS_AUTH_KEYS_FILE")]
     pub(crate) streams_auth_keys_file: Option<std::path::PathBuf>,
     #[arg(long, env = "STREAMS_AUTH_POLICY_FILE")]
@@ -652,6 +658,23 @@ impl CliArgs {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    /// BILLING_MODE=required: production billing, where volatile fallbacks
+    /// are refused and billing infrastructure failures are fatal at startup.
+    /// Clap has already resolved `--billing-mode` over the variable and no
+    /// consumer re-reads the environment, so validation, the drain, /health
+    /// and /operator/billing.json agree with boot (item 32). Only the exact
+    /// word `required` selects it.
+    pub(crate) fn billing_required(&self) -> bool {
+        self.billing_mode == "required"
+    }
+
+    /// ROLLUP=1: this instance runs the usage rollup consumer and month
+    /// closer, so required-mode readiness waits for its rollup database.
+    /// Resolved by clap like `billing_required`; only the exact word `1`.
+    pub(crate) fn runs_rollup(&self) -> bool {
+        self.rollup == "1"
     }
 }
 

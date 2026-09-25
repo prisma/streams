@@ -21,6 +21,7 @@ python3 -m unittest discover -s scripts/quality -v
 # change affects, and scripts/release-gate.sh requires `check --fresh`
 # (verification/README.md, "Three levels of enforcement").
 python3 scripts/quality/formal.py check
+python3 -m unittest discover -s scripts/effective-config -v
 # The JSON goes to a file, so a failed clippy would otherwise stop here with
 # no finding on screen: the ratchet always reads it and prints what the
 # compiler refused (its rendered file:line and help), then both statuses

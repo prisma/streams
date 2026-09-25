@@ -1,0 +1,1104 @@
+{
+  "argv": [
+    "--listen",
+    "127.0.0.1:9872",
+    "--s3-endpoint",
+    "http://127.0.0.1:9873",
+    "--bucket",
+    "lfcanary-placeholder",
+    "--flush-interval-ms",
+    "1",
+    "--wal-flush-gap-ms",
+    "2"
+  ],
+  "env": {
+    "ABSORB_GATHER_MAX_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "8388608"
+    },
+    "ABSORB_GLOBAL_BUDGET_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "100859904"
+    },
+    "ABSORB_GLOBAL_GATHERS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "ADMIT_RSS_SHED_MB": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "500"
+    },
+    "AUTH_TOKEN": {
+      "provenance": "server",
+      "value": "placeholder-lfcanary-debug-token-0123456789"
+    },
+    "CELL_ID": {
+      "provenance": "server",
+      "value": "cell-a"
+    },
+    "COMPACTOR_MAX_CONCURRENT": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "COMPACT_BYTES_TO_FETCH": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1048576"
+    },
+    "COMPACT_MAX_FETCH_TASKS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "COMPACT_MAX_SST_SIZE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "COMPACT_MAX_SUBCOMPACTIONS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "FLEET_ALLOW_HTTP_PEERS": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "FLEET_AUTH_MODE": {
+      "provenance": "server",
+      "value": "workload"
+    },
+    "FLEET_MAX": {
+      "provenance": "server",
+      "value": "3"
+    },
+    "FLEET_MIN": {
+      "provenance": "server",
+      "value": "3"
+    },
+    "FLEET_PREFIX": {
+      "provenance": "server",
+      "value": "fleet"
+    },
+    "HISTORY_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "INITIAL_SHARDS": {
+      "provenance": "server",
+      "value": "8"
+    },
+    "INSTANCE_NAME": {
+      "provenance": "server",
+      "value": "streams-1"
+    },
+    "L0_MAX_SSTS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "32"
+    },
+    "L0_SST_SIZE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "8388608"
+    },
+    "MAX_RECORD_PAYLOAD_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "131072"
+    },
+    "MAX_UNFLUSHED_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "16777216"
+    },
+    "MEMPROFILE_CERT": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "compute-1g"
+    },
+    "POSTINGS_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "67108864"
+    },
+    "PROJECT_ID": {
+      "provenance": "server",
+      "value": "proj-lc"
+    },
+    "REBALANCE_LAG_SECS": {
+      "provenance": "server",
+      "value": "1000000"
+    },
+    "REBALANCE_RETURN_SECS": {
+      "provenance": "server",
+      "value": "1000000"
+    },
+    "SCALE_COOLDOWN_SECS": {
+      "provenance": "server",
+      "value": "5"
+    },
+    "SCALE_EVAL_SECS": {
+      "provenance": "server",
+      "value": "5"
+    },
+    "SCALE_HOT_EVALS": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "SCALE_HOT_PCT": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "SCALE_RATE_WINDOW_SECS": {
+      "provenance": "server",
+      "value": "10"
+    },
+    "SELF_URL": {
+      "provenance": "server",
+      "value": "http://127.0.0.1:9872"
+    },
+    "SHARED_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "134217728"
+    },
+    "SLATEDB_RT_THREADS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "4"
+    },
+    "SSE_FEED_PROJECT_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "SSE_FEED_RING_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1048576"
+    },
+    "SSE_FEED_TOTAL_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "67108864"
+    },
+    "SSE_HEARTBEAT_MS": {
+      "provenance": "server",
+      "value": "1000"
+    },
+    "SSE_MAX_CONNECTIONS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1200"
+    },
+    "STORE_BULK_INFLIGHT_MAX_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "STREAMS_AUTH_GRANTS_FILE": {
+      "provenance": "server",
+      "value": "/tmp/lfcanary-placeholder/a/grants.json"
+    },
+    "STREAMS_AUTH_ISSUER": {
+      "provenance": "server",
+      "value": "https://auth.prisma.io"
+    },
+    "STREAMS_AUTH_KEYS_FILE": {
+      "provenance": "server",
+      "value": "/tmp/lfcanary-placeholder/a/keys.json"
+    },
+    "STREAMS_AUTH_MODE": {
+      "provenance": "server",
+      "value": "enforce"
+    },
+    "STREAMS_AUTH_POLICY_FILE": {
+      "provenance": "server",
+      "value": "/tmp/lfcanary-placeholder/a/policies.json"
+    },
+    "STREAMS_AUTH_REFRESH_SECS": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "STREAMS_CERTIFICATION_MODE": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "STREAMS_CERT_SEALED_PUBLISH_DELAY_MS": {
+      "provenance": "server",
+      "value": "1500"
+    },
+    "STREAMS_RELEASE_POSTURE": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "TELEMETRY_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "16777216"
+    },
+    "USAGE_STREAM_KEY": {
+      "provenance": "server",
+      "value": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="
+    },
+    "WORKLOAD_TOKEN_FILE": {
+      "provenance": "server",
+      "value": "/tmp/lfcanary-placeholder/a/workload.jwt"
+    }
+  },
+  "family": "livefeed-canary",
+  "family_sha256": "b0a4d6f6bf7d820984ed7524d25e0e26b3681c879eb7bc51f9e5afdb8957e560",
+  "names": [
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GATHER_MAX_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GLOBAL_BUDGET_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GLOBAL_GATHERS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ADMIT_RSS_SHED_MB",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "AUTH_TOKEN",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "CELL_ID",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACTOR_MAX_CONCURRENT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_BYTES_TO_FETCH",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_FETCH_TASKS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_SST_SIZE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_SUBCOMPACTIONS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FLEET_ALLOW_HTTP_PEERS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FLEET_AUTH_MODE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FLEET_MAX",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FLEET_MIN",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FLEET_PREFIX",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "HISTORY_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "INITIAL_SHARDS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "INSTANCE_NAME",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "L0_MAX_SSTS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "L0_SST_SIZE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MAX_RECORD_PAYLOAD_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MAX_UNFLUSHED_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MEMPROFILE_CERT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "POSTINGS_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "PROJECT_ID",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "REBALANCE_LAG_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "REBALANCE_RETURN_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SCALE_COOLDOWN_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SCALE_EVAL_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SCALE_HOT_EVALS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SCALE_HOT_PCT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SCALE_RATE_WINDOW_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SELF_URL",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SHARED_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATEDB_RT_THREADS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_PROJECT_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_RING_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_TOTAL_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_HEARTBEAT_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_MAX_CONNECTIONS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STORE_BULK_INFLIGHT_MAX_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_GRANTS_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_ISSUER",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_KEYS_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_MODE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_POLICY_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_REFRESH_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_CERTIFICATION_MODE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_CERT_SEALED_PUBLISH_DELAY_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_RELEASE_POSTURE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "TELEMETRY_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "USAGE_STREAM_KEY",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "WORKLOAD_TOKEN_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    }
+  ],
+  "new": {
+    "leaves": 155,
+    "verdict": "accepted"
+  },
+  "new_leaves": {
+    "admission.absorb_lag_secs": "900",
+    "admission.limit_burst_secs": "2.0",
+    "admission.limit_bytes_per_sec": "5000000.0",
+    "admission.limit_recs_per_sec": "5000.0",
+    "admission.limit_reqs_per_sec": "1000.0",
+    "admission.maint_release_pct": "75",
+    "admission.unabsorbed_bytes_instance": "536870912",
+    "admission.unabsorbed_bytes_shard": "268435456",
+    "billing.alert_usage_outbox_dirty": "1000",
+    "billing.meter_enabled": "true",
+    "billing.metrics_interval_secs": "15",
+    "billing.month_close_grace_ms": "86400000",
+    "billing.outbox_sweep_secs": "300",
+    "billing.path_prefix_env": "None",
+    "billing.sweep_discovery_max": "8",
+    "billing.sweep_maint_resident": "2",
+    "billing.sweep_resident_quantum": "4",
+    "billing.telemetry_cache_bytes": "16777216",
+    "billing.telemetry_drain_secs": "2",
+    "cli.absorb_age_secs": "300",
+    "cli.absorb_bytes": "4194304",
+    "cli.absorb_concurrency": "None",
+    "cli.absorb_gather_max_bytes": "8388608",
+    "cli.absorb_pace_ms": "0",
+    "cli.absorb_pace_window_ms": "50",
+    "cli.absorb_pass_bytes": "None",
+    "cli.absorb_read_par": "8",
+    "cli.absorb_small_bytes": "None",
+    "cli.access_key_id": "\"test\"",
+    "cli.account_id": "\"acct_local\"",
+    "cli.admit_max_inflight": "0",
+    "cli.admit_max_inflight_per_stream": "64",
+    "cli.admit_rss_shed_mb": "500",
+    "cli.auth_token": "Some(\"placeholder-lfcanary-debug-token-0123456789\")",
+    "cli.billing_mode": "\"off\"",
+    "cli.bucket": "\"lfcanary-placeholder\"",
+    "cli.cell_id": "\"cell-a\"",
+    "cli.compactions_gc_interval_secs": "30",
+    "cli.compactions_gc_min_age_secs": "120",
+    "cli.compactor_max_concurrent": "1",
+    "cli.compactor_poll_ms": "2500",
+    "cli.conformance_default_key": "None",
+    "cli.data_bucket": "None",
+    "cli.fleet_auth_mode": "\"workload\"",
+    "cli.fleet_internal_token": "None",
+    "cli.fleet_max": "3",
+    "cli.fleet_prefix": "Some(\"fleet\")",
+    "cli.flush_interval_ms": "1",
+    "cli.gc_quiet_interval_secs": "600",
+    "cli.handle_idle_evict_secs": "600",
+    "cli.handle_max_resident": "65536",
+    "cli.initial_shards": "Some(8)",
+    "cli.instance_name": "\"streams-1\"",
+    "cli.l0_max_ssts": "32",
+    "cli.l0_max_ssts_per_key": "0",
+    "cli.l0_sst_size_bytes": "8388608",
+    "cli.listen": "\"127.0.0.1:9872\"",
+    "cli.manifest_poll_ms": "2000",
+    "cli.max_record_payload_bytes": "Some(131072)",
+    "cli.max_request_body_bytes": "33554432",
+    "cli.max_unflushed_bytes": "16777216",
+    "cli.ops_bucket": "None",
+    "cli.path_prefix": "None",
+    "cli.project_id": "\"proj-lc\"",
+    "cli.project_memory_pressure_bytes": "0",
+    "cli.project_memory_release_pct": "75",
+    "cli.region": "\"us-east-1\"",
+    "cli.release_posture": "true",
+    "cli.rollup": "\"0\"",
+    "cli.s3_endpoint": "\"http://127.0.0.1:9873\"",
+    "cli.scale_cpu_sustain_secs": "20",
+    "cli.scale_edge_latency_ms": "1000",
+    "cli.scale_edge_slots": "140",
+    "cli.scale_in_cpu_pct": "50",
+    "cli.scale_in_secs": "60",
+    "cli.scale_lat_sustain_secs": "20",
+    "cli.scale_latency_ms": "250",
+    "cli.scale_out_cpu_pct": "75",
+    "cli.scale_rps_capacity": "0",
+    "cli.secret_access_key": "\"test\"",
+    "cli.shard_bucket": "None",
+    "cli.shared_cache_bytes": "134217728",
+    "cli.sse_max_connections": "1200",
+    "cli.streams_auth_grants_file": "Some(\"/tmp/lfcanary-placeholder/a/grants.json\")",
+    "cli.streams_auth_issuer": "\"https://auth.prisma.io\"",
+    "cli.streams_auth_keys_file": "Some(\"/tmp/lfcanary-placeholder/a/keys.json\")",
+    "cli.streams_auth_mode": "\"enforce\"",
+    "cli.streams_auth_policy_file": "Some(\"/tmp/lfcanary-placeholder/a/policies.json\")",
+    "cli.streams_auth_refresh_secs": "1",
+    "cli.streams_cursor_key": "None",
+    "cli.tail_ring_bytes": "0",
+    "cli.telemetry_region": "\"\"",
+    "cli.trim_global_budget": "65536",
+    "cli.trim_per_op": "8192",
+    "cli.usage_stream_key": "Some(\"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=\")",
+    "cli.wal_flush_gap_ms": "2",
+    "cli.wal_gather_skip_bytes": "1048576",
+    "cli.wal_gather_skip_reqs": "32",
+    "cli.wal_gc_interval_secs": "30",
+    "cli.wal_gc_min_age_secs": "60",
+    "cli.wal_group_commit": "0",
+    "cli.wal_post_ack_gather_ms": "0",
+    "cli.workload_token_file": "Some(\"/tmp/lfcanary-placeholder/a/workload.jwt\")",
+    "crypto.frame_compress": "false",
+    "engine.compact_bytes_to_fetch": "1048576",
+    "engine.compact_max_fetch_tasks": "1",
+    "engine.compact_max_sst_size": "33554432",
+    "engine.compact_max_subcompactions": "1",
+    "engine.compactor_max_concurrent": "1",
+    "engine.compactor_poll_ms": "2500",
+    "engine.slatedb_rt_threads": "4",
+    "fleet.allow_http_peers": "true",
+    "fleet.fleet_min": "3",
+    "fleet.peer_domains_raw": "None",
+    "fleet.rebalance_lag_secs": "1000000",
+    "fleet.rebalance_move_cooldown_secs": "60",
+    "fleet.rebalance_return_secs": "1000000",
+    "fleet.self_url": "\"http://127.0.0.1:9872\"",
+    "history.absorb_global_budget_bytes": "100859904",
+    "history.absorb_global_gathers": "1",
+    "history.absorb_pause_initial": "false",
+    "history.cache_bytes": "33554432",
+    "history.compactor_off": "false",
+    "history.gc_interval": "Some(600s)",
+    "http.binary_sha256": "\"unknown\"",
+    "http.debug_exit": "false",
+    "http.debug_timing": "false",
+    "http.h1_header_timeout": "120s",
+    "http.h1_max_buf": "65536",
+    "http.tail_max_bytes": "1048576",
+    "postings.cache_bytes": "67108864",
+    "runtime.cert_sealed_publish_delay_ms_raw": "Some(\"1500\")",
+    "runtime.certification_mode": "Some(\"1\")",
+    "runtime.memprofile_cert": "Some(\"compute-1g\")",
+    "runtime.tokio_workers": "None",
+    "scaler.cold_evals": "180",
+    "scaler.cold_pct": "0.15",
+    "scaler.cooldown_secs": "5",
+    "scaler.eval_secs": "5",
+    "scaler.hot_evals": "1",
+    "scaler.hot_pct": "0.01",
+    "scaler.max_segments": "64",
+    "scaler.rate_window_secs": "10.0",
+    "shard.open_deadline": "180s",
+    "shard.open_wait_ms": "10000",
+    "shard.unready_exit_after_secs": "300",
+    "sse.feed_project_bytes_raw": "Some(\"33554432\")",
+    "sse.feed_ring_bytes": "1048576",
+    "sse.feed_total_bytes": "67108864",
+    "sse.feed_total_bytes_raw": "Some(\"67108864\")",
+    "sse.heartbeat_ms": "1000",
+    "storage.bulk_inflight_max_bytes": "33554432",
+    "storage.bulk_nominal_get_bytes": "33554432",
+    "storage.pool_idle_secs": "4",
+    "storage.store_max_concurrent": "0"
+  },
+  "notes": [
+    "The canary spreads ...process.env first (non-hermetic): the invoking shell's variables reach the server too. Modelled hermetically here.",
+    "AUTH_TOKEN is the canary's DEBUG_TOKEN, substituted by a placeholder; USAGE_STREAM_KEY is the canary's own 32 x 0x09 test key. Temp-dir paths use a fixed stand-in."
+  ],
+  "old": {
+    "leaves": 156,
+    "verdict": "not-evaluated"
+  },
+  "old_leaves": {
+    "admission.absorb_lag_secs": "900",
+    "admission.limit_burst_secs": "2.0",
+    "admission.limit_bytes_per_sec": "5000000.0",
+    "admission.limit_recs_per_sec": "5000.0",
+    "admission.limit_reqs_per_sec": "1000.0",
+    "admission.maint_release_pct": "75",
+    "admission.unabsorbed_bytes_instance": "536870912",
+    "admission.unabsorbed_bytes_shard": "268435456",
+    "billing.alert_usage_outbox_dirty": "1000",
+    "billing.meter_enabled": "true",
+    "billing.metrics_interval_secs": "15",
+    "billing.mode_env": "None",
+    "billing.month_close_grace_ms": "86400000",
+    "billing.outbox_sweep_secs": "300",
+    "billing.path_prefix_env": "None",
+    "billing.rollup_env": "None",
+    "billing.sweep_discovery_max": "8",
+    "billing.sweep_maint_resident": "2",
+    "billing.sweep_resident_quantum": "4",
+    "billing.telemetry_cache_bytes": "16777216",
+    "billing.telemetry_drain_secs": "2",
+    "cli.absorb_age_secs": "300",
+    "cli.absorb_bytes": "4194304",
+    "cli.absorb_concurrency": "6",
+    "cli.absorb_gather_max_bytes": "8388608",
+    "cli.absorb_pace_ms": "0",
+    "cli.absorb_pace_window_ms": "50",
+    "cli.absorb_pass_bytes": "268435456",
+    "cli.absorb_read_par": "8",
+    "cli.absorb_small_bytes": "1048576",
+    "cli.access_key_id": "\"test\"",
+    "cli.account_id": "\"acct_local\"",
+    "cli.admit_max_inflight": "0",
+    "cli.admit_max_inflight_per_stream": "64",
+    "cli.admit_rss_shed_mb": "500",
+    "cli.auth_token": "Some(\"placeholder-lfcanary-debug-token-0123456789\")",
+    "cli.billing_mode": "\"off\"",
+    "cli.bucket": "\"lfcanary-placeholder\"",
+    "cli.cell_id": "\"cell-a\"",
+    "cli.compactions_gc_interval_secs": "30",
+    "cli.compactions_gc_min_age_secs": "120",
+    "cli.compactor_max_concurrent": "1",
+    "cli.compactor_poll_ms": "2500",
+    "cli.conformance_default_key": "None",
+    "cli.data_bucket": "None",
+    "cli.fleet_auth_mode": "\"workload\"",
+    "cli.fleet_internal_token": "None",
+    "cli.fleet_max": "3",
+    "cli.fleet_prefix": "Some(\"fleet\")",
+    "cli.flush_interval_ms": "1",
+    "cli.gc_quiet_interval_secs": "600",
+    "cli.handle_idle_evict_secs": "600",
+    "cli.handle_max_resident": "65536",
+    "cli.initial_shards": "Some(8)",
+    "cli.instance_name": "\"streams-1\"",
+    "cli.l0_max_ssts": "32",
+    "cli.l0_max_ssts_per_key": "0",
+    "cli.l0_sst_size_bytes": "8388608",
+    "cli.listen": "\"127.0.0.1:9872\"",
+    "cli.manifest_poll_ms": "2000",
+    "cli.max_record_payload_bytes": "Some(131072)",
+    "cli.max_request_body_bytes": "33554432",
+    "cli.max_unflushed_bytes": "16777216",
+    "cli.ops_bucket": "None",
+    "cli.path_prefix": "None",
+    "cli.project_id": "\"proj-lc\"",
+    "cli.project_memory_pressure_bytes": "0",
+    "cli.project_memory_release_pct": "75",
+    "cli.region": "\"us-east-1\"",
+    "cli.release_posture": "true",
+    "cli.rollup": "\"0\"",
+    "cli.s3_endpoint": "\"http://127.0.0.1:9873\"",
+    "cli.scale_cpu_sustain_secs": "20",
+    "cli.scale_edge_latency_ms": "1000",
+    "cli.scale_edge_slots": "140",
+    "cli.scale_in_cpu_pct": "50",
+    "cli.scale_in_secs": "60",
+    "cli.scale_lat_sustain_secs": "20",
+    "cli.scale_latency_ms": "250",
+    "cli.scale_out_cpu_pct": "75",
+    "cli.scale_rps_capacity": "0",
+    "cli.secret_access_key": "\"test\"",
+    "cli.shard_bucket": "None",
+    "cli.shared_cache_bytes": "134217728",
+    "cli.sse_max_connections": "1200",
+    "cli.streams_auth_grants_file": "Some(\"/tmp/lfcanary-placeholder/a/grants.json\")",
+    "cli.streams_auth_issuer": "\"https://auth.prisma.io\"",
+    "cli.streams_auth_keys_file": "Some(\"/tmp/lfcanary-placeholder/a/keys.json\")",
+    "cli.streams_auth_mode": "\"enforce\"",
+    "cli.streams_auth_policy_file": "Some(\"/tmp/lfcanary-placeholder/a/policies.json\")",
+    "cli.streams_auth_refresh_secs": "1",
+    "cli.streams_cursor_key": "None",
+    "cli.tail_ring_bytes": "0",
+    "cli.telemetry_region": "\"\"",
+    "cli.trim_global_budget": "65536",
+    "cli.trim_per_op": "8192",
+    "cli.usage_stream_key": "Some(\"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=\")",
+    "cli.wal_flush_gap_ms": "2",
+    "cli.wal_gather_skip_bytes": "1048576",
+    "cli.wal_gather_skip_reqs": "32",
+    "cli.wal_gc_interval_secs": "30",
+    "cli.wal_gc_min_age_secs": "60",
+    "cli.wal_group_commit": "0",
+    "cli.wal_post_ack_gather_ms": "0",
+    "cli.workload_token_file": "Some(\"/tmp/lfcanary-placeholder/a/workload.jwt\")",
+    "crypto.frame_compress": "false",
+    "engine.compact_bytes_to_fetch": "1048576",
+    "engine.compact_max_fetch_tasks": "1",
+    "engine.compact_max_sst_size": "33554432",
+    "engine.compact_max_subcompactions": "1",
+    "engine.compactor_max_concurrent": "1",
+    "engine.compactor_poll_ms": "2500",
+    "engine.slatedb_rt_threads": "4",
+    "fleet.allow_http_peers": "true",
+    "fleet.fleet_min": "3",
+    "fleet.peer_domains_raw": "None",
+    "fleet.rebalance_lag_secs": "1000000",
+    "fleet.rebalance_move_cooldown_secs": "60",
+    "fleet.rebalance_return_secs": "1000000",
+    "fleet.self_url": "\"http://127.0.0.1:9872\"",
+    "history.absorb_global_budget_bytes": "100859904",
+    "history.absorb_global_gathers": "1",
+    "history.absorb_pause_initial": "false",
+    "history.cache_bytes": "33554432",
+    "history.compactor_off": "false",
+    "history.gc_interval": "Some(600s)",
+    "http.binary_sha256": "\"unknown\"",
+    "http.debug_exit": "false",
+    "http.debug_timing": "false",
+    "http.h1_max_buf": "65536",
+    "http.tail_max_bytes": "1048576",
+    "postings.cache_bytes": "67108864",
+    "runtime.cert_sealed_publish_delay_ms_raw": "Some(\"1500\")",
+    "runtime.certification_mode": "Some(\"1\")",
+    "runtime.memprofile_cert": "Some(\"compute-1g\")",
+    "runtime.tokio_workers": "None",
+    "scaler.cold_evals": "180",
+    "scaler.cold_pct": "0.15",
+    "scaler.cooldown_secs": "5",
+    "scaler.eval_secs": "5",
+    "scaler.hot_evals": "1",
+    "scaler.hot_pct": "0.01",
+    "scaler.max_segments": "64",
+    "scaler.rate_window_secs": "10.0",
+    "shard.open_deadline": "180s",
+    "shard.open_wait_ms": "10000",
+    "shard.unready_exit_after_secs": "300",
+    "sse.feed_project_bytes_raw": "Some(\"33554432\")",
+    "sse.feed_ring_bytes": "1048576",
+    "sse.feed_total_bytes": "67108864",
+    "sse.feed_total_bytes_raw": "Some(\"67108864\")",
+    "sse.heartbeat_ms": "1000",
+    "storage.bulk_inflight_max_bytes": "33554432",
+    "storage.bulk_nominal_get_bytes": "33554432",
+    "storage.pool_idle_secs": "4",
+    "storage.store_max_concurrent": "0"
+  },
+  "omitted": {},
+  "overridden": [],
+  "rows": [
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "6",
+      "path": "cli.absorb_concurrency"
+    },
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "268435456",
+      "path": "cli.absorb_pass_bytes"
+    },
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "1048576",
+      "path": "cli.absorb_small_bytes"
+    },
+    {
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "effective": "equal-effective",
+      "kind": "paired",
+      "new": "\"off\"",
+      "old": "None",
+      "path": "billing.mode_env ~ cli.billing_mode"
+    },
+    {
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "effective": "equal-effective",
+      "kind": "paired",
+      "new": "\"0\"",
+      "old": "None",
+      "path": "billing.rollup_env ~ cli.rollup"
+    },
+    {
+      "commit": "71345c03",
+      "edge_record": 12,
+      "kind": "added",
+      "new": "120s",
+      "old": "<absent>",
+      "old_semantics": "no request-head deadline and no idle keep-alive close (hyper's 30 s header_read_timeout was dropped for want of a timer)",
+      "path": "http.h1_header_timeout"
+    }
+  ],
+  "sources": [
+    [
+      "bench/canary/livefeed-canary.mjs",
+      "const instEnv = (name) => ({"
+    ]
+  ]
+}

@@ -21,6 +21,10 @@
 #   $SOAK_HOME/app-server-<region>/ copy of deploy/app-server (bun install'd)
 #   $SOAK_HOME/app-gen-<region>/    copy of deploy/app-gen    (bun install'd)
 #
+# The two app copies are (re)staged from deploy/ on every deploy by
+# bench/stage-app.sh, which refuses one that still differs: a copy staged
+# before item 39 keeps the wrapper that holds every death (RUNBOOK §7.2).
+#
 # Run regions SEQUENTIALLY. Parallel `bunx` calls race on the shared
 # package cache and fail with EEXIST (deploy/README.md).
 set -euo pipefail
@@ -142,6 +146,7 @@ if [ "${SCALE_KNOBS:-0}" = "1" ]; then
 fi
 
 if [ "$ROLE" = server ]; then
+  "$HERE/../stage-app.sh" app-server "$S/app-server-$R"
   cd "$S/app-server-$R"
   # MANIFEST_POLL_MS / COMPACTOR_POLL_MS are deliberately NOT set: the
   # binary defaults (2000/2500) ARE the field idle-cost posture
@@ -189,6 +194,7 @@ else
   # An empty BENCH_TIERS env still selects the (empty) tier ramp in
   # awsbench and runs nothing — only pass the var when it has tiers.
   TIERARG=(); [ -n "$BENCH_TIERS" ] && TIERARG=(--env "BENCH_TIERS=$BENCH_TIERS")
+  "$HERE/../stage-app.sh" app-gen "$S/app-gen-$R"
   cd "$S/app-gen-$R"
   # Same retry-with-evidence contract as the server deploy above.
   DEPLOYED=0

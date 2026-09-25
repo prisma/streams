@@ -52,8 +52,8 @@ pub(crate) fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bo
 /// Raw scalar-offset control (the pinned single-segment surface).
 /// Round-11.3: the ONE raw vocabulary — an epoch/segment offset token
 /// with the exact field layout of the scalar control. For segment 0
-/// the token is byte-identical to the scalar encoding
-/// (`encode_ep(0, o) == Offset::encode(o)`), so unsplit raw
+/// the token is the scalar token by construction (one codec,
+/// `offsets::encode(seg_id, next)`), so unsplit raw
 /// transcripts do not change; successor segments carry the
 /// segment-aware token the legacy lineage streamer already proved.
 #[expect(
@@ -67,7 +67,7 @@ pub(crate) fn sse_control_ep(
     up_to_date: bool,
     closed: bool,
 ) -> String {
-    let tok = crate::offsets::encode_ep(seg_id, crate::offsets::Offset::before(next));
+    let tok = crate::offsets::encode(seg_id, next);
     let mut fields = vec![format!("\"streamNextOffset\":\"{tok}\"")];
     if !closed {
         fields.push(format!(
@@ -82,4 +82,21 @@ pub(crate) fn sse_control_ep(
         fields.push("\"streamClosed\":true".to_string());
     }
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Segment 0's control names the scalar token and a successor segment
+    /// names its ordinal: raw transcripts are pinned byte for byte.
+    #[test]
+    fn raw_control_names_next_in_its_segment() {
+        assert_eq!(
+            super::sse_control_ep(0, 42, None, true, true),
+            "event: control\ndata:{\"streamNextOffset\":\"000000000000000000N0000000\",\"upToDate\":true,\"streamClosed\":true}\n\n"
+        );
+        assert_eq!(
+            super::sse_control_ep(3, 6, None, false, true),
+            "event: control\ndata:{\"streamNextOffset\":\"000000R0000000000030000000\",\"streamClosed\":true}\n\n"
+        );
+    }
 }

@@ -68,8 +68,11 @@ pausectl() { # <instance url> <on|off> <label> — POST until HTTP 200
 
 hdr "handoff-$RUN  LB=$LB  peak target=${PEAK_MB}MB"
 
-# 0a) fleet health: a PREVIOUS attempt's aborted owner is a corpse
-# (its supervisor serves the crash diagnostic) until revived with
+# 0a) fleet health: a PREVIOUS attempt's aborted owner is no longer
+# left as a corpse: since item 39 the wrapper exits after a ready
+# binary's death and Compute replaces the instance, which may still be
+# waking here. A corpse (its supervisor serving the crash diagnostic)
+# is now a binary that died at boot, and stays one until revived with
 # deploy-fleet.sh ONLY=N + urls + lb. Fail here with the remedy
 # instead of dying mid-pause with a curl exit code (R30 attempt 3).
 for i in 1 2 3 4; do

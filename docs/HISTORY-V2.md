@@ -146,10 +146,32 @@ Consequences, each load-bearing:
 **Flush many streams together.** The unit of work changes from
 open-write-flush-advance per stream to: gather records across hundreds
 of streams → one shared WriteBatch → one flush → one
-`CommitOp::AbsorbedBatch { streams: Vec<(IncarnationHash, Offset)> }`
-advancing every covered boundary in one shard commit. Trim stays
-deferred and bounded as today; retries stay idempotent via the
-submitted high-water mark.
+`CommitOp::AbsorbedBatch { streams: Vec<AbsorbedAdvance> }`, each entry
+(stream hash, new upto, `CopiedBytes { from, len }`), advancing every
+covered boundary in one shard commit. Trim stays deferred and bounded
+as today. An overlapping re-absorption is not idempotent: the committer
+retires an advance only when its copy starts exactly at the stream's
+absorbed boundary and drops any other advance whole, so a regather that
+starts below an in-flight advance is wasted. Postings pages tile only
+when each gather starts where the previous one ended; a dropped
+advance's pages stay in the partition and overlap the next gather's,
+which readers treat as corruption (envelope fallback). The absorber
+therefore gathers from its submitted high-water mark and rolls a mark
+back only when no advance of that stream can still land: every
+submitted advance carries a receipt, counted per stream bucket, that
+the committer drops at staging, with a refused group, or after durable
+dispatch (release hold HOLD-SPLIT-500). Known residual (review of the
+fix, low): the rollback does not delete pages. A refused group that held
+a stream's advance with a later advance of the same stream chained
+behind it (the committer lagging one absorber tick) heals by
+regathering from the durable boundary, and the chained advance's pages,
+flushed before submit, overlap the heal's. So do a bucket-sharing
+stream's dropped gather and an engine retirement that drops two chained
+advances before the next owner regathers. Records and the maintenance
+ledger stay exact; that key's page bucket reads through the envelope
+fallback (POSTINGS_CORRUPT) until its pages are rewritten. The fix, a
+heal that deletes the stream's pages in [durable, mark) in its own
+WriteBatch, is recorded as follow-up work.
 
 **Read through the already-open partition.** The shard owner serves
 history reads from its own open Db — no per-stream DbReader, no
@@ -221,8 +243,9 @@ deterministic crash/fault points at: after shared write before flush;
 after flush before AbsorbedBatch; after AbsorbedBatch durable before
 publication; after publication before trim; during trim + concurrent
 merged read; during fencing; during split/clone. At every point: acked
-records readable; never `completed=true` across a gap; re-absorption
-idempotent; no client-visible duplication; restart rediscovers every
+records readable; never `completed=true` across a gap; a repeated
+advance retires nothing twice (it starts at the boundary or is dropped
+whole); no client-visible duplication; restart rediscovers every
 unfinished boundary without customer keys.
 
 ## Rollout

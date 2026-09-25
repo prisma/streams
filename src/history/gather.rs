@@ -9,13 +9,13 @@ use super::{
     ABSORB_BUILD_MULTIPLIER, ABSORB_BYTES_TOTAL, AbsorbReservation, Absorber,
     CANONICAL_BYTES_WRITTEN, DISCOVERY_PAGE_STREAMS, GATHER_LAST_ACTUAL, GATHER_LAST_FLUSH_MS,
     GATHER_LAST_PACE_MS, GATHER_LAST_READ_MS, GATHER_LAST_WRITE_MS, GATHER_PER_STREAM_CAP,
-    GatherOutcome, HISTORY_FLUSH_STALL_MS, HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS,
-    POSTINGS_BYTES_WRITTEN, POSTINGS_PAGES_WRITTEN, POSTINGS_RUNS_WRITTEN, PendingAbsorb,
-    hist2_record_key,
+    HISTORY_FLUSH_STALL_MS, HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS, POSTINGS_BYTES_WRITTEN,
+    POSTINGS_PAGES_WRITTEN, POSTINGS_RUNS_WRITTEN, PendingAbsorb, hist2_record_key,
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
-use crate::shard::{FrameReadResult, StreamHandle, read_frames_range};
+use crate::shard::record::{RangeReadError, RecordCorruption};
+use crate::shard::{CopiedBytes, FrameReadResult, StreamHandle, read_frames_range};
 use bytes::Bytes;
 use slatedb::config::WriteOptions;
 use slatedb::{Db, WriteBatch};
@@ -23,7 +23,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot::{self, error::TryRecvError};
 
 /// Rough WriteBatch bookkeeping cost per entry, on top of key+value.
 const ENTRY_OVERHEAD: usize = 64;
@@ -39,74 +38,8 @@ struct ReadPlan {
     hash: [u8; 16],
     handle: Arc<StreamHandle>,
     from: u64,
-    /// The read's end: the durable end, or a refused chunk's end (`LaneMark`).
     upto: u64,
-    /// The durable end: a chunk that stops below it leaves the stream pending.
-    next: u64,
     route: RouteHash,
-}
-
-/// One chunk advance as submitted: (hash, chunk start, new upto, frame bytes).
-type Advance = ([u8; 16], u64, u64, u64);
-
-/// Where a stream's next chunk on one lane starts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct LaneMark {
-    /// The highest `upto` the lane submitted, or the start of the refused
-    /// chunk it was rolled back to.
-    pub(super) from: u64,
-    /// True for the v2 shared partition; a lane trusts only its own mark.
-    pub(super) v2: bool,
-    /// Set by a rollback: the next chunk reads no further than the refused
-    /// chunk's end, so it replays that chunk row for row.
-    pub(super) replay_to: Option<u64>,
-}
-
-/// One submitted batch: its chunks, and the receipt its committer group
-/// answers once written or drops unanswered when refused.
-struct Submission {
-    receipt: oneshot::Receiver<()>,
-    chunks: Vec<Advance>,
-}
-
-/// The absorber's lane: every stream's mark, and the submissions the
-/// committer has not answered yet, oldest first.
-///
-/// A mark rests on flushed history: it only rises to the end of a chunk
-/// whose rows and postings pages the gather flushed before submitting. A
-/// refused group lands nothing, so a mark it raised must come back down, or
-/// every later chunk starts above the durable boundary and the first
-/// accepted advance recounts every refused chunk inside the committer. It
-/// comes down only to the refused chunk's start, and only while it still
-/// rests on that chunk's end, and the next chunk replays exactly that chunk:
-/// the same rows, so the same postings pages, overwritten in place. Flushed
-/// pages above the chunk's end (a later chunk still in flight, or a flush
-/// that failed after writing) are never straddled by the replay. A wider
-/// re-gather (a rescan's, or a new owner's) leaves pages overlapping them,
-/// which describe the same rows and admit as one index (`append_page_runs`).
-#[derive(Default)]
-pub(super) struct Lane {
-    pub(super) marks: HashMap<[u8; 16], LaneMark>,
-    in_flight: Vec<Submission>,
-}
-
-impl Lane {
-    /// Roll `hash`'s v2 mark back to replay the refused chunk `[from, upto)`
-    /// if the mark still rests on that chunk's end; true when it did.
-    fn replay(&mut self, hash: [u8; 16], from: u64, upto: u64) -> bool {
-        let Some(mark) = self.marks.get_mut(&hash) else {
-            return false;
-        };
-        let rests_on_chunk = mark.v2 && mark.from == upto;
-        if rests_on_chunk {
-            *mark = LaneMark {
-                from,
-                v2: true,
-                replay_to: Some(upto),
-            };
-        }
-        rests_on_chunk
-    }
 }
 
 /// One chunk's postings runs per routing-key hash.
@@ -116,6 +49,59 @@ type KeyRuns = Vec<([u8; 16], Vec<AbsRun>)>;
 /// warming — installed only after the batch flush succeeds. The range is
 /// the rows staged: the install claims the runs are all of its records.
 type WarmChunk = (SegmentHash, u64, u64, KeyRuns);
+
+/// Per-stream classification of one v2 gather (review round 4, P1): the
+/// pump must retire ONLY what the gather settled. `advanced` carries
+/// (hash, new upto, raw frame bytes copied — the committer's
+/// unabsorbed_bytes decrement); `no_work` had nothing durable to absorb;
+/// `deferred_budget` did not fit this batch's byte budget and MUST stay
+/// pending — with lag and age intact — for the next tick.
+#[derive(Default)]
+pub(crate) struct GatherOutcome {
+    pub(crate) advanced: Vec<([u8; 16], u64, u64)>,
+    pub(crate) no_work: Vec<[u8; 16]>,
+    pub(crate) deferred_budget: Vec<[u8; 16]>,
+    /// Streams whose gather ADVANCED but did not reach the stream's
+    /// durable end — the per-stream byte cap truncated the chunk, so
+    /// data remains. `(hash, remaining offsets)`. These MUST stay
+    /// pending: retiring them (they are also in `advanced`) strands the
+    /// remainder until some unrelated event re-discovers it, and for a
+    /// stream whose next record exceeds the cap that is effectively
+    /// never — 8x100 KiB behind a 64 KiB cap absorbed exactly one
+    /// record and then stopped forever (chaos campaign, 2026-08-09).
+    pub(crate) partial: Vec<([u8; 16], u64)>,
+    /// Streams left out for their own stored bytes, with the typed reason.
+    /// They MUST stay pending with their own backoff: retiring them strands
+    /// their backlog; retrying them every tick re-reads a chunk that fails
+    /// the same way.
+    pub(crate) failed: Vec<([u8; 16], StreamGatherFailure)>,
+}
+
+/// Why a gather left one stream out (item 35). Each verdict is a pure
+/// function of that stream's own durable bytes, so the same read fails the
+/// same way on every retry: it costs that stream its turn and its backoff,
+/// never its lane-mates'. Store, fence, partition and flush errors are not
+/// here: they still abort the whole gather.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StreamGatherFailure {
+    /// A stored row failed canonical admission (key width, namespace,
+    /// frame or offset).
+    Corrupt(RecordCorruption),
+    /// The chunk's postings pages did not decode back to what was encoded.
+    PostingsSelfDecode,
+    /// The chunk's postings pages decoded to overlapping runs.
+    PostingsOverlap,
+}
+
+impl std::fmt::Display for StreamGatherFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Corrupt(corruption) => write!(f, "{corruption}"),
+            Self::PostingsSelfDecode => f.write_str("postings page failed its self-decode"),
+            Self::PostingsOverlap => f.write_str("postings pages overlap"),
+        }
+    }
+}
 
 /// The batch under construction: its rows, their modeled size, and what
 /// the flush must prove durable before it is published.
@@ -129,6 +115,9 @@ struct Staged {
     refused: usize,
     warm_installs: Vec<WarmChunk>,
     out: GatherOutcome,
+    /// The committer's view of `out.advanced`: each advance with the
+    /// offset its copy starts at, which is where it may retire from.
+    copies: Vec<([u8; 16], u64, CopiedBytes)>,
 }
 
 /// #266: optional duty cycle between read waves — see the
@@ -158,28 +147,22 @@ fn chunk_cost(chunk: &FrameReadResult) -> (usize, u64) {
     (chunk_bytes, chunk_raw)
 }
 
-/// Stage the chunk's canonical rows — the frame is stored once under its
-/// canonical offset — noting every frame's routing key for its postings
-/// pages; returns the offsets staged. They are dense (a ring hit proves its
-/// window dense; a Remote scan reads one snapshot of the log) but can start
-/// above `plan.from`: a Remote scan skips the head a trim deleted after a
-/// stale plan (TLA-016-F3).
-fn stage_rows(
-    wb: &mut WriteBatch,
+/// Note every frame's routing key for the chunk's postings pages, staging
+/// nothing yet: a chunk whose pages fail their self-check must leave no
+/// canonical row in the shared batch. Returns the offsets the chunk holds.
+/// They are dense (a ring hit proves its window dense; a Remote scan reads
+/// one snapshot of the log) but can start above `plan.from`: a Remote scan
+/// skips the head a trim deleted after a stale plan (TLA-016-F3).
+fn note_frames(
     plan: &ReadPlan,
     chunk: &FrameReadResult,
     pages: &mut PageBuilder,
 ) -> std::ops::Range<u64> {
-    let inc = SegmentHash(plan.hash);
     let mut first = None;
     let mut last = plan.from;
     for raw in &chunk.frames {
         let frame = raw.view();
         let off = frame.header.offset;
-        wb.put(
-            hist2_record_key(plan.route, inc, off),
-            Bytes::from(raw.clone()),
-        );
         pages.note_frame(
             crate::postings::rk_hash(frame.header.routing_key),
             off,
@@ -191,36 +174,64 @@ fn stage_rows(
     first.unwrap_or(plan.from)..last + 1
 }
 
-/// Stage the chunk's postings pages (ROUTING-V3 §3): every routing key —
-/// INCLUDING the empty/default key — gets compact offset-run pages in the
-/// SAME WriteBatch, so the index adds no request, manifest, database,
-/// namespace or GC surface of its own. Returns the per-key runs decoded
-/// back from what was just encoded (cheap varints, and a free round-trip
-/// check) — exactly the runs a reader would load, so write-through
-/// warming (spec §7) makes first-read-after-absorb skip the index round
-/// trip.
-fn stage_postings(
+/// A chunk's postings pages after they proved their own round trip. Only
+/// `check_postings` builds one and only `stage_checked` spends it, so the
+/// batch can only ever receive a checked chunk.
+struct ChunkPostings {
+    pages: crate::postings::Pages,
+    runs: KeyRuns,
+    bytes: u64,
+}
+
+/// The chunk's postings pages must decode back to runs that do not
+/// overlap. The runs decoded back from what was encoded (cheap varints)
+/// are exactly the runs a reader would load, so write-through warming
+/// (spec §7) makes first-read-after-absorb skip the index round trip.
+/// Touches no batch and counts nothing.
+fn check_postings(pages: PageBuilder) -> Result<ChunkPostings, StreamGatherFailure> {
+    let (pages, bytes) = pages.finish();
+    let mut runs: HashMap<[u8; 16], Vec<AbsRun>> = HashMap::new();
+    for (kh, _, first, value) in &pages {
+        let abs = crate::postings::decode_page_abs(*first, value)
+            .ok_or(StreamGatherFailure::PostingsSelfDecode)?;
+        crate::postings::append_page_runs(runs.entry(kh.0).or_default(), abs)
+            .ok_or(StreamGatherFailure::PostingsOverlap)?;
+    }
+    let runs = runs.into_iter().collect();
+    Ok(ChunkPostings { pages, runs, bytes })
+}
+
+/// Stage a checked chunk: its canonical rows — the frame is stored once
+/// under its canonical offset — then its postings pages (ROUTING-V3 §3):
+/// every routing key, INCLUDING the empty/default key, gets compact
+/// offset-run pages in the SAME WriteBatch, so the index adds no request,
+/// manifest, database, namespace or GC surface of its own. Returns the
+/// chunk's per-key runs.
+fn stage_checked(
     wb: &mut WriteBatch,
     plan: &ReadPlan,
-    pages: PageBuilder,
-) -> anyhow::Result<KeyRuns> {
+    chunk: &FrameReadResult,
+    checked: ChunkPostings,
+) -> KeyRuns {
     let inc = SegmentHash(plan.hash);
-    let (emitted, postings_bytes) = pages.finish();
-    POSTINGS_PAGES_WRITTEN.fetch_add(emitted.len() as u64, Ordering::Relaxed);
-    let mut chunk_runs: HashMap<[u8; 16], Vec<AbsRun>> = HashMap::new();
-    for (kh, bucket, first, value) in emitted {
-        let abs = crate::postings::decode_page_abs(first, &value)
-            .ok_or_else(|| anyhow::anyhow!("postings page failed self-decode during gather"))?;
-        POSTINGS_RUNS_WRITTEN.fetch_add(abs.len() as u64, Ordering::Relaxed);
-        crate::postings::append_page_runs(chunk_runs.entry(kh.0).or_default(), abs)
-            .ok_or_else(|| anyhow::anyhow!("overlapping postings during gather"))?;
+    for raw in &chunk.frames {
+        wb.put(
+            hist2_record_key(plan.route, inc, raw.view().header.offset),
+            Bytes::from(raw.clone()),
+        );
+    }
+    let ChunkPostings { pages, runs, bytes } = checked;
+    POSTINGS_PAGES_WRITTEN.fetch_add(pages.len() as u64, Ordering::Relaxed);
+    let run_count: usize = runs.iter().map(|(_, key_runs)| key_runs.len()).sum();
+    POSTINGS_RUNS_WRITTEN.fetch_add(run_count as u64, Ordering::Relaxed);
+    for (kh, bucket, first, value) in pages {
         wb.put(
             crate::postings::postings_key(plan.route, inc, &kh, bucket, first),
             value,
         );
     }
-    POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, Ordering::Relaxed);
-    Ok(chunk_runs.into_iter().collect())
+    POSTINGS_BYTES_WRITTEN.fetch_add(bytes, Ordering::Relaxed);
+    runs
 }
 
 /// Drain trace for the DST harness: which frames this gather staged.
@@ -282,7 +293,6 @@ impl Absorber {
             if recs == 0 {
                 continue;
             }
-            self.roll_back_stranded_mark(h, absorbed);
             // Backdate by the age threshold so recovered work is eligible
             // promptly rather than a full window later.
             let since = Instant::now()
@@ -323,107 +333,47 @@ impl Absorber {
     }
 
     /// R25-D: heal a stranded submitted-watermark. The gather records
-    /// what it SUBMITTED so an advance in flight to handle state is not
-    /// re-sent. A refused group's receipt rolls its marks back
-    /// (`settle_submissions`), but a landed group can still drop one
-    /// stream's advance alone (a stream handle the committer cannot load,
-    /// a layout-sealed lane). The durable boundary never moved and the mark
-    /// fences the range off: `from = max(mark, absorbed) >= upto` reads as
-    /// no_work forever. The durable tail is the source of truth: a mark
-    /// ahead of it at rescan time describes a submission that did not
-    /// land, so roll it back. A genuine in-flight
-    /// advance re-submitted after this is harmless — the committer
-    /// ignores non-advancing boundaries, retires exactly the range it
-    /// advances over (TLA-016-F1), and the history write is idempotent.
+    /// what it SUBMITTED (fire-and-forget) so an advance in flight to
+    /// handle state is not re-sent — but if the committer group carrying
+    /// that advance FAILED, the durable boundary never moved and the mark
+    /// now fences the range off from every future gather: `from =
+    /// max(mark, absorbed) >= upto` reads as no_work forever, and the
+    /// backlog is stranded until a restart. Called at plan time, and
+    /// only while the stream's settlement bucket is at zero: then no
+    /// advance of the stream can still land, so a mark ahead of the
+    /// durable boundary describes a submission that never will, and the
+    /// durable tail is the truth. A mark whose advance is still in flight
+    /// must not be rolled back: the regather would start below it, the
+    /// committer drops an advance that does not start at its boundary,
+    /// and the dropped copy's postings pages would overlap the ones the
+    /// stream's next gather writes.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::roll_back_stranded_mark; a poisoned lane may hold a partially raised or rolled-back lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
+        reason = "Absorber::roll_back_stranded_mark; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could fence a range off from every future gather or re-trust a mark the layout seal dropped"
     )]
     fn roll_back_stranded_mark(&self, h: [u8; 16], absorbed: u64) {
-        let mut lane = self.submitted.lock().unwrap();
-        if let Some(mark) = lane.marks.get(&h)
-            && mark.from > absorbed
+        let mut submitted = self.submitted.lock().unwrap();
+        if let Some((mark, _v2)) = submitted.get(&h)
+            && *mark > absorbed
         {
             tracing::warn!(
                 "rolling back stranded absorb mark for {}: submitted={} durable absorbed={}",
                 crate::crypto::hex(&h[..4]),
-                mark.from,
+                mark,
                 absorbed,
             );
-            lane.marks.remove(&h);
+            submitted.remove(&h);
         }
     }
 
-    /// Settle every submission the committer has answered, oldest first,
-    /// before the next gather plans (see `Lane`). A refused group's streams
-    /// whose marks still rest on its chunks roll back to replay them and are
-    /// due again: their pending entries went with the refused gather's
-    /// outcome. A mark a later chunk already raised stays; that chunk's
-    /// advance recounts the refused one. Consecutive refusals each settled
-    /// late leave consecutive holes, so a recount can span more than the
-    /// chunks in flight at any one refusal. Never waits on the committer.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "Absorber::settle_submissions; a poisoned lane may hold a partially raised or rolled-back mark; recovering it could plan a chunk past a refused one or re-read over flushed postings pages"
-    )]
-    pub(super) fn settle_submissions(&self, pending: &mut HashMap<[u8; 16], PendingAbsorb>) {
-        let mut lane = self.submitted.lock().unwrap();
-        let mut refused = Vec::new();
-        lane.in_flight
-            .retain_mut(|submission| match submission.receipt.try_recv() {
-                Err(TryRecvError::Empty) => true,
-                Ok(()) => false,
-                Err(TryRecvError::Closed) => {
-                    refused.append(&mut submission.chunks);
-                    false
-                }
-            });
-        for (hash, from, upto, bytes) in refused {
-            if !lane.replay(hash, from, upto) {
-                continue;
-            }
-            let since = Instant::now()
-                .checked_sub(self.cfg.threshold_age)
-                .unwrap_or_else(Instant::now);
-            pending.entry(hash).or_insert(PendingAbsorb {
-                bytes,
-                since,
-                failures: 0,
-                retry_after: None,
-            });
-        }
-    }
-
-    /// Prune lane marks (the map otherwise grows with every stream ever
-    /// absorbed): a mark is only load-bearing while a re-gather could still
-    /// observe a stale durable boundary, i.e. while the stream is pending or
-    /// its resident absorbed boundary trails the mark. Frames are
-    /// deterministic and boundary submits are guarded, so over-pruning
-    /// merely costs an idempotent rewrite.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "Absorber::prune_lane_marks; a poisoned lane may hold a partially raised or rolled-back mark; recovering it could keep trusting a mark whose submission never landed"
-    )]
-    pub(super) fn prune_lane_marks(&self, pending: &HashMap<[u8; 16], PendingAbsorb>) {
-        self.submitted.lock().unwrap().marks.retain(|h, mark| {
-            pending.contains_key(h)
-                || self
-                    .shard
-                    .resident_absorbed(h)
-                    .is_some_and(|a| a < mark.from)
-        });
-    }
-
-    /// Test-facing wrapper: settle answered submissions, reserve
-    /// adaptively, then gather, as a pump tick does. The pump loop calls
-    /// absorb_gather_v2_with directly because its reservation must precede
-    /// the post-budget fence re-check.
+    /// Test-facing wrapper: reserve adaptively, then gather. The pump
+    /// loop calls absorb_gather_v2_with directly because its
+    /// reservation must precede the post-budget fence re-check.
     #[cfg(test)]
     pub(crate) async fn absorb_gather_v2(
         &self,
         streams: &[[u8; 16]],
     ) -> anyhow::Result<GatherOutcome> {
-        self.settle_submissions(&mut HashMap::new());
         let mut reservation = self
             .shard
             .history_resources
@@ -443,7 +393,9 @@ impl Absorber {
     /// backlog until the ~60 s resident-handle sweep re-found it. A
     /// per-stream byte cap truncates fat streams mid-range — their
     /// boundary still advances over what was written, and the sweep or
-    /// the next signal re-drives the remainder.
+    /// the next signal re-drives the remainder. A stream whose own stored
+    /// bytes fail (a row refused admission, pages failing their self-check)
+    /// is left out as `failed`, alone; every other error aborts the lane.
     pub(crate) async fn absorb_gather_v2_with(
         &self,
         streams: &[[u8; 16]],
@@ -457,6 +409,7 @@ impl Absorber {
             refused: 0,
             warm_installs: Vec::new(),
             out: GatherOutcome::default(),
+            copies: Vec::new(),
         };
         let mut pacing = Pacing {
             paced: Duration::ZERO,
@@ -486,7 +439,16 @@ impl Absorber {
             let got = self.read_wave(wave, per_stream).await;
             self.pace_between_waves(&mut pacing).await;
             for (plan, read) in wave.iter().zip(got) {
-                self.stage_chunk(&mut staged, reservation, plan, &read?)?;
+                match read {
+                    Ok(chunk) => self.stage_chunk(&mut staged, reservation, plan, &chunk),
+                    // The row's own bytes failed admission: it costs this
+                    // stream its turn, never its lane-mates'.
+                    Err(RangeReadError::Corrupt(corruption)) => staged
+                        .out
+                        .failed
+                        .push((plan.hash, StreamGatherFailure::Corrupt(corruption))),
+                    Err(RangeReadError::Store(error)) => return Err(error.into()),
+                }
             }
         }
         GATHER_LAST_PACE_MS.store(millis(pacing.paced), Ordering::Relaxed);
@@ -500,7 +462,9 @@ impl Absorber {
     }
 
     /// Plan every requested stream's read; streams with nothing durable
-    /// to absorb are classified `no_work` here.
+    /// to absorb are classified `no_work` here. A settled stream's
+    /// stranded mark is rolled back first, so a refused advance is
+    /// regathered from the durable boundary by the stream's next gather.
     async fn plan_reads(
         &self,
         streams: &[[u8; 16]],
@@ -509,6 +473,11 @@ impl Absorber {
         let mut plans = Vec::new();
         for hash in streams {
             let handle = self.shard.stream_handle(*hash).await?;
+            if self.submissions.settled(hash)
+                && let Some(durable) = self.shard.resident_absorbed(hash)
+            {
+                self.roll_back_stranded_mark(*hash, durable);
+            }
             match self.plan_read(*hash, handle) {
                 Some(plan) => plans.push(plan),
                 None => out.no_work.push(*hash),
@@ -518,17 +487,16 @@ impl Absorber {
     }
 
     /// The stream's read window: from its durable absorbed boundary —
-    /// floored at OUR lane's submitted mark — up to its durable end, or up
-    /// to the end of the refused chunk a rolled-back mark replays. Lane-
+    /// floored at OUR lane's submitted mark — up to its durable end. Lane-
     /// scoped floor: a v1 mark here may describe an advance the layout
     /// seal dropped, and skipping past it would hide that range from the
     /// partition.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::plan_read; a poisoned handle state or lane may hold a partially advanced boundary, lane mark or replay end; recovering it could plan a read from a boundary that was never committed or past a refused chunk"
+        reason = "Absorber::plan_read; a poisoned handle state or submitted-mark map may hold a partially advanced boundary or lane mark; recovering it could plan a read from a boundary that was never committed"
     )]
     fn plan_read(&self, hash: [u8; 16], handle: Arc<StreamHandle>) -> Option<ReadPlan> {
-        let (from, next, route) = {
+        let (from, upto, route) = {
             let st = handle.state.lock().unwrap();
             (
                 st.durable.absorbed,
@@ -536,19 +504,19 @@ impl Absorber {
                 RouteHash(st.durable.route),
             )
         };
-        let mark = self.submitted.lock().unwrap().marks.get(&hash).copied();
-        let mark = mark.filter(|mark| mark.v2);
-        let from = mark.map_or(0, |mark| mark.from).max(from);
-        let upto = match mark.and_then(|mark| mark.replay_to) {
-            Some(end) if end > from => end.min(next),
-            _ => next,
-        };
+        let from = self
+            .submitted
+            .lock()
+            .unwrap()
+            .get(&hash)
+            .and_then(|(u, v2)| (*v2).then_some(*u))
+            .unwrap_or(0)
+            .max(from);
         (from < upto).then(|| ReadPlan {
             hash,
             handle,
             from,
             upto,
-            next,
             route,
         })
     }
@@ -563,7 +531,7 @@ impl Absorber {
         &self,
         wave: &[ReadPlan],
         per_stream: usize,
-    ) -> Vec<Result<FrameReadResult, slatedb::Error>> {
+    ) -> Vec<Result<FrameReadResult, RangeReadError>> {
         let reads = wave
             .iter()
             .map(|p| read_frames_range(&self.shard, &p.handle, p.from, p.upto, per_stream));
@@ -593,17 +561,17 @@ impl Absorber {
         reservation: &mut AbsorbReservation<'_>,
         plan: &ReadPlan,
         chunk: &FrameReadResult,
-    ) -> anyhow::Result<()> {
+    ) {
         if chunk.frames.is_empty() {
             staged.out.no_work.push(plan.hash);
-            return Ok(());
+            return;
         }
         let (chunk_bytes, chunk_raw) = chunk_cost(chunk);
         let batch_bytes = staged.bytes + chunk_bytes;
         let over_packing = staged.bytes > 0 && batch_bytes > self.cfg.gather_max_bytes;
         if over_packing || staged.refused > 0 {
             staged.out.deferred_budget.push(plan.hash);
-            return Ok(());
+            return;
         }
         // #266 adaptive reservation: cover this chunk's modeled
         // transient BEFORE building it. On the steady path the
@@ -623,28 +591,36 @@ impl Absorber {
             );
             staged.refused = batch_bytes;
             staged.out.deferred_budget.push(plan.hash);
-            return Ok(());
+            return;
         }
+        let mut pages = PageBuilder::default();
+        let rows = note_frames(plan, chunk, &mut pages);
+        // The pages prove their own round trip BEFORE any of the chunk
+        // enters the shared batch: a refused chunk leaves nothing behind.
+        let checked = match check_postings(pages) {
+            Ok(checked) => checked,
+            Err(failure) => {
+                staged.out.failed.push((plan.hash, failure));
+                return;
+            }
+        };
         staged.bytes = batch_bytes;
         #[cfg(test)]
         trace_gather(plan, chunk);
-        let mut pages = PageBuilder::default();
-        let rows = stage_rows(&mut staged.wb, plan, chunk, &mut pages);
-        let runs = stage_postings(&mut staged.wb, plan, pages)?;
+        let runs = stage_checked(&mut staged.wb, plan, chunk, checked);
         CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, Ordering::Relaxed);
         staged
             .warm_installs
             .push((SegmentHash(plan.hash), rows.start, rows.end, runs));
+        staged.out.advanced.push((plan.hash, rows.end, chunk_raw));
         staged
-            .out
-            .advanced
-            .push((plan.hash, plan.from, rows.end, chunk_raw));
-        // Truncated by the per-stream cap or a replay's end: more durable
-        // data sits below `next`. The caller must keep this stream pending.
-        if rows.end < plan.next {
-            staged.out.partial.push((plan.hash, plan.next - rows.end));
+            .copies
+            .push((plan.hash, rows.end, CopiedBytes::new(plan.from, chunk_raw)));
+        // Truncated by the per-stream cap: more durable data sits
+        // below `upto`. The caller must keep this stream pending.
+        if rows.end < plan.upto {
+            staged.out.partial.push((plan.hash, plan.upto - rows.end));
         }
-        Ok(())
     }
 
     /// Make the batch durable — one write, one flush — then publish what
@@ -673,6 +649,7 @@ impl Absorber {
             wb,
             warm_installs,
             out,
+            copies,
             ..
         } = staged;
         let ord = Ordering::Relaxed;
@@ -697,7 +674,7 @@ impl Absorber {
         let flush_ms = millis(t_flush.elapsed());
         GATHER_LAST_FLUSH_MS.store(flush_ms, ord);
         HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
-        let absorbed_bytes = out.advanced.iter().map(|(_, _, _, b)| *b).sum::<u64>();
+        let absorbed_bytes = out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>();
         ABSORB_BYTES_TOTAL.fetch_add(absorbed_bytes, ord);
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
@@ -707,11 +684,17 @@ impl Absorber {
                 .postings_cache
                 .install_chunk(inc, chunk_from, chunk_to, per_key);
         }
-        let receipt = self
-            .shard
-            .submit_absorbed_batch_v2(out.advanced.clone())
-            .await;
-        self.raise_lane_marks(&out.advanced, receipt);
+        // Each advance is counted before it can be staged; its receipt
+        // settles it once it can no longer land.
+        let receipted = copies
+            .into_iter()
+            .map(|(hash, upto, copied)| {
+                let receipt = self.submissions.submit(&hash);
+                (hash, upto, copied.receipted(receipt))
+            })
+            .collect();
+        self.shard.submit_absorbed_batch_v2(receipted).await;
+        self.raise_lane_marks(&out.advanced);
         tracing::info!(
             "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",
             out.advanced.len(),
@@ -723,34 +706,23 @@ impl Absorber {
 
     /// Raise each advanced stream's v2 lane mark to what this gather
     /// submitted, so pacing off the published boundary alone cannot
-    /// re-absorb a range whose committer batch has not dispatched yet, and
-    /// keep the batch's receipt until the committer answers it.
+    /// re-absorb a range whose committer batch has not dispatched yet.
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::raise_lane_marks; a poisoned lane may hold a partially raised lane mark or an unrecorded submission; recovering it could re-absorb or fence off a range whose chunk advance is still in flight, or never roll back a refused one"
+        reason = "Absorber::raise_lane_marks; a poisoned submitted-mark map may hold a partially raised lane mark; recovering it could re-absorb or fence off a range whose submission is still in flight"
     )]
-    fn raise_lane_marks(&self, advanced: &[Advance], receipt: oneshot::Receiver<()>) {
-        let mut lane = self.submitted.lock().unwrap();
-        for (hash, _, upto, _) in advanced {
-            let mark = lane.marks.entry(*hash).or_insert(LaneMark {
-                from: 0,
-                v2: true,
-                replay_to: None,
-            });
-            if mark.v2 {
-                mark.from = mark.from.max(*upto);
+    fn raise_lane_marks(&self, advanced: &[([u8; 16], u64, u64)]) {
+        let mut submitted = self.submitted.lock().unwrap();
+        for (hash, upto, _) in advanced {
+            let e = submitted.entry(*hash).or_insert((0, true));
+            if e.1 {
+                e.0 = e.0.max(*upto);
             } else {
-                *mark = LaneMark {
-                    from: *upto,
-                    v2: true,
-                    replay_to: None,
-                };
+                *e = (*upto, true);
             }
-            mark.replay_to = mark.replay_to.filter(|end| *end > mark.from);
         }
-        lane.in_flight.push(Submission {
-            receipt,
-            chunks: advanced.to_vec(),
-        });
     }
 }
+
+#[cfg(test)]
+mod postings_refusal_tests;

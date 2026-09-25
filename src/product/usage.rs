@@ -16,6 +16,108 @@ fn usage_unavailable(error: &dyn std::fmt::Display) -> Response {
     )
 }
 
+impl crate::auth::RequestPrincipal {
+    /// Project usage totals (`GET /v1/projects/{project}/usage`) answer for
+    /// every stream of the project, so they need `streams.usage.read` AND an
+    /// unrestricted effective stream grant: a credential limited to some
+    /// names could otherwise subtract its own streams' usage from the total
+    /// and learn the rest (owner decision, second external review). A
+    /// restricted credential is refused 403 `prefix_denied`, the refusal a
+    /// stream outside its grant gets; its per-stream usage stays readable.
+    pub(crate) fn require_project_usage(&self) -> Result<(), crate::auth::AuthError> {
+        self.require(crate::tenant::Scope::UsageRead)?;
+        match self.grant {
+            crate::tenant::StreamGrant::All => Ok(()),
+            crate::tenant::StreamGrant::Prefixes(_) => Err(crate::auth::AuthError::PrefixDenied),
+        }
+    }
+}
+
+/// Why a per-stream usage lookup has no row to answer with.
+enum UsageRefusal {
+    /// `?streamId=` names no incarnation of the URL's name in the month.
+    NotAnIncarnation,
+    /// A rollup read failed: retryable, never a client error.
+    Unavailable(anyhow::Error),
+}
+
+impl IntoResponse for UsageRefusal {
+    fn into_response(self) -> Response {
+        match self {
+            UsageRefusal::NotAnIncarnation => perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "streamId is not an incarnation of this stream",
+                None,
+                false,
+            ),
+            UsageRefusal::Unavailable(error) => usage_unavailable(&error),
+        }
+    }
+}
+
+impl crate::rollup::UsageRollup {
+    /// The identity a per-stream usage answer reports, and its month row.
+    ///
+    /// Historical incarnation lookup (round-21 dashboard gap): after a
+    /// delete/recreate, `?streamId=` addresses a PRIOR incarnation's rows
+    /// directly, so invoice history survives the live resource. The gate
+    /// authorized the name in the URL and nothing else, so the id must be
+    /// an incarnation of that name ([`Self::names_incarnation`]). Any
+    /// other id is refused as not found before its month row is read;
+    /// otherwise a credential allowed one name would read any stream's
+    /// usage by naming its id.
+    async fn usage_row(
+        &self,
+        month: &str,
+        mut id: crate::billing::BillingIdentity,
+        stream_id: Option<&String>,
+    ) -> Result<(crate::billing::BillingIdentity, crate::rollup::MonthRow), UsageRefusal> {
+        if let Some(sid) = stream_id.filter(|sid| **sid != id.stream_id) {
+            let named = self
+                .names_incarnation(month, &id, sid)
+                .await
+                .map_err(UsageRefusal::Unavailable)?;
+            if !named {
+                return Err(UsageRefusal::NotAnIncarnation);
+            }
+            id.stream_id.clone_from(sid);
+        }
+        let row = self
+            .month_row(month, &id.account_id, &id.project_id, &id.stream_id)
+            .await
+            .map_err(UsageRefusal::Unavailable)?;
+        Ok((id, row.unwrap_or_default()))
+    }
+
+    /// Whether `sid` is an incarnation of `id`'s name, as the rollup
+    /// recorded it under `id`'s own account and project: the month's
+    /// aggregate for the name lists it, or its month row or any of its
+    /// segment states carries the name. Every writer stamps a row with
+    /// its own identity's name, so a foreign id's rows carry the foreign
+    /// stream's name. The segment states answer for a month the
+    /// incarnation did not contribute to (a zero row) and for storage
+    /// the month's aggregate has not listed yet.
+    async fn names_incarnation(
+        &self,
+        month: &str,
+        id: &crate::billing::BillingIdentity,
+        sid: &str,
+    ) -> anyhow::Result<bool> {
+        let (account, project, name) = (&id.account_id, &id.project_id, &id.stream_name);
+        let listed = self.name_row(month, account, project, name).await?;
+        if listed.is_some_and(|aggregate| aggregate.incarnations.iter().any(|i| i == sid)) {
+            return Ok(true);
+        }
+        let row = self.month_row(month, account, project, sid).await?;
+        if row.is_some_and(|row| row.stream_name == *name) {
+            return Ok(true);
+        }
+        let states = self.stream_segment_states(account, project, sid).await?;
+        Ok(states.iter().any(|state| state.stream_name == *name))
+    }
+}
+
 /// GET /v1/streams/{name}/usage[?month=YYYY-MM] and .../usage/current.
 /// Control-plane metadata: bearer-authorized, NO record key required,
 /// answered from the rollup with a point read (never a ledger scan).
@@ -79,19 +181,16 @@ pub(super) async fn product_usage(
             false,
         );
     }
-    let mut id = crate::billing::identity_of_query(&state, &desc);
-    // Historical incarnation lookup (round-21 dashboard gap): after a
-    // delete/recreate, ?streamId= addresses a PRIOR incarnation's rows
-    // directly — invoice history survives the live resource.
-    if let Some(sid) = q.get("streamId").map(String::as_str) {
-        id.stream_id = sid.to_string();
-    }
-    let row: crate::rollup::MonthRow = match rollup
-        .month_row(&month, &id.account_id, &id.project_id, &id.stream_id)
+    let (id, row) = match rollup
+        .usage_row(
+            &month,
+            crate::billing::identity_of_query(&state, &desc),
+            q.get("streamId"),
+        )
         .await
     {
-        Ok(row) => row.unwrap_or_default(),
-        Err(error) => return usage_unavailable(&error),
+        Ok((id, row)) => (id, row),
+        Err(error) => return error.into_response(),
     };
     let is_current = month == current;
     // Round-21 blocker 2: a retained-but-idle stream has no month row

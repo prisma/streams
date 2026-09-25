@@ -9,10 +9,6 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "main; the Tokio worker floor is process configuration read once before any runtime, supervisor or configuration owner exists; routing it through an owner would need the runtime it sizes"
-)]
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -37,20 +33,8 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     };
-    // Run 13: tokio timer drift of ~230 ms p50 (vs 4 ms for a raw thread)
-    // proved the event loop is starved by inline blocking work. On a 1-vCPU
-    // box #[tokio::main] means ONE worker — a single blocking poll freezes
-    // every future, including durable-watermark acks (O14a). A worker floor
-    // of 2+ lets the OS timeslice around a blocked worker.
-    let workers: usize = std::env::var("TOKIO_WORKERS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        })
-        .max(2);
+    let available = std::thread::available_parallelism().ok();
+    let workers = config.config().runtime.worker_threads(available);
     tracing::info!("tokio runtime: {workers} worker threads");
     streams_slate::serve(config, workers)
 }

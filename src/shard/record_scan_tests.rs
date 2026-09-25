@@ -1,7 +1,7 @@
 //! R08-A: real persisted scans, rather than an ordered-key model.
 use super::{
     Deliver, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail, producer_key,
-    read_frames, read_frames_range, record_key, tail_key,
+    read_frames, read_frames_range, record::RangeReadError, record_key, tail_key,
 };
 use bytes::Bytes;
 use slatedb::{Db, WriteBatch};
@@ -143,10 +143,7 @@ async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
             ordinary.unwrap().err().expect("corrupt row refused").kind(),
             slatedb::ErrorKind::Data
         );
-        assert_eq!(
-            absorber.unwrap().err().expect("corrupt row refused").kind(),
-            slatedb::ErrorKind::Data
-        );
+        assert!(matches!(absorber.unwrap(), Err(RangeReadError::Corrupt(_))));
     }
 }
 

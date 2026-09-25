@@ -213,16 +213,22 @@ fn classify(joined: Result<TaskResult, tokio::task::JoinError>) -> TaskOutcome {
         Ok(TaskResult::Done) => TaskOutcome::Finished,
         Ok(TaskResult::Failed(e)) => TaskOutcome::Failed(e),
         Err(e) if e.is_panic() => {
-            let p = e.into_panic();
-            let msg = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "panic".to_string());
-            TaskOutcome::Panicked(msg)
+            let payload = e.into_panic();
+            TaskOutcome::Panicked(panic_message(&*payload))
         }
         Err(_) => TaskOutcome::Cancelled,
     }
+}
+
+/// A panic as the supervisor reports it: the text of a literal or formatted
+/// `panic!`, else only that it panicked. The join report and a process
+/// root's stop cause read the same payload through here, so they agree.
+pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".to_string())
 }
 
 #[cfg(test)]

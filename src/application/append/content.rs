@@ -81,13 +81,9 @@ pub(super) fn parse_content(
     // measures the bytes stored, as the record ceiling and billing do.
     let stored: u64 = entries.iter().map(|entry| entry.len() as u64).sum();
     if deferred.is_none()
-        && let Some(kind) = usage.permanently_unadmittable(stored, entries.len() as u64)
+        && let Some(refusal) = usage.permanently_unadmittable(stored, entries.len() as u64)
     {
-        return fail(
-            FailureClass::Invalid,
-            AppendCode::PayloadTooLarge,
-            &format!("request exceeds the per-stream ingest {kind} capacity"),
-        );
+        return Err(AppendFailure::from_capacity(refusal));
     }
     Ok(ContentPlan { entries, deferred })
 }

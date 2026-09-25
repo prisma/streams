@@ -24,7 +24,7 @@ async fn setup(
     for index in 0..count {
         let project = crate::tenant::ProjectId::new(&format!("r09-project-{}", index / 2)).unwrap();
         let sref = project.stream_ref(if index % 2 == 0 { "same" } else { "other" });
-        let mut desc = crate::application::creation::fresh_desc(
+        let (mut desc, _) = crate::application::creation::fresh_desc(
             &service,
             &sref,
             &skey(),
@@ -218,7 +218,7 @@ async fn r09a_old_ttl_cas_cannot_mutate_or_suppress_a_recreated_incarnation() {
         })
         .await
         .unwrap();
-    let mut replacement = crate::application::creation::fresh_desc(
+    let (mut replacement, _) = crate::application::creation::fresh_desc(
         &service,
         &old.sref(),
         &skey(),
@@ -265,7 +265,7 @@ async fn r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects
     let (rig, store, descriptors) = setup(160).await;
     let service = rig.state.creation_service();
     let target = rig.state.deployment.raw_adapter_sref("ttl-overload");
-    let mut desc = crate::application::creation::fresh_desc(
+    let (mut desc, _) = crate::application::creation::fresh_desc(
         &service,
         &target,
         &skey(),

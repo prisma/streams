@@ -402,6 +402,127 @@ async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
     engine_shutdown(&state).await;
 }
 
+/// Owner decision (second external review, a billing release blocker):
+/// recreating a name over an incarnation that expired while idle must not
+/// erase what that incarnation's storage still owes. Its row is acked
+/// CLEAN, it expires, and the name is recreated before the walk reaches it,
+/// so the walk never sees it again. Red before the fix: the old gauge stayed
+/// open through every sweep (the rollup carried it monthly). Now the
+/// recreation records a closure debt before it replaces the descriptor, the
+/// settlement pass closes the old gauge at its persisted expiry and then
+/// removes the debt, and the new incarnation's gauge is untouched. Also:
+/// a debt a recreation wrote before losing its race to a renewal (the
+/// incarnation is still stored and live) is dropped, never acted on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (_svc, state, addr) = auth_rig("proj-recreate", "ws_rec", &["c_rec"], None).await;
+    let bearer = mint_token("c_rec", "proj-recreate", "ws_rec", 1, 1, "rec-1", 600);
+    let project = crate::tenant::ProjectId::new("proj-recreate").unwrap();
+    let mut rows = Vec::new();
+    for name in ["idle", "renewed"] {
+        rig_create(addr, name, &bearer).await;
+        assert_eq!(rig_append(addr, name, &bearer, r#"{"n":1}"#).await, 200);
+        let desc = state
+            .registry
+            .get(&project.stream_ref(name))
+            .await
+            .unwrap()
+            .unwrap();
+        rows.push(desc);
+    }
+    let prefix = |d: &crate::registry::StreamDesc| {
+        state.shards.prefix_for(&d.segment_route_by_id(0).unwrap())
+    };
+    assert_eq!(prefix(&rows[0]), prefix(&rows[1]), "the rig's one shard");
+    let engine = state
+        .shards
+        .open(&prefix(&rows[0]))
+        .expect("the stream's shard is open");
+    let identity = |d: &crate::registry::StreamDesc| d.resolve_segment("").identity;
+    let mut clean = false;
+    for _ in 0..200 {
+        crate::billing::drain_once(&state).await.expect("drain");
+        let dirty = engine.usage_dirty_scan().await.unwrap();
+        clean = rows
+            .iter()
+            .all(|d| dirty.iter().all(|(hash, _)| *hash != identity(d)));
+        if clean {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(clean, "rows must be acked clean first");
+    let open = |meta: Option<crate::billing::SegmentBillingMetaV1>| {
+        meta.map_or(0, |m| m.owned_frame_bytes_current)
+    };
+    assert!(
+        open(engine.billing_meta(identity(&rows[0])).await) > 0,
+        "no gauge to leak"
+    );
+
+    // Idle expiry, then the name is recreated before any walk.
+    let expired_at = crate::billing::billing_now_ms();
+    let sref = project.stream_ref("idle");
+    assert!(
+        state
+            .registry
+            .cas_update(&sref, |d| {
+                d.expires_at_ms = Some(expired_at);
+                true
+            })
+            .await
+            .unwrap()
+    );
+    state.registry.invalidate(&sref);
+    rig_create(addr, "idle", &bearer).await;
+    let fresh = state.registry.get(&sref).await.unwrap().unwrap();
+    assert_ne!(
+        fresh.stream_epoch, rows[0].stream_epoch,
+        "a new incarnation"
+    );
+    assert_eq!(rig_append(addr, "idle", &bearer, r#"{"n":2}"#).await, 200);
+
+    // A recreation that lost to a renewal: its debt names a live incarnation.
+    state.registry.record_replaced(&rows[1]).await.unwrap();
+
+    let mut closed = false;
+    for _ in 0..50 {
+        crate::billing::tombstone_walk(&state).await;
+        crate::billing::replaced::settle_replaced(&state).await;
+        if open(engine.billing_meta(identity(&rows[0])).await) == 0 {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(
+        closed,
+        "the replaced incarnation kept its storage gauge; month close would carry it"
+    );
+    // Its debt settles on the next pass, and the spurious one is gone.
+    let mut debts = usize::MAX;
+    for _ in 0..20 {
+        crate::billing::replaced::settle_replaced(&state).await;
+        debts = state.registry.replaced_page(64).await.unwrap().len();
+        if debts == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(debts, 0, "every debt settles or is dropped");
+    for (what, desc) in [
+        ("the new incarnation", &fresh),
+        ("the renewed stream", &rows[1]),
+    ] {
+        assert!(
+            open(engine.billing_meta(identity(desc)).await) > 0,
+            "{what}'s gauge is not the debt's to close"
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
 fn cancellation_read_envelope(at_ms: i64) -> crate::billing::UsageEnvelope {
     use crate::billing::{
         BillingIdentity, MeterSource, ReadBatch, ReadRow, UsageEnvelope, UsagePayload,

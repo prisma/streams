@@ -37,12 +37,9 @@ if [ ! -s "$S/bkey-fleet.json" ]; then
   echo "bucket: $BID"
 fi
 
+# Always re-stage: a copy made before item 39 keeps the wrapper that holds
+# every death (bench/stage-app.sh). deploy-fleet.sh re-stages too.
 for app in app-server app-lb; do
-  d="$S/fleet-$app"
-  if [ ! -d "$d/node_modules" ]; then
-    rm -rf "$d"; cp -R "$REPO/deploy/$app" "$d"
-    (cd "$d" && bun install --silent)
-    echo "prepared $d"
-  fi
+  "$REPO/bench/stage-app.sh" "$app" "$S/fleet-$app"
 done
 echo "setup complete: project=$(cat "$S/proj-fleet.txt")"

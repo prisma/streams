@@ -117,7 +117,7 @@ async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let signing_key =
         crate::crypto::wait_sig_key(&crate::crypto::touch_token(&skey(), &epoch), &epoch);
     for (expires, expected) in [

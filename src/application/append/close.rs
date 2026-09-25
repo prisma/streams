@@ -172,6 +172,9 @@ pub(super) async fn install_intent(
     #[cfg(test)]
     let name = desc.sref().name().as_str().to_string();
     if is_owed_final && seal_auth.is_none() && deferred.is_none() {
+        // Resuming an owed final renews only its own claim, and only now,
+        // after deterministic validation (external review §5): a retry the
+        // content owner refused, or deferred, has written nothing.
         plan.generation = Some(renew_owed_final(state, desc, this_close_op).await?);
     }
     if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
@@ -207,7 +210,7 @@ pub(super) async fn install_intent(
                 }
             }
             Ok(None) => {}
-            Err(e) => return fail(FailureClass::Conflict, AppendCode::Sealed, &e.to_string()),
+            Err(e) => return Err(intent_refused(&e)),
         }
         #[cfg(test)]
         if crate::failpoints::should_stop_after_seal_intent(&name) {
@@ -243,12 +246,36 @@ async fn renew_owed_final(
             AppendCode::Sealed,
             "the seal this close was resuming has been superseded",
         ),
+        // Only a registry read or write failure: nothing was renewed, so
+        // the close answers what its completion answers, retry.
         Err(e) => fail(
             FailureClass::Unavailable,
-            AppendCode::Internal,
+            AppendCode::SealIncomplete,
             &e.to_string(),
         ),
     }
+}
+
+/// A close whose intent was not installed has sealed nothing. Another
+/// seal's live claim, or a refusal the lifecycle settled, is the conflict
+/// `sealed`. A registry the intent could not read or write, or a
+/// transition that kept the collection busy, decided nothing: the close
+/// answers what its completion answers, retry.
+fn intent_refused(error: &crate::application::lifecycle::SealError) -> AppendFailure {
+    use crate::application::lifecycle::SealError;
+    let (class, code) = match error {
+        SealError::Storage(_) | SealError::Resumable(_) => {
+            (FailureClass::Unavailable, AppendCode::SealIncomplete)
+        }
+        SealError::Conflict(_)
+        | SealError::Missing
+        | SealError::ChangedIncarnation
+        | SealError::AlreadySealed
+        | SealError::OtherOperation
+        | SealError::OwedFinal
+        | SealError::InvalidClaim => (FailureClass::Conflict, AppendCode::Sealed),
+    };
+    AppendFailure::new(class, code, error.to_string())
 }
 
 #[expect(

@@ -12,7 +12,6 @@ use crate::application::read::{
 };
 use crate::application::read_remote::{InternalTarget, remote_read_page};
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
-use crate::offsets::Offset;
 use crate::product_cursor::{KeyCursor, ReadCursor};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -225,8 +224,11 @@ async fn applied_page_over_a_held_record(
         serde_json::json!([{"n":0},{"n":1}]),
         "raw applied page"
     );
-    assert_eq!(headers["stream-next-offset"], Offset::before(2).encode());
-    assert_eq!(headers["stream-durable-offset"], Offset::before(1).encode());
+    assert_eq!(headers["stream-next-offset"], crate::offsets::encode(0, 2));
+    assert_eq!(
+        headers["stream-durable-offset"],
+        crate::offsets::encode(0, 1)
+    );
     let (status, _, wire) = raw_read(addr, &desc, "-1", None, true).await;
     assert_eq!(status, 200, "{wire}");
     assert_eq!(wire["continuation"]["continues"]["recover"], 1, "{wire}");
@@ -407,7 +409,10 @@ async fn raw_continuation_resynchronises(
     let (status, headers, body) = raw_read(addr2, desc, &held.raw_next, continuation, false).await;
     assert_eq!(status, 409, "stale raw continuation accepted: {body}");
     assert_eq!(body["error"]["code"], "cursor_beyond_tail", "{body}");
-    assert_eq!(headers["stream-durable-offset"], Offset::before(1).encode());
+    assert_eq!(
+        headers["stream-durable-offset"],
+        crate::offsets::encode(0, 1)
+    );
     let (status, _, body) = raw_read(addr2, desc, &held.raw_next, continuation, true).await;
     assert_eq!(status, 409, "{body}");
     assert_eq!(
@@ -452,12 +457,15 @@ async fn raw_continuation_resynchronises(
         relayed.map(|out| out.next)
     );
     let (status, headers, body) =
-        raw_read(addr2, desc, &Offset::before(1).encode(), None, false).await;
+        raw_read(addr2, desc, &crate::offsets::encode(0, 1), None, false).await;
     assert_eq!(
         (status, body),
         (200, serde_json::json!([{"n":10},{"n":20}]))
     );
-    assert_eq!(headers["stream-durable-offset"], Offset::before(3).encode());
+    assert_eq!(
+        headers["stream-durable-offset"],
+        crate::offsets::encode(0, 3)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -678,7 +686,7 @@ async fn a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary() {
     for body in [br#"{"n":1}"#, br#"{"n":2}"#] {
         assert_eq!(append(addr, "", body).await, 200);
     }
-    let at = Offset::before(2).encode();
+    let at = crate::offsets::encode(0, 2);
     let desc = descriptor(&state).await;
     let (status, _, body) = raw_read(addr, &desc, &at, Some(&replaced(2)), false).await;
     assert_eq!(status, 400, "a continuation that does not fit: {body}");
@@ -691,7 +699,7 @@ async fn a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary() {
         assert_eq!(body["error"]["code"], "cursor_beyond_tail", "{body}");
         headers["stream-durable-offset"].clone()
     };
-    assert_eq!(refused(&desc, 0, &at).await, Offset::before(1).encode());
+    assert_eq!(refused(&desc, 0, &at).await, crate::offsets::encode(0, 1));
 
     let sref = state.deployment.raw_adapter_sref("tp");
     assert!(crate::scaler3::execute_split(&state, &sref, 0, 1 << 63).await);
@@ -701,10 +709,10 @@ async fn a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary() {
     let desc = descriptor(&state).await;
     let child = desc.resolve_segment("").seg_id;
     assert_ne!(child, 0, "the split moved the key to a child");
-    let at = crate::offsets::encode_ep(child, Offset::before(2));
+    let at = crate::offsets::encode(child, 2);
     assert_eq!(
         refused(&desc, child, &at).await,
-        crate::offsets::encode_ep(child, Offset::before(1))
+        crate::offsets::encode(child, 1)
     );
     engine_shutdown(&state).await;
 }

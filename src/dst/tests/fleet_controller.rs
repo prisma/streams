@@ -233,13 +233,14 @@ async fn settled(budget: Duration, mut ready: impl FnMut() -> bool) {
     }
 }
 
-/// A non-draining heartbeat for `instance` with a trusted https origin and
-/// `inflight` admitted requests, stamped 60 s ahead so it stays inside the
-/// 10 s live window for the whole scenario however the ticks are scheduled.
-async fn peer_heartbeat(store: &Arc<dyn ObjectStore>, instance: &str, inflight: i64) {
+/// A non-draining heartbeat for `instance` with a trusted https origin,
+/// `inflight` admitted requests and `cpu_pct` load, stamped 60 s ahead so it
+/// stays inside the 10 s live window for the whole scenario however the
+/// ticks are scheduled.
+async fn peer_heartbeat(store: &Arc<dyn ObjectStore>, instance: &str, inflight: i64, cpu_pct: f64) {
     let ts_ms = now_ms() + 60_000;
     let body = format!(
-        r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"inflight":{inflight},"owned_shards":[],"draining":false,"url":"https://{instance}.invalid"}}"#
+        r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"cpu_pct":{cpu_pct},"inflight":{inflight},"owned_shards":[],"draining":false,"url":"https://{instance}.invalid"}}"#
     );
     store
         .put(
@@ -287,7 +288,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
             .await
             .unwrap();
     }
-    peer_heartbeat(&inner, "streams-2", 300).await;
+    peer_heartbeat(&inner, "streams-2", 300, 0.0).await;
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
@@ -374,5 +375,224 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         report.aborted.is_empty(),
         "fleet loop must cancel cooperatively: {report:?}"
     );
+    engine_shutdown(&rig.state).await;
+}
+
+/// A ring of two (streams-1, streams-2) and the given shard overrides,
+/// written as the fleet writes them.
+async fn seed_ring_of_two(store: &Arc<dyn ObjectStore>, entries: &[(&str, &str)]) {
+    let overrides = crate::fleet::Overrides {
+        entries: entries
+            .iter()
+            .map(|(prefix, to)| {
+                let entry = crate::fleet::OverrideEntry {
+                    to: (*to).to_string(),
+                    ms: now_ms(),
+                };
+                ((*prefix).to_string(), entry)
+            })
+            .collect(),
+        ..Default::default()
+    };
+    for (path, body) in [
+        (
+            "fleet/desired.json",
+            br#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#.to_vec(),
+        ),
+        (
+            "fleet/overrides.json",
+            serde_json::to_vec(&overrides).unwrap(),
+        ),
+    ] {
+        store
+            .put(&Path::from(path), PutPayload::from(body))
+            .await
+            .unwrap();
+    }
+}
+
+/// `instance`'s own heartbeat stamp. A tick publishes its heartbeat before
+/// its first read, so a newer stamp proves the previous tick ran to its end.
+async fn heartbeat_stamp(store: &Arc<dyn ObjectStore>, instance: &str) -> i64 {
+    let path = Path::from(format!("fleet/{instance}.json"));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    serde_json::from_slice::<crate::fleet::Heartbeat>(&bytes)
+        .unwrap()
+        .ts_ms
+}
+
+/// Item 34: the ring ignores an override whose target is not a member
+/// (`effective_owner`, the router mirror), so that target must never open
+/// the shard: the open would fence the ring's real owner, the next tick
+/// yields it, and after the holdoff the open fires again, indefinitely.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
+    let inner = mem();
+    seed_ring_of_two(&inner, &[("00", "streams-9")]).await;
+    peer_heartbeat(&inner, "streams-1", 0, 0.0).await;
+    peer_heartbeat(&inner, "streams-2", 0, 0.0).await;
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-9".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let opened = rig.state.shards.open_stats()["started"].clone();
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
+    settled(Duration::from_secs(20), || {
+        rig.state.ownership.ring_active() == ring
+    })
+    .await;
+    assert_eq!(
+        rig.state.ownership.ring_active(),
+        ring,
+        "the tick must publish the ring"
+    );
+    assert_eq!(
+        rig.state.ownership.effective_owner("00").as_deref(),
+        Some("streams-1"),
+        "the ring ignores an override to a non-member"
+    );
+    let published = heartbeat_stamp(&inner, "streams-9").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while heartbeat_stamp(&inner, "streams-9").await <= published
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        heartbeat_stamp(&inner, "streams-9").await > published,
+        "a second tick must run"
+    );
+    assert_eq!(
+        rig.state.shards.open_stats()["started"],
+        opened,
+        "an override the ring ignores must never open the shard on its target"
+    );
+    assert!(
+        rig.state.shards.held_prefixes().is_empty(),
+        "the target must hold nothing the ring assigns elsewhere"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// Item 34: the rebalancer's target must be a member of the active ring.
+/// The idlest heartbeat outside it (a scale-in leftover, a non-ordinal
+/// name) would receive an override every reader ignores, so the move would
+/// only evict the shard from the laggard and strike its holdoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
+    let inner = mem();
+    seed_ring_of_two(&inner, &[]).await;
+    peer_heartbeat(&inner, "streams-2", 0, 50.0).await;
+    peer_heartbeat(&inner, "streams-9", 0, 0.0).await;
+    let ring = ["streams-1".to_string(), "streams-2".to_string()];
+    assert_eq!(
+        crate::ownership::ring_pick("00", &ring),
+        0,
+        "the ring gives 00 to streams-1"
+    );
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(matches!(
+        rig.state
+            .shards
+            .open_or_wait("00", Duration::from_secs(5))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    // Lag no absorber clears (no stream owns this segment), well over the
+    // default 60 s threshold, attributed to shard 00.
+    let usage = &rig.state.runtime.usage;
+    usage.set_absorb_lag(crate::crypto::SegmentHash([0x34; 16]), 120);
+    usage.set_shard_lag("00", 120);
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    settled(Duration::from_secs(20), || {
+        rig.state.ownership.overrides().contains_key("00")
+    })
+    .await;
+    assert_eq!(
+        rig.state
+            .ownership
+            .overrides()
+            .get("00")
+            .map(String::as_str),
+        Some("streams-2"),
+        "a move target must be a member of the active ring"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// Item 34: the instance the ring assigns an overridden shard to opens it at
+/// its next tick (the eager handoff fences the previous holder's db), both
+/// for a move-in the ring honours and for a shard whose override names a
+/// non-member, which the ring gives to its rendezvous home.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_rings_owner_opens_every_overridden_shard_it_is_assigned_at_the_tick() {
+    let inner = mem();
+    seed_ring_of_two(&inner, &[("00", "streams-9"), ("10", "streams-1")]).await;
+    peer_heartbeat(&inner, "streams-2", 0, 0.0).await;
+    let ring = ["streams-1".to_string(), "streams-2".to_string()];
+    assert_eq!(
+        (
+            crate::ownership::ring_pick("00", &ring),
+            crate::ownership::ring_pick("10", &ring)
+        ),
+        (0, 1),
+        "the ring gives 00 to streams-1 and 10 to streams-2"
+    );
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-1".into()),
+            prefixes: vec!["00".into(), "10".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    let shards = &rig.state.shards;
+    settled(Duration::from_secs(10), || {
+        shards.is_open("00") && shards.is_open("10")
+    })
+    .await;
+    assert!(
+        shards.is_open("10"),
+        "a move-in the ring honours opens at the tick, not at the first routed request"
+    );
+    assert!(
+        shards.is_open("00"),
+        "the ring's owner opens a shard whose override it ignores at the tick"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
 }

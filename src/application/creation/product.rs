@@ -85,7 +85,7 @@ impl CreationService {
             Ok(d)
         };
         let build_fresh = || {
-            let mut d = fresh_desc(
+            let (mut d, epoch) = fresh_desc(
                 self,
                 &sref,
                 &key,
@@ -95,14 +95,12 @@ impl CreationService {
             );
             d.watch_definitions = cfg.watches.clone();
             // Only this key-bearing creation attempt can install the verifier.
-            if let Some(epoch) = d.epoch_bytes() {
-                use base64::Engine;
-                let token = crate::crypto::touch_token(&key, &epoch);
-                d.watch_sig_key = Some(
-                    base64::engine::general_purpose::STANDARD
-                        .encode(crate::crypto::wait_sig_key(&token, &epoch)),
-                );
-            }
+            use base64::Engine;
+            let token = crate::crypto::touch_token(&key, &epoch);
+            d.watch_sig_key = Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(crate::crypto::wait_sig_key(&token, &epoch)),
+            );
             d
         };
         let (created, desc) = match existing {

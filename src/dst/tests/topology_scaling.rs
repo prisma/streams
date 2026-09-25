@@ -8,6 +8,88 @@ use super::fixture_storage::mem;
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The absorber events release hold HOLD-SPLIT-500 is judged by, counted
+/// from their logs: commit groups refused for diverged maintenance
+/// accounting, absorbed advances dropped for not starting at their
+/// boundary, and stranded lane marks rolled back. The counting subscriber
+/// is the process default, so the counts are the capacity rig's only when
+/// its test runs alone, as its gate legs run it (`--exact`). The counts
+/// print when the capture drops, so a failed run reports them too.
+#[derive(Default)]
+struct AbsorbEvents {
+    diverged: AtomicU64,
+    detached: AtomicU64,
+    rolled_back: AtomicU64,
+}
+
+impl AbsorbEvents {
+    /// Install the counting subscriber; once per test process.
+    fn capture() -> AbsorbEventLog {
+        use tracing_subscriber::layer::{Layer, SubscriberExt};
+        let events = Arc::new(Self::default());
+        let warnings = CountAbsorbEvents(events.clone())
+            .with_filter(tracing_subscriber::filter::LevelFilter::WARN);
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(warnings))
+            .expect("the capacity test installs the only process subscriber");
+        AbsorbEventLog(events)
+    }
+}
+
+/// Prints the counts when the run ends, passed or failed.
+struct AbsorbEventLog(Arc<AbsorbEvents>);
+
+impl Drop for AbsorbEventLog {
+    fn drop(&mut self) {
+        eprintln!("{}", self.0);
+    }
+}
+
+impl std::fmt::Display for AbsorbEvents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "absorber hold events: diverged={} detached_drops={} rollbacks={}",
+            self.diverged.load(Ordering::Relaxed),
+            self.detached.load(Ordering::Relaxed),
+            self.rolled_back.load(Ordering::Relaxed)
+        )
+    }
+}
+
+struct CountAbsorbEvents(Arc<AbsorbEvents>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountAbsorbEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut message = MessageField(String::new());
+        event.record(&mut message);
+        let events = &self.0;
+        let counter = if message.0.starts_with("maintenance accounting diverged") {
+            &events.diverged
+        } else if message
+            .0
+            .starts_with("dropped an absorb advance that does not start")
+        {
+            &events.detached
+        } else if message.0.starts_with("rolling back stranded absorb mark") {
+            &events.rolled_back
+        } else {
+            return;
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct MessageField(String);
+
+impl tracing::field::Visit for MessageField {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
 
 // ---- physical scaling (review blocker 1: a split must ADD capacity —
 // children on real routes, distinct engines, ≥1.8x throughput) --------
@@ -300,6 +382,7 @@ async fn post_split_throughput_scales() {
     // measured 1.77). This serializes the measurement; it does not
     // relax the gate.
     let _l = gap_lock().lock().await;
+    let _absorb_events = AbsorbEvents::capture();
     let inner = mem();
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(
         inner,
@@ -741,5 +824,101 @@ async fn an_append_routed_by_a_pre_seal_descriptor_is_still_refused_as_sealed() 
         assert_eq!(st, 409, "{key}: {body}");
         assert!(body.contains("\"code\":\"sealed\""), "{key}: {body}");
     }
+    engine_shutdown(&state).await;
+}
+
+// ---- a transition the segment map refuses keeps its intent ------------
+// Phase B used to read every MapError as "already done": it cleared the
+// intent and reported the publication over parents the resume had
+// already closed, leaving their ranges routed to closed engines with
+// nothing left to resume them.
+
+/// Persist `planted`, its pending intent included, as the collection's
+/// map and resume it: the verdict, the map as stored, and the map the
+/// resume left.
+async fn resume_planted(
+    state: &Arc<crate::http::AppState>,
+    name: &str,
+    planted: &crate::segmap::SegmentMap,
+) -> (bool, crate::segmap::SegmentMap, crate::segmap::SegmentMap) {
+    let sref = state.deployment.raw_adapter_sref(name);
+    let seal_gen = planted.pending.as_ref().map_or(0, |p| p.seal_gen);
+    let stored = state
+        .registry
+        .cas_update(&sref, |d| {
+            d.seal_gen_counter = d.seal_gen_counter.max(seal_gen);
+            d.segments = Some(planted.clone());
+            true
+        })
+        .await
+        .unwrap();
+    assert!(stored, "the intent is planted");
+    let before = fresh_desc(state, name).await.segments.clone().unwrap();
+    let resumed = crate::scaler3::resume(state, &sref).await;
+    let after = fresh_desc(state, name).await.segments.clone().unwrap();
+    (resumed, before, after)
+}
+
+/// A split of segment 0 on a fresh collection whose allocator stands at
+/// `next_seg_id`: phase B must refuse it and keep the intent.
+async fn a_split_is_refused_with_the_allocator_at(name: &str, next_seg_id: u32) {
+    let (state, _addr) = keyed_collection(name).await;
+    let mut planted = crate::segmap::SegmentMap::initial("", 1);
+    planted.next_seg_id = next_seg_id;
+    planted.pending = Some(crate::segmap::PendingTransition {
+        kind: "split".into(),
+        segs: vec![0],
+        split_at: 0x8000_0000_0000_0000,
+        started_ms: 1,
+        seal_gen: 1,
+    });
+    let (resumed, before, after) = resume_planted(&state, name, &planted).await;
+    assert_eq!(
+        (resumed, after.pending.as_ref(), after.version),
+        (false, before.pending.as_ref(), before.version),
+        "a split with the allocator at {next_seg_id} was published or lost its intent"
+    );
+    assert_eq!(after, before, "a refused split leaves the map as planted");
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_split_the_allocator_cannot_number_keeps_its_intent_pending() {
+    // Both children get ids; the allocator has none left to advance to.
+    a_split_is_refused_with_the_allocator_at("spentsplit", u32::MAX - 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_split_with_no_id_for_its_high_child_keeps_its_intent_pending() {
+    a_split_is_refused_with_the_allocator_at("spentsplitmax", u32::MAX).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merge_the_segment_map_refuses_keeps_its_intent_pending() {
+    let (state, _addr) = keyed_collection("refusedmerge").await;
+    split_at_half(&state, "refusedmerge").await;
+    let desc = fresh_desc(&state, "refusedmerge").await;
+    let mut planted = desc.segments.clone().unwrap();
+    assert_eq!(planted.live().map(|s| s.seg_id).collect::<Vec<_>>(), [1, 2]);
+    // A sealed parent no successor was ever published for: merge() refuses
+    // it (AlreadySealed) before it allocates, whatever the allocator holds.
+    for high in planted.segments.iter_mut().filter(|s| s.seg_id == 2) {
+        high.sealed_ms = Some(1);
+        high.sealed_next_offset = Some(0);
+    }
+    planted.pending = Some(crate::segmap::PendingTransition {
+        kind: "merge".into(),
+        segs: vec![1, 2],
+        split_at: 0,
+        started_ms: 1,
+        seal_gen: 2,
+    });
+    let (resumed, before, after) = resume_planted(&state, "refusedmerge", &planted).await;
+    assert_eq!(
+        (resumed, after.pending.as_ref(), after.version),
+        (false, before.pending.as_ref(), before.version),
+        "a merge the segment map refused was published or lost its intent"
+    );
+    assert_eq!(after, before, "a refused merge leaves the map as planted");
     engine_shutdown(&state).await;
 }

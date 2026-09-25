@@ -1,10 +1,12 @@
-//! The h1 connection posture: what every accepted socket is served with.
+//! The h1 serve loop and its connection posture: what every accepted socket is served with.
 //!
 //! One builder, cloned per connection, so production and every rig serve
 //! with the same bounded read buffer and the same request-head deadline
 //! (`HttpConfig::h1_max_buf`, `HttpConfig::h1_header_timeout`).
 
 use crate::config::HttpConfig;
+
+use super::{NOFILE_HARD, NOFILE_SOFT, raise_nofile, spawn_runtime_watchdog};
 
 /// The hyper builder every connection is served with; cloned per accept
 /// (an `Arc` bump and a parser-config copy).
@@ -37,6 +39,117 @@ pub(crate) fn h1_builder(http: &HttpConfig) -> hyper::server::conn::http1::Build
     b
 }
 
+/// A reaped connection's verdict (item 37). hyper does not catch a panic in
+/// the service or its response body, so a panicking handler unwinds the
+/// connection task and its client sees only a closed socket: this
+/// JoinError is the one place the server learns of it. A cancelled task
+/// is the shutdown's own abort, not a fault.
+fn reap(tasks: &crate::tasks::TaskSupervisor, joined: Result<(), tokio::task::JoinError>) {
+    match joined {
+        Err(error) if error.is_panic() => {
+            tracing::error!("connection task panicked; its request got no response: {error}");
+            tasks.record_connection_panic();
+        }
+        Ok(()) | Err(_) => {}
+    }
+}
+
+/// #269: the one h1 serve entry — production and every test rig serve
+/// through THIS function, so the suite exercises the real connection
+/// path; what each connection is served with is `serve::h1_builder`, and
+/// every response it serves passes `challenge`.
+pub(crate) async fn serve_h1(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    http: &crate::config::HttpConfig,
+    tasks: crate::tasks::TaskSupervisor,
+) -> std::io::Result<()> {
+    let app = app.layer(axum::middleware::map_response(challenge));
+    serve_connections(listener, app, http, tasks).await
+}
+
+/// RFC 9110 §15.5.2: a 401 names how to authenticate. Every credential the
+/// server takes, on the product, raw and operator surfaces, is a bearer
+/// token (RFC 6750). A challenge a handler already set is kept.
+async fn challenge(mut response: axum::response::Response) -> axum::response::Response {
+    if response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        response
+            .headers_mut()
+            .entry(axum::http::header::WWW_AUTHENTICATE)
+            .or_insert(axum::http::HeaderValue::from_static(
+                "Bearer realm=\"streams\"",
+            ));
+    }
+    response
+}
+
+/// The accept loop behind `serve_h1`.
+#[expect(
+    clippy::disallowed_methods,
+    clippy::let_underscore_must_use,
+    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns, reaps (counting a panicked one) and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled connection results would restate what the JoinSet already owns"
+)]
+async fn serve_connections(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    http: &crate::config::HttpConfig,
+    tasks: crate::tasks::TaskSupervisor,
+) -> std::io::Result<()> {
+    let svc = hyper_util::service::TowerToHyperService::new(app);
+    let h1 = h1_builder(http);
+    let limits = raise_nofile();
+    let (soft, hard) = (
+        limits.soft.map_or(0, |n| n.get()),
+        limits.hard.map_or(0, |n| n.get()),
+    );
+    NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
+    NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
+    spawn_runtime_watchdog(&tasks);
+    // PR 6.1-A: the accept loop OWNS its connections. A connection is
+    // not request-scoped — keep-alives and live subscriptions outlive
+    // any one request — so on cancellation the loop stops accepting,
+    // releases the address, then aborts and JOINS every connection: a
+    // runtime that has shut down has no socket left open, and a
+    // replacement can bind the same address immediately.
+    let cancel = tasks.cancellation();
+    let mut conns = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            accepted = listener.accept() => match accepted {
+                Ok((sock, _peer)) => {
+                    let svc = svc.clone();
+                    let h1 = h1.clone();
+                    conns.spawn(async move {
+                        let _ = sock.set_nodelay(true);
+                        let io = hyper_util::rt::TokioIo::new(sock);
+                        // Errors here are routine client behavior (resets,
+                        // half-closed keep-alives, head deadlines), not
+                        // server faults.
+                        let _ = h1.serve_connection(io, svc).await;
+                    });
+                }
+                Err(e) => {
+                    // Transient accept errors (EMFILE bursts, aborted
+                    // handshakes) must not kill the acceptor.
+                    tracing::warn!("accept: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+            // Reap finished connections so the set never grows with
+            // completed entries.
+            Some(joined) = conns.join_next(), if !conns.is_empty() => reap(&tasks, joined),
+        }
+    }
+    drop(listener);
+    conns.abort_all();
+    while let Some(joined) = conns.join_next().await {
+        reap(&tasks, joined);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::HttpConfig;
@@ -52,12 +165,20 @@ mod tests {
     /// this long fails by assertion, it never hangs.
     const BOUND: Duration = Duration::from_secs(4);
 
-    /// The production serve loop over a two-route app, on `deadline`.
+    /// A handler that panics mid-request: neither axum nor hyper catches the
+    /// unwind, so it ends the connection task.
+    async fn panicking_handler() -> &'static str {
+        panic!("scripted handler panic")
+    }
+
+    /// The production serve loop over the rig's routes, on `deadline`.
     async fn serve(deadline: Duration) -> (std::net::SocketAddr, TaskSupervisor) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = axum::Router::new()
             .route("/fast", axum::routing::get(|| async {}))
+            .route("/hang", axum::routing::get(std::future::pending::<()>))
+            .route("/panic", axum::routing::get(panicking_handler))
             .route(
                 "/slow",
                 axum::routing::get(move || async move {
@@ -185,6 +306,47 @@ mod tests {
         tasks.shutdown(Duration::from_secs(5)).await;
     }
 
+    /// Item 37 (A): a panicking handler ends its connection with no response,
+    /// and the accept loop that reaps the task counts it on the runtime's task
+    /// record exactly once. A connection the shutdown aborts mid-request is
+    /// cancelled, not panicked, and is not counted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_handler_is_counted_once_and_an_aborted_connection_is_not() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        // Served once (so it is certainly accepted), then parked in a handler
+        // that never answers: only the shutdown's abort ends it.
+        let mut hung = TcpStream::connect(addr).await.unwrap();
+        hung.write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let head = response_head(&mut hung).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        hung.write_all(b"GET /hang HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let mut panicked = TcpStream::connect(addr).await.unwrap();
+        panicked
+            .write_all(b"GET /panic HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            closed_within(&mut panicked, BOUND).await,
+            Ok(()),
+            "a panicked request is answered by a closed socket"
+        );
+        tasks.shutdown(Duration::from_secs(5)).await;
+        assert_eq!(
+            closed_within(&mut hung, BOUND).await,
+            Ok(()),
+            "the shutdown aborts and joins the parked connection"
+        );
+        assert_eq!(
+            tasks.monitor().connection_panics(),
+            1,
+            "one panicked connection is counted; the aborted one is not"
+        );
+    }
+
     /// The validated floor is exactly the one hyper asserts: a buffer at
     /// the floor builds, one byte less panics. If hyper moves its private
     /// minimum either way, this fails before a config it refuses can boot.
@@ -206,6 +368,31 @@ mod tests {
         assert!(
             !builds(HttpConfig::MIN_H1_MAX_BUF - 1),
             "hyper accepts less than the validated floor"
+        );
+    }
+
+    /// A 401 gains the bearer challenge; any other status does not, and a
+    /// challenge a handler already set is kept.
+    #[tokio::test]
+    async fn only_a_401_is_challenged_and_an_existing_challenge_is_kept() {
+        use axum::http::{HeaderValue, StatusCode, header::WWW_AUTHENTICATE};
+        use axum::response::IntoResponse;
+        let challenged = super::challenge(StatusCode::UNAUTHORIZED.into_response()).await;
+        assert_eq!(
+            challenged.headers().get(WWW_AUTHENTICATE),
+            Some(&HeaderValue::from_static("Bearer realm=\"streams\""))
+        );
+        for status in [StatusCode::OK, StatusCode::FORBIDDEN, StatusCode::NOT_FOUND] {
+            let response = super::challenge(status.into_response()).await;
+            assert_eq!(response.headers().get(WWW_AUTHENTICATE), None, "{status}");
+        }
+        let mut own = StatusCode::UNAUTHORIZED.into_response();
+        own.headers_mut()
+            .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Basic"));
+        let kept = super::challenge(own).await;
+        assert_eq!(
+            kept.headers().get(WWW_AUTHENTICATE),
+            Some(&HeaderValue::from_static("Basic"))
         );
     }
 }

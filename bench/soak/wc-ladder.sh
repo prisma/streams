@@ -145,6 +145,9 @@ svc_id() {
 deploy() {
   local ROLE=$1; shift
   local DIR="$S/app-${ROLE%%-*}-$R"   # gen-k roles share the gen app dir
+  # Re-stage from deploy/ and refuse a copy that still differs: a copy
+  # staged before item 39 holds every death (bench/stage-app.sh).
+  "$HERE/../stage-app.sh" "app-${ROLE%%-*}" "$DIR"
   local DR=$(role_region "$ROLE") DP=$(role_project "$ROLE")
   local SVC=$(svc_id "$ROLE"); local SVCARG=()
   [ -n "$SVC" ] && SVCARG=(--service "$SVC")

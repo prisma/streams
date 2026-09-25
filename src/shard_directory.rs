@@ -310,6 +310,12 @@ impl ShardDirectory {
         self.inner.gate.get_or_open(prefix, wait).await
     }
 
+    /// The directory hides its gate; the operator surfaces need exactly one
+    /// read of it, this runtime's reopen-storm counters (`shard_opens`).
+    pub(crate) fn open_stats(&self) -> serde_json::Value {
+        self.inner.gate.stats_json()
+    }
+
     /// The resident engine for `prefix`, if open (no adoption stamp).
     #[expect(
         clippy::unwrap_used,
@@ -380,7 +386,11 @@ impl ShardDirectory {
 
     /// Stops admission and observes the same retirement owners on every call.
     /// A deadline cancels observers only; late opens and database closes remain
-    /// fenced in the gate until their owners establish termination.
+    /// fenced in the gate until their owners establish termination. A close
+    /// that failed is settled, not pending (item 38): its owner keeps the fence
+    /// and the readiness failure, no wait turns it into a close, and the stop
+    /// answers with the joined reports that name it, also at the deadline.
+    /// Pending engines and reports come from one observation (`settle_engines`).
     #[expect(
         clippy::excessive_nesting,
         reason = "ShardDirectory::shutdown; the drain nests the joined-report verdict inside the no-pending branch of the wait loop; flattening it would separate the verdict from the drain it concludes"
@@ -393,13 +403,8 @@ impl ShardDirectory {
         let deadline = tokio::time::Instant::now() + grace;
         loop {
             let (engines, opens) = self.inner.gate.shutdown_pending();
-            let reports = futures_util::future::join_all(engines.iter().map(|engine| {
-                engine.wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
-            }))
-            .await;
-            let pending = engines.iter().filter(|engine| !engine.terminated()).count();
+            let (pending, failures) = settle_engines(&engines, deadline).await;
             if opens == 0 && pending == 0 {
-                let failures: Vec<_> = reports.into_iter().filter_map(Result::err).collect();
                 return if failures.is_empty() {
                     Ok(())
                 } else {
@@ -408,7 +413,7 @@ impl ShardDirectory {
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!(
-                    "shutdown ongoing or failed: {opens} opens, {pending} engines; owners retained"
+                    "shutdown ongoing or failed: {opens} opens, {pending} engines; owners retained; joined reports: {failures:?}"
                 ));
             }
             tokio::time::sleep_until(
@@ -460,6 +465,24 @@ impl ShardDirectory {
         engine.begin_close();
         RetireOutcome::Retired(engine)
     }
+}
+
+/// Observes each retiring engine once, until it settles or `deadline`
+/// passes: how many are still closing, and the failures the settled ones
+/// reported. Both come from that one observation per engine, so a close that
+/// ends just after its observation timed out still counts as closing, never
+/// as settled with a report taken before it ended (item 38).
+async fn settle_engines(
+    engines: &[crate::shard::EngineShutdown],
+    deadline: tokio::time::Instant,
+) -> (usize, Vec<String>) {
+    let reports = futures_util::future::join_all(engines.iter().map(|engine| {
+        engine.settle(deadline.saturating_duration_since(tokio::time::Instant::now()))
+    }))
+    .await;
+    let pending = reports.iter().filter(|report| report.is_none()).count();
+    let failures = reports.into_iter().flatten().filter_map(Result::err);
+    (pending, failures.collect())
 }
 
 #[cfg(test)]
@@ -551,6 +574,12 @@ mod directory_tests {
             other => panic!("expected OpenFailed, got {other:?}"),
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let opens = dir.open_stats();
+        assert_eq!(
+            opens["started"], 1,
+            "the directory reports its own gate: {opens}"
+        );
+        assert_eq!(opens["failed"], 1, "{opens}");
     }
 
     /// An open slower than the caller's patience is a retryable,

@@ -33,9 +33,6 @@ pub(super) struct CommitTransaction<'a> {
     extra_writes: bool,
     changed: bool,
     accounting_diverged: Option<String>,
-    /// Receipts of the absorbed batches this group carries: answered once
-    /// its batch is written, dropped unanswered by every refusal.
-    landed: Vec<oneshot::Sender<()>>,
     maintenance_added: u64,
     maintenance_retired: u64,
     started: std::time::Instant,
@@ -49,12 +46,10 @@ pub(super) struct CommitTransaction<'a> {
 impl<'a> CommitTransaction<'a> {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained, absorbed-batch receipts included; checked conversions would only restate those bounds"
+        reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained; checked conversions would only restate those bounds"
     )]
     pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>, cfg: &'a ShardConfig) {
-        // A group refused before it is staged drops `landed` unanswered.
-        let mut landed = Vec::new();
-        let ops = Self::expand(engine, ops, &mut landed);
+        let ops = Self::expand(engine, ops);
         if engine.is_closed() {
             for op in ops {
                 Self::reject_op(op, AppendErr::Moved);
@@ -94,7 +89,6 @@ impl<'a> CommitTransaction<'a> {
             extra_writes: false,
             changed: false,
             accounting_diverged: None,
-            landed,
             maintenance_added: 0,
             maintenance_retired: 0,
             started,
@@ -136,7 +130,7 @@ impl<'a> CommitTransaction<'a> {
     }
     #[expect(
         clippy::match_same_arms,
-        reason = "CommitTransaction::stage; the hash arms stay separate so the mutation harness never selects the whole stage as one mutant, whose blank form hangs every waiting reply instead of failing a test; folding the arms would put the dispatch of every op, the awaited absorbed advance included, under a mutant the harness cannot bound"
+        reason = "CommitTransaction::stage; the hash arms stay separate so the mutation harness never selects the whole stage as one mutant, whose blank form hangs every waiting reply instead of failing a test; folding the arms would put the dispatch under a mutant the harness cannot bound"
     )]
     async fn stage(&mut self, op: CommitOp) {
         let hash = match &op {
@@ -181,12 +175,8 @@ impl<'a> CommitTransaction<'a> {
                 self.billing_retained(&mut local, hash, retained)
             }
             CommitOp::Absorbed {
-                from,
-                upto,
-                bytes,
-                v2,
-                ..
-            } => self.absorbed(&mut local, hash, from, upto, bytes, v2).await,
+                upto, bytes, v2, ..
+            } => self.absorbed(&mut local, hash, upto, bytes, v2),
             CommitOp::TrimStep { .. } => self.trim(&mut local, hash),
             CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {
                 unreachable!("expanded before staging")

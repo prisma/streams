@@ -26,6 +26,17 @@ pub(crate) const KIND_LEASE_V2: u8 = 0x42;
 
 const MAC_LEN: usize = 16;
 
+/// Why a key cursor, message id or lease token was refused. Readers and
+/// settlers answer both alike; the kind verdict keeps kind-before-shape
+/// falsifiable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenError {
+    /// Unreadable, unauthenticated, or bound to another incarnation or key.
+    Invalid,
+    /// Another token class.
+    WrongKind,
+}
+
 /// One routing-key read position (spec Stage 6 §2.3): the lineage
 /// position and the consumed segment-local offset, bound to the stream
 /// incarnation and the exact routing key.
@@ -163,6 +174,20 @@ pub(crate) struct ScanCursor {
 }
 
 pub(crate) const SCAN_CURSOR_MAX: usize = 16 * 1024;
+
+/// Why a scan cursor was refused. The scan page matches these exhaustively and
+/// owns each one's wire answer, so a new refusal cannot reach the edge until
+/// that page decides its status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanCursorError {
+    /// Unreadable, unauthenticated or minted for another incarnation. Identity
+    /// is judged before expiry, so a foreign cursor is this even when expired.
+    Invalid,
+    /// Another token class; the kind byte is judged before shape.
+    WrongKind,
+    /// An authentic snapshot past its deadline; the client starts a new scan.
+    Expired,
+}
 
 /// Catalog cursor (review item 3): versioned and PROJECT-BOUND — a
 /// listing cursor from one project replayed under another is
@@ -392,7 +417,7 @@ mod tests {
         );
         assert_eq!(
             ScanCursor::decode(&s, &tp(), &key(), &[1; 16], 1_000_001).unwrap_err(),
-            "scan_expired"
+            ScanCursorError::Expired
         );
         // A key cursor on the scan decoder (and vice versa) is a
         // DIFFERENT token class.
@@ -405,11 +430,11 @@ mod tests {
         .encode(&tp(), &key());
         assert_eq!(
             ScanCursor::decode(&kc, &tp(), &key(), &[1; 16], 0).unwrap_err(),
-            "wrong_cursor_kind"
+            ScanCursorError::WrongKind
         );
         assert_eq!(
             KeyCursor::decode(&s, &tp(), &key(), &[1; 16], &[2; 16]).unwrap_err(),
-            "wrong_cursor_kind"
+            TokenError::WrongKind
         );
     }
 
@@ -440,15 +465,15 @@ mod tests {
         // is not a cursor, and vice versa.
         assert_eq!(
             MessageId::decode(&ls, &tp(), &key(), &[1; 16]).unwrap_err(),
-            "wrong_token_kind"
+            TokenError::WrongKind
         );
         assert_eq!(
             LeaseToken::decode(&ms, &tp(), &key(), &[1; 16]).unwrap_err(),
-            "wrong_token_kind"
+            TokenError::WrongKind
         );
         assert_eq!(
             KeyCursor::decode(&ms, &tp(), &key(), &[1; 16], &[2; 16]).unwrap_err(),
-            "wrong_cursor_kind"
+            TokenError::WrongKind
         );
     }
 }

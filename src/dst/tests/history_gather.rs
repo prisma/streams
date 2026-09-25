@@ -1,12 +1,11 @@
 //! History gather.
 
 use super::fixture_storage::{
-    append_sized, mem, open_engine_with_settings, skey, wait_all_absorbed,
+    append_sized, mem, open_engine, open_engine_with_settings, skey, wait_all_absorbed,
 };
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 fn gather_hashes(tag: u8, count: u16) -> Vec<[u8; 16]> {
     (0..count)
@@ -72,17 +71,12 @@ async fn gather_after_reopen(
         },
     )
     .await;
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine2.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        cfg,
-    );
+    let absorber = crate::history::Absorber::new(engine2.clone(), cfg);
     let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
     let mut advanced: Vec<([u8; 16], u64)> = outcome
         .advanced
         .iter()
-        .map(|(h, _, upto, _)| (*h, *upto))
+        .map(|(h, upto, _)| (*h, *upto))
         .collect();
     advanced.sort_unstable();
     (advanced, engine2)
@@ -113,18 +107,13 @@ async fn gather_with_pacing(
     for h in &hashes {
         append_sized(&engine, *h, key, "", 2048).await;
     }
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        cfg,
-    );
+    let absorber = crate::history::Absorber::new(engine.clone(), cfg);
     let t0 = std::time::Instant::now();
     let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
     let mut advanced: Vec<([u8; 16], u64)> = outcome
         .advanced
         .iter()
-        .map(|(h, _, upto, _)| (*h, *upto))
+        .map(|(h, upto, _)| (*h, *upto))
         .collect();
     advanced.sort_unstable();
     (advanced, t0.elapsed(), engine)
@@ -167,12 +156,7 @@ async fn adaptive_gather_estimate_seeds_decays_and_jumps() {
         slatedb::config::Settings::default(),
     )
     .await;
-    let absorber = crate::history::Absorber::new(
-        store,
-        engine,
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig::default(),
-    );
+    let absorber = crate::history::Absorber::new(engine, crate::history::AbsorberConfig::default());
     let cap = crate::history::AbsorberConfig::default()
         .gather_max_bytes
         .saturating_mul(crate::history::ABSORB_BUILD_MULTIPLIER)
@@ -323,12 +307,8 @@ async fn sparse_absorption_wave_bounds_append_latency() {
         append_sized(&engine, *h, &key, "", 2048).await;
     }
 
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig::default(),
-    );
+    let absorber =
+        crate::history::Absorber::new(engine.clone(), crate::history::AbsorberConfig::default());
 
     // Probe stream must exist before measuring.
     append_sized(&engine, [0xA7; 16], &key, "", 1024).await;
@@ -407,9 +387,7 @@ async fn v2_gather_packs_to_the_aggregate_budget() {
     // deterministic. ~16.6 KiB per unkeyed chunk against a 40 KiB budget
     // means exactly two streams per gather.
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 40 * 1024,
             ..Default::default()
@@ -484,9 +462,7 @@ async fn an_oversized_chunk_gathers_alone() {
     append_sized(&engine, small_b, &key, "", 16 * 1024).await;
 
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 64 * 1024,
             ..Default::default()
@@ -550,23 +526,40 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
     // Keyed chunks now weigh what unkeyed ones do (~16.6 KiB): the
     // canonical row plus a compact postings allowance.
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 40 * 1024,
             ..Default::default()
         },
     );
-    let before = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed);
     let g1 = absorber.absorb_gather_v2(&hashes).await.expect("gather 1");
     assert_eq!(
         g1.advanced.len(),
         2,
         "postings killed the keyed double-write: both streams fit one budget"
     );
-    let postings = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed) - before;
-    let canonical: u64 = g1.advanced.iter().map(|(_, _, _, b)| *b).sum();
+    // The gate is judged on the pages this gather stored, read back from
+    // every postings key of each stream in this engine's own partition
+    // (append_sized routes each stream by its own hash):
+    // POSTINGS_BYTES_WRITTEN is process-wide, and every gather a
+    // concurrently running test stages moves it.
+    let part = engine.history_partition().await.expect("partition");
+    let mut postings = 0u64;
+    for (hash, _, _) in &g1.advanced {
+        let (route, segment) = (
+            crate::crypto::RouteHash(*hash),
+            crate::crypto::SegmentHash(*hash),
+        );
+        let first = crate::crypto::RoutingKeyHash([0; 16]);
+        let last = crate::crypto::RoutingKeyHash([0xFF; 16]);
+        let lo = crate::postings::postings_key(route, segment, &first, 0, 0);
+        let hi = crate::postings::postings_key(route, segment, &last, u64::MAX, u64::MAX);
+        let mut pages = part.scan(lo..=hi).await.expect("postings scan");
+        while let Some(page) = pages.next().await.expect("postings page") {
+            postings += page.value.len() as u64;
+        }
+    }
+    let canonical: u64 = g1.advanced.iter().map(|(_, _, b)| *b).sum();
     assert!(postings > 0, "keyed frames must produce postings pages");
     assert!(
         postings * 100 <= canonical * 8,
@@ -654,9 +647,7 @@ async fn untouched_streams_absorb_after_restart() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine_b.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -756,9 +747,7 @@ async fn absorber_on_pool(
     )
     .await;
     let absorber = crate::history::Absorber::new(
-        store,
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes,
             ..Default::default()
@@ -884,5 +873,50 @@ async fn a_refused_oversized_chunk_defers_and_sizes_the_next_reservation() {
     );
     wait_all_absorbed(&engine, &[fat]).await;
     assert_eq!(pool.budget.reserved_bytes(), 0);
+    engine.begin_close();
+}
+
+/// Item 35: a stored row that fails admission fails identically on every
+/// retry, so it may cost only its own stream; the lane-mates read beside
+/// it advance in the same flush and the corrupt stream's boundary holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_corrupt_row_fails_only_its_stream() {
+    let store = mem();
+    let key = skey();
+    let (a, bad, c) = ([0xB1u8; 16], [0xB2u8; 16], [0xB3u8; 16]);
+    // ShardConfig::default(): ring off, per-engine HistoryResources.
+    let engine = open_engine(store.clone(), "dst-corrupt-row").await;
+    for h in [a, bad, c] {
+        append_sized(&engine, h, &key, "", 1024).await;
+    }
+    let mut overwrite = slatedb::WriteBatch::new();
+    overwrite.put(crate::shard::record_key(&bad, 0), b"invalid frame");
+    let written = engine.db.write(overwrite).await.expect("overwrite the row");
+    written.await_durable().await.expect("durable overwrite");
+    let absorber =
+        crate::history::Absorber::new(engine.clone(), crate::history::AbsorberConfig::default());
+    let outcome = absorber
+        .absorb_gather_v2(&[a, bad, c])
+        .await
+        .expect("a corrupt row in one stream must not fail the lane's gather");
+    let advanced: Vec<[u8; 16]> = outcome.advanced.iter().map(|(h, _, _)| *h).collect();
+    assert_eq!(
+        advanced,
+        vec![a, c],
+        "the corrupt stream's lane-mates advance in the same flush"
+    );
+    let frame =
+        crate::history::StreamGatherFailure::Corrupt(crate::shard::record::RecordCorruption::Frame);
+    assert_eq!(
+        outcome.failed,
+        vec![(bad, frame)],
+        "only the corrupt stream is left out, with the row's own reason"
+    );
+    assert!(outcome.no_work.is_empty() && outcome.deferred_budget.is_empty());
+    assert!(outcome.partial.is_empty());
+    wait_all_absorbed(&engine, &[a, c]).await;
+    let handle = engine.stream_handle(bad).await.expect("handle");
+    let absorbed = handle.state.lock().unwrap().durable.absorbed;
+    assert_eq!(absorbed, 0, "the corrupt stream's boundary holds");
     engine.begin_close();
 }

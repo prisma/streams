@@ -20,18 +20,73 @@ warm instance keeps `/tmp` across versions and would otherwise pin the
 previous release.
 
 `supervise.ts` closes the same gap from the other side. If the binary
-exits — bad arch, missing required env var, workload finished — the
-wrapper binds `$PORT` itself and serves a 500 carrying the exit code and
-the tail of stderr. Without it the only symptom is the domain answering
-404/503, which is indistinguishable from a cold start; with it a dead
-service explains itself:
+exits at boot — before it ever accepted on `$PORT`, or within its first
+minute (bad arch, missing required env var, a store it cannot open,
+workload finished) — the wrapper binds `$PORT` itself and answers every
+request with a generic 500 `binary_exited`. Without it the only symptom
+is the domain answering 404/503, which is indistinguishable from a cold
+start; with it a dead service reads as dead. The port is customer-reachable
+and the wrapper, not the binary, answers it, so the body carries nothing
+of the binary (second external review); the details are in the platform
+log: the child's own stderr, which the wrapper tees there as it runs, then
+`binary exited with code N; holding :PORT unhealthy; details: {...}` with
+the binary, its arguments, exit code, uptime, whether it ever accepted,
+and a hint:
 
 ```bash
-curl -s https://<domain>/ | head -20
-# {"error":"binary_exited","exitCode":2,"hint":"non-zero exit: check
-#  required env vars ...","stderrTail":"error: the following required
-#  arguments were not provided: --shape <SHAPE>"}
+curl -s https://<domain>/
+# {"error":"binary_exited","message":"the service is not running; its exit is recorded in the platform log"}
 ```
+
+A SIGTERM or SIGINT to the wrapper is forwarded to the binary, and the
+wrapper exits with the binary's code whatever its policy (the platform is
+stopping the instance). A binary still running 35 s after the first
+forwarded signal (streams-slate bounds its own stop at 30 s, plus up to
+250 ms for its last stderr line) is killed, and the wrapper exits 137.
+
+A binary that dies after it was ready — it accepted on `$PORT` and had
+been up for 60 s, counted on the monotonic clock from the spawn (owner
+decision D4(c)) — died at runtime (an OOM kill; streams-slate's exit 1
+after a critical loop's exit, item 38). `app-server`, and `app-lb` as the
+router (`PILOT_MODE` unset or `lb`), then exit with the child's own code
+(a graceful 0 stays 0; a signal is 128 + its number, e.g. 137 for an OOM
+kill) and Compute replaces the instance (item 39). The wrapper's log line
+`binary exited with code N after serving on :PORT ...` is then the only
+record of that death. `app-gen`, and `app-lb` running the pilot's
+generator or benchmark (`PILOT_MODE=gen` or `bench`), hold every death,
+because a workload that runs to completion must not be restarted
+mid-campaign. The choice is `policyFor(app, env)` in `supervise.ts`; every
+`index.ts` passes `policyFor("<its app>", process.env)`, and
+`superviseBinary` has no default policy: called without one it refuses to
+start, rather than silently holding every death. `bun test
+./deploy/supervise.test.ts` pins every app's policy, the wiring in each
+`index.ts`, both death paths, the 60 s boot window, the preserved exit code
+(0, 1 and 137), the wrapper's log line, and that the three copies stay
+byte-identical.
+
+**Deploy only the repo's wrapper (plan decision D11).** A streams-slate
+with item 38 behind an older wrapper turns a critical exit into a 500 that
+is never replaced, where the old binary at least kept serving. The
+campaign scripts deploy from copies of these directories under
+`$SOAK_HOME` (they carry `node_modules`), and a copy staged before item 39
+still holds every death. `bench/stage-app.sh <app> <dir>` refuses a copy
+holding any entry this directory does not (hidden ones such as `.env`
+included, which Bun would load on its own; other directories; symlinks),
+before installing anything, then builds a fresh directory with exactly
+these files, moves the old `node_modules` in only if an install succeeded
+for exactly this manifest (else runs `bun install`, output shown, and
+refuses on failure), verifies it byte for byte, and only then swaps it in
+(`deploy/stage-app.test.ts`);
+`bench/soak/deploy-region.sh`, `mt-tenants.sh`, `wc-ladder.sh`,
+`bench/fleet/setup-fleet.sh` and `deploy-fleet.sh` run it before every
+deploy. Run it yourself before deploying any other copy.
+
+The wrapper forwards SIGTERM and SIGINT to the binary (see above), so
+streams-slate's graceful stop and its 30 s stop bound run when the
+platform signals the wrapper. How Compute delivers its stop signal (to
+PID 1, to the process group, or by tearing the VM down) is not yet
+verified: the wrapper -> binary -> platform lifecycle on Compute is a
+deployment gate (D10).
 
 Distinct env names per role (`SERVER_BINARY_S3_KEY` vs `LB_BINARY_S3_KEY`,
 `BIN_S3_*` vs `SLATE_S3_*`) — Compute env vars are project-scoped and
@@ -69,6 +124,7 @@ it rather than redeploying into it.
 
 **Fresh app directories need `bun install` before `deploy`.** A copied
 wrapper app without `node_modules` deploys and then fails at import.
+`bench/stage-app.sh` installs when it stages one.
 
 **Do not run parallel `bunx @prisma/compute-cli` invocations.** They race
 on the shared package cache and fail with `EEXIST`. Fan out across regions

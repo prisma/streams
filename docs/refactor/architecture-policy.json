@@ -30,13 +30,6 @@
       "rationale": "Required durable metadata decoding and stable-finality failures now stop the same ordered drain transaction instead of treating missing/unreadable state as zero.",
       "source_obligation": "Required-read failure preserves outbox checkpoints and attribution"
     },
-    "function:src/fleet.rs::start": {
-      "limit": 687,
-      "owner": "Fleet runtime",
-      "finding": "R10/R17",
-      "rationale": "Task/resource ownership and monotonic timing are threaded through the existing startup supervision loop with no additional network boundary.",
-      "source_obligation": "Critical-task registration and runtime resource wiring"
-    },
     "function:src/product.rs::product_entry": {
       "limit": 318,
       "owner": "Product transport dispatch",

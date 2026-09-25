@@ -875,7 +875,7 @@ async fn telemetry_crash_points_and_cost_gates() {
         "content-type",
         axum::http::HeaderValue::from_static("application/json"),
     );
-    let r = crate::http::append(
+    let r = crate::http::append_typed(
         state.clone(),
         crate::tenant::system_project().stream_ref("_usage"),
         hdrs,
@@ -885,7 +885,7 @@ async fn telemetry_crash_points_and_cost_gates() {
         None,
     )
     .await;
-    assert!(r.status().is_success());
+    assert!(r.is_ok());
     for _ in 0..50 {
         if crate::billing::rollup_step(&state).await.unwrap() == 0 {
             break;

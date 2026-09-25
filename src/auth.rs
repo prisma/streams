@@ -24,8 +24,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod lease;
 mod publication;
+mod refusal;
+pub(crate) use lease::{AuthLease, LeaseInvalidReason};
 use publication::HighWater;
+pub(crate) use refusal::{Denial, Refusal};
 
 use arc_swap::ArcSwap;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -47,6 +51,19 @@ pub(crate) const POLICY_STALENESS_MAX_SECS: i64 = 300;
 /// its key set for this long must stop trusting it (review item 6) —
 /// a revoked signing key must not verify forever on a wedged feed.
 pub(crate) const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
+
+/// §7.1: the last second a snapshot fetched at `fetched_at_unix` still
+/// authorizes. Every staleness refusal, the operator surface and every
+/// lease deadline derive from this one boundary, so "stale" and
+/// "re-check now" cannot disagree about when a window closes.
+fn feed_fresh_until(fetched_at_unix: i64, window_secs: i64) -> i64 {
+    fetched_at_unix.saturating_add(window_secs)
+}
+
+/// §7.1: the one fail-closed staleness predicate.
+fn feed_stale(fetched_at_unix: i64, window_secs: i64, now: i64) -> bool {
+    now > feed_fresh_until(fetched_at_unix, window_secs)
+}
 
 /// Separate JWT trust boundaries (§14): a customer token can never satisfy
 /// a fleet workload check and vice versa. Operator access uses its own bearer.
@@ -182,69 +199,6 @@ pub(crate) struct RequestPrincipal {
     pub scopes: ScopeSet,
     pub grant: StreamGrant,
     pub expires_at: i64,
-}
-
-/// Review V4: compact authorization lease for LONG-LIVED
-/// subscriptions. A live SSE connection re-checks this whenever the
-/// auth snapshot generation changes (bounded by the heartbeat
-/// cadence) and terminates no later than token expiry — an old owner
-/// must not keep receiving records through a connection opened
-/// before a transfer, suspension, revocation, or expiry.
-#[derive(Clone, Debug)]
-pub(crate) struct AuthLease {
-    pub project_id: ProjectId,
-    pub credential_id: Arc<str>,
-    pub ownership_version: u64,
-    pub grant_version: u64,
-    pub expires_at: i64,
-}
-
-/// Review round 3 F1: the reasons a live subscription's lease stops
-/// being valid. Exported as termination counters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LeaseInvalidReason {
-    TokenExpired,
-    PolicyStale,
-    GrantsStale,
-    ProjectMissing,
-    ProjectNotActive,
-    OwnershipChanged,
-    CredentialMissing,
-    CredentialInactive,
-    GrantChanged,
-    CredentialExpired,
-}
-
-impl LeaseInvalidReason {
-    pub(crate) const ALL: [LeaseInvalidReason; 10] = [
-        Self::TokenExpired,
-        Self::PolicyStale,
-        Self::GrantsStale,
-        Self::ProjectMissing,
-        Self::ProjectNotActive,
-        Self::OwnershipChanged,
-        Self::CredentialMissing,
-        Self::CredentialInactive,
-        Self::GrantChanged,
-        Self::CredentialExpired,
-    ];
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::TokenExpired => "token_expired",
-            Self::PolicyStale => "policy_stale",
-            Self::GrantsStale => "grants_stale",
-            Self::ProjectMissing => "project_missing",
-            Self::ProjectNotActive => "project_not_active",
-            Self::OwnershipChanged => "ownership_changed",
-            Self::CredentialMissing => "credential_missing",
-            Self::CredentialInactive => "credential_inactive",
-            Self::GrantChanged => "grant_changed",
-            Self::CredentialExpired => "credential_expired",
-        }
-    }
-    pub(crate) fn index(self) -> usize {
-        Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
-    }
 }
 
 impl RequestPrincipal {
@@ -482,74 +436,6 @@ impl AuthService {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Review round 3 F1: why a lease stopped being valid — exported
-    /// as a termination counter and used to pick the next deadline.
-    pub(crate) fn lease_check(
-        &self,
-        l: &AuthLease,
-        now_unix: i64,
-    ) -> Result<(), LeaseInvalidReason> {
-        use LeaseInvalidReason as R;
-        if now_unix >= l.expires_at {
-            return Err(R::TokenExpired);
-        }
-        let w = self.staleness_max_secs();
-        let pols = self.projects.load();
-        // Fail closed at the SAME window new requests use: an
-        // established subscription must never outlive the feed truth.
-        if now_unix - pols.fetched_at_unix > w {
-            return Err(R::PolicyStale);
-        }
-        let Some(p) = pols.projects.get(&l.project_id) else {
-            return Err(R::ProjectMissing);
-        };
-        if p.status != crate::project_policy::ProjectStatus::Active {
-            return Err(R::ProjectNotActive);
-        }
-        if p.ownership_version != l.ownership_version {
-            return Err(R::OwnershipChanged);
-        }
-        let creds = self.credentials.load();
-        if now_unix - creds.fetched_at_unix > w {
-            return Err(R::GrantsStale);
-        }
-        let Some(c) = creds.credentials.get(&l.credential_id) else {
-            return Err(R::CredentialMissing);
-        };
-        if c.status != crate::project_policy::CredentialStatus::Active {
-            return Err(R::CredentialInactive);
-        }
-        if c.grant_version != l.grant_version || c.project_id != l.project_id {
-            return Err(R::GrantChanged);
-        }
-        if let Some(e) = c.expires_at
-            && now_unix >= e
-        {
-            return Err(R::CredentialExpired);
-        }
-        Ok(())
-    }
-
-    /// Review round 3 F1: the next instant at which this lease MUST be
-    /// re-proved even if no feed publishes — the earliest of token
-    /// expiry, credential expiry, and each feed's staleness boundary.
-    /// A clean refresh (even an identical replay) moves it forward.
-    pub(crate) fn lease_deadline(&self, l: &AuthLease) -> i64 {
-        let w = self.staleness_max_secs();
-        let mut d = l.expires_at;
-        d = d.min(self.projects.load().fetched_at_unix + w);
-        let creds = self.credentials.load();
-        d = d.min(creds.fetched_at_unix + w);
-        if let Some(e) = creds
-            .credentials
-            .get(&l.credential_id)
-            .and_then(|c| c.expires_at)
-        {
-            d = d.min(e);
-        }
-        d
-    }
-
     /// Review round 3 F2: a watch on the publication generation — no
     /// lost wakeups, immediate notification to parked response bodies,
     /// current value visible to new receivers.
@@ -600,7 +486,7 @@ impl AuthService {
         let jwks = self.jwks.load();
         // Bounded key-set staleness (review item 6): fail closed like
         // policies and grants — retryable, not a credential error.
-        if now.saturating_sub(jwks.fetched_at_unix) > JWKS_STALENESS_MAX_SECS {
+        if feed_stale(jwks.fetched_at_unix, JWKS_STALENESS_MAX_SECS, now) {
             return Err(AuthError::KeysStale);
         }
         let entry = match jwks.keys.get(&kid) {
@@ -701,7 +587,7 @@ impl AuthService {
 
         // §7.1 fail-closed policy checks, all from local snapshots.
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::PolicyStale);
         }
         // §8.1: placement is not an authorization problem. This cell's
@@ -711,11 +597,10 @@ impl AuthService {
         // a 401 that would make the client refresh a perfectly valid
         // credential. Then, for a project we DO serve, confirm the
         // token's own cell claim agrees.
-        let policy = policies
-            .projects
-            .get(&project_id)
+        let policy = self
+            .served_policy(&policies, &project_id)
             .ok_or(AuthError::WrongCell)?;
-        if policy.cell_id.as_ref() != self.cell_id.as_ref() || c.cell_id != *self.cell_id {
+        if c.cell_id != *self.cell_id {
             return Err(AuthError::WrongCell);
         }
         // Ownership BEFORE status: a token minted under a previous owner
@@ -733,7 +618,7 @@ impl AuthService {
         }
 
         let grants = self.credentials.load();
-        if now - grants.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(grants.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::GrantsStale);
         }
         let cred = grants
@@ -815,14 +700,14 @@ impl AuthService {
             self.shadow.missing.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        match self.verify_customer(token, now) {
+        match self.verify_customer(token, now).map_err(|e| e.refusal()) {
             Ok(_) => {
                 self.shadow.ok.fetch_add(1, Ordering::Relaxed);
             }
-            Err(AuthError::WrongCell) => {
+            Err(Refusal::WrongCell) => {
                 self.shadow.wrong_cell.fetch_add(1, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(Refusal::FeedStale | Refusal::Denied(_) | Refusal::Unverified) => {
                 self.shadow.failed.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -842,13 +727,29 @@ impl AuthService {
     /// CAPABILITY principal is held to (SR-3): the capability is a
     /// bearer credential, so suspension and admission apply to it the
     /// same instant they apply to token principals.
+    /// §8.1: the policy of a project this cell serves: present in the snapshot
+    /// AND placed here. Verification, the lease and capability status ask this
+    /// one question, so a policy republished for another cell cannot keep
+    /// authorizing one path after another refuses it.
+    fn served_policy<'a>(
+        &self,
+        policies: &'a PolicySnapshot,
+        project: &ProjectId,
+    ) -> Option<&'a crate::project_policy::ProjectPolicy> {
+        policies
+            .projects
+            .get(project)
+            .filter(|p| p.cell_id == self.cell_id)
+    }
+
     /// Project status + quotas for a NON-JWT principal (watch
     /// capabilities). SR2 finding 3: this must carry the SAME
     /// freshness contract as JWT verification — a capability holding
     /// a policy older than the staleness window fails CLOSED
     /// (`PolicyStale` -> retryable 503), never open on a stale
-    /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
-    /// (not served here); the caller's uniform refusal applies.
+    /// `Active`. `Ok(None)` = the project is not served here (absent
+    /// from a FRESH snapshot, or placed on another cell); the caller's
+    /// uniform refusal applies.
     pub(crate) fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
@@ -861,12 +762,11 @@ impl AuthService {
         AuthError,
     > {
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > self.staleness_max_secs() {
+        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
             return Err(AuthError::PolicyStale);
         }
-        Ok(policies
-            .projects
-            .get(project)
+        Ok(self
+            .served_policy(&policies, project)
             .map(|p| (p.status, p.quotas.clone())))
     }
 
@@ -891,13 +791,13 @@ impl AuthService {
                 "projects": policies.projects.len(),
                 "feedVersion": policies.feed_version,
                 "ageSecs": age(policies.fetched_at_unix),
-                "stale": now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+                "stale": feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now),
             },
             "grants": {
                 "credentials": grants.credentials.len(),
                 "feedVersion": grants.feed_version,
                 "ageSecs": age(grants.fetched_at_unix),
-                "stale": now - grants.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+                "stale": feed_stale(grants.fetched_at_unix, self.staleness_max_secs(), now),
             },
         })
     }
@@ -954,7 +854,7 @@ mod tests {
     const KID: &str = "test-1";
     const ISS: &str = "https://auth.prisma.io";
     const CELL: &str = "fra-cell-07";
-    const NOW: i64 = 1_786_600_600;
+    pub(super) const NOW: i64 = 1_786_600_600;
 
     #[derive(serde::Serialize)]
     struct C {
@@ -1004,7 +904,7 @@ mod tests {
         encode(&h, c, &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap()).unwrap()
     }
 
-    fn service() -> AuthService {
+    pub(super) fn service() -> AuthService {
         let svc = AuthService::new(AuthMode::Shadow, ISS.into(), CELL).unwrap();
         let mut keys = HashMap::new();
         keys.insert(
@@ -1671,6 +1571,67 @@ mod tests {
             3,
             "a NEW receiver must observe the CURRENT generation; \
              a dropped publication left it stale"
+        );
+    }
+
+    /// Item 65: verification, the lease, its deadline, capability status
+    /// and the operator surface agree on the instant a feed goes stale,
+    /// including under a window a rig shortened.
+    #[test]
+    fn every_freshness_reader_shares_one_boundary() {
+        let svc = service();
+        svc.set_staleness_max_secs(3);
+        let lease = svc.verify_customer(&sign(&claims()), NOW).unwrap().lease();
+        let edge = NOW + 3; // age == window: fresh everywhere
+        assert!(svc.verify_customer(&sign(&claims()), edge).is_ok());
+        assert_eq!(svc.lease_check(&lease, edge), Ok(()));
+        assert_eq!(svc.lease_deadline(&lease), edge);
+        assert!(svc.status_and_quotas(&lease.project_id, edge).is_ok());
+        assert_eq!(svc.feed_json(edge)["policies"]["stale"], false);
+        let past = edge + 1; // one second later: stale everywhere
+        let refused = svc.verify_customer(&sign(&claims()), past).unwrap_err();
+        assert_eq!(refused, AuthError::PolicyStale);
+        assert_eq!(
+            svc.lease_check(&lease, past),
+            Err(LeaseInvalidReason::PolicyStale)
+        );
+        let surface = svc.feed_json(past);
+        assert_eq!(
+            surface["policies"]["stale"], true,
+            "the operator surface must call a refusing feed stale"
+        );
+        assert_eq!(surface["grants"]["stale"], true);
+    }
+
+    /// Republishes proj_456's policy as placed on `cell`, with new policy
+    /// and feed versions so publication accepts it.
+    pub(super) fn place_on(svc: &AuthService, cell: &str) {
+        let mut snap = (**svc.projects.load()).clone();
+        let policy = snap
+            .projects
+            .get_mut(&ProjectId::new("proj_456").unwrap())
+            .unwrap();
+        policy.cell_id = Arc::from(cell);
+        policy.project_policy_version += 1;
+        snap.feed_version += 1;
+        svc.publish_policies(snap).unwrap();
+    }
+
+    /// Item 65: a live lease re-proves its project's placement on this
+    /// cell, as request verification does, so a policy republished for
+    /// another cell ends it.
+    #[test]
+    fn a_lease_ends_when_its_project_is_placed_on_another_cell() {
+        let svc = service();
+        let lease = svc.verify_customer(&sign(&claims()), NOW).unwrap().lease();
+        assert_eq!(svc.lease_check(&lease, NOW), Ok(()));
+        place_on(&svc, "sin-cell-01");
+        let refused = svc.verify_customer(&sign(&claims()), NOW).unwrap_err();
+        assert_eq!(refused, AuthError::WrongCell);
+        assert_eq!(
+            svc.lease_check(&lease, NOW),
+            Err(LeaseInvalidReason::ProjectMissing),
+            "a lease must not outlive its project's placement on this cell"
         );
     }
 }

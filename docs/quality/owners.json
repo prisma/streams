@@ -523,14 +523,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
-      "path": "src/dst/tests/livefeed_ownership.rs",
-      "reason": "Test-only orphaned transition; shared failpoint serialization and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::watched_test",
       "path": "src/dst/tests/fixture_livefeed.rs",
       "reason": "Test-only located-stall watchdog; the OS thread holds only the current step and a non-blocking state probe, is woken by the test's completion and joined before the test returns, and aborts the process only after reporting a step that outlived every runtime bound. A runtime task cannot report a runtime whose workers are blocked or whose teardown never ends.",
@@ -615,14 +607,6 @@
       "path": "src/sketch.rs",
       "reason": "Sketch arithmetic property owner; the pinned macro generates 1,024 actual-source clock and range cases per property; it produces test cases rather than service state.",
       "syntax": "proptest::proptest"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::TaskSupervisor::spawn",
-      "path": "src/tasks.rs",
-      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership.",
-      "syntax": "tokio::spawn"
     },
     {
       "category": "macro-dsl",
@@ -1897,14 +1881,6 @@
       "syntax": "tokio::spawn"
     },
     {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::main",
-      "path": "src/main.rs",
-      "reason": "Process entry reads the Tokio worker floor once before the runtime exists; no service configuration or credentials are inferred.",
-      "syntax": "std::env::var"
-    },
-    {
       "category": "global",
       "count": 1,
       "owner": "crate::reg::M",
@@ -2089,22 +2065,6 @@
       "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
     },
     {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::serve_h1",
-      "path": "src/http.rs",
-      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
-      "syntax": "tokio::task::JoinSet::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::router",
-      "path": "src/http.rs",
-      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
-      "syntax": "tokio::spawn"
-    },
-    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::test_support",
@@ -2142,14 +2102,6 @@
       "owner": "crate",
       "path": "src/sse/feed/retention.rs",
       "reason": "Retention entry imports its enclosing feed owner; the compiler resolves the parent exports and the entry only mirrors admission.",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/sse/feed/test_support.rs",
-      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -2281,35 +2233,11 @@
       "syntax": "path = \"read_remote_tests.rs\""
     },
     {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::macro(proptest::proptest)",
-      "path": "src/offsets.rs",
-      "reason": "Offset codec property owner; the pinned macro generates 1,024 actual-source round-trip and malformed-token cases per property; it produces test cases rather than service state.",
-      "syntax": "proptest::proptest"
-    },
-    {
       "category": "effect",
       "count": 1,
       "owner": "crate::a_fence_survives_engine_replacement",
       "path": "src/dst/tests/seal_fencing.rs",
       "reason": "Seal fence replacement fixture owns the parked close; it is released and joined after the takeover and the engine replacement. Concurrent execution is required to hold the request across both.",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::commit_behind_held_dispatch",
-      "path": "src/history/bounded_discovery_tests.rs",
-      "reason": "Bounded-discovery regressions own their append handles through this one helper: each append waits on the held dispatch while its test drives the gathers, and is joined once dispatch is released. Only concurrent requests can commit behind a lagging published end.",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group",
-      "path": "src/dst/tests/history_absorption.rs",
-      "reason": "Maintenance group fixture owns the rider request handle; it is joined after the refused group is released. Concurrent execution is required for the rider to land in the refused group.",
       "syntax": "tokio::spawn"
     },
     {
@@ -2543,6 +2471,230 @@
       "path": "src/application/creation.rs",
       "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/offsets.rs",
+      "reason": "Offset codec properties; the pinned macro generates the valid-position round trip and order, and arbitrary accepted-or-refused inputs, against the one production codec; all generated cases execute in the quality_ codec leg.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::OpenGate::stats_json",
+      "path": "src/sharddir.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes this gate's reviewed shard-open counters; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "reason": "Test-only orphaned transition; its own stream name and release guard bound the fault; the parked split is explicitly aborted and its cancellation joined before recovery.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_set_aside",
+      "path": "src/tasks/refusal.rs",
+      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership; a task a closing runtime refuses is dropped after the lock is released.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "src/tasks/refusal.rs",
+      "reason": "Per-thread set-aside slot for one supervised spawn call: it is Some only while tokio::spawn runs on this thread, so a future the closing runtime drops inline is handed back to the caller instead of re-entering the registration lock; it holds nothing between calls.",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<OpenSlot as Drop>::drop",
+      "path": "src/tasks/refusal.rs",
+      "reason": "A spawn call that unwinds under the registration lock can neither hand its set-aside futures back nor drop them there without the same-thread deadlock the slot prevents; the unwind poisons that lock, so the one failed spawn's futures are leaked and the slot is closed.",
+      "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::assert_teardown_completes",
+      "path": "src/tasks/tests.rs",
+      "reason": "F-G deadlock fixture owns one detached thread that drops the runtime under test; a deadlocked drop never returns, so a bounded channel receive observes it instead of hanging the suite.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::capacity_refused",
+      "path": "src/product/append_body.rs",
+      "reason": "The permanent capacity refusal's details object {dimension, capacity, requested} is rendered with serde_json's literal macro; its wire shape is the product error contract pinned by admission_maintenance, seal_recovery and product::tests, and WIRE-MATRIX §2.5/§2.7/§2.8.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/product/tests.rs",
+      "reason": "Product capacity-verdict property (external review §5); the pinned macro generates 1,024 JSON values, JSON batches and byte bodies against buckets straddling each request and runs each through the production parse_append_body, comparing its verdict with the append core's measure; it produces test cases, not service state.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve_connections",
+      "path": "src/http/serve.rs",
+      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve_connections",
+      "path": "src/http/serve.rs",
+      "reason": "The accept loop selects cancellation, accept and connection reaping; the pinned Tokio macro is the await-any form and all three arms are owned by the loop; the http::serve rig tests drive every arm.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::debug_routes",
+      "path": "src/http.rs",
+      "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::debug_routes",
+      "path": "src/http.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the operator debug table's reviewed answers behind its one bearer gate; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/test_support.rs",
+      "reason": "Feed budget test knobs import their enclosing feed owner; the compiler resolves the parent exports and the knobs only size, exhaust and release budgets or read a feed's retained charge.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LEASE_TERMINATIONS",
+      "path": "src/sse/auth.rs",
+      "reason": "Process instrumentation counters: one AtomicU64 per lease-termination reason, sized by LeaseInvalidReason::ALL so a reason's slot is its discriminant; /v1/debug/load exports them as lease_terminations, and a per-runtime copy would hide terminations from the canary.",
+      "syntax": "[std :: sync :: atomic :: AtomicU64 ; LeaseInvalidReason :: ALL . len ()]"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_readiness",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Billing-readiness scenarios for the clap-resolved billing selectors; real HTTP /health and /operator/billing.json against argv-configured rigs, and the read-spool root under the clap PATH_PREFIX; compiled and executed with DST.",
+      "syntax": "path = \"tests/billing_readiness.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_operation_counts",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Operation-count scenarios for §4.5 append_requests/queue_operations: real HTTP appends on both surfaces and settles, appends (a dead-letter handoff included) parked at the committer enqueue under registry faults, and a handler dropped mid-commit; compiled and executed with DST.",
+      "syntax": "path = \"tests/billing_operation_counts.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::park_append",
+      "path": "src/dst/tests/billing_operation_counts.rs",
+      "reason": "Operation-count fixture owns one request handle per scenario; the request is parked at the committer enqueue by stream name and joined after release. Concurrent execution is required to change the registry while the append is in flight.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::an_append_its_handler_never_answered_is_not_counted",
+      "path": "src/dst/tests/billing_operation_counts.rs",
+      "reason": "Abandoned-append fixture owns the product handler task; it is aborted while durability dispatch is held and joined before release. Concurrent execution is required to drop the handler between the commit and its answer.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_operations",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Product-operation authorization scenarios; the section 6.1 scope every dispatched operation demands and authentication before a route refusal, over real HTTP against an enforce-mode rig; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_operations.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_seal",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Seal authorization scenarios; a seal carrying a final record needs records.append as well as lifecycle.manage and a refused one changes nothing, over real HTTP against an enforce-mode rig; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_seal.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_usage",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
+      "syntax": "path = \"tests/security_usage.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
+      "path": "src/quota/tests.rs",
+      "reason": "Tracker-race regression owns one scoped thread; it joins before the test returns, even on panic, and parks a real admit on its own rate bucket between the lookup and the charge.",
+      "syntax": "std::thread::scope"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
+      "path": "src/quota/tests.rs",
+      "reason": "Tracker-race regression yields while it waits, bounded by a 10 s deadline, for the parked admit to have looked its entry up.",
+      "syntax": "std::thread::yield_now"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/quota/tests.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::arm_stop_deadline",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the process root's bound on the ordered stop a critical exit or a termination signal requested runs on its own named OS thread, so a wedged executor cannot hold it; the thread only sleeps and then ends the process, and is never joined because the process is ending either way.",
+      "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::arm_stop_deadline",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the deadline thread sleeps out the bound off the executor, then ends the process.",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::exit_failed",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the process's last stderr line is written on a named OS thread of its own and waited for at most 250 ms, so a full pipe or another thread's held stderr lock cannot hold the exit; the thread is never joined because the process is ending either way.",
+      "syntax": "std::thread::Builder::new"
     }
   ]
 }

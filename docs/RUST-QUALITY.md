@@ -38,25 +38,59 @@ The adoption inventory is frozen against commit `5bdaf9684197ff84bd544fd0fcd6952
 
 Exceptions MUST be statement/item-scoped `#[expect(clippy::lint_name, reason = "owner; invariant/issue; why the simpler alternative is wrong")]`. Narrow `allow(..., reason = "...")` is permitted when conditional compilation makes expectations unreliable. Test-only modules may exempt size/argument rules. Blanket lint-group suppression is forbidden. Unfulfilled expectations expose stale exceptions. Existing legacy exceptions are inventoried during adoption and cannot authorize new sites.
 
-Every reasoned source exception also has a merge-base structural contract: its
-parsed scope size, nested-item count and syntax-fact multiplicity may not grow
-under the unchanged exception decision. `unwrap_used` and `expect_used` retain
-normalized direct-method and associated-call fingerprints. Lexical import
-aliases are resolved; ordinary callee and path sites under the exceptional
-scope are also retained conservatively so a local alias cannot hide a same-size
-replacement. `dead_code` retains exact field fingerprints. These are source
-ceilings, not reimplementations of Clippy; the pinned compiler fixtures remain
-the typed authority for method and associated-function lint truth. A legitimate
-expansion must narrow the exception or update its reason as the explicit
-reviewed decision. This preserves deliberate poisoned-lock failure while
-preventing an impl-wide expectation from silently covering an unrelated panic
-site or compatibility field.
+Every reasoned source exception also has a merge-base structural contract: the
+code under it may not grow. Scope is measured as code: lines that are not
+blank, comments or attributes, the nested-item count, and the syntax facts
+outside attributes. An exception on an out-of-line `mod x;`, or a file-level
+`#![...]` in a file that declares one, covers the module file too, and is
+measured over it; a declared module file the ratchet does not read fails, as
+does a `#[path]` module outside the ratcheted source set. `unwrap_used` and
+`expect_used` retain normalized direct-method and associated-call
+fingerprints, including panic methods written inside a macro's arguments.
+Lexical import aliases are resolved; ordinary callee and path sites under the
+exceptional scope are also retained conservatively so a local alias cannot
+hide a same-size replacement. `dead_code` retains exact field fingerprints.
+Fingerprints are keyed below the exception's owner, so renaming the owner
+keeps them. These are source ceilings, not reimplementations of Clippy; the
+pinned compiler fixtures remain the typed authority for method and
+associated-function lint truth. This preserves deliberate poisoned-lock
+failure while preventing an impl-wide expectation from silently covering an
+unrelated panic site or compatibility field.
+
+A contract is identified by its file, owning item, scope kind and one lint; the
+reason text is not part of it. Editing a reason is an explanation update only:
+it keeps every ceiling and never admits growth. Each lint of a multi-lint
+attribute keeps its own contract, and several attributes on one scope measure
+that scope once, so splitting, merging or deleting a redundant attribute
+neither resets nor loosens a ceiling. A contract that disappears from one file
+while the same owner, scope kind and lint appears in another has moved and is
+compared with the contract it left. One that appears under another owner, in
+the same file or a related module (a file and its submodules), with the same
+scope kind and lint as a disappearing one is a rename or a narrowing onto an
+extracted item, and is compared the same way. Among several candidates an
+exact match is the origin; otherwise each metric is held to the candidates'
+smallest value.
+
+Growth is first answered by narrowing the exception, moving code out of its
+scope or restructuring. Growth that remains is admitted only by a row in
+`docs/quality/exception-growth.json` naming the contract (`path`, `owner`,
+`scope`, `lint`), the grown `metrics` at exactly the values the gate reports
+(each `metric before -> after` becomes `"metric": after`), a `rationale` and the
+`approver`. A row records the contract's current state: it stays valid while
+the contract holds exactly those values and fails as stale once the contract
+changes, so it must then be removed or re-approved. Rows carry the repository
+owner's approval. A coding agent may propose a row, with the gate's reported
+values, as a decision for the owner, but never adds its own approval rows. A
+plan never re-decides an exception's reason, and never renames, re-wraps,
+splits or re-attaches an exception's owner, to absorb growth; a new exception
+on code that left an existing exception's scope is growth, proposed as a row.
+The gate checks each row's shape; it cannot check who approved it.
 
 Never replace a deliberate poisoned-lock failure with silent recovery, swallow an error, or introduce a wrapper solely to satisfy a lint. A flags/options bag does not discharge argument complexity; a pass-through module does not discharge canonical ownership.
 
 ## Architecture requirements
 
-The syntax-aware gate extends the existing architecture check and keeps its historical anchors. Merge-base comparisons and the adoption inventory provide a non-growing limit after a file has shrunk.
+The syntax-aware gate extends the existing architecture check and keeps its historical anchors. Merge-base comparisons and the adoption inventory provide a non-growing limit after a file has shrunk. On a push the source ratchet's comparison base is the event's previous revision (`QUALITY_BEFORE_SHA`), because `origin/<branch>` is the pushed commit itself; a push without it, or a branch-creating push with no previous revision, fails closed rather than comparing HEAD with HEAD. A base file that does not parse (a red push this one repairs) is left out of the comparison.
 
 | Gate | Mandatory behavior |
 | --- | --- |
@@ -136,16 +170,23 @@ The planner separately records `formatted_visibility_files` for narrowed
 visibility plus token-preserving formatting, including parser-identified
 trailing parameter commas on the narrowed functions. This does **not** prove
 unchanged macro expansion: unrelated derive spans may move. All otherwise
-selected compiler, property, Miri and Loom checks remain selected. Only mutation
+selected property-corpus and Miri checks remain selected. Only mutation
 selection omits these non-executable edits; every other critical changed source
 still needs an actual-diff mutation scope. Changed opaque macro inputs, source
 introspection, expressions, types, tuple commas and other functions' parameter
 commas are ineligible. No zero-mutant execution is reported as a passing test.
 
 The `visibility_only_files` and `production_unchanged_files` classifications do
-not select runtime mutation/Miri/property/Loom checks by themselves. Tooling changes still exercise the verification harness. This is
+not select mutation, Miri or property-corpus checks by themselves. Tooling changes still exercise the verification harness. This is
 a selection decision, not a passing zero-mutation experiment; other critical
 changes still require a registered executable mutation scope.
+
+`plan.json` selects exactly three checks, `properties_fuzz`, `miri` and
+`mutants`, and each gates one `rust-quality` step; a planner test refuses a
+check no step reads. Nothing selects the rest, because it runs on every change:
+compiler, Clippy, the `--lib quality_` leg (the lib property and Loom models)
+and ci.yml's full `cargo test --release`, which also carries the two pilot Loom
+models (`src/bin/pilot/benchmark/tests.rs` and `tests/pilot_membership.rs`).
 
 A scheduled bucket bypasses diff-oriented prefix selection entirely. Its full
 owners, complete discovery source set and rotation slot must agree in the plan,

@@ -118,6 +118,9 @@ enum AppendConflict {
         received: u64,
     },
     ProducerEpoch(u64),
+    /// Not a conflict: the permanent capacity refusal's limit, which the
+    /// renderers report (external review §5).
+    Capacity(crate::usage::CapacityRefusal),
 }
 
 #[derive(Debug)]
@@ -189,6 +192,25 @@ impl AppendFailure {
         match self.conflict.as_deref() {
             Some(AppendConflict::ProducerEpoch(epoch)) => Some(*epoch),
             _ => None,
+        }
+    }
+    /// The permanent 413 for a request no fresh per-stream bucket admits: one
+    /// code on every surface, its message naming the numbers, its limit kept
+    /// for the product's `details`.
+    pub(crate) fn from_capacity(refusal: crate::usage::CapacityRefusal) -> Self {
+        let mut e = Self::new(
+            FailureClass::Invalid,
+            AppendCode::PayloadTooLarge,
+            refusal.to_string(),
+        );
+        e.conflict = Some(Box::new(AppendConflict::Capacity(refusal)));
+        e
+    }
+    pub(crate) fn capacity_refusal(&self) -> Option<&crate::usage::CapacityRefusal> {
+        if let Some(AppendConflict::Capacity(refusal)) = self.conflict.as_deref() {
+            Some(refusal)
+        } else {
+            None
         }
     }
     pub(crate) fn retry(mut self, seconds: u64) -> Self {
@@ -313,6 +335,10 @@ pub(crate) struct AppendOutcome {
     pub(crate) closed: bool,
     pub(crate) producer: Option<(u64, u64)>,
     pub(crate) appended_records: usize,
+    /// The descriptor the append committed under (the incarnation
+    /// `expected_epoch` fenced): a surface counts the request (§4.5)
+    /// against it instead of reading the registry again.
+    pub(crate) descriptor: StreamDesc,
 }
 pub(crate) type AppendResult = Result<AppendOutcome, AppendFailure>;
 pub(crate) fn fail<T>(

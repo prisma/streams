@@ -1,0 +1,26 @@
+# Platform end-to-end battery (local release certification), cell A. The
+# RELEASE posture closest to the promote-rc tag text: STREAMS_RELEASE_POSTURE=1,
+# enforce auth, workload fleet auth and NO static fleet token (the script
+# deletes FLEET_INTERNAL_TOKEN), CELL_ID, USAGE_STREAM_KEY, ROLLUP=1 and a
+# record ceiling. No compute-1g profile.
+source scripts/platform-e2e.mjs "const cellEnv = (cellId, dir, refreshSecs) => {"
+note The battery spreads ...process.env first (non-hermetic) and then deletes FLEET_INTERNAL_TOKEN. Modelled hermetically here.
+note USAGE_STREAM_KEY is the battery's 32 x 0x07 test key; replaced by a canned 32-byte placeholder of the same shape. Temp-dir paths use a fixed stand-in.
+argv --listen 127.0.0.1:9702 --s3-endpoint http://127.0.0.1:9703 --bucket pe2e-a-placeholder --max-unflushed-bytes 67108864 --flush-interval-ms 1 --wal-flush-gap-ms 2
+
+role server
+env STREAMS_AUTH_MODE=enforce
+env STREAMS_AUTH_ISSUER=https://auth.prisma.io
+env STREAMS_AUTH_KEYS_FILE=/tmp/platform-e2e-placeholder/a/keys.json
+env STREAMS_AUTH_POLICY_FILE=/tmp/platform-e2e-placeholder/a/policies.json
+env STREAMS_AUTH_GRANTS_FILE=/tmp/platform-e2e-placeholder/a/grants.json
+env STREAMS_AUTH_REFRESH_SECS=1
+env FLEET_AUTH_MODE=workload
+env WORKLOAD_TOKEN_FILE=/tmp/platform-e2e-placeholder/a/workload.jwt
+env STREAMS_RELEASE_POSTURE=1
+env MAX_RECORD_PAYLOAD_BYTES=131072
+env CELL_ID=cell-a
+env PROJECT_ID=proj-deploy-e2e
+env USAGE_STREAM_KEY=CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=
+env OUTBOX_SWEEP_SECS=2
+env ROLLUP=1

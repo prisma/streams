@@ -59,9 +59,7 @@ impl ServerConfig {
     }
 
     fn overlay_engine(&mut self, env: &dyn Environment) {
-        if let Some(v) = env_parse(env, "COMPACTOR_POLL_MS") {
-            self.engine.compactor_poll_ms = v;
-        }
+        // COMPACTOR_POLL_MS is clap-owned (with_knob_defaults).
         if let Some(v) = env_parse(env, "COMPACTOR_MAX_CONCURRENT") {
             self.engine.compactor_max_concurrent = v;
         }
@@ -173,9 +171,8 @@ impl ServerConfig {
     }
 
     fn overlay_billing_telemetry_rollup(&mut self, env: &dyn Environment) {
-        self.billing.mode_env = env.get("BILLING_MODE");
+        // BILLING_MODE and ROLLUP are clap-owned: CliArgs::{billing_required, runs_rollup}.
         self.billing.meter_enabled = env.get("BILLING_METER").map(|v| v != "off").unwrap_or(true);
-        self.billing.rollup_env = env.get("ROLLUP");
         self.billing.path_prefix_env = env.get("PATH_PREFIX");
         if let Some(v) = env_parse(env, "OUTBOX_SWEEP_SECS") {
             self.billing.outbox_sweep_secs = v;
@@ -304,5 +301,6 @@ impl ServerConfig {
         self.runtime.cert_sealed_publish_delay_ms_raw =
             env.get("STREAMS_CERT_SEALED_PUBLISH_DELAY_MS");
         self.runtime.certification_mode = env.get("STREAMS_CERTIFICATION_MODE");
+        self.runtime.tokio_workers = env_parse(env, "TOKIO_WORKERS");
     }
 }

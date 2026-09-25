@@ -439,13 +439,8 @@ impl StreamDesc {
     pub(crate) fn key_point(routing_key: &str) -> u64 {
         PersistedDescriptor::key_point(routing_key)
     }
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "StreamDesc::epoch_bytes; the option is the shape the raw and product readers already match against, and epoch() gives the bare value; unwrapping it here would move every caller's match"
-    )]
-    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
-        Some(self.epoch)
-    }
+    /// The incarnation epoch `validate_descriptor` decoded when this serving
+    /// descriptor was built: it cannot be absent, so no caller branches on it.
     pub(crate) fn epoch(&self) -> [u8; 16] {
         self.epoch
     }
@@ -627,10 +622,6 @@ fn default_content_type() -> String {
 }
 
 impl PersistedDescriptor {
-    pub(crate) fn epoch_bytes(&self) -> Option<[u8; 16]> {
-        crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
-    }
-
     /// The project-qualified identity of this stream. Names are
     /// validated at decode/create, so reconstructing the checked type
     /// is an invariant, not a convenience.
@@ -907,18 +898,7 @@ fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
     format!("{PROJECTS_ROOT}{}/streams/", hex(project.as_bytes()))
 }
 
-/// Why a generation-fenced mutation did not apply.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(test)]
-pub(crate) enum IncarnationCas {
-    Applied,
-    /// The mutation itself declined (its own precondition failed).
-    Declined,
-    /// The name now holds a DIFFERENT stream: this operation belongs to
-    /// an incarnation that no longer exists, and must not touch it.
-    IncarnationChanged,
-}
-
+/// One page of the stream catalog.
 pub(crate) struct CatalogPage {
     pub streams: Vec<StreamDesc>,
     /// Continuation: a stream name (project page) or an object key (reconciliation).
@@ -996,10 +976,11 @@ impl Registry {
         }
     }
 
-    /// Replace a dead (deleted/expired) descriptor with a fresh incarnation.
-    /// Predicated CAS: the replacement applies only while the stored descriptor
-    /// is still dead per `still_dead` (one winner among racing recreators; a
-    /// decline returns `(false, current)`), and indexes fork debt it overwrites.
+    /// Replace a dead (deleted/expired) descriptor with a fresh incarnation. Predicated CAS: the
+    /// replacement applies only while the current descriptor is still dead per `still_dead`. Racing
+    /// recreators get one winner; a decline returns the current descriptor `still_dead` refused
+    /// (`(false, current)`): live, or retained for its forks. What it replaces is first recorded:
+    /// its closure debt (`replaced.rs`), then any fork release it owes (`fork_debt.rs`).
     pub(crate) async fn recreate(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1013,6 +994,8 @@ impl Registry {
                 "recreation identity mismatch",
             ));
         }
+        let body = serde_json::to_vec(&fresh)
+            .map_err(|_| invalid_descriptor(&fresh.name, "unencodable descriptor"))?;
         for _ in 0..5 {
             let got = match self.store.get(&desc_path(&self.cell, sref)).await {
                 Ok(r) => r,
@@ -1031,17 +1014,13 @@ impl Registry {
                 self.invalidate(sref);
                 return Ok((false, current));
             }
+            self.record_replaced(&current).await?;
             self.index_overwritten_debt(&current).await?;
-            #[expect(
-                clippy::expect_used,
-                reason = "Registry::recreate; the replacement body: the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced. Narrowed to this statement when the recreation began indexing the fork debt it overwrites, which adds no expect site"
-            )]
-            let body = serde_json::to_vec(&fresh).expect("desc json");
             match self
                 .store
                 .put_opts(
                     &desc_path(&self.cell, sref),
-                    PutPayload::from(body),
+                    PutPayload::from(body.clone()),
                     PutOptions::from(ConditionalUpdateToken::from_etag(etag)?.mode()),
                 )
                 .await
@@ -1060,9 +1039,8 @@ impl Registry {
         })
     }
 
-    /// CAS-update the descriptor (delete = tombstone). Production callers
-    /// converted to fenced APIs; kept as the corruption fail-closed probe
-    /// (tests) pending a Stage-4 cleanup decision.
+    /// CAS-update the descriptor (delete = tombstone). Production callers converted to fenced APIs;
+    /// kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision.
     #[cfg(test)]
     pub(crate) async fn update<F: Fn(&mut PersistedDescriptor)>(
         &self,
@@ -1102,34 +1080,6 @@ impl Registry {
         Err(object_store::Error::Generic {
             store: "registry",
             source: "descriptor CAS retries exhausted".into(),
-        })
-    }
-
-    /// Test compatibility adapter for old incarnation-outcome fixtures.
-    #[cfg(test)]
-    pub(crate) async fn cas_update_incarnation_outcome(
-        &self,
-        sref: &crate::tenant::TenantStreamRef,
-        expected_epoch: &str,
-        mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
-    ) -> anyhow::Result<IncarnationCas> {
-        let mut moved = false;
-        let applied = self
-            .cas_update_retry(sref, |d| {
-                if d.stream_epoch != expected_epoch {
-                    moved = true;
-                    return false;
-                }
-                moved = false;
-                mutate(d)
-            })
-            .await?;
-        Ok(if applied {
-            IncarnationCas::Applied
-        } else if moved {
-            IncarnationCas::IncarnationChanged
-        } else {
-            IncarnationCas::Declined
         })
     }
 
@@ -1495,6 +1445,7 @@ mod catalog;
 #[cfg(test)]
 mod failpoints;
 pub(crate) mod fork_debt;
+pub(crate) mod replaced;
 #[cfg(test)]
 mod resolution_tests;
 #[cfg(test)]

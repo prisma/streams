@@ -5,6 +5,7 @@
 //! termination accounting established in rounds V4/3/4. Contract
 //! tests transfer unchanged.
 
+use crate::auth::{LeaseInvalidReason, Refusal};
 use crate::http::{AppState, InternalLease, SseSlot, err_resp};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -50,25 +51,19 @@ pub(crate) mod sse_stats {
     pub(crate) static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
     pub(crate) static FEED_CUTOFF_ENGINE_RETIRED: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
-    /// session that had not reached live yet — NOT a disconnect).
+    /// session that had not reached live yet — NOT a disconnect). A hole
+    /// below the floor that the durable read cannot explain yet is
+    /// re-read after each catch-up wait, so it counts here at that pace.
     pub(crate) static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);
     /// Feed version publications (one per actual state change).
     pub(crate) static FEED_VERSION_BUMPS: AtomicU64 = AtomicU64::new(0);
 }
 
-/// Review round 3 F1: lease terminations by reason (canary counter).
-pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64; 10] = [
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-    std::sync::atomic::AtomicU64::new(0),
-];
+/// Review round 3 F1: lease terminations by reason (canary counter),
+/// one slot per reason at its `LeaseInvalidReason::index`.
+pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64;
+    LeaseInvalidReason::ALL.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; LeaseInvalidReason::ALL.len()];
 
 pub(crate) fn lease_terminations_json() -> serde_json::Value {
     let mut m = serde_json::Map::new();
@@ -85,15 +80,16 @@ pub(crate) fn lease_terminations_json() -> serde_json::Value {
 
 /// Round-4 finding 1: a subscription whose lease was ALREADY invalid
 /// when its body was constructed is refused, never established. The
-/// status classes mirror `auth_failure_response` (product.rs): 503 for
-/// this cell's own feed staleness, 403 for verified-but-denied project
-/// state, 401 for everything a fresh token fixes.
-pub(crate) fn lease_refusal_response(r: crate::auth::LeaseInvalidReason) -> Response {
-    use crate::auth::LeaseInvalidReason as R;
-    let status = match r {
-        R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
-        R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
-        _ => StatusCode::UNAUTHORIZED,
+/// status is the reason's `Refusal` class, answered as
+/// `auth_failure_response` (product.rs) answers the request path: 503 for
+/// this cell's own feed staleness, 403 for verified-but-denied state, 401
+/// for everything a fresh token fixes.
+pub(crate) fn lease_refusal_response(r: LeaseInvalidReason) -> Response {
+    let status = match r.refusal() {
+        Refusal::WrongCell => StatusCode::MISDIRECTED_REQUEST,
+        Refusal::FeedStale => StatusCode::SERVICE_UNAVAILABLE,
+        Refusal::Denied(_) => StatusCode::FORBIDDEN,
+        Refusal::Unverified => StatusCode::UNAUTHORIZED,
     };
     err_resp(
         status,
@@ -511,6 +507,50 @@ impl futures_util::Stream for GatedSseBody {
                 }
                 Poll::Pending
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LEASE_TERMINATIONS, lease_refusal_response, lease_terminations_json};
+    use crate::auth::LeaseInvalidReason as R;
+    use axum::http::StatusCode;
+
+    /// A reason's counter slot is its position in `ALL`, and the export
+    /// names every slot exactly once.
+    #[test]
+    fn lease_terminations_have_one_slot_per_reason() {
+        for (slot, reason) in R::ALL.into_iter().enumerate() {
+            assert_eq!(reason.index(), slot, "{}", reason.as_str());
+        }
+        let exported = lease_terminations_json();
+        let names = exported.as_object().map(serde_json::Map::len);
+        assert_eq!(names, Some(LEASE_TERMINATIONS.len()));
+    }
+
+    /// A refused subscription answers its reason's class status and names
+    /// the reason; the oracle lists every reason by name.
+    #[tokio::test]
+    async fn lease_refusals_answer_their_class_status() {
+        for reason in R::ALL {
+            let expected = match reason {
+                R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
+                R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
+                R::TokenExpired
+                | R::OwnershipChanged
+                | R::CredentialMissing
+                | R::CredentialInactive
+                | R::GrantChanged
+                | R::CredentialExpired => StatusCode::UNAUTHORIZED,
+            };
+            let response = lease_refusal_response(reason);
+            assert_eq!(response.status(), expected, "{}", reason.as_str());
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["code"], reason.as_str());
         }
     }
 }

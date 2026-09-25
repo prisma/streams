@@ -321,7 +321,7 @@ async fn product_watch_wakes_on_matching_append() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let tok = crate::crypto::touch_token(&skey_local, &epoch);
     let sk = crate::crypto::wait_sig_key(&tok, &epoch);
     let exp = crate::shard::now_ms() / 1000 + 120;
@@ -512,7 +512,7 @@ async fn watch_capability_respects_project_suspension() {
         .unwrap()
         .stream_ref("orders");
     let desc = state.registry.get(&bref).await.unwrap().unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let khex = format!("{:016x}", 7u64);
     let tokk = crate::crypto::touch_token(&skey(), &epoch);
     let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
@@ -623,7 +623,7 @@ async fn watch_capability_waits_occupy_project_admission() {
         .unwrap()
         .stream_ref("orders");
     let desc = state.registry.get(&bref).await.unwrap().unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let khex = format!("{:016x}", 9u64);
     let tokk = crate::crypto::touch_token(&skey(), &epoch);
     let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
@@ -690,7 +690,7 @@ async fn stale_policy_fails_watch_capabilities_closed() {
         .unwrap()
         .stream_ref("orders");
     let desc = state.registry.get(&bref).await.unwrap().unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let khex = format!("{:016x}", 7u64);
     let tokk = crate::crypto::touch_token(&skey(), &epoch);
     let sk = crate::crypto::wait_sig_key(&tokk, &epoch);

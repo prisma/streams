@@ -134,7 +134,7 @@ async fn product_read_pages_and_binds_cursors() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let sc = crate::product_cursor::ScanCursor {
         epoch,
         map_version: 0,
@@ -541,7 +541,7 @@ async fn product_scan_is_snapshot_exact() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let expired = crate::product_cursor::ScanCursor {
         epoch,
         map_version: 0,
@@ -582,6 +582,89 @@ async fn product_scan_is_snapshot_exact() {
     )
     .await;
     assert_eq!(st, 400);
+    engine_shutdown(&state).await;
+}
+
+/// Each scan-cursor verdict has its own wire answer, pinned so retyping the
+/// decoder's refusals cannot swap two of them: identity is judged before
+/// expiry (a foreign, expired cursor is invalid, not gone), another token
+/// class is named as such, and only an authentic expired snapshot is 410.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_scan_answers_each_cursor_verdict() {
+    let (state, addr) = http_rig(mem()).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/scv",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let epoch = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("scv"))
+        .await
+        .unwrap()
+        .unwrap()
+        .epoch();
+    let mut foreign = epoch;
+    foreign[0] ^= 1;
+    let tenant = state.deployment.deployment_tenant();
+    let expired_scan = |epoch| {
+        crate::product_cursor::ScanCursor {
+            epoch,
+            map_version: 0,
+            segments: vec![(0, 1)],
+            current_index: 0,
+            current_offset: 0,
+            expires_at_ms: 1,
+        }
+        .encode(tenant, &skey())
+    };
+    // The class byte is judged before any binding, so the key hash is moot.
+    let key_cursor = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: [2; 16],
+        seg_id: 0,
+        offset: 0,
+    }
+    .encode(tenant, &skey());
+    for (cursor, status, code, message) in [
+        (
+            expired_scan(foreign),
+            400,
+            "invalid_cursor",
+            "invalid scan cursor",
+        ),
+        (
+            key_cursor,
+            400,
+            "invalid_cursor",
+            "cursor is not a scan cursor",
+        ),
+        (
+            expired_scan(epoch),
+            410,
+            "scan_expired",
+            "scan snapshot expired; start a new scan",
+        ),
+    ] {
+        let path = format!("/v1/streams/scv:scan?cursor={cursor}");
+        let (st, _, b) = preq(addr, "GET", &path, &key, b"").await;
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(
+            (
+                st,
+                v["error"]["code"].as_str(),
+                v["error"]["message"].as_str()
+            ),
+            (status, Some(code), Some(message)),
+            "{message}: {}",
+            String::from_utf8_lossy(&b)
+        );
+    }
     engine_shutdown(&state).await;
 }
 

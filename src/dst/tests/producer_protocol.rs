@@ -404,7 +404,7 @@ async fn product_append_and_append_many() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let kh = crate::crypto::stream_hash("customer-42");
     let c = crate::product_cursor::KeyCursor::decode(
         &cursor1,
@@ -548,7 +548,7 @@ async fn product_producer_hash_discipline() {
         .await
         .unwrap()
         .unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let kh = crate::crypto::stream_hash("g");
     let kc = crate::product_cursor::KeyCursor::decode(
         v["cursor"].as_str().unwrap(),

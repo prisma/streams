@@ -67,11 +67,17 @@ impl SegmentDesc {
                     self.seg_id
                 ));
             }
+            // Allocation order: a successor is newer and a predecessor older.
+            let reversed = if successor {
+                *id <= self.seg_id
+            } else {
+                *id >= self.seg_id
+            };
             // Missing historical predecessors may already have been absorbed.
             // A missing successor would lose future routing authority.
             let other = match map.get(*id) {
                 Some(other) => other,
-                None if !successor && *id < self.seg_id => continue,
+                None if !successor && !reversed => continue,
                 None => {
                     return Err(format!(
                         "segment {} references missing segment {id}",
@@ -79,7 +85,7 @@ impl SegmentDesc {
                     ));
                 }
             };
-            if (successor && *id <= self.seg_id) || (!successor && *id >= self.seg_id) {
+            if reversed {
                 return Err(format!(
                     "segment {} has cyclic/reversed lineage",
                     self.seg_id
@@ -352,11 +358,11 @@ impl SegmentMap {
     /// route (same discipline as split — review blocker 1).
     #[expect(
         clippy::too_many_arguments,
-        reason = "SegmentMap::merge; a merge names both segments, the new segment's id, epoch and owner and the transition version separately as the rebalancer decided them; a request struct would exist for this single call site"
+        reason = "SegmentMap::merge; phase B supplies both parents, each parent's frozen next offset, the child's route and the clock as separate facts it proved; a request struct would exist for this single call site"
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "SegmentMap::merge; both segment ids were validated live and adjacent before the merge, so the lookup finds them; a fallible find would add a branch no validated merge reaches"
+        reason = "SegmentMap::merge; both parents were found live and adjacent and the child id allocated before either seals, so the lookup finds them; a fallible find would add a branch no validated merge reaches"
     )]
     pub(crate) fn merge(
         &mut self,
@@ -389,13 +395,16 @@ impl SegmentMap {
             return Err(MapError::NotAdjacent(a_id, b_id));
         };
         let c = self.next_seg_id;
+        // Allocate before either parent seals: a refused merge leaves the
+        // map exactly as phase B read it, so its intent can stay pending.
+        let next_seg_id = c.checked_add(1).ok_or(MapError::IdExhausted)?;
         for (id, next) in [(a_id, a_sealed_next), (b_id, b_sealed_next)] {
             let s = self.segments.iter_mut().find(|s| s.seg_id == id).unwrap();
             s.sealed_ms = Some(now_ms);
             s.sealed_next_offset = Some(next);
             s.successors = vec![c];
         }
-        self.next_seg_id += 1;
+        self.next_seg_id = next_seg_id;
         self.segments.push(SegmentDesc {
             seg_id: c,
             lo,
@@ -518,6 +527,13 @@ mod tests {
             "successor does not reference parent"
         );
 
+        let mut disjoint = map.clone();
+        disjoint.segments[2].predecessors.push(a);
+        assert_eq!(
+            disjoint.validate().unwrap_err(),
+            "lineage ranges do not overlap"
+        );
+
         let mut reverse = map;
         reverse.segments[1].predecessors.push(b);
         assert_eq!(
@@ -543,6 +559,7 @@ mod tests {
         assert!(m.check_partition());
         assert_eq!(m.route(mid - 1).unwrap().seg_id, a);
         assert_eq!(m.route(mid).unwrap().seg_id, b);
+        assert_eq!(m.route(KEYSPACE_END).unwrap().seg_id, b);
         let parent = m.get(0).unwrap();
         assert_eq!(parent.sealed_next_offset, Some(4242));
         let succ = &parent.successors;
@@ -553,6 +570,45 @@ mod tests {
             m.split(0, mid / 2, 0, [3u8; 16], [4u8; 16], 3).unwrap_err(),
             MapError::AlreadySealed(0)
         );
+        assert_eq!(
+            m.version, 2,
+            "one split bumps the CAS version once; a refused one never"
+        );
+    }
+
+    /// A split must leave both children a non-empty range.
+    #[test]
+    fn a_split_point_on_the_parents_bounds_is_refused() {
+        let mut m = SegmentMap::initial("root", 1);
+        for bound in [0, KEYSPACE_END] {
+            assert_eq!(
+                m.split(0, bound, 0, [1u8; 16], [2u8; 16], 2),
+                Err(MapError::InvalidSplitPoint)
+            );
+        }
+        assert_eq!(
+            m,
+            SegmentMap::initial("root", 1),
+            "a refused split changes nothing"
+        );
+    }
+
+    /// Both invariants anchor at key 0 and at KEYSPACE_END: a map whose
+    /// only segment starts above 0, or ends below the end, routes nothing
+    /// there and must be refused. Each bound is checked on its own.
+    #[test]
+    fn a_keyspace_that_starts_late_or_ends_early_is_neither_covered_nor_partitioned() {
+        let mut late = SegmentMap::initial("root", 1);
+        late.segments[0].lo = 1;
+        let mut early = SegmentMap::initial("root", 1);
+        early.segments[0].hi = KEYSPACE_END - 1;
+        for map in [late, early] {
+            assert!(!map.check_partition());
+            assert_eq!(
+                map.validate().unwrap_err(),
+                "terminal segments do not exactly cover keyspace"
+            );
+        }
     }
 
     #[test]
@@ -589,6 +645,10 @@ mod tests {
         assert_eq!(m.live().count(), 2);
         assert_eq!(m.route(KEYSPACE_END / 2).unwrap().seg_id, e);
         assert_eq!(m.get(d).unwrap().successors, vec![e]);
+        assert_eq!(
+            m.version, 4,
+            "two splits and one merge; the refused merge bumps nothing"
+        );
     }
 
     #[test]
@@ -599,5 +659,27 @@ mod tests {
         let j = serde_json::to_string(&m).unwrap();
         let back: SegmentMap = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn an_exhausted_allocator_refuses_before_any_parent_seals() {
+        let mut m = SegmentMap::initial("root", 1);
+        let (a, b) = m
+            .split(0, KEYSPACE_END / 2, 0, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
+        m.next_seg_id = u32::MAX;
+        let spent = m.clone();
+        assert_eq!(
+            m.merge(a, b, 1, 2, [9u8; 16], 3),
+            Err(MapError::IdExhausted),
+            "a spent allocator refuses the merge"
+        );
+        assert_eq!(m, spent, "a refused merge seals neither parent");
+        assert_eq!(
+            m.split(a, KEYSPACE_END / 4, 0, [3u8; 16], [4u8; 16], 3),
+            Err(MapError::IdExhausted),
+            "the same allocator refuses a split"
+        );
+        assert_eq!(m, spent, "a refused split opens no child");
     }
 }

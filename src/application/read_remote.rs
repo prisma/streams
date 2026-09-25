@@ -477,9 +477,7 @@ pub(crate) async fn remote_read_page(
     let continuation = continuation.as_deref();
     let offset = match from {
         super::read::ScanStart::Now => "now".to_string(),
-        super::read::ScanStart::At(from) => {
-            crate::offsets::encode_ep(segment, crate::offsets::Offset::before(from))
-        }
+        super::read::ScanStart::At(from) => crate::offsets::encode(segment, from),
     };
     let mut owner = initial_owner.to_string();
     for hop in 0..2 {

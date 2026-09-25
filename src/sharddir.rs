@@ -60,18 +60,24 @@ const SHORT_LIVED: Duration = Duration::from_secs(30);
 // the gate contained it (one open, 648 coalesced waiters, zero storm),
 // but the shard was unavailable the whole time.
 
-// Process-global counters for /v1/debug/store: the cloud-run detector for
-// this failure mode is "opens_started climbing while the serving map stays
-// empty", and it must be visible without logs.
-static OPENS_STARTED: AtomicU64 = AtomicU64::new(0);
-static OPENS_COMPLETED: AtomicU64 = AtomicU64::new(0);
-static OPENS_FAILED: AtomicU64 = AtomicU64::new(0);
-static OPENS_COALESCED: AtomicU64 = AtomicU64::new(0);
-static OPENS_IN_FLIGHT: AtomicI64 = AtomicI64::new(0);
-static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
-/// Abandoned opens that eventually completed and were closed by the
-/// reaper instead of installed.
-static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
+/// The reopen-storm detector /v1/debug/store reports as `shard_opens`:
+/// started climbing while the serving map stays empty is this failure
+/// mode's cloud-run signature, and it must be visible without logs. The
+/// gate that counts is the gate that reports (one per directory, one
+/// directory per runtime), so another runtime in the process can neither
+/// inflate nor hide these opens.
+#[derive(Default)]
+struct OpenCounters {
+    started: AtomicU64,
+    completed: AtomicU64,
+    failed: AtomicU64,
+    coalesced: AtomicU64,
+    in_flight: AtomicI64,
+    deadlined: AtomicU64,
+    /// Abandoned opens that eventually completed and were closed by the
+    /// reaper instead of installed.
+    reaped: AtomicU64,
+}
 
 mod health;
 pub(crate) use health::ShardHealth;
@@ -142,10 +148,10 @@ impl UnreadyWindow {
     }
 }
 
-/// The watchdog TASK ADAPTER: samples readiness on the injected clock's
-/// cadence, feeds the pure policy monotonic readings, and — until WP-15
-/// task supervision gives critical tasks a result policy — keeps the
-/// survival `process::exit` when the policy says Expired.
+/// The watchdog TASK ADAPTER: samples shard readiness on the injected
+/// clock's cadence, feeds the pure policy monotonic readings, and keeps the
+/// survival `process::exit` when the policy says Expired. A critical loop's
+/// exit is not its concern: the process root stops for that itself (item 38).
 #[expect(
     clippy::let_underscore_must_use,
     reason = "spawn_unready_watchdog; the supervisor rejects a spawn only while it is stopping, when no exit deadline is owed; a rejected watchdog has nothing left to police"
@@ -191,18 +197,6 @@ pub(crate) fn spawn_unready_watchdog(
 
 #[cfg(test)]
 mod watchdog_policy_tests;
-
-pub(crate) fn stats_json() -> serde_json::Value {
-    serde_json::json!({
-        "started": OPENS_STARTED.load(Ordering::Relaxed),
-        "completed": OPENS_COMPLETED.load(Ordering::Relaxed),
-        "failed": OPENS_FAILED.load(Ordering::Relaxed),
-        "coalesced": OPENS_COALESCED.load(Ordering::Relaxed),
-        "in_flight": OPENS_IN_FLIGHT.load(Ordering::Relaxed),
-        "deadlined": OPENS_DEADLINED.load(Ordering::Relaxed),
-        "reaped": OPENS_REAPED.load(Ordering::Relaxed),
-    })
-}
 
 type OpenResult = Result<Arc<ShardEngine>, String>;
 /// PR 6.1-B: the identity of ONE open attempt's engine within its
@@ -296,20 +290,8 @@ struct GateInner {
     st: Mutex<HashMap<String, PrefixGate>>,
     /// Ceiling on one open attempt (SHARD_OPEN_DEADLINE_MS via config).
     open_deadline: Duration,
-    /// Per-INSTANCE mirrors of the global counters, for tests. The
-    /// statics feed process metrics and are shared with every other
-    /// OpenGate in the binary — a paused-clock gate test asserting on
-    /// them raced ordinary http_rig tests opening engines concurrently
-    /// (completed bled to 1 in one full-suite run per ~8). Tests
-    /// assert on THEIR gate's counters instead.
-    #[cfg(test)]
-    c_started: AtomicU64,
-    #[cfg(test)]
-    c_completed: AtomicU64,
-    #[cfg(test)]
-    c_failed: AtomicU64,
-    #[cfg(test)]
-    c_coalesced: AtomicU64,
+    /// Counted per gate, never in process statics: see `OpenCounters`.
+    opens: OpenCounters,
     /// PR 6.1.2-A: the forced-interleaving park. Per GATE INSTANCE, not
     /// process-global and not keyed by prefix name: two directories in
     /// one test binary must never park each other's opens.
@@ -440,14 +422,7 @@ impl OpenGate {
                 next_incarnation: AtomicU64::new(0),
                 st: Mutex::new(HashMap::new()),
                 open_deadline,
-                #[cfg(test)]
-                c_started: AtomicU64::new(0),
-                #[cfg(test)]
-                c_completed: AtomicU64::new(0),
-                #[cfg(test)]
-                c_failed: AtomicU64::new(0),
-                #[cfg(test)]
-                c_coalesced: AtomicU64::new(0),
+                opens: OpenCounters::default(),
                 #[cfg(test)]
                 park: GatePark::default(),
             }),
@@ -470,7 +445,7 @@ impl OpenGate {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "OpenGate::get_or_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"
+        reason = "OpenGate::get_or_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff beside this gate's own open counters; recovering either could serve, reopen or reap the wrong incarnation"
     )]
     #[expect(
         clippy::excessive_nesting,
@@ -509,9 +484,7 @@ impl OpenGate {
             g.closing = None;
 
             if let Some(rx) = &g.inflight {
-                OPENS_COALESCED.fetch_add(1, Ordering::Relaxed);
-                #[cfg(test)]
-                self.inner.c_coalesced.fetch_add(1, Ordering::Relaxed);
+                self.inner.opens.coalesced.fetch_add(1, Ordering::Relaxed);
                 rx.clone()
             } else {
                 if let Some(until) = g.holdoff_until {
@@ -541,10 +514,8 @@ impl OpenGate {
                 }
                 let (tx, rx) = tokio::sync::watch::channel(None);
                 g.inflight = Some(rx.clone());
-                OPENS_STARTED.fetch_add(1, Ordering::Relaxed);
-                OPENS_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
-                #[cfg(test)]
-                self.inner.c_started.fetch_add(1, Ordering::Relaxed);
+                self.inner.opens.started.fetch_add(1, Ordering::Relaxed);
+                self.inner.opens.in_flight.fetch_add(1, Ordering::Relaxed);
 
                 // The open task OWNS the outcome: it inserts into the
                 // serving map and updates gate state no matter what happens
@@ -564,14 +535,12 @@ impl OpenGate {
                     let mut fut = Box::pin((inner.opener)(p.clone(), incarnation));
                     let res: Result<anyhow::Result<Arc<ShardEngine>>, tokio::time::error::Elapsed> =
                         tokio::time::timeout(inner.open_deadline, &mut fut).await;
-                    OPENS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+                    inner.opens.in_flight.fetch_sub(1, Ordering::Relaxed);
                     let out: OpenResult = match res {
                         Ok(Ok(engine)) => publish_open(&inner, &p, incarnation, engine),
 
                         Ok(Err(e)) => {
-                            OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
-                            #[cfg(test)]
-                            inner.c_failed.fetch_add(1, Ordering::Relaxed);
+                            inner.opens.failed.fetch_add(1, Ordering::Relaxed);
                             let msg = format!("{e:#}");
                             tracing::warn!(prefix = %p, "shard open failed: {msg}");
                             inner.health.failed(&p, format!("{p}: {msg}"));
@@ -583,10 +552,8 @@ impl OpenGate {
                             Err(msg)
                         }
                         Err(_deadline) => {
-                            OPENS_DEADLINED.fetch_add(1, Ordering::Relaxed);
-                            OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
-                            #[cfg(test)]
-                            inner.c_failed.fetch_add(1, Ordering::Relaxed);
+                            inner.opens.deadlined.fetch_add(1, Ordering::Relaxed);
+                            inner.opens.failed.fetch_add(1, Ordering::Relaxed);
                             tracing::warn!(
                                 prefix = %p,
                                 "shard open exceeded its deadline ({:?}); \
@@ -629,7 +596,7 @@ impl OpenGate {
                                         engine.as_ref().map(|engine| engine.shutdown_handle());
                                 }
                                 if let Some(engine) = engine {
-                                    OPENS_REAPED.fetch_add(1, Ordering::Relaxed);
+                                    reaper.opens.reaped.fetch_add(1, Ordering::Relaxed);
                                     engine.begin_close();
                                 }
                             });
@@ -801,6 +768,23 @@ impl OpenGate {
         (engines, opens)
     }
 
+    /// This gate's `shard_opens` object: the key set is the operator
+    /// contract (started diverging from completed is the reopen loop, see
+    /// docs/SOAK-REGIONS.md), rendered once so the dashboard,
+    /// /v1/debug/store and the tests read one object.
+    pub(crate) fn stats_json(&self) -> serde_json::Value {
+        let opens = &self.inner.opens;
+        serde_json::json!({
+            "started": opens.started.load(Ordering::Relaxed),
+            "completed": opens.completed.load(Ordering::Relaxed),
+            "failed": opens.failed.load(Ordering::Relaxed),
+            "coalesced": opens.coalesced.load(Ordering::Relaxed),
+            "in_flight": opens.in_flight.load(Ordering::Relaxed),
+            "deadlined": opens.deadlined.load(Ordering::Relaxed),
+            "reaped": opens.reaped.load(Ordering::Relaxed),
+        })
+    }
+
     /// The forced-interleaving park for THIS gate (tests only).
     #[cfg(test)]
     pub(crate) fn test_park(&self) -> &GatePark {
@@ -826,26 +810,6 @@ impl OpenGate {
             g.holdoff_until = None;
             g.strikes = 0;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reset_counters_for_tests() {
-        OPENS_STARTED.store(0, Ordering::Relaxed);
-        OPENS_COMPLETED.store(0, Ordering::Relaxed);
-        OPENS_FAILED.store(0, Ordering::Relaxed);
-        OPENS_COALESCED.store(0, Ordering::Relaxed);
-        OPENS_IN_FLIGHT.store(0, Ordering::Relaxed);
-    }
-
-    /// This gate's OWN counters — immune to other tests' engine opens.
-    #[cfg(test)]
-    pub(crate) fn instance_counters(&self) -> (u64, u64, u64, u64) {
-        (
-            self.inner.c_started.load(Ordering::Relaxed),
-            self.inner.c_completed.load(Ordering::Relaxed),
-            self.inner.c_failed.load(Ordering::Relaxed),
-            self.inner.c_coalesced.load(Ordering::Relaxed),
-        )
     }
 
     /// Tests only: one prefix's gate and resident for a stall report,
@@ -961,10 +925,8 @@ fn publish_open(
         engine.begin_close();
         Err("engine closed or directory stopped during open".into())
     } else {
-        OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+        inner.opens.completed.fetch_add(1, Ordering::Relaxed);
         inner.health.succeeded();
-        #[cfg(test)]
-        inner.c_completed.fetch_add(1, Ordering::Relaxed);
         Ok(engine)
     }
 }

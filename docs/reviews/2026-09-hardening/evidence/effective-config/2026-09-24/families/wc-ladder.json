@@ -1,0 +1,1715 @@
+{
+  "argv": [
+    "--listen",
+    "0.0.0.0:8080"
+  ],
+  "env": {
+    "ABSORB_AGE_SECS": {
+      "provenance": "server",
+      "value": "60"
+    },
+    "ABSORB_BYTES": {
+      "provenance": "server",
+      "value": "4194304"
+    },
+    "ABSORB_GATHER_MAX_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "8388608"
+    },
+    "ABSORB_GLOBAL_BUDGET_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "100859904"
+    },
+    "ABSORB_GLOBAL_GATHERS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "ABSORB_PACE_MS": {
+      "provenance": "server",
+      "value": "0"
+    },
+    "ABSORB_PACE_WINDOW_MS": {
+      "provenance": "server",
+      "value": "50"
+    },
+    "ABSORB_READ_PAR": {
+      "provenance": "server",
+      "value": "8"
+    },
+    "ADMIT_MAX_INFLIGHT": {
+      "provenance": "server",
+      "value": "512"
+    },
+    "ADMIT_MAX_INFLIGHT_PER_STREAM": {
+      "provenance": "server",
+      "value": "256"
+    },
+    "ADMIT_RSS_SHED_MB": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "500"
+    },
+    "APP_BINARY_SHA256": {
+      "provenance": "supervisor",
+      "value": "placeholder-sha256-of-the-downloaded-binary"
+    },
+    "AUTH_TOKEN": {
+      "provenance": "server",
+      "value": "placeholder-auth-token"
+    },
+    "AWSBENCH_S3_KEY": {
+      "provenance": "gen",
+      "value": "bin/awsbench-wc-20260924T000000Z-x64"
+    },
+    "BENCH_BATCH": {
+      "provenance": "gen",
+      "value": "1"
+    },
+    "BENCH_CERT_ACTIVE": {
+      "provenance": "gen",
+      "value": "100"
+    },
+    "BENCH_CERT_CONNECT_CONC": {
+      "provenance": "gen",
+      "value": "48"
+    },
+    "BENCH_CERT_FANOUT_ACTIVE": {
+      "provenance": "gen",
+      "value": "10"
+    },
+    "BENCH_CERT_FEEDS_PER_PROJECT": {
+      "provenance": "gen",
+      "value": "1"
+    },
+    "BENCH_CERT_NOISY_FEEDS": {
+      "provenance": "gen",
+      "value": "0"
+    },
+    "BENCH_CERT_NOISY_RECORD_BYTES": {
+      "provenance": "gen",
+      "value": "8192"
+    },
+    "BENCH_CERT_NOISY_SUBS_PER": {
+      "provenance": "gen",
+      "value": "2"
+    },
+    "BENCH_CERT_NOISY_WPS": {
+      "provenance": "gen",
+      "value": "100"
+    },
+    "BENCH_CERT_SECS": {
+      "provenance": "gen",
+      "value": "1800"
+    },
+    "BENCH_CERT_SETTLE_SECS": {
+      "provenance": "gen",
+      "value": "60"
+    },
+    "BENCH_CERT_SUBS_N": {
+      "provenance": "gen",
+      "value": "0"
+    },
+    "BENCH_CERT_SUB_OFFSET": {
+      "provenance": "gen",
+      "value": "0"
+    },
+    "BENCH_CERT_SUB_TENANTS": {
+      "provenance": "gen",
+      "value": "1000"
+    },
+    "BENCH_CERT_TENANTS": {
+      "provenance": "gen",
+      "value": "10000"
+    },
+    "BENCH_CERT_WINDOW_MS": {
+      "provenance": "gen",
+      "value": "5000"
+    },
+    "BENCH_CERT_WPS": {
+      "provenance": "gen",
+      "value": "1000"
+    },
+    "BENCH_CERT_WRITERS": {
+      "provenance": "gen",
+      "value": "1"
+    },
+    "BENCH_HOLD": {
+      "provenance": "gen",
+      "value": "1"
+    },
+    "BENCH_RECORD_BYTES": {
+      "provenance": "gen",
+      "value": "1024"
+    },
+    "BENCH_SHAPE": {
+      "provenance": "gen",
+      "value": "cert"
+    },
+    "BENCH_START_GATED": {
+      "provenance": "gen",
+      "value": "true"
+    },
+    "BENCH_STREAM": {
+      "provenance": "gen",
+      "value": "wcL1-"
+    },
+    "BENCH_SYSTEM": {
+      "provenance": "gen",
+      "value": "prisma"
+    },
+    "BENCH_TARGET": {
+      "provenance": "gen",
+      "value": "https://placeholder-soak-server.invalid"
+    },
+    "BENCH_WIDE_SETUP_CONC": {
+      "provenance": "gen",
+      "value": "64"
+    },
+    "BIN_S3_ACCESS_KEY_ID": {
+      "provenance": "supervisor",
+      "value": "placeholder-artifact-key-id"
+    },
+    "BIN_S3_BUCKET": {
+      "provenance": "supervisor",
+      "value": "placeholder-artifact-bucket"
+    },
+    "BIN_S3_ENDPOINT": {
+      "provenance": "supervisor",
+      "value": "https://placeholder-artifact-endpoint.invalid"
+    },
+    "BIN_S3_REGION": {
+      "provenance": "supervisor",
+      "value": "auto"
+    },
+    "BIN_S3_SECRET_ACCESS_KEY": {
+      "provenance": "supervisor",
+      "value": "placeholder-artifact-secret"
+    },
+    "CELL_ID": {
+      "provenance": "server",
+      "value": "mt-cell-1"
+    },
+    "COMPACTOR_MAX_CONCURRENT": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "COMPACT_BYTES_TO_FETCH": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1048576"
+    },
+    "COMPACT_MAX_FETCH_TASKS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "COMPACT_MAX_SST_SIZE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "COMPACT_MAX_SUBCOMPACTIONS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1"
+    },
+    "FEEDS_S3_KEY": {
+      "provenance": "supervisor",
+      "value": "wc/wc-20260924T000000Z/feeds.json"
+    },
+    "FLUSH_INTERVAL_MS": {
+      "provenance": "server",
+      "value": "25"
+    },
+    "FRAME_COMPRESS": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "HISTORY_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "INITIAL_SHARDS": {
+      "provenance": "server",
+      "value": "4"
+    },
+    "INSTANCE_NAME": {
+      "provenance": "server",
+      "value": "streams-1"
+    },
+    "KEEP_AWAKE": {
+      "provenance": "supervisor",
+      "value": "1"
+    },
+    "L0_MAX_SSTS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "32"
+    },
+    "L0_SST_SIZE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "8388608"
+    },
+    "LIMIT_RECS_PER_SEC": {
+      "provenance": "server",
+      "value": "100000"
+    },
+    "MAX_RECORD_PAYLOAD_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "131072"
+    },
+    "MAX_UNFLUSHED_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "16777216"
+    },
+    "MEMPROFILE_CERT": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "compute-1g"
+    },
+    "PATH_PREFIX": {
+      "provenance": "server",
+      "value": "wc-20260924T000000Z"
+    },
+    "POOL_IDLE_SECS": {
+      "provenance": "server",
+      "value": "4"
+    },
+    "PORT": {
+      "provenance": "platform",
+      "value": "8080"
+    },
+    "POSTINGS_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "67108864"
+    },
+    "PROJECT_ID": {
+      "provenance": "server",
+      "value": "proj-mt-deploy"
+    },
+    "S3_ACCESS_KEY_ID": {
+      "provenance": "gen",
+      "value": "placeholder-artifact-key-id"
+    },
+    "S3_BUCKET": {
+      "provenance": "gen",
+      "value": "placeholder-artifact-bucket"
+    },
+    "S3_ENDPOINT": {
+      "provenance": "gen",
+      "value": "https://placeholder-artifact-endpoint.invalid"
+    },
+    "S3_REGION": {
+      "provenance": "gen",
+      "value": "auto"
+    },
+    "S3_SECRET_ACCESS_KEY": {
+      "provenance": "gen",
+      "value": "placeholder-artifact-secret"
+    },
+    "SERVER_BINARY_S3_KEY": {
+      "provenance": "supervisor",
+      "value": "bin/streams-wc-20260924T000000Z-x64"
+    },
+    "SHARED_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "134217728"
+    },
+    "SLATEDB_RT_THREADS": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "4"
+    },
+    "SLATE_S3_ACCESS_KEY_ID": {
+      "provenance": "server",
+      "value": "placeholder-data-key-id"
+    },
+    "SLATE_S3_BUCKET": {
+      "provenance": "server",
+      "value": "placeholder-data-bucket"
+    },
+    "SLATE_S3_ENDPOINT": {
+      "provenance": "server",
+      "value": "https://placeholder-data-endpoint.invalid"
+    },
+    "SLATE_S3_REGION": {
+      "provenance": "server",
+      "value": "auto"
+    },
+    "SLATE_S3_SECRET_ACCESS_KEY": {
+      "provenance": "server",
+      "value": "placeholder-data-secret"
+    },
+    "SSE_FEED_PROJECT_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "SSE_FEED_RING_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "1048576"
+    },
+    "SSE_FEED_TOTAL_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "67108864"
+    },
+    "SSE_MAX_CONNECTIONS": {
+      "provenance": "server",
+      "value": "2000"
+    },
+    "STORE_BULK_INFLIGHT_MAX_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "33554432"
+    },
+    "STREAMS_AUTH_GRANTS_FILE": {
+      "provenance": "server",
+      "value": "/tmp/feeds/grants.json"
+    },
+    "STREAMS_AUTH_ISSUER": {
+      "provenance": "server",
+      "value": "https://auth.prisma.io"
+    },
+    "STREAMS_AUTH_KEYS_FILE": {
+      "provenance": "server",
+      "value": "/tmp/feeds/keys.json"
+    },
+    "STREAMS_AUTH_MODE": {
+      "provenance": "server",
+      "value": "enforce"
+    },
+    "STREAMS_AUTH_POLICY_FILE": {
+      "provenance": "server",
+      "value": "/tmp/feeds/policies.json"
+    },
+    "STREAMS_AUTH_REFRESH_SECS": {
+      "provenance": "server",
+      "value": "60"
+    },
+    "STREAM_KEY": {
+      "provenance": "gen",
+      "value": "placeholder-stream-key"
+    },
+    "TELEMETRY_CACHE_BYTES": {
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "value": "16777216"
+    },
+    "TOKENS_S3_KEY": {
+      "provenance": "gen",
+      "value": "placeholder-wc/wc-20260924T000000Z/tokens.json"
+    },
+    "TRIM_PER_OP": {
+      "provenance": "server",
+      "value": "65536"
+    },
+    "WAL_FLUSH_GAP_MS": {
+      "provenance": "server",
+      "value": "10"
+    },
+    "WAL_GROUP_COMMIT": {
+      "provenance": "server",
+      "value": "1"
+    },
+    "WAL_POST_ACK_GATHER_MS": {
+      "provenance": "server",
+      "value": "6"
+    }
+  },
+  "family": "wc-ladder",
+  "family_sha256": "e145005054af8573d71b58a789379ae0554fa4b5bf7c8cfa3a785e931b3faff3",
+  "names": [
+    {
+      "class": "BOTH",
+      "name": "ABSORB_AGE_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GATHER_MAX_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GLOBAL_BUDGET_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_GLOBAL_GATHERS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_PACE_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_PACE_WINDOW_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ABSORB_READ_PAR",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ADMIT_MAX_INFLIGHT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ADMIT_MAX_INFLIGHT_PER_STREAM",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "ADMIT_RSS_SHED_MB",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "APP_BINARY_SHA256",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "supervisor",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "AUTH_TOKEN",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "AWSBENCH_S3_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_BATCH",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_ACTIVE",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_CONNECT_CONC",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_FANOUT_ACTIVE",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_FEEDS_PER_PROJECT",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_NOISY_FEEDS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_NOISY_RECORD_BYTES",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_NOISY_SUBS_PER",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_NOISY_WPS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_SECS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_SETTLE_SECS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_SUBS_N",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_SUB_OFFSET",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_SUB_TENANTS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_TENANTS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_WINDOW_MS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_WPS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_CERT_WRITERS",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_HOLD",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_RECORD_BYTES",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_SHAPE",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_START_GATED",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_STREAM",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_SYSTEM",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_TARGET",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BENCH_WIDE_SETUP_CONC",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BIN_S3_ACCESS_KEY_ID",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BIN_S3_BUCKET",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BIN_S3_ENDPOINT",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BIN_S3_REGION",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "BIN_S3_SECRET_ACCESS_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "CELL_ID",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACTOR_MAX_CONCURRENT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_BYTES_TO_FETCH",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_FETCH_TASKS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_SST_SIZE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "COMPACT_MAX_SUBCOMPACTIONS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "FEEDS_S3_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "FLUSH_INTERVAL_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "FRAME_COMPRESS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "HISTORY_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "INITIAL_SHARDS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "INSTANCE_NAME",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "KEEP_AWAKE",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "L0_MAX_SSTS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "L0_SST_SIZE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "LIMIT_RECS_PER_SEC",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MAX_RECORD_PAYLOAD_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MAX_UNFLUSHED_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "MEMPROFILE_CERT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "PATH_PREFIX",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "POOL_IDLE_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "PORT",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "platform",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "POSTINGS_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "PROJECT_ID",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "S3_ACCESS_KEY_ID",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "S3_BUCKET",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "S3_ENDPOINT",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "S3_REGION",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "S3_SECRET_ACCESS_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "NEITHER",
+      "name": "SERVER_BINARY_S3_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "supervisor",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "SHARED_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATEDB_RT_THREADS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATE_S3_ACCESS_KEY_ID",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATE_S3_BUCKET",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATE_S3_ENDPOINT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATE_S3_REGION",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SLATE_S3_SECRET_ACCESS_KEY",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_PROJECT_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_RING_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_FEED_TOTAL_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "SSE_MAX_CONNECTIONS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STORE_BULK_INFLIGHT_MAX_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_GRANTS_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_ISSUER",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_KEYS_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_MODE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_POLICY_FILE",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "STREAMS_AUTH_REFRESH_SECS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "STREAM_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "TELEMETRY_CACHE_BYTES",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "include:deploy/profiles/compute-1g.env",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "NEITHER",
+      "name": "TOKENS_S3_KEY",
+      "new_changed": false,
+      "old_changed": false,
+      "provenance": "gen",
+      "static_new": false,
+      "static_old": false
+    },
+    {
+      "class": "BOTH",
+      "name": "TRIM_PER_OP",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "WAL_FLUSH_GAP_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "WAL_GROUP_COMMIT",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    },
+    {
+      "class": "BOTH",
+      "name": "WAL_POST_ACK_GATHER_MS",
+      "new_changed": true,
+      "old_changed": true,
+      "provenance": "server",
+      "static_new": true,
+      "static_old": true
+    }
+  ],
+  "new": {
+    "leaves": 155,
+    "verdict": "accepted"
+  },
+  "new_leaves": {
+    "admission.absorb_lag_secs": "900",
+    "admission.limit_burst_secs": "2.0",
+    "admission.limit_bytes_per_sec": "5000000.0",
+    "admission.limit_recs_per_sec": "100000.0",
+    "admission.limit_reqs_per_sec": "1000.0",
+    "admission.maint_release_pct": "75",
+    "admission.unabsorbed_bytes_instance": "536870912",
+    "admission.unabsorbed_bytes_shard": "268435456",
+    "billing.alert_usage_outbox_dirty": "1000",
+    "billing.meter_enabled": "true",
+    "billing.metrics_interval_secs": "15",
+    "billing.month_close_grace_ms": "86400000",
+    "billing.outbox_sweep_secs": "300",
+    "billing.path_prefix_env": "Some(\"wc-20260924T000000Z\")",
+    "billing.sweep_discovery_max": "8",
+    "billing.sweep_maint_resident": "2",
+    "billing.sweep_resident_quantum": "4",
+    "billing.telemetry_cache_bytes": "16777216",
+    "billing.telemetry_drain_secs": "2",
+    "cli.absorb_age_secs": "60",
+    "cli.absorb_bytes": "4194304",
+    "cli.absorb_concurrency": "None",
+    "cli.absorb_gather_max_bytes": "8388608",
+    "cli.absorb_pace_ms": "0",
+    "cli.absorb_pace_window_ms": "50",
+    "cli.absorb_pass_bytes": "None",
+    "cli.absorb_read_par": "8",
+    "cli.absorb_small_bytes": "None",
+    "cli.access_key_id": "\"placeholder-data-key-id\"",
+    "cli.account_id": "\"acct_local\"",
+    "cli.admit_max_inflight": "512",
+    "cli.admit_max_inflight_per_stream": "256",
+    "cli.admit_rss_shed_mb": "500",
+    "cli.auth_token": "Some(\"placeholder-auth-token\")",
+    "cli.billing_mode": "\"off\"",
+    "cli.bucket": "\"placeholder-data-bucket\"",
+    "cli.cell_id": "\"mt-cell-1\"",
+    "cli.compactions_gc_interval_secs": "30",
+    "cli.compactions_gc_min_age_secs": "120",
+    "cli.compactor_max_concurrent": "1",
+    "cli.compactor_poll_ms": "2500",
+    "cli.conformance_default_key": "None",
+    "cli.data_bucket": "None",
+    "cli.fleet_auth_mode": "\"static\"",
+    "cli.fleet_internal_token": "None",
+    "cli.fleet_max": "4",
+    "cli.fleet_prefix": "None",
+    "cli.flush_interval_ms": "25",
+    "cli.gc_quiet_interval_secs": "600",
+    "cli.handle_idle_evict_secs": "600",
+    "cli.handle_max_resident": "65536",
+    "cli.initial_shards": "Some(4)",
+    "cli.instance_name": "\"streams-1\"",
+    "cli.l0_max_ssts": "32",
+    "cli.l0_max_ssts_per_key": "0",
+    "cli.l0_sst_size_bytes": "8388608",
+    "cli.listen": "\"0.0.0.0:8080\"",
+    "cli.manifest_poll_ms": "2000",
+    "cli.max_record_payload_bytes": "Some(131072)",
+    "cli.max_request_body_bytes": "33554432",
+    "cli.max_unflushed_bytes": "16777216",
+    "cli.ops_bucket": "None",
+    "cli.path_prefix": "Some(\"wc-20260924T000000Z\")",
+    "cli.project_id": "\"proj-mt-deploy\"",
+    "cli.project_memory_pressure_bytes": "0",
+    "cli.project_memory_release_pct": "75",
+    "cli.region": "\"auto\"",
+    "cli.release_posture": "false",
+    "cli.rollup": "\"0\"",
+    "cli.s3_endpoint": "\"https://placeholder-data-endpoint.invalid\"",
+    "cli.scale_cpu_sustain_secs": "20",
+    "cli.scale_edge_latency_ms": "1000",
+    "cli.scale_edge_slots": "140",
+    "cli.scale_in_cpu_pct": "50",
+    "cli.scale_in_secs": "60",
+    "cli.scale_lat_sustain_secs": "20",
+    "cli.scale_latency_ms": "250",
+    "cli.scale_out_cpu_pct": "75",
+    "cli.scale_rps_capacity": "0",
+    "cli.secret_access_key": "\"placeholder-data-secret\"",
+    "cli.shard_bucket": "None",
+    "cli.shared_cache_bytes": "134217728",
+    "cli.sse_max_connections": "2000",
+    "cli.streams_auth_grants_file": "Some(\"/tmp/feeds/grants.json\")",
+    "cli.streams_auth_issuer": "\"https://auth.prisma.io\"",
+    "cli.streams_auth_keys_file": "Some(\"/tmp/feeds/keys.json\")",
+    "cli.streams_auth_mode": "\"enforce\"",
+    "cli.streams_auth_policy_file": "Some(\"/tmp/feeds/policies.json\")",
+    "cli.streams_auth_refresh_secs": "60",
+    "cli.streams_cursor_key": "None",
+    "cli.tail_ring_bytes": "0",
+    "cli.telemetry_region": "\"\"",
+    "cli.trim_global_budget": "65536",
+    "cli.trim_per_op": "65536",
+    "cli.usage_stream_key": "None",
+    "cli.wal_flush_gap_ms": "10",
+    "cli.wal_gather_skip_bytes": "1048576",
+    "cli.wal_gather_skip_reqs": "32",
+    "cli.wal_gc_interval_secs": "30",
+    "cli.wal_gc_min_age_secs": "60",
+    "cli.wal_group_commit": "1",
+    "cli.wal_post_ack_gather_ms": "6",
+    "cli.workload_token_file": "None",
+    "crypto.frame_compress": "true",
+    "engine.compact_bytes_to_fetch": "1048576",
+    "engine.compact_max_fetch_tasks": "1",
+    "engine.compact_max_sst_size": "33554432",
+    "engine.compact_max_subcompactions": "1",
+    "engine.compactor_max_concurrent": "1",
+    "engine.compactor_poll_ms": "2500",
+    "engine.slatedb_rt_threads": "4",
+    "fleet.allow_http_peers": "false",
+    "fleet.fleet_min": "1",
+    "fleet.peer_domains_raw": "None",
+    "fleet.rebalance_lag_secs": "60",
+    "fleet.rebalance_move_cooldown_secs": "60",
+    "fleet.rebalance_return_secs": "300",
+    "fleet.self_url": "\"\"",
+    "history.absorb_global_budget_bytes": "100859904",
+    "history.absorb_global_gathers": "1",
+    "history.absorb_pause_initial": "false",
+    "history.cache_bytes": "33554432",
+    "history.compactor_off": "false",
+    "history.gc_interval": "Some(600s)",
+    "http.binary_sha256": "\"placeholder-sha256-of-the-downloaded-binary\"",
+    "http.debug_exit": "false",
+    "http.debug_timing": "false",
+    "http.h1_header_timeout": "120s",
+    "http.h1_max_buf": "65536",
+    "http.tail_max_bytes": "1048576",
+    "postings.cache_bytes": "67108864",
+    "runtime.cert_sealed_publish_delay_ms_raw": "None",
+    "runtime.certification_mode": "None",
+    "runtime.memprofile_cert": "Some(\"compute-1g\")",
+    "runtime.tokio_workers": "None",
+    "scaler.cold_evals": "180",
+    "scaler.cold_pct": "0.15",
+    "scaler.cooldown_secs": "600",
+    "scaler.eval_secs": "10",
+    "scaler.hot_evals": "2",
+    "scaler.hot_pct": "0.75",
+    "scaler.max_segments": "64",
+    "scaler.rate_window_secs": "120.0",
+    "shard.open_deadline": "180s",
+    "shard.open_wait_ms": "10000",
+    "shard.unready_exit_after_secs": "300",
+    "sse.feed_project_bytes_raw": "Some(\"33554432\")",
+    "sse.feed_ring_bytes": "1048576",
+    "sse.feed_total_bytes": "67108864",
+    "sse.feed_total_bytes_raw": "Some(\"67108864\")",
+    "sse.heartbeat_ms": "15000",
+    "storage.bulk_inflight_max_bytes": "33554432",
+    "storage.bulk_nominal_get_bytes": "33554432",
+    "storage.pool_idle_secs": "4",
+    "storage.store_max_concurrent": "0"
+  },
+  "notes": [
+    "${WC_*} defaults are used; ADMIT_RSS_SHED_MB=600 and SLATEDB_RT_THREADS=2 are passed BEFORE the profile, so the profile's 500 and 4 win (later --env wins); see the overrides.",
+    "SOAK_RUN_ID / BIN_TAG are wc-<UTC timestamp>; a fixed stand-in is used."
+  ],
+  "old": {
+    "leaves": 156,
+    "verdict": "not-evaluated"
+  },
+  "old_leaves": {
+    "admission.absorb_lag_secs": "900",
+    "admission.limit_burst_secs": "2.0",
+    "admission.limit_bytes_per_sec": "5000000.0",
+    "admission.limit_recs_per_sec": "100000.0",
+    "admission.limit_reqs_per_sec": "1000.0",
+    "admission.maint_release_pct": "75",
+    "admission.unabsorbed_bytes_instance": "536870912",
+    "admission.unabsorbed_bytes_shard": "268435456",
+    "billing.alert_usage_outbox_dirty": "1000",
+    "billing.meter_enabled": "true",
+    "billing.metrics_interval_secs": "15",
+    "billing.mode_env": "None",
+    "billing.month_close_grace_ms": "86400000",
+    "billing.outbox_sweep_secs": "300",
+    "billing.path_prefix_env": "Some(\"wc-20260924T000000Z\")",
+    "billing.rollup_env": "None",
+    "billing.sweep_discovery_max": "8",
+    "billing.sweep_maint_resident": "2",
+    "billing.sweep_resident_quantum": "4",
+    "billing.telemetry_cache_bytes": "16777216",
+    "billing.telemetry_drain_secs": "2",
+    "cli.absorb_age_secs": "60",
+    "cli.absorb_bytes": "4194304",
+    "cli.absorb_concurrency": "6",
+    "cli.absorb_gather_max_bytes": "8388608",
+    "cli.absorb_pace_ms": "0",
+    "cli.absorb_pace_window_ms": "50",
+    "cli.absorb_pass_bytes": "268435456",
+    "cli.absorb_read_par": "8",
+    "cli.absorb_small_bytes": "1048576",
+    "cli.access_key_id": "\"placeholder-data-key-id\"",
+    "cli.account_id": "\"acct_local\"",
+    "cli.admit_max_inflight": "512",
+    "cli.admit_max_inflight_per_stream": "256",
+    "cli.admit_rss_shed_mb": "500",
+    "cli.auth_token": "Some(\"placeholder-auth-token\")",
+    "cli.billing_mode": "\"off\"",
+    "cli.bucket": "\"placeholder-data-bucket\"",
+    "cli.cell_id": "\"mt-cell-1\"",
+    "cli.compactions_gc_interval_secs": "30",
+    "cli.compactions_gc_min_age_secs": "120",
+    "cli.compactor_max_concurrent": "1",
+    "cli.compactor_poll_ms": "2500",
+    "cli.conformance_default_key": "None",
+    "cli.data_bucket": "None",
+    "cli.fleet_auth_mode": "\"static\"",
+    "cli.fleet_internal_token": "None",
+    "cli.fleet_max": "4",
+    "cli.fleet_prefix": "None",
+    "cli.flush_interval_ms": "25",
+    "cli.gc_quiet_interval_secs": "600",
+    "cli.handle_idle_evict_secs": "600",
+    "cli.handle_max_resident": "65536",
+    "cli.initial_shards": "Some(4)",
+    "cli.instance_name": "\"streams-1\"",
+    "cli.l0_max_ssts": "32",
+    "cli.l0_max_ssts_per_key": "0",
+    "cli.l0_sst_size_bytes": "8388608",
+    "cli.listen": "\"0.0.0.0:8080\"",
+    "cli.manifest_poll_ms": "2000",
+    "cli.max_record_payload_bytes": "Some(131072)",
+    "cli.max_request_body_bytes": "33554432",
+    "cli.max_unflushed_bytes": "16777216",
+    "cli.ops_bucket": "None",
+    "cli.path_prefix": "Some(\"wc-20260924T000000Z\")",
+    "cli.project_id": "\"proj-mt-deploy\"",
+    "cli.project_memory_pressure_bytes": "0",
+    "cli.project_memory_release_pct": "75",
+    "cli.region": "\"auto\"",
+    "cli.release_posture": "false",
+    "cli.rollup": "\"0\"",
+    "cli.s3_endpoint": "\"https://placeholder-data-endpoint.invalid\"",
+    "cli.scale_cpu_sustain_secs": "20",
+    "cli.scale_edge_latency_ms": "1000",
+    "cli.scale_edge_slots": "140",
+    "cli.scale_in_cpu_pct": "50",
+    "cli.scale_in_secs": "60",
+    "cli.scale_lat_sustain_secs": "20",
+    "cli.scale_latency_ms": "250",
+    "cli.scale_out_cpu_pct": "75",
+    "cli.scale_rps_capacity": "0",
+    "cli.secret_access_key": "\"placeholder-data-secret\"",
+    "cli.shard_bucket": "None",
+    "cli.shared_cache_bytes": "134217728",
+    "cli.sse_max_connections": "2000",
+    "cli.streams_auth_grants_file": "Some(\"/tmp/feeds/grants.json\")",
+    "cli.streams_auth_issuer": "\"https://auth.prisma.io\"",
+    "cli.streams_auth_keys_file": "Some(\"/tmp/feeds/keys.json\")",
+    "cli.streams_auth_mode": "\"enforce\"",
+    "cli.streams_auth_policy_file": "Some(\"/tmp/feeds/policies.json\")",
+    "cli.streams_auth_refresh_secs": "60",
+    "cli.streams_cursor_key": "None",
+    "cli.tail_ring_bytes": "0",
+    "cli.telemetry_region": "\"\"",
+    "cli.trim_global_budget": "65536",
+    "cli.trim_per_op": "65536",
+    "cli.usage_stream_key": "None",
+    "cli.wal_flush_gap_ms": "10",
+    "cli.wal_gather_skip_bytes": "1048576",
+    "cli.wal_gather_skip_reqs": "32",
+    "cli.wal_gc_interval_secs": "30",
+    "cli.wal_gc_min_age_secs": "60",
+    "cli.wal_group_commit": "1",
+    "cli.wal_post_ack_gather_ms": "6",
+    "cli.workload_token_file": "None",
+    "crypto.frame_compress": "true",
+    "engine.compact_bytes_to_fetch": "1048576",
+    "engine.compact_max_fetch_tasks": "1",
+    "engine.compact_max_sst_size": "33554432",
+    "engine.compact_max_subcompactions": "1",
+    "engine.compactor_max_concurrent": "1",
+    "engine.compactor_poll_ms": "2500",
+    "engine.slatedb_rt_threads": "4",
+    "fleet.allow_http_peers": "false",
+    "fleet.fleet_min": "1",
+    "fleet.peer_domains_raw": "None",
+    "fleet.rebalance_lag_secs": "60",
+    "fleet.rebalance_move_cooldown_secs": "60",
+    "fleet.rebalance_return_secs": "300",
+    "fleet.self_url": "\"\"",
+    "history.absorb_global_budget_bytes": "100859904",
+    "history.absorb_global_gathers": "1",
+    "history.absorb_pause_initial": "false",
+    "history.cache_bytes": "33554432",
+    "history.compactor_off": "false",
+    "history.gc_interval": "Some(600s)",
+    "http.binary_sha256": "\"placeholder-sha256-of-the-downloaded-binary\"",
+    "http.debug_exit": "false",
+    "http.debug_timing": "false",
+    "http.h1_max_buf": "65536",
+    "http.tail_max_bytes": "1048576",
+    "postings.cache_bytes": "67108864",
+    "runtime.cert_sealed_publish_delay_ms_raw": "None",
+    "runtime.certification_mode": "None",
+    "runtime.memprofile_cert": "Some(\"compute-1g\")",
+    "runtime.tokio_workers": "None",
+    "scaler.cold_evals": "180",
+    "scaler.cold_pct": "0.15",
+    "scaler.cooldown_secs": "600",
+    "scaler.eval_secs": "10",
+    "scaler.hot_evals": "2",
+    "scaler.hot_pct": "0.75",
+    "scaler.max_segments": "64",
+    "scaler.rate_window_secs": "120.0",
+    "shard.open_deadline": "180s",
+    "shard.open_wait_ms": "10000",
+    "shard.unready_exit_after_secs": "300",
+    "sse.feed_project_bytes_raw": "Some(\"33554432\")",
+    "sse.feed_ring_bytes": "1048576",
+    "sse.feed_total_bytes": "67108864",
+    "sse.feed_total_bytes_raw": "Some(\"67108864\")",
+    "sse.heartbeat_ms": "15000",
+    "storage.bulk_inflight_max_bytes": "33554432",
+    "storage.bulk_nominal_get_bytes": "33554432",
+    "storage.pool_idle_secs": "4",
+    "storage.store_max_concurrent": "0"
+  },
+  "omitted": {
+    "HANDLE_MAX_RESIDENT": "WC_DIET=1 only (wc-ladder-diet)",
+    "PROJECT_MEMORY_PRESSURE_BYTES": "only when WC_PMP is set (acceptance legs)",
+    "PROJECT_MEMORY_RELEASE_PCT": "only when WC_PMP_RELEASE is set (acceptance legs)",
+    "TAIL_RING_BYTES": "WC_DIET=1 only (wc-ladder-diet)"
+  },
+  "overridden": [
+    [
+      "SLATEDB_RT_THREADS",
+      "2",
+      "4"
+    ],
+    [
+      "ADMIT_RSS_SHED_MB",
+      "600",
+      "500"
+    ],
+    [
+      "SSE_MAX_CONNECTIONS",
+      "1200",
+      "2000"
+    ]
+  ],
+  "rows": [
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "6",
+      "path": "cli.absorb_concurrency"
+    },
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "268435456",
+      "path": "cli.absorb_pass_bytes"
+    },
+    {
+      "kind": "value",
+      "new": "None",
+      "old": "1048576",
+      "path": "cli.absorb_small_bytes"
+    },
+    {
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "effective": "equal-effective",
+      "kind": "paired",
+      "new": "\"off\"",
+      "old": "None",
+      "path": "billing.mode_env ~ cli.billing_mode"
+    },
+    {
+      "commit": "46d4b7df",
+      "edge_record": 49,
+      "effective": "equal-effective",
+      "kind": "paired",
+      "new": "\"0\"",
+      "old": "None",
+      "path": "billing.rollup_env ~ cli.rollup"
+    },
+    {
+      "commit": "71345c03",
+      "edge_record": 12,
+      "kind": "added",
+      "new": "120s",
+      "old": "<absent>",
+      "old_semantics": "no request-head deadline and no idle keep-alive close (hyper's 30 s header_read_timeout was dropped for want of a timer)",
+      "path": "http.h1_header_timeout"
+    }
+  ],
+  "sources": [
+    [
+      "bench/soak/wc-ladder.sh",
+      "echo \"== server: fresh process, $TENANTS-project feeds, prefix $SOAK_RUN_ID\""
+    ]
+  ]
+}

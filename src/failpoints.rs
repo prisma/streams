@@ -558,3 +558,28 @@ pub(crate) fn stop_before_sealed_publish_off(name: &str) {
 pub(crate) fn should_stop_before_sealed_publish(name: &str) -> bool {
     hit(Fp::StopBeforeSealedPublish, name)
 }
+
+/// The per-name contract that lets a failpoint test run without the
+/// DST `gap_lock`: arming, arrivals and release are keyed by (point,
+/// stream name), so one test's name can neither park, flag nor release
+/// another's.
+#[test]
+fn a_point_armed_for_one_name_never_reaches_another() {
+    use futures_util::FutureExt;
+    let fp = Fp::CloseBeforeMark;
+    let (a, b) = ("fp-iso-a", "fp-iso-b");
+    arm(fp, a);
+    assert!(hit(fp, a), "{a} must see its own arm");
+    assert!(!hit(fp, b), "arming {a} armed {b}");
+    assert!(
+        pause(fp, b).now_or_never().is_some(),
+        "{b} parked on the arm of {a}"
+    );
+    assert_eq!(parked(fp, b), 0, "{b} counted an arrival for {a}");
+    arm(fp, b);
+    release(fp, a);
+    assert!(hit(fp, b), "releasing {a} disarmed {b}");
+    assert!(pause(fp, b).now_or_never().is_none(), "{b} must park");
+    assert_eq!(parked(fp, b), 1, "{b} counts its own arrival once");
+    release(fp, b);
+}

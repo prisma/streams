@@ -55,6 +55,25 @@ fn scaler_coercions_preserve_the_existing_float_contract() {
 }
 
 #[test]
+fn tokio_workers_come_from_the_knob_or_the_cores_never_below_two() {
+    let cores = |n| std::num::NonZeroUsize::new(n);
+    let unset = ServerConfig::load(CliArgs::deterministic(), &MapEnvironment::empty()).runtime;
+    assert_eq!(unset.tokio_workers, None);
+    assert_eq!(unset.worker_threads(cores(8)), 8);
+    assert_eq!(unset.worker_threads(cores(1)), 2);
+    assert_eq!(unset.worker_threads(None), 2);
+    for (raw, expected) in [("3", 3), ("1", 2), ("three", 8)] {
+        let env = MapEnvironment::from([("TOKIO_WORKERS", raw)]);
+        let runtime = ServerConfig::load(CliArgs::deterministic(), &env).runtime;
+        assert_eq!(
+            runtime.worker_threads(cores(8)),
+            expected,
+            "TOKIO_WORKERS={raw}"
+        );
+    }
+}
+
+#[test]
 fn summary_durations_saturate_instead_of_wrapping_to_zero() {
     let mut cfg = ServerConfig::load(CliArgs::deterministic(), &MapEnvironment::empty());
     for (duration, expected) in [

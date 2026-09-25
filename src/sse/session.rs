@@ -27,7 +27,9 @@ use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_send, sse_send_bi
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+mod catch_up;
 mod read_retry;
+use catch_up::Stall;
 use read_retry::ReadRetry;
 
 /// Per-session wire vocabulary.
@@ -421,29 +423,13 @@ pub(crate) async fn serve(
                         // Match-free scanned range still progresses.
                         cursor = cursor.max(batch.scan_to.min(catchup_bound));
                     }
-                    // This source's spans are exhausted below the bound
-                    // (a swap happened mid-catch-up): the live loop
-                    // re-snapshots and, if the ring moved, re-catches-up
-                    // through the 'handoff path.
-                    Ok(_) => break,
-                    Err(e) => {
-                        // Round-11.2: fatal span outcomes disconnect
-                        // with the typed reason (no terminal) instead
-                        // of retrying forever.
-                        if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
-                            count_cutoff(cut.0);
-                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            tracing::info!(reason = ?cut.0, "livefeed catch-up fatal cutoff");
-                            return;
-                        }
-                        // Source failure mid-catch-up: bounded backoff,
-                        // then retry the SAME bound — never a hot loop
-                        // (finding 6 discipline applies here too).
-                        crate::sse::auth::sse_stats::FEED_SOURCE_FAILED
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
+                    // A read that advanced nothing: `catch_up::Stall`
+                    // names what this pass owes it.
+                    read => match catch_up::stalled(read).await {
+                        Stall::Cutoff => return,
+                        Stall::Failed => {}
+                        Stall::NoProgress => break,
+                    },
                 }
             }
 

@@ -28,6 +28,12 @@ mod billing_controller;
 #[path = "tests/billing_maintenance.rs"]
 mod billing_maintenance;
 
+#[path = "tests/billing_readiness.rs"]
+mod billing_readiness;
+
+#[path = "tests/billing_operation_counts.rs"]
+mod billing_operation_counts;
+
 #[path = "tests/billing_usage.rs"]
 mod billing_usage;
 
@@ -198,6 +204,9 @@ mod security_modes;
 #[path = "tests/security_noninterference.rs"]
 mod security_noninterference;
 
+#[path = "tests/security_operations.rs"]
+mod security_operations;
+
 #[path = "tests/security_policy.rs"]
 mod security_policy;
 
@@ -207,8 +216,14 @@ mod security_revocation;
 #[path = "tests/security_routes.rs"]
 mod security_routes;
 
+#[path = "tests/security_seal.rs"]
+mod security_seal;
+
 #[path = "tests/security_subscription.rs"]
 mod security_subscription;
+
+#[path = "tests/security_usage.rs"]
+mod security_usage;
 
 #[path = "tests/security_workload.rs"]
 mod security_workload;

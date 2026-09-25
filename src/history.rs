@@ -11,28 +11,26 @@
 
 mod canonical_span;
 mod gather;
+#[cfg(test)]
+pub(crate) use gather::StreamGatherFailure;
 mod postings_read;
 use postings_read::execute_postings_plan;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
-use object_store::ObjectStore;
 use slatedb::Db;
 use slatedb::config::{CompressionCodec, Settings};
 use tokio::sync::mpsc;
 
 use crate::crypto::{RouteHash, SegmentHash, StreamKey};
-use crate::shard::{AbsorbSignal, ShardEngine};
+use crate::shard::{AbsorbSignal, ShardEngine, Submissions};
 
 #[cfg(test)]
 mod controller_tests;
 #[cfg(test)]
 mod test_support;
 
-// ---- block transformer: AES-256-GCM with a random nonce per block ----
-
-/// Operator pause for the whole absorber (fleet runbook).
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
 /// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
@@ -78,11 +76,6 @@ pub(crate) fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) 
     k
 }
 
-// ---- settings (D23 maintenance profile + F2 pattern) ----
-
-/// Shared block cache for ALL history DBs (absorber writes + reads):
-/// SlateDB's per-DB default is 512 MB, and the absorber opens a DB per
-/// absorbed stream — unbounded aggregate cache on a 1 GB box.
 /// Per-partition L0 facts from the db's IN-MEMORY manifest snapshot
 /// (`Db::manifest()` — no object-store request). The manifest types
 /// only expose Serialize at this pin, so this walks the serde view
@@ -148,8 +141,8 @@ pub(crate) fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
 /// reserve() is the ONLY wait on the byte pool and it waits holding
 /// no bytes; growth mid-gather is try_grow(), which refuses instead
 /// of waiting — two holders can never wait on each other.
-/// Budgets are process-wide BY CONSTRUCTION: the semaphores live in one
-/// process-level static, not per absorber.
+/// Budgets are per runtime: `RuntimeCaps` owns the `HistoryResources` bootstrap
+/// hands every engine; an engine opened without one (tests) builds its own.
 pub(crate) struct AbsorbBudget {
     bytes: tokio::sync::Semaphore,
     gathers: tokio::sync::Semaphore,
@@ -206,9 +199,6 @@ pub(crate) fn worst_frame_transient_for(body_limit: usize) -> usize {
     (body_limit + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
 }
 
-/// The gather packing limit AS RESOLVED at startup — after the clamp to
-/// `capacity / ABSORB_BUILD_MULTIPLIER`. Published so the concurrency
-/// arithmetic below matches what the absorber actually does.
 /// Runtime-scoped resources shared by every engine of that runtime.
 /// Construction captures validated capacities; no first caller can select
 /// configuration for a different runtime.
@@ -444,6 +434,8 @@ pub(crate) static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
+
+// ---- settings (D23 maintenance profile + F2 pattern) ----
 
 /// Settings for the SHARED history v2 partition (docs/HISTORY-V2.md).
 /// Differences from v1 per-stream DBs, each deliberate: NO compression
@@ -712,28 +704,6 @@ fn due_streams(
     due
 }
 
-/// Per-stream classification of one v2 gather (review round 4, P1): the
-/// pump must retire ONLY what the gather settled. `advanced` carries
-/// (hash, chunk start, new upto, raw frame bytes copied for the chunk);
-/// `no_work` had nothing durable to absorb;
-/// `deferred_budget` did not fit this batch's byte budget and MUST stay
-/// pending — with lag and age intact — for the next tick.
-#[derive(Default)]
-pub(crate) struct GatherOutcome {
-    pub(crate) advanced: Vec<([u8; 16], u64, u64, u64)>,
-    pub(crate) no_work: Vec<[u8; 16]>,
-    pub(crate) deferred_budget: Vec<[u8; 16]>,
-    /// Streams whose gather ADVANCED but did not reach the stream's
-    /// durable end — the per-stream byte cap truncated the chunk, so
-    /// data remains. `(hash, remaining offsets)`. These MUST stay
-    /// pending: retiring them (they are also in `advanced`) strands the
-    /// remainder until some unrelated event re-discovers it, and for a
-    /// stream whose next record exceeds the cap that is effectively
-    /// never — 8x100 KiB behind a 64 KiB cap absorbed exactly one
-    /// record and then stopped forever (chaos campaign, 2026-08-09).
-    pub(crate) partial: Vec<([u8; 16], u64)>,
-}
-
 /// Fence-class absorb errors mean this engine lost the shard to a new owner:
 /// retrying can never succeed and — worse — keeps evicting the rightful
 /// owner's history db in a ping-pong ("the absorption war", 2026-07-20).
@@ -747,13 +717,10 @@ fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Each stream's lane mark and the submissions the committer has not answered.
-type LaneMarks = std::sync::Mutex<gather::Lane>;
+/// The highest `upto` each lane submitted per stream, with the lane that
+/// submitted it (true = the v2 shared partition).
+type LaneMarks = std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>;
 
-#[expect(
-    dead_code,
-    reason = "Absorber; the store and key cache it was started with are kept for the gather planner, which reaches them through the engine today, while the lane beside them holds marks and unanswered submissions; dropping them would touch boot's mutation-gated wiring for no behaviour change"
-)]
 pub(crate) struct Absorber {
     /// Decaying max of observed per-gather transient (batch bytes x
     /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
@@ -764,58 +731,39 @@ pub(crate) struct Absorber {
     /// estimate keeps the pressure line honest at sparse shapes while
     /// try_grow() + the pool keep the OOM bound exact.
     recent_transient: AtomicU64,
-    data_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
-    keys: Arc<KeyCache>,
     cfg: AbsorberConfig,
-    /// History DB handles kept open across passes. The original F2 design
-    /// opened and closed per pass ("maintenance-free"), but each open is
-    /// 1-2 s of manifest round-trips — at a 32 MB pass that caps absorb
-    /// throughput near ~5-8k rec/s, below a loaded stream's ingest, and
-    /// the backlog compounds into the OOM spiral (sinmax run 11 marathon).
-    /// Small LRU (4) + idle eviction keeps V4's idle-per-DB-overhead
-    /// concern bounded; entries are dropped on fence-class errors and on
-    /// absorber exit.
-    /// Where this absorber's next chunk starts per stream, WITH the lane
-    /// that submitted it (true = v2 shared partition): the highest `upto`
-    /// it submitted, rolled back when the committer refuses the group
-    /// (`gather::Lane`). The published handle state only reflects a
-    /// submit after its committer batch is durable AND dispatched, so
-    /// pacing off the published value alone re-absorbs the same range when
-    /// dispatch lags a tick — wasted decrypt/write work, and the duplicate
-    /// `Absorbed` op it produces used to collapse the deferred-trim lag
-    /// (2026-07-27 boundary-race DST failure). LANE-SCOPED (round 4):
-    /// each lane trusts only its OWN mark — during the brief pre-seal
-    /// window both lanes can claim a stream, and the committer's layout
-    /// seal then DROPS one side's advance; if the surviving lane trusted
-    /// the dropped lane's floor it would skip a range that only exists
-    /// in the dropped tier, permanently hiding acked records. Per-
-    /// instance state: a restarted or new-owner absorber starts from
-    /// published state again, which is safe because re-absorbing is
-    /// idempotent.
+    /// Highest `upto` this absorber has submitted per stream, WITH the
+    /// lane that submitted it (true = v2 shared partition). Durable handle
+    /// state reflects a submit only once its batch is durable AND
+    /// dispatched, and the committer retires an advance only from its
+    /// boundary, so a regather from the published value alone copies
+    /// what an in-flight advance covers and is dropped. A mark is rolled
+    /// back only while `submissions` shows its stream settled. LANE-
+    /// SCOPED (round 4): each lane trusts only its OWN mark — the layout
+    /// seal DROPS one lane's advance, and trusting the dropped lane's
+    /// floor would hide acked records. A restarted or new-owner absorber
+    /// starts from durable state, where nothing of its own is in flight.
     submitted: LaneMarks,
+    /// This absorber's advances that could still land, per stream
+    /// bucket: the receipts the committer holds until each settles.
+    submissions: Arc<Submissions>,
     discovery_after: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
 impl Absorber {
     /// Construct without starting the pump — DST tests drive gathers
     /// directly for deterministic budget/packing assertions.
-    pub(crate) fn new(
-        data_store: Arc<dyn ObjectStore>,
-        shard: Arc<ShardEngine>,
-        keys: Arc<KeyCache>,
-        cfg: AbsorberConfig,
-    ) -> Self {
+    pub(crate) fn new(shard: Arc<ShardEngine>, cfg: AbsorberConfig) -> Self {
         let seed = cfg
             .gather_max_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
             .max(shard.history_resources.worst_frame_transient) as u64;
         Absorber {
-            data_store,
             shard,
-            keys,
             cfg,
-            submitted: Default::default(),
+            submitted: std::sync::Mutex::new(HashMap::new()),
+            submissions: Default::default(),
             discovery_after: Default::default(),
             // Seeded at the worst-case est: boot-time gathers (restart
             // rediscovery drains the whole backlog) reserve like the
@@ -868,18 +816,14 @@ impl Absorber {
         reason = "Absorber::start_owned; the engine handle is cloned into the absorber and then registers its task; borrowing it would ripple through boot's mutation-gated wiring and four fixtures for one clone"
     )]
     pub(crate) fn start_owned(
-        data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
-        keys: Arc<KeyCache>,
         cfg: AbsorberConfig,
         rx: mpsc::Receiver<AbsorbSignal>,
     ) {
-        let absorber = Self::new(data_store, shard.clone(), keys, cfg);
+        let absorber = Self::new(shard.clone(), cfg);
         shard.spawn_required("absorber", absorber.run(rx));
     }
 }
-
-use std::sync::atomic::AtomicU64;
 
 /// Zero-route tails with unabsorbed data (a bug, not a layout — the v1
 /// per-stream format was deleted in the pre-launch clean switch).
@@ -1109,7 +1053,7 @@ pub(crate) fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::{PutOptions, PutPayload, PutResult, path::Path as OPath};
+    use object_store::{ObjectStore, PutOptions, PutPayload, PutResult, path::Path as OPath};
 
     #[derive(Debug)]
     struct SlowPuts(Arc<dyn ObjectStore>);
@@ -1213,9 +1157,7 @@ mod tests {
             crate::shard::ShardMaintenance::default(),
         );
         let handle = Absorber::start(
-            store.clone(),
             engine.clone(),
-            Arc::new(KeyCache::default()),
             AbsorberConfig {
                 tick: Duration::from_millis(50),
                 ..Default::default()

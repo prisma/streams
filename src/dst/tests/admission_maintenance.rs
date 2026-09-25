@@ -696,7 +696,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
         &crate::config::AdmissionConfig::default(),
         Arc::new(crate::runtime::ManualClock::at(0)),
     ));
-    let (_state, addr) = http_rig_build(
+    let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
@@ -707,8 +707,10 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
             ..Default::default()
         },
     )
-    .await
-    .parts();
+    .await;
+    // One panicked connection reported on THIS runtime's task record.
+    rig.tasks.record_connection_panic();
+    let (_state, addr) = rig.parts();
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/load-t", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -719,6 +721,10 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     let (st, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
     assert_eq!(st, 200);
     let before = load(&body);
+    assert_eq!(
+        before["tasks"]["connection_panics"], 1,
+        "item 37: the runtime's own panicked connections reach /v1/debug/load: {before}"
+    );
     let m = &before["maintenance_shards"];
     assert!(
         m["ingest_frame_bytes_total"].as_u64().unwrap() >= 1,
@@ -792,6 +798,10 @@ async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
         "10,001 records never fit a 10,000-record bucket: {body}"
     );
     assert!(body.contains("payload_too_large"), "{body}");
+    assert!(
+        body.contains("of 10001 records exceeds the per-stream ingest capacity of 10000 records"),
+        "the refusal names its limit: {body}"
+    );
     assert_eq!(
         headers.get("retry-after"),
         None,
@@ -807,9 +817,10 @@ async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
 
 /// The product batch surface reaches the same owner: with a record bucket
 /// smaller than MAX_BATCH_RECORDS, a batch larger than a fresh bucket is a
-/// permanent 413 (the product spelling is `body_too_large`), and exactly
-/// the capacity is still admitted afterwards because the refusal consumed
-/// nothing (the rig's usage clock never refills between the two).
+/// permanent 413 (one spelling on both surfaces, `payload_too_large`, with
+/// its limit in `details`), and exactly the capacity is still admitted
+/// afterwards because the refusal consumed nothing (the rig's usage clock
+/// never refills between the two).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn product_batch_over_record_capacity_is_413_without_retry_after() {
     let usage = Arc::new(crate::usage::UsageService::new(
@@ -849,9 +860,24 @@ async fn product_batch_over_record_capacity_is_413_without_retry_after() {
         &records_body(101),
     )
     .await;
-    let body = String::from_utf8_lossy(&body).to_string();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(st, 413, "101 records never fit a 100-record bucket: {body}");
-    assert!(body.contains("body_too_large"), "{body}");
+    let (code, d) = (body["error"]["code"].as_str(), &body["error"]["details"]);
+    assert_eq!(
+        (
+            code,
+            d["dimension"].as_str(),
+            d["capacity"].as_u64(),
+            d["requested"].as_u64()
+        ),
+        (
+            Some("payload_too_large"),
+            Some("records"),
+            Some(100),
+            Some(101)
+        ),
+        "{body}"
+    );
     assert_eq!(headers.get("retry-after"), None);
     let (st, _, body) = preq(
         rig.addr,
@@ -915,4 +941,60 @@ async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
     let body = String::from_utf8_lossy(&body).to_string();
     assert_eq!(st, 400, "the deferred verdict answers first: {body}");
     assert!(body.contains("invalid_body"), "{body}");
+}
+
+/// External review §5 on the product surface: the handler refuses a body no
+/// fresh bucket admits before the key is checked (413, not 403), except a
+/// producer request, whose duplicate is recognized before any later
+/// validation refusal (Stage 4 §5): the core decides it, and its deferred
+/// verdict (a record over the ceiling) outranks the stored-bytes 413.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_product_capacity_413_precedes_the_key_but_not_a_producer_verdict() {
+    let usage = Arc::new(crate::usage::UsageService::new(
+        &crate::config::AdmissionConfig {
+            limit_bytes_per_sec: 50.0, // x LIMIT_BURST_SECS 2 = 100 bytes
+            ..Default::default()
+        },
+        Arc::new(crate::runtime::ManualClock::at(0)),
+    ));
+    let shard = crate::shard::ShardConfig {
+        shared_usage: Some(usage),
+        ..Default::default()
+    };
+    let options = HttpRigOptions {
+        shard,
+        ..Default::default()
+    };
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    let key = ("prisma-encryption-key", PRISMA_KEY);
+    let json = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(
+        preq(rig.addr, "PUT", "/v1/streams/cap-order", &[key], json)
+            .await
+            .0,
+        201
+    );
+    // 1 + 102 stored bytes: over the 100-byte bucket.
+    let body = format!("[1,\"{}\"]", "x".repeat(100));
+    let path = "/v1/streams/cap-order/records:batch";
+    let wrong = (
+        "prisma-encryption-key",
+        "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+    );
+    let (st, _, b) = preq(rig.addr, "POST", path, &[wrong], body.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    assert_eq!(st, 413, "the handler's 413 comes before the key: {b}");
+    rig.state.admission.set_record_ceiling(50);
+    let producer = [
+        key,
+        ("producer-id", "p"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(rig.addr, "POST", path, &producer, body.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    assert_eq!(
+        st, 400,
+        "a producer's deferred verdict outranks the 413: {b}"
+    );
 }

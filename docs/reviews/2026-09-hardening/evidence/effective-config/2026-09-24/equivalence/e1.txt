@@ -1,0 +1,2 @@
+E1 PASS: Args identical (522 lines): v0.2.0-rc.4 src/main.rs:72 == 6bcaff69 src/bootstrap.rs:23 (pub(crate) normalized; the block starts at the derive line)
+

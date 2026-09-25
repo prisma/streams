@@ -200,6 +200,70 @@ async fn r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final() {
     engine_shutdown(&state).await;
 }
 
+/// F3: the re-preparation after a waited-out transition is the retry
+/// loop's second refresh. A registry it cannot read proves nothing, as
+/// the closure check's cannot: the append, refused as closed by every
+/// attempt and so uncommitted, answers the same retryable 503, never a
+/// 500, and its retry lands once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal() {
+    use super::fixture_livefeed::wait_parked;
+    use crate::application::append::FailureClass;
+    use crate::failpoints::Fp::ScalerBeforePublish;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "typed-reprepare";
+    let create = br#"{"format":{"kind":"json"}}"#;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    let (status, _, _) = preq(addr, "PUT", "/v1/streams/typed-reprepare", &headers, create).await;
+    assert_eq!(status, 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let app = state.append_service();
+    crate::failpoints::arm_scaler_before_publish(name);
+    let held = super::fixture_failpoints::FailpointGuard(name.to_string());
+    let split = crate::scaler3::execute_split(&state, &sref, 0, 0x8000_0000_0000_0000);
+    let append = async {
+        wait_parked(ScalerBeforePublish, name, 1).await;
+        app.execute(command(&desc, "reprepare", br#"{"n":1}"#))
+            .await
+    };
+    let release = async {
+        wait_parked(ScalerBeforePublish, name, 2).await;
+        state.registry.fail_next_get(name);
+        drop(held);
+    };
+    let (_, answer, ()) = futures_util::future::join3(split, append, release).await;
+    let error = answer.unwrap_err();
+    assert!(
+        error.message.contains("injected registry get failure"),
+        "{error:?}"
+    );
+    assert_eq!(
+        (error.class, error.code, error.retry_after),
+        (
+            FailureClass::Unavailable,
+            AppendCode::SegmentTransition,
+            Some(1)
+        ),
+        "{error:?}"
+    );
+    state.registry.invalidate(&sref);
+    let published = state.registry.get(&sref).await.unwrap().unwrap();
+    assert!(
+        published
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none())
+    );
+    let landed = app
+        .execute(command(&desc, "reprepare", br#"{"n":1}"#))
+        .await
+        .unwrap();
+    assert!(!landed.duplicate, "the refused append committed nothing");
+    assert_ne!(landed.seg_id, 0, "the retry lands on a child");
+    engine_shutdown(&state).await;
+}
+
 /// A sealed descriptor's closure is final by itself: `sealed` never
 /// resets within an incarnation and freezes the map, so its route cannot
 /// be stale. The engine's refusal must cost no descriptor refresh (a
@@ -253,5 +317,100 @@ async fn r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams() {
         AppendCode::TargetIncarnationChanged,
         "{error:?}"
     );
+    engine_shutdown(&state).await;
+}
+
+/// A raw close whose seal intent could not be installed has not sealed
+/// anything. Another seal's live claim is a conflict and stays the 409
+/// `sealed`. A registry the intent could not read (here, the lapsed
+/// final's takeover re-reading the descriptor to fence it) decided
+/// nothing: the close answers the retryable 503 `seal_incomplete` its
+/// completion answers, and its retry closes the collection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed() {
+    use crate::application::append::FailureClass;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "typed-close-read";
+    let create = br#"{"format":{"kind":"json"}}"#;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    let (status, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/typed-close-read",
+        &headers,
+        create,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let sref = state.deployment.raw_adapter_sref(name);
+    let owed = |claimed_ms| {
+        move |d: &mut crate::registry::PersistedDescriptor| {
+            d.seal_gen_counter += 1;
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: "owed-final".into(),
+                intent: crate::registry::SealIntent::Final {
+                    routing_key: String::new(),
+                    request_hash: "owed-final".into(),
+                    final_committed: false,
+                },
+                claimed_ms,
+                claim_generation: d.seal_gen_counter,
+            });
+            true
+        }
+    };
+    let close = |desc: &crate::registry::StreamDesc| AppendCommand {
+        body: Bytes::new(),
+        producer: None,
+        close: true,
+        request_hash: None,
+        ..command(desc, "close", b"")
+    };
+    let app = state.append_service();
+    let now = crate::shard::now_ms();
+    assert!(state.registry.cas_update(&sref, owed(now)).await.unwrap());
+    state.registry.invalidate(&sref);
+    let live = state.registry.get(&sref).await.unwrap().unwrap();
+    let conflict = app.execute(close(&live)).await.unwrap_err();
+    assert_eq!(
+        (conflict.class, conflict.code),
+        (FailureClass::Conflict, AppendCode::Sealed),
+        "{conflict:?}"
+    );
+
+    let lapsed = now - crate::registry::SEAL_CLAIM_MS - 1_000;
+    assert!(
+        state
+            .registry
+            .cas_update(&sref, owed(lapsed))
+            .await
+            .unwrap()
+    );
+    state.registry.invalidate(&sref);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let prepared = app
+        .prepare(&sref, AppendKey::Provided(skey()))
+        .await
+        .unwrap();
+    state.registry.fail_next_get(name);
+    let error = app
+        .execute_prepared(prepared, close(&desc))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("injected registry get failure"),
+        "{error:?}"
+    );
+    assert_eq!(
+        (error.class, error.code),
+        (FailureClass::Unavailable, AppendCode::SealIncomplete),
+        "{error:?}"
+    );
+    state.registry.invalidate(&sref);
+    assert!(!state.registry.get(&sref).await.unwrap().unwrap().sealed);
+    let closed = app.execute(close(&desc)).await.unwrap();
+    assert!(closed.closed, "the retry closes the collection");
+    state.registry.invalidate(&sref);
+    assert!(state.registry.get(&sref).await.unwrap().unwrap().sealed);
     engine_shutdown(&state).await;
 }

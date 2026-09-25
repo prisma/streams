@@ -348,7 +348,7 @@ async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
 
     use tokio::io::AsyncWriteExt;
     let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     let req = format!(
         "GET /v1/stream/lfr?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
     );
@@ -538,7 +538,7 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     // RAW creates the feed first.
     use tokio::io::AsyncWriteExt;
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     let req = format!(
         "GET /v1/stream/lfx?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
     );
@@ -622,7 +622,7 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
     prod.write_all(preq2.as_bytes()).await.unwrap();
     // RAW joins second.
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let start_tok = crate::offsets::encode(0, 0);
     let req = format!(
         "GET /v1/stream/lfp?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
     );

@@ -579,9 +579,7 @@ async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() 
     let handle = engine.stream_handle(hash).await.unwrap();
     let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, u64::MAX);
     let absorber = crate::history::Absorber::new(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             gather_max_bytes: 1,
             ..Default::default()
@@ -590,7 +588,7 @@ async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() 
     for upto in [1, 2] {
         let gather = absorber.absorb_gather_v2(&[hash]).await.expect("gather");
         assert_eq!(gather.advanced.len(), 1, "one record per gather");
-        assert_eq!(gather.advanced[0].2, upto);
+        assert_eq!(gather.advanced[0].1, upto);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let durable_absorbed = loop {

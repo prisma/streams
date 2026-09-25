@@ -1,0 +1,946 @@
+{
+ "entries": [
+  {
+   "item": "rustls advisory (RUSTSEC-2026-0285)",
+   "title": "Upgrade rustls 0.23.41 -> 0.23.45 to clear RUSTSEC-2026-0285",
+   "kind": "security",
+   "commits": [
+    "f4cb7b63"
+   ],
+   "what_changed": "cargo deny was red on slate because RUSTSEC-2026-0285 (rustls accepted TLS 1.3 handshake messages at the wrong encryption level after a key-changing message) had been published against the locked rustls 0.23.41. The lockfile-only bump is rustls 0.23.45, rustls-webpki 0.103.15, aws-lc-rs 1.18.1 and aws-lc-sys 0.45.0. It is its own commit because aws-lc-rs is the TLS crypto backend and AGENTS.md has a standing crypto hold; the program notes record that Soren approved it.",
+   "evidence": "cargo deny (advisories, bans, licenses, sources) ok; cargo machete ok; the build has zero warnings. The merged tree 7a6ecd23 gated QUALITY_OK, suite 1056/0, isolated capacity leg 1/0.",
+   "edge_visible": "none at the HTTP level (lockfile only); the TLS stack now answers RFC 8446 s5.1 violations with an unexpected_message alert",
+   "pushed_head": "7a6ecd23 (CI ok, rust-quality FAILED for an unrelated reason fixed by dd220be8, workflow-lint ok)"
+  },
+  {
+   "item": "Prior external-review follow-ups (3 open items) + opening merge + its mutation-scope fixup",
+   "title": "Hermetic signal proof, one fleet config authority, engine_shutdown's contract; merged directly; fleet mutation scope reaches its proofs",
+   "kind": "maintainability",
+   "commits": [
+    "f1304d08",
+    "7a6ecd23",
+    "dd220be8"
+   ],
+   "what_changed": "f1304d08 closes three open items: (1) the SIGTERM/SIGINT test now signals a child copy of the test binary, because Tokio's first registration had left the whole suite deaf to Ctrl-C and to CI cancellation; (2) fleet::start_configured derives its posture from state.config instead of a separate ServerConfig parameter (raw start() and FleetCfg are now private); (3) engine_shutdown's drifted doc is restored. 7a6ecd23 merges f4cb7b63, f1304d08, ae1efcbe and 0ac4002e onto slate directly (owner's request, no PR). dd220be8 adds dst_tests::fleet_controller and dst_tests::runtime_isolation to the fleet mutation-owner filter: the old `fleet::` filter matched none of the DST proofs, so the two start_configured -> bool mutants had run against no tests.",
+   "evidence": "Signal proof verified red: with SIGINT unprepared, the helper dies ('the helper failed (signal: 2 (SIGINT))') and the parent suite is untouched. rust-quality on 7a6ecd23 FAILED with 2 MISSED mutants (start_configured -> true/false, 0 s of test time). dd220be8 re-ran CI's exact comparison (adc2cdc5 -> 7a6ecd23) locally: bootstrap 1/1 caught, fleet 2/2 caught, mutations.sh exit 0. Gate QUALITY_OK, suite 1056/0.",
+   "edge_visible": "none",
+   "pushed_head": "7a6ecd23 (rust-quality failed); dd220be8 pushed with b0a6ba65 (all three workflows green)"
+  },
+  {
+   "item": "rustdoc to zero",
+   "title": "Clear all 61 rustdoc warnings and gate rustdoc in scripts/quality.sh",
+   "kind": "docs",
+   "commits": [
+    "ae1efcbe",
+    "0ac4002e"
+   ],
+   "what_changed": "ae1efcbe clears 61 rustdoc warnings at 41 sites: byte layouts parsed as HTML tags, unresolved links (including real drift: a link to StreamDesc::seal_gen_counter, which had moved to PersistedDescriptor), public items linking to private ones, and a link to a cfg(test)-only item. 0ac4002e makes scripts/quality.sh run `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --document-private-items`, and docs/RUST-QUALITY.md states the conventions (fenced `text` layouts; name private items in plain code).",
+   "evidence": "rustdoc warnings 61 -> 0 with no executable token changed; the ceilinged history.rs and shard.rs stay line-neutral. Certified in the 7a6ecd23 merge gate (QUALITY_OK).",
+   "edge_visible": "none",
+   "pushed_head": "7a6ecd23"
+  },
+  {
+   "item": "Review item 2 (high-impact)",
+   "title": "A routing key no append header can carry is refused on both writers",
+   "kind": "bug-fix",
+   "commits": [
+    "b0a6ba65"
+   ],
+   "what_changed": "Seal admitted a routing key with HeaderValue::from_str, which accepts bytes 0x80-0xFF, and then read it back with to_str().ok().unwrap_or(\"\"). So seal 'cafe' with an accent answered 200, but the final record and its idempotency hash were filed under the DEFAULT key of a now-immutable collection; the raw append handler had the same read-back. One predicate, parse_routing_key (at most 1,024 bytes of header text: visible ASCII, space, tab), is parsed once per writer, and the seal path takes the key as a parameter (the HeaderMap clone and its .expect are deleted).",
+   "evidence": "Red against a real server: an append with a non-text key -> 200 {count:1}; a seal with the accented key -> 200 {sealed:true}. Both now 400, with no seal intent published. The predicate is checked against http's from_bytes+to_str for every byte value in 4 positions (1,024 cases). Suite 1060/0; accepted exceptions 1,019 -> 1,018.",
+   "edge_visible": "YES: a Prisma-Routing-Key header, or a seal routingKey, outside visible ASCII/space/tab or over 1,024 bytes is 400 invalid_routing_key on both writers (was 200 filed under the default key). WIRE-MATRIX updated.",
+   "pushed_head": "b0a6ba65 (green)"
+  },
+  {
+   "item": "Review item 1 (high-impact)",
+   "title": "Postings cache: a store load claims coverage only up to its target and publishes against the entry resident at publish time",
+   "kind": "bug-fix",
+   "commits": [
+    "d2e87129",
+    "3dfb970f"
+   ],
+   "what_changed": "Keyed catch-up reads could silently skip durable records in the default config. load_runs claimed coverage up to the 65,536-offset bucket END, and spawn_load published that claim unclamped and overwrote any install that landed between its scan and its publish. load_runs now owns one .min(target) claim with its runs clipped (ValidatedRuns::clipped_to), and Inner::publish_load decides against the entry resident at publish time (it never lowers indexed_to and never drops runs). 3dfb970f adds the first test of the byte-capped arm.",
+   "evidence": "End-to-end red: 'catch-up from the old cursor skipped durable records left: [] right: [4, 5, 6, 7]'. Six reds (for example, a cold load at absorbed=100 claimed Some((0, 65536, 0))), two 1,024-case properties, and the minimised seed committed. Mutation: postings_cache 47 mutants (36 caught, 9 unviable, 2 MISSED: + -> - and + -> * in the byte-capped arm). Both are killed by byte_capped_load_claims_through_its_last_decoded_run, checked by applying each by hand (267,299 vs 267,300 runs). Suite 1071/0 -> 1072/0.",
+   "edge_visible": "none in status or body shape; keyed catch-up now returns records it used to skip (recorded trade-off: a cold load that stops short of a chunk-only entry publishes nothing)",
+   "pushed_head": "3dfb970f (green)"
+  },
+  {
+   "item": "Review item 4 (high-impact)",
+   "title": "A consumer pull loops back only on settled poison and always delivers the leases its receive granted",
+   "kind": "bug-fix",
+   "commits": [
+    "1994fc25"
+   ],
+   "what_changed": "When a Receive reported poisoned leases, pull discarded dlq_and_settle's result and jumped back above its only deadline check. A blocked dead-letter handoff therefore spun the request forever (even at waitMs=0), and leases the same Receive had granted to OTHER keys were dropped undelivered (at maxAttempts=1 such a record was dead-lettered unseen). Now the handoff always runs, granted leases are always delivered, the only extra loop-back is `handoff.settled > 0`, and the result is a #[must_use] DeadLetterPass; a failed dead-letter append is logged.",
+   "evidence": "Reds: 'a pull answers by its deadline even when the dead-letter handoff is blocked: Elapsed(())'; 'a settled handoff still delivers the same receive's leases left: 0, right: 1'. Falsifiability: each reverted piece re-reds, and `let _ = dlq_and_settle(..)` is now a clippy error. Suite 1074/0; exceptions 1,018 -> 1,017.",
+   "edge_visible": "YES (behavioural, no new codes): a pull whose DLQ handoff is blocked now answers by its deadline, and leases granted to other keys in the same receive are delivered",
+   "pushed_head": "1994fc25 (green)"
+  },
+  {
+   "item": "Review item 5 (high-impact)",
+   "title": "The billing tombstone walk covers every project in the cell, not only the deployment tenant",
+   "kind": "bug-fix",
+   "commits": [
+    "84f80b75"
+   ],
+   "what_changed": "tombstone_walk paged only deployment_tenant()'s catalog prefix. In enforce mode, a clean usage row for any other project's expired or deleted stream therefore kept owned_frame_bytes_current above zero, and the rollup carried that storage onto every later month. Registry now has a private project_page and a cell-wide reconciliation_page (it takes no project; its cursor is the last object key) over one scan body. list_page_raw is deleted, and sref_of_key accepts a key only if desc_path mints it back exactly.",
+   "evidence": "Red: 'a clean terminal row outside the deployment tenant kept its storage gauge'. Controls: reverting only the scoping does not compile (project_page is private), and pointing the walk at the per-project listing re-reds. Two 1,024-case properties pin sref_of_key to desc_path. The pinned r09 walk test is re-pinned (cursor spelling only). Suite 1079/0.",
+   "edge_visible": "none on the wire; other projects' terminal streams stop accruing carried storage in the rollup",
+   "pushed_head": "84f80b75 (green)"
+  },
+  {
+   "item": "Review item 3 (high-impact)",
+   "title": "A watch wait proves shard ownership before it parks; a non-owner replays to the ring owner",
+   "kind": "bug-fix",
+   "commits": [
+    "6faf4757"
+   ],
+   "what_changed": "WatchService::wait went straight from admission to a process-local journal without resolving ownership, so a wait routed to a non-owner answered 200 invalidated:false indefinitely (multi-instance only). It now holds the ShardDirectory and resolves the route shard (Adoption::External) before keys.put/touch.journal. The refusal is WatchFailure::Resolve, rendered by the existing http::resolve_error_response.",
+   "evidence": "Reds on a real two-instance rig: watch_wait_on_a_non_owner_replays_to_the_ring_owner and watch_wait_follows_the_ring_when_the_shard_moves ('left: 200, right: 409'). A cold non-owner answers without opening (fencing) the owner's shard. Looped 12/12; suite 1081/0.",
+   "edge_visible": "YES: a watch long-poll on a non-owner answers 409 not_ring_owner + Streams-Replay-To (or the shared 503 shard_* envelope) instead of 200 invalidated:false; WIRE-MATRIX watch-observation row",
+   "pushed_head": "6faf4757 (green)"
+  },
+  {
+   "item": "Review item 8 (high-impact)",
+   "title": "The absorber never waits for pool bytes while it holds some",
+   "kind": "bug-fix",
+   "commits": [
+    "c19cc2f0"
+   ],
+   "what_changed": "AbsorbReservation::grow awaited the byte pool with no timeout while keeping its grant, mid-gather. Two growing gathers could therefore hold-and-wait and park every absorber in the process (this needs ≥2 shard absorbers and ABSORB_GLOBAL_GATHERS ≥ 2; the certified compute-1g profile sets 1). grow is replaced by a sync #[must_use] try_grow: a refused chunk takes the existing deferred_budget outcome and records its demand so the next reserve() asks up front. stage_chunk is no longer async.",
+   "evidence": "Reds, each after a 20 s bound: 'two gathers growing on one pool must both return, not hold-and-wait: Elapsed(())' and 'a gather the pool cannot grow must return, not wait holding its grant: Elapsed(())'. 8/8 looped. Suite 1082/0; capacity leg ~20 s unchanged; exceptions 1,017 -> 1,016.",
+   "edge_visible": "none (one info log line per refused gather)",
+   "pushed_head": "c19cc2f0 (green)"
+  },
+  {
+   "item": "Review item 6 (high-impact)",
+   "title": "The SSE feed's retry task never reads a subscriber's records",
+   "kind": "bug-fix",
+   "commits": [
+    "d902a85b",
+    "5292e3e3",
+    "5c306651"
+   ],
+   "what_changed": "The feed's transition-retry tick called the subscriber's permit-held drive, so it could read and publish records into a ring nobody was reading; a solo subscriber then met its own records as a lag cut. d902a85b first moves the drive verbatim to sse/feed/drive.rs, because the impl-wide unwrap_used exception fingerprints the whole spawn. 5292e3e3 then makes the tick inspect only a record-free `Tail` (Readable wakes subscribers, Unresolved keeps the task, anything else ends it), and 5c306651 bounds three driver-lifecycle test rendezvous at 10 s.",
+   "evidence": "Reds in src/sse/feed/tests/retry.rs: 'a never-slow singleton must not be lag-cut by the retry task', 'expected Solo from 3, got Idle', head 'left: 2, right: 0'; nine tests in total. The move was verified verbatim (154 lines moved; only `mod drive;` added). Four LiveFeed::tail mutants that TIMED OUT (not counted as detection) now FAIL in 10 s (24 and 8 failures).",
+   "edge_visible": "none (removes a spurious lag cut / wire gap)",
+   "pushed_head": "5c306651 (green)"
+  },
+  {
+   "item": "Stale-route append after split/merge (program bug #9, found via dst livefeed_merge_continuation_in_place 1-in-7 flake)",
+   "title": "A topology transition never reaches a writer as closure",
+   "kind": "bug-fix",
+   "commits": [
+    "668bc80c",
+    "5d60dc63"
+   ],
+   "what_changed": "A descriptor cached from before a split or merge routed an append to a closed segment, and AppendService::execute_prepared answered 409 sealed for a live collection: it retried only already-wrapped descriptors, and it returned the closure even when the fresh route was a different live segment. Now an engine closure counts only while the fresh map routes the key to that same live segment (closure_is_current): any descriptor retries up to 4 attempts, a declared seal is final without a refresh, and the refresh is incarnation-fenced. 5d60dc63 makes the waits a literal table, [10, 20, 30] ms. The commit's own recorded follow-up is not addressed by this or any later commit: a stale route met by an idempotent producer with history answers producer_gap before the closed check, so it never reaches this path (follow-up F-A, needs a design).",
+   "evidence": "Found as a flake of dst livefeed_merge_continuation_in_place. Reds in dst topology_scaling ('a split-away parent answered for a live collection: 409 sealed', and the same for a merged-away child; the control that predates split AND seal is still 409 sealed). Review-driven reds in append_application: an unreadable refresh was fail-open, a sealed descriptor paid a refresh, and a recreated name got StreamClosed. An adversarial review found a regression in v1 (503 'did not converge' for key gb), which was reproduced red and fixed. 5d60dc63 removes two surviving mutants in `10 * attempt`.",
+   "edge_visible": "YES: a stale-descriptor append after a split or merge succeeds instead of 409 sealed; an unreadable refresh answers retryable segment_transition (was StreamClosed); a recreated name answers TargetIncarnationChanged; exhaustion carries Retry-After",
+   "pushed_head": "668bc80c (green); 5d60dc63 pushed with 00ff0e7e (green)"
+  },
+  {
+   "item": "Review item 18",
+   "title": "A gate leg proves it ran the tests it names",
+   "kind": "tooling-ci",
+   "commits": [
+    "00ff0e7e"
+   ],
+   "what_changed": "`cargo test <filter>` exits 0 with '0 passed' when nothing matches, so renaming the capacity test, the 1,000-project cert smoke, the MT identity lint or the LiveFeed prefixes would silently remove their legs. scripts/quality/tests_ran.py judges a saved log (every result line ok, passed count ≥ the leg's floor, each --exact name has its own ok line), and scripts/test-leg.sh runs a filtered leg through it. gate.sh, release-gate.sh, quality.sh, ci.yml and rust-quality.yml all use them.",
+   "evidence": "Red: scripts/quality/test_tests_ran.py (a renamed --exact leg's log passes the old `^test result: ok` grep and is refused twice: floor, missing name). The mt-lint leg with a misspelt name exits 1. The full gate is green through the new checks (suite floor 466, capacity exact 1).",
+   "edge_visible": "none",
+   "pushed_head": "00ff0e7e (green)"
+  },
+  {
+   "item": "Review item 10",
+   "title": "An idle window never wraps a stream's expiry into the past (Stream-TTL ceiling 2^32-1 s)",
+   "kind": "bug-fix",
+   "commits": [
+    "efe12b2e"
+   ],
+   "what_changed": "fresh_desc computed now + ttl*1000 unchecked. Stream-TTL u64::MAX cast to -1 and answered 201 for a stream that was already expired, 9223372036854776 overflowed (a past expiry in release, a handler panic under overflow checks), and a fork of such a window was 409 fork_target_changed forever. src/application/creation/ttl.rs now owns MAX_TTL_SECS = 2^32-1, admit_ttl and saturating window/expiry helpers. Parsers refuse values above the ceiling; fork inheritance and renewal saturate a legacy window to 'never'.",
+   "evidence": "Reds: unit 'left: Some(4294967296) right: None'; dst lifecycle_creation 'raw Stream-TTL 18446744073709551615: left: 201 right: 400'; a legacy u64::MAX fork 'left: 409 right: 201'. Conformance 332 passed / 0 failed / 6 skipped (@durable-streams/server-conformance-tests@0.3.6) on the release binary.",
+   "edge_visible": "YES: Stream-TTL above 4294967295 is 400 invalid_ttl (raw) or invalid_config (product), where it was a 201 for a dead-on-arrival stream or a dropped connection; forks of legacy windows succeed; Stream-TTL: 0 is still admitted on raw. WIRE-MATRIX and the product spec's 'max idle expiry' updated.",
+   "pushed_head": "efe12b2e (green)"
+  },
+  {
+   "item": "Review item 24",
+   "title": "A settle's retry delay and extended visibility are held to the 12 h lease window",
+   "kind": "bug-fix",
+   "commits": [
+    "2374751d"
+   ],
+   "what_changed": "settle passed client delayMs/visibilityMs into now + x as i64 unclamped. 9e18 wrote a lease that never expires (the record was never redelivered or dead-lettered, and its key stayed blocked); u64::MAX cast to -1 (immediate redelivery); the band just below i64::MAX overflowed the committer. src/queue.rs owns MAX_LEASE_WINDOW_MS (12 h), visibility_window_ms (1 s..12 h), retry_delay_ms (0..12 h) and configured_visibility_ms, and QueueOp's window fields narrow to u32. The values are clamped, not refused, because a settle carries acks.",
+   "evidence": "Reds in dst consumer_dlq (release profile; the oracle is the durable lease row's deadline): delayMs 9e18 'the lease row's deadline is 9000000000000000000 ms past the settle, not 43200000'; visibilityMs 9e18 the same; u64::MAX redelivered at 'attempts: 2' (left 1, right 0). Also a unit table and a 1,024-case property in mutation owner `queue`.",
+   "edge_visible": "YES: settle delayMs/visibilityMs are clamped to 12 h; an extend's visibilityMs: 0 now means the 1 s floor ('visible now' is spelled retries[{delayMs:0}]); rows already written unbounded are not healed. WIRE-MATRIX s2.15/s2.16.",
+   "pushed_head": "2374751d (green)"
+  },
+  {
+   "item": "Review item 36 (registry descriptor cache)",
+   "title": "The descriptor cache never publishes a read that raced a write",
+   "kind": "bug-fix",
+   "commits": [
+    "ca36a7f4",
+    "063a674d"
+   ],
+   "what_changed": "Registry::get released the lock, awaited the store and inserted the result unconditionally, and invalidate was a bare remove. So a read fetched before a write could re-install the pre-write descriptor for a full 5 s TTL on every reader; this is the mechanism behind bug #9's flake, and it had four shapes, including a cached absence over a create. After a verbatim move to src/registry/cache.rs, DescriptorCache::fill claims a per-stream slot under a globally unique generation and publishes only if the generation is unchanged. Invalidation empties the slot under a fresh generation, the cap purge keeps recently touched slots, and recreate's loser invalidates instead of installing.",
+   "evidence": "Deterministic reds (a store decorator runs the writer inside the read's reply): on the move commit 1 passed, 4 failed (seal; renewal 'left: None, right: Some(60)'; create absence; recreate loser). The per-stream control is green. A 3-lens adversarial review plus adjudicator found no publishing interleaving. The first cargo-mutants run left 4 survivors (< -> <= on elapsed()<ttl, and cache_len); these are killed by an explicit-now `within` predicate. New mutation owner registry_cache.",
+   "edge_visible": "none on the wire; readers stop seeing pre-write descriptors for up to 5 s after a write; a lost recreate costs one extra GET",
+   "pushed_head": "063a674d (green)"
+  },
+  {
+   "item": "Review item 17",
+   "title": "Every h1 connection is served under a request-head deadline",
+   "kind": "robustness",
+   "commits": [
+    "71345c03"
+   ],
+   "what_changed": "serve_h1 built hyper's http1::Builder with no timer, so hyper's documented 30 s header_read_timeout was silently off (axum::serve never had it either): a socket that never sends a request head held a descriptor and a task forever. http::serve::h1_builder now sets the timer, header_read_timeout and max_buf_size together. The deadline is HttpConfig::h1_header_timeout (SSE_H1_HEADER_TIMEOUT_MS, >0 only, default 120 s); it also bounds idle keep-alive and never runs in flight.",
+   "evidence": "Reds (1 s deadline, 4 s bound): headless_connection_is_closed_at_the_deadline and idle_keep_alive_is_served_inside_and_closed_past_the_deadline ('left: Err(\"still open after 4s\")'). in_flight_response_outlives_the_deadline is green before and after. New mutation owner http_serve.",
+   "edge_visible": "YES: headless or idle keep-alive h1 connections close after 120 s (new knob SSE_H1_HEADER_TIMEOUT_MS, shown in the config summary); long-polls and SSE are unaffected; bench tool client pools moved 120 s -> 60 s. The 120 s default is recorded for the owner to review.",
+   "pushed_head": "71345c03 (green)"
+  },
+  {
+   "item": "Review item 13 (bug half)",
+   "title": "A shared RAW SSE session is owed its upToDate after a batch that carried nothing for it",
+   "kind": "bug-fix",
+   "commits": [
+    "4247421f"
+   ],
+   "what_changed": "The shared Take::Batch arm cleared the RAW status whenever a batch ended at the frontier, even if this session had sent no record from it. A RAW session sharing its default-lane feed with a product session therefore lost its standalone upToDate after a match-free window, so wire behaviour depended on the subscriber count. The clear now rides the at_head record this session actually sends; the change is line- and fact-neutral in the ratcheted serve. Open: the review's dedupe half (serve()'s emit protocol copied 3-4x, effort M) is not done.",
+   "evidence": "Red in dst sse_delivery: 'shared raw: ONE standalone upToDate at next=2 for a match-free window (solo got one at next=1): left: 0, right: 1'. The solo half is the control; the last window pins raw vs product framing after a shared record.",
+   "edge_visible": "YES: a RAW SSE session sharing a feed now receives the standalone upToDate after a match-free window, as a solo session already did; LIVE-FEED.md and WIRE-MATRIX state the rule",
+   "pushed_head": "4247421f (green)"
+  },
+  {
+   "item": "Review item 15",
+   "title": "A panicking single-flight loader fails its load instead of wedging its key",
+   "kind": "robustness",
+   "commits": [
+    "fd810688"
+   ],
+   "what_changed": "OpenGate and PostingsCache spawn detached loaders that are the only code that clears their in-flight marker, so a panic wedged the key. For OpenGate, every later get_or_open answered 500 'shard open task vanished' with no strike, holdoff or health record; for PostingsCache, readers spun on a dead channel and prefetch stayed off. sharddir/unwind.rs::unwind_proof wraps every opener, and postings_cache/owned_load.rs::load_owned runs owned loads under catch_unwind, so a panic becomes a failed open or load.",
+   "evidence": "Reds: 'a panicking opener must fail its open with the panic, got: shard open task vanished' (plus a synchronous-closure twin); 'the reader spun on the dead loader's channel: the marker outlived its task: left: 3, right: 0'. New mutation owners sharddir_unwind and postings_cache_owned_load.",
+   "edge_visible": "YES: after an opener panic the first caller gets 500 'shard open panicked: <payload>' and later callers get the documented 503 shard_moving holdoff (was 500 forever)",
+   "pushed_head": "fd810688 (green)"
+  },
+  {
+   "item": "Review item 16",
+   "title": "A sealed span's page resolves its engine on every read, never through a reader cached across pages",
+   "kind": "bug-fix",
+   "commits": [
+    "ac9ab99e"
+   ],
+   "what_changed": "The lineage source cached the (engine, handle) pair of the last sealed-span page under a tokio Mutex held across the whole read, and cleared it only when ownership moved away. An engine that closed and reopened under the SAME owner therefore stayed cached as closed, and the session retried every 100 ms forever; the mutex also serialised every session's catch-up. The cache is deleted: each page resolves the resident engine and handle, and no Mutex remains in src/sse/source.rs.",
+   "evidence": "Red in dst livefeed_ownership: 'a catch-up through a reopened sealed span must serve, not retry a closed engine forever: HTTP/1.1 200 OK (15 s of keep-alives, no record)'. Green: r:0..r:2 arrive in 0.08 s.",
+   "edge_visible": "none in codes; such a catch-up now delivers records instead of keep-alives forever",
+   "pushed_head": "ac9ab99e (green)"
+  },
+  {
+   "item": "Review item 14",
+   "title": "A live tail whose engine retired under the same owner is a typed cutoff, not a session parked forever",
+   "kind": "bug-fix",
+   "commits": [
+    "d93b421b"
+   ],
+   "what_changed": "Feed sources pin one ShardEngine incarnation, and their cut predicates checked ownership only. When the engine closed under the same owner (a fatal store error, a required worker's exit, a sub-tick ownership flap, a shutdown retirement), parked sessions re-parked on the dead handle and sent keep-alives forever, and reconnects joined the dead feed. One predicate, live_tail_cutoff (ownership first, then is_closed(), giving the new SourceCutoff::EngineRetired), now guards both the park and the read paths.",
+   "evidence": "Three reds in the new dst livefeed_engine_retired.rs, each after 10 s of keep-alives: parked single-segment, parked lineage LiveLocal, and a read at the drive failpoint on a retired engine. Green in 0.09 s, including a reconnect served by a new engine incarnation. The tests were added to the sse_source, sse_session and http mutation filters.",
+   "edge_visible": "YES: such sessions get the existing typed nonterminal disconnect (EOF, no terminal control) instead of endless keep-alives; new /v1/debug/load key sse_livefeed.cutoff_engine_retired",
+   "pushed_head": "d93b421b (green)"
+  },
+  {
+   "item": "Review item 19",
+   "title": "Every CI job has a deadline and every workflow a concurrency group",
+   "kind": "tooling-ci",
+   "commits": [
+    "af9ba1fc"
+   ],
+   "what_changed": "No job declared timeout-minutes, so a hung leg held a runner for six hours, and no workflow had a concurrency group. Deadlines are now at least twice the maximum of the last 40 green runs (quality 30, invariant-tools 240, rust 60, livefeed 30, the other jobs 30/15/10 minutes, the nightly noisy campaign 60 as a budget). Concurrency is workflow + PR number, so a newer push to a PR cancels the superseded run while slate pushes and scheduled runs always complete.",
+   "evidence": "Deadlines derived from the last 40 green runs per job (measured 2026-09-23); the policy is in docs/RUST-QUALITY.md. This deadline is what cut both F-G hangs at 60 min.",
+   "edge_visible": "none",
+   "pushed_head": "af9ba1fc (green)"
+  },
+  {
+   "item": "Review item 20",
+   "title": "A durability-barrier test proves its request entered the engine before calling it pending",
+   "kind": "test-fidelity",
+   "commits": [
+    "82095942"
+   ],
+   "what_changed": "Eight 'still pending' checks in dst durability_fences were a sleep followed by !is_finished(), which passes vacuously for a request that has not reached the engine yet. held(engine, entered, task, what) first polls appends_enqueued up to the count the request must reach, then waits the grace period, then asserts the request is still pending; each site names its count.",
+   "evidence": "A count the request never reaches fails in 5.9 s ('the original: the request never reached the engine'); the named counts held on every run. This push's CI was CANCELLED at 60 min by the unrelated F-G hang; the next push, eb52b970, is green on all three workflows.",
+   "edge_visible": "none",
+   "pushed_head": "82095942 (CI cancelled by the F-G hang; rust-quality and workflow-lint ok)"
+  },
+  {
+   "item": "Review item 12",
+   "title": "A billing-sweep release is not an anti-flap strike; only a judged departure escalates the holdoff",
+   "kind": "bug-fix",
+   "commits": [
+    "eb52b970"
+   ],
+   "what_changed": "The billing sweep's routine open-probe-close was judged like an engine that died young, so every cycle earned a strike and cold shards drifted to the 60 s holdoff ceiling; a customer's first request after a sweep then met 503 shard_moving with a Retry-After of up to a minute. sharddir/holdoff.rs owns Departure {Died, Retired(reason)}, an exhaustive is_evidence and a pure ledger_after. A sweep release or a shutdown arms only the 3 s base holdoff and leaves the strike ledger untouched.",
+   "evidence": "Reds: sharddir::holdoff::tests 'cycle 0: SweepEviction is not a strike: left: 1, right: 0'; dst runtime_retirement '...must be the 3 s base, not an escalated one (Retry-After 5s)'. Contrast (died, moved or fleet-evicted still strike 1, 2, 3) is green before and after. The SHORT_LIVED boundary is pinned over explicit inputs. New mutation owner sharddir_holdoff.",
+   "edge_visible": "YES (value only): the same 503 shard_moving, but Retry-After after a sweep close is the 3 s base instead of an escalated value up to 60 s",
+   "pushed_head": "eb52b970 (green)"
+  },
+  {
+   "item": "Review item 11",
+   "title": "An unreadable router report defers only the desired publication, not the whole fleet tick",
+   "kind": "robustness",
+   "commits": [
+    "4bb51c0d"
+   ],
+   "what_changed": "One routers/*.json that was not JSON, oversized or slow made the fleet tick `continue` every 2 s. That skipped set_view, set_peers, yield, eager open, return-home and the rebalancer cell-wide for as long as the file persisted. The read now uses inspect_err, reports fold through the pure fresh_edge_p50 (its 10 s freshness boundary is an input), and only the scale-decision publication is deferred.",
+   "evidence": "Red in dst fleet_controller with routers/edge-1.json = 'not json': 'an unreadable router report must not freeze ownership publication: left: [], right: [\"streams-1\", \"streams-2\"]'. Green: the view, yield, peers and return-home CAS land while desired stays at epoch 1, and epoch 2 publishes after the file is deleted. A unit table pins exactly-10-s, 1 ms younger, unstamped and future stamps.",
+   "edge_visible": "none on the wire; ownership publication continues through a bad router report (a slow router GET can still delay the view by up to 10 s)",
+   "pushed_head": "4bb51c0d (green)"
+  },
+  {
+   "item": "F-G CI hang (follow-up)",
+   "title": "The livefeed owner-movement test hang: bounded fixtures, a CI stack-dump watchdog, and the TaskSupervisor::spawn teardown deadlock",
+   "kind": "bug-fix",
+   "commits": [
+    "d8689572",
+    "4c51ebfd",
+    "714abcc2"
+   ],
+   "what_changed": "dst livefeed_owner_movement_one_redirect_and_typed_cutoffs hung CI twice until the 60-min deadline: on 82095942 (47 min, with the other 1,137 tests passed), and on 33fbd10e in run 35870075157, where 1,210 of 1,211 tests passed. d8689572 bounds the hreq/preq fixtures at 60 s with a named panic (it did not fire on the recurrence), and 4c51ebfd adds scripts/quality/hang_dump.sh (a gdb all-thread dump and kill at 15 min). 714abcc2 fixes a deadlock, reproduced deterministically, that is the likely root cause (its commit calls it a root-cause candidate; the CI hang itself never reproduced locally). TaskSupervisor::spawn called tokio::spawn under its registration mutex; a closing runtime drops the refused future inside that call, and a RequiredExit guard's drop re-takes the same mutex. That is a same-thread deadlock, which also blocks runtime drop. tasks/refusal.rs sets such futures aside in a per-thread slot and drops them after the lock is released.",
+   "evidence": "Deterministic red: a_spawn_refused_by_a_closing_runtime_cannot_deadlock_its_supervisor ('runtime teardown deadlocked inside TaskSupervisor::spawn', bounded at 10 s on a detached thread). The watchdog was exercised in an ubuntu:24.04 container. Before the fix, the hang never reproduced locally: 25 isolated runs and 4 full parallel suites (d8689572), then 60 isolated runs (4c51ebfd). New mutation owner tasks_refusal. CI is green on every push from 4c51ebfd onward, which is consistent with the fix but does not prove it; if the hang recurs, the 4c51ebfd watchdog dumps every thread's stack within 15 min.",
+   "edge_visible": "none on the wire; a process shutdown can no longer deadlock in this shape",
+   "pushed_head": "d8689572 (green); 4c51ebfd (green); 714abcc2 (green)"
+  },
+  {
+   "item": "Review item 28 (steps A and B)",
+   "title": ":scan pages and consumer :pull draw on the project read-byte quota like any other page",
+   "kind": "bug-fix",
+   "commits": [
+    "0eb8a38d",
+    "527d3d3a",
+    "df9ff212",
+    "f1c9e77e"
+   ],
+   "what_changed": "GET {collection}:scan (up to 8 MiB of decrypted records per page) and POST .../consumers/{c}:pull neither checked nor debited read_bytes_per_sec. A project in read debt therefore kept exporting and draining queues while records GET and long-poll refused it, and the records debit was rebuilt from the finished Response's size hint. After verbatim moves to product/scan.rs and product/consumer_pull.rs (each pushed with its fix, because product_entry's fingerprint moves with the callee path), check_read_quota admits the page routes and the pull (before any lease), and one debit_read_bytes charges the framed body; debit_read_response is deleted. Note on labels: the program's steps A and B are the :scan and :pull fixes. The review's own step B (move append/settle metering onto typed results and delete meter_op_if_ok/OpKind) is not done; both still exist in src/product.rs.",
+   "evidence": "Reds in dst quota_read_volume (enforce rig, 8 B/s budget): 'scan in read debt must refuse typed ... left: 200, right: 429'; 'pull in read debt must refuse typed: 200 {\"backlog\":2,\"messages\":[]} left: 200, right: 429'. Green: 429 project_rate_limit with retry-after, and records GET is 429 on the same bucket. volume_quotas_meter_appends_and_reads pins the records debit across the move.",
+   "edge_visible": "YES: :scan and consumer :pull gain the 429 project_rate_limit (retry-after) class; a refused pull takes no lease; pull responses now carry the documented Cache-Control: no-store. WIRE-MATRIX s2.6/s2.9/s2.15 and MULTITENANCY.md s17 updated.",
+   "pushed_head": "527d3d3a (green); f1c9e77e (green)"
+  },
+  {
+   "item": "Review item 21",
+   "title": "A system append decides create-vs-relay from the typed result, never from a status code",
+   "kind": "bug-fix",
+   "commits": [
+    "aa445217",
+    "8dabca7f"
+   ],
+   "what_changed": "billing::system_append appended through the raw HTTP surface and sniffed the Response, which conflated not-found, not-ring-owner and invalid-key refusals; the relay receiver repeated the guess, so an unprimed non-owner answered 404. After a verbatim move to billing/system_append.rs, append_local uses append_typed, creates under the SYSTEM project on AppendCode::NotFound, and returns LocalFailure{Key, Append, Create} carrying the ring owner. system_append relays once, only on an owner-bearing refusal, and the receiver runs the same typed path.",
+   "evidence": "Three reds: an unprimed rig-b append of _audit_events failed '404 Not Found' instead of relaying; the receiver on a non-owner answered 404 instead of 409; a peerless non-owner reported the raw status instead of 'create not_ring_owner: shard 00 belongs to rig-a'. Two more tests kill match-guard mutants (a rotated key is wrong_key, not a re-create; a relay refused with 409 is reported, not counted as landed).",
+   "edge_visible": "Fleet-internal only: the relay receiver on a non-owner answers 409 not_ring_owner + Streams-Replay-To (was 404); a missing or invalid header gets 400 missing_key/invalid_name/invalid_key",
+   "pushed_head": "8dabca7f (green)"
+  },
+  {
+   "item": "Review item 49",
+   "title": "An unreadable ops checkpoint fails the rollup step instead of restarting the ledger",
+   "kind": "robustness",
+   "commits": [
+    "06fb8d51"
+   ],
+   "what_changed": "UsageRollup::ops_cursor read the _ops_metrics checkpoint with .ok().flatten() and .ok(), so a transient read error or a non-UTF-8 checkpoint read as 'start of ledger': ops_rollup_step re-merged every snapshot (samples += 1 is not idempotent) and rewound the checkpoint. system_read also defaulted a 2xx page without stream-next-offset to a \"\" cursor, and two header maps were dead. rollup.rs now owns one read_text, and cursor/ops_cursor return Result<Option<String>>. billing.rs page_position refuses a page without a position, and the dead maps are gone.",
+   "evidence": "Red in dst billing_controller: 'an unreadable checkpoint fails the step; it never restarts the ledger left: Ok(0) right: Err(\"injected rollup repository read failure\")'. Two unit reds were staged against the new shapes with the old semantics: ops_cursor returned Some(\"c0\") without consuming the fault, and page_position answered Ok(\"\").",
+   "edge_visible": "none",
+   "pushed_head": "06fb8d51 (green)"
+  },
+  {
+   "item": "Review item 30",
+   "title": "An internal receiver tells an unreadable registry apart from an absent stream",
+   "kind": "bug-fix",
+   "commits": [
+    "5c0e62d6"
+   ],
+   "what_changed": "The sweep-segment, queue-cursor and segment-scan fleet-internal receivers collapsed a registry Ok(None) and a store Err into 404 not_found. The sealed-span SSE sender reads that as 'incarnation gone', so a transient registry blip disconnected every subscriber of a live stream. product/internal.rs::internal_desc answers 404 only for a positive absence, and 503 temporarily_unavailable (retryable) for a store error.",
+   "evidence": "Red in dst read_peer_compatibility: [(\"segment-scan\", (404, \"not_found\", Some(false))), ...] vs 503 temporarily_unavailable Some(true). Green: all three receivers answer 503, then the same scan serves 200, and an absent name is still 404. One CI run on this head (35792791523) failed on the F-H flake; ci-per-push shows the head green.",
+   "edge_visible": "Fleet-internal routes gain a 503 temporarily_unavailable class; SSE subscribers are no longer cut on a transient registry fault. WIRE-MATRIX s3.",
+   "pushed_head": "5c0e62d6 (green after rerun)"
+  },
+  {
+   "item": "Review item 22",
+   "title": "A relayed read verdict crosses the fleet as itself, never rebuilt from a status",
+   "kind": "bug-fix",
+   "commits": [
+    "74391f9c"
+   ],
+   "what_changed": "The owner rendered relayed read refusals with the public renderer, where CursorBeyondTail and ChangedIncarnation are both a bare 409, and remote_read_page mapped any 409 without Streams-Replay-To to ChangedIncarnation. So a cross-owner deliver=applied replay beyond the tail surfaced as target_mismatch and broke the SDK's rewind contract (an R06 regression). read_remote.rs owns WireReadRefusal and the page body {\"refused\": <verdict>} on the page route (streams-internal-read-page: 1), and the coordinator decodes it whatever status carried it. Untyped answers keep the old status mapping, which keeps rolling deploys safe.",
+   "evidence": "Red in dst read_application: 'the relayed verdict must be the owner's cursor_beyond_tail: ChangedIncarnation'; 'left: Null right: \"cursor_beyond_tail\"'. The decoder unit tests are red by construction on the old tree (E0433/E0425). A try_clone().expect and read_inner's too_many_lines exception are deleted.",
+   "edge_visible": "YES: a cross-owner applied replay beyond the tail answers cursor_beyond_tail (was target_mismatch); the fleet-internal page route carries a typed refusal body. Untyped 409 -> ChangedIncarnation is deliberately KEPT (decision pending).",
+   "pushed_head": "74391f9c (green)"
+  },
+  {
+   "item": "Review item 26",
+   "title": "A graceful stop seals the active read window and drains it once, inside one cadence",
+   "kind": "bug-fix",
+   "commits": [
+    "fc18a704",
+    "ee99975d"
+   ],
+   "what_changed": "Both cancel arms of the telemetry-drain loop returned at once, so SIGTERM dropped up to 10 s of metered read deltas plus any undrained sealed batches, contrary to OBSERVABILITY-BILLING s2.3/s7.4. After a verbatim move to billing/telemetry_loop.rs, cancellation runs one terminal round: seal the active window, then one drain_once, spool first. The round is bounded by one TELEMETRY_DRAIN_SECS cadence so a wedged store cannot force a supervisor abort.",
+   "evidence": "Red in dst billing_controller: 'a graceful stop left read usage behind left: (1, 150, 0) right: (0, 0, 0)'. r09 now pins the round from below and above ('must be attempted and given one cadence, not 246.541µs'); r09's grace moved 300 ms -> 5 s and its mechanism pin was re-hashed.",
+   "edge_visible": "none on the wire; graceful stops now flush read usage (TELEMETRY_DRAIN_SECS must stay below the 10 s supervisor grace, documented)",
+   "pushed_head": "ee99975d (green)"
+  },
+  {
+   "item": "Review item 25",
+   "title": "A request larger than a fresh bucket is 413 on every append; a limit posture that cannot admit one unit is refused at boot",
+   "kind": "bug-fix",
+   "commits": [
+    "33d10a7c",
+    "a8c99c23"
+   ],
+   "what_changed": "A content append with more records than the bucket can ever hold (10,000 at defaults) was 429 limit_records_per_sec with retry-after 1, forever. The limit knobs were also unvalidated: LIMIT_BURST_SECS=0 bricked writes, NaN or inf silently disabled a limit, and a sub-token request bucket refused every append. config/admission_limits.rs now validates the posture at boot, and parse_content refuses anything larger than a fresh bucket with 413 before TTL renewal or any intent; admit_usage's dead bytes-413 arm is deleted. 33d10a7c first rewrites the debug-load test to show a transient refusal with a drained bucket.",
+   "evidence": "Four reds: 10,001 records 'left: 429 right: 413' (raw, dst admission_maintenance); product :batch 101 records 429 -> 413; 'validate() must reject (marker \"LIMIT_BURST_SECS\")'; 'left: Some(\"requests\") right: None'. Validator table (0/NaN/-1/inf/1e308; 0.4x2 refused, 0.5x2 admitted); a 1,024-case property; new mutation owner config/admission_limits.rs (program notes: 27/27 killed).",
+   "edge_visible": "YES: an over-capacity append is 413 payload_too_large (raw) or body_too_large (product) with no retry-after (was 429 forever); an invalid limit posture refuses boot; /v1/debug/load limiter counters now count transient 429s only. WIRE-MATRIX s1.2/s2.7/s2.8 and RUNBOOK s3.2b updated.",
+   "pushed_head": "0afa2597 (green)"
+  },
+  {
+   "item": "F-H CI flake (follow-up)",
+   "title": "The spool restart test observes the durable backlog as the L0 table, not the manifest version",
+   "kind": "test-fidelity",
+   "commits": [
+    "0afa2597"
+   ],
+   "what_changed": "billing::read_spool restart_preserves_spool_sequence_and_observable_durable_backlog asserted that one persist_all both exposed an L0 table and advanced the manifest version, but manifest publication runs on SlateDB's own timing. The test now asserts the durable backlog as the L0 table only.",
+   "evidence": "CI run 35792791523 (head 5c0e62d6) saw before=(0, 0, 0, 3), after=(1, 0, 0, 3). A bounded wait for the version hit its 10 s bound in 1 of 3 local runs. 5 + 15 consecutive local runs are green after the change.",
+   "edge_visible": "none",
+   "pushed_head": "0afa2597 (green)"
+  },
+  {
+   "item": "Review item 68",
+   "title": "A clippy failure shows the finding, file:line and help, instead of aborting silently",
+   "kind": "tooling-ci",
+   "commits": [
+    "0a8ed40a"
+   ],
+   "what_changed": "quality.sh sent clippy's JSON to a file under set -e, so any finding stopped the script showing only cargo's 'could not compile'. The script now keeps clippy's exit status, always hands the JSON to the ratchet and fails if either failed, and diagnostics.py prints the compiler's rendering once per finding.",
+   "evidence": "Red: scripts/quality/test_diagnostics.py (missing rendering; duplicate line '2 != 1'). End to end, a planted vec.len() == 0 in src/bin/keys.rs prints clippy::len_zero with '--> src/bin/keys.rs:79:27' and 'QUALITY_FAIL: clippy exit 101, ratchet exit 1'.",
+   "edge_visible": "none",
+   "pushed_head": "0a8ed40a (green)"
+  },
+  {
+   "item": "Review item 70",
+   "title": "The architecture gate refuses a budget exception nothing needs any more",
+   "kind": "tooling-ci",
+   "commits": [
+    "47799eb3"
+   ],
+   "what_changed": "architecture-policy.json budget exceptions only ever raised limits and were never checked for need: eight file exceptions were inert, and three function keys named functions that had moved, so a new function reusing one of those names would inherit an unreviewed waiver. The gate now fails 'obsolete budget exception' for an unneeded or dangling key. Twelve were deleted, and six live ones remained (later commits fb18840d and 6515a15d retired those for serve and fleet::start).",
+   "evidence": "Red: architecture-gate --self-test with two new controls (AssertionError before the check existed); --check on the tree listed exactly the twelve.",
+   "edge_visible": "none",
+   "pushed_head": "47799eb3 (green)"
+  },
+  {
+   "item": "Review item 43",
+   "title": "The multitenancy audit sees every source file, and a moved site fails until reviewed",
+   "kind": "tooling-ci",
+   "commits": [
+    "09fd911d",
+    "fba5af56"
+   ],
+   "what_changed": "scripts/multitenancy-audit.sh globbed only top-level src/*.rs, so a site moved into a subdirectory vanished and counted as progress. Its normaliser also collapsed the TAB, so the src/crypto.rs exclusion never matched; grep errors were swallowed; and GONE rows still printed MT_AUDIT_OK. It now lists every src/**/*.rs, normalises only the text field, and fails on grep errors and GONE rows; fba5af56 uses [ \\t] instead of [[:space:]] for CI's mawk.",
+   "evidence": "Red: scripts/quality/test_mt_audit.py on a fixture tree ('src/crypto.rs' unexpectedly found; a GONE fingerprint exited 0: '0 != 1'). The baseline was regenerated 67 -> 77 rows: newly visible pre-existing sites added, and crypto.rs's own five rows dropped.",
+   "edge_visible": "none",
+   "pushed_head": "09fd911d (green); fba5af56 (green)"
+  },
+  {
+   "item": "Review item 58",
+   "title": "The catalog-walk failpoint is compiled only into tests",
+   "kind": "maintainability",
+   "commits": [
+    "e578402d"
+   ],
+   "what_changed": "Registry::list_page locked and checked fail_next_list on every production call (the one registry failpoint that was not cfg(test)), under an unwrap_used reason that described the descriptor cache. The field, its initialiser and the check are now cfg(test), and arming lives in registry/failpoints.rs.",
+   "evidence": "quota_enforcement's fail-closed seed test and the registry suites are green; clippy is clean for both the test and the lib-only builds; exception scopes 1,013 -> 1,012; registry.rs 1,509 -> 1,501.",
+   "edge_visible": "none",
+   "pushed_head": "9b2f53bc (green)"
+  },
+  {
+   "item": "Review item 57",
+   "title": "A refused fleet event append is reported, not a silent Ok(0); the isolation test that relied on the silence proves isolation directly",
+   "kind": "robustness",
+   "commits": [
+    "12ad5134",
+    "9b2f53bc"
+   ],
+   "what_changed": "fleet::outbox::drain_events skipped append and encode errors with `continue` and returned Ok(0) with no log while pending events grew; the clear re-encoded with unwrap_or_default (which could write an empty document). Errors now propagate ('fleet event append: ...') with the CAS outbox untouched, so the next tick retries. That exposed dst runtime_isolation two_runtimes_never_share_fleet_state as vacuous (it read A's Ok(0) as proof of isolation), and 9b2f53bc asserts the isolation facts directly via pending_event_ids.",
+   "evidence": "Red: fleet::outbox::tests 'left: Ok(0) right: Err(\"fleet event append: system append _ops_events: create not_ring_owner\")'. The next gate run failed runtime_isolation with 'fleet event append: ... not_ring_owner: shard  belongs to streams-1', which 9b2f53bc fixes: B's planted event id must stay in B's outbox and never reach A.",
+   "edge_visible": "none on the wire; the telemetry loop's 'fleet event drain' warning can now fire",
+   "pushed_head": "9b2f53bc (green)"
+  },
+  {
+   "item": "Review item 9",
+   "title": "A raw PUT never replaces a name its forks read through; a declined recreate answers the winner's verdict; product create is idempotent against a live forked winner",
+   "kind": "bug-fix",
+   "commits": [
+    "f499d590",
+    "bbd23d13",
+    "e7c7ad87"
+   ],
+   "what_changed": "The raw recreate CAS judged the stored descriptor without a fork check, while the 'retained for forks' guard ran on a snapshot that could be up to 5 s stale. A raw PUT could therefore give an expired fork source a fresh epoch (201), after which every fork read failed 'different incarnation'; a declined soft-deleted winner answered 200 'exists'. application::creation owns retained_for_forks(desc, at) and recreatable(desc, at), and claim.rs judges both the snapshot and the CAS at one instant. bbd23d13 routes append and delete through the same owner; e7c7ad87 fixes product create, which classified a live forked winner as retained.",
+   "evidence": "Reds: dst lifecycle_incarnation 'a source retained for its fork was recreated: left: 201 right: 409' and 'a PUT was answered for a deleted name: left: 200 right: 409'; dst product_lifecycle 'a live forked collection was refused as retained ... left: 409 right: 200'. A unit table shows the three verdicts partition every descriptor at one instant, the expiry instant included.",
+   "edge_visible": "YES, inside the race window only (answers now match the documented race-free path): a raw PUT over an expired source with forks is 409 gone (was 201); a PUT over a soft-deleted name is 409 gone (was 200); a product create losing to a live forked incarnation gets the idempotent 200/config_mismatch/wrong_key (was 409 gone)",
+   "pushed_head": "9b2f53bc (green)"
+  },
+  {
+   "item": "Review item 55",
+   "title": "A producer or Stream-Seq row that does not decode refuses the append instead of reading as a lane that never committed",
+   "kind": "robustness",
+   "commits": [
+    "517f4fa1"
+   ],
+   "what_changed": "load_producer_chain accepted any producer row of at least 16/24/40 bytes and read a shorter row as 'no row' (the lane reopened at seq 0, or an older predecessor's state was staged). load_seq_chain read a non-UTF-8 Stream-Seq row as 'no sequence'. Both silently dropped the idempotence fence. src/shard/lane_rows.rs now decodes producer rows of exactly 16, 24 or 40 bytes and UTF-8 seq rows only, and encode_producer_row is the single writer. A row that exists either decodes or is an error.",
+   "evidence": "Four runtime reds: widths [15, 17, 23, 25, 39, 41] accepted; a non-UTF-8 seq row gave Ok(None); two corrupt-row appends acked. Decoder pins for every length 0..=41 and two 1,024-case properties. New mutation owner lane_rows (program notes: CI rust-quality took 2h04m for its 20 shard mutants). Exception scopes 1,012 -> 1,011.",
+   "edge_visible": "YES, corrupt storage only: an append that consults a corrupt producer or Stream-Seq row is 500 internal (raw) or 500 append_failed (product), with nothing written, instead of accepting a duplicate",
+   "pushed_head": "7c4f8606 (green)"
+  },
+  {
+   "item": "Review item 33",
+   "title": "A live read that failed or made no progress is re-driven on the session's own bounded backoff, not at the next append",
+   "kind": "bug-fix",
+   "commits": [
+    "7c4f8606"
+   ],
+   "what_changed": "After a SourceFailed or NoProgress live drive, the session parked with nothing left to wake it: the producer heartbeat those comments cited had been removed in round 11.1. Durable records then waited for the next append, or for the lease nap (an hour for an unleased raw session). sse::session::read_retry::ReadRetry makes a session whose own drive read nothing park for min(delay, lease nap): 250 ms, doubling to 5 s, reset on progress.",
+   "evidence": "Red in dst sse_delivery (production serve over FakeSource): 'source-failed: the record behind a failed live read must arrive without another append' (and the same for no-progress): 5 s with only the head status. Green in 0.26 s. Three unit pins; new mutation owner sse_session_read_retry.",
+   "edge_visible": "Timing only (frames, codes and cursors unchanged); a sealed-span peer answering 429/503 is re-read on this backoff, and its Retry-After is not consulted",
+   "pushed_head": "7c4f8606 (green)"
+  },
+  {
+   "item": "Review item 53",
+   "title": "SSE_H1_MAX_BUF below hyper's floor is a boot error; an over-long Stream-Seq can no longer wedge its stream",
+   "kind": "robustness",
+   "commits": [
+    "8f590ec5",
+    "d148e1a4"
+   ],
+   "what_changed": "An SSE_H1_MAX_BUF below hyper's 8,192-byte floor passed validation, opened engines, spawned loops and then panicked the bootstrap future; HttpConfig::MIN_H1_MAX_BUF is now checked in validate_topology_and_ceilings. encode_tail wrote seq.len() as u16, so a 65,536-byte Stream-Seq made the stream's tail row undecodable ('inconsistent persisted tail'). A sequence longer than u16::MAX is now written without the tail copy, which has no reader.",
+   "evidence": "Reds: 'validate() must reject (marker \"SSE_H1_MAX_BUF\")'; 'a Stream-Seq one byte past the tail row's u16 length must leave the stored tail decodable left: Err(\"Data error: inconsistent persisted tail\") right: Ok(Some(1))'. A control pins the named floor to hyper's own assert from both sides; a codec pin shows 65,535 keeps its copy; goldens unchanged; exception scopes 1,011 -> 1,010.",
+   "edge_visible": "YES: SSE_H1_MAX_BUF < 8192 exits 1 at boot before any side effect (was a panic after boot); a Stream-Seq over 65,535 bytes no longer breaks its stream; rows that fit are byte-identical",
+   "pushed_head": "fb18840d (green)"
+  },
+  {
+   "item": "Review item 59",
+   "title": "The round-13 keyed-dense bisect lever that no test ever armed is deleted; RAW pairing is pinned on multi-record windows first",
+   "kind": "maintainability",
+   "commits": [
+    "905d6656",
+    "fb18840d"
+   ],
+   "what_changed": "TEST_ASSERT_KEYED_DENSE was a process-global AtomicBool that nothing ever set. It carried three cfg(test) audit blocks, serve's task_rk_dbg and bisect_last_off, LiveFeed::floor_for_test, an http.rs re-export and ledger rows, and it had taken over execute_segment's rustdoc; fb18840d deletes all of it. 905d6656 first pins RAW upToDate pairing on multi-record windows, because the deletion brings serve's at_head predicates into the mutation diff.",
+   "evidence": "raw_up_to_date_rides_only_the_last_record_of_a_multi_record_window is green by design; it kills the predicted `delete !`, && -> ||, + -> - and + -> * survivors. serve drops to 679 lines (baseline 715), so its budget exception is retired; exception scopes 1,010 -> 1,009; session.rs 950 -> 911, read.rs 938 -> 909.",
+   "edge_visible": "none (production binaries unaffected)",
+   "pushed_head": "fb18840d (green)"
+  },
+  {
+   "item": "Review item 71",
+   "title": "Only decrypt_frame is dead in the service build, so only it keeps a dead-code allowance",
+   "kind": "maintainability",
+   "commits": [
+    "58569eb7"
+   ],
+   "what_changed": "crypto.rs carried eleven per-item allow(dead_code) attributes for its by-path includers, which already allow dead_code module-wide. In the service library these allowances made ten live items dead-code roots, hiding them from the dead-code pass. Ten are removed; decrypt_frame keeps its allowance, with a reason corrected to match the facts.",
+   "evidence": "Replacing both secret_eq calls with == now reports 'function secret_eq is never used' (the allowance used to mask it); removing all eleven reports exactly decrypt_frame and its callee. Annotation-only change.",
+   "edge_visible": "none",
+   "pushed_head": "fba7b844 (green)"
+  },
+  {
+   "item": "Review item 62",
+   "title": "A serving descriptor has one epoch, and it is never absent",
+   "kind": "maintainability",
+   "commits": [
+    "796211d7"
+   ],
+   "what_changed": "StreamDesc::epoch_bytes() returned an Option that could never be None, because validate_descriptor requires 16 bytes. It forced three unreachable branches: KeyCheck::BadDescriptor, consumer DELETE's 500 'bad descriptor', and the relayed sweep's segment_unavailable. The Option, those branches, and PersistedDescriptor's hex-re-parsing epoch_bytes (reachable through Deref) are gone; SweepTarget.epoch is [u8; 16], and fresh_desc returns the epoch it minted.",
+   "evidence": "A reintroduced .epoch_bytes() is now a compile error; 19 DST sites read desc.epoch(); test-inventory rehashed (21); two pinned bodies re-pinned.",
+   "edge_visible": "none (the removed branches were unreachable)",
+   "pushed_head": "fba7b844 (green)"
+  },
+  {
+   "item": "Review item 61",
+   "title": "Cursor verdicts are typed, and the scan page answers each one exhaustively",
+   "kind": "maintainability",
+   "commits": [
+    "eca3f12a",
+    "b9f3cd7c"
+   ],
+   "what_changed": "Cursor and token decoders refused with &'static str, and product_scan chose 410 vs 400 by matching two string literals with an Err(_) catch-all, so a renamed or new refusal silently became 400. ScanCursor::decode now returns ScanCursorError {Invalid, WrongKind, Expired}, matched exhaustively at the scan page. Key cursors, message ids and lease tokens return TokenError {Invalid, WrongKind}.",
+   "evidence": "eca3f12a first pins all three scan-cursor answers by status, code and message (410 scan_expired; 400 'cursor is not a scan cursor'; 400 'invalid scan cursor', including a foreign expired cursor). Negative control: swapping the two 400 messages fails. A probe shows adding a variant is E0004 at the page.",
+   "edge_visible": "none (answers pinned byte-identical)",
+   "pushed_head": "fba7b844 (green)"
+  },
+  {
+   "item": "Review item 60",
+   "title": "LiveFeed's shadow retained-charge gauge and unused key parameter are gone",
+   "kind": "maintainability",
+   "commits": [
+    "83e57067",
+    "e6550142",
+    "44cd0df8",
+    "fba7b844"
+   ],
+   "what_changed": "LiveFeed kept a retained_charge AtomicUsize, mirrored by three stores, that only a cfg(test) accessor read, and new_with_budget took a FeedKey it never used. retained() now reads the ring's own charge (83e57067); construction moves verbatim out of the impl-wide poisoned-state unwrap_used scope (e6550142); the gauge and take_visible's `popped` flag are deleted (44cd0df8); and the _key parameter goes with its call-site clones (fba7b844). source_reads stays, because gating it would grow two exceptions.",
+   "evidence": "All 30 sse::feed tests are green on the stronger accessor before the gauge is deleted. New pin read_cap_is_two_thirds_of_the_ring_within_its_bounds (4096 -> 2730, 1000 -> 1024, 1 MiB -> 256 KiB) tells / apart from % and *. survivor_drains_retained_batches_after_drop_to_one pins the floor move.",
+   "edge_visible": "none (the gauge was never exported)",
+   "pushed_head": "fba7b844 (green)"
+  },
+  {
+   "item": "Review item 66",
+   "title": "Two history tests judge their own engine, not process-wide counters",
+   "kind": "test-fidelity",
+   "commits": [
+    "0aaa1ef1"
+   ],
+   "what_changed": "keyed_frames_no_longer_count_twice_against_the_budget bounded a delta of the process-global POSTINGS_BYTES_WRITTEN, so a neighbour's gather could fail it. sparse_key_reads_page_with_bounded_spans asserted READ_FRAMES_MATCHED > 0, which any earlier test satisfies. The first now sums this engine's own stored postings pages, and the second asserts this engine's postings slice cache served a hit.",
+   "evidence": "A neighbour bump reproduced '4168 vs 32882' on the old test; the new test is green under that bump and red for a real extra 4 KiB page. With the planner bypassed, the new sparse test fails with \"hits\":0 where the old one passed.",
+   "edge_visible": "none",
+   "pushed_head": "729c52ac (green)"
+  },
+  {
+   "item": "Review item 67",
+   "title": "Shard-open counters belong to the gate that counts them",
+   "kind": "test-fidelity",
+   "commits": [
+    "a1cf29f3"
+   ],
+   "what_changed": "/v1/debug/store shard_opens (the reopen-storm detector) read seven process statics, while tests asserted four cfg(test) mirrors. So every runtime in a process reported every other runtime's opens, and the operator counters (deadlined, reaped, in_flight) were never tested. The counters are now one OpenCounters field of the gate, rendered only by OpenGate::stats_json (via ShardDirectory::open_stats); the statics, mirrors, reset hook and serializing gate_lock are gone.",
+   "evidence": "Red: debug_store_reports_this_runtimes_shard_opens (two rigs; the idle one reported the other's open: 'left: Number(1), right: 0'); it also pins ?swap=1 and /operator/data.json. The hung-open test asserts started 1, failed 1, deadlined 1, reaped 1 through the JSON.",
+   "edge_visible": "/v1/debug/store and /operator/data.json shard_opens are now per runtime (same keys; production values unchanged at one directory per process)",
+   "pushed_head": "729c52ac (green)"
+  },
+  {
+   "item": "Review item 64 (step 1)",
+   "title": "A topology transition the segment map refuses stays pending, never 'already done'; a merge allocates its child id before either parent seals",
+   "kind": "bug-fix",
+   "commits": [
+    "abadfce6",
+    "85017d84",
+    "729c52ac"
+   ],
+   "what_changed": "Phase B treated every MapError from map.split/map.merge as an idempotent completion: it cleared the intent, bumped the version and reported the transition published although the parents were already closed. Writers to that range then got the closed engine's closure as final, and counters and events recorded a publication that never happened. SegmentMap::merge also sealed both parents before an unchecked next_seg_id += 1. After a pure refactor (abadfce6: one map read; topology.rs now carries no exceptions), refusals decline without writing and are logged with the typed MapError, the split's high-child id is a checked add, and merge allocates its child id before sealing. Open: step 2 (a Transition enum parsed once, with one begin/publish, removing the duplicated split/merge phases) is not done.",
+   "evidence": "Three DST reds over planted maps: a split with the allocator at u32::MAX-1 gave 'left: (true, None, 2)' vs (false, Some(split intent), 1); a split at u32::MAX panicked on overflow in debug; a merge with a sealed parent gave 'left: (true, None, 4)'. Unit red an_exhausted_allocator_refuses_before_any_parent_seals: 'left: Ok(4294967295), right: Err(IdExhausted)'.",
+   "edge_visible": "Latent state only: writers to the parents' range get retryable segment_transition instead of a false closure; split/merge counters and *_committed ops events stop counting unpublished transitions",
+   "pushed_head": "729c52ac (green)"
+  },
+  {
+   "item": "Review item 86",
+   "title": "An empty catch-up page waits before it is read again, instead of spinning",
+   "kind": "bug-fix",
+   "commits": [
+    "557e8ba6",
+    "2fb92fb9"
+   ],
+   "what_changed": "serve's catch-up handed an empty page straight to the live loop, whose Lagged arm sent a below-floor session straight back to catch-up with no await. A below-floor session (always the case for a new feed's first subscriber catching up from an old cursor) therefore spun a worker thread whenever its catch-up read returned an empty page, which is an unexplained hole in the durable read. After the stalled-read arms move into sse/session/catch_up.rs as Stall {Cutoff, Failed, NoProgress} (557e8ba6), an empty page counts as FEED_NO_PROGRESS and waits the same 100 ms as a failed read before handing off to the live loop. The review's 'skip the retry bump' variant (re-read without reaching the live loop) was deliberately not taken, because it would also stop a session at or above the ring floor from being served by the ring while the hole lasts.",
+   "evidence": "Red through production serve: 'the faulted catch-up read ran 1,686,963 times in 503 ms'. Green: about 5 re-reads per 500 ms (bound 7), records 0..2 exactly once, 8/8 loops. Pins a_stalled_catch_up_read_owes_its_pass_one_verdict and a_failed_catch_up_read_is_read_again_after_a_bounded_wait; new mutation owner sse_session_catch_up.",
+   "edge_visible": "Debug counters only: sse_livefeed.no_progress now also counts empty catch-up pages, and catchup_retries counts a persistent hole at most once per 100 ms (was ~1.7M reads per 0.5 s); no frame change. Timing: after an empty catch-up page, a session reaches the live loop 100 ms later than before, so a durable hole adds up to 100 ms of delivery latency",
+   "pushed_head": "2fb92fb9 (green)"
+  },
+  {
+   "item": "Review item 42",
+   "title": "The absorber budget default is the shipped 64 MiB and two gathers in every build",
+   "kind": "test-fidelity",
+   "commits": [
+    "bc43a2bb"
+   ],
+   "what_changed": "HistoryConfig::default() forked on cfg!(test): 4 GiB and 64 gathers in tests, 64 MiB and 2 in the shipped binary. So no test ran the shipped absorber posture, and the fork protected a process-global budget that is now per runtime. The shipped value is now the default in every build.",
+   "evidence": "Reds: default_values_are_pinned 'left: 4294967296, right: 67108864'; shipped_absorber_budget_floors_to_one_worst_frame_gather 'left: 4294967295, right: 100859904' (2 slots, effective concurrency 1). The whole lib suite (1,204 tests, capacity included) is green under the shipped posture.",
+   "edge_visible": "none",
+   "pushed_head": "2f2c3015 (green)"
+  },
+  {
+   "item": "Review item 34",
+   "title": "A rebalance move names only a ring member, and an override the ring ignores never opens on its target",
+   "kind": "bug-fix",
+   "commits": [
+    "6515a15d"
+   ],
+   "what_changed": "pick_move_target picked the coolest fresh heartbeat under any name, ring member or not, while every ring reader ignores an override to a non-member. The eager handoff opened on the raw `e.to == me`, so a non-member target opened the shard and fenced its real owner's DB, yielded, and reopened after the holdoff: about once a minute, indefinitely. pick_move_target now takes the tick's active ring, the eager open admits exactly effective_owner == me, and return-home and moves reuse the tick's published ring.",
+   "evidence": "Three DST reds over a seeded ring of two: a non-member target opened the shard ('left: Number(1)', right 0); a lagging owner moved its shard to an idle non-member ('left: Some(\"streams-9\")'); the ring owner never opened a shard overridden to a non-member at its tick. The unit calls failed with E0061 until the signature took the ring. fleet::start's budget exception is deleted.",
+   "edge_visible": "Fleet policy: rebalance targets only ring members; the ring-assigned owner now opens an overridden shard at its next tick even when the override names a non-member; docs/SCALING.md",
+   "pushed_head": "2f2c3015 (green)"
+  },
+  {
+   "item": "Review item 52",
+   "title": "The telemetry-append receiver reads its body only after authentication, under the configured limit",
+   "kind": "security",
+   "commits": [
+    "d3c63675",
+    "2f2c3015"
+   ],
+   "what_changed": "internal_telemetry_append extracted body: Bytes, so axum buffered up to its implicit 2 MiB BEFORE the fleet-credential check (R25-E requires authenticating before buffering). An authorized relay was also capped at 2 MiB while senders batch up to MAX_REQUEST_BODY_BYTES, so larger batches were refused and requeued every round. After a verbatim move to http/telemetry_append.rs, the handler takes Body and reads it with to_bytes under the configured limit (MAX_REQUEST_BODY_BYTES, 32 MiB by default), only after authentication and every header-level refusal.",
+   "evidence": "Reds through the in-process router: an unauthenticated 3 MiB upload gave 'left: (413, 2162688)' (status, bytes read) vs (401, 0); an authorized 2.7 MB batch under a 4 MiB limit gave 'left: 413' vs 204. New mutation owner http_telemetry_append.",
+   "edge_visible": "Fleet-internal route only: unauthenticated uploads are 401 with 0 bytes read (before: buffered up to axum's 2 MiB limit first, then 413 if larger or 401 if not); an authenticated relay may carry up to MAX_REQUEST_BODY_BYTES (32 MiB by default, namespace-pinned) instead of 2 MiB (413 too_large beyond it), so a receiver may hold about 2x 32 MiB per concurrent relay. WIRE-MATRIX updated.",
+   "pushed_head": "2f2c3015 (green)"
+  },
+  {
+   "item": "Review item 44",
+   "title": "Every /v1/debug path answers through one bearer gate, not twelve copies",
+   "kind": "security",
+   "commits": [
+    "33fbd10e"
+   ],
+   "what_changed": "Debug-route authorization was a 7-line block copied into 12 handlers and closures, with no layer and no test that sent an unauthenticated request to a bearer-configured rig, so deleting any one copy stayed green. The table now mounts only through debug::gated (src/http/debug.rs): a layer on the nested /v1/debug router with its own fallback, which runs before method routing, extractors and handlers.",
+   "evidence": "Red: debug_surface_refuses_every_path_without_the_token ('GET /v1/debug/nope with None must be refused: left: 404, right: 401'); pin debug_surface_serves_every_handler_with_the_token. New mutation owner http_debug. This push's CI was CANCELLED at 60 min by the F-G hang (rust-quality green); the next push, 4c51ebfd, is green.",
+   "edge_visible": "YES (operator debug surface): without the token, an unrouted /v1/debug path or a wrong method is 401 (was 404/405); with the token, or in Off mode, every answer is byte-identical. WIRE-MATRIX updated.",
+   "pushed_head": "33fbd10e (CI cancelled by F-G; rust-quality and workflow-lint ok)"
+  },
+  {
+   "item": "Review item 37 (step A)",
+   "title": "A panicking request handler is logged and counted on its runtime's task record",
+   "kind": "robustness",
+   "commits": [
+    "f0c072b3",
+    "a0185c3b"
+   ],
+   "what_changed": "serve_h1 reaped connection tasks with `Some(_) = conns.join_next()` and discarded every JoinError. A panicking handler therefore killed its connection leaving only the default hook's stderr line: no tracing event and no counter. After a verbatim move of serve_h1 into http/serve.rs, the accept loop reaps through `reap`: a panic is an ERROR log plus a count on the runtime's own task record (TaskSupervisor::record_connection_panic), and a cancelled task is not counted.",
+   "evidence": "Reds: a_panicking_handler_is_counted_once_and_an_aborted_connection_is_not ('left: 0, right: 1'); debug_load_reports_typed_limiter_and_frame_totals reading via /v1/debug/load ('left: Null, right: 1'); panicked_connections_are_counted_on_the_monitor (E0599 before the change).",
+   "edge_visible": "Additive: /v1/debug/load gains tasks.connection_panics; clients still see a closed socket. Step B (poisoned locks and readiness) is held.",
+   "pushed_head": "4c51ebfd (green)"
+  },
+  {
+   "item": "Review item 87",
+   "title": "A source read fails as a typed SourceReadError, never through an anyhow downcast; a retried read logs its cause",
+   "kind": "maintainability",
+   "commits": [
+    "eb742c42",
+    "6ef3bc64"
+   ],
+   "what_changed": "SSE source reads returned anyhow, and both consumers (the feed drive and the catch-up pass) told fatal from retryable with downcast_ref::<FatalSpanCutoff>. So a `?` or bail! could silently turn a cutoff into a retry, and retryable causes were dropped unlogged. read_batch (the trait and all three sources) and sealed_span_page now return SourceReadError {Fatal(SourceCutoff), Retryable(anyhow)} with no From<anyhow::Error>. Both consumers match it exhaustively and log a retry's cause; FatalSpanCutoff is deleted.",
+   "evidence": "eb742c42 pins the fatal path first: a_fatal_source_read_retires_the_feed_once (IncarnationClosed, lifecycle Gone, one version bump, nothing delivered; green on the old tree). Reds: a_retryable_source_read_logs_its_cause_once_per_drive and a_failed_catch_up_read_logs_its_cause ('left: []', right: [\"injected source failure\"] for the drive test / [\"injected\"] for the catch-up test).",
+   "edge_visible": "none (new debug-level log events only)",
+   "pushed_head": "eb742c42 with 714abcc2 (green); 6ef3bc64 (green)"
+  },
+  {
+   "item": "Review item 88 (step 1)",
+   "title": "One offset codec: encode(epoch, next) and parse -> (epoch, next)",
+   "kind": "maintainability",
+   "commits": [
+    "2ced74c7",
+    "33d8d3dd"
+   ],
+   "what_changed": "offsets.rs carried two copies of both the encoder and the decoder loop, and eight call sites wrapped `next` into Offset(Option<u64>) with checked_sub(1) only for the codec to add the 1 back (Offset(Some(u64::MAX)) would overflow). There is now one encode(epoch: u32, next: u64), parse -> (u32, u64) and parse_scalar, with a typed OffsetError whose Display is the old wire text; the loops are copied verbatim. Open: step 2 (a strict decoder that refuses non-canonical tokens) is held as a wire decision.",
+   "evidence": "2ced74c7 pins raw tokens, the three fork-offset refusal texts and raw SSE controls byte for byte, and non_canonical_tokens_keep_their_lax_reading pins four lax readings (all green by design). Two 1,024-case properties (round trip for epoch < 2^30; every input is either refused or canonical). Golden literals unchanged. Recorded for review (33d8d3dd): the encoder drops epoch bits 30-31, so segment 2^30+k's tokens collide with segment k's; the decisions memo proposes capping segment-id allocation at 2^30 (no wire change).",
+   "edge_visible": "none (token bytes and accepted inputs identical; refusing non-canonical tokens is decision 'item 88 step 2')",
+   "pushed_head": "aaf2baa5 (green)"
+  },
+  {
+   "item": "Review item 63 (step A)",
+   "title": "An external stamp and a sweep custody install can no longer both miss each other",
+   "kind": "bug-fix",
+   "commits": [
+    "69d8bc95",
+    "aaf2baa5"
+   ],
+   "what_changed": "The R29 sweep custody handshake is a store-buffering (Dekker) pair, and every access was Relaxed, so a customer's stamp_external and the sweep's install could both miss each other, even on x86-TSO. That left custody installed over external history and let a debt-free sweep retire an engine a customer had adopted. 69d8bc95 moves the two words behind a private-field SweepCustody (billing/sweep_custody.rs, generic over CustodyWord for Loom) with the orderings verbatim. aaf2baa5 makes every custody write a SeqCst read-modify-write: the stamp's swap, the install's swap (was a plain store) and the revoke CAS. Open: step B (a SweepScheduler with one per-prefix record, replacing the 11 accessors) is not done.",
+   "evidence": "Red Loom model quality_loom_external_stamp_never_coexists_with_custody (preemption bound 2, same methods on Loom atomics): 'install 2 kept custody over an external stamp'. The model also asserts custody is 0 once both return. Four unit tests pin every transition; new mutation owner sweep_custody.",
+   "edge_visible": "none on the wire (costs one extra locked exchange per external resolution)",
+   "pushed_head": "aaf2baa5 (green)"
+  },
+  {
+   "item": "Review item 90 (step 1)",
+   "title": "The per-name failpoint contract is pinned; gap_lock names the two owners it still serves",
+   "kind": "docs",
+   "commits": [
+    "a4de4f51",
+    "29ff93c4"
+   ],
+   "what_changed": "gap_lock's doc gave three reasons, none of which still holds (fork_failpoints is gone, parked counters are keyed per (point, name), and 19 failpoint tests already run without it). a4de4f51 pins that arming one stream name never parks, flags or releases another. 29ff93c4 rewrites the doc to the two things gap_lock still protects (the process-global LEASE_TERMINATIONS array and the capacity measurement) and deletes seven stale comments, and rewrites an owners.json reason that cited \"shared failpoint serialization\" to name the stream-name isolation. Open: steps 2 and 3 (narrowing the lock itself) are out of scope here and not done.",
+   "evidence": "a_point_armed_for_one_name_never_reaches_another. Negative controls: a point-global hit fails 'arming fp-iso-a armed fp-iso-b'; a point-wide release fails 'releasing fp-iso-a disarmed fp-iso-b'.",
+   "edge_visible": "none",
+   "pushed_head": "77c13d74 (green)"
+  },
+  {
+   "item": "Review item 93",
+   "title": "The refresher stamps feed freshness at the fetch it asked for; file-feed freshness means last successful read",
+   "kind": "robustness",
+   "commits": [
+    "75fc66c5",
+    "4cb6263c"
+   ],
+   "what_changed": "Each auth snapshot parser wrote a caller-supplied `now`, so every source decided its own freshness: a cached source could launder stale data, and a post-dated stamp gave a negative age that defeats the fail-closed window. The contract ('last successful read, not author liveness') was also undocumented. Parsers now return stamp 0 (unpublished, fails closed), and refresh_source stamps the instant it asked, only for a snapshot published inside the deadline. The module doc and the --streams-auth-keys-file help state the contract.",
+   "evidence": "75fc66c5 pins the contract: a failed parse refreshes nothing (age stays ≥250 s), and re-reading generation 7 is fresh again. Red: the_refresher_not_the_source_stamps_feed_freshness ('jwks: a published fetch is fresh whatever the source stamped (1)').",
+   "edge_visible": "none on the wire (help text of --streams-auth-keys-file)",
+   "pushed_head": "77c13d74 (green)"
+  },
+  {
+   "item": "Review item 41 (C1 scaler + C2 TOKIO_WORKERS)",
+   "title": "A cooldown past the millisecond range holds forever instead of wrapping; TOKIO_WORKERS is a RuntimeConfig knob",
+   "kind": "bug-fix",
+   "commits": [
+    "07db91a7",
+    "a342ab6f"
+   ],
+   "what_changed": "SCALE_COOLDOWN_SECS=inf loaded as i64::MAX, and the scaler multiplied it by 1000 at three sites: a panic in debug, and in release a wrap to -1000 that turned every cooldown off so hot segments could re-split on every evaluation. SCALE_HOT_EVALS=inf made hot_evals*4 wrap, making every multi-segment stream a merge candidate; cooldown_ms() and merge_patience() now saturate. main.rs read TOKIO_WORKERS directly after validation (the last production env read outside the config owner); it is now RuntimeConfig.tokio_workers with worker_threads(available), keeping the same parse, fallback and floor of two.",
+   "evidence": "Reds (release): a_cooldown_beyond_the_millisecond_range_never_elapses and merge_patience_is_four_split_patiences_and_never_wraps ('a hot stream became a merge candidate: [\"busy\"]'); in debug, 'attempt to multiply with overflow' at src/scaler3.rs:142:55. Boundary pins are the mutation killers. C2: compile-level red (E0599/E0609) for tokio_workers_come_from_the_knob_or_the_cores_never_below_two.",
+   "edge_visible": "YES (configuration): SCALE_COOLDOWN_SECS=inf now means 'never re-scale' (was 'always' in release, a panic in debug); SCALE_HOT_EVALS=inf no longer forces merges; TOKIO_WORKERS unchanged. C3 (a knob typo refuses boot) is held.",
+   "pushed_head": "77c13d74 (green)"
+  },
+  {
+   "item": "Review item 89",
+   "title": "The verification plan's checks are the ones rust-quality gates on; offsets, segmap and telemetry_batch are mutation owners",
+   "kind": "tooling-ci",
+   "commits": [
+    "5151a692",
+    "61d03e34",
+    "6669d3b5",
+    "77c13d74"
+   ],
+   "what_changed": "An edit to src/offsets.rs, src/segmap.rs or src/telemetry_batch.rs selected no conditional check, and plan() computed `loom` and `compiler` keys nothing read (the docs claimed they were selected). The four commits: 5151a692 adds pins for the survivors a whole-file trace found; 61d03e34 restructures away four equivalent mutants (| -> + for disjoint bit fields, a redundant digit arm, a `<` guard) with byte-identical output; 6669d3b5 deletes the dead plan keys; 77c13d74 registers the three files as mutation owners. src/usage.rs stays unregistered as a mutation owner: its admission float arithmetic needs its own equivalence audit first, and the file is 7 lines under its ceiling (77c13d74).",
+   "evidence": "Whole-file cargo-mutants 27.1.0 at registration: offsets 37/37 caught; telemetry_batch 25 caught, 1 unviable; segmap 86 caught, 3 unviable, 1 MISSED (`A || B || C` -> `A || B && C`), then 87 caught after a new pin (validate/check_partition re-run 19/19). Planner reds: test_every_selected_check_gates_a_workflow_step and test_small_codec_and_admission_owners_select_their_mutations (3 subtests). Python suite 111 OK.",
+   "edge_visible": "none",
+   "pushed_head": "77c13d74 (green)"
+  },
+  {
+   "item": "Review item 65 (four small fixes; D1-D4 held)",
+   "title": "Authority currency: the lease re-proves placement, one freshness boundary, exhaustive refusal tables, and discriminant-indexed lease counters",
+   "kind": "security",
+   "commits": [
+    "91da8f7c",
+    "d704c1ea",
+    "1ec80593",
+    "535152bc",
+    "a73b7b79",
+    "1791207a"
+   ],
+   "what_changed": "lease_check asked only whether the project was present, so a policy republished for another cell left live SSE leases re-proving Ok and delivering on a cell that no longer serves the project. served_policy is now the one question both paths ask (1791207a). Also: /v1/debug/auth judged staleness against the POLICY_STALENESS_MAX_SECS constant rather than the instance window, and feed_fresh_until/feed_stale are now the one boundary (a73b7b79); lease counter slots were position().unwrap_or(0) and are now the discriminant with a compile-time proof (1ec80593); request and lease refusals classify in exhaustive tables in src/auth/refusal.rs with no catch-all arms (535152bc). 91da8f7c moves the lease code verbatim to src/auth/lease.rs (auth.rs 1,676 -> 1,547), and d704c1ea pins every response first.",
+   "evidence": "Reds: a_lease_ends_when_its_project_is_placed_on_another_cell ('left: Ok(()) right: Err(ProjectMissing)'); every_freshness_reader_shares_one_boundary ('left: Bool(false) right: true'). Pins: every_auth_refusal_keeps_its_response (27 AuthError variants: status, code, message, retryable, prisma-error-code, journal tag), lease_terminations_have_one_slot_per_reason, lease_refusals_answer_their_class_status. The verbatim-move diff is empty.",
+   "edge_visible": "YES: a live SSE lease whose project is republished to another cell now ends as project_missing (403 at establishment, a counted termination when live); /v1/debug/auth reports stale exactly when enforcement refuses (this only differs with a shortened window); every other response is unchanged. Left open on purpose: the same placement gap remains in status_and_quotas (watch capabilities for a project placed on another cell; held as decision D4), and the two lease-vs-request class differences named in src/auth/refusal.rs are unchanged (an inactive credential answers 401 on a lease vs 403 on a request; an unserved project answers 403 project_missing vs 421 wrong_cell).",
+   "pushed_head": "5d9d517f (green)"
+  },
+  {
+   "item": "Review item 35 (D1 counter held)",
+   "title": "One stream's corrupt row backs off that stream alone; its lane-mates advance in the same flush",
+   "kind": "robustness",
+   "commits": [
+    "b5365880",
+    "4ab5cfda",
+    "ea75231f",
+    "e19c80c5"
+   ],
+   "what_changed": "A v2 gather aborted on the first per-stream error (a row failing admission, or postings pages failing their self-check), dropped the whole batch, and backed off every stream in the lane (up to 1,024) together, up to 320 s, logging only a count. Now GatherOutcome.failed records a StreamGatherFailure {Corrupt, PostingsSelfDecode, PostingsOverlap} per stream: that stream backs off alone with a named warn while its lane-mates settle, store errors still abort the lane, and pages are checked (check_postings) before anything is staged. Groundwork commits: a verbatim move of GatherOutcome (b5365880), a typed RangeReadError {Corrupt, Store} (4ab5cfda), and gather_due split into settle_gather/settle_gather_error/back_off, deleting its nesting exception (ea75231f).",
+   "evidence": "Reds: history::worker::lane_isolation_tests::corrupt_row_backs_off_only_its_stream; dst history_gather::one_corrupt_row_fails_only_its_stream ('Data error: stored record corruption: Frame'); postings_refusal_tests do not compile on the old tree (E0432). r08a asserts the typed Corrupt for four corruption shapes. The mt-audit baseline goes 77 -> 78 (one identity-neutral test row).",
+   "edge_visible": "none on the wire (a per-stream warn naming the hash prefix, reason and failure count)",
+   "pushed_head": "5d9d517f (green)"
+  },
+  {
+   "item": "Review item 32 (C1a + C2; D-32a/b/c held)",
+   "title": "--compactor-poll-ms reaches the compactor; BILLING_MODE and ROLLUP have one reader",
+   "kind": "bug-fix",
+   "commits": [
+    "fdc31b07",
+    "46d4b7df"
+   ],
+   "what_changed": "COMPACTOR_POLL_MS was read by clap and by the env overlay, and BILLING_MODE/ROLLUP by clap and by env copies in BillingConfig (mode_env/rollup_env). --compactor-poll-ms on argv was accepted and ignored (compactors kept polling at 2.5 s); with_knob_defaults now carries clap's value into EngineConfig. For BILLING_MODE/ROLLUP, boot read clap while /health, /operator/billing.json and the drain read env copies, so with argv flags boot enforced required mode while the report said 'off'/ready and /health never gated. CliArgs::billing_required()/runs_rollup() are now the one reading, and the env copies are deleted.",
+   "evidence": "Reds: compactor_poll_given_on_argv_reaches_the_compactor_options ('left: 2.5s right: 500ms'); argv_billing_mode_required_holds_readiness_until_the_spool_opens and argv_rollup_owner_is_unready_until_its_rollup_installs ('left: (200, \"ok\")' vs 503 'billing not ready (...)'). clap_owned_names_keep_their_environment_channel pins env-only deployments for the five names both channels read.",
+   "edge_visible": "YES, for argv-configured deployments only: --compactor-poll-ms takes effect, and /health and /operator/billing.json follow --billing-mode/--rollup (503 'billing not ready' until the spool/rollup is ready); the boot summary loses the two env-copy keys. Env-only deployments are unchanged. Also: the drain's memory-only refusal follows the clap value (before, it took the volatile path whenever the spool was closed); a --rollup 1 owner is unready until its rollup installs; and the reverse mixed case (env BILLING_MODE=required, argv off), which used to leave /health 503 forever, now follows argv. Still unchanged: --compactor-max-concurrent on argv is ignored (held as D-32c).",
+   "pushed_head": "5d9d517f (green)"
+  },
+  {
+   "item": "Review item 27 (C0-C2; C3 and D1 held)",
+   "title": "Byte-time wire pinned; a late byte-time no correction can carry fails its page; an undecodable pending artifact is logged",
+   "kind": "robustness",
+   "commits": [
+    "0ddfebc4",
+    "31fd9096",
+    "5d9d517f"
+   ],
+   "what_changed": "0ddfebc4 pins the wire's two zeros: \"\" for an unwritten field, \"0\" for a computed zero. apply_late_snapshot wrote a u128 difference as an i128 decimal: above i128::MAX it was committed, absorb()'s parse().unwrap_or(0) silently skipped it, and month_row then refused the row, wedging the rollup. i128::try_from now fails the page before anything is staged (31fd9096). pending_artifacts silently skipped an undecodable pending monthly artifact (never published or counted); each such row is now logged on every scan and stays in the outbox (5d9d517f).",
+   "evidence": "Reds: rollup::accounting_failure_tests::a_late_byte_time_no_correction_can_carry_fails_its_page (apply_page returned Ok and committed the unreadable correction); an_undecodable_pending_artifact_is_logged_and_stays_pending ('left: 0 right: 2'). Pins: an_unwritten_byte_time_keeps_its_empty_wire, a_late_read_correction_carries_a_written_zero_byte_time.",
+   "edge_visible": "none (only a corrupt snapshot can reach the overflow; new error log lines)",
+   "pushed_head": "5d9d517f (green)"
+  },
+  {
+   "item": "Review item 77 (stage 1)",
+   "title": "The incarnation ABA tests replay their stale decisions through mutate_incarnation, the fence production runs",
+   "kind": "test-fidelity",
+   "commits": [
+    "200d5ad8"
+   ],
+   "what_changed": "a_parked_delete_never_removes_a_later_incarnation and a_fork_stamp_never_lands_on_a_later_incarnation proved the ABA fence through cas_update_incarnation_outcome, a cfg(test) adapter with its own epoch check that no production path uses. Both now replay through Registry::mutate_incarnation and assert its typed IncarnationChanged, and the adapter and IncarnationCas are deleted.",
+   "evidence": "Non-vacuity controls: (0) old tree with the production fence deleted: both old tests PASS; (A) new tree, fence deleted: both fail 'not fenced: Err(InvalidData(... mutation changed incarnation identity))'; (B) fence and the identity backstop's epoch clause deleted: both fail 'not fenced: Ok(Applied(()))'.",
+   "edge_visible": "none",
+   "pushed_head": "c397e9e5 (green)"
+  },
+  {
+   "item": "Review item 76 (steps A + D)",
+   "title": "history.rs drops orphaned docs; the Absorber stops carrying the store and key cache it never read",
+   "kind": "maintainability",
+   "commits": [
+    "b392aaf1",
+    "ed9238da"
+   ],
+   "what_changed": "history.rs carried doc fragments for items it no longer has (a block-transformer header, and docs for the deleted v1 per-stream DBs and their LRU attached to unrelated items); these are removed or re-homed (1,693 -> 1,674 lines in b392aaf1). Absorber held data_store and keys under a struct-wide #[expect(dead_code)]; they leave the struct, its constructors and all 35 constructor calls, along with bootstrap's key-cache clones and rig_opener's key-cache parameter (and its too_many_arguments exception). ed9238da takes history.rs from 1,674 to 1,656 lines and re-decides bootstrap::run's two unwrap/expect reasons.",
+   "evidence": "Removing only the expectation makes the compiler report 'fields data_store and keys are never read'. Non-vacuity: NV1, pausing absorption in v2_absorbs_without_customer_keys, gives 'keyless v2 absorption never advanced'; NV2, dropping the rig opener's absorber, fails raw_hierarchical_append_sheds_typed_503_under_backlog.",
+   "edge_visible": "none",
+   "pushed_head": "c397e9e5 (green)"
+  },
+  {
+   "item": "Review item 80",
+   "title": "Test fixtures stop driving the deleted per-stream absorb lane; test-only engine witnesses are cfg(test)",
+   "kind": "test-fidelity",
+   "commits": [
+    "6bf64c62",
+    "eb23b56d",
+    "ea1c3a1e"
+   ],
+   "what_changed": "Seven tests staged maintenance state through the test-only ShardEngine::submit_absorbed. It drives the per-stream history lane deleted in the clean switch, putting the engine in a layout the read path refuses. Nine fixture sites now use absorb_through (the shared-partition batch the absorber really sends), the layout-seal test plants a legacy per-stream tail instead, and submit_absorbed is deleted with its two exceptions. Four test-only witnesses become #[cfg(test)] (ea1c3a1e).",
+   "evidence": "Control: making the batch submit a no-op turns all the ported tests red. Seal-test controls: accepting every v2 advance fails with (5, true) vs (3, false); a no-op submit fails at 'first v2 advance seals v2'. The dropped advance over the planted tail is now counted exactly once (was '>= 2'). shard.rs 3,186 -> 3,139.",
+   "edge_visible": "none",
+   "pushed_head": "c397e9e5 (green)"
+  },
+  {
+   "item": "Review item 92 (step A)",
+   "title": "platform-e2e fault legs fail when the fault was not applied, when the cell accepted it, or when the cell died",
+   "kind": "test-fidelity",
+   "commits": [
+    "034d809d",
+    "c397e9e5"
+   ],
+   "what_changed": "The platform-e2e battery (a required check for RC promotion) injected faults through fault(), which returned the emulator's response unread, so a refused injection passed legs whose probes read the same answer either way. fault() now requires 200 and the regression leg checks for a strictly lower replayed generation (034d809d). The regression and drift probes also require the exact pre-fault answer (403), and the drift fault restores the pre-revocation grant_version so an accepted drift would revive the token (c397e9e5).",
+   "evidence": "Red (emulator cases renamed): both legs printed ok and the battery printed PLATFORM_E2E_OK (54 ok); now 'FAIL fault generation-regression injected status 400 ... unknown fault kind', PLATFORM_E2E_FAIL (3). Controls: before the change, a cell sabotaged to accept every grants snapshot still failed the regression leg but passed the drift leg, and a killed cell B passed both legs. After the change, both controls fail both legs ('status 200 (403 before the fault)' / 'status 0 (403 before the fault)'). Green: 62 ok.",
+   "edge_visible": "none (test harness; README check count 45 -> 62)",
+   "pushed_head": "c397e9e5 (green)"
+  },
+  {
+   "item": "Review item 73 (pins; typed ProductOperation held as D1)",
+   "title": "Every dispatched product operation is pinned to the one scope the gate demands",
+   "kind": "test-fidelity",
+   "commits": [
+    "a7f3167d"
+   ],
+   "what_changed": "The product gate decides scope in required_scope, separately from the entry's dispatch, and that matrix ends in permissive fallback arms; nothing pinned the pairing. The new dst security_operations module proves that each of the 19 dispatched operations demands exactly its s6.1 scope (the watch wait needs none), and that a request naming no operation is authenticated before its 404/405 in enforce mode (8 shapes).",
+   "evidence": "Non-vacuity: changing scan's scope to metadata.read gives '(404, \"not_found\")' vs '(403, \"missing_scope\")'; a gate answering an anonymous request as the deployment gives '(404, \"unknown_route\")' vs '(401, \"unauthorized\")'. Pinned exception: a grammar refusal (an invalid consumer name) still comes before authentication, from the route parser.",
+   "edge_visible": "none (tests only)",
+   "pushed_head": "24c4c77a (green). Batch 12 (a7f3167d + 24c4c77a) was pushed although its local gate reported GATEFAIL-capacity (one append answered 500 at the split in post_split_throughput_scales), after three isolated re-runs of the capacity leg passed and with no production code changed since the previous green gate. Reproduction attempts after the push (60 isolated runs, 40 runs under 8 busy cores, runs under 16 busy cores) never produced a 500."
+  },
+  {
+   "item": "Review item 69 (step B; step A held)",
+   "title": "A push compares the source ratchet with the previous pushed revision, and fails closed without it",
+   "kind": "tooling-ci",
+   "commits": [
+    "24c4c77a"
+   ],
+   "what_changed": "ci.yml's architecture-report job ran the source ratchet on push with only QUALITY_BASE_REF=origin/<branch>, which on a push is the pushed commit itself. merge_base() therefore returned HEAD, and every growth check compared HEAD with HEAD. merge_base() now refuses a push without QUALITY_BEFORE_SHA, and the job sets the event, the previous revision and the base ref (fetching the previous revision if needed), as rust-quality already did. Unchanged: a scheduled run still has no previous revision and keeps comparing with the branch head; pull requests and local runs keep their bases.",
+   "evidence": "Red: test_a_push_ratchet_without_the_previous_revision_fails_closed ('ValueError not raised'); pin test_push_and_local_ratchets_keep_their_bases; actionlint OK. The pushed head is green on CI, rust-quality and workflow-lint.",
+   "edge_visible": "none",
+   "pushed_head": "24c4c77a (green; = origin/slate). Batch 12 (a7f3167d + 24c4c77a) was pushed although its local gate reported GATEFAIL-capacity (one append answered 500 at the split in post_split_throughput_scales), after three isolated re-runs of the capacity leg passed and with no production code changed since the previous green gate. Reproduction attempts after the push (60 isolated runs, 40 runs under 8 busy cores, runs under 16 busy cores) never produced a 500."
+  }
+ ],
+ "themes": [
+  "Fail-open verdicts became typed and fail-closed. Response or status sniffing, &'static str refusals, anyhow downcasts and Ok(None)-on-error were replaced by typed enums matched exhaustively, so a new or renamed refusal is a compile error rather than a silent 400/404/Ok(0). Items 21, 22, 30, 35, 49, 55, 57, 61, 65, 87, 27.",
+  "A topology or ownership transition may delay a caller but must never look like closure, absence or finality. Covered by bug #9 (stale-descriptor append), item 36 (descriptor cache generation), item 9 (fork-retained names judged at one instant), items 3/14/16 (watch and SSE ownership and engine incarnation), 34 (ring-member-only moves), 64 (phase-B refusal stays pending) and 63A (SeqCst custody handshake proven with Loom).",
+  "Liveness: silent hangs, spins and wedges became bounded waits, typed cutoffs or named failures. Items 4 (pull spin), 8 (absorber hold-and-wait), 15 (panicking single-flight), 17 (h1 head deadline), 33 and 86 (SSE retry/backoff, a 1.7M-reads-per-0.5 s spin), 11 and 12 (fleet tick and holdoff), and F-G (a TaskSupervisor::spawn teardown deadlock, reproduced deterministically after two CI hangs and fixed as their likely root cause).",
+  "Untrusted numbers and knobs now have owned ceilings, saturating arithmetic, and a refusal at boot instead of a wrap, panic or silent default. Items 10 (TTL), 24 (lease window), 25 (413 plus limit-posture validation), 41 (scaler cooldowns, TOKIO_WORKERS), 53 (SSE_H1_MAX_BUF, Stream-Seq length), 27 (byte-time overflow) and 32 (argv/env double parsing).",
+  "Quota and billing correctness: :scan and :pull are metered, clean rows are reconciled across every project, graceful stops flush read usage, rollups fail instead of re-merging or wedging, and sweep probes no longer escalate holdoffs. Items 5, 28, 26, 49, 12, 32, 27.",
+  "Tests that could not fail were made to bite, each with a recorded non-vacuity control. Items 20, 42, 66, 67, 73, 77, 80 and 92, the runtime_isolation fix exposed by item 57, and the F-H flake. Every fix landed red-first, and ten verbatim-move-then-fix pairs kept ceilinged files (product.rs, http.rs, billing.rs, registry.rs, history.rs, auth.rs, shard.rs, feed.rs) from growing; exception scopes recorded in commit bodies fell 1,019 -> 1,009, with more deleted afterwards.",
+  "Gate and CI hardening. The rustdoc gate; gate legs that prove their tests ran (18); job deadlines and concurrency (19); clippy findings made visible (68); obsolete budget exceptions refused (70); the MT audit covering every file (43); mutation owners for the codec files and no dead plan keys (89); the push ratchet comparing against the previous revision (69B); a 15-minute CI hang watchdog; and the fleet mutation-scope fix (dd220be8).",
+  "Edge-visible changes are confined and documented in WIRE-MATRIX. Anything that would widen a wire contract or process policy was held for the owner: bug #7, the item 22 untyped-409 mapping, items 31, 38, 40, 50, 51, the 45->29 and 46/47/48->23 chains, 65 D1-D4, 73 D1, 88 step 2, 41 C3, 32 D-32a/b/c, 69A and 83. The first-update calls also remain open for review: h1 idle deadline 120 s, TTL ceiling 2^32-1 s, and extend visibilityMs 0 floored to 1 s."
+ ],
+ "totals": "128 commits on slate since 2026-09-21 (127 plus the merge 7a6ecd23), HEAD = origin/slate = 24c4c77a, mapped to 73 entries. Those are 67 items of the 94-item robustness/maintainability review (7 of the 8 high-impact items; #7 held), plus 6 others: bug #9 (the flake-found stale-descriptor append), the F-G CI hang, the F-H flake, the rustls advisory, the prior external-review follow-ups, and rustdoc to zero. 51 pushes: CI succeeded on 49 of 51 (82095942 and 33fbd10e were cancelled at the 60-minute deadline by the F-G hang, its likely root cause fixed in 714abcc2, with the 4c51ebfd watchdog as a backstop); rust-quality succeeded on 50 of 51 (7a6ecd23 failed on 2 MISSED fleet mutants, fixed by dd220be8 in the next push, b0a6ba65); workflow-lint succeeded on 51 of 51. One CI run on 5c0e62d6 (35792791523) failed on the F-H flake and passed on rerun. The final head, 24c4c77a, is green on all three workflows."
+}

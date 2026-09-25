@@ -1,0 +1,49 @@
+{
+  "comment": "Agent proposals (cause, edge record, whether the change looks intended) merged into annotations.template.json as `proposed`. Never a decision: the owner sets `decision` in annotations.json. Keys are annotation row ids.",
+  "R1:added:http.h1_header_timeout:<absent>->120s": {
+    "commit": "71345c03",
+    "edge_record": 12,
+    "intended": "yes",
+    "note": "New knob SSE_H1_HEADER_TIMEOUT_MS (default 120 s; 0 or unparseable keep the default). No family sets it. Behaviour: idle keep-alive, headless and partial-head HTTP/1.1 connections are closed after 120 s; the platform edge's upstream pool idle is unmeasured (edge record #12's risk)."
+  },
+  "R1:value:cli.absorb_concurrency:6->None": {
+    "commit": "99d5c098",
+    "edge_record": null,
+    "intended": "yes",
+    "note": "The three v1 absorber options lost their clap defaults and became Option (accepted but ignored; a supplied value logs one IgnoredAbsorberOptions warning). Inert on both sides: rc.4 set AbsorberConfig.{pass_bytes, small_pass_bytes, concurrency} and never read them. 2026-09-13, before the hardening program, so no edge record."
+  },
+  "R1:value:cli.absorb_pass_bytes:268435456->None": {
+    "commit": "99d5c098",
+    "edge_record": null,
+    "intended": "yes",
+    "note": "See cli.absorb_concurrency."
+  },
+  "R1:value:cli.absorb_small_bytes:1048576->None": {
+    "commit": "99d5c098",
+    "edge_record": null,
+    "intended": "yes",
+    "note": "See cli.absorb_concurrency."
+  },
+  "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
+    "commit": null,
+    "intended": "n/a",
+    "note": "Read by both sides (http.debug_exit = value == \"1\"); the family's 0 equals the unset default, so neither removal nor perturbation changes anything. Not a difference."
+  },
+  "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_TIMING": {
+    "commit": null,
+    "intended": "n/a",
+    "note": "Read by both sides (http.debug_timing = value == \"1\"); 0 equals the unset default. Not a difference."
+  },
+  "R4:notice:new:ABSORB_PASS_BYTES are deprecated compatibility options and are ignored by the v2 gather planner; use ABSORB_GATHER_MAX_BYTES for batch packing, ABSORB_GLOBAL_BUDGET_BYTES/ABSORB_GLOBAL_GATHERS for process memory and gather concurrency, and ABSORB_READ_PAR for reads within a gather": {
+    "commit": "99d5c098",
+    "edge_record": null,
+    "intended": "yes",
+    "note": "Seen only in the merge-trap probe (region-server plus the rc.4-era ABSORB_PASS_BYTES=67108864). A Compute project that still holds the name boots and logs this one warning; the value had no effect at rc.4 either."
+  },
+  "R4:notice:gone:ABSORB_GLOBAL_BUDGET_BYTES raised 67108864 -> 100859904: the budget must cover one worst-case frame build (33554432 B frame x3)": {
+    "commit": "b612fbff",
+    "edge_record": null,
+    "intended": "yes (the warning only)",
+    "note": "rc.4 warned when the default 64 MiB absorb budget was floored to one worst-case frame build (96.2 MiB). The floor still applies at HEAD: the resolved absorbBudgetBytes (/v1/debug/absorb) is 100859904 on both sides, and HEAD states it in the INFO 'memory budget' line. Only families without the compute-1g profile (defaults, platform-e2e) hit the floor. Removed by the R10 refactor on 2026-09-06, before the hardening program."
+  }
+}

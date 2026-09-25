@@ -17,11 +17,11 @@ use crate::http::AppState;
 #[expect(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail once the page is debited; mapping either into a substitute response would report a wire status the handler never decided"
+    reason = "product_scan; a routing key serializes as a JSON string and the response builder holds a fixed status and validated headers, so neither step can fail once each typed cursor verdict is answered and the page is debited; mapping either into a substitute response would report a wire status the handler never decided"
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "product_scan; the scan resolves, decodes and pages the frozen cursor and debits the page it frames in one sequence; splitting it would separate the page from the cursor it advances and the bytes it charges"
+    reason = "product_scan; the scan resolves the collection, answers each typed cursor verdict, pages the frozen cursor and debits the page it frames in one sequence; splitting it would separate the page from the cursor it advances and the bytes it charges"
 )]
 pub(super) async fn product_scan(
     state: Arc<AppState>,
@@ -110,7 +110,7 @@ pub(super) async fn product_scan(
             match crate::product_cursor::ScanCursor::decode(c, &desc.project_id, &skey, &epoch, now)
             {
                 Ok(sc) => Some(sc),
-                Err("scan_expired") => {
+                Err(crate::product_cursor::ScanCursorError::Expired) => {
                     return perr(
                         StatusCode::GONE,
                         "scan_expired",
@@ -119,7 +119,7 @@ pub(super) async fn product_scan(
                         false,
                     );
                 }
-                Err("wrong_cursor_kind") => {
+                Err(crate::product_cursor::ScanCursorError::WrongKind) => {
                     return perr(
                         StatusCode::BAD_REQUEST,
                         "invalid_cursor",
@@ -128,7 +128,7 @@ pub(super) async fn product_scan(
                         false,
                     );
                 }
-                Err(_) => {
+                Err(crate::product_cursor::ScanCursorError::Invalid) => {
                     return perr(
                         StatusCode::BAD_REQUEST,
                         "invalid_cursor",

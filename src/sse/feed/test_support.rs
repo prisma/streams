@@ -1,5 +1,5 @@
-//! Test-only knobs of the feed memory budget: sized, exhausted and released
-//! per rig.
+//! Test-only knobs of the feed memory budget (sized, exhausted and released
+//! per rig) and the ring charge its reservations are checked against.
 #![cfg(test)]
 use super::*;
 
@@ -79,5 +79,11 @@ impl LiveFeed {
             self.driving.load(Ordering::SeqCst),
             self.source_reads.load(Ordering::Relaxed)
         )
+    }
+
+    /// Retention tests compare the budget's reservation with the charge the
+    /// ring itself holds, the number `Drop` releases, never with a copy of it.
+    pub(crate) fn retained(&self) -> usize {
+        self.st.lock().unwrap().charge
     }
 }

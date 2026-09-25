@@ -1,0 +1,103 @@
+# Workload-cert field ladder, server role, WC_DIET=1 (the 10k-resident-stream
+# memory diet overrides the profile's caches; then RUNGFLAGS). The project is
+# reused across runs, so the previous run's writer generator env is merged in
+# (RUNBOOK §7.3; WC_GEN_REGION unset = same project). RUNGFLAGS come last:
+# SSE_MAX_CONNECTIONS=2000 overrides the profile's 1200.
+source bench/soak/wc-ladder.sh "if [ \"${WC_DIET:-0}\" = \"1\" ]; then"
+note ${WC_*} defaults are used; ADMIT_RSS_SHED_MB=600 and SLATEDB_RT_THREADS=2 are passed BEFORE the profile, so the profile's 500 and 4 win (later --env wins); see the overrides.
+note SOAK_RUN_ID / BIN_TAG are wc-<UTC timestamp>; a fixed stand-in is used.
+argv --listen 0.0.0.0:8080
+platform PORT=8080
+omit PROJECT_MEMORY_PRESSURE_BYTES only when WC_PMP is set (acceptance legs)
+omit PROJECT_MEMORY_RELEASE_PCT only when WC_PMP_RELEASE is set (acceptance legs)
+
+role gen
+env AWSBENCH_S3_KEY=bin/awsbench-wc-20260924T000000Z-x64
+env S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+env S3_BUCKET=placeholder-artifact-bucket
+env S3_REGION=auto
+env S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+env S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env BENCH_SYSTEM=prisma
+env BENCH_SHAPE=cert
+env BENCH_TARGET=https://placeholder-soak-server.invalid
+env TOKENS_S3_KEY=placeholder-wc/wc-20260924T000000Z/tokens.json
+env BENCH_CERT_TENANTS=10000
+env BENCH_CERT_SUB_TENANTS=1000
+env BENCH_CERT_SUBS_N=0
+env BENCH_CERT_SUB_OFFSET=0
+env BENCH_CERT_WRITERS=1
+env BENCH_CERT_ACTIVE=100
+env BENCH_CERT_FANOUT_ACTIVE=10
+env BENCH_CERT_WINDOW_MS=5000
+env BENCH_CERT_CONNECT_CONC=48
+env BENCH_CERT_WPS=1000
+env BENCH_CERT_SECS=1800
+env BENCH_CERT_SETTLE_SECS=60
+env BENCH_CERT_FEEDS_PER_PROJECT=1
+env BENCH_CERT_NOISY_FEEDS=0
+env BENCH_CERT_NOISY_SUBS_PER=2
+env BENCH_CERT_NOISY_WPS=100
+env BENCH_CERT_NOISY_RECORD_BYTES=8192
+env BENCH_WIDE_SETUP_CONC=64
+env BENCH_RECORD_BYTES=1024
+env BENCH_BATCH=1
+env BENCH_HOLD=1
+env BENCH_START_GATED=true
+env AUTH_TOKEN=placeholder-auth-token
+env STREAM_KEY=placeholder-stream-key
+env BENCH_STREAM=wcL1-
+supervisor KEEP_AWAKE=1
+
+role server
+supervisor SERVER_BINARY_S3_KEY=bin/streams-wc-20260924T000000Z-x64
+supervisor BIN_S3_ENDPOINT=https://placeholder-artifact-endpoint.invalid
+supervisor BIN_S3_BUCKET=placeholder-artifact-bucket
+supervisor BIN_S3_REGION=auto
+supervisor BIN_S3_ACCESS_KEY_ID=placeholder-artifact-key-id
+supervisor BIN_S3_SECRET_ACCESS_KEY=placeholder-artifact-secret
+env SLATE_S3_ENDPOINT=https://placeholder-data-endpoint.invalid
+env SLATE_S3_BUCKET=placeholder-data-bucket
+env SLATE_S3_REGION=auto
+env SLATE_S3_ACCESS_KEY_ID=placeholder-data-key-id
+env SLATE_S3_SECRET_ACCESS_KEY=placeholder-data-secret
+env AUTH_TOKEN=placeholder-auth-token
+env PATH_PREFIX=wc-20260924T000000Z
+env INSTANCE_NAME=streams-1
+env INITIAL_SHARDS=4
+env WAL_GROUP_COMMIT=1
+env WAL_FLUSH_GAP_MS=10
+env FLUSH_INTERVAL_MS=25
+env WAL_POST_ACK_GATHER_MS=6
+env FRAME_COMPRESS=1
+env ADMIT_MAX_INFLIGHT=512
+env ADMIT_MAX_INFLIGHT_PER_STREAM=256
+env LIMIT_RECS_PER_SEC=100000
+env ABSORB_BYTES=4194304
+env ABSORB_AGE_SECS=60
+env TRIM_PER_OP=65536
+env ABSORB_PACE_WINDOW_MS=50
+env ABSORB_PACE_MS=0
+env ABSORB_READ_PAR=8
+env ADMIT_RSS_SHED_MB=600
+env MAX_RECORD_PAYLOAD_BYTES=131072
+env POOL_IDLE_SECS=4
+supervisor KEEP_AWAKE=1
+env CELL_ID=mt-cell-1
+env PROJECT_ID=proj-mt-deploy
+env SLATEDB_RT_THREADS=2
+env STREAMS_AUTH_MODE=enforce
+env STREAMS_AUTH_ISSUER=https://auth.prisma.io
+env STREAMS_AUTH_KEYS_FILE=/tmp/feeds/keys.json
+env STREAMS_AUTH_POLICY_FILE=/tmp/feeds/policies.json
+env STREAMS_AUTH_GRANTS_FILE=/tmp/feeds/grants.json
+env STREAMS_AUTH_REFRESH_SECS=60
+supervisor FEEDS_S3_KEY=wc/wc-20260924T000000Z/feeds.json
+include deploy/profiles/compute-1g.env
+env SHARED_CACHE_BYTES=67108864
+env POSTINGS_CACHE_BYTES=16777216
+env HISTORY_CACHE_BYTES=16777216
+env TAIL_RING_BYTES=0
+env HANDLE_MAX_RESIDENT=6000
+env SSE_MAX_CONNECTIONS=2000
+supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

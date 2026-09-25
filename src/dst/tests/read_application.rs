@@ -82,10 +82,8 @@ async fn r06_empty_filtered_page_has_one_position_across_application_and_protoco
     assert_eq!(status, 200);
     assert_eq!(&body[..], b"[]");
     assert_eq!(
-        crate::offsets::Offset::parse(headers.get("stream-next-offset").unwrap())
-            .unwrap()
-            .scan_from(),
-        out.next.after
+        crate::offsets::parse(headers.get("stream-next-offset").unwrap()),
+        Ok((0, out.next.after))
     );
     let (status, headers, body) = preq(
         addr,
@@ -415,8 +413,8 @@ async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelop
         ("streams-internal-max-bytes", "4096"),
     ];
     headers.extend(target_headers.iter().map(|(k, v)| (*k, v.as_str())));
-    // scan_from() == 100, two records: beyond the tail.
-    let offset = crate::offsets::encode_ep(0, crate::offsets::Offset::before(100));
+    // next == 100, two records: beyond the tail.
+    let offset = crate::offsets::encode(0, 100);
     let (status, _, body) = preq(
         addr,
         "GET",
@@ -568,11 +566,9 @@ async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
     let (rig, desc) = relay_tail_rig().await;
     let addr = rig.addr;
     let raw_key = [("stream-encryption-key", PRISMA_KEY)];
-    let max = crate::offsets::Offset::before(u64::MAX).encode();
+    let max = crate::offsets::encode(0, u64::MAX);
     let raw_next = |headers: &std::collections::HashMap<String, String>| {
-        crate::offsets::Offset::parse(headers.get("stream-next-offset").unwrap())
-            .unwrap()
-            .scan_from()
+        crate::offsets::parse_scalar(headers.get("stream-next-offset").unwrap()).unwrap()
     };
     let (status, headers, body) = preq(
         addr,
@@ -652,7 +648,7 @@ async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
         ("streams-internal-max-bytes", "4096"),
     ];
     page.extend(target.iter().map(|(k, v)| (*k, v.as_str())));
-    let max = crate::offsets::encode_ep(0, crate::offsets::Offset::before(u64::MAX));
+    let max = crate::offsets::encode(0, u64::MAX);
     let (status, _, body) = preq(
         addr,
         "GET",

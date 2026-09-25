@@ -41,12 +41,45 @@ fn sig_compatibility_rules() {
     assert!(sig_compatible(&old2, &old2));
 }
 
-/// The fatal cutoff carried through anyhow names the reason the feed
-/// downcasts, so a bare error message never hides which cutoff fired.
+/// Item 87: which remote span refusals end the feed here (typed cutoffs)
+/// and which the same bound retries, with the cause it logs.
 #[test]
-fn a_fatal_span_cutoff_names_its_reason() {
-    let cutoff = crate::sse::source::FatalSpanCutoff(crate::sse::feed::SourceCutoff::WrongOwner);
-    assert_eq!(cutoff.to_string(), "fatal span cutoff: WrongOwner");
+fn remote_span_refusals_split_into_cutoffs_and_retries() {
+    use crate::application::read_remote::RemoteSpanError as R;
+    let verdict = |refusal| match super::spans::remote_span_verdict(3, refusal) {
+        SourceReadError::Fatal(cut) => Ok(cut),
+        SourceReadError::Retryable(cause) => Err(cause.to_string()),
+    };
+    assert_eq!(verdict(R::Unauthorized), Ok(SourceCutoff::FleetAuth));
+    assert_eq!(verdict(R::TargetGone), Ok(SourceCutoff::IncarnationChanged));
+    assert_eq!(verdict(R::TargetMismatch), Ok(SourceCutoff::TargetMismatch));
+    let looped = R::RedirectLoop {
+        first: "a".into(),
+        second: "b".into(),
+    };
+    assert_eq!(verdict(looped), Ok(SourceCutoff::RedirectLoop));
+    let busy = R::Retryable {
+        status: 503,
+        code: None,
+    };
+    assert_eq!(
+        verdict(busy),
+        Err("remote span 3: retryable 503 None".into())
+    );
+    let reset = R::Transport("reset".into());
+    assert_eq!(verdict(reset), Err("remote span 3: transport reset".into()));
+    let garbled = R::InvalidResponse("json".into());
+    assert_eq!(
+        verdict(garbled),
+        Err("remote span 3: invalid response json".into())
+    );
+    let moved = R::WrongOwner {
+        owner: "inst-c".into(),
+    };
+    assert_eq!(
+        verdict(moved),
+        Err("remote span 3: unresolved owner inst-c".into())
+    );
 }
 
 /// The linearization rule: a one-past offset maps to the span covering

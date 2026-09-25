@@ -223,8 +223,7 @@ async fn stale_view_read_across_compaction_gc(selector: Option<&str>) {
     // The engine builds the partition from this same settings owner.
     let settings = crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
     let poll = settings.manifest_poll_interval;
-    let (engine, absorber) =
-        open_engine_with_absorber_cfg(store.clone(), prefix, hash, &key, cfg).await;
+    let (engine, absorber) = open_engine_with_absorber_cfg(store.clone(), prefix, cfg).await;
     for _ in 0..4 {
         append_sized(&engine, hash, &key, "k", 64).await;
         wait_all_absorbed(&engine, &[hash]).await;

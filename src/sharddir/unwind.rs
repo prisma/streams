@@ -146,8 +146,13 @@ mod tests {
             msg.contains("scripted opener panic"),
             "a panicking opener must fail its open with the panic, got: {msg}"
         );
-        let (_started, completed, failed, _coalesced) = gate.instance_counters();
-        assert_eq!((completed, failed), (0, 1), "the panic is one failed open");
+        let opens = gate.stats_json();
+        assert_eq!(opens["failed"], 1, "the panic is one failed open: {opens}");
+        assert_eq!(opens["completed"], 0, "{opens}");
+        assert_eq!(
+            opens["in_flight"], 0,
+            "a panicked open is not in flight: {opens}"
+        );
         assert_eq!(
             gate.shutdown_pending().1,
             0,

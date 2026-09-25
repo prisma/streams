@@ -1,6 +1,7 @@
 """Syntax facts drive source rules; typed calls remain the compiler's job."""
 from collections import Counter
 import hashlib
+import posixpath
 import re
 from common import digest
 from lint_contract import from_compiler
@@ -106,11 +107,177 @@ def _exception_lints(value):
     }
 
 
-def _fingerprint_sites(metrics, prefix, facts):
+def _relative(qualified, owner):
+    """A site's item path below the exception's owner: renaming the owner or
+    narrowing onto an extracted item keeps every fingerprint."""
+    if qualified == owner or qualified.startswith(f'{owner}::'):
+        return qualified[len(owner):]
+    return qualified
+
+
+def _fingerprint_sites(metrics, prefix, facts, owner):
     for fact in facts:
-        site = f'{fact["qualified"]}\0{fact["value"]}'
+        qualified = _relative(fact['qualified'], owner)
+        site = f'{qualified}\0{fact["value"]}'
         digest = hashlib.sha256(site.encode()).hexdigest()[:16]
-        metrics[f'{prefix}:{fact["qualified"]}:{digest}'] += 1
+        metrics[f'{prefix}:{qualified}:{digest}'] += 1
+
+
+def exception_scopes(sources, facts):
+    """Yield (path, attribute, scope kind, location) for each reasoned exception.
+
+    The scope is the smallest parsed item enclosing the attribute, or the file;
+    a statement-level expectation measures its item.
+    """
+    for path, parsed in facts.items():
+        file_end = max(1, len(sources[path].splitlines()))
+        for attribute in parsed['facts']:
+            value = attribute['value']
+            if (attribute['kind'] not in ('attribute', 'macro-attribute')
+                    or not re.match(r'(allow|expect)\s*\(', value)
+                    or 'reason =' not in value):
+                continue
+            candidates = [item for item in parsed.get('items', [])
+                          if _inside(attribute['location'], item['location'])]
+            if candidates:
+                scope = min(candidates, key=lambda item: (
+                    item['location']['end_line'] - item['location']['line'],
+                    item['location']['end_column'] - item['location']['column'],
+                ))
+                yield path, attribute, scope['kind'], scope['location']
+            else:
+                yield path, attribute, 'crate', {'line': 1, 'column': 0, 'end_line': file_end,
+                                                 'end_column': 1 << 30}
+
+
+def _directory_owner(path):
+    """A file whose `mod x;` children live beside it rather than below it."""
+    name = posixpath.basename(path)
+    parent = posixpath.basename(posixpath.dirname(path))
+    return name in ('mod.rs', 'lib.rs', 'main.rs') or parent in ('bin', 'examples', 'tests', 'benches', 'fuzz_targets')
+
+
+def _child_modules(path, location, sources, facts):
+    """(qualified, resolved file or None) for each out-of-line module declared
+    inside `location` of `path`: a lint attribute on it, or on its parent,
+    covers the child file too."""
+    lines = sources[path].splitlines()
+    for item in facts[path].get('items', []):
+        where = item['location']
+        if (item['kind'] != 'module' or not _inside(where, location)
+                or not lines[where['end_line'] - 1].rstrip().endswith(';')):
+            continue
+        declared = [re.match(r'path\s*=\s*"([^"]*)"', fact['value']) for fact in facts[path]['facts']
+                    if classify(path, fact) == 'by-path-module' and _inside(fact['location'], where)]
+        folder = posixpath.dirname(path)
+        if declared:
+            candidates = [posixpath.normpath(posixpath.join(folder, match[1])) for match in declared if match]
+        else:
+            name = item['qualified'].rsplit('::', 1)[-1]
+            below = posixpath.join(folder, posixpath.basename(path).removesuffix('.rs'))
+            first, second = (folder, below) if _directory_owner(path) else (below, folder)
+            candidates = [posixpath.join(first, f'{name}.rs'), posixpath.join(first, name, 'mod.rs'),
+                          posixpath.join(second, f'{name}.rs'), posixpath.join(second, name, 'mod.rs')]
+        yield item['qualified'], next((c for c in candidates if c in sources), None)
+
+
+def _whole(path, sources):
+    return {'line': 1, 'column': 0, 'end_line': max(1, len(sources[path].splitlines())), 'end_column': 1 << 30}
+
+
+def scope_files(path, location, sources, facts):
+    """The (file, location) pairs an exception covers: its own scope and,
+    recursively, every out-of-line module file declared inside it; plus the
+    qualified names of declared modules no ratcheted file holds."""
+    covered, missing, pending, seen = [(path, location)], [], [(path, location)], {path}
+    while pending:
+        where, span = pending.pop()
+        for qualified, child in _child_modules(where, span, sources, facts):
+            if child is None:
+                missing.append(qualified)
+            elif child not in seen and child in facts:
+                seen.add(child)
+                covered.append((child, _whole(child, sources)))
+                pending.append((child, _whole(child, sources)))
+    return covered, missing
+
+
+def _measured(path, location, sources, facts, attributes):
+    """Code lines, and facts and items, of one covered span. Attributes (the
+    exception's own, docs, cfg), comments and blank lines are not scope: a
+    reworded or re-wrapped reason neither grows nor frees a ceiling."""
+    covered = attributes[path][1]
+    text = sources[path].splitlines()[location['line'] - 1:location['end_line']]
+    lines = sum(1 for number, line in enumerate(text, location['line'])
+                if number not in covered and line.strip() and not line.strip().startswith('//'))
+    scoped_facts = [fact for index, fact in enumerate(facts[path]['facts'])
+                    if index not in attributes[path][0] and _inside(fact['location'], location)]
+    scoped_items = [item for item in facts[path]['items'] if _inside(item['location'], location)]
+    return lines, scoped_facts, scoped_items
+
+
+def _attribute_spans(path, facts):
+    """(indices of facts inside attributes, line numbers attributes cover)."""
+    by_line = {}
+    for fact in facts[path]['facts']:
+        if fact['kind'] in ('attribute', 'macro-attribute'):
+            span = fact['location']
+            for number in range(span['line'], span['end_line'] + 1):
+                by_line.setdefault(number, []).append(span)
+    inside = {index for index, fact in enumerate(facts[path]['facts'])
+              if any(_inside(fact['location'], span) for span in by_line.get(fact['location']['line'], ()))}
+    return inside, set(by_line)
+
+
+def _lint_metrics(lint, owner, scoped_facts, scoped_items):
+    metrics = Counter()
+    for name, methods, total, prefix in (
+        ('clippy::unwrap_used', {'unwrap', 'unwrap_err'}, 'unwrap_sites', 'unwrap_site'),
+        ('clippy::expect_used', {'expect', 'expect_err'}, 'expect_sites', 'expect_site'),
+    ):
+        if lint != name:
+            continue
+        sites = [
+            fact for fact in scoped_facts
+            if fact['kind'] in {'method-call-site', 'call-site'}
+            and fact['value'].partition('\t')[0].rsplit('::', 1)[-1] in methods
+        ]
+        # A macro's arguments are opaque tokens to the parser; Clippy still
+        # lints a panic method written inside them.
+        written = re.compile(r'\.\s*(?:' + '|'.join(sorted(methods, reverse=True)) + r')\s*\(')
+        in_macros = [fact for fact in scoped_facts
+                     if fact['kind'] == 'macro-tokens' and written.search(fact['value'])]
+        metrics[total] = len(sites) + sum(len(written.findall(fact['value'])) for fact in in_macros)
+        _fingerprint_sites(metrics, prefix, sites, owner)
+        _fingerprint_sites(metrics, f'{prefix}:macro', in_macros, owner)
+        # Import aliases resolve above, but local function-pointer aliases
+        # require type resolution. Preserve every ordinary call spelling
+        # under this exceptional scope so such an alias cannot replace a
+        # benign call without an approved growth row.
+        _fingerprint_sites(
+            metrics,
+            f'{prefix}:ordinary-call',
+            (fact for fact in scoped_facts if fact['kind'] == 'call-site'),
+            owner,
+        )
+        # A local binding can hide an associated function behind an
+        # arbitrary callee name. Exact path sites make changing that
+        # binding an explicit decision without guessing Rust types.
+        _fingerprint_sites(
+            metrics,
+            f'{prefix}:path',
+            (fact for fact in scoped_facts if fact['kind'] == 'path'),
+            owner,
+        )
+    if lint == 'dead_code':
+        fields = [item for item in scoped_items if item['kind'] == 'field']
+        metrics['fields'] = len(fields)
+        for field in fields:
+            qualified = _relative(field['qualified'], owner)
+            site = f'{qualified}\0{field["signature"]}'
+            digest = hashlib.sha256(site.encode()).hexdigest()[:16]
+            metrics[f'field_site:{qualified}:{digest}'] += 1
+    return metrics
 
 
 def exception_contracts(sources, facts):
@@ -120,99 +287,144 @@ def exception_contracts(sources, facts):
     compiler still decides whether an unwrap is the Clippy lint or whether a
     field is dead. These counters ensure an existing item/impl expectation
     cannot silently cover one more candidate site or a larger structure.
+
+    A contract is (path, owner, scope kind, lint). The reason is explanation,
+    never identity, and each lint of a multi-lint attribute is its own contract.
     """
-    contracts = {}
-    for path, parsed in facts.items():
-        file_end = max(1, len(sources[path].splitlines()))
-        for attribute in parsed['facts']:
-            value = attribute['value']
-            if (attribute['kind'] not in ('attribute', 'macro-attribute')
-                    or not re.match(r'(allow|expect)\s*\(', value)
-                    or 'reason =' not in value):
+    contracts, measured, attributes = {}, set(), {}
+    for path, attribute, kind, location in exception_scopes(sources, facts):
+        lines, scoped_facts, scoped_items = 0, [], []
+        for where, span in scope_files(path, location, sources, facts)[0]:
+            if where not in attributes:
+                attributes[where] = _attribute_spans(where, facts)
+            covered = _measured(where, span, sources, facts, attributes)
+            lines += covered[0]
+            scoped_facts += covered[1]
+            scoped_items += covered[2]
+        scope = Counter({
+            'scope_lines': lines,
+            'nested_items': len(scoped_items),
+            # A compiler-independent multiplicity ceiling for other lint
+            # candidates (paths, calls, macros). Typed Clippy still decides
+            # which of them actually trigger a lint.
+            'syntax_facts': len(scoped_facts),
+        })
+        span = (location['line'], location['column'], location['end_line'], location['end_column'])
+        for lint in sorted(_exception_lints(attribute['value'])):
+            identity = (path, attribute['qualified'], kind, lint)
+            # One scope is measured once per lint, however many attributes on
+            # it name that lint: a redundant attribute is not extra ceiling.
+            if (identity, span) in measured:
                 continue
-            candidates = [item for item in parsed['items']
-                          if _inside(attribute['location'], item['location'])]
-            if candidates:
-                scope = min(candidates, key=lambda item: (
-                    item['location']['end_line'] - item['location']['line'],
-                    item['location']['end_column'] - item['location']['column'],
-                ))
-                location = scope['location']
-                kind = scope['kind']
-            else:
-                location = {'line': 1, 'column': 0, 'end_line': file_end,
-                            'end_column': 1 << 30}
-                kind = 'crate'
-            lints = _exception_lints(value)
-            scoped_facts = [fact for fact in parsed['facts']
-                            if _inside(fact['location'], location)]
-            scoped_items = [item for item in parsed['items']
-                            if _inside(item['location'], location)]
-            metrics = Counter({
-                'scope_lines': location['end_line'] - location['line'] + 1,
-                'nested_items': len(scoped_items),
-                # A compiler-independent multiplicity ceiling for other lint
-                # candidates (paths, calls, macros, attributes). Typed Clippy
-                # still decides which of them actually trigger a lint.
-                'syntax_facts': len(scoped_facts),
-            })
-            for lint, methods, total, prefix in (
-                ('clippy::unwrap_used', {'unwrap', 'unwrap_err'}, 'unwrap_sites', 'unwrap_site'),
-                ('clippy::expect_used', {'expect', 'expect_err'}, 'expect_sites', 'expect_site'),
-            ):
-                if lint not in lints:
-                    continue
-                sites = [
-                    fact for fact in scoped_facts
-                    if fact['kind'] in {'method-call-site', 'call-site'}
-                    and fact['value'].partition('\t')[0].rsplit('::', 1)[-1] in methods
-                ]
-                metrics[total] = len(sites)
-                _fingerprint_sites(metrics, prefix, sites)
-                # Import aliases resolve above, but local function-pointer aliases
-                # require type resolution. Preserve every ordinary call spelling
-                # under this exceptional scope so such an alias cannot replace a
-                # benign call without an explicit new exception decision.
-                _fingerprint_sites(
-                    metrics,
-                    f'{prefix}:ordinary-call',
-                    (fact for fact in scoped_facts if fact['kind'] == 'call-site'),
-                )
-                # A local binding can hide an associated function behind an
-                # arbitrary callee name. Exact path sites make changing that
-                # binding an explicit decision without guessing Rust types.
-                _fingerprint_sites(
-                    metrics,
-                    f'{prefix}:path',
-                    (fact for fact in scoped_facts if fact['kind'] == 'path'),
-                )
-            if 'dead_code' in lints:
-                fields = [item for item in scoped_items if item['kind'] == 'field']
-                metrics['fields'] = len(fields)
-                for field in fields:
-                    site = f'{field["qualified"]}\0{field["signature"]}'
-                    digest = hashlib.sha256(site.encode()).hexdigest()[:16]
-                    metrics[f'field_site:{field["qualified"]}:{digest}'] += 1
-            identity = (path, attribute['qualified'], kind, value)
-            if identity in contracts:
-                contracts[identity].update(metrics)
-            else:
-                contracts[identity] = metrics
+            measured.add((identity, span))
+            metrics = contracts.setdefault(identity, Counter())
+            metrics.update(scope)
+            metrics.update(_lint_metrics(lint, attribute['qualified'], scoped_facts, scoped_items))
     return contracts
 
 
-def exception_growth(current, previous):
-    failures = []
-    for identity, metrics in current.items():
-        if identity not in previous:
-            continue  # A new/changed reason is the explicit review decision.
-        before = previous[identity]
-        for metric, count in metrics.items():
-            if count > before.get(metric, 0):
-                failures.append(
-                    f'accepted exception grew without a new decision: {identity}: '
-                    f'{metric} {before.get(metric, 0)} -> {count}'
-                )
+GROWTH_ROW_FIELDS = frozenset(('path', 'owner', 'scope', 'lint', 'metrics', 'rationale', 'approver'))
+
+
+def growth_ledger(document):
+    """The rows of docs/quality/exception-growth.json, failing on any other shape."""
+    if set(document) != {'schema', 'rows'} or document['schema'] != 1 or not isinstance(document['rows'], list):
+        raise ValueError(f'invalid exception growth ledger: {sorted(document)}')
+    return document['rows']
+
+
+def _growth_rows(rows):
+    approved = {}
+    for row in rows:
+        valid = (isinstance(row, dict) and set(row) == GROWTH_ROW_FIELDS
+                 and all(isinstance(row[k], str) and row[k].strip()
+                         for k in GROWTH_ROW_FIELDS - {'metrics'})
+                 and isinstance(row['metrics'], dict) and row['metrics']
+                 and all(isinstance(m, str) and m and type(n) is int and n > 0
+                         for m, n in row['metrics'].items()))
+        identity = (row['path'], row['owner'], row['scope'], row['lint']) if valid else None
+        if not valid or identity in approved:
+            raise ValueError(f'invalid exception growth row: {row}')
+        approved[identity] = row['metrics']
+    return approved
+
+
+def _module(path):
+    stem = path.removesuffix('.rs')
+    for leaf in ('/mod', '/main', '/lib'):
+        stem = stem.removesuffix(leaf)
+    return stem
+
+
+def _related(one, other):
+    """One file's module is the other's, or encloses it (src/fleet.rs and
+    src/fleet/mod.rs, src/product.rs and src/product/scan.rs)."""
+    a, b = _module(one), _module(other)
+    return a == b or a.startswith(f'{b}/') or b.startswith(f'{a}/')
+
+
+def _origins(identity, candidates, previous, current):
+    """The vanished contracts a moved one is compared with: those in a related
+    module when there are any, else all of them (a move to an unrelated module
+    is still compared), and among those an exact match when there is one."""
+    related = [c for c in candidates if _related(c[0], identity[0])] or candidates
+    exact = [c for c in related if previous[c] == current[identity]]
+    return exact[:1] or related
+
+
+def _floor(origins, previous):
+    return Counter({m: min(previous[o][m] for o in origins) for o in origins for m in previous[o]})
+
+
+def exception_predecessors(current, previous):
+    """identity -> (the ceiling it is held to, its origins, a note naming them).
+
+    A contract that vanished from one file and reappears with the same owner,
+    scope kind and lint in another has moved. One that appears under another
+    owner, in the same file or a related module, with the same scope kind and
+    lint as a vanished one is paired with it: a rename, or a narrowing onto
+    an extracted item. Among several candidates an exact match is the origin;
+    otherwise each metric is held to the candidates' smallest value. A
+    vanished contract may be the origin of more than one. Any other appeared
+    contract is a new exception, reviewed in source.
+    """
+    vanished = [identity for identity in previous if identity not in current]
+    result = {}
+    for identity in current:
+        if identity in previous:
+            result[identity] = (previous[identity], (), '')
+            continue
+        moves = sorted(v for v in vanished if v[1:] == identity[1:])
+        if moves:
+            origins = _origins(identity, moves, previous, current)
+            result[identity] = (_floor(origins, previous), tuple(origins),
+                                f' (moved from {", ".join(o[0] for o in origins)})')
+            continue
+        renames = sorted(v for v in vanished if v[2:] == identity[2:] and _related(v[0], identity[0]))
+        if renames:
+            origins = _origins(identity, renames, previous, current)
+            names = ', '.join(o[1] if o[0] == identity[0] else f'{o[0]} {o[1]}' for o in origins)
+            result[identity] = (_floor(origins, previous), tuple(origins), f' (paired with vanished {names})')
+    return result
+
+
+def exception_growth(current, previous, rows=()):
+    approved, failures = _growth_rows(rows), []
+    for identity, (before, _, note) in exception_predecessors(current, previous).items():
+        recorded = approved.get(identity, {})
+        failures.extend(
+            f'accepted exception grew without an approved growth row: {identity}{note}: '
+            f'{metric} {before[metric]} -> {count}'
+            for metric, count in current[identity].items()
+            if count > before[metric] and recorded.get(metric) != count
+        )
+    # A row records its contract's current state: it stays valid while the
+    # contract holds exactly those values, and goes stale when it changes.
+    failures.extend(
+        f'stale exception growth row (the contract no longer has these values): {identity}'
+        for identity, metrics in approved.items()
+        if identity not in current or any(current[identity][m] != n for m, n in metrics.items())
+    )
     return failures
 
 
@@ -285,6 +497,20 @@ def violations(sources, facts, before_lines, prior_lines, allowed, architecture)
                         failures.append(f'primitive-spawn exception needs a registered function owner: {path}: {fact["qualified"]}')
                 if identity not in allowed and ('reason =' not in value or not re.search(r'"[^";]+;[^";]+;[^";]+"', value)):
                     failures.append(f'exception needs owner; invariant; alternative: {path}: {value}')
+    for path, attribute, _, location in exception_scopes(sources, facts):
+        failures.extend(f'exception covers a module file the ratchet does not read: {path}: {qualified}'
+                        for qualified in scope_files(path, location, sources, facts)[1])
+    for path, parsed in facts.items():
+        for fact in parsed['facts']:
+            if classify(path, fact) != 'by-path-module':
+                continue
+            # An exception moved into a file the ratchet does not read would
+            # leave every ceiling behind with it.
+            target = re.match(r'path\s*=\s*"([^"]*)"', fact['value'])
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target[1])) if target else None
+            if resolved not in sources:
+                failures.append(f'by-path module outside the ratcheted source set: {path}: '
+                                f'{target[1] if target else fact["value"]}')
     for identity, count in inventory(facts).items():
         # A new narrow reasoned expectation is reviewed in-source, not another
         # baseline entry. Unknown macros/effects/globs/statics fail until owned.

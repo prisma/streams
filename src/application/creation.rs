@@ -202,9 +202,11 @@ pub(crate) fn create_request_hash(
     }
     hex(&h.finalize()[..16])
 }
+/// A fresh incarnation hands back the epoch it minted, so key material derived
+/// from it (the product watch verifier) never re-parses the hex written here.
 #[expect(
     clippy::too_many_arguments,
-    reason = "fresh_desc; a fresh descriptor is built from the resolved name, epoch, policy and fork parts separately as creation decided them; a builder would restate the descriptor's own fields"
+    reason = "fresh_desc; a fresh descriptor is built from the resolved name, key, content type and expiry policy as creation decided them, and returns the epoch it minted; a builder would restate the descriptor's own fields"
 )]
 pub(crate) fn fresh_desc(
     service: &CreationService,
@@ -213,9 +215,9 @@ pub(crate) fn fresh_desc(
     content_type: String,
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
-) -> crate::registry::PersistedDescriptor {
+) -> (crate::registry::PersistedDescriptor, [u8; 16]) {
     let epoch = service.runtime.epoch();
-    crate::registry::PersistedDescriptor {
+    let desc = crate::registry::PersistedDescriptor {
         name: sref.name().as_str().to_string(),
         account_id: Some(service.deployment.account_id().to_string()),
         project_id: sref.project_id().clone(),
@@ -240,7 +242,8 @@ pub(crate) fn fresh_desc(
         watch_sig_key: None,
         parent_ref_pending: false,
         layout_version: crate::registry::LAYOUT_VERSION,
-    }
+    };
+    (desc, epoch)
 }
 
 /// The records a JSON body holds, as a JSON collection stores them: each

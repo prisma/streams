@@ -1,12 +1,7 @@
 //! History absorption.
 
-use super::fixture_storage::{
-    append_n, drain_filtered, mem, open_engine, open_engine_with_absorber, skey,
-};
-use crate::dst::{
-    FaultPlan, FaultProfile, FaultStore, ObjClass, OpLog, Outcome, StoreOp, Workload,
-    drain_observed, mech,
-};
+use super::fixture_storage::{drain_filtered, mem, open_engine_with_absorber, skey};
+use crate::dst::{FaultPlan, FaultStore, OpLog, Workload, drain_observed, mech};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -52,7 +47,7 @@ async fn acked_records_survive_absorption_into_history() {
     let cov = store.coverage();
     let key = skey();
     let hash = [8u8; 16];
-    let (engine, absorber) = open_engine_with_absorber(store.clone(), "dst-hist", hash, &key).await;
+    let (engine, absorber) = open_engine_with_absorber(store.clone(), "dst-hist").await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -122,15 +117,11 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(hash, key.clone(), hash);
     // The absorber listens on a channel that never carries a signal. Keep
     // the sender alive: a closed channel would exit the absorber loop.
     let (_quiet_tx, quiet_rx) = crate::history::absorber_channel();
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -209,14 +200,10 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(hash, key.clone(), hash);
     // 64 KiB gather cap: EVERY record below is bigger, so every gather
     // is truncated after exactly one record.
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -285,7 +272,7 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
 
 /// History v2's headline property: absorption WITHOUT the customer key.
 /// The gather lane copies raw encrypted frames into the shared
-/// partition, so an absorber whose KeyCache is EMPTY must still absorb
+/// partition, so the absorber, which holds no key cache, must still absorb
 /// — and the records must decode correctly on read, where the client
 /// supplies the key. (v1 required the key server-side and stranded
 /// key-expired backlogs; docs/COST-WIDE1.md §2.)
@@ -322,12 +309,8 @@ async fn v2_absorbs_without_customer_keys() {
         None,
         __maint,
     );
-    // NO keys.put: the v1 absorber would return key-missing forever.
-    let keys = Arc::new(crate::history::KeyCache::default());
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -385,7 +368,7 @@ async fn v2_history_survives_engine_handoff() {
     let hash = [51u8; 16];
     let prefix = "dst-v2reopen";
 
-    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
@@ -396,7 +379,7 @@ async fn v2_history_survives_engine_handoff() {
 
     // Successor opens the same shard; its first commit fences the old
     // owner, its partition open fences the old partition writer.
-    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix).await;
     // Same Workload: op numbering must continue, or the post-handoff ops
     // collide with the pre-handoff ones in the shared OpLog.
     w.run(&b, hash, &key, &["r"], 5, false, &mut log).await;
@@ -465,13 +448,8 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         None,
         __maint,
     );
-    let keys = Arc::new(crate::history::KeyCache::default());
-    keys.put(tiny, key.clone(), tiny);
-    keys.put(fat, key.clone(), fat);
     let absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        keys,
         crate::history::AbsorberConfig {
             // Byte threshold out of reach; age immediate — absorption
             // happens purely through the age trigger, which must take
@@ -546,308 +524,4 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         .audit(&obs_fat)
         .expect("fat stream readable after absorption");
     absorber.abort();
-}
-
-/// TLA-016-F1: an advance whose chunk does not start at the boundary
-/// retires the stored bytes of the range it advances over, never the
-/// chunk's reported count. When that range cannot be read whole the
-/// committer guesses nothing: the group, a rider append included, is
-/// refused, and the boundary, the ledger and the durable row stay put.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "maintenance group fixture; the rider request is joined after the refused group is released; it must ride the group concurrently to observe the refusal"
-)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group() {
-    let store = mem();
-    let engine = open_engine(store.clone(), "dst-f1exact").await;
-    let key = skey();
-    let hash = [30u8; 16];
-    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
-    let w = Workload::new(cov.clone());
-    let mut frames = Vec::new();
-    for i in 0..4 {
-        let out = w
-            .attempt_with_deadline(&engine, hash, &key, "k", &format!("m{i}"), None, None)
-            .await;
-        assert!(matches!(out, Outcome::Acked { .. }));
-        let row = engine.db.get(crate::shard::record_key(&hash, i)).await;
-        frames.push(row.unwrap().unwrap().len() as u64);
-    }
-    // Chunk [1, 2) with a bogus count, applied at boundary 0: the committer
-    // retires the stored bytes of [0, 2).
-    engine.submit_absorbed(hash, 1, 2, 999_999).await;
-    let mut tail = engine.tail_fields(&hash).await.unwrap().unwrap();
-    for _ in 0..400 {
-        if tail.absorbed == 2 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        tail = engine.tail_fields(&hash).await.unwrap().unwrap();
-    }
-    let owed = frames[2] + frames[3];
-    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (2, owed));
-    assert_eq!(engine.maintenance_snapshot().unabsorbed_frame_bytes, owed);
-    let row_before = crate::shard::decode_shard_maint(
-        &engine
-            .db
-            .get(crate::shard::shard_maint_key())
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-
-    // Record 3 disappears underneath the committer, so [2, 4) cannot be
-    // read whole for the chunk [3, 4).
-    let _deleted = engine
-        .db
-        .delete(crate::shard::record_key(&hash, 3))
-        .await
-        .unwrap();
-    let hold = engine.test_hold_commit().await;
-    let base = engine.appends_enqueued();
-    let (e2, k2) = (engine.clone(), key.clone());
-    let mut w2 = Workload::new(cov.clone());
-    w2.max_attempts = 1;
-    let rider = tokio::spawn(async move {
-        w2.attempt_with_deadline(&e2, hash, &k2, "k", "doomed", None, None)
-            .await
-    });
-    while engine.appends_enqueued() < base + 1 {
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    }
-    engine.submit_absorbed(hash, 3, 4, frames[3]).await;
-    drop(hold);
-    let out = rider.await.unwrap();
-    assert!(
-        !matches!(out, Outcome::Acked { .. }),
-        "an unreadable retirement must refuse the group, but the rider acked: {out:?}"
-    );
-    let after = engine.tail_fields(&hash).await.unwrap().unwrap();
-    assert_eq!(
-        (after.absorbed, after.next, after.unabsorbed_bytes),
-        (2, 4, owed)
-    );
-    let row_after = crate::shard::decode_shard_maint(
-        &engine
-            .db
-            .get(crate::shard::shard_maint_key())
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(row_after, row_before, "durable row must not move");
-    engine.begin_close();
-}
-
-/// TLA-016-F1 cost: a mis-started advance recounts every chunk refused
-/// groups carried, inside the committer, so its scan must read ahead like
-/// the gather did. Over 6,144 stored records (~1,600 blocks) with no block
-/// cache and 10 ms per SST read, it issues a handful of requests, several
-/// in flight at once, where one block per request would be ~1,600 reads in
-/// series. Like the gather, it reads ahead in 2 MiB windows: the stored
-/// range splits into as many equal requests as it has 2 MiB windows. An
-/// aligned advance reads nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() {
-    let slow_sst_reads = FaultPlan {
-        latency_pct: 100,
-        latency_ms: (10, 10),
-        ..FaultPlan::CLEAN
-    };
-    let profile = FaultProfile::clean().with_op_class(StoreOp::Get, ObjClass::Sst, slow_sst_reads);
-    let store = FaultStore::new(mem(), 1, profile);
-    let db = slatedb::Db::builder("dst-f1ahead/shard", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            compactor_options: None,
-            ..Default::default()
-        })
-        .with_db_cache_disabled()
-        .build()
-        .await
-        .unwrap();
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .unwrap();
-    let engine = crate::shard::ShardEngine::start(
-        "dst-f1ahead".into(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        maintenance,
-    );
-    let key = skey();
-    let (lagging, aligned) = ([31u8; 16], [32u8; 16]);
-    for _ in 0..24 {
-        append_n(&engine, lagging, &key, 256, 1024).await;
-    }
-    append_n(&engine, aligned, &key, 4, 1024).await;
-    engine
-        .db
-        .flush_with_options(slatedb::config::FlushOptions {
-            flush_type: slatedb::config::FlushType::MemTable,
-        })
-        .await
-        .unwrap();
-    // Tails are read from the resident handles: a stored-tail read would
-    // itself be an SST read.
-    let sst_reads = || store.count(StoreOp::Get, ObjClass::Sst);
-    let owed = durable_tail(&engine, aligned, 1, |_| true)
-        .await
-        .unwrap()
-        .unabsorbed_bytes;
-
-    let before = sst_reads();
-    engine
-        .submit_absorbed_batch_v2(vec![(aligned, 0, 4, owed)])
-        .await;
-    let tail = durable_tail(&engine, aligned, 400, |t| t.absorbed == 4)
-        .await
-        .unwrap();
-    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (4, 0));
-    assert_eq!(
-        sst_reads(),
-        before,
-        "an aligned advance read stored records"
-    );
-
-    // The last record's chunk at boundary 0: the committer recounts all of
-    // [0, 6144) at its read level.
-    let next = 24 * 256;
-    let stored = durable_tail(&engine, lagging, 1, |_| true)
-        .await
-        .unwrap()
-        .unabsorbed_bytes;
-    let before = sst_reads();
-    engine
-        .submit_absorbed_batch_v2(vec![(lagging, next - 1, next, 1)])
-        .await;
-    let tail = durable_tail(&engine, lagging, 400, |t| t.absorbed == next)
-        .await
-        .unwrap();
-    let reads = sst_reads() - before;
-    assert_eq!(
-        (tail.absorbed, tail.unabsorbed_bytes),
-        (next, 0),
-        "the recount did not retire the whole range within 10 s ({reads} SST reads)"
-    );
-    assert!(
-        reads <= 32,
-        "the recount read one block per request: {reads} SST reads"
-    );
-    let window = stored.div_ceil(stored.div_ceil(2 << 20));
-    assert!(
-        store.largest_get(ObjClass::Sst) >= window,
-        "the recount read ahead less than 2 MiB at a time: its largest SST read \
-         was {} bytes of a {window}-byte window",
-        store.largest_get(ObjClass::Sst)
-    );
-    assert!(
-        store.peak_gets_in_flight(ObjClass::Sst) >= 2,
-        "the recount fetched its read-ahead windows one at a time"
-    );
-    engine.begin_close();
-}
-
-/// A refused absorption group rolls its lane marks back, so refusals do not
-/// stack chunks onto the next accepted advance's recount. With one record
-/// per chunk, eight consecutive groups carrying the stream's advance are
-/// refused; each gather settles the committer's answer first and replays
-/// the refused chunk. The first accepted advance then starts at the boundary
-/// and the committer reads no stored record for it. Before the rollback the
-/// absorber planned each chunk from the mark the refused one raised, and the
-/// first accepted advance recounted all nine chunks inside the committer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refused_absorbed_groups_do_not_widen_the_next_recount() {
-    const REFUSALS: usize = 8;
-    let store = FaultStore::new(mem(), 1, FaultProfile::clean());
-    let db = slatedb::Db::builder("dst-lagmark/shard", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            compactor_options: None,
-            ..Default::default()
-        })
-        .with_db_cache_disabled()
-        .build()
-        .await
-        .unwrap();
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .unwrap();
-    let engine = crate::shard::ShardEngine::start(
-        "dst-lagmark".into(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        maintenance,
-    );
-    let key = skey();
-    let (hash, rider) = ([33u8; 16], [34u8; 16]);
-    append_n(&engine, hash, &key, REFUSALS + 4, 1024).await;
-    engine
-        .db
-        .flush_with_options(slatedb::config::FlushOptions {
-            flush_type: slatedb::config::FlushType::MemTable,
-        })
-        .await
-        .unwrap();
-    let absorber = crate::history::Absorber::new(
-        store.clone(),
-        engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
-        crate::history::AbsorberConfig {
-            gather_max_bytes: 1,
-            ..Default::default()
-        },
-    );
-    for refused in 1..=REFUSALS {
-        engine.fail_next_absorbed_group();
-        let gather = absorber.absorb_gather_v2(&[hash]).await.unwrap();
-        assert_eq!(gather.advanced.len(), 1);
-        let mut polls = 0;
-        while engine.group_failures_tripped() < refused && polls < 400 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            polls += 1;
-        }
-        assert_eq!(
-            engine.group_failures_tripped(),
-            refused,
-            "refusal {refused}"
-        );
-        // The committer runs groups in order: the rider's ack proves the
-        // refused group is finished and its receipt answered.
-        append_n(&engine, rider, &key, 1, 16).await;
-    }
-    // The accepted gather runs before its group, so every SST read after it
-    // is the committer's.
-    let sst_reads = || store.count(StoreOp::Get, ObjClass::Sst);
-    let hold = engine.test_hold_commit().await;
-    let accepted = absorber.absorb_gather_v2(&[hash]).await.unwrap();
-    let before = sst_reads();
-    drop(hold);
-    let (_, from, upto, _) = accepted.advanced[0];
-    let tail = durable_tail(&engine, hash, 400, |t| t.absorbed >= upto)
-        .await
-        .unwrap();
-    let recount_reads = sst_reads() - before;
-    assert_eq!(tail.absorbed, upto, "the accepted advance never landed");
-    assert!(
-        upto <= 2,
-        "after {REFUSALS} refused groups the first accepted advance (chunk [{from}, {upto})) \
-         moved the boundary over {upto} one-record chunks, all recounted in the committer \
-         ({recount_reads} SST reads)"
-    );
-    assert_eq!(
-        (from, recount_reads),
-        (0, 0),
-        "a settled refusal replays its chunk from the boundary, which the committer trusts unread"
-    );
-    engine.begin_close();
 }

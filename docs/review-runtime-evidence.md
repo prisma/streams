@@ -20,7 +20,7 @@ Production protocol leases and runtime timing use the injected runtime clock. HT
 
 ## R17: readiness
 
-TaskMonitor reports unready before registration, after shutdown or stop, and after any critical task returns, panics or aborts. Normal noncritical completion does not poison serving. Ten task monitor tests passed. An additional real-router test exercised critical termination at both `/health` and `/readyz` and required HTTP 503 (one test passed).
+TaskMonitor reports unready before registration, after shutdown or stop, and after any critical task returns, panics or aborts. Normal noncritical completion does not poison serving. Ten task monitor tests passed. An additional real-router test exercised critical termination at both `/health` and `/readyz` and required HTTP 503 (one test passed). Item 38: under the binary's process root a critical exit, `Done` included, also requests the ordered stop and fails the process (exit 1), bounded off the executor; `TaskMonitor` readiness is unchanged for every other supervisor.
 
 ## R18: scaler bounds and determinism
 

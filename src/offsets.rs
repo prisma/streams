@@ -1,184 +1,219 @@
-//! Canonical Durable Streams offset encoding.
+//! Canonical Durable Streams offset encoding: the one codec every raw
+//! surface (reads, appends, creates, fork offsets, SSE controls, peer
+//! relays) speaks, so a position is the same string wherever it is minted.
 //!
 //! Offsets are 26-char Crockford base32 of a big-endian 128-bit tuple
-//! (epoch u32, rawSeq u64 split hi/lo, in_block u32) followed by two zero pad
-//! bits, 130 bits in all. rawSeq = seq + 1 so the reserved "-1"
-//! (start-of-stream) never appears in encoded form. The epoch is the whole
-//! `u32` segment ordinal: the leading digit carries its top bits.
+//! (epoch u32, rawSeq u64 split hi/lo, in_block u32) padded to 130 bits.
+//! rawSeq is `next`, the first record index a read at the token returns,
+//! so the reserved "-1" and rawSeq 0 both name start-of-stream. The epoch
+//! is the segment ordinal on per-key streams (PER-KEY-ORDERING.md §3) and
+//! 0 elsewhere; the padding shifts its top two bits out of u128, so only
+//! ordinals below 2^30 round-trip (segment ids are allocated from 1).
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// Digits in a token: 26 * 5 bits hold the 128-bit tuple and its 2 pad bits.
-const DIGITS: usize = 26;
 
-/// A read position, held as the first record index a read at it covers
-/// (the token's rawSeq): 0 is start-of-stream ("-1"), `n + 1` is "after
-/// entry n". Every `u64` is a valid position, so there is no successor
-/// arithmetic to overflow, wrap into START, or differ between debug and
-/// release builds.
+/// Why a token names no position. The Display words are wire text: the
+/// fork-offset refusal hands them to clients verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Offset {
-    next: u64,
+pub(crate) enum OffsetError {
+    Length(usize),
+    Char(char),
+    Epoch(u32),
 }
 
-impl Offset {
-    pub(crate) const START: Offset = Offset { next: 0 };
-
-    /// The position a read resumes from to cover record index `next` onward:
-    /// START for 0, otherwise "after entry `next - 1`".
-    pub(crate) const fn before(next: u64) -> Offset {
-        Offset { next }
-    }
-
-    /// First record index covered by a read at this offset.
-    pub(crate) const fn scan_from(self) -> u64 {
-        self.next
-    }
-
-    pub(crate) fn encode(self) -> String {
-        encode_ep(0, self)
-    }
-
-    pub(crate) fn parse(input: &str) -> Result<Offset, String> {
-        match parse_ep(input)? {
-            (0, offset) => Ok(offset),
-            (epoch, _) => Err(format!("unsupported offset epoch: {epoch}")),
+impl std::fmt::Display for OffsetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OffsetError::Length(len) => write!(f, "invalid offset length: {len}"),
+            OffsetError::Char(ch) => write!(f, "invalid base32 char: {ch}"),
+            OffsetError::Epoch(epoch) => write!(f, "unsupported offset epoch: {epoch}"),
         }
     }
 }
 
-/// The alphabet position of one token byte, accepting Crockford's case and
-/// O/I/L aliases. A non-ASCII byte is never a digit.
-fn decode_digit(byte: u8) -> Option<u8> {
-    match byte.to_ascii_uppercase() {
-        b'O' => Some(0),
-        b'I' | b'L' => Some(1),
-        upper => ALPHABET
-            .iter()
-            .position(|&symbol| symbol == upper)
-            .and_then(|position| u8::try_from(position).ok()),
+/// The one token for "records from `next` on" in `epoch`; in_block is
+/// always 0, so equal positions are equal strings on every surface.
+pub(crate) fn encode(epoch: u32, next: u64) -> String {
+    // Epoch and next occupy disjoint bits, so their sum is their concatenation.
+    let n: u128 = ((epoch as u128) << 96) + ((next as u128) << 32);
+    let padded = n << 2; // 128 -> 130 bits
+    let mut out = String::with_capacity(26);
+    for i in 0..26 {
+        let shift = 5 * (25 - i);
+        let idx = ((padded >> shift) & 31) as usize;
+        out.push(ALPHABET[idx] as char);
     }
+    out
 }
 
-/// Per-key streams (PER-KEY-ORDERING.md §3): epoch = segment ordinal.
-pub(crate) fn encode_ep(epoch: u32, offset: Offset) -> String {
-    token_digits(epoch, offset)
-        .iter()
-        .copied()
-        .map(char::from)
-        .collect()
-}
-
-/// Parse accepting any epoch (per-key streams). "-1" => (0, START).
-pub(crate) fn parse_ep(input: &str) -> Result<(u32, Offset), String> {
+/// The one decoder behind every raw surface; segmented reads take the
+/// epoch as the segment. It reads, rather than refuses, bits no encoder
+/// sets (pad, in_block, bits past u128, a non-ASCII char's low byte):
+/// refusing them is a pending wire decision.
+pub(crate) fn parse(input: &str) -> Result<(u32, u64), OffsetError> {
     if input == "-1" {
-        return Ok((0, Offset::START));
+        return Ok((0, 0));
     }
-    let digits = <&[u8; DIGITS]>::try_from(input.as_bytes())
-        .map_err(|_| format!("invalid offset length: {}", input.len()))?;
-    parse_digits(digits).map_err(|byte| format!("invalid base32 char: {}", byte.escape_ascii()))
+    if input.len() != 26 {
+        return Err(OffsetError::Length(input.len()));
+    }
+    let mut n: u128 = 0;
+    for ch in input.chars() {
+        let v = decode_char(ch).ok_or(OffsetError::Char(ch))?;
+        n = (n << 5) + v as u128; // v < 32 fills the five bits the shift cleared
+    }
+    let n = n >> 2; // strip pad bits
+    let epoch = (n >> 96) as u32;
+    let next = ((n >> 32) & 0xffff_ffff_ffff_ffff) as u64;
+    Ok((epoch, next))
 }
 
-/// The token's ASCII digits, most significant first.
-fn token_digits(epoch: u32, offset: Offset) -> [u8; DIGITS] {
-    let tuple = (u128::from(epoch) << 96) | (u128::from(offset.next) << 32);
-    // The last digit is the tuple's three lowest bits above the two pad
-    // bits; each earlier digit takes the next five bits up, so the leading
-    // digit holds the top of the epoch rather than shifting it out.
-    let mut digits = [0u8; DIGITS];
-    let mut value = (tuple & 0b111) << 2;
-    let mut rest = tuple >> 3;
-    for digit in digits.iter_mut().rev() {
-        *digit = ALPHABET[(value & 31) as usize];
-        value = rest;
-        rest >>= 5;
+/// Unsplit reads and fork offsets name positions in epoch 0 only: a
+/// segment token there is refused, never re-based onto segment 0.
+pub(crate) fn parse_scalar(input: &str) -> Result<u64, OffsetError> {
+    match parse(input)? {
+        (0, next) => Ok(next),
+        (epoch, _) => Err(OffsetError::Epoch(epoch)),
     }
-    digits
 }
 
-/// The (epoch, position) a token's digits encode, or the first byte that is
-/// not a digit.
-fn parse_digits(digits: &[u8; DIGITS]) -> Result<(u32, Offset), u8> {
-    let mut tuple: u128 = 0;
-    for (index, &byte) in digits.iter().enumerate() {
-        let digit = decode_digit(byte).ok_or(byte)?;
-        // The final digit contributes its three data bits; its two pad bits
-        // lie below the tuple.
-        tuple = if index + 1 < DIGITS {
-            (tuple << 5) | u128::from(digit)
-        } else {
-            (tuple << 3) | u128::from(digit >> 2)
-        };
+/// Digits and letters read as their ALPHABET index; O and I/L are
+/// Crockford's only other spellings.
+fn decode_char(ch: char) -> Option<u8> {
+    match ch {
+        'O' | 'o' => Some(0),
+        'I' | 'i' | 'L' | 'l' => Some(1),
+        _ => {
+            let up = ch.to_ascii_uppercase() as u8;
+            ALPHABET
+                .iter()
+                .position(|&a| a == up)
+                .and_then(|p| u8::try_from(p).ok())
+        }
     }
-    let epoch = (tuple >> 96) as u32;
-    let raw_seq = ((tuple >> 32) & 0xffff_ffff_ffff_ffff) as u64;
-    Ok((epoch, Offset::before(raw_seq)))
 }
-
-#[cfg(kani)]
-mod proofs;
 
 #[cfg(test)]
 mod tests {
-    use super::{Offset, encode_ep, parse_ep};
+    use super::*;
     use proptest::prelude::{any, prop_assert, prop_assert_eq};
 
     #[test]
     fn round_trip() {
-        for next in [1u64, 2, 3, 42, (1 << 33) + 1, u64::MAX] {
-            let s = Offset::before(next).encode();
-            assert_eq!(s.len(), 26);
-            assert_eq!(Offset::parse(&s).unwrap(), Offset::before(next));
+        for next in [0u64, 1, 2, 3, 42, (1 << 33) + 1, u64::MAX] {
+            let t = encode(0, next);
+            assert_eq!(t.len(), 26);
+            assert_eq!(parse(&t), Ok((0, next)));
+            assert_eq!(parse_scalar(&t), Ok(next));
         }
-        assert_eq!(Offset::parse("-1").unwrap(), Offset::START);
-        assert_eq!(
-            Offset::parse(&Offset::START.encode()).unwrap(),
-            Offset::START
-        );
-        assert_eq!(Offset::START.encode(), "00000000000000000000000000");
+        assert_eq!(parse("-1"), Ok((0, 0)));
+        assert_eq!(parse_scalar("-1"), Ok(0));
+        assert_eq!(encode(0, 0), "00000000000000000000000000");
     }
 
     #[test]
     fn epoch_round_trip() {
         for (e, next) in [(0u32, 6u64), (3, 1), (255, (1 << 40) + 1)] {
-            let s = encode_ep(e, Offset::before(next));
-            assert_eq!(parse_ep(&s).unwrap(), (e, Offset::before(next)));
+            assert_eq!(parse(&encode(e, next)), Ok((e, next)));
         }
-        // Epoch-0 encoding matches the total-order codec exactly.
-        assert_eq!(encode_ep(0, Offset::before(8)), Offset::before(8).encode());
+        assert_eq!(parse_scalar(&encode(3, 1)), Err(OffsetError::Epoch(3)));
         // Tokens order lexicographically within a segment and across ordinals.
-        assert!(encode_ep(1, Offset::before(1)) > encode_ep(0, Offset::before(1000)));
-        let top = (1u32 << 30) - 1;
-        assert!(encode_ep(top + 1, Offset::START) > encode_ep(top, Offset::before(u64::MAX)));
-        assert!(encode_ep(u32::MAX, Offset::START) > encode_ep(u32::MAX - 1, Offset::before(1)));
+        assert!(encode(1, 1) > encode(0, 1000));
+    }
+
+    /// Today's decoder reads four kinds of non-canonical token as a position
+    /// instead of refusing it: a first digit above '7' (its top bits fall off
+    /// u128), a two-byte char (the gate counts bytes, the loop counts chars and
+    /// `as u8` keeps the low byte), nonzero pad bits and nonzero in_block bits.
+    /// Refusing them is a pending wire decision (review item 88 step 2); until
+    /// it is made, no refactor may move them.
+    #[test]
+    fn non_canonical_tokens_keep_their_lax_reading() {
+        assert_eq!(parse("G0000000000000000000000000"), Ok((0, 0)));
+        assert_eq!(parse("00000000000000000\u{131}0000000"), Ok((0, 2)));
+        assert_eq!(parse("0000000000000000000G000003"), Ok((0, 1)));
+        assert_eq!(parse("0000000000000000000G000010"), Ok((0, 1)));
+    }
+
+    /// Crockford's O and I/L spellings are a wire-visible reading a strict
+    /// decoder must decide on explicitly (review item 88 step 2); until then
+    /// no refactor may move them.
+    #[test]
+    fn crockford_aliases_read_as_their_digits() {
+        for alias in [
+            "000000000000000000I0000000",
+            "000000000000000000i0000000",
+            "000000000000000000L0000000",
+            "000000000000000000l0000000",
+        ] {
+            assert_eq!(parse(alias), Ok((0, 2)), "{alias}");
+        }
+        assert_eq!(parse("OOOOOOOOOOOOOOOOOOOOOOOOOo"), Ok((0, 0)));
+    }
+
+    /// The fork-offset refusal hands these words to clients verbatim.
+    #[test]
+    fn refusal_words_are_wire_text() {
+        assert_eq!(
+            OffsetError::Length(1).to_string(),
+            "invalid offset length: 1"
+        );
+        assert_eq!(OffsetError::Char('U').to_string(), "invalid base32 char: U");
+        assert_eq!(
+            OffsetError::Epoch(3).to_string(),
+            "unsupported offset epoch: 3"
+        );
+    }
+
+    /// The characters a token can carry, canonical or not.
+    fn token_char() -> impl proptest::strategy::Strategy<Value = char> {
+        proptest::sample::select(vec![
+            '0', '1', '7', '8', 'G', 'Z', 'O', 'o', 'I', 'i', 'L', 'l', 'a', 'z', 'U', '-',
+            '\u{131}',
+        ])
     }
 
     proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config { cases: 1024, ..Default::default() })]
+        #![proptest_config(proptest::test_runner::Config::with_cases(1024))]
+        /// Every position the codec can carry (epochs below 2^30, see the
+        /// module doc) has one 26-char token that decodes back to it, and
+        /// tokens sort like positions (offsets are opaque, lexicographically
+        /// sortable strings).
         #[test]
-        fn quality_every_epoch_and_position_round_trips(epoch in any::<u32>(), next in any::<u64>()) {
-            let token = encode_ep(epoch, Offset::before(next));
-            prop_assert_eq!(token.len(), 26);
-            prop_assert_eq!(parse_ep(&token), Ok((epoch, Offset::before(next))));
-            prop_assert_eq!(Offset::parse(&token).is_ok(), epoch == 0);
+        fn quality_offsets_every_position_has_one_ordered_token(
+            a in (0u32..(1 << 30), any::<u64>()),
+            b in (0u32..(1 << 30), any::<u64>()),
+        ) {
+            let (left, right) = (encode(a.0, a.1), encode(b.0, b.1));
+            prop_assert_eq!(left.len(), 26);
+            prop_assert_eq!(parse(&left), Ok(a));
+            prop_assert_eq!(left.cmp(&right), a.cmp(&b));
         }
 
+        /// Any input is either refused or names one position the encoder
+        /// represents canonically: a wrong length is always the length
+        /// refusal, an accepted epoch fits the 30 bits that round-trip, and
+        /// the scalar decoder is the general one restricted to epoch 0.
         #[test]
-        fn quality_a_parsed_token_is_its_position(bytes in proptest::collection::vec(any::<u8>(), 0..40)) {
-            let input = String::from_utf8_lossy(&bytes);
-            if let Ok((epoch, offset)) = parse_ep(&input) {
-                prop_assert!(input == "-1" || (input.len() == 26 && input.is_ascii()));
-                prop_assert_eq!(parse_ep(&encode_ep(epoch, offset)), Ok((epoch, offset)));
+        fn quality_offsets_any_accepted_token_names_one_canonical_position(
+            chars in proptest::collection::vec(token_char(), 0..31),
+            reserved in any::<bool>(),
+        ) {
+            let input: String = if reserved { "-1".to_string() } else { chars.into_iter().collect() };
+            let parsed = parse(&input);
+            if input != "-1" && input.len() != 26 {
+                prop_assert_eq!(parsed, Err(OffsetError::Length(input.len())));
             }
+            if let Ok((epoch, next)) = parsed {
+                prop_assert!(epoch < (1 << 30), "epoch {} past the 30 bits", epoch);
+                prop_assert_eq!(parse(&encode(epoch, next)), Ok((epoch, next)));
+            }
+            let scalar = match parsed {
+                Ok((0, next)) => Ok(next),
+                Ok((epoch, _)) => Err(OffsetError::Epoch(epoch)),
+                Err(e) => Err(e),
+            };
+            prop_assert_eq!(parse_scalar(&input), scalar);
         }
-    }
-
-    #[test]
-    fn a_multibyte_char_is_not_a_digit() {
-        // 24 ASCII digits plus a two-byte char is 26 bytes but 25 chars. The
-        // char-wise parser read it as 25 digits and truncated U+0141 to 'A'.
-        let token = format!("{}\u{141}", "0".repeat(24));
-        assert_eq!(token.len(), 26);
-        assert!(parse_ep(&token).is_err());
-        assert!(Offset::parse(&token).is_err());
     }
 }

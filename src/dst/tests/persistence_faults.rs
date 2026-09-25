@@ -361,7 +361,7 @@ fn delivered_records(complete: &str) -> Vec<u64> {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn cut_resume_never_skips_a_durable_record() {
-    let _l = gap_lock().lock().await; // shared failpoint schedule
+    let _l = gap_lock().lock().await;
     let store: Arc<dyn ObjectStore> =
         Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));
     let (state, addr) = http_rig(store).await;
@@ -419,7 +419,7 @@ async fn cut_resume_never_skips_a_durable_record() {
             &cursor,
             &desc.project_id,
             &skey(),
-            &desc.epoch_bytes().unwrap(),
+            &desc.epoch(),
             &crate::crypto::stream_hash(""),
         )
         .expect("initial cursor must authenticate for this stream");

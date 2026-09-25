@@ -50,6 +50,10 @@ j() { python3 -c "import json;print(json.load(open('$S/bkey-fleet.json'))['data'
 RESOLV=$'nameserver 108.61.10.10\nnameserver 8.8.8.8'
 # Absolute: the deploy steps cd into $SOAK_HOME app dirs first.
 CCLI=$(cd "$(dirname "$0")/.." && pwd)/ccli.sh
+# Every deploy re-stages its app dir from deploy/<app> first, and refuses a
+# copy that still differs: a copy staged before item 39 keeps the wrapper
+# that holds every death (bench/stage-app.sh, RUNBOOK §7.2).
+STAGE=$(cd "$(dirname "$0")/.." && pwd)/stage-app.sh
 
 svc_arg() { # existing service id for a name, if any
   local f="$S/svc-$1.txt"
@@ -77,6 +81,7 @@ resolve_url() { # service name -> running preview URL
 }
 
 if [ "$STEP" = servers ]; then
+  "$STAGE" app-server "$S/fleet-app-server"
   cd "$S/fleet-app-server"
   # ONLY=N deploys a single ordinal (instance replacement — leg B kills
   # one service and revives just it; redeploying all four would churn
@@ -146,6 +151,7 @@ elif [ "$STEP" = lb ]; then
   UP="$(cat "$S/url-fleet-s1.txt"),$(cat "$S/url-fleet-s2.txt"),$(cat "$S/url-fleet-s3.txt"),$(cat "$S/url-fleet-s4.txt")"
   echo "UPSTREAMS=$UP"
   case "$UP" in *,,*|,*|*,) echo "refusing LB deploy: an upstream URL is empty ($UP)" >&2; exit 1;; esac
+  "$STAGE" app-lb "$S/fleet-app-lb"
   cd "$S/fleet-app-lb"
   DOK=0
   for DATT in 1 2 3 4 5 6 7 8; do
@@ -191,6 +197,7 @@ print("published fleet/urls.json:", urls)
 PY
 elif [ "$STEP" = gen ]; then
   LBURL=$(cat "$S/url-fleet-lb.txt")
+  "$STAGE" app-lb "$S/fleet-app-lb"
   cd "$S/fleet-app-lb"   # same pilot wrapper, MODE=gen
   "$CCLI" deploy --project "$P" $(svc_arg fleet-gen) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-gen" \

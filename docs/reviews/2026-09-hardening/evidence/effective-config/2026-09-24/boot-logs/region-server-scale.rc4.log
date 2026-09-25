@@ -1,0 +1,12 @@
+[2m2026-09-24T13:20:49.249664Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory profile certified: compute-1g (all DB families) [3mprofile[0m[2m=[0m{"bytes_to_fetch":1048576,"max_concurrent_compactions":1,"max_fetch_tasks":1,"max_sst_size":33554432,"max_subcompactions":1,"store_bulk_inflight_max_bytes":33554432,"worker_max_concurrent_compactions":1}
+[2m2026-09-24T13:20:49.249813Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m tokio runtime: 20 worker threads
+[2m2026-09-24T13:20:49.249831Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m project memory-pressure model (round-13; weights are code-versioned) [3mmodel[0m[2m=[0m{"dirty_stream_weight_bytes":65536,"feed_weight_bytes":16384,"sub_weight_bytes":32768,"version":1}
+[2m2026-09-24T13:20:49.302396Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m startup canary: ops/shard/data buckets readable and writable
+[2m2026-09-24T13:20:49.302509Z[0m [33m WARN[0m [2mstreams_slate[0m[2m:[0m FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy posture; the release posture requires workload identity (§14.1)
+[2m2026-09-24T13:20:49.302531Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot); feed retention budget=67108864B
+[2m2026-09-24T13:20:49.313833Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m topology v1: 4 shard(s), body ceiling 33554432 bytes (namespace-pinned)
+[2m2026-09-24T13:20:49.314183Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m maintenance backpressure bounds [3munabsorbed_instance[0m[2m=[0m536870912 [3munabsorbed_shard[0m[2m=[0m268435456 [3mlag_secs[0m[2m=[0m900 [3mrelease_pct[0m[2m=[0m75
+[2m2026-09-24T13:20:49.314214Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory budget: caches shared=128MiB history=32MiB postings=64MiB telemetry=16MiB; unflushed/db=16MiB; absorb budget=96MiB (worst-frame build=96MiB, per-gather reservation=96MiB, configured gather slots=1, EFFECTIVE gather concurrency=1); slatedb rt threads=4; shed line=500MB (RSS + reserved absorber bytes)
+[2m2026-09-24T13:20:49.314243Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m telemetry pipeline off (USAGE_STREAM_KEY unset)
+[2m2026-09-24T13:20:49.314758Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m streams-slate listening on 127.0.0.1:53648
+[2m2026-09-24T13:20:49.314783Z[0m [32m INFO[0m [2mstreams_slate::http[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot)

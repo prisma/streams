@@ -658,7 +658,7 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
 /// still converges promptly on release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
-    let _serial = gap_lock().lock().await; // global failpoint registry
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let (st, _, _) = preq(

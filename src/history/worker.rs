@@ -1,4 +1,5 @@
 //! The absorber's owned worker future, shared by owned and legacy test spawns.
+use super::gather::GatherOutcome;
 use super::{
     ABSORB_ZERO_ROUTE_DROPPED, AbsorbSignal, Absorber, GATHER_LAST_RESERVED, MAX_PENDING_STREAMS,
     PendingAbsorb, SegmentHash, absorb_error_is_fence, due_streams,
@@ -15,7 +16,7 @@ impl Absorber {
     )]
     #[expect(
         clippy::unwrap_used,
-        reason = "Absorber::run; the eight-byte phase prefix of a sixteen-byte hash always fits a u64, and a poisoned discovery cursor may hold a half-advanced position; recovering it could rescan a page forever"
+        reason = "Absorber::run; the eight-byte phase prefix of a sixteen-byte hash always fits a u64, and a poisoned discovery cursor or lane-mark map may hold a half-advanced position; recovering the latter could rescan a page forever or trust a mark the layout seal dropped"
     )]
     pub(super) async fn run(self, mut rx: mpsc::Receiver<AbsorbSignal>) {
         let absorber = self;
@@ -122,7 +123,23 @@ impl Absorber {
                     // than anything evicted: 2.3 GB RSS in seven
                     // minutes). Fat backlogs enter due-now and big.
                     if tick_n.is_multiple_of(absorber.cfg.sweep_every.max(1)) {
-                        absorber.prune_lane_marks(&pending);
+                        // Prune the submitted high-water map (it
+                        // otherwise grows with every stream ever
+                        // absorbed): an entry is only load-bearing
+                        // while a re-gather could still observe a
+                        // stale durable boundary — i.e. while the
+                        // stream is pending or its resident absorbed
+                        // boundary trails the submitted mark. Frames
+                        // are deterministic and boundary submits are
+                        // guarded, so over-pruning merely costs an
+                        // idempotent rewrite.
+                        absorber.submitted.lock().unwrap().retain(|h, v| {
+                            pending.contains_key(h)
+                                || absorber
+                                    .shard
+                                    .resident_absorbed(h)
+                                    .is_some_and(|a| a < v.0)
+                        });
                     }
                     // Publish absorption lag (scale-out signal).
                     // Every pending stream is eligible: the interim
@@ -161,7 +178,6 @@ impl Absorber {
                     if absorber.shard.history_resources.paused.load(std::sync::atomic::Ordering::Relaxed) {
                         continue;
                     }
-                    absorber.settle_submissions(&mut pending);
                     let v2_lane = absorber.classify_due(&mut pending, now, &mut classify_after).await;
                     absorber.gather_due(&mut pending, now, &v2_lane).await;
 
@@ -288,10 +304,6 @@ impl Absorber {
         }
         v2_lane
     }
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "Absorber::gather_due; the outcome handling nests the per-stream bookkeeping inside the advanced, partial, no-work and failed arms of one gather; flattening it would separate the bookkeeping from the outcome that decides it"
-    )]
     async fn gather_due(
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,
@@ -326,78 +338,116 @@ impl Absorber {
                 return; // fenced while waiting for budget
             }
             match self.absorb_gather_v2_with(v2_lane, &mut _reservation).await {
-                Ok(outcome) => {
-                    // Retire ONLY what the gather settled:
-                    // covered streams advanced; no_work had
-                    // nothing durable to absorb (residues
-                    // and new data re-arrive via
-                    // signals/sweep). Budget-deferred
-                    // streams KEEP their pending entry, lag
-                    // and age — they gather next tick
-                    // without needing a new signal or the
-                    // ~60 s handle sweep (review round 4:
-                    // removing them silently stranded
-                    // their backlog for up to a minute and
-                    // blinded the fleet lag view).
-                    let partial: std::collections::HashMap<[u8; 16], u64> =
-                        outcome.partial.iter().copied().collect();
-                    for (h, _, _, _) in &outcome.advanced {
-                        // A PARTIAL advance is progress, not
-                        // completion: keep it pending so the
-                        // next tick continues immediately.
-                        if partial.contains_key(h) {
-                            continue;
-                        }
-                        pending.remove(h);
-                        self.shard
-                            .usage
-                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                    }
-                    for (h, remaining) in &partial {
-                        let est = remaining.saturating_mul(1024);
-                        pending
-                            .entry(*h)
-                            .and_modify(|p| {
-                                p.bytes = p.bytes.max(est);
-                                // Progress clears the failure
-                                // backoff; the age is left
-                                // alone so age-based due keeps
-                                // its original meaning.
-                                p.failures = 0;
-                                p.retry_after = None;
-                            })
-                            .or_insert(PendingAbsorb {
-                                bytes: est,
-                                since: Instant::now(),
-                                failures: 0,
-                                retry_after: None,
-                            });
-                    }
-                    for h in &outcome.no_work {
-                        pending.remove(h);
-                        self.shard
-                            .usage
-                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                    }
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    if absorb_error_is_fence(&e) {
-                        tracing::warn!("v2 gather fence-class ({} streams): {msg}", v2_lane.len());
-                        // Engine is dying; the exit path
-                        // clears pending.
-                    } else {
-                        tracing::warn!("v2 gather failed ({} streams): {msg}", v2_lane.len());
-                        for h in v2_lane {
-                            if let Some(p) = pending.get_mut(h) {
-                                p.failures = p.failures.saturating_add(1);
-                                let shift = p.failures.min(6);
-                                p.retry_after = Some(now + self.cfg.tick * 2u32.pow(shift));
-                            }
-                        }
-                    }
-                }
+                Ok(outcome) => self.settle_gather(pending, &outcome, now),
+                Err(e) => self.settle_gather_error(pending, &e, now, v2_lane),
+            }
+        }
+    }
+    /// Settles one gather's outcome into the pending roster. A stream the
+    /// gather left out for its own stored bytes backs off alone.
+    fn settle_gather(
+        &self,
+        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+        outcome: &GatherOutcome,
+        now: Instant,
+    ) {
+        // Retire ONLY what the gather settled:
+        // covered streams advanced; no_work had
+        // nothing durable to absorb (residues
+        // and new data re-arrive via
+        // signals/sweep). Budget-deferred
+        // streams KEEP their pending entry, lag
+        // and age — they gather next tick
+        // without needing a new signal or the
+        // ~60 s handle sweep (review round 4:
+        // removing them silently stranded
+        // their backlog for up to a minute and
+        // blinded the fleet lag view).
+        let partial: std::collections::HashMap<[u8; 16], u64> =
+            outcome.partial.iter().copied().collect();
+        for (h, _, _) in &outcome.advanced {
+            // A PARTIAL advance is progress, not
+            // completion: keep it pending so the
+            // next tick continues immediately.
+            if partial.contains_key(h) {
+                continue;
+            }
+            pending.remove(h);
+            self.shard
+                .usage
+                .clear_absorb_lag(crate::crypto::SegmentHash(*h));
+        }
+        for (h, remaining) in &partial {
+            let est = remaining.saturating_mul(1024);
+            pending
+                .entry(*h)
+                .and_modify(|p| {
+                    p.bytes = p.bytes.max(est);
+                    // Progress clears the failure
+                    // backoff; the age is left
+                    // alone so age-based due keeps
+                    // its original meaning.
+                    p.failures = 0;
+                    p.retry_after = None;
+                })
+                .or_insert(PendingAbsorb {
+                    bytes: est,
+                    since: Instant::now(),
+                    failures: 0,
+                    retry_after: None,
+                });
+        }
+        for h in &outcome.no_work {
+            pending.remove(h);
+            self.shard
+                .usage
+                .clear_absorb_lag(crate::crypto::SegmentHash(*h));
+        }
+        // Item 35: its lane-mates above settled with this flush.
+        for (h, failure) in &outcome.failed {
+            let Some(p) = pending.get_mut(h) else {
+                continue;
+            };
+            back_off(p, now, self.cfg.tick);
+            tracing::warn!(
+                "v2 gather left {} out: {failure}; failure {} backs it off alone",
+                crate::crypto::hex(&h[..4]),
+                p.failures,
+            );
+        }
+    }
+
+    /// A gather that failed as a whole backs off every stream in its lane.
+    fn settle_gather_error(
+        &self,
+        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+        e: &anyhow::Error,
+        now: Instant,
+        v2_lane: &[[u8; 16]],
+    ) {
+        let msg = e.to_string();
+        if absorb_error_is_fence(e) {
+            tracing::warn!("v2 gather fence-class ({} streams): {msg}", v2_lane.len());
+            // Engine is dying; the exit path
+            // clears pending.
+            return;
+        }
+        tracing::warn!("v2 gather failed ({} streams): {msg}", v2_lane.len());
+        for h in v2_lane {
+            if let Some(p) = pending.get_mut(h) {
+                back_off(p, now, self.cfg.tick);
             }
         }
     }
 }
+
+/// Exponential retry after a failed absorb: tick·2^n, capped at 2^6, so a
+/// persistent failure costs one read per backoff window, not one per tick.
+fn back_off(p: &mut PendingAbsorb, now: Instant, tick: Duration) {
+    p.failures = p.failures.saturating_add(1);
+    let shift = p.failures.min(6);
+    p.retry_after = Some(now + tick * 2u32.pow(shift));
+}
+
+#[cfg(test)]
+mod lane_isolation_tests;

@@ -1431,20 +1431,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::router",
-      "path": "src/http.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::main",
-      "path": "src/main.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::main",
       "path": "src/main.rs",
       "syntax": "std::thread::available_parallelism"
@@ -1510,13 +1496,6 @@
       "count": 1,
       "owner": "crate::serve",
       "path": "src/sse/session.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::TaskSupervisor::spawn",
-      "path": "src/tasks.rs",
       "syntax": "tokio::spawn"
     },
     {
@@ -1823,13 +1802,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::gate_lock::L",
-      "path": "src/dst/tests/runtime_open_gate.rs",
-      "syntax": "std :: sync :: OnceLock < tokio :: sync :: Mutex < () > >"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::ACTIVE",
       "path": "src/failpoints.rs",
       "syntax": "[std :: sync :: atomic :: AtomicUsize ; Fp :: ALL . len ()]"
@@ -2092,62 +2064,6 @@
       "owner": "crate::billing_read_faults::FAULTS",
       "path": "src/shard.rs",
       "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , () > > >"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_COALESCED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_COMPLETED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_DEADLINED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_FAILED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_IN_FLIGHT",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicI64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_REAPED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::OPENS_STARTED",
-      "path": "src/sharddir.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::LEASE_TERMINATIONS",
-      "path": "src/sse/auth.rs",
-      "syntax": "[std :: sync :: atomic :: AtomicU64 ; 10]"
     },
     {
       "category": "global",
@@ -2921,20 +2837,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 7,
-      "owner": "crate::router",
-      "path": "src/http.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::serve_h1",
-      "path": "src/http.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::spawn_runtime_watchdog",
       "path": "src/http.rs",
@@ -3184,13 +3086,6 @@
       "owner": "crate::spawn_unready_watchdog",
       "path": "src/sharddir.rs",
       "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::stats_json",
-      "path": "src/sharddir.rs",
-      "syntax": "serde_json::json"
     },
     {
       "category": "macro-dsl",
@@ -3624,6 +3519,13 @@
       "count": 1,
       "owner": "crate",
       "path": "src/http/read.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/offsets.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

@@ -683,7 +683,7 @@ async fn watch_waits_occupy_the_subscription_pool() {
         .unwrap()
         .stream_ref("orders");
     let desc = state.registry.get(&bref).await.unwrap().unwrap();
-    let epoch = desc.epoch_bytes().unwrap();
+    let epoch = desc.epoch();
     let khex = format!("{:016x}", 7u64);
     let tokk = crate::crypto::touch_token(&skey(), &epoch);
     let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
@@ -941,6 +941,59 @@ async fn max_streams_transition_seeds_from_reality() {
         429,
         "re-enabled limit must seed from the real count: {st} {}",
         String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// External review §5: a product append no fresh per-stream bucket admits
+/// (a 10,000,001-byte value, measured as the bytes it would store) is refused 413
+/// BEFORE the project's append volume (1 byte/s here) is charged, by the
+/// handler or, for a producer request, by the core; the next valid append
+/// owes nothing, and while the bucket refills the refusal is still the
+/// permanent 413, never a 429 naming a wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unadmittable_append_leaves_the_project_volume_quota_untouched() {
+    let quotas = crate::project_policy::ProjectQuotas {
+        append_bytes_per_sec: 1,
+        ..Default::default()
+    };
+    let (state, addr, auth) =
+        quota_rig("cu", "streams.create streams.records.append", quotas).await;
+    let h = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("authorization", auth.as_str()),
+    ];
+    let json = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(preq(addr, "PUT", "/v1/streams/c", &h, json).await.0, 201);
+    let producer = [
+        h[0],
+        h[1],
+        ("producer-id", "p"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (path, big) = (
+        "/v1/streams/c/records",
+        format!("\"{}\"", "x".repeat(9_999_999)),
+    );
+    for headers in [&h[..], &producer[..]] {
+        let (st, _, b) = preq(addr, "POST", path, headers, big.as_bytes()).await;
+        let b: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        let requested = b["error"]["details"]["requested"].as_u64();
+        assert_eq!((st, requested), (413, Some(10_000_001)), "{b}");
+    }
+    // 1,002 bytes from a full bucket: admitted, leaving ~1,000 s of refill.
+    let small = format!("\"{}\"", "x".repeat(1_000));
+    let (st, _, b) = preq(addr, "POST", path, &h, small.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    assert_eq!(st, 200, "the 413 left the project in debt: {b}");
+    let (st, headers, b) = preq(addr, "POST", path, &h, big.as_bytes()).await;
+    let b = String::from_utf8_lossy(&b);
+    let retry = headers.get("retry-after");
+    assert_eq!(
+        (st, retry),
+        (413, None),
+        "a permanent refusal answered as transient: {b}"
     );
     engine_shutdown(&state).await;
 }

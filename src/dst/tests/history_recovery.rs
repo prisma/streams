@@ -142,9 +142,7 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -299,9 +297,7 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
     // streams per gather, so full convergence REQUIRES deferred streams
     // surviving in pending across ticks. No sweep, no extra signals.
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -409,9 +405,7 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
     // THE POINT: pure AbsorberConfig::default() — production thresholds,
     // production tick, production sweep cadence. No requests arrive.
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine_b.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig::default(),
         absorb_rx,
     );
@@ -508,9 +502,7 @@ async fn dirty_scan_retries_until_it_succeeds() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine_b.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
@@ -620,9 +612,7 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
     // Byte threshold out of reach (the 512 B record must go through the
     // AGE trigger), age immediate, fast tick.
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine_b.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(50),
@@ -695,9 +685,7 @@ async fn pending_summary_clears_on_shard_close() {
         __maint,
     );
     let _absorber = crate::history::Absorber::start(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
             tick: std::time::Duration::from_millis(50),
             sweep_every: u32::MAX,

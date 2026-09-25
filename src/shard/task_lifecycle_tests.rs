@@ -5,13 +5,18 @@ use std::{sync::Arc, sync::atomic::Ordering, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
 async fn fixture() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
+    fixture_named("r17a-engine", 1717).await
+}
+
+/// An engine on its own clean store under `prefix`, with its absorber.
+async fn fixture_named(prefix: &str, seed: u64) -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
-        1717,
+        seed,
         crate::dst::FaultProfile::clean(),
     );
     let db = Arc::new(
-        Db::builder("r17a-engine", store.clone())
+        Db::builder(prefix.to_string(), store.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(Duration::from_secs(600)),
                 ..Default::default()
@@ -22,7 +27,7 @@ async fn fixture() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     );
     let (tx, rx) = mpsc::channel(16);
     let engine = ShardEngine::start(
-        "r17a-engine".into(),
+        prefix.into(),
         db,
         store.clone(),
         ShardConfig {
@@ -35,9 +40,7 @@ async fn fixture() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
         ShardMaintenance::default(),
     );
     crate::history::Absorber::start_owned(
-        store.clone(),
         engine.clone(),
-        Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig::default(),
         rx,
     );
@@ -297,4 +300,154 @@ async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
     assert!(engine.termination_complete());
     assert!(engine.shutdown_handle().failure().is_none());
     assert!(engine.required_task_failure().is_none());
+}
+
+/// A directory whose one prefix is served by `engine`.
+fn serving(engine: &Arc<ShardEngine>) -> crate::shard_directory::ShardDirectory {
+    let opened = engine.clone();
+    crate::shard_directory::ShardDirectory::new(
+        vec![engine.prefix.clone()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: Duration::from_secs(10),
+            open_wait: Duration::from_secs(1),
+        },
+        move |_| Box::new(move |_, _| Box::pin(std::future::ready(Ok(opened.clone())))),
+    )
+}
+
+/// Item 38: a failed storage close is final, so the directory stop answers
+/// at once, with the report that names it, and the owner keeps its fence
+/// and readiness failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_storage_close_ends_the_directory_stop_at_once() {
+    let (engine, _store) = fixture().await;
+    let directory = serving(&engine);
+    assert!(matches!(
+        directory
+            .open_or_wait(&engine.prefix, Duration::from_secs(1))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    engine
+        .tasks
+        .begin_failed_close_for_test("scripted close failure");
+    let stopped = tokio::time::timeout(
+        Duration::from_secs(5),
+        directory.shutdown(Duration::from_secs(30)),
+    )
+    .await
+    .expect("a failed close is final: the directory stop must not wait out its grace");
+    let error = stopped.unwrap_err();
+    assert!(
+        error.contains("storage-close: Failed(\"scripted close failure\")"),
+        "{error}"
+    );
+    assert!(
+        directory
+            .unready_reason()
+            .unwrap()
+            .contains("scripted close failure"),
+        "the owner keeps the readiness failure"
+    );
+    assert!(
+        !engine.termination_complete(),
+        "a failed close proves no termination"
+    );
+    drop(engine.db.close().await);
+}
+
+/// Item 38: a directory stop that reaches its deadline counts the engine
+/// still closing as pending, and its joined reports hold only closes that
+/// settled (a failed one is never dropped beside a pending one): an engine
+/// whose close is still running has no report yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
+    let (engine, store) = held_wal().await;
+    let directory = serving(&engine);
+    assert!(matches!(
+        directory
+            .open_or_wait(&engine.prefix, Duration::from_secs(1))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    let stopped = tokio::time::timeout(
+        Duration::from_secs(5),
+        directory.shutdown(Duration::from_millis(5)),
+    )
+    .await
+    .expect("the stop is bounded by its grace");
+    assert_eq!(
+        stopped.unwrap_err(),
+        "shutdown ongoing or failed: 0 opens, 1 engines; owners retained; joined reports: []"
+    );
+    store.release_hold();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        directory.shutdown(Duration::from_secs(10)),
+    )
+    .await
+    .expect("the released close completes within its grace")
+    .unwrap();
+    assert!(engine.termination_complete());
+}
+
+/// Item 38: at the deadline, a close that failed beside one still running
+/// is carried in the joined reports: the directory stop names the failure
+/// and counts the running engine as pending (review of da06acad: T9 alone
+/// no longer pinned this, since its only engine is still closing).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_close_beside_a_pending_one_is_reported_at_the_deadline() {
+    let (held, store) = held_wal().await;
+    let (failed, _) = fixture_named("r17a-failed", 1718).await;
+    let engines: std::collections::HashMap<String, Arc<ShardEngine>> = [
+        (held.prefix.clone(), held.clone()),
+        (failed.prefix.clone(), failed.clone()),
+    ]
+    .into_iter()
+    .collect();
+    let directory = crate::shard_directory::ShardDirectory::new(
+        vec![held.prefix.clone(), failed.prefix.clone()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: Duration::from_secs(10),
+            open_wait: Duration::from_secs(1),
+        },
+        move |_| {
+            Box::new(move |prefix: String, _| {
+                let engine = engines.get(&prefix).cloned().unwrap();
+                Box::pin(std::future::ready(Ok(engine)))
+            })
+        },
+    );
+    for prefix in [&held.prefix, &failed.prefix] {
+        assert!(matches!(
+            directory.open_or_wait(prefix, Duration::from_secs(1)).await,
+            crate::sharddir::OpenOutcome::Ready(_)
+        ));
+    }
+    failed
+        .tasks
+        .begin_failed_close_for_test("scripted close failure");
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        directory.shutdown(Duration::from_millis(200)),
+    )
+    .await
+    .expect("the stop is bounded by its grace")
+    .unwrap_err();
+    store.release_hold();
+    drop(failed.db.close().await);
+    drop(
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            directory.shutdown(Duration::from_secs(10)),
+        )
+        .await,
+    );
+    assert!(error.contains("1 engines; owners retained"), "{error}");
+    assert!(
+        error.contains("scripted close failure"),
+        "the failed close was dropped beside the pending one: {error}"
+    );
 }

@@ -232,9 +232,9 @@ mod tests {
         crate::tenant::ProjectId::new("proj-feed-test").unwrap()
     }
 
-    fn make_feed(key: FeedKey, budget: &Arc<FeedMemoryBudget>) -> Arc<LiveFeed> {
+    fn make_feed(budget: &Arc<FeedMemoryBudget>) -> Arc<LiveFeed> {
         let src = Arc::new(FakeSource::new(0, 8));
-        LiveFeed::new_with_budget(key, src, RING, budget.clone(), tpid())
+        LiveFeed::new_with_budget(src, RING, budget.clone(), tpid())
     }
 
     fn key(n: u8) -> FeedKey {
@@ -249,7 +249,7 @@ mod tests {
         let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
         for round in 0..3 {
             let sub = registry
-                .subscribe(key(1), || make_feed(key(1), &budget), None)
+                .subscribe(key(1), || make_feed(&budget), None)
                 .expect("subscribe");
             assert_eq!(registry.len_for_test(), 1, "round {round}: one live feed");
             assert_eq!(sub.feed.subscriber_count(), 1);
@@ -271,13 +271,13 @@ mod tests {
         let registry = Arc::new(FeedRegistry::new());
         let budget = Arc::new(FeedMemoryBudget::new_for_test(16 * RING as u64));
         let s1 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget), None)
+            .subscribe(key(1), || make_feed(&budget), None)
             .expect("s1");
         let s2 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget), None)
+            .subscribe(key(1), || make_feed(&budget), None)
             .expect("s2");
         let s3 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget), None)
+            .subscribe(key(1), || make_feed(&budget), None)
             .expect("s3");
         assert_eq!(s1.feed.subscriber_count(), 3);
         assert_eq!(
@@ -302,10 +302,10 @@ mod tests {
         // Zero global budget: sharing is statically impossible.
         let budget = Arc::new(FeedMemoryBudget::new_for_test(0));
         let s1 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget), None)
+            .subscribe(key(1), || make_feed(&budget), None)
             .expect("s1");
         for _ in 0..3 {
-            let rejected = registry.subscribe(key(1), || make_feed(key(1), &budget), None);
+            let rejected = registry.subscribe(key(1), || make_feed(&budget), None);
             assert!(matches!(rejected, Err(CapacityRejected)));
         }
         assert_eq!(
@@ -326,9 +326,9 @@ mod tests {
         let registry = Arc::new(FeedRegistry::new());
         let budget = Arc::new(FeedMemoryBudget::new_for_test(0));
         let s1 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget), None)
+            .subscribe(key(1), || make_feed(&budget), None)
             .expect("singleton admitted at zero budget");
-        let rejected = registry.subscribe(key(1), || make_feed(key(1), &budget), None);
+        let rejected = registry.subscribe(key(1), || make_feed(&budget), None);
         assert!(matches!(rejected, Err(CapacityRejected)));
         assert_eq!(s1.feed.subscriber_count(), 1);
         drop(s1);
@@ -347,7 +347,7 @@ mod tests {
                 key(1),
                 || {
                     let src = Arc::new(FakeSource::new(0, 8));
-                    LiveFeed::new_with_budget(key(1), src, 0, budget.clone(), tpid())
+                    LiveFeed::new_with_budget(src, 0, budget.clone(), tpid())
                 },
                 None,
             )
@@ -356,7 +356,7 @@ mod tests {
             key(1),
             || {
                 let src = Arc::new(FakeSource::new(0, 8));
-                LiveFeed::new_with_budget(key(1), src, 0, budget.clone(), tpid())
+                LiveFeed::new_with_budget(src, 0, budget.clone(), tpid())
             },
             None,
         );
@@ -377,12 +377,12 @@ mod tests {
         for n in 0..32u8 {
             subs.push(
                 registry
-                    .subscribe(key(n), || make_feed(key(n), &budget), None)
+                    .subscribe(key(n), || make_feed(&budget), None)
                     .expect("singleton"),
             );
             subs.push(
                 registry
-                    .subscribe(key(n), || make_feed(key(n), &budget), None)
+                    .subscribe(key(n), || make_feed(&budget), None)
                     .expect("second subscriber — model B never rations feeds"),
             );
         }

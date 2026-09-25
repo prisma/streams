@@ -3,7 +3,7 @@
 use super::fixture_failpoints::sweep_lock;
 use super::fixture_http::http_rig_cold_absorb;
 use super::fixture_requests::hreq;
-use super::fixture_storage::mem;
+use super::fixture_storage::{absorb_through, mem};
 use std::sync::Arc;
 
 /// Drain billing debt until the sweep's own probes read clean, so the
@@ -111,8 +111,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
     let hash = dirty[0].0;
     let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
-    kept.submit_absorbed(hash, tail.absorbed, tail.next, tail.unabsorbed_bytes)
-        .await;
+    absorb_through(&kept, hash, tail.next, tail.unabsorbed_bytes).await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -494,9 +493,7 @@ async fn custody_declines_on_prior_external_use() {
         "engine with prior external use must never be sweep-closed"
     );
     assert_eq!(
-        engine
-            .sweep_custody
-            .load(std::sync::atomic::Ordering::Relaxed),
+        engine.sweep_custody.value(),
         0,
         "custody must not be installed over external history"
     );
@@ -560,18 +557,14 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
         .shards
         .open(&prefix)
         .expect("sweep must retain the indebted shard");
-    let custody0 = engine
-        .sweep_custody
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let custody0 = engine.sweep_custody.value();
     assert_ne!(custody0, 0, "sweep must hold custody of its resident");
     // Maintenance-style internal touches: must NOT revoke custody.
     for _ in 0..3 {
         let _ = state.engine_for_quiet(&seg.shard_route).await.unwrap();
     }
     assert_eq!(
-        engine
-            .sweep_custody
-            .load(std::sync::atomic::Ordering::Relaxed),
+        engine.sweep_custody.value(),
         custody0,
         "internal resolution must not revoke scheduler custody"
     );
@@ -890,12 +883,7 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
         .shards
         .open(&prefix)
         .expect("sweep must retain the indebted shard");
-    assert_ne!(
-        engine
-            .sweep_custody
-            .load(std::sync::atomic::Ordering::Relaxed),
-        0
-    );
+    assert_ne!(engine.sweep_custody.value(), 0);
     // Customer adoption revokes custody.
     let _ = state.engine_for(&seg.shard_route).await.unwrap();
     crate::billing::sweep_owned_outboxes(&state).await;
@@ -913,7 +901,7 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     // opens-started check is wrong here — the same sweep legitimately
     // discovery-opens the other cold shards.)
     assert_eq!(
-        now.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        now.sweep_custody.value(),
         0,
         "scheduler must have dropped its claim"
     );

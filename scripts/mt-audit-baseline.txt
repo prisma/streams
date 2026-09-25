@@ -42,6 +42,7 @@ stream-hash	src/history.rs	key_hash: crate::crypto::stream_hash(""),
 stream-hash	src/history.rs	let h = crate::crypto::stream_hash(prefix);
 stream-hash	src/history/controller_tests.rs	key_hash: crate::crypto::stream_hash(""),
 stream-hash	src/history/worker.rs	let h = crate::crypto::stream_hash(&absorber.shard.prefix);
+stream-hash	src/history/worker/lane_isolation_tests.rs	key_hash: crate::crypto::stream_hash(""),
 stream-hash	src/product.rs	key_hash: crate::crypto::stream_hash(routing_key),
 stream-hash	src/product/read_cursor.rs	key_hash: crate::crypto::stream_hash(self.routing_key),
 stream-hash	src/product/read_cursor.rs	let key_hash = crate::crypto::stream_hash(self.routing_key);

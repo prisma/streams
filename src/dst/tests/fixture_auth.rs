@@ -305,13 +305,12 @@ pub(super) fn rig_scoped_bearer(
     scopes: &str,
     gv: u64,
 ) -> String {
-    let (project_id, ws) = project;
     let mut credentials = std::collections::HashMap::new();
     credentials.insert(
         std::sync::Arc::from(cred),
         crate::project_policy::CredentialGrant {
             credential_id: std::sync::Arc::from(cred),
-            project_id: crate::tenant::ProjectId::new(project_id).unwrap(),
+            project_id: crate::tenant::ProjectId::new(project.0).unwrap(),
             grant_version: gv,
             status: crate::project_policy::CredentialStatus::Active,
             scopes: crate::tenant::ScopeSet::parse(scopes).0,
@@ -319,13 +318,22 @@ pub(super) fn rig_scoped_bearer(
             expires_at: None,
         },
     );
-    let now = crate::shard::now_ms() / 1000;
     svc.publish_grants(crate::project_policy::GrantSnapshot {
         credentials,
-        fetched_at_unix: now,
+        fetched_at_unix: crate::shard::now_ms() / 1000,
         feed_version: gv,
     })
     .unwrap();
+    rig_bearer(project, cred, scopes, gv)
+}
+
+/// A token for `cred` naming `scopes` and grant version `gv`, bound to
+/// the credential grant the caller published (`rig_scoped_bearer`
+/// publishes an every-name grant; a caller needing another stream grant
+/// publishes its own).
+pub(super) fn rig_bearer(project: (&str, &str), cred: &str, scopes: &str, gv: u64) -> String {
+    let (project_id, ws) = project;
+    let now = crate::shard::now_ms() / 1000;
     AccessClaims {
         iss: "https://auth.prisma.io",
         aud: "prisma-streams-data",

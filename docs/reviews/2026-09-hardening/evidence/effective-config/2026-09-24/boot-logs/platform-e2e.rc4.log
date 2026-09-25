@@ -1,0 +1,25 @@
+[2m2026-09-24T13:20:45.994897Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m tokio runtime: 20 worker threads
+[2m2026-09-24T13:20:45.995049Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m project memory-pressure model (round-13; weights are code-versioned) [3mmodel[0m[2m=[0m{"dirty_stream_weight_bytes":65536,"feed_weight_bytes":16384,"sub_weight_bytes":32768,"version":1}
+[2m2026-09-24T13:20:46.081441Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m startup canary: ops/shard/data buckets readable and writable
+[2m2026-09-24T13:20:46.081591Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot); feed retention budget=16777216B
+[2m2026-09-24T13:20:46.093341Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m topology v1: 1 shard(s), body ceiling 33554432 bytes (namespace-pinned)
+[2m2026-09-24T13:20:46.093643Z[0m [33m WARN[0m [2mstreams_slate::history[0m[2m:[0m ABSORB_GLOBAL_BUDGET_BYTES raised 67108864 -> 100859904: the budget must cover one worst-case frame build (33554432 B frame x3)
+[2m2026-09-24T13:20:46.093777Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m maintenance backpressure bounds [3munabsorbed_instance[0m[2m=[0m536870912 [3munabsorbed_shard[0m[2m=[0m268435456 [3mlag_secs[0m[2m=[0m900 [3mrelease_pct[0m[2m=[0m75
+[2m2026-09-24T13:20:46.093806Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m memory budget: caches shared=192MiB history=32MiB postings=64MiB telemetry=16MiB; unflushed/db=64MiB; absorb budget=96MiB (worst-frame build=96MiB, per-gather reservation=96MiB, configured gather slots=2, EFFECTIVE gather concurrency=1); slatedb rt threads=2; shed line=600MB (RSS + reserved absorber bytes)
+[2m2026-09-24T13:20:46.094419Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m streams-slate listening on 127.0.0.1:53570
+[2m2026-09-24T13:20:46.094447Z[0m [32m INFO[0m [2mstreams_slate::http[0m[2m:[0m nofile soft=9223372036854775807 hard=9223372036854775807 (raised to hard at boot)
+[2m2026-09-24T13:20:46.095138Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:46.096312Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:46.098522Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:46.107299Z[0m [32m INFO[0m [2mstreams_slate[0m[2m:[0m opening shard log shards/root (lazy; fences prior owner)
+[2m2026-09-24T13:20:46.215300Z[0m [32m INFO[0m [2mstreams_slate::billing[0m[2m:[0m usage rollup running
+[2m2026-09-24T13:20:47.095818Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:47.095930Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:47.095973Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:48.096894Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:48.097072Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:48.097167Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:48.462107Z[0m [32m INFO[0m [2mstreams_slate::history[0m[2m:[0m absorber seeded 1 dirty streams from the durable index ()
+[2m2026-09-24T13:20:49.098347Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: keys fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:49.099786Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: policy fetch failed (previous snapshot ages): No such file or directory (os error 2)
+[2m2026-09-24T13:20:49.105461Z[0m [33m WARN[0m [2mstreams_slate::auth_feed[0m[2m:[0m auth feed: grants fetch failed (previous snapshot ages): No such file or directory (os error 2)

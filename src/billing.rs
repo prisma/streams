@@ -4,10 +4,8 @@
 //!   1. data-plane billing state  — exact per-segment ingest/storage
 //!      accumulators updated in the SAME shard WriteBatch as the
 //!      records they describe (shard.rs committer);
-//!   2. the `_usage` ledger       — an internal total-order stream of
-//!      idempotent usage observations;
-//!   3. the usage rollup          — one SlateDB materialization; the
-//!      customer dashboard is a point read, never a ledger scan;
+//!   2. the `_usage` ledger       — an internal total-order stream of idempotent usage observations;
+//!   3. the usage rollup          — one SlateDB materialization (dashboard point reads);
 //!   4. operational telemetry     — `_ops_events` (typed, durable,
 //!      deterministic IDs) and `_ops_metrics` (mergeable series).
 //!
@@ -21,6 +19,7 @@
 //! display metadata, not the billing identity** — billing keys are
 //! (account, project, stream incarnation).
 
+use crate::http::AppState;
 use serde::{Deserialize, Serialize};
 
 mod read_accumulator;
@@ -33,8 +32,11 @@ pub(crate) use read_spool::ReadSpool;
 
 mod system_append;
 pub(crate) use system_append::{LocalFailure, append_local, system_append};
+mod sweep_custody;
+pub(crate) use sweep_custody::SweepCustody;
 mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
+pub(crate) mod replaced;
 
 // ---------------------------------------------------------------------
 // Reserved system streams
@@ -510,10 +512,7 @@ mod tests;
 /// The BillingIdentity for a descriptor, with deployment defaults for
 /// descriptors created before the cutover. Counts feed misses — use
 /// on METERING paths only.
-pub(crate) fn identity_of(
-    state: &crate::http::AppState,
-    desc: &crate::registry::StreamDesc,
-) -> BillingIdentity {
+pub(crate) fn identity_of(state: &AppState, desc: &crate::registry::StreamDesc) -> BillingIdentity {
     identity_inner(state, desc, true)
 }
 
@@ -521,14 +520,14 @@ pub(crate) fn identity_of(
 /// paths (usage GETs), so dashboard polling of a feed-lagged project
 /// cannot inflate a counter named "meter events".
 pub(crate) fn identity_of_query(
-    state: &crate::http::AppState,
+    state: &AppState,
     desc: &crate::registry::StreamDesc,
 ) -> BillingIdentity {
     identity_inner(state, desc, false)
 }
 
 fn identity_inner(
-    state: &crate::http::AppState,
+    state: &AppState,
     desc: &crate::registry::StreamDesc,
     count_miss: bool,
 ) -> BillingIdentity {
@@ -700,12 +699,6 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
     serde_json::to_vec(e).map(|v| v.len()).unwrap_or(4096) + 1
 }
 
-/// BILLING_MODE=required: production billing — volatile fallbacks are
-/// refused and billing infrastructure failures are fatal at startup.
-pub(crate) fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
-    cfg.mode_env.as_deref() == Some("required")
-}
-
 /// Drain step 1: move sealed batches into the durable spool. On a
 /// mid-loop store fault the failed batch AND the not-yet-persisted
 /// remainder requeue at the accumulator head (round-22 item 2a) — a
@@ -800,7 +793,7 @@ pub(crate) async fn drain_once(
             envelopes.push(env);
             spooled_keys.push(key);
         }
-    } else if billing_required(&state.config.billing) {
+    } else if state.config.cli.billing_required() {
         // Round-22 item 2b: required mode has NO memory-only window.
         // Until the spool is open, drains fail (the meter keeps
         // accumulating; nothing is emitted from volatile state).
@@ -1573,7 +1566,7 @@ pub(crate) fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> u
         .shards
         .engines()
         .iter()
-        .filter(|e| e.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) != 0)
+        .filter(|e| e.sweep_custody.held())
         .count()
 }
 
@@ -1710,9 +1703,9 @@ pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::App
         }
     }
 
-    // The tombstone walk budgets its own opens (walk_engine_budgeted):
-    // over-budget descriptors defer to the next sweep's re-page.
+    // Both budget their own opens (walk_engine_budgeted) and defer past it.
     tombstone_walk(state).await;
+    replaced::settle_replaced(state).await;
 }
 
 /// One residency budget for EVERY debt class the scheduler can retain
@@ -1749,21 +1742,10 @@ async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt 
     }
 }
 
-/// R29 custody core. One global adoption sequence orders every
-/// external resolution against every custody install; the invariants:
-///
-///   * custody installs ONLY onto an engine with zero external
-///     history — a customer who resolved the engine before the sweep
-///     probed it (including one who coalesced into the sweep's own
-///     in-flight open) makes the install DECLINE, closing the
-///     pre-mark window the R28 baseline model left open;
-///   * an external resolution atomically revokes custody
-///     (stamp_external, called inside the request path's map guard);
-///   * internal paths (tombstone walk, scaler) never stamp, so
-///     maintenance cannot leak an engine out of the rotation;
-///   * a close succeeds only via compare_exchange on the installer's
-///     exact custody value — custody still present implies no
-///     external stamp since install.
+/// R29: ONE process-wide adoption sequence, so custody values stay unique
+/// across engines and across incarnations of one prefix: a custody record
+/// left by a retired engine never matches its successor's custody. The
+/// handshake itself is `SweepCustody`.
 static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Called from every EXTERNAL engine resolution (http engine_for fast
@@ -1771,12 +1753,7 @@ static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// flags in the serving map, so revocation is just the swap.
 pub(crate) fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>) {
     let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    engine
-        .last_external_seq
-        .store(seq, std::sync::atomic::Ordering::Relaxed);
-    engine
-        .sweep_custody
-        .swap(0, std::sync::atomic::Ordering::Relaxed);
+    engine.sweep_custody.stamp_external(seq);
 }
 
 /// Install scheduler custody. Returns the custody value on success;
@@ -1784,26 +1761,8 @@ pub(crate) fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>)
 /// the install race) and the scheduler must treat it as
 /// customer-resident.
 fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option<u64> {
-    use std::sync::atomic::Ordering;
-    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
-        return None;
-    }
-    let seq = ADOPTION_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    engine.sweep_custody.store(seq, Ordering::Relaxed);
-    // Re-check: a stamp that landed between the first read and the
-    // store has either already revoked (swap saw our value) or carries
-    // a newer last_external_seq; both mean decline.
-    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
-        if engine
-            .sweep_custody
-            .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            // we still held it; release cleanly (no SCHED_HELD yet)
-        }
-        return None;
-    }
-    Some(seq)
+    let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    engine.sweep_custody.install(seq).then_some(seq)
 }
 
 fn residence_quantum(cfg: &crate::config::BillingConfig) -> usize {
@@ -1841,16 +1800,10 @@ fn custody_intact(
     prefix: &str,
     engine: &std::sync::Arc<crate::shard::ShardEngine>,
 ) -> bool {
-    let rec = state.billing.sweep_custody_seq(prefix);
-    match rec {
-        Some(seq) => {
-            engine
-                .sweep_custody
-                .load(std::sync::atomic::Ordering::Relaxed)
-                == seq
-        }
-        None => false,
-    }
+    state
+        .billing
+        .sweep_custody_seq(prefix)
+        .is_some_and(|seq| engine.sweep_custody.holds(seq))
 }
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
@@ -1871,7 +1824,6 @@ pub(crate) fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState
 /// window is the ownership-move window, which clients already survive
 /// by replay contract.
 fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
-    use std::sync::atomic::Ordering;
     let Some(seq) = state.billing.sweep_custody_seq(prefix) else {
         return;
     };
@@ -1893,12 +1845,7 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     match state.shards.retire(
         prefix,
         crate::shard_directory::RetirementReason::SweepEviction,
-        |engine, _incarnation| {
-            engine
-                .sweep_custody
-                .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-        },
+        |engine, _incarnation| engine.sweep_custody.revoke_if(seq),
     ) {
         crate::shard_directory::RetireOutcome::Retired(_) => {
             unmark(state, prefix);
@@ -1973,10 +1920,10 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// a zero gauge no-ops, and the persisted stamp makes every retry
 /// account to the same instant. Fork-retained sources are flagged too.
 ///
-/// Residual (accepted): a closure lost to a crash while the row was
-/// clean AND the name recreated under a new epoch before the next
-/// sweep replaces the tombstone this walk needs; that incarnation's
-/// gauge is then reachable only through the dirty-path reconciler.
+/// A recreation replaces the terminal descriptor this walk needs; it
+/// records a closure debt first, which `replaced::settle_replaced`
+/// settles after this walk (an idle expiry or a crash-lost delete close
+/// no longer leaves that incarnation's gauge open).
 #[expect(
     clippy::excessive_nesting,
     reason = "tombstone_walk; the walk nests the close stamp and the submit verdict inside each tombstone's engine branch; flattening them would separate the verdict from the tombstone it closes"

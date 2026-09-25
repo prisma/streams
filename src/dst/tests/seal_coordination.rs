@@ -1,8 +1,9 @@
 //! Seal coordination.
 
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 
 /// Seal-with-final through the SDK's own shape: NO caller producer
@@ -840,4 +841,58 @@ async fn another_operation_on_a_sealed_collection_is_refused_definitively() {
     assert_eq!(seal("sealplain", b"").await.0, 200);
     refused(seal("sealplain", first).await);
     engine_shutdown(&state).await;
+}
+
+/// External review §5: a raw close resuming an owed final renews its claim
+/// only after the content owner has validated the record. A retry the
+/// per-stream capacity refuses (the final was owed under a larger
+/// LIMIT_BYTES_PER_SEC than the restarted process runs with) is a 413 that
+/// leaves the owed claim exactly as the crash left it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_owed_final_retry_leaves_its_claim_unrenewed() {
+    async fn claim(state: &crate::http::AppState) -> Option<u64> {
+        let sref = state.deployment.raw_adapter_sref("owedcap");
+        state.registry.invalidate(&sref);
+        let desc = state.registry.get(&sref).await.unwrap().unwrap();
+        desc.sealing.as_ref().map(|s| s.claim_generation)
+    }
+    let store = mem();
+    let (state, addr) = http_rig(store.clone()).await;
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/owedcap", &[ct], b"").await;
+    assert!(st == 200 || st == 201);
+    // 212 bytes: within the default capacity, over the restart's 100 bytes.
+    let body = format!(r#"[{{"pad":"{}"}}]"#, "x".repeat(200));
+    let close = [ct, ("stream-closed", "true")];
+    // The failpoint is keyed by this test's own stream name.
+    crate::failpoints::stop_after_seal_intent("owedcap");
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/owedcap", &close, body.as_bytes()).await;
+    crate::failpoints::stop_after_seal_intent_off("owedcap");
+    assert_eq!(st, 503, "the failpoint did not stop the close");
+    engine_shutdown(&state).await;
+    drop(state);
+
+    let admission = crate::config::AdmissionConfig {
+        limit_bytes_per_sec: 50.0, // x LIMIT_BURST_SECS 2 = 100 bytes
+        ..Default::default()
+    };
+    let options = HttpRigOptions {
+        admission: Some(admission),
+        ..Default::default()
+    };
+    let rig = http_rig_build(store, RigRuntime::incarnation(1), options).await;
+    let before = claim(&rig.state).await;
+    assert!(before.is_some(), "the crash left no owed claim");
+    let (st, _, b) = hreq(
+        rig.addr,
+        "POST",
+        "/v1/stream/owedcap",
+        &close,
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 413, "{}", String::from_utf8_lossy(&b));
+    let after = claim(&rig.state).await;
+    assert_eq!(after, before, "a refused retry renewed the owed claim");
+    engine_shutdown(&rig.state).await;
 }

@@ -91,6 +91,18 @@ impl EngineTasks {
     pub(super) fn abort(&self, role: &str) -> tokio::task::AbortHandle {
         self.supervisor.abort_named(role)
     }
+    /// Tests only: the engine's storage close FAILS. No store fault produces
+    /// this (SlateDB retries its faults, and `close_db` settles Clean and
+    /// Fenced), so the proof of what a failed close means to the directory
+    /// installs one. The roles are aborted and joined as a real close would;
+    /// the database stays open for the test to close.
+    #[cfg(test)]
+    pub(super) fn begin_failed_close_for_test(&self, error: &'static str) {
+        self.supervisor
+            .begin_shutdown_with(Duration::ZERO, "storage-close", async move {
+                TaskResult::Failed(error.into())
+            });
+    }
 }
 /// Retains join authority and its report, without retaining engine caches.
 #[derive(Clone)]
@@ -103,20 +115,32 @@ impl EngineShutdown {
         self.0.monitor().phase() == Some(crate::tasks::Phase::Stopped)
     }
     pub(crate) async fn wait(&self, timeout: Duration) -> Result<(), String> {
+        self.settle(timeout).await.unwrap_or_else(|| {
+            Err("engine shutdown still running; join authority retained".to_string())
+        })
+    }
+    /// The close's joined report within `timeout`, or `None` while it is
+    /// still closing. A report means the close is over: termination proved
+    /// (`Ok`), or a close that failed for good (`Err` naming the roles). A
+    /// failed close is final (item 38): its owner keeps the replacement fence
+    /// and the readiness failure, and no later wait turns it into a close.
+    /// Whether it settled and what it reported come from this one
+    /// observation, never from two readings that a close can fall between.
+    pub(crate) async fn settle(&self, timeout: Duration) -> Option<Result<(), String>> {
         let report = tokio::time::timeout(timeout, self.0.observe_shutdown())
             .await
-            .map_err(|_| "engine shutdown still running; join authority retained".to_string())?;
+            .ok()?;
         let failures: Vec<_> = report
             .outcomes
             .iter()
             .filter(|(_, outcome)| !matches!(outcome, TaskOutcome::Finished))
             .map(|(role, outcome)| format!("{role}: {outcome:?}"))
             .collect();
-        if failures.is_empty() {
+        Some(if failures.is_empty() {
             Ok(())
         } else {
             Err(failures.join("; "))
-        }
+        })
     }
 }
 struct RequiredExit {

@@ -69,7 +69,9 @@ pub struct StorageConfig {
 /// SlateDB this process opens — R27-4/R28).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineConfig {
-    /// COMPACTOR_POLL_MS, default `crate::DEFAULT_COMPACTOR_POLL_MS`.
+    /// `--compactor-poll-ms` (env COMPACTOR_POLL_MS), default
+    /// `crate::DEFAULT_COMPACTOR_POLL_MS`. Clap owns it: `with_knob_defaults`
+    /// copies the resolved value so an argv override reaches every DB family.
     pub compactor_poll_ms: u64,
     /// COMPACTOR_MAX_CONCURRENT, default 4.
     pub compactor_max_concurrent: usize,
@@ -129,13 +131,11 @@ pub struct HistoryConfig {
     /// runtime-mutable pause flag (the debug endpoint toggles the
     /// atomic at runtime).
     pub absorb_pause_initial: bool,
-    /// ABSORB_GLOBAL_BUDGET_BYTES. Defaults: 4 GiB under cfg(test),
-    /// 64 MiB otherwise (preserved exactly, including the test split);
-    /// `floored_budget_capacity()` still raises it to the worst-frame
-    /// floor at the use site.
+    /// ABSORB_GLOBAL_BUDGET_BYTES, default 64 MiB. The runtime floors it
+    /// at one worst-frame build (`HistoryResources::with_body_limit`), so
+    /// the default runs at 100,859,904 bytes under the 32 MiB body pin.
     pub absorb_global_budget_bytes: usize,
-    /// ABSORB_GLOBAL_GATHERS, max(1). Defaults: 64 under cfg(test),
-    /// 2 otherwise.
+    /// ABSORB_GLOBAL_GATHERS, max(1), default 2.
     pub absorb_global_gathers: usize,
     /// HISTORY_CACHE_BYTES, default 32 MiB.
     pub cache_bytes: usize,
@@ -198,18 +198,8 @@ pub struct HttpConfig {
 /// Billing/telemetry/rollup knobs (src/billing.rs, src/ops.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BillingConfig {
-    /// RAW BILLING_MODE env value. `billing_required()` and the debug
-    /// endpoint read the ENVIRONMENT today, NOT the clap field
-    /// (`--billing-mode`, env BILLING_MODE) — a dual-channel quirk
-    /// preserved exactly here. Consumers of the CLI value keep reading
-    /// `args.billing_mode`. Scheduled for unification in WP-13.
-    pub mode_env: Option<String>,
     /// BILLING_METER: metering on unless == "off" (per-append read).
     pub meter_enabled: bool,
-    /// RAW ROLLUP env value. /health and /v1/debug/billing read the env
-    /// directly today; `spawn_rollup` uses the clap field. Same
-    /// dual-channel quirk as `mode_env`.
-    pub rollup_env: Option<String>,
     /// RAW PATH_PREFIX env value. `open_read_spool` reads the env
     /// directly (NOT `--path-prefix`), while `spawn_rollup` uses the clap
     /// field — preserved as-is; WP-13 owns the unification.
@@ -322,17 +312,37 @@ pub struct RuntimeConfig {
     pub cert_sealed_publish_delay_ms_raw: Option<String>,
     /// STREAMS_CERTIFICATION_MODE, raw (Some("1") enables cert knobs).
     pub certification_mode: Option<String>,
+    /// TOKIO_WORKERS; None = one per available core.
+    pub tokio_workers: Option<usize>,
+}
+
+impl RuntimeConfig {
+    /// The Tokio worker count: TOKIO_WORKERS, else one per available core,
+    /// never below two. Run 13 measured ~230 ms p50 timer drift (vs 4 ms
+    /// for a raw thread) from inline blocking work; on a 1-vCPU box one
+    /// worker lets a single blocking poll freeze every future, durable
+    /// acks included (O14a), so a second worker lets the OS timeslice
+    /// around it.
+    pub fn worker_threads(&self, available: Option<std::num::NonZeroUsize>) -> usize {
+        self.tokio_workers
+            .unwrap_or_else(|| available.map_or(1, std::num::NonZeroUsize::get))
+            .max(2)
+    }
 }
 
 impl ServerConfig {
-    /// The no-environment knob posture. `load()` overlays the
-    /// environment on top of this, so `load(cli, empty_env)` is provably
-    /// this value.
+    /// The no-environment knob posture over `cli` (whose compactor poll
+    /// interval it carries). `load()` overlays the environment on top of
+    /// this, so `load(cli, empty_env)` is provably this value.
     pub(crate) fn with_knob_defaults(cli: CliArgs) -> Self {
+        let engine = EngineConfig {
+            compactor_poll_ms: cli.compactor_poll_ms,
+            ..EngineConfig::default()
+        };
         Self {
             cli,
             storage: Default::default(),
-            engine: Default::default(),
+            engine,
             shard: Default::default(),
             history: Default::default(),
             postings: Default::default(),
@@ -387,15 +397,11 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             absorb_pause_initial: false,
-            // The test/profile split is preserved from the old
-            // history.rs OnceLock: tests get headroom, production
-            // gets the field-validated 64 MiB / 2 gathers posture.
-            absorb_global_budget_bytes: if cfg!(test) {
-                4 * 1024 * 1024 * 1024
-            } else {
-                64 * 1024 * 1024
-            },
-            absorb_global_gathers: if cfg!(test) { 64 } else { 2 },
+            // The field-validated posture in every build. Budgets are per
+            // runtime, so a test that needs more headroom states it in its
+            // own HistoryConfig; the default never forks on the build.
+            absorb_global_budget_bytes: 64 * 1024 * 1024,
+            absorb_global_gathers: 2,
             cache_bytes: 32 * 1024 * 1024,
             compactor_off: false,
             gc_interval: Some(Duration::from_secs(600)),
@@ -439,9 +445,7 @@ impl Default for HttpConfig {
 impl Default for BillingConfig {
     fn default() -> Self {
         Self {
-            mode_env: None,
             meter_enabled: true,
-            rollup_env: None,
             path_prefix_env: None,
             outbox_sweep_secs: 300,
             telemetry_drain_secs: 2,

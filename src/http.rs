@@ -29,7 +29,7 @@ pub(crate) fn append_failure_status(error: &AppendFailure) -> StatusCode {
 }
 fn append_position(seg: u32, next: u64, materialized: bool) -> String {
     if materialized {
-        crate::offsets::encode_ep(seg, Offset::before(next))
+        crate::offsets::encode(seg, next)
     } else {
         tail_token(next)
     }
@@ -124,7 +124,6 @@ use serde_json::json;
 
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::history::KeyCache;
-use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
 
@@ -253,6 +252,25 @@ impl AppState {
             admission_config: self.config.admission.clone(),
             meter_enabled: self.config.billing.meter_enabled,
         }
+    }
+
+    /// The raw surface's append (`POST /v1/stream/{name}`): the typed
+    /// append, then its accepted outcome (applied, a producer duplicate or
+    /// a close) counted once (§4.5 `append_requests`) against the
+    /// incarnation it committed to, with no second descriptor read and no
+    /// await between the outcome and the count; then the protocol answer.
+    /// The BILLED ingest bytes are the committer's, atomic with the records.
+    pub(crate) async fn raw_append(
+        self: &Arc<Self>,
+        sref: crate::tenant::TenantStreamRef,
+        headers: HeaderMap,
+        body: Body,
+    ) -> Response {
+        let result = append_typed(self.clone(), sref, headers, body, None, None, None).await;
+        if let Ok(out) = &result {
+            crate::billing::meter_append_request(self, &out.descriptor);
+        }
+        render_append(result)
     }
 }
 
@@ -722,17 +740,8 @@ async fn track_inflight(
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
 /// (rate constant regardless of latency).
 async fn debug_sleep(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let ms: u64 = q
         .get("ms")
         .and_then(|v| v.parse().ok())
@@ -817,19 +826,7 @@ async fn get_segments(
     clippy::cast_possible_truncation,
     reason = "debug_load; the load report gathers every runtime gauge into one JSON document stamped with Unix milliseconds that fit u64 for millions of years; splitting the report or checking the stamp would only restate the document"
 )]
-async fn debug_load(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let _ = &q;
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let (now, peak) = state.admission.swap_peak();
     let adm = state.admission.snapshot();
     let lf = state.livefeed.snapshot();
@@ -1010,11 +1007,11 @@ async fn debug_load(
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
         // should stay rare enough to investigate when it moves.
-        // PR 6-F: the supervised long-lived loops and the first critical
-        // exit, if any (readiness adopts it in WP-15's remaining slice).
+        // PR 6-F / item 37: supervised loops, the first critical exit and panicked connections.
         "tasks": {
             "phase": state.tasks.phase().map(|p| format!("{p:?}")),
             "critical_failure": state.tasks.critical_failure(),
+            "connection_panics": state.tasks.connection_panics(),
             "loops": state.tasks.snapshot().into_iter().map(|t| serde_json::json!({
                 "name": t.name,
                 "policy": format!("{:?}", t.policy),
@@ -1035,42 +1032,23 @@ async fn debug_load(
 /// heartbeats read it non-destructively).
 async fn debug_store(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let window: u64 = q
         .get("window")
         .and_then(|v| v.parse().ok())
         .unwrap_or(60)
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
-    let mut snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io);
-    if let Some(_obj) = snap.as_object_mut() {
-        // History DbReader service: hits vs misses shows how much
-        // per-request manifest traffic the cache absorbs; stale_reopens
-        // is bounded by absorb cadence; coalesced proves single-flight.
-    }
+    let opens = state.shards.open_stats();
+    let snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
     axum::Json(snap).into_response()
 }
 
 /// Shadow-mode observability (MULTITENANCY §7.2): mode, counter
 /// deltas, and the age/size of every published snapshot — the numbers
 /// the field trial reads to decide the enforce flip.
-async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_auth(State(state): State<Arc<AppState>>) -> Response {
     let now = crate::shard::now_ms() / 1000;
     let (tracked, inflight) = state.quotas.stats();
     axum::Json(serde_json::json!({
@@ -1081,16 +1059,9 @@ async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     .into_response()
 }
 
-/// Per-stream usage counters + the active limits. Auth: same bearer as
-/// the other debug endpoints (enforced by the middleware layer).
-async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+/// Per-stream usage counters + the active limits: per-stream data, which
+/// is why the whole /v1/debug table mounts through `debug::gated`.
+async fn debug_usage(State(state): State<Arc<AppState>>) -> Response {
     let l = state.runtime.usage.limits();
     let streams: Vec<serde_json::Value> = state.runtime.usage.snapshot()
         .into_iter()
@@ -1149,14 +1120,7 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
 /// Recent operational events (§12.5): the live ring, newest first.
 /// Bearer-gated like every debug route; the durable history lives in
 /// `_ops_events` and the ops rollup serves timelines.
-async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_ops_events(State(state): State<Arc<AppState>>) -> Response {
     let recent = state.runtime.ops.recent(128);
     axum::Json(serde_json::json!({
         "events": recent,
@@ -1173,15 +1137,7 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
 async fn debug_usage_reconcile(
     State(state): State<Arc<AppState>>,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
-    headers: HeaderMap,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
     let mut month: Option<String> = None;
     for pair in query
         .as_deref()
@@ -1221,128 +1177,8 @@ async fn debug_usage_reconcile(
     }
 }
 
-/// Fleet-internal telemetry append (round-21 blocker 5): the OWNER-side
-/// target for system-stream relays. Fleet credential only; reserved
-/// names only; creates the stream lazily with the carried system key.
-async fn internal_telemetry_append(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if !fleet_operation_authorized(&state, &headers, InternalOperation::TelemetryAppend) {
-        return internal_unauthorized();
-    }
-    if !crate::billing::is_reserved_stream(&name) {
-        return err_resp(
-            StatusCode::FORBIDDEN,
-            "not_system_stream",
-            "telemetry-append accepts only reserved system streams",
-        );
-    }
-    // Stage 7 review fix: the RECEIVER addresses the reserved stream
-    // under the SYSTEM project — the identity the sender appended toward
-    // and every reader (system_read, rollup_step) reads; the deployment
-    // tenant would put relayed batches in a stream nobody reads.
-    let Some(key) = raw_key(&headers, &state) else {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "missing_key",
-            "Stream-Encryption-Key required",
-        );
-    };
-    let Ok(canonical) = crate::tenant::CanonicalStreamName::new(&name) else {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "invalid_name",
-            "not a canonical stream name",
-        );
-    };
-    let sref = crate::tenant::TenantStreamRef::new(crate::tenant::system_project(), canonical);
-    // The same typed local path the sender took: a refusal here is the
-    // owner's own decision (ownership included), never a status guess.
-    match crate::billing::append_local(&state, sref, key, body).await {
-        Ok(out) => render_append(Ok(out)),
-        Err(crate::billing::LocalFailure::Key(m)) => {
-            err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m)
-        }
-        Err(crate::billing::LocalFailure::Append(e)) => render_append(Err(e)),
-        Err(crate::billing::LocalFailure::Create(e)) => creation_error_response(e),
-    }
-}
-
-/// #269: the one h1 serve loop — production and every test rig serve
-/// through THIS function, so the suite exercises the real connection
-/// path; what each connection is served with is `serve::h1_builder`.
-#[expect(
-    clippy::disallowed_methods,
-    clippy::let_underscore_must_use,
-    reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled results would restate what the JoinSet already owns"
-)]
-pub(crate) async fn serve_h1(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-    http: &crate::config::HttpConfig,
-    tasks: crate::tasks::TaskSupervisor,
-) -> std::io::Result<()> {
-    let svc = hyper_util::service::TowerToHyperService::new(app);
-    let h1 = serve::h1_builder(http);
-    let limits = raise_nofile();
-    let (soft, hard) = (
-        limits.soft.map_or(0, |n| n.get()),
-        limits.hard.map_or(0, |n| n.get()),
-    );
-    NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
-    NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
-    tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
-    spawn_runtime_watchdog(&tasks);
-    // PR 6.1-A: the accept loop OWNS its connections. A connection is
-    // not request-scoped — keep-alives and live subscriptions outlive
-    // any one request — so on cancellation the loop stops accepting,
-    // releases the address, then aborts and JOINS every connection: a
-    // runtime that has shut down has no socket left open, and a
-    // replacement can bind the same address immediately.
-    let cancel = tasks.cancellation();
-    let mut conns = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            accepted = listener.accept() => match accepted {
-                Ok((sock, _peer)) => {
-                    let svc = svc.clone();
-                    let h1 = h1.clone();
-                    conns.spawn(async move {
-                        let _ = sock.set_nodelay(true);
-                        let io = hyper_util::rt::TokioIo::new(sock);
-                        // Errors here are routine client behavior (resets,
-                        // half-closed keep-alives, head deadlines), not
-                        // server faults.
-                        let _ = h1.serve_connection(io, svc).await;
-                    });
-                }
-                Err(e) => {
-                    // Transient accept errors (EMFILE bursts, aborted
-                    // handshakes) must not kill the acceptor.
-                    tracing::warn!("accept: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-            },
-            // Reap finished connections so the set never grows with
-            // completed entries.
-            Some(_) = conns.join_next(), if !conns.is_empty() => {}
-        }
-    }
-    drop(listener);
-    conns.abort_all();
-    while conns.join_next().await.is_some() {}
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    clippy::disallowed_methods,
-    reason = "router; the route table is one declaration so every path is visible in one place, and the debug abort spawns a bare task that ends the process itself; splitting the table or supervising the abort would separate the routes from the table and the abort from the death it causes"
-)]
+/// Every route the service answers. The operator debug table mounts under
+/// `/v1/debug` only through its one gate, `debug::gated`.
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
@@ -1395,31 +1231,77 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             "/v1/internal/telemetry-append/{*name}",
             post(internal_telemetry_append),
         )
-        .route("/v1/debug/timings", get(debug_timings))
-        .route("/v1/debug/load", get(debug_load))
-        .route("/v1/debug/store", get(debug_store))
-        .route("/v1/debug/usage", get(debug_usage))
-        .route("/v1/debug/auth", get(debug_auth))
-        .route("/v1/debug/ops-events", get(debug_ops_events))
-        .route("/v1/debug/usage-reconcile", get(debug_usage_reconcile))
-        // Every /v1/debug/* route is account-gated (round-19: the
-        // security model claims bearer auth on all of /v1/*, and these
-        // MUTATE production state — pausing absorption, occupying
-        // request slots, resetting peak gauges — or expose per-stream
-        // usage). SR-5: /operator is bearer-gated like the debug surface.
+        .nest("/v1/debug", debug::gated(&state, debug_routes()))
+        // Operator dashboard: UNSECURED by explicit product decision (on-call
+        // must see the cell without credentials). The payload is therefore
+        // restricted to operational metadata — never stream names, tenant
+        // identifiers, tokens, keys, or signed URLs.
+        .route("/operator", get(crate::operator::page))
+        .route("/operator/data.json", get(crate::operator::data))
+        .route("/operator/runbook", get(crate::operator::runbook))
+        .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
         .route(
-            "/v1/debug/absorb-pause",
+            "/v1/streams",
+            axum::routing::get(product_list_axum).options(product_preflight),
+        )
+        .route("/v1/streams/{*name}", any(product_entry_axum))
+        .route(
+            "/v1/projects/{project}/usage",
+            axum::routing::get(project_usage_axum).options(product_preflight),
+        )
+        .route("/v1/stream/{*name}", any(stream_entry))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_inflight,
+        ))
+        // Server-origin marker on EVERY response, including errors
+        // (round-19 must-fix 4). A 404 from a real server means "this
+        // stream does not exist" — a 404 from the PLATFORM edge (dead
+        // or unpublished service) means "this upstream is unavailable",
+        // and the SDK retries 429/503 but never 404. A router that
+        // cannot tell them apart turns an instance loss into permanent
+        // "stream deleted" for applications (the hard-kill campaign:
+        // 8,371 semantic 404s in ~30 s). Marked responses are ours;
+        // unmarked ones never reached a server.
+        .layer(axum::middleware::map_response_with_state(
+            state.clone(),
+            |State(state): State<Arc<AppState>>, mut resp: Response| async move {
+                resp.headers_mut().insert(
+                    "x-content-type-options",
+                    axum::http::HeaderValue::from_static("nosniff"),
+                );
+                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
+                    resp.headers_mut().insert("prisma-streams-origin", v);
+                }
+                resp
+            },
+        ))
+        .with_state(state)
+}
+
+/// The operator debug table. Its routes MUTATE production state (pausing
+/// absorption, stalling flushes, aborting the process, resetting peak
+/// gauges) or expose per-stream usage, so it mounts only through
+/// `debug::gated`: no handler here checks the bearer itself.
+#[expect(
+    clippy::too_many_lines,
+    clippy::disallowed_methods,
+    reason = "debug_routes; the operator debug table is one declaration behind one gate, and the debug abort spawns a bare task that ends the process itself; splitting the table would scatter what the gate covers and supervising the abort would separate it from the death it causes"
+)]
+fn debug_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/timings", get(debug_timings))
+        .route("/load", get(debug_load))
+        .route("/store", get(debug_store))
+        .route("/usage", get(debug_usage))
+        .route("/auth", get(debug_auth))
+        .route("/ops-events", get(debug_ops_events))
+        .route("/usage-reconcile", get(debug_usage_reconcile))
+        .route(
+            "/absorb-pause",
             post(
                 |State(state): State<Arc<AppState>>,
-                 headers: HeaderMap,
                  Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
                     let on = q.get("on").map(|v| v == "1").unwrap_or(false);
                     state.runtime.history.paused
                         .store(on, std::sync::atomic::Ordering::Relaxed);
@@ -1434,16 +1316,9 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // and auth-gated like every debug route. Platform `versions
         // stop` is too graceful to prove crash recovery.
         .route(
-            "/v1/debug/abort",
+            "/abort",
             post(
-                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |State(state): State<Arc<AppState>>| async move {
                     if !state.config.http.debug_exit {
                         return err_resp(
                             StatusCode::FORBIDDEN,
@@ -1461,24 +1336,15 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
                 },
             ),
         )
-        .route("/v1/debug/sleep", get(debug_sleep))
+        .route("/sleep", get(debug_sleep))
         // Injected history-flush slowdown (OOM review acceptance
         // campaign): stalls the REAL gather flush path by ?ms= per
         // flush, with the process-wide reservation held — the
         // mechanism the slow-compactor campaign drives. 0 clears.
         .route(
-            "/v1/debug/history-stall",
+            "/history-stall",
             post(
-                |State(state): State<Arc<AppState>>,
-                 headers: HeaderMap,
-                 Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
                     let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);
                     crate::history::HISTORY_FLUSH_STALL_MS
                         .store(ms, std::sync::atomic::Ordering::Relaxed);
@@ -1492,16 +1358,9 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // (or refute) "history compaction fell behind". Authorized like
         // every other /v1/debug route.
         .route(
-            "/v1/debug/absorb",
+            "/absorb",
             get(
-                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
-                    if !authorized(&state, &headers) {
-                        return err_resp(
-                            StatusCode::UNAUTHORIZED,
-                            "unauthorized",
-                            "bearer token required",
-                        );
-                    }
+                |State(state): State<Arc<AppState>>| async move {
                     let ord = std::sync::atomic::Ordering::Relaxed;
                     let engines: Vec<_> = state.shards.engines_by_prefix();
                     let mut parts = Vec::new();
@@ -1599,51 +1458,6 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
                 },
             ),
         )
-        // Operator dashboard: UNSECURED by explicit product decision (on-call
-        // must see the cell without credentials). The payload is therefore
-        // restricted to operational metadata — never stream names, tenant
-        // identifiers, tokens, keys, or signed URLs.
-        .route("/operator", get(crate::operator::page))
-        .route("/operator/data.json", get(crate::operator::data))
-        .route("/operator/runbook", get(crate::operator::runbook))
-        .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
-        .route(
-            "/v1/streams",
-            axum::routing::get(product_list_axum).options(product_preflight),
-        )
-        .route("/v1/streams/{*name}", any(product_entry_axum))
-        .route(
-            "/v1/projects/{project}/usage",
-            axum::routing::get(project_usage_axum).options(product_preflight),
-        )
-        .route("/v1/stream/{*name}", any(stream_entry))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            track_inflight,
-        ))
-        // Server-origin marker on EVERY response, including errors
-        // (round-19 must-fix 4). A 404 from a real server means "this
-        // stream does not exist" — a 404 from the PLATFORM edge (dead
-        // or unpublished service) means "this upstream is unavailable",
-        // and the SDK retries 429/503 but never 404. A router that
-        // cannot tell them apart turns an instance loss into permanent
-        // "stream deleted" for applications (the hard-kill campaign:
-        // 8,371 semantic 404s in ~30 s). Marked responses are ours;
-        // unmarked ones never reached a server.
-        .layer(axum::middleware::map_response_with_state(
-            state.clone(),
-            |State(state): State<Arc<AppState>>, mut resp: Response| async move {
-                resp.headers_mut().insert(
-                    "x-content-type-options",
-                    axum::http::HeaderValue::from_static("nosniff"),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
-                    resp.headers_mut().insert("prisma-streams-origin", v);
-                }
-                resp
-            },
-        ))
-        .with_state(state)
 }
 
 /// Rendezvous over instance NAMES (FNV-1a, identical in the pilot LB) —
@@ -1664,14 +1478,7 @@ pub(crate) fn err_resp(status: StatusCode, code: &str, message: &str) -> Respons
     clippy::unwrap_used,
     reason = "debug_timings; a poisoned timing ring may hold a half-recorded wait; recovering it could report a group that never completed"
 )]
-async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
+async fn debug_timings(State(state): State<Arc<AppState>>) -> Response {
     let mut shards = serde_json::Map::new();
     let engines: Vec<(String, Arc<ShardEngine>)> = state.shards.engines_by_prefix();
     for (prefix, eng) in &engines {
@@ -1879,10 +1686,9 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
-    if crate::billing::billing_required(&state.config.billing) {
+    if state.config.cli.billing_required() {
         let spool_ok = state.billing.read_spool_open();
-        let rollup_ok =
-            state.config.billing.rollup_env.as_deref() != Some("1") || state.rollup.installed();
+        let rollup_ok = !state.config.cli.runs_rollup() || state.rollup.installed();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1954,13 +1760,12 @@ async fn billing_readiness_axum(
             "pendingCorrectionArtifacts": pending_corr,
         });
     }
-    let ready = !crate::billing::billing_required(&state.config.billing)
+    let ready = !state.config.cli.billing_required()
         || (state.billing.usage_key().is_some()
             && spool_open
-            && (state.config.billing.rollup_env.as_deref() != Some("1")
-                || state.rollup.get().is_some()));
+            && (!state.config.cli.runs_rollup() || state.rollup.get().is_some()));
     axum::Json(serde_json::json!({
-        "mode": state.config.billing.mode_env.clone().unwrap_or_else(|| "off".into()),
+        "mode": &state.config.cli.billing_mode,
         "ready": ready,
         "usageLedgerConfigured": state.billing.usage_key().is_some(),
         "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },
@@ -2013,7 +1818,7 @@ async fn project_usage_axum_inner(
     let authority = if state.auth.mode == crate::auth::AuthMode::Enforce {
         match crate::product::enforce_customer(&state, req.headers()) {
             Ok(p) => {
-                if let Err(e) = p.require(crate::tenant::Scope::UsageRead) {
+                if let Err(e) = p.require_project_usage() {
                     return crate::product::with_product_cors(crate::audit::tag_project(
                         crate::product::auth_failure_response(&e),
                         &p.project_id,
@@ -2193,7 +1998,6 @@ async fn stream_entry(
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     clippy::unwrap_used,
     reason = "stream_entry_inner; the raw entry takes every extractor axum resolved and dispatches every method from one match, and its preflight response carries only fixed headers; a request struct, a split or a fallible build would separate the dispatch from the extractors and the preflight from the method it answers"
 )]
@@ -2271,27 +2075,9 @@ async fn stream_entry_inner(
             r
         }
         Method::POST => {
-            let r = append(
-                state.clone(),
-                state.deployment.raw_adapter_sref(&name),
-                headers,
-                body,
-                None,
-                None,
-                None,
-            )
-            .await;
-            // Operation count only (§4.5) — the BILLED ingest bytes are
-            // the committer's, atomic with the records themselves.
-            if r.status().is_success()
-                && let Ok(Some(desc)) = state
-                    .registry
-                    .get(&state.deployment.raw_adapter_sref(&name))
-                    .await
-            {
-                crate::billing::meter_append_request(&state, &desc);
-            }
-            r
+            state
+                .raw_append(state.deployment.raw_adapter_sref(&name), headers, body)
+                .await
         }
         Method::GET | Method::HEAD => {
             // Round-4 finding 2: a workload-JWT read carries its
@@ -2359,7 +2145,6 @@ pub(crate) enum KeyCheck {
     Ok(StreamKey, [u8; 16]),
     Missing,
     Wrong,
-    BadDescriptor,
 }
 
 fn raw_key<'a>(headers: &'a HeaderMap, state: &'a AppState) -> Option<&'a str> {
@@ -2376,9 +2161,7 @@ pub(crate) fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
     let Ok(key) = StreamKey::from_b64(raw) else {
         return KeyCheck::Wrong;
     };
-    let Some(epoch) = desc.epoch_bytes() else {
-        return KeyCheck::BadDescriptor;
-    };
+    let epoch = desc.epoch();
     if key.fingerprint(&epoch) != desc.key_fingerprint {
         return KeyCheck::Wrong;
     }
@@ -2443,7 +2226,7 @@ fn parse_fork_offset(tok: &str) -> Result<u64, String> {
         }
         return Err("malformed fork offset".into());
     }
-    Offset::parse(tok).map(|o| o.scan_from())
+    crate::offsets::parse_scalar(tok).map_err(|e| e.to_string())
 }
 
 /// Strict TTL grammar: canonical non-negative decimal, at most the `admit_ttl` ceiling.
@@ -2468,8 +2251,10 @@ fn want_close(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// Creates and appends to a stream without a segment map answer in the
+/// scalar (epoch 0) lane.
 pub(crate) fn tail_token(next: u64) -> String {
-    Offset::before(next).encode()
+    crate::offsets::encode(0, next)
 }
 
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {
@@ -2691,41 +2476,6 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
         .map(|t| t.timestamp_millis())
 }
 
-/// ROUTING-V3 sealed-segment retry wrapper: an ENGINE's stream-closed
-/// answer is retried after refreshing the descriptor and resuming any
-/// pending transition, whatever the cached map looked like (it may
-/// predate the first split) — a seal is a few ms of routing
-/// indirection, never a client-visible 409. It passes through as a
-/// genuine user-closed stream only when the refreshed map still routes
-/// the key to that same segment, LIVE, with no pending transition. A
-/// closure the descriptor itself declares (sealed/sealing) is final and
-/// costs no refresh (AppendService::closure_is_current).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "append; the append entry takes the state, descriptor, key, headers, body and producer parts as the handler resolved them; a request struct would exist only for this signature"
-)]
-pub(crate) async fn append(
-    state: Arc<AppState>,
-    sref: crate::tenant::TenantStreamRef,
-    headers: HeaderMap,
-    body: Body,
-    product_hash: Option<[u8; 16]>,
-    product_key: Option<String>,
-    seal_auth: Option<SealAuthz>,
-) -> Response {
-    render_append(
-        append_typed(
-            state,
-            sref,
-            headers,
-            body,
-            product_hash,
-            product_key,
-            seal_auth,
-        )
-        .await,
-    )
-}
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -3349,10 +3099,14 @@ async fn internal_segment_read(
     .await
 }
 
+mod debug;
 #[path = "http/read.rs"]
 mod read_adapter;
 mod serve;
+mod telemetry_append;
 pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
+pub(crate) use serve::serve_h1;
+use telemetry_append::internal_telemetry_append;
 
 #[cfg(test)]
 #[path = "http/test_support.rs"]
