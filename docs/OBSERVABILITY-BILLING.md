@@ -144,6 +144,7 @@ Deleting and recreating `orders` creates a new `stream_id`.
 - Invoice rows are resource-incarnation rows.
 - The dashboard may additionally show a name-level monthly aggregate across incarnations.
 - A stale telemetry observation for an old `stream_id` can never mutate the new stream's rollup.
+- Replacing a dead incarnation (deleted, or expired while idle) never erases what its storage still owes. Before the conditional write that replaces its descriptor, the recreation records a closure debt for it (`registry/v4/replaced/…`, `src/registry/replaced.rs`): the replaced descriptor and the persisted instant its storage closes at (its deletion stamp, else its expiry; a later writer's later instant wins). Each instance's billing sweep settles the debts after the tombstone walk (`src/billing/replaced.rs`): once the name holds another incarnation, every segment it owns is closed at that instant while its gauge is open and marked settled when nothing is left open; the last settlement removes the debt. A debt whose incarnation is still stored is judged by the stored descriptor: live or retained for its forks, the recreation lost to a renewal and the debt is dropped; dead, the walk closes it. Fork-retained incarnations are never replaced, so their storage is never closed this way. Before this (second external review), an incarnation replaced before the walk reached it kept its gauge, and every month close carried its storage.
 
 ### 3.2 Tenant boundary
 

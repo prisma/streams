@@ -823,6 +823,17 @@
     "scenarios": []
   },
   {
+    "name": "a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "47ed5b4b0d32113053f746e7bad2dc9be8a9e1c8c0bb053876463d120e81e816",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_refused_oversized_chunk_defers_and_sizes_the_next_reservation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

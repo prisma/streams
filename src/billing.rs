@@ -4,10 +4,8 @@
 //!   1. data-plane billing state  — exact per-segment ingest/storage
 //!      accumulators updated in the SAME shard WriteBatch as the
 //!      records they describe (shard.rs committer);
-//!   2. the `_usage` ledger       — an internal total-order stream of
-//!      idempotent usage observations;
-//!   3. the usage rollup          — one SlateDB materialization; the
-//!      customer dashboard is a point read, never a ledger scan;
+//!   2. the `_usage` ledger       — an internal total-order stream of idempotent usage observations;
+//!   3. the usage rollup          — one SlateDB materialization (dashboard point reads);
 //!   4. operational telemetry     — `_ops_events` (typed, durable,
 //!      deterministic IDs) and `_ops_metrics` (mergeable series).
 //!
@@ -21,6 +19,7 @@
 //! display metadata, not the billing identity** — billing keys are
 //! (account, project, stream incarnation).
 
+use crate::http::AppState;
 use serde::{Deserialize, Serialize};
 
 mod read_accumulator;
@@ -37,6 +36,7 @@ mod sweep_custody;
 pub(crate) use sweep_custody::SweepCustody;
 mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
+pub(crate) mod replaced;
 
 // ---------------------------------------------------------------------
 // Reserved system streams
@@ -512,10 +512,7 @@ mod tests;
 /// The BillingIdentity for a descriptor, with deployment defaults for
 /// descriptors created before the cutover. Counts feed misses — use
 /// on METERING paths only.
-pub(crate) fn identity_of(
-    state: &crate::http::AppState,
-    desc: &crate::registry::StreamDesc,
-) -> BillingIdentity {
+pub(crate) fn identity_of(state: &AppState, desc: &crate::registry::StreamDesc) -> BillingIdentity {
     identity_inner(state, desc, true)
 }
 
@@ -523,14 +520,14 @@ pub(crate) fn identity_of(
 /// paths (usage GETs), so dashboard polling of a feed-lagged project
 /// cannot inflate a counter named "meter events".
 pub(crate) fn identity_of_query(
-    state: &crate::http::AppState,
+    state: &AppState,
     desc: &crate::registry::StreamDesc,
 ) -> BillingIdentity {
     identity_inner(state, desc, false)
 }
 
 fn identity_inner(
-    state: &crate::http::AppState,
+    state: &AppState,
     desc: &crate::registry::StreamDesc,
     count_miss: bool,
 ) -> BillingIdentity {
@@ -1706,9 +1703,9 @@ pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::App
         }
     }
 
-    // The tombstone walk budgets its own opens (walk_engine_budgeted):
-    // over-budget descriptors defer to the next sweep's re-page.
+    // Both budget their own opens (walk_engine_budgeted) and defer past it.
     tombstone_walk(state).await;
+    replaced::settle_replaced(state).await;
 }
 
 /// One residency budget for EVERY debt class the scheduler can retain
@@ -1923,10 +1920,10 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// a zero gauge no-ops, and the persisted stamp makes every retry
 /// account to the same instant. Fork-retained sources are flagged too.
 ///
-/// Residual (accepted): a closure lost to a crash while the row was
-/// clean AND the name recreated under a new epoch before the next
-/// sweep replaces the tombstone this walk needs; that incarnation's
-/// gauge is then reachable only through the dirty-path reconciler.
+/// A recreation replaces the terminal descriptor this walk needs; it
+/// records a closure debt first, which `replaced::settle_replaced`
+/// settles after this walk (an idle expiry or a crash-lost delete close
+/// no longer leaves that incarnation's gauge open).
 #[expect(
     clippy::excessive_nesting,
     reason = "tombstone_walk; the walk nests the close stamp and the submit verdict inside each tombstone's engine branch; flattening them would separate the verdict from the tombstone it closes"
