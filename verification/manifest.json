@@ -1370,10 +1370,12 @@
       "kind": "tla",
       "title": "History absorption, publication, and safe hot-data trimming",
       "status": "pass-with-recorded-scope",
-      "owner": "history absorber (gather, lane marks and batch receipts, dirty-index rescan), shard committer maintenance (absorbed advance, receipts, trims, byte ledger), the postings warm install and the postings index admission of overlapping pages",
+      "owner": "history absorber (gather, lane marks, the settled plan-time rollback of a stranded mark, the dirty-index rescan and the sweep prune), shard committer maintenance (absorbed-advance retirement from the stream's own boundary, trims, byte ledger), the settlement receipts, the postings warm install and the postings index admission of overlapping pages",
       "source_paths": [
+        "src/history.rs",
         "src/history/gather.rs",
         "src/history/worker.rs",
+        "src/shard/commit_plan.rs",
         "src/shard/transaction/maintenance.rs",
         "src/shard/transaction/mod.rs",
         "src/shard/transaction/prepare.rs",
@@ -1406,9 +1408,10 @@
         "ASM-HISTORY-ACTORS",
         "ASM-HISTORY-REABSORB",
         "ASM-HISTORY-EVICTION",
+        "ASM-HISTORY-SETTLEMENT",
         "ASM-HISTORY-PAGES"
       ],
-      "input_scope": "one stream incarnation, 3 one-byte record offsets (1 durable at Init, 2 appends) with routing keys K1, K1, K2, or 4 offsets (K1, K1, K2, K1; 3 appends) in the page and recount shapes and the recount witness; per-stream gather cap 2 records (small, ledger, liveness, cache-cap2, page, straddle witnesses) or 1 record (expanded, cache, recount); gathers by one Remote scan over the snapshot taken when it starts (small, ledger, liveness, recount) or by that scan or the durable ring (expanded, cache, page); up to 1 (recount, liveness-refusal), 2 (small) or 3 (expanded) applied-not-durable commit groups; up to 2 AbsorbedBatch messages in flight (1 in liveness-refusal and the recount witness), each carrying its chunk start and a receipt the committer answers when the group lands and drops when it refuses the group; the absorber settles answered receipts before each plan and rolls a mark resting on a refused chunk back to replay it, capped at that chunk's end; dirty-index rescan with mark rollback, and mark prune for evictable handles (neither in the page shape; no prune in recount and liveness-refusal); 1 crash, 1 failed or ambiguous history flush and 1 refused group or dropped op (small, expanded); 2 refused groups, one of which may be a dropped op (recount); 2 refused groups and 1 failed or ambiguous flush, with no crash, rescan, prune or dropped op (page); 1 crash with the rescan and prune, and no flush failure or refusal (page-regather); 1 refused group or dropped op (liveness-refusal); none in the ledger-overlap, cache and liveness shapes; 1 (small) or 2 (expanded) reader snapshots; per-operation trim allowances {0,1,3}; postings-slice cache with 1 weight eviction and cold loads (cache shape only); postings pages per routing key as (first offset, offsets) under the (key, first offset) page key, with the reader's admission of overlapping pages that agree over their common span (page shapes, the overlap witnesses and the scan probe only); liveness with bounded faults and fairness on actor attempts only. No symmetry, no state or action constraints.",
+      "input_scope": "one stream incarnation, 3 one-byte record offsets (1 durable at Init, 2 appends) with routing keys K1, K1, K2, or 4 offsets (K1, K1, K2, K1; 3 appends) in the page shape; per-stream gather cap 2 records (small, ledger, liveness, cache-cap2, page, overlap witnesses, scan probe) or 1 record (expanded, cache); gathers by one Remote scan over the snapshot taken when it starts (small, ledger, liveness, overlap witnesses) or by that scan or the durable ring (expanded, cache, page); up to 2 (small) or 3 (expanded) applied-not-durable commit groups; up to 2 AbsorbedBatch messages in flight (3 in the scan probe), each carrying the chunk start and byte count of its copy and a settlement receipt that a group retiring an Exact advance holds until dispatch has published its tails, and every other advance drops at staging; the committer retires an advance only from the stream's own boundary (Exact, Detached, Diverged); a plan rolls a stranded lane mark back only while the stream's bucket is settled; a pending-roster flag that signals, the gather outcome and the seeding-only dirty-index rescan update; the sweep prune for evictable handles, not gated on settlement (all shapes but the page shape, liveness-refusal keeps it); a bucket-sharing stream toggled by the environment (ledger-small, the mate witness only); 1 crash, 1 failed or ambiguous history flush and 1 refused group or dropped op (small, expanded, ledger-small); 2 refused groups, one of which may be a dropped op, and 1 failed or ambiguous flush, with no crash or prune (page); 1 crash and 1 refused group with the prune (page-regather); 1 refused group or dropped op (liveness-refusal); none in the ledger-overlap, cache and liveness shapes; 1 (small) or 2 (expanded) reader snapshots; per-operation trim allowances {0,1,3}; postings-slice cache with 1 weight eviction and cold loads (cache shapes only); postings pages per routing key as (first offset, offsets) under the (key, first offset) page key, with the reader's admission of overlapping pages that agree over their common span (page shapes, the overlap witnesses and the scan probe only); liveness with bounded faults and fairness on actor attempts only, the rescan included. No symmetry, no state or action constraints.",
       "checks": [
         {
           "id": "TLA-016/baseline-small",
@@ -1509,16 +1512,6 @@
             "result": "pass"
           },
           "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-016/baseline-recount",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_recount.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 7200
         },
         {
           "id": "TLA-016/nc-publish-before-flush",
@@ -1631,23 +1624,33 @@
           }
         },
         {
-          "id": "TLA-016/nc-no-settle",
+          "id": "TLA-016/nc-ungated-rollback",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_no_settle.cfg",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_ungated_rollback.cfg",
           "expect": {
             "result": "violation",
-            "property": "SettledMarkAtBoundary"
+            "property": "DetachedOnlyAfterFault"
           }
         },
         {
-          "id": "TLA-016/nc-replay-unbounded",
+          "id": "TLA-016/nc-settle-before-publish",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_replay_unbounded.cfg",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_settle_before_publish.cfg",
           "expect": {
             "result": "violation",
-            "property": "NoStraddledChunk"
+            "property": "NoRegatherUnderInFlight"
+          }
+        },
+        {
+          "id": "TLA-016/nc-no-plan-rollback",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_no_plan_rollback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AbsorptionCompletes"
           }
         },
         {
@@ -1751,16 +1754,6 @@
           }
         },
         {
-          "id": "TLA-016/witness-MarkRolledBackInFlight",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_MarkRolledBackInFlight.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_MarkRolledBackInFlight"
-          }
-        },
-        {
           "id": "TLA-016/witness-EvictedMarkPrunedInFlight",
           "role": "witness",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
@@ -1791,16 +1784,6 @@
           }
         },
         {
-          "id": "TLA-016/witness-MisStartedAdvanceCompletes",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_MisStartedAdvanceCompletes.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_MisStartedAdvanceCompletes"
-          }
-        },
-        {
           "id": "TLA-016/witness-InstallStartsAbovePlan",
           "role": "witness",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
@@ -1811,40 +1794,30 @@
           }
         },
         {
-          "id": "TLA-016/witness-RefusalReplayed",
+          "id": "TLA-016/witness-RefusalHealed",
           "role": "witness",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_RefusalReplayed.cfg",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_RefusalHealed.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_RefusalReplayed"
+            "property": "Witness_RefusalHealed"
           }
         },
         {
-          "id": "TLA-016/witness-LateRefusalRecount",
+          "id": "TLA-016/witness-MateDelaysRollback",
           "role": "witness",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_LateRefusalRecount.cfg",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_MateDelaysRollback.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_LateRefusalRecount"
+            "property": "Witness_MateDelaysRollback"
           }
         },
         {
-          "id": "TLA-016/witness-RecountBeyondInFlight",
+          "id": "TLA-016/witness-OverlapAdmittedRefusedChain",
           "role": "witness",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_RecountBeyondInFlight.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_RecountBeyondInFlight"
-          }
-        },
-        {
-          "id": "TLA-016/witness-OverlapAdmittedRescan",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedRescan.cfg",
+          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedRefusedChain.cfg",
           "expect": {
             "result": "violation",
             "property": "Witness_OverlapAdmitted"
@@ -1873,8 +1846,25 @@
       ],
       "regressions": [
         "dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog",
-        "history::bounded_discovery_tests::rolled_back_mark_regather_keeps_the_ledger_exact",
-        "dst::dst_tests::history_absorption::misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group",
+        "shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary",
+        "shard::commit_plan::tests::a_stream_settles_when_its_last_receipt_drops",
+        "shard::maintenance_tests::an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
+        "shard::maintenance_tests::an_advance_that_skips_offsets_is_dropped_whole",
+        "shard::maintenance_tests::a_receipted_advance_settles_only_after_its_group_is_durable",
+        "shard::maintenance_tests::a_refused_advance_settles_with_its_group",
+        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_never_retires_a_byte_twice",
+        "shard::commit_plan::loom_tests::quality_loom_an_upto_only_retirement_counts_a_regathered_overlap_twice",
+        "shard::commit_plan::loom_tests::quality_loom_an_unsettled_batch_keeps_its_lane_mark",
+        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_regathers_under_an_unsettled_batch",
+        "shard::commit_plan::loom_tests::quality_loom_a_refused_batch_is_regathered_from_the_durable_boundary",
+        "shard::commit_plan::loom_tests::quality_loom_a_shared_bucket_only_delays_a_rollback",
+        "history::bounded_discovery_tests::a_regather_from_the_submitted_mark_retires_each_byte_once",
+        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_never_fails_an_append",
+        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark",
+        "history::bounded_discovery_tests::a_refused_advance_is_regathered_from_the_durable_boundary",
+        "history::bounded_discovery_tests::a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber",
+        "history::bounded_discovery_tests::a_regather_across_a_detached_chunk_keeps_the_index_readable",
+        "history::bounded_discovery_tests::a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable",
         "history::bounded_discovery_tests::stale_regather_never_warms_a_trimmed_head_as_absent",
         "postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows",
         "postings_cache::tests::a_demand_bridge_never_crosses_an_unadmitted_install",
@@ -1882,20 +1872,11 @@
         "postings_cache::tests::a_bridge_never_crosses_a_chunk_that_found_its_key_short",
         "history::bounded_discovery_tests::a_warm_bridge_never_crosses_an_unadmitted_install",
         "dst::dst_tests::reads_ring::a_duplicate_absorbed_op_does_not_advance_the_trim",
-        "dst::dst_tests::history_absorption::refused_absorbed_groups_do_not_widen_the_next_recount",
-        "history::bounded_discovery_tests::a_refusal_behind_an_in_flight_chunk_recounts_only_the_chunks_in_flight",
-        "history::bounded_discovery_tests::a_rolled_back_mark_replays_exactly_the_refused_chunk",
-        "history::bounded_discovery_tests::absorber_gathers_never_wait_on_a_stalled_committer",
-        "shard::transaction_tests::an_absorbed_batch_receipt_is_answered_only_when_its_group_lands",
-        "dst::dst_tests::history_absorption::mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing",
-        "history::bounded_discovery_tests::a_rescan_regather_across_a_chunk_in_flight_keeps_the_index_readable",
-        "history::bounded_discovery_tests::a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable",
         "verification/tla/history/evidence/TLA-016_ledger_under_retire.trace.txt",
         "verification/tla/history/evidence/TLA-016_ledger_over_retire.trace.txt",
         "verification/tla/history/evidence/TLA-016_liveness_stall.trace.txt",
         "verification/tla/history/evidence/TLA-016_cache_false_absence.trace.txt",
-        "verification/tla/history/evidence/TLA-016_recount_beyond_in_flight.trace.txt",
-        "verification/tla/history/evidence/TLA-016_overlap_admitted_rescan.trace.txt",
+        "verification/tla/history/evidence/TLA-016_overlap_admitted_refused_chain.trace.txt",
         "verification/tla/history/evidence/TLA-016_overlap_admitted_prune.trace.txt",
         "verification/tla/history/evidence/TLA-016_overlap_admitted_new_owner.trace.txt"
       ]

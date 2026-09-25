@@ -18,15 +18,16 @@ The obligations, checks, bounds and assumptions are in
 
 | Obligation | Status | Production defects found | Open |
 |---|---|---|---|
-| TLA-016 | `pass-with-recorded-scope` | TLA-016-F1 (fixed): the absorbed advance retired the chunk's bytes, not the range it moved over. TLA-016-F3 (fixed): the postings warm install claimed coverage over a trimmed head it never read. Overlapping postings pages after a re-gather from a stale boundary (found with F1; fixed by `d16559b3`, readers admit overlapping pages that agree). | — |
+| TLA-016 | `pass-with-recorded-scope` | TLA-016-F1 (fixed by slate's `9c6675d7` and `b5751e75`, adopted by the merge `3a24eace`; our `6371da0a` is superseded): the absorbed advance retired the chunk's bytes, not the range it moved over. TLA-016-F3 (fixed): the postings warm install claimed coverage over a trimmed head it never read; slate's code still had it, and the merge re-applied our warm-install rule. Overlapping postings pages after a re-gather (fixed by `d16559b3`, readers admit overlapping pages that agree; they still arise from a refused chain, the ungated prune and a new owner). | Follow-ups, not defects: heal latency of a refused quiet stream (up to one rescan period) and settlement-bucket sharing. |
 | TLA-018 | `pass-with-recorded-scope` | TLA-018-F1 (fixed): an applied keyed read skipped durable records trimmed by a non-durable advance. TLA-018-F3 (fixed): a stale applied cursor was accepted once the new owner's tail passed it. | TLA-018-F2 (open obligation, owner decision): H11 holds at the reader only through durability and the cache contract; `docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. |
 | TLA-019 | `pass-with-recorded-scope` | TLA-019-F4 (fixed): releasing a fork pin after an interrupted or raced `DELETE` depended on the client repeating `DELETE`; a background reconciler now releases it. TLA-019-F1 was an abstraction mismatch, withdrawn conditionally: the compactor's checkpoint protects the SSTs a stale writer view still names while ASM-SLATEDB-COMPACTION-CHECKPOINT holds. | Open service obligations (`docs/READINESS.md`): TLA-019-F2, GC convergence without further writes (H14); TLA-019-F3, no physical reclamation policy for hard-deleted incarnations' rows. |
 
 No defect in this group is open, so no check has the `known-defect` role.
 Each fixed defect has a passing baseline and a negative control that
 reproduces the pre-fix behaviour. The group also records two documentation
-defects, both fixed in comments (TLA-016-F2, and TLA-016-F4 in a fix's
-comments), one open obligation that needs an owner decision (TLA-018-F2,
+defects: TLA-016-F2, fixed in comments, and TLA-016-F4, fixed in a fix's
+comments and moot since the merge dropped the recount it concerned. It
+records one open obligation that needs an owner decision (TLA-018-F2,
 H11), two open service obligations (TLA-019-F2, H14 without further writes;
 TLA-019-F3, physical reclamation), and two defects found in passing by the
 fixes, both fixed: overlapping postings pages after a re-gather from a
@@ -35,7 +36,9 @@ agreeing overlaps) and a cache bridge over dropped runs (the model cannot
 express it). TLA-019-F4 was first recorded as an unjustified assumption (the
 client retry); the fix made it production work, and it is listed as fixed.
 
-File and line references in the TLA-018 and TLA-019 findings and mapping
+File and line references in the TLA-016 mapping table and its F1 and F3
+findings are at `3a24eace`, the merge of `slate` whose absorber the model now
+maps. Those in the TLA-018 and TLA-019 findings and mapping
 tables are at `d9aeaef` (the fixes landed in `55881d7`, `0d40dc2` and
 `8a03e0d`; between `55881d7` and `d9aeaef` only `src/shard.rs` and
 `src/history.rs` moved among the cited files, and the cited `src/history.rs`
@@ -78,9 +81,11 @@ Configuration names say what a check is:
 <!-- RESULTS -->
 ## Results
 
-Each table is rendered from the obligation's receipt. Each receipt was
-recorded with `formal.py run --record` on a clean tree: TLA-016 on
-`3f386070`, TLA-019 on `1d20f76f`, and TLA-018 again on `cb4c6b47`, after a
+Each table is rendered from the obligation's receipt, except TLA-016's,
+which is rendered from an unrecorded run of the model reworked for the merge
+`3a24eace` (see below). Each receipt was
+recorded with `formal.py run --record` on a clean tree: TLA-016 (pre-merge
+model) on `3f386070`, TLA-019 on `1d20f76f`, and TLA-018 again on `cb4c6b47`, after a
 mutation-lane test landed in `read_continuation.rs`. `formal.py check --fresh`
 reports all three current at `cb4c6b47`. Tools: TLC
 2.19 (tla2tools 1.7.4) on Java 17.0.1, aarch64-apple-darwin. The driver ran
@@ -92,56 +97,60 @@ configuration checks one property.
 
 ### TLA-016 (`pass-with-recorded-scope`)
 
-Receipt `verification/receipts/TLA-016.json`, recorded on `3f386070`: 46 checks, every verdict as expected; 108 min of TLC wall time in total.
+Not yet recorded for the reworked model. The table is rendered from an
+unrecorded driver run (`formal.py run --id TLA-016 --out
+target/formal/mg-absorb`, without `--record`) on the working tree over
+`3a24eace` with the model reworked for the merge: 43 checks, every verdict
+as expected; 31 min of TLC wall time in total, while other agents' runs
+loaded the same 8-core laptop (load average above 30). The receipt
+`verification/receipts/TLA-016.json` still describes the pre-merge model's 46
+checks on `3f386070` and is stale until it is re-recorded.
 
 | Check | Module / config | Role | Expected | Verdict | Distinct states | Seconds |
 |---|---|---|---|---|---|---|
-| `baseline-small` | `HistoryAbsorb` / `small` | baseline | pass | pass | 31,506,682 | 1659.4 |
-| `baseline-expanded` | `HistoryAbsorb` / `expanded` | baseline | pass | pass | 58,418,430 | 2667.0 |
-| `ledger-small` | `HistoryAbsorb` / `ledger_small` | baseline | pass | pass | 31,506,682 | 808.6 |
-| `ledger-overlap` | `HistoryAbsorb` / `ledger_overlap` | baseline | pass | pass | 579,554 | 9.2 |
-| `liveness-small` | `HistoryAbsorb` / `liveness` | baseline | pass | pass | 134,989 | 58.1 |
-| `liveness-refusal` | `HistoryAbsorb` / `liveness_refusal` | baseline | pass | pass | 132,525 | 57.7 |
-| `baseline-cache` | `HistoryAbsorb` / `cache` | baseline | pass | pass | 2,338,359 | 51.5 |
-| `baseline-cache-cap2` | `HistoryAbsorb` / `cache_cap2` | baseline | pass | pass | 4,234,784 | 97.0 |
-| `baseline-pages` | `HistoryAbsorb` / `pages` | baseline | pass | pass | 168,654 | 5.7 |
-| `baseline-pages-regather` | `HistoryAbsorb` / `pages_regather` | baseline | pass | pass | 1,103,474 | 28.9 |
-| `baseline-recount` | `HistoryAbsorb` / `recount` | baseline | pass | pass | 4,836,946 | 78.0 |
-| `nc-publish-before-flush` | `HistoryAbsorb` / `nc_publish_before_flush` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 504 | 0.9 |
-| `nc-canonical-only` | `HistoryAbsorb` / `nc_canonical_only` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 624 | 0.9 |
-| `nc-trim-to-proposed` | `HistoryAbsorb` / `nc_trim_to_proposed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,122 | 0.9 |
-| `nc-duplicate-collapse` | `HistoryAbsorb` / `nc_duplicate_collapse` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 24,867 | 1.6 |
-| `nc-tick-trim-to-absorbed` | `HistoryAbsorb` / `nc_tick_trim_to_absorbed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,486 | 0.9 |
-| `nc-lastcopy-publish-before-flush` | `HistoryAbsorb` / `nc_lastcopy_publish_before_flush` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 28,068 | 1.6 |
-| `nc-lastcopy-trim-past-absorbed` | `HistoryAbsorb` / `nc_lastcopy_trim_past_absorbed` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 11 | 0.8 |
-| `nc-retire-chunk-bytes` | `HistoryAbsorb` / `nc_retire_chunk_bytes` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 24,347 | 1.6 |
-| `nc-retire-chunk-bytes-overlap` | `HistoryAbsorb` / `nc_retire_chunk_bytes_overlap` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 9,441 | 1.3 |
-| `nc-retire-chunk-bytes-liveness` | `HistoryAbsorb` / `nc_retire_chunk_bytes_liveness` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 1,614,897 | 890.3 |
-| `nc-warm-install-from-plan` | `HistoryAbsorb` / `nc_warm_install_from_plan` | negative-control | violation `CacheNeverProvesFalseAbsence` | violation `CacheNeverProvesFalseAbsence` | 94,838 | 2.3 |
-| `nc-no-settle` | `HistoryAbsorb` / `nc_no_settle` | negative-control | violation `SettledMarkAtBoundary` | violation `SettledMarkAtBoundary` | 1,088 | 0.8 |
-| `nc-replay-unbounded` | `HistoryAbsorb` / `nc_replay_unbounded` | negative-control | violation `NoStraddledChunk` | violation `NoStraddledChunk` | 3,893 | 1.0 |
-| `probe-scan-per-row` | `HistoryAbsorb` / `probe_scan_per_row` | negative-control | violation `PagesAdmit` | violation `PagesAdmit` | 29,572 | 1.5 |
-| `witness-TrimDurable` | `HistoryAbsorb` / `w_TrimDurable` | witness | violation `Witness_TrimDurable` | violation `Witness_TrimDurable` | 39,467 | 1.6 |
-| `witness-FullyAbsorbedDurable` | `HistoryAbsorb` / `w_FullyAbsorbedDurable` | witness | violation `Witness_FullyAbsorbedDurable` | violation `Witness_FullyAbsorbedDurable` | 59,319 | 1.8 |
-| `witness-LostPublicationRecovered` | `HistoryAbsorb` / `w_LostPublicationRecovered` | witness | violation `Witness_LostPublicationRecovered` | violation `Witness_LostPublicationRecovered` | 445,753 | 6.5 |
-| `witness-FlushFailRecovered` | `HistoryAbsorb` / `w_FlushFailRecovered` | witness | violation `Witness_FlushFailRecovered` | violation `Witness_FlushFailRecovered` | 223,120 | 3.9 |
-| `witness-StaleDuplicateIgnored` | `HistoryAbsorb` / `w_StaleDuplicateIgnored` | witness | violation `Witness_StaleDuplicateIgnored` | violation `Witness_StaleDuplicateIgnored` | 555,945 | 7.7 |
-| `witness-CrashRecovered` | `HistoryAbsorb` / `w_CrashRecovered` | witness | violation `Witness_CrashRecovered` | violation `Witness_CrashRecovered` | 82,866 | 2.2 |
-| `witness-GatherOverTrimmedPrefix` | `HistoryAbsorb` / `w_GatherOverTrimmedPrefix` | witness | violation `Witness_GatherOverTrimmedPrefix` | violation `Witness_GatherOverTrimmedPrefix` | 166,041 | 3.2 |
-| `witness-StaleSnapshotLosesTail` | `HistoryAbsorb` / `w_StaleSnapshotLosesTail` | witness | violation `Witness_StaleSnapshotLosesTail` | violation `Witness_StaleSnapshotLosesTail` | 51,667 | 1.7 |
-| `witness-TwoAdvancesNotDurable` | `HistoryAbsorb` / `w_TwoAdvancesNotDurable` | witness | violation `Witness_TwoAdvancesNotDurable` | violation `Witness_TwoAdvancesNotDurable` | 22,758 | 1.3 |
-| `witness-MarkRolledBackInFlight` | `HistoryAbsorb` / `w_MarkRolledBackInFlight` | witness | violation `Witness_MarkRolledBackInFlight` | violation `Witness_MarkRolledBackInFlight` | 698 | 0.8 |
-| `witness-EvictedMarkPrunedInFlight` | `HistoryAbsorb` / `w_EvictedMarkPrunedInFlight` | witness | violation `Witness_EvictedMarkPrunedInFlight` | violation `Witness_EvictedMarkPrunedInFlight` | 731 | 0.8 |
-| `witness-RingGatherBelowTrim` | `HistoryAbsorb` / `w_RingGatherBelowTrim` | witness | violation `Witness_RingGatherBelowTrim` | violation `Witness_RingGatherBelowTrim` | 244,257 | 4.1 |
-| `witness-WarmBridgeCovers` | `HistoryAbsorb` / `w_WarmBridgeCovers` | witness | violation `Witness_WarmBridgeCovers` | violation `Witness_WarmBridgeCovers` | 12,067 | 1.3 |
-| `witness-MisStartedAdvanceCompletes` | `HistoryAbsorb` / `w_MisStartedAdvanceCompletes` | witness | violation `Witness_MisStartedAdvanceCompletes` | violation `Witness_MisStartedAdvanceCompletes` | 59,309 | 1.9 |
-| `witness-InstallStartsAbovePlan` | `HistoryAbsorb` / `w_InstallStartsAbovePlan` | witness | violation `Witness_InstallStartsAbovePlan` | violation `Witness_InstallStartsAbovePlan` | 75,921 | 2.1 |
-| `witness-RefusalReplayed` | `HistoryAbsorb` / `w_RefusalReplayed` | witness | violation `Witness_RefusalReplayed` | violation `Witness_RefusalReplayed` | 539,450 | 7.1 |
-| `witness-LateRefusalRecount` | `HistoryAbsorb` / `w_LateRefusalRecount` | witness | violation `Witness_LateRefusalRecount` | violation `Witness_LateRefusalRecount` | 32,539 | 1.5 |
-| `witness-RecountBeyondInFlight` | `HistoryAbsorb` / `w_RecountBeyondInFlight` | witness | violation `Witness_RecountBeyondInFlight` | violation `Witness_RecountBeyondInFlight` | 30,797 | 1.4 |
-| `witness-OverlapAdmittedRescan` | `HistoryAbsorb` / `w_OverlapAdmittedRescan` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 8,274 | 1.1 |
-| `witness-OverlapAdmittedPrune` | `HistoryAbsorb` / `w_OverlapAdmittedPrune` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 6,276 | 1.1 |
-| `witness-OverlapAdmittedNewOwner` | `HistoryAbsorb` / `w_OverlapAdmittedNewOwner` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 3,092 | 1.0 |
+| `baseline-small` | `HistoryAbsorb` / `small` | baseline | pass | pass | 5,254,914 | 245.6 |
+| `baseline-expanded` | `HistoryAbsorb` / `expanded` | baseline | pass | pass | 12,949,808 | 442.9 |
+| `ledger-small` | `HistoryAbsorb` / `ledger_small` | baseline | pass | pass | 19,579,296 | 882.6 |
+| `ledger-overlap` | `HistoryAbsorb` / `ledger_overlap` | baseline | pass | pass | 174,438 | 6.2 |
+| `liveness-small` | `HistoryAbsorb` / `liveness` | baseline | pass | pass | 39,145 | 10.7 |
+| `liveness-refusal` | `HistoryAbsorb` / `liveness_refusal` | baseline | pass | pass | 174,625 | 53.0 |
+| `baseline-cache` | `HistoryAbsorb` / `cache` | baseline | pass | pass | 468,267 | 22.2 |
+| `baseline-cache-cap2` | `HistoryAbsorb` / `cache_cap2` | baseline | pass | pass | 1,231,603 | 58.2 |
+| `baseline-pages` | `HistoryAbsorb` / `pages` | baseline | pass | pass | 294,373 | 12.7 |
+| `baseline-pages-regather` | `HistoryAbsorb` / `pages_regather` | baseline | pass | pass | 945,441 | 34.7 |
+| `nc-publish-before-flush` | `HistoryAbsorb` / `nc_publish_before_flush` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 369 | 1.0 |
+| `nc-canonical-only` | `HistoryAbsorb` / `nc_canonical_only` | negative-control | violation `H3_AbsorbedBackedByDurableHistory` | violation `H3_AbsorbedBackedByDurableHistory` | 603 | 1.0 |
+| `nc-trim-to-proposed` | `HistoryAbsorb` / `nc_trim_to_proposed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 912 | 1.0 |
+| `nc-duplicate-collapse` | `HistoryAbsorb` / `nc_duplicate_collapse` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 17,784 | 1.8 |
+| `nc-tick-trim-to-absorbed` | `HistoryAbsorb` / `nc_tick_trim_to_absorbed` | negative-control | violation `StaleReaderRangeIntact` | violation `StaleReaderRangeIntact` | 1,460 | 1.1 |
+| `nc-lastcopy-publish-before-flush` | `HistoryAbsorb` / `nc_lastcopy_publish_before_flush` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 13,636 | 1.9 |
+| `nc-lastcopy-trim-past-absorbed` | `HistoryAbsorb` / `nc_lastcopy_trim_past_absorbed` | negative-control | violation `LastRecoverableCopy` | violation `LastRecoverableCopy` | 9 | 0.9 |
+| `nc-retire-chunk-bytes` | `HistoryAbsorb` / `nc_retire_chunk_bytes` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 13,991 | 1.8 |
+| `nc-retire-chunk-bytes-overlap` | `HistoryAbsorb` / `nc_retire_chunk_bytes_overlap` | negative-control | violation `LedgerExact` | violation `LedgerExact` | 5,924 | 1.5 |
+| `nc-retire-chunk-bytes-liveness` | `HistoryAbsorb` / `nc_retire_chunk_bytes_liveness` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 46,405 | 10.6 |
+| `nc-warm-install-from-plan` | `HistoryAbsorb` / `nc_warm_install_from_plan` | negative-control | violation `CacheNeverProvesFalseAbsence` | violation `CacheNeverProvesFalseAbsence` | 53,912 | 2.8 |
+| `nc-ungated-rollback` | `HistoryAbsorb` / `nc_ungated_rollback` | negative-control | violation `DetachedOnlyAfterFault` | violation `DetachedOnlyAfterFault` | 4,035 | 1.3 |
+| `nc-settle-before-publish` | `HistoryAbsorb` / `nc_settle_before_publish` | negative-control | violation `NoRegatherUnderInFlight` | violation `NoRegatherUnderInFlight` | 667 | 1.1 |
+| `nc-no-plan-rollback` | `HistoryAbsorb` / `nc_no_plan_rollback` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 20,012 | 4.5 |
+| `probe-scan-per-row` | `HistoryAbsorb` / `probe_scan_per_row` | negative-control | violation `PagesAdmit` | violation `PagesAdmit` | 23,559 | 2.4 |
+| `witness-TrimDurable` | `HistoryAbsorb` / `w_TrimDurable` | witness | violation `Witness_TrimDurable` | violation `Witness_TrimDurable` | 22,098 | 2.0 |
+| `witness-FullyAbsorbedDurable` | `HistoryAbsorb` / `w_FullyAbsorbedDurable` | witness | violation `Witness_FullyAbsorbedDurable` | violation `Witness_FullyAbsorbedDurable` | 41,145 | 2.6 |
+| `witness-LostPublicationRecovered` | `HistoryAbsorb` / `w_LostPublicationRecovered` | witness | violation `Witness_LostPublicationRecovered` | violation `Witness_LostPublicationRecovered` | 172,665 | 6.3 |
+| `witness-FlushFailRecovered` | `HistoryAbsorb` / `w_FlushFailRecovered` | witness | violation `Witness_FlushFailRecovered` | violation `Witness_FlushFailRecovered` | 120,171 | 4.3 |
+| `witness-StaleDuplicateIgnored` | `HistoryAbsorb` / `w_StaleDuplicateIgnored` | witness | violation `Witness_StaleDuplicateIgnored` | violation `Witness_StaleDuplicateIgnored` | 306,211 | 7.6 |
+| `witness-CrashRecovered` | `HistoryAbsorb` / `w_CrashRecovered` | witness | violation `Witness_CrashRecovered` | violation `Witness_CrashRecovered` | 64,162 | 3.0 |
+| `witness-GatherOverTrimmedPrefix` | `HistoryAbsorb` / `w_GatherOverTrimmedPrefix` | witness | violation `Witness_GatherOverTrimmedPrefix` | violation `Witness_GatherOverTrimmedPrefix` | 93,738 | 3.8 |
+| `witness-StaleSnapshotLosesTail` | `HistoryAbsorb` / `w_StaleSnapshotLosesTail` | witness | violation `Witness_StaleSnapshotLosesTail` | violation `Witness_StaleSnapshotLosesTail` | 28,471 | 2.3 |
+| `witness-TwoAdvancesNotDurable` | `HistoryAbsorb` / `w_TwoAdvancesNotDurable` | witness | violation `Witness_TwoAdvancesNotDurable` | violation `Witness_TwoAdvancesNotDurable` | 12,929 | 1.8 |
+| `witness-EvictedMarkPrunedInFlight` | `HistoryAbsorb` / `w_EvictedMarkPrunedInFlight` | witness | violation `Witness_EvictedMarkPrunedInFlight` | violation `Witness_EvictedMarkPrunedInFlight` | 598 | 1.1 |
+| `witness-RingGatherBelowTrim` | `HistoryAbsorb` / `w_RingGatherBelowTrim` | witness | violation `Witness_RingGatherBelowTrim` | violation `Witness_RingGatherBelowTrim` | 136,678 | 4.8 |
+| `witness-WarmBridgeCovers` | `HistoryAbsorb` / `w_WarmBridgeCovers` | witness | violation `Witness_WarmBridgeCovers` | violation `Witness_WarmBridgeCovers` | 6,366 | 1.7 |
+| `witness-InstallStartsAbovePlan` | `HistoryAbsorb` / `w_InstallStartsAbovePlan` | witness | violation `Witness_InstallStartsAbovePlan` | violation `Witness_InstallStartsAbovePlan` | 43,107 | 3.0 |
+| `witness-RefusalHealed` | `HistoryAbsorb` / `w_RefusalHealed` | witness | violation `Witness_RefusalHealed` | violation `Witness_RefusalHealed` | 174,224 | 5.9 |
+| `witness-MateDelaysRollback` | `HistoryAbsorb` / `w_MateDelaysRollback` | witness | violation `Witness_MateDelaysRollback` | violation `Witness_MateDelaysRollback` | 821,067 | 18.7 |
+| `witness-OverlapAdmittedRefusedChain` | `HistoryAbsorb` / `w_OverlapAdmittedRefusedChain` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 2,571 | 1.5 |
+| `witness-OverlapAdmittedPrune` | `HistoryAbsorb` / `w_OverlapAdmittedPrune` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 6,740 | 1.7 |
+| `witness-OverlapAdmittedNewOwner` | `HistoryAbsorb` / `w_OverlapAdmittedNewOwner` | witness | violation `Witness_OverlapAdmitted` | violation `Witness_OverlapAdmitted` | 3,991 | 1.8 |
 
 ### TLA-018 (`pass-with-recorded-scope`)
 
@@ -241,12 +250,13 @@ Receipt `verification/receipts/TLA-019.json`, recorded on `1d20f76f`: 50 checks,
 
 | ID | Classification | Disposition |
 |---|---|---|
-| TLA-016-F1 | production defect | **Fixed** by "An absorption advance retires exactly the bytes of the range it moves the boundary over" (`6371da0`). Baselines `ledger-small`, `ledger-overlap`, `liveness-small` pass; controls `nc-retire-chunk-bytes*` reproduce the pre-fix behaviour. |
-| TLA-016-F3 | production defect (latent) | **Fixed** by "A re-gather warms the postings cache only over the rows it staged": the warm install is named by the rows the gather staged (`src/history/gather.rs`). `baseline-cache` passes; `nc-warm-install-from-plan` reproduces the pre-fix behaviour. |
+| TLA-016-F1 | production defect | **Fixed** by slate's "The committer retires an absorbed advance only from its own boundary" (`9c6675d7`) and "A lane mark is rolled back only when no submitted advance of its stream can still land" (`b5751e75`), adopted by the merge `3a24eace`; our `6371da0a` (the stored-row recount) is superseded and was dropped. Baselines `ledger-small`, `ledger-overlap`, `liveness-small` pass; controls `nc-retire-chunk-bytes*` (slate's planted "retire ignoring from") reproduce the pre-fix behaviour. |
+| TLA-016-F3 | production defect (latent) | **Fixed** by "A re-gather warms the postings cache only over the rows it staged" (`b47c2d2a`). Slate's code still installed from `plan.from`; the merge re-applied the rule (`note_frames` returns the staged range, `src/history/gather.rs`). `baseline-cache` passes; `nc-warm-install-from-plan` (slate's install) reproduces the defect, now through the ungated prune. |
 | TLA-016-F2 | documentation defect | **Fixed in comments** by `63202168` ("The invariant docs state what the models showed and what stays an owner decision"): the `trim_safe_to` comments now say the one-advance lag protects a snapshot at most one advance stale, and that `absorption_race` carries the guarantee for staler readers. |
-| TLA-016-F4 | documentation defect, found while modelling the receipt fix `d9aeaef` | **Fixed**: the `settle_submissions` and `stored_frame_bytes` comments no longer claim the bound. The fix bounds a recount per refusal, but consecutive refusals that are each settled late leave consecutive holes, so a recount is not bounded by the chunks in flight at any one refusal. `witness-RecountBeyondInFlight`. |
-| (overlapping pages) | production defect, recorded with the TLA-016-F1 fix | **Fixed** by "Overlapping postings pages from a re-gather admit when they agree" (`d16559b3`). A re-gather from a stale boundary writes pages that overlap an earlier chunk's, and the reader refused them as corrupt. Readers now admit an overlapping page that lists exactly the admitted offsets over the common span. Modelled (`Pages`, ASM-HISTORY-PAGES): `baseline-pages-regather` checks `PagesAdmit` with the rescan, prune and restart re-gathers; `witness-OverlapAdmitted{Rescan,Prune,NewOwner}` show overlaps that admit; `probe-scan-per-row` shows the admission rests on dense chunks. |
-| (cache bridge) | production defect, found in passing during the TLA-016-F3 fix | **Fixed** by "A postings-cache bridge never crosses a chunk whose runs no slice recorded". Outside what the model can express (admission line, capped and merging loads); covered by real-code regressions. |
+| TLA-016-F4 | documentation defect, found while modelling the receipt fix `d9aeaef` | **Fixed** in comments, and **moot** since the merge: the recount it bounded is gone, and a mis-started advance is dropped whole. Its witness and properties were removed with the mechanism. |
+| (overlapping pages) | production defect, recorded with the TLA-016-F1 fix | **Fixed** by "Overlapping postings pages from a re-gather admit when they agree" (`d16559b3`, kept by the merge). Overlaps still arise from a refused chain (slate's recorded residual, `882004d9`), the ungated sweep prune and a new owner; `keep_past` admits them. `baseline-pages` and `baseline-pages-regather` check `PagesAdmit`; `witness-OverlapAdmitted{RefusedChain,Prune,NewOwner}` show overlaps that admit; `probe-scan-per-row` shows the admission rests on dense chunks. |
+| (cache bridge) | production defect, found in passing during the TLA-016-F3 fix | **Fixed** by "A postings-cache bridge never crosses a chunk whose runs no slice recorded" (kept by the merge). Outside what the model can express (admission line, capped and merging loads); covered by real-code regressions. |
+| (heal latency, bucket sharing) | follow-ups recorded by the merge, not defects | **Open follow-ups.** A refused quiet stream heals only at the next dirty-index rescan (`liveness-refusal` needs the rescan's fairness); a shared settlement bucket delays a rollback (`witness-MateDelaysRollback`, `ledger-small`). See [Follow-ups recorded by the merge](#follow-ups-recorded-by-the-merge-not-defects). |
 | TLA-018-F1 | production defect | **Fixed** by "An applied read revalidates its tail scan at the level it scanned, so it never skips a durable record" (`9cea1b6`). `baseline-applied-keyed-small` passes; controls `nc-applied-race-remote*` reproduce the pre-fix behaviour. |
 | TLA-018-F3 | production defect | **Fixed** by "A provisional read cursor proves the history it continues, or answers an explicit resync" (`55881d7`). `baseline-applied-unfiltered-expanded` (the former known-defect shape) and `baseline-applied-keyed-expanded` check `ExactDurablePrefix` and pass; `nc-no-continuation-check` reproduces the pre-fix acceptance. Regressions in `dst::dst_tests::reads_applied_history`; `verification/regressions/TLA-018-F3/README.md`. |
 | TLA-018-F2 | open obligation (owner decision) | **Open; needs an owner decision.** H11 is adopted as written and only partly enforced: the reader does not detect a page or canonical row lost after durability, which holds only through durability and the cache contract. The owner either keeps H11 and adds a coverage mechanism (option A) or deliberately revises the contract under roadmap §2.10 (option B); `docs/dst/DST-EXPANSION-SPEC.md` §9.12.2. Until then no report counts H11 as met. |
@@ -273,48 +283,57 @@ differ when the lane mark and the committed boundary disagree:
   `next` as "maintenance accounting diverged", together with every other
   operation in the group. A quiet stream never absorbs its last record.
 
-**Fix, as modelled.** Each advance carries its chunk start. When
-`from == prev_absorbed` the chunk's bytes are exact and trusted. Otherwise the
-committer sums the stored record rows of `[prev_absorbed, min(upto, next))`
-at Memory level (`stored_frame_bytes`; `ScanOptions::default()` is Memory in
-the pinned SlateDB), and a failed read or a missing row refuses the group. In
-the model this is `RetireBytes` and `StoredFrameBytes`. The model shows that
-the trusted count is exact: `LedgerExact` holds in every tail view, with
-Remote-scan gathers that skip trimmed rows and with ring gathers that return
-rows below the trim point. `NoMissingRetiredRow` shows that the new refusal
-fires only on a failed read (a transient error, covered by `CommitReject`),
-never on a missing row, so it cannot stall absorption.
+**Fix in the code (slate, adopted by the merge).** `9c6675d7` ("The
+committer retires an absorbed advance only from its own boundary, so no
+regather can retire a byte twice") and `b5751e75` ("A lane mark is rolled
+back only when no submitted advance of its stream can still land, so a
+regather never starts under an advance in flight"). Each advance carries
+`CopiedBytes { from, len }`, and `retire_absorbed`
+(`src/shard/commit_plan.rs:304`) moves the boundary only when `from` is the
+stream's absorbed boundary (Exact); any other advance is dropped whole
+(Detached), and one claiming more than the ledger refuses its group
+(Diverged). `b5751e75` removes the causal path of the over-retirement: the
+rescan no longer rolls marks back, and a plan rolls a stranded mark back
+only while the stream's settlement bucket shows no advance in flight. Our
+fix `6371da0a` (a recount of the stored rows by `stored_frame_bytes` for a
+mis-started advance, with the receipt and replay machinery of `d9aeaeff`)
+is **superseded**: the merge dropped it.
 
-**Checks.** `ledger-small` (under-retirement shape), `ledger-overlap`
-(over-retirement shape with no lost publication), `liveness-small` and
-`baseline-expanded` (ring gathers, with `LedgerExact`) pass. The pre-fix
-behaviour is `MutRetireChunkBytes`; `nc-retire-chunk-bytes` and
-`nc-retire-chunk-bytes-overlap` violate `LedgerExact`, and
-`nc-retire-chunk-bytes-liveness` violates `AbsorptionCompletes`.
-`witness-MisStartedAdvanceCompletes` shows an advance whose chunk did not
-start at the boundary retiring the stored bytes, followed by complete
-absorption.
+**Model.** The mutation point is `Retires` (baseline `m.f = prev`).
+`LedgerExact` holds in every tail view in every baseline, with refusals,
+dropped ops, a crash, flush failures, the ungated prune and ring gathers
+that return rows below the trim point. `DetachedOnlyAfterFault` says the
+drop happens only after a lost advance or the prune.
+
+**Checks.** `baseline-small`, `baseline-expanded`, `ledger-small` (with a
+bucket mate), `ledger-overlap` (no lost publication, the prune only) and
+`liveness-small` pass. `MutRetireIgnoringFrom` is slate's own planted
+control (`if copied.from != tail.absorbed && false`):
+`nc-retire-chunk-bytes` (under-retirement after a refused group) and
+`nc-retire-chunk-bytes-overlap` (over-retirement after the prune) violate
+`LedgerExact`, and `nc-retire-chunk-bytes-liveness` violates
+`AbsorptionCompletes` (every later advance is Diverged).
 
 **Regressions.**
-`dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog`,
-`history::bounded_discovery_tests::rolled_back_mark_regather_keeps_the_ledger_exact`
-and
-`dst::dst_tests::history_absorption::misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group`.
+`dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog`
+(its doc now describes the Detached drop and the plan-time heal),
+`shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary`,
+`shard::maintenance_tests::an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append`,
+`shard::maintenance_tests::an_advance_that_skips_offsets_is_dropped_whole`,
+`history::bounded_discovery_tests::a_regather_from_the_submitted_mark_retires_each_byte_once`,
+`…::a_rescan_during_an_inflight_advance_never_fails_an_append`,
+`…::a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark`,
+`…::a_refused_advance_is_regathered_from_the_durable_boundary`,
+`…::a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber`, and
+the Loom models in `src/shard/commit_plan/loom_tests.rs`. Our
+`rolled_back_mark_regather_keeps_the_ledger_exact` and
+`misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group` were
+dropped with the recount.
 
 **Pre-fix evidence.** `evidence/TLA-016_ledger_under_retire.trace.txt`,
 `evidence/TLA-016_ledger_over_retire.trace.txt` and
-`evidence/TLA-016_liveness_stall.trace.txt`, recorded on the pre-fix model.
-
-**Found in passing, fixed later.** The fix found that a rescan rollback
-followed by a re-gather can leave overlapping postings pages on its own,
-which a keyed reader then read as corrupt. `d16559b3` makes readers admit an
-overlapping page that agrees; see
-[Overlapping postings pages after a stale re-gather](#overlapping-postings-pages-after-a-stale-re-gather-fixed).
-
-The first version of this model proposed retiring `newAbs − prev` directly.
-The landed fix reads the stored rows instead, and the model now follows the
-landed code. A rejected fix design that ignored mis-started advances is not
-modelled.
+`evidence/TLA-016_liveness_stall.trace.txt`, recorded on the pre-fix model
+(before `6371da0a`; they show the defect, which slate's fix also removes).
 
 ### TLA-016-F3 — the warm install claimed postings coverage over a trimmed head it never read (fixed)
 
@@ -328,38 +347,40 @@ trimmed head's records. `runs_for` served that slice as a `Hit`, so a keyed
 read, `deliver=durable` included, received a complete page without a durable
 record and its cursor moved past it.
 
-**Fix, as modelled.** `stage_rows` returns the range of offsets it staged,
-and `stage_chunk` names the install by that range
-(`src/history/gather.rs`, `stage_rows` and `stage_chunk`). The staged rows
-are dense: a ring hit proves its window dense, and a Remote scan reads one
-snapshot (ASM-SLATEDB-DURABLE (j)). The advance still carries `plan.from`;
-the committer recounts stored bytes whenever that differs from the boundary
-(TLA-016-F1). `install_chunk`'s eviction taint was not changed: it is not
-what protects correctness, because the idle sweep can drop a segment's warm
-record along with its slices, and the defect reproduced without a taint. In
-the model the install start is the operator `WarmInstallFrom`, now the first
-staged offset, and the gather's Remote scan reads the snapshot taken when it
-starts.
+**Status after the merge.** The defect **still stands in slate's code**:
+slate's `stage_chunk` installs from `plan.from`. The merge re-applied our
+rule: `note_frames` returns the staged rows `first..last + 1`
+(`src/history/gather.rs:156-175`), and `stage_chunk` names the install by
+that range (`gather.rs:612-614`); the advance still carries
+`CopiedBytes::new(plan.from, …)` (`:616-618`). Under slate's gate a
+settled rollback never re-gathers while an advance can land, so the stale
+plan that exposes the defect now needs the ungated sweep prune of a
+non-resident handle (D6); a new owner plans from a boundary nothing can
+move under it. The staged rows are dense: a ring hit proves its window
+dense, and a Remote scan reads one snapshot (ASM-SLATEDB-DURABLE (j)). In
+the model the install start is the operator `WarmInstallFrom`.
 
 **Checks.** `baseline-cache` (one-record gathers) and `baseline-cache-cap2`
-(two-record gathers, so an install names a multi-row range) check
-`CacheNeverProvesFalseAbsence` with every other safety property and pass.
-The pre-fix behaviour is `MutWarmInstallFromPlan`;
-`nc-warm-install-from-plan` violates
-`CacheNeverProvesFalseAbsence` (`evidence/TLA-016_cache_false_absence.trace.txt`,
-recorded on the pre-fix model). `witness-InstallStartsAbovePlan` shows a
-re-gather whose scan skipped a trimmed head warming the cache over its staged
-rows only.
+(two-record gathers) check `CacheNeverProvesFalseAbsence` with every other
+safety property and pass. `MutWarmInstallFromPlan` is slate's install:
+`nc-warm-install-from-plan` violates `CacheNeverProvesFalseAbsence` (the
+prune removes the mark of two queued one-record chunks, the stale re-gather
+plans from 0, both advances land and trim row 0, the slice is evicted, and
+the install over `[0, 2)` holds only row 1).
+`witness-InstallStartsAbovePlan` shows the fixed install starting above
+`plan.from`. `evidence/TLA-016_cache_false_absence.trace.txt` was recorded
+on the pre-fix, pre-merge model.
 
 **Regressions.**
 `history::bounded_discovery_tests::stale_regather_never_warms_a_trimmed_head_as_absent`
-drives the real absorber: two queued one-record gathers, a mark rollback,
-both advances durable with row 0 trimmed, an idle sweep that evicts the
-slice, and a stale re-gather that reads only row 1. On the unfixed code a
-durable keyed read from 0 returned `[1]` as a complete page with cursor 2.
+drives the real absorber: two queued one-record gathers, the mark removed
+directly (standing for the ungated prune of a non-resident handle), both
+advances durable with row 0 trimmed, an idle sweep that evicts the slice,
+and a stale re-gather that reads only row 1. With the install from
+`plan.from` (the pre-fix code, which slate's branch still had) a durable
+keyed read from 0 returned `[1]` as a complete page with cursor 2.
 `postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows`
-pins the cache contract: an install named from the first staged offset
-still sends the read to the store after a gap reset.
+pins the cache contract.
 
 **Found in passing during the F3 fix: a bridge could cross a chunk whose
 runs no slice recorded (fixed).** The warm window `[from, to)` is the absence
@@ -373,9 +394,10 @@ after a restart). A later load ending inside the dropped chunk was then
 bridged over the key's records. Reproduced through the real absorber: a
 durable keyed read returned `[]` where `[1]` was owed, as a complete page.
 Fixed by "A postings-cache bridge never crosses a chunk whose runs no slice
-recorded": `admitted_all` is gone, and any install that drops a key's runs
-raises the window's `from` past its chunk, so the unchanged bridge conditions
-refuse a bridge that starts below it. Regressions:
+recorded" (kept by the merge): `admitted_all` is gone, and any install that
+drops a key's runs raises the window's `from` past its chunk, so the
+unchanged bridge conditions refuse a bridge that starts below it.
+Regressions:
 `postings_cache::tests::a_demand_bridge_never_crosses_an_unadmitted_install`,
 `postings_cache::tests::an_install_bridge_never_crosses_an_unadmitted_install`,
 `postings_cache::tests::a_bridge_never_crosses_a_chunk_that_found_its_key_short`
@@ -383,176 +405,125 @@ and
 `history::bounded_discovery_tests::a_warm_bridge_never_crosses_an_unadmitted_install`.
 The model could not find this: it has no admission line (every fresh install
 is admitted), no capped loads and no loads that merge into a resident slice.
-`InstallChunk` now raises `from` when it drops a key's runs, as the code
-does. The drop path is reachable in the cache shapes, but a scratch run of
-`cache` and `cache_cap2` without the raise also passed (2,327,172 and
-4,208,811 distinct states, against 2,338,359 and 4,234,784 with it), so no
-configuration here distinguishes the two and there is no negative control
-for this fix.
+`InstallChunk` raises `from` when it drops a key's runs, as the code does,
+but no configuration here distinguishes the two (a scratch run of the
+pre-merge `cache` and `cache_cap2` without the raise also passed), so there
+is no negative control for this fix.
 
 ### TLA-016-F2 — the `trim_safe_to` comments only held for one-advance-stale readers (documentation defect, fixed in comments)
 
 `src/shard.rs:64-67` and the `TailFields::trim_safe_to` comment
-(`src/shard.rs:601-607`) say the one-advance lag means "in-flight readers
-holding a stale absorbed snapshot never lose their range".
-`StaleReaderRangeIntact` (a snapshot at most one advance stale) passes, but
-`witness-StaleSnapshotLosesTail` shows that a reader whose snapshot is two
-or more advances stale finds part of its tail range trimmed. Reads stay correct
-because every tail page is revalidated against the absorbed boundary at the
-scan's own visibility (TLA-018; the applied path gained that check with the
-TLA-018-F1 fix). `63202168` corrected both comments: the lag keeps the
-range of a snapshot at most one advance stale, and a staler reader relies on
-`absorption_race`, which revalidates each tail page against the absorbed
-boundary at its scan's visibility. No code regression is needed.
+(`src/shard.rs:601-607`) (lines at `d9aeaef`) said the one-advance lag
+means "in-flight readers holding a stale absorbed snapshot never lose their
+range". `StaleReaderRangeIntact` (a snapshot at most one advance stale)
+passes, but `witness-StaleSnapshotLosesTail` shows that a reader whose
+snapshot is two or more advances stale finds part of its tail range
+trimmed. Reads stay correct because every tail page is revalidated against
+the absorbed boundary at the scan's own visibility (TLA-018; the applied
+path gained that check with the TLA-018-F1 fix). `63202168` corrected both
+comments: the lag keeps the range of a snapshot at most one advance stale,
+and a staler reader relies on `absorption_race`, which revalidates each tail
+page against the absorbed boundary at its scan's visibility. No code
+regression is needed. Unchanged by the merge.
 
-### TLA-016-F4 — the receipt fix bounds a recount per refusal, not across consecutive late refusals (documentation defect, comments corrected)
+### TLA-016-F4 — the receipt fix bounded a recount per refusal, not across consecutive late refusals (moot since the merge)
 
 `d9aeaef` ("A refused absorption group rolls its lane marks back, so a
-recount covers only chunks in flight") answers each `AbsorbedBatch` receipt
-when its group lands and drops it on every refusal. `settle_submissions`
-rolls a mark that still rests on a refused chunk back to replay that chunk,
-capped at its end. Its comments state the resulting bound:
-`settle_submissions` (`src/history/gather.rs:359-362`) says "no recount spans
-more than the chunks in flight when the refusal happened", and the
-`stored_frame_bytes` comment (`src/shard/transaction/maintenance.rs:338-341`)
-says an advance recounts "just the chunks in flight then: two, while the
-committer answers within a tick".
+recount covers only chunks in flight") claimed that no `stored_frame_bytes`
+recount spans more than the chunks in flight at a refusal. The pre-merge
+model showed that consecutive refusals, each settled after the stream's
+next chunk had raised the mark, leave consecutive holes, so a recount grew
+by one chunk per late refusal (`witness-RecountBeyondInFlight`), and the
+comments were corrected. The merge dropped the recount, the answered
+receipts and `settle_submissions`: an advance that does not start at the
+boundary is now dropped whole and never reads stored rows. The finding, its
+witness and the pre-merge `SettledMarkAtBoundary` and
+`RecountWithinInFlight` properties are gone with the mechanism; the
+driver trace that `f1de3dcb` recorded as
+`evidence/TLA-016_recount_beyond_in_flight.trace.txt` is removed from the
+tree and remains in the repository history at `3a24eace`.
 
-The model confirms the aligned case. Once every submission is settled, and
-no refusal was settled late and no op was dropped, the mark rests at or
-below the boundary, so the next chunk starts there and recounts nothing
-(`SettledMarkAtBoundary`, in `baseline-small`, `baseline-expanded`,
-`baseline-recount` and `baseline-pages`; `nc-no-settle` is the pre-fix
-absorber and violates it). `witness-RefusalReplayed` shows a refused chunk
-rolled back, replayed from the boundary and absorbed with no recount.
+### Overlapping postings pages after a re-gather (fixed by `keep_past`; still arise)
 
-The stated bound does not hold across refusals. A refusal that the absorber
-settles after the stream's next chunk has raised the mark leaves the refused
-chunk as a hole. The next such refusal adds another hole.
-`witness-RecountBeyondInFlight` (4 records, cap 1 record, 1 queued batch):
-
-1. Chunk `[0,1)` is submitted. Chunk `[1,2)` is planned and flushed while
-   the channel is full.
-2. The committer refuses `[0,1)`, and `[1,2)` is submitted (mark 2). The
-   settle finds `[0,1)` refused with the mark at 2, so the mark stays.
-3. `[2,3)` is planned. The committer refuses `[1,2)`, and `[2,3)` is
-   submitted (mark 3). Settling that refusal would leave the mark too,
-   because it rests on 3, not on 2.
-4. `[2,3)` lands at boundary 0 and recounts `[0,3)`. That is three chunks,
-   while at most two (one queued, one gathering) were in flight at either
-   refusal.
-
-Each late refusal needs the committer to answer after the absorber's next
-tick has planned, so the committer must lag at least one tick and keep
-refusing. In that regime the recount grows by one chunk per consecutive
-late refusal and is bounded only by the stream's backlog, as it was before
-the fix. The gather in progress counts too: with two queued batches, two
-refusals and a third chunk that lands before any settle already recount
-three chunks. So the LAG report's proposed bound, `Cap × MaxChan`, is not
-a bound even without consecutive refusals. Even with the gather counted, as
-the model's `RecountWithinInFlight` does (`Cap × (MaxChan + 1)`), the bound
-is false on the fixed model, so it is checked only as the witness. The
-code's cost statement for a committer that answers within a tick is
-unaffected. Both comments now say so, and that consecutive late refusals
-accumulate. No code regression is needed; `evidence/TLA-016_recount_beyond_in_flight.trace.txt` is the
-driver's trace.
-
-### Overlapping postings pages after a stale re-gather (fixed)
-
-**Defect.** The TLA-016-F1 fix recorded that a rescan rollback followed by a
-re-gather can leave overlapping postings pages. A page is keyed by its first
-offset. Two gathers that cut the same rows into different chunks therefore
-leave pages under different keys over the same offsets. The cold index load
-(`append_page_runs`) refused any page starting below the accumulated end as
-corrupt, so that key's reads fell back to the envelope scan for good.
+**Defect.** A page is keyed by its first offset, so two gathers that cut
+the same rows into different chunks leave pages under different keys over
+the same offsets. The cold index load (`append_page_runs`) refused any page
+starting below the accumulated end as corrupt, so that key's reads fell
+back to the envelope scan for good.
 
 **Fix.** "Overlapping postings pages from a re-gather admit when they agree"
-(`d16559b3`). Each page is complete over its own span. `keep_past`
-(`src/postings.rs`) admits an overlapping page only when its offsets over
-the common span equal the offsets already admitted, and keeps only its part
-past them. A disagreeing overlap is still corruption.
+(`d16559b3`, kept by the merge). Each page is complete over its own span.
+`keep_past` (`src/postings.rs:295`) admits an overlapping page only when its
+offsets over the common span equal the offsets already admitted, and keeps
+only its part past them. A disagreeing overlap is still corruption.
+
+**They still arise after the merge.** Slate's gate stops the rescan's
+re-gather under an advance in flight, but three sources remain, and slate
+records the first as a residual (`882004d9`): no rollback deletes the pages
+a dropped or lost advance already flushed.
+
+- *A refused chain* (`witness-OverlapAdmittedRefusedChain`, the schedule of
+  `a_regather_across_a_detached_chunk_keeps_the_index_readable`): chunk
+  `[0,1)` is flushed and submitted (mark 1), and `[1,2)` is planned from
+  the mark, flushed and submitted (mark 2) while the first is still queued.
+  The committer refuses the first group, and the chained advance, which no
+  longer starts at the boundary, is Detached. Both receipts are settled, so
+  the next plan rolls the mark back and re-gathers `[0,2)`: its K1 page
+  `{0, 1}` overlaps the chained chunk's first-1 page `{1}`, the two agree,
+  and absorption completes.
+- *The ungated prune* (`witness-OverlapAdmittedPrune`): `[0,1)` and `[1,3)`
+  are queued, the stream has left the roster and its handle is evictable,
+  so the sweep prunes the mark (D6); the rescan re-pends the stream and the
+  re-gather from 0 stages `{0, 1}` over the first-1 page.
+- *A new owner* (`witness-OverlapAdmittedNewOwner`, the schedule of
+  `a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable`):
+  the engine closes with `[0,1)` flushed and `[1,2)`'s page flushed by a
+  memtable flush, neither advance durable; the new owner plans from 0 and
+  stages `{0, 1}` over the inherited first-1 page.
+
+A bucket-sharing stream adds a fourth path without a new mechanism: a
+refused stream whose bucket is held by another stream's advance gathers
+from its stranded mark, is Detached, and leaves pages under its eventual
+heal (`882004d9`).
 
 **Model.** With `Pages`, each staged chunk writes one page per routing key,
-`<<key, first offset, offsets>>`, into a store keyed by (key, first offset).
-A later page under the same key replaces the earlier one, and the memtable
-view overlays the durable view (ASM-HISTORY-PAGES). `PagesAdmit` folds the
-reader's admission over each key's pages in key order, at every state:
+`<<key, first offset, offsets>>`, into a store keyed by (key, first offset)
+(ASM-HISTORY-PAGES). `PagesAdmit` folds the reader's admission over each
+key's pages in key order, at every state. The pre-merge property
+`NoStraddledChunk` (no page starts inside another's span) held only in a
+shape without crash, rescan or prune; with slate's refused chains it no
+longer holds in any shape with a refusal, so it is now the witness
+`Witness_OverlapAdmitted` (`Straddled /\ PagesAdmit /\ D.abs = N`).
 
-- a page that starts below the accumulated end must list exactly the
-  accumulated offsets over `[first, min(end, its end))`;
-- only its part past the end is added.
-
-`NoStraddledChunk` says that no page of a key starts inside another page's
-span.
-
-**Checks.**
-
-- `baseline-pages-regather` has 3 records, cap 2, ring or scan gathers, the
-  rescan, the prune and a crash (a new owner). Each of those re-gathers from
-  a stale boundary. It passes `PagesAdmit` with every ledger and history
-  property.
-- `baseline-pages` has 4 records, 2 refused groups and a failed or ambiguous
-  flush, and no stale re-gather. It passes both `PagesAdmit` and
-  `NoStraddledChunk`, so the receipt rollback's replay, capped at
-  `replay_to`, never overlaps pages at all.
-- `nc-replay-unbounded` replays up to the durable end instead. It overlaps
-  the pages that a failed flush left above the refused chunk, which the
-  non-ambiguous failure keeps in the memtable.
-- `probe-scan-per-row` replaces the scan's one snapshot (ASM-SLATEDB-DURABLE
-  (j)) with a trim point read row by row, with every record under one key.
-  After a rescan rollback, the stale re-gather reads row 0, the queued
-  advances land and trim row 1, and the scan stages `{0, 2}`. Its first-0
-  page disagrees with row 1's page, and the index is refused. So the
-  admission rests on dense chunks, which the one-snapshot scan and the
-  dense ring window provide.
-
-**Admitted overlaps.** Each witness needs only 3 records, cap 2 and
-Remote-scan gathers, with no refusal or flush failure. It ends with an
-overlap admitted and the stream fully absorbed and durable
-(`Witness_OverlapAdmitted`). Records 0 and 1 are key K1 and record 2 is K2.
-In each trace, the first gather plans while the published end is still 1.
-It flushes K1's page `{0}` for chunk `[0,1)` and submits it (mark 1). The
-chunk ends at 1 because of the published end at plan time, not the cap.
-Then:
-
-- `witness-OverlapAdmittedRescan`, the schedule of
-  `a_rescan_regather_across_a_chunk_in_flight_keeps_the_index_readable`:
-  1. Dispatch publishes end 3. The next gather plans `[1,3)` from the mark.
-  2. Meanwhile the committer applies the `[0,1)` advance and it becomes
-     durable (absorbed 1), but it is not dispatched, so the published
-     absorbed stays 0.
-  3. `[1,3)` flushes K1's page `{1}` (first offset 1) and K2's page `{2}`,
-     and submits (mark 3). Its advance is queued.
-  4. The dirty-index rescan reads the row at Memory level (absorbed 1).
-     `roll_back_stranded_mark` removes the mark because 3 > 1.
-  5. The next gather plans from the published boundary 0 and reads `[0,2)`.
-     While it reads, the queued `[1,3)` advance lands and becomes durable
-     (absorbed 3).
-  6. The gather stages K1's page `{0, 1}`. It replaces the first-0 page and
-     overlaps the first-1 page `{1}`, and the two agree over `[1,2)`, so
-     the key's pages admit.
-- `witness-OverlapAdmittedPrune`. `[1,3)` is submitted while `[0,1)` is
-  still queued. The sweep then prunes the mark: no group is
-  applied-but-undispatched, so the handle is evictable
-  (ASM-HISTORY-EVICTION; a queued batch holds no handle). The re-gather from
-  0 stages the same overlapping page while both queued advances land. The
-  model's prune ignores `pending`. In production this path also needs the
-  stream to have left the pending map, which happens once a gather reached
-  its durable end. `d16559b3` names only the rescan and the new owner; its
-  admission does not depend on which schedule made the overlap.
-- `witness-OverlapAdmittedNewOwner`, the schedule of
-  `a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable`.
-  The second gather is `[1,2)`, because the published end is 2. Its K1 page
-  `{1}` becomes durable through a memtable flush. The engine then closes or
-  moves before either advance is durable, and the lane goes with it. The
-  new owner plans from the durable boundary 0 and stages `[0,2)`, whose page
-  `{0, 1}` overlaps the inherited first-1 page. It then absorbs `[2,3)`, and
-  both advances land.
-
-The traces are `evidence/TLA-016_overlap_admitted_rescan.trace.txt`,
+**Checks.** `baseline-pages` (4 records, 2 refusals or drops, a failed or
+ambiguous flush) and `baseline-pages-regather` (the prune, a crash and a
+refusal) pass `PagesAdmit` with every ledger and history property; the
+three overlap witnesses show the overlaps; `probe-scan-per-row` shows the
+admission rests on dense chunks. The traces are
+`evidence/TLA-016_overlap_admitted_refused_chain.trace.txt`,
 `evidence/TLA-016_overlap_admitted_prune.trace.txt` and
 `evidence/TLA-016_overlap_admitted_new_owner.trace.txt` (the driver's logs
 on the current model).
+
+### Follow-ups recorded by the merge (not defects)
+
+- **Heal latency.** A refused or dropped advance of a quiet stream is no
+  longer re-pended at once: the stream left the roster when its gather
+  reached the end, no signal follows, and only the dirty-index rescan
+  (every 120 ticks, about 10 minutes) re-pends it, after which the settled
+  plan rolls the mark back. The model proves the heal happens
+  (`liveness-refusal`, with the rescan fair; without that fairness the same
+  shape violates `AbsorptionCompletes`) and cannot bound how soon. Until
+  then the stream's records stay in the shard log and its ledger counts
+  them; nothing is lost.
+- **Bucket sharing.** 1,024 buckets serve all of an absorber's streams. A
+  refused stream whose bucket also holds another stream's in-flight
+  advance keeps its stranded mark (`witness-MateDelaysRollback`); a gather
+  meanwhile is Detached and leaves overlapping pages. `ledger-small` checks
+  the ledger, the gate and `DetachedOnlyAfterFault` with a bucket mate
+  toggling freely; the liveness shapes have no mate, because a mate that
+  never settles would hold the rollback back forever. Under a lagging
+  committer the delay can repeat; it is safe with `keep_past`.
 
 ### TLA-018-F1 — `deliver=applied` keyed reads skipped durable records trimmed by a non-durable advance (fixed)
 
@@ -943,7 +914,16 @@ for the owner, not a defect claim. Its acceptance criteria are in
 
 ## TLA-016 — History absorption, publication, and safe hot-data trimming
 
-Modules `HistoryAbsorb.tla` and `MC_HistoryAbsorb.tla`.
+Modules `HistoryAbsorb.tla` and `MC_HistoryAbsorb.tla`. Since the merge of
+`slate` (`3a24eace`), the model maps slate's absorber: an advance retires
+only from the stream's own boundary (`retire_absorbed`: Exact, Detached or
+Diverged, `9c6675d7`), each submitted advance carries a settlement receipt
+counted per stream bucket (`Submissions`, `b5751e75`), and a stranded lane
+mark is rolled back at plan time only while the stream's bucket is settled.
+The dirty-index rescan only seeds work. The mechanism the model mapped
+before the merge (the committer's `stored_frame_bytes` recount, the lane's
+answered receipts and `settle_submissions`, the replay-capped `LaneMark`, the
+rescan's rollback) is no longer in the code and no longer in the model.
 
 ### Claim
 
@@ -963,43 +943,50 @@ For one stream incarnation, the model checks that:
   snapshots are not protected, F2);
 - a lane mark never claims more than durable history
   (`MarkBackedByHistory`);
-- the absorber's unanswered submissions are exactly the committer channel's
-  batches, in order (`SubsMatchChan`, part of `TypeOK`);
-- once every submission is settled, and no refusal was settled late and no
-  op was dropped, the lane mark rests at or below the applied boundary, so a
-  refused chunk is replayed from the boundary and its advance recounts
-  nothing (`SettledMarkAtBoundary`; it fails without the receipt rollback,
-  `nc-no-settle`);
-- the reader admits every routing key's postings pages as one index,
-  including the overlapping pages that a re-gather from a stale boundary
-  (rescan rollback, eviction prune, new owner) leaves (`PagesAdmit` in both
-  page shapes; `d16559b3` admits agreeing overlaps; it fails when a scan
-  loses its snapshot, `probe-scan-per-row`);
-- with no crash, rescan or prune, no page overlaps another at all: the
-  refusal rollback's replay, capped at `replay_to`, rewrites exactly the
-  refused chunk's pages (`NoStraddledChunk` in the page shape; it fails
-  without the cap, `nc-replay-unbounded`);
-- durable and published frontiers are monotone (`FrontiersMonotone`);
+- the settlement receipts are exactly the advances that can still move or
+  publish the boundary: an applied group holds one iff it retired an Exact
+  advance, and a durable group still holds one iff dispatch has not
+  published the boundary it moved (`ReceiptsMatchInFlight`, part of
+  `TypeOK`; a queued batch holds one by construction);
 - the per-stream `unabsorbed_bytes` ledger equals the bytes in
-  `[absorbed, next)` in every view, even when absorption repeats, restarts
-  from a stale boundary or loses a publication (`LedgerExact`), and the
-  committer never finds a row of the range it retires missing
-  (`NoMissingRetiredRow`);
+  `[absorbed, next)` in every view, whatever range a re-gather starts at and
+  whatever advances are lost (`LedgerExact`; it fails when the committer
+  retires an advance that does not start at the boundary,
+  `nc-retire-chunk-bytes*`);
+- the settlement gate: a gather never starts below a queued advance's end
+  or below the applied boundary (`NoRegatherUnderInFlight`; it fails when
+  receipts settle before dispatch publishes, `nc-settle-before-publish`).
+  The sweep prune is not gated on settlement (slate's decision D6), so the
+  property is checked until a prune has removed a mark whose advance was in
+  flight, which `witness-EvictedMarkPrunedInFlight` shows is reachable;
+- the committer drops an advance as Detached only after a refused group or
+  a dropped op lost an advance of the stream, or after that ungated prune
+  (`DetachedOnlyAfterFault`; it fails with the gate removed,
+  `nc-ungated-rollback`, which is slate's own planted control);
+- the reader admits every routing key's postings pages as one index,
+  including the overlapping pages a refused chain, the ungated prune or a
+  new owner leaves (`PagesAdmit` in both page shapes; `keep_past`,
+  `d16559b3`; it fails when a scan loses its snapshot,
+  `probe-scan-per-row`). Overlaps themselves are reachable, so the former
+  `NoStraddledChunk` is now the witness `Witness_OverlapAdmitted`;
 - the postings-slice cache never proves the absence of a record that history
   holds below the durable absorbed boundary (`CacheNeverProvesFalseAbsence`;
-  it failed before the TLA-016-F3 fix);
+  it fails with slate's warm install from `plan.from`, TLA-016-F3);
+- durable and published frontiers are monotone (`FrontiersMonotone`);
 - (liveness) once faults cease, every appended record is absorbed and the
-  advance is durable and published (`AbsorptionCompletes`).
+  advance is durable and published (`AbsorptionCompletes`). A refused
+  advance of a quiet stream heals only through the dirty-index rescan
+  (`liveness-refusal`; it fails without the plan-time rollback,
+  `nc-no-plan-rollback`).
 
 These hold under crashes between every step, failed and ambiguous history
-flushes, refused commit groups (the absorber is told through the dropped
-receipt), dropped `Absorbed` ops in groups that land (it is not told),
-refusals settled before or after the stream's next chunk is planned, the
-dirty-index rescan and rollback, marks
-pruned for evicted handles, delayed `AbsorbedBatch` messages, stale re-plans
-from the published boundary, trims between a gather's plan and its scan,
-gathers served by the durable ring or by a Remote scan, per-stream caps of
-one or two records, exhausted trim budgets, cache evictions and cold loads.
+flushes, refused commit groups and dropped `Absorbed` ops (both settle their
+receipts), chained advances behind a refused one, marks pruned for evicted
+handles while their advances are queued, a bucket-sharing stream holding the
+rollback gate closed, delayed `AbsorbedBatch` messages, stale re-plans from
+the published boundary, trims between a gather's plan and its scan, gathers
+served by the durable ring or by a Remote scan, per-stream caps of one or two
+records, exhausted trim budgets, cache evictions and cold loads.
 
 **Requirement anchors:** H1, H3, H4, H13; H2 and H11 through the cache claim.
 
@@ -1011,18 +998,18 @@ yet durable groups in WAL order; `D`, the Remote-durable prefix that
 `DurabilityLevel::Remote` reads see; and `P`, the published
 `handle.state.durable` written by `dispatch_durable`. History rows (canonical
 `hc`, postings `hp`) are `none`, `mem` (in the WAL-less partition memtable)
-or `dur`. The absorber's gather, lane mark, submissions, dirty-index
-observation and the committer channel are volatile. The channel carries
-`(from, upto, bytes)`, and each batch's receipt is the matching submission
-`[f, u, st]` in `subs`. Its status is `pending`, or `refused` (dropped
-unanswered) until the absorber settles it. A landed (answered) receipt
-leaves `subs` when it is answered: settling it would only remove it. The lane mark is `[from, replay]`
-(`LaneMark { from, replay_to }`; `replay = 0` is none). With `Pages`, the
-postings pages are `<<key, first offset, offsets>>` under the
-(key, first offset) page key, in the memtable (`pgMem`) or durable
-(`pgDur`). A reader sees the memtable over the durable pages, and
-`PagesAdmit` is the cold index load's admission (`append_page_runs`,
-`keep_past`) evaluated over that view in every state.
+or `dur`. The absorber's gather, its lane mark (`Absorber::submitted`, a
+number; `NoMark = 0` is no entry), its pending-roster entry (`due`) and the
+committer channel are volatile. The channel carries
+`(from, upto, bytes)`, the `CopiedBytes` of each advance. The receipts of
+this stream are one per channel entry, a `held` flag per applied group, and
+`durHeld`, the receipts of durable groups not yet dispatched; the bucket
+counter is zero when none is outstanding and the bucket mate (`mateBusy`,
+with `BucketMate`) is idle. With `Pages`, the postings pages are
+`<<key, first offset, offsets>>` under the (key, first offset) page key, in
+the memtable (`pgMem`) or durable (`pgDur`). A reader sees the memtable over
+the durable pages, and `PagesAdmit` is the cold index load's admission
+(`append_page_runs`, `keep_past`) evaluated over that view in every state.
 The postings-slice cache is modelled by the claims it makes: per key
 `covered_from`, `indexed_to_offset` and the runs, and the segment's warm
 record (`from`, `to`, `clean`). The reader is its published snapshot only;
@@ -1030,35 +1017,39 @@ the merged read is TLA-018.
 
 ### Atomicity / linearization table
 
+File and line references are at `3a24eace`.
+
 | Model action | Production function(s) | Atomicity justification / dependency contract |
 |---|---|---|
-| `CustomerAppend` | `CommitTransaction::append` (`src/shard/transaction/append.rs:19`), `stage_stream_rows` and `write` (`finalize.rs:79`, `:184`), `publish` (`publish.rs:17`) | One `WriteBatch` per commit group, applied atomically (ASM-SLATEDB-DURABLE e). Groups carry one operation each; coalescing only removes crash points. |
-| `WalDurable` | SlateDB WAL flush; `durable_seq` from `db.subscribe()` in `ShardEngine::acker_loop` (`src/shard.rs:3077`) | Remote durability is a prefix of applied order (ASM-SLATEDB-DURABLE f). |
-| `Dispatch` | `ShardEngine::dispatch_durable` (`src/shard.rs:3006`) | Publishes `handle.state.durable` in group order under the handle mutex. May lag durability. |
-| `Crash` | Process crash, engine close (including `write_failed` → `begin_close`, `finalize.rs:211-220`) or ownership move; the absorber task ends with the engine (`worker.rs:27-29`) | Loses applied groups, the committer channel, the lane (marks and unsettled submissions) and the partition memtable, pages included (WAL disabled, `history_settings`, `src/history.rs:499`). Keeps `D`, durable history rows and dirty rows. The process-wide postings cache is wiped (process crash) or kept (engine close or move); both are explored. |
+| `CustomerAppend` | `CommitTransaction::append` (`src/shard/transaction/append.rs:19`), `finish` and `write` (`finalize.rs:3`, `:170`), `publish` (`publish.rs:17`) | One `WriteBatch` per commit group, applied atomically (ASM-SLATEDB-DURABLE e). Groups carry one operation each; coalescing only removes crash points. |
+| `WalDurable` | SlateDB WAL flush; `durable_seq` from `db.subscribe()` in `ShardEngine::acker_loop` (`src/shard.rs:3020`) | Remote durability is a prefix of applied order (ASM-SLATEDB-DURABLE f). A group's receipts stay in its `DurableEffects` (`src/shard/commit_plan.rs:47`) past this point: `durHeld` counts them (the operator `HeldPastWal`). |
+| `Dispatch` | `ShardEngine::dispatch_durable` (`src/shard.rs:2949`): tails at `:2988-2991`, `AbsorbSignal` sent at `:3004-3006`, the group and its receipts dropped at the end of the iteration (`:3012`) | Publishes `handle.state.durable` in group order under the handle mutex, then drops the group's receipts (ASM-HISTORY-SETTLEMENT); so `durHeld` returns to 0. May lag durability. The signal of an append group re-pends the stream; the model never drops it (`try_send` can; the rescan covers that). A signal that arrives during a gather is handled by the absorber's select loop after the gather settles (`worker.rs:62-77`), so it re-pends the stream after that gather. |
+| `Crash` | Process crash, engine close (including `write_failed` → `begin_close`, `finalize.rs:202-206`) or ownership move; the absorber task ends with the engine (`worker.rs:28-31`) | Loses applied groups, the committer channel, the lane marks, the pending roster, the absorber's `Submissions` (one per engine, `src/history.rs:750`) and the partition memtable, pages included (WAL disabled, `history_settings`, `src/history.rs:456`). Keeps `D`, durable history rows and dirty rows. The process-wide postings cache is wiped (process crash) or kept (engine close or move); both are explored. |
 | `HistoryBackgroundFlush` | SlateDB memtable flush (size-triggered, or the final flush in `Db::close`) | The whole memtable goes to L0 atomically (ASM-SLATEDB-DURABLE h). |
-| `AbsorberSettle` | `Absorber::settle_submissions` (`src/history/gather.rs:368`) with `Lane::replay` (`:95`), called by the pump tick right before `classify_due` and `gather_due` (`src/history/worker.rs:164`) | Atomic under the lane mutex, with `try_recv` only, so it never waits on the committer. Every answered submission leaves the lane; the model removes a landed one already when the committer answers it, because settling it never moves a mark. Each refused chunk `[f, u)`, in submission order, rolls a mark with `from = u` back to `[from ↦ f, replay ↦ u]`; a mark a later chunk already raised stays. Re-pending the stream is outside the model (no roster). The absorber is one task, so settling never runs during a gather. |
-| `AbsorberPlan` | `Absorber::plan_reads` → `stream_handle` → `plan_read` (`gather.rs:503`, `:529`) | Reads `st.durable` (= `P`) and the lane mark under their mutexes: `from = max(mark.from, P.abs)`; `upto = min(replay, P.next)` while `replay > from`, else `P.next` (the operator `PlanUpto`). The ring-or-scan choice is made here. Each tick settles and then gathers once (`worker.rs:164-166`), so the model enables a plan only when every answered receipt is settled. A receipt answered between the settle and the plan commutes with the plan, which reads no receipt, so no behaviour is lost. |
-| `AbsorberRead`, `AbsorberReadEnd` | `read_wave` → `read_frames_range` (`gather.rs:561`; `src/shard/record.rs:129`) | A ring hit (`ring_read`, `record.rs:153`) returns the window densely, including rows a trim has deleted. Otherwise one `DurabilityLevel::Remote` scan (`record.rs:156-181`), observed row by row, over the snapshot taken when it starts (ASM-SLATEDB-DURABLE j): it skips the rows trimmed by then and no later ones. The per-stream byte cap is `Cap` equal-size records. |
-| `AbsorberStage` | `stage_chunk` → `stage_rows` + `stage_postings` (`gather.rs:589`, `:166`, `:201`) | Canonical rows and postings pages go into one `WriteBatch`, atomic in the memtable. With `Pages` each key's page replaces any page under the same (key, first offset) (ASM-HISTORY-PAGES). |
-| `AbsorberFlushOk` / `AbsorberFlushFail` | `Absorber::commit`: `write_with_options`, then `part.flush()` (`gather.rs:670`, `:679`, `:693`); error path in `gather_due` (`worker.rs:383`) | Flush `Ok` means every earlier write is durable. `Err` is ambiguous: rows and pages may or may not be durable, and if not they stay in the memtable. No install, no submit, no mark raise. |
-| `AbsorberSubmit` (with `InstallChunk`) | After the flush: `postings_cache.install_chunk(inc, chunk_from, chunk_to, runs)` over the staged range `stage_rows` returned (recorded in `stage_chunk`, `gather.rs:631-636`; installed at `:704-707`; `src/postings_cache.rs:274`); then `submit_absorbed_batch_v2` with `(hash, plan.from, last + 1, chunk_raw)`, which returns the batch's receipt (`gather.rs:709-712`; `src/shard.rs:2011`); then `raise_lane_marks(advanced, receipt)` (`gather.rs:713`, `:731`) | One step: no await separates the install loop from the send, nor the send's return from the raise. A crash while the send is blocked leaves claims about rows that are already durable, which is the kept-cache branch of `Crash`. The raise sets `mark.from = max(mark.from, u)`, clears a `replay` it has passed and records the submission as pending. A send the closed queue refuses drops the receipt (a refused group), which the engine-close branch of `Crash` covers. The install's start is the operator `WarmInstallFrom` (F3). |
-| `RescanObserve`, `RescanRollback` | `seed_from_dirty_index` → `scan_dirty_streams_page` (Memory read, `src/shard.rs:2153`) → `roll_back_stranded_mark` (`gather.rs:259`, `:284`, `:341`) | Two steps: the committer runs between the row read and the rollback. Both run in the absorber task, never during a gather. Unchanged by the receipt fix: a mark with `from` above the observed boundary is removed, `replay` with it. It is the only heal for a dropped op (`CommitDropOne`). Enabled by `Rescan`. |
-| `MarkPrune` | `prune_lane_marks` (`gather.rs:406`), called every sweep tick (`worker.rs:124-126`); `evict_idle_handles` (`src/shard.rs:2405`); reload in `stream_handle` (`src/shard.rs:2343`) | Atomic under the lane mutex. Keeps a mark while the stream is pending or its resident absorbed boundary trails `mark.from`. Prunes when `P.abs ≥ mark.from` or the handle is evictable (ASM-HISTORY-EVICTION). A reloaded handle reads the Memory-level tail, which then equals `D` and `P`. The model ignores `pending`, so it prunes more often than production. Enabled by `Prune`. |
-| `CommitAbsorbed` | `CommitTransaction::absorbed` (`src/shard/transaction/maintenance.rs:235`) with `stored_frame_bytes` (`:331`), then `finish`/`write`; the receipt collected by `expand` (`prepare.rs:13`, `:27`) and answered by `answer_landed` (`finalize.rs:44`) | The advance, `trim_safe_to`, the budgeted trims (`:314-324`), `unabsorbed_bytes` and the dirty row go in one batch. A chunk that starts at the boundary retires its own bytes; any other retires the stored rows of `[prev_absorbed, min(upto, next))` read at Memory level with 2 MiB × 4 read-ahead (`:282-287`, `21c5e61`). A missing row or a `checked_sub` failure (`:288-302`) refuses the whole group (`finalize.rs:5-8`) and drops the receipt (`refused`). A written group answers it before `publish` (`finalize.rs:208`), and a no-write group, where every advance was already at or below its boundary, answers it too (`finalize.rs:18`) (`landed`). The stored read does not see earlier writes of its own group, but those are trims below the boundary and appends at or above `next`, which never touch `[prev_absorbed, upto)`; one operation per group therefore loses nothing. |
-| `CommitRefuseGroup` | The whole group carrying the advance is refused and its receipt dropped unanswered (`refused`): a closed engine or a billing-row pre-read failure in `CommitTransaction::run` (`src/shard/transaction/mod.rs:58-73`), another operation's accounting divergence or a failed `stored_frame_bytes` read (`finalize.rs:5-8`), the `stage_maintenance` divergence (`finalize.rs:27-33`), or the test failpoint `fail_next_absorbed_group` (`finalize.rs:23-26`) | Nothing is written; the absorber learns of it at its next settle. The divergence of this advance itself is the refused branch of `CommitAbsorbed`. Bounded by `MaxRejects`. |
-| `CommitDropOne` | `stage()` drops only this `Absorbed` op when `stream_handle` fails (`mod.rs:157-165`; `reject_op`'s `_ => {}`, `mod.rs:134`) while the rest of the group lands and answers the receipt (`landed`) | The advance is lost and the absorber is **not** told; only the rescan rollback heals the mark. A layout-sealed lane drop (`maintenance.rs:257-273`) has the same shape but needs two lanes, which the model does not have. Bounded by `MaxDrops` within `MaxRejects`. |
-| `TrimStep` | `TrimTick` → `expand` (`prepare.rs:13`, `:38`) → `CommitTransaction::trim` (`maintenance.rs:375-384`) | Budgeted deletes in one batch. |
+| `MateToggle` | Another stream whose hash maps to the same one of the 1,024 settlement buckets (`Submissions::bucket`, `commit_plan.rs:247`) submits an advance or settles its last one | An environment step, enabled by `BucketMate`. Sharing only delays a rollback, never permits one. |
+| `AbsorberPlan` | `Absorber::plan_reads` (`src/history/gather.rs:468-487`): `stream_handle`, then, while `Submissions::settled` (`commit_plan.rs:264`), `roll_back_stranded_mark` (`gather.rs:354`) with `resident_absorbed` (`src/shard.rs:2402`); then `plan_read` (`gather.rs:498`) | One step: the gate, the published boundary, the rollback and `from = max(mark, P.abs)`, `upto = P.next`. Only this task submits, so a settled bucket stays settled until it submits again, and a group holding a receipt is the only thing that moves `P.abs`; the Release drop and Acquire load make every boundary published before the last receipt dropped visible (ASM-HISTORY-SETTLEMENT). The rollback removes a mark above `P.abs` (operator `RollbackGate`). An empty window is `no_work`, which leaves the roster (`settle_gather`, `worker.rs:400-405`). The ring-or-scan choice is made here. `resident_absorbed` returning `None` (an eviction between the load and the check) only skips a rollback, like the bucket mate. |
+| `AbsorberRead`, `AbsorberReadEnd` | `read_wave` → `read_frames_range` (`gather.rs:530`; `src/shard/record.rs:149`) | A ring hit (`ring_read`, `record.rs:173`) returns the window densely, including rows a trim has deleted. Otherwise one `DurabilityLevel::Remote` scan (`record.rs:175-186`), observed row by row, over the snapshot taken when it starts (ASM-SLATEDB-DURABLE j): it skips the rows trimmed by then and no later ones. The per-stream byte cap is `Cap` equal-size records. |
+| `AbsorberStage` | `stage_chunk` (`gather.rs:558`) → `note_frames` (`:156`), `check_postings` (`:191`), `stage_checked` (`:210`) | Canonical rows and postings pages go into one `WriteBatch`, atomic in the memtable. With `Pages` each key's page replaces any page under the same (key, first offset) (ASM-HISTORY-PAGES). An empty chunk is `no_work`. `check_postings`' own-chunk refusal (`failed`) is not modelled. |
+| `AbsorberFlushOk` / `AbsorberFlushFail` | `Absorber::commit`: `write_with_options`, then `part.flush()` (`gather.rs:647`, `:657`, `:671`); error path `settle_gather_error` (`worker.rs:421`) | Flush `Ok` means every earlier write is durable. `Err` is ambiguous: rows and pages may or may not be durable, and if not they stay in the memtable. No install, no submit, no mark raise; the stream stays pending. |
+| `AbsorberSubmit` (with `InstallChunk`) | After the flush: `postings_cache.install_chunk(inc, chunk_from, chunk_to, runs)` over the staged range `note_frames` returned (recorded in `stage_chunk`, `gather.rs:612-614`; installed at `:682-686`; `src/postings_cache.rs:274`); `Submissions::submit` per advance, the receipt riding `CopiedBytes::new(plan.from, chunk_raw)` (`gather.rs:616-618`, `:689-695`; `commit_plan.rs:252`); `submit_absorbed_batch_v2` (`src/shard.rs:1970`); `raise_lane_marks` (`gather.rs:697`, `:714`); then `settle_gather` (`worker.rs:348`) | One step: no await separates the install loop from the count and the send, nor the send's return from the raise. A crash while the send is blocked leaves claims about rows that are already durable, which is the kept-cache branch of `Crash`; a send the closed queue refuses drops its receipt with the batch (engine close). The raise sets `mark = max(mark, u)`. The roster keeps the stream after a partial chunk (`u < plan.upto`) or when a signal arrived during the gather; otherwise it leaves. The install's start is the operator `WarmInstallFrom` (F3). |
+| `RescanSeed` | `seed_from_dirty_index` (`gather.rs:271`) every `RESCAN_EVERY` = 120 ticks and at a new owner's start (`worker.rs:47`, `:83-113`): `scan_dirty_streams_page` (`src/shard.rs:2108`), `backlog_of` → `tail_fields` (`gather.rs:318`; `src/shard.rs:2158`, a Memory-level read) | Merges a stream whose row shows unabsorbed records into the roster (`or_insert`). It no longer touches lane marks. It is the only thing that re-pends a quiet stream whose advance was refused or dropped. |
+| `MarkPrune` | The sweep's `submitted.retain` (`worker.rs:125-143`); `evict_idle_handles` (`src/shard.rs:2354`); reload in `stream_handle` (`src/shard.rs:2292`) | Atomic under the lane mutex. Keeps a mark while the stream is pending or its resident absorbed boundary trails the mark; prunes when the stream is not pending and `P.abs ≥ mark` or the handle is evictable (ASM-HISTORY-EVICTION). Not gated on settlement (D6). A reloaded handle reads the Memory-level tail, which then equals `D` and `P`. |
+| `CommitAbsorbed` | `CommitTransaction::absorbed` (`src/shard/transaction/maintenance.rs:236`, guard `:274`) → `advance_boundary` (`:287`) → `retire_absorbed` (`commit_plan.rs:304`); `expand` (`prepare.rs:16-24`) | An advancing op (`upto > absorbed`) whose `from` is the applied boundary is Exact: boundary to `min(upto, next)`, ledger minus `len`, `trim_safe_to` raised to the previous boundary, budgeted trims (`maintenance.rs:324-334`), and the group keeps the receipt (`:338-340`; `held`). If `len` exceeds the ledger it is Diverged: `accounting_diverged` refuses the whole group in `finish` (`finalize.rs:5-8`). Any other `from` is Detached: a warning, nothing moves. Detached, Diverged and non-advancing ops drop their receipt at staging. The mutation point is `Retires`. |
+| `CommitRefuseGroup` | The whole group carrying the advance is refused before it is written and its receipts drop with it: a closed engine or a billing-row pre-read failure in `CommitTransaction::run` (`src/shard/transaction/mod.rs:53-68`), another operation's accounting divergence (`finalize.rs:5-8`), the `stage_maintenance` divergence (`finalize.rs:25-31`), or the test failpoint `fail_next_absorbed_group` (`finalize.rs:20-23`); `reject` (`mod.rs:196`) | Nothing is written; the stream's mark is stranded until its bucket settles and a plan runs. Bounded by `MaxRejects`. |
+| `CommitDropOne` | `stage()` drops only this `Absorbed` op when `stream_handle` fails (`mod.rs:153-158`; `reject_op`'s `_ => {}`, `mod.rs:128`) while the rest of the group lands | The receipt drops at staging, so the stream settles as for a refusal. A layout-sealed lane drop (`maintenance.rs:257-273`) has the same shape but needs two lanes, which the model does not have. Bounded by `MaxDrops` within `MaxRejects`. |
+| `TrimStep` | `TrimTick` → `expand` (`prepare.rs:25-43`) → `CommitTransaction::trim` (`maintenance.rs:343`) | Budgeted deletes in one batch. |
 | `CacheEvict` | Weight eviction at the end of `install_chunk` (`postings_cache.rs`), or the idle sweep | Removes one slice and taints the segment's warm window (`clean = false`). |
-| `CacheLoad` | `runs_for` → `Decision::Lead` → `spawn_load` → `publish_load` (`postings_cache.rs`) | A cold load of all the key's pages up to the reader's absorbed boundary. Capped loads and loads that merge into a resident slice are not modelled. |
+| `CacheLoad` | `runs_for` → `Decision::Lead` → `spawn_load` → `publish_load` (`postings_cache.rs:502`) | A cold load of all the key's pages up to the reader's absorbed boundary. Capped loads and loads that merge into a resident slice are not modelled. |
 | `ReaderSnap` / `ReaderRelease` | The snapshot in `execute_segment` (`src/application/read.rs:130`) | Taken under the handle mutex. |
 
 ### Assumptions
 
-ASM-SLATEDB-DURABLE, ASM-HISTORY-ACTORS (liveness), ASM-HISTORY-REABSORB,
-ASM-HISTORY-EVICTION and ASM-HISTORY-PAGES (the page shapes, the overlap
-witnesses and the scan probe). The cache property checks ASM-HISTORY-POSTINGS-CACHE for the
-install path; it does not assume it.
+ASM-SLATEDB-DURABLE, ASM-HISTORY-ACTORS (liveness, including the rescan
+cadence), ASM-HISTORY-REABSORB, ASM-HISTORY-EVICTION,
+ASM-HISTORY-SETTLEMENT (the plan's gate and the receipts' drop after
+publication) and ASM-HISTORY-PAGES (the page shapes, the overlap witnesses
+and the scan probe). The cache property checks
+ASM-HISTORY-POSTINGS-CACHE for the install path; it does not assume it.
 
 ### Constants per configuration
 
@@ -1066,47 +1057,33 @@ Every configuration uses `InitNext = 1`, `TrimBudgets = {0,1,3}` and keys
 `K1, K1, K2` for offsets 0, 1, 2 (and `K1` for offset 3 where `N = 4`).
 Records are one byte each, so the exact ledger is `next − abs`. *Refusals*
 (`MaxRejects`) bounds refused groups and dropped ops together; *Drops*
-(`MaxDrops`) bounds the dropped ops among them. *Rescan* and *Prune* enable
-the dirty-index rescan rollback and the lane-mark prune; *Pages* models the
-page ranges. Every configuration not listed with *Pages* has it off and
-*Rescan* and *Prune* on.
+(`MaxDrops`) bounds the dropped ops among them. *Prune* enables the sweep's
+lane-mark prune, *Mate* a bucket-sharing stream (`BucketMate`), *Pages* the
+page ranges. The dirty-index rescan is always on.
 
-| Config | N | MaxPend | MaxChan | Crashes | FlushFail | Refusals | Drops | Reads | Cap | Ring | Cache | Evictions | Pages | Rescan / Prune | Spec |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `small`, `ledger_small`, controls, witnesses (except as below) | 3 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 2 | no | no | 0 | no | yes / yes | `Spec` |
-| `expanded` | 3 | 3 | 2 | 1 | 1 | 1 | 1 | 2 | 1 | yes | no | 0 | no | yes / yes | `Spec` |
-| `w_RingGatherBelowTrim` | 3 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 2 | yes | no | 0 | no | yes / yes | `Spec` |
-| `ledger_overlap`, `nc_retire_chunk_bytes_overlap` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 1 | 2 | no | no | 0 | no | yes / yes | `Spec` |
-| `cache`, `nc_warm_install_from_plan`, `w_WarmBridgeCovers`, `w_InstallStartsAbovePlan` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 1 | yes | yes | 1 | no | yes / yes | `Spec` |
-| `cache_cap2` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 2 | yes | yes | 1 | no | yes / yes | `Spec` |
-| `pages`, `nc_replay_unbounded` | 4, 3 | 2 | 2 | 0 | 1 | 2 | 0 | 0 | 2 | yes | no | 0 | yes | no / no | `Spec` |
-| `pages_regather` | 3 | 2 | 2 | 1 | 0 | 0 | 0 | 0 | 2 | yes | no | 0 | yes | yes / yes | `Spec` |
-| `probe_scan_per_row` (every record under K1) | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 2 | no | no | 0 | yes | yes / no | `Spec` |
-| `recount` | 4 | 1 | 2 | 0 | 0 | 2 | 1 | 0 | 1 | no | no | 0 | no | yes / no | `Spec` |
-| `w_RecountBeyondInFlight` | 4 | 2 | 1 | 0 | 0 | 2 | 0 | 0 | 1 | no | no | 0 | no | yes / yes | `Spec` |
-| `w_OverlapAdmittedRescan`, `…Prune`, `…NewOwner` | 3 | 2 | 2 | 0, 0, 1 | 0 | 0 | 0 | 0 | 2 | no | no | 0 | yes | yes / no, no / yes, no / no | `Spec` |
-| `liveness`, `nc_retire_chunk_bytes_liveness` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 2 | no | no | 0 | no | yes / yes | `LiveSpec` |
-| `liveness_refusal` | 3 | 1 | 1 | 0 | 0 | 1 | 1 | 0 | 2 | no | no | 0 | no | yes / no | `LiveSpec` |
+| Config | N | MaxPend | MaxChan | Crashes | FlushFail | Refusals | Drops | Reads | Cap | Ring | Cache | Evictions | Pages | Prune | Mate | Spec |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `small`, controls, witnesses (except as below) | 3 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 2 | no | no | 0 | no | yes | no | `Spec` |
+| `expanded` | 3 | 3 | 2 | 1 | 1 | 1 | 1 | 2 | 1 | yes | no | 0 | no | yes | no | `Spec` |
+| `ledger_small`, `w_MateDelaysRollback` | 3 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 2 | no | no | 0 | no | yes | yes | `Spec` |
+| `w_RingGatherBelowTrim` | 3 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 2 | yes | no | 0 | no | yes | no | `Spec` |
+| `ledger_overlap`, `nc_retire_chunk_bytes_overlap`, `nc_ungated_rollback`, `nc_settle_before_publish` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 1 | 2 | no | no | 0 | no | yes | no | `Spec` |
+| `cache`, `nc_warm_install_from_plan`, `w_WarmBridgeCovers`, `w_InstallStartsAbovePlan` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 1 | yes | yes | 1 | no | yes | no | `Spec` |
+| `cache_cap2` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 2 | yes | yes | 1 | no | yes | no | `Spec` |
+| `pages` | 4 | 2 | 2 | 0 | 1 | 2 | 1 | 0 | 2 | yes | no | 0 | yes | no | no | `Spec` |
+| `pages_regather` | 3 | 2 | 2 | 1 | 0 | 1 | 0 | 0 | 2 | yes | no | 0 | yes | yes | no | `Spec` |
+| `probe_scan_per_row` (every record under K1) | 3 | 2 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | no | no | 0 | yes | yes | no | `Spec` |
+| `w_OverlapAdmittedRefusedChain`, `…Prune`, `…NewOwner` | 3 | 2 | 2 | 0, 0, 1 | 0 | 1, 0, 0 | 0 | 0 | 2 | no | no | 0 | yes | no, yes, no | no | `Spec` |
+| `liveness`, `nc_retire_chunk_bytes_liveness` | 3 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 2 | no | no | 0 | no | yes | no | `LiveSpec` |
+| `liveness_refusal`, `nc_no_plan_rollback` | 3 | 2 | 2 | 0 | 0 | 1 | 1 | 0 | 2 | no | no | 0 | no | yes | no | `LiveSpec` |
 
-`recount` and `liveness_refusal` hold one applied-not-durable group and
-have no prune, and `liveness_refusal` holds one queued batch, to keep the
-four-record and liveness searches tractable. An earlier version of this
-model kept landed receipts until the settle. On that version, `recount` with
-two groups and the prune passed 9 million distinct states without
-finishing, and `liveness_refusal` with two queued batches ran its temporal
-check of 1,026,377 states for more than 20 minutes without finishing. The
-model now drops a landed receipt when it is answered. Settling a landed
-receipt never moves a mark, so this reduction is stuttering-equivalent, and
-it gives back exactly the earlier state counts of the shapes with no
-refusal (`ledger_overlap` 579,554, `cache_cap2` 4,234,784). The larger
-shapes were not re-measured on it.
-
-The `pages` shape has no crash, rescan or prune because each of them
-re-gathers from a stale boundary and overlaps pages (the
-`w_OverlapAdmitted*` witnesses), which would violate its `NoStraddledChunk`.
-`pages_regather` has them and checks `PagesAdmit` instead. `pages` has no
-dropped op because without the rescan a dropped op strands the mark and
-absorption stops (a deadlock, not a property result).
+The state spaces are far smaller than the pre-merge model's (`small`
+5,254,914 distinct states against 31,506,682): the model no longer carries
+the lane's receipt sequence, the replay end or the rescan's two-step
+observation. So `liveness_refusal` now has two queued batches, two
+applied-not-durable groups and the prune, which the pre-merge model could
+not afford, and `pages` has a dropped op, which now heals through the
+rescan instead of deadlocking.
 
 `TrimBudgets` is the set of per-operation allowances that the shared
 `trim_global_budget` and `max_trim_per_op` can leave; 0 means exhausted.
@@ -1116,15 +1093,18 @@ failures, refusals, drops and appends are bounded. The `liveness` shape has
 none of the first four; `liveness_refusal` has one refused group or one
 dropped op. Fairness is on actor attempts, never on a success outcome:
 `WF` on `WalDurable`, `Dispatch`, `AbsorberRead`, `AbsorberReadEnd`,
-`AbsorberStage`, the flush attempt, `RescanRollback` and `ReaderRelease`.
-`SF` applies to `AbsorberSettle` and `AbsorberPlan`: each tick settles and
-then gathers pending streams after at most one dirty-index page, so rescans,
-which disable both between their two steps, cannot starve them. A
-weakly fair settle let a rescan loop keep a refused receipt unsettled forever,
-a model artefact. `SF` also applies to `AbsorberSubmit`, to the committer's
-handling of a message (`CommitAbsorbed ∨ CommitRefuseGroup ∨ CommitDropOne`),
-to `TrimStep` and to `RescanObserve`, which are only intermittently enabled.
-No fairness on appends, crashes, prunes, evictions or loads.
+`AbsorberStage`, the flush attempt, `RescanSeed` and `ReaderRelease`; `SF`
+on `AbsorberPlan`, `AbsorberSubmit`, the committer's handling of a message
+(`CommitAbsorbed ∨ CommitRefuseGroup ∨ CommitDropOne`) and `TrimStep`, which
+are only intermittently enabled. No fairness on appends, crashes, prunes,
+the bucket mate, evictions or loads; the liveness shapes have no bucket
+mate, because a mate that stays busy forever would hold the rollback back
+forever. The rescan's fairness is load-bearing: a refused advance leaves a
+quiet stream out of the roster with its mark stranded above the boundary,
+and only the rescan re-pends it. A scratch run of `liveness_refusal` without
+`WF(RescanSeed)` violates `AbsorptionCompletes` (14,317 distinct states);
+in production the heal waits for the next rescan, up to 120 ticks (about 10
+minutes at the 5 s tick).
 
 ### Negative controls
 
@@ -1137,13 +1117,14 @@ No fairness on appends, crashes, prunes, evictions or loads.
 | `nc_tick_trim_to_absorbed` | `TickTrimTarget <- MutTickTrimToAbsorbed` | `StaleReaderRangeIntact` | The trim tick's `trim_safe_to` guard is load-bearing. |
 | `nc_lastcopy_publish_before_flush` | `SubmitReady <- MutSubmitBeforeFlush` | `LastRecoverableCopy` | The advance trims rows whose history copy is only in the memtable; a crash loses the last copy. |
 | `nc_lastcopy_trim_past_absorbed` | `TickTrimTarget <- MutTickTrimToNext` | `LastRecoverableCopy` | Rows history does not hold are deleted. |
-| `nc_retire_chunk_bytes` | `RetireBytes <- MutRetireChunkBytes` (pre-fix F1) | `LedgerExact` | A refused advance and a re-plan from the raised mark under-retire. |
-| `nc_retire_chunk_bytes_overlap` | `RetireBytes <- MutRetireChunkBytes` | `LedgerExact` | A stale re-plan over a queued chunk over-retires, with no lost publication. |
-| `nc_retire_chunk_bytes_liveness` | `RetireBytes <- MutRetireChunkBytes` | `AbsorptionCompletes` | After an over-retirement every advance to `next` is refused. |
-| `nc_warm_install_from_plan` | `WarmInstallFrom <- MutWarmInstallFromPlan` (pre-fix F3) | `CacheNeverProvesFalseAbsence` | A stale re-gather over a trimmed head gives an evicted key a slice that proves a durable record absent. |
-| `nc_no_settle` | `SettleRollsBack <- MutSettleNeverRollsBack` (pre-fix receipts, before `d9aeaef`) | `SettledMarkAtBoundary` | The absorber never learns of a refused group, so its mark stays above the boundary and the next advance recounts the refused chunk. |
-| `nc_replay_unbounded` | `PlanUpto <- MutPlanUptoIgnoresReplay`: the replay reads to the durable end | `NoStraddledChunk` | A refused chunk's replay re-gathers past its end, over the pages a failed flush left above it (the reason for `replay_to`). |
-| `probe_scan_per_row` | `ScanView <- MutScanPerRow`: the Remote scan reads the trim point row by row instead of one snapshot (ASM-SLATEDB-DURABLE (j)) | `PagesAdmit` | A trim landing mid-scan drops a row from the middle of a stale re-gather's chunk, whose page then disagrees with the earlier page of that row, and the reader refuses the key's index. The admission of overlapping pages rests on dense chunks. |
+| `nc_retire_chunk_bytes` | `Retires <- MutRetireIgnoringFrom`: `retire_absorbed` ignores `from` (pre-fix F1; slate's planted control for `9c6675d7`) | `LedgerExact` | A refused advance and a re-plan from the raised mark under-retire. |
+| `nc_retire_chunk_bytes_overlap` | `Retires <- MutRetireIgnoringFrom` | `LedgerExact` | A re-gather after the ungated prune starts below a queued chunk and over-retires, with no lost publication. |
+| `nc_retire_chunk_bytes_liveness` | `Retires <- MutRetireIgnoringFrom` | `AbsorptionCompletes` | After an over-retirement every advance to `next` is Diverged and its group refused. |
+| `nc_warm_install_from_plan` | `WarmInstallFrom <- MutWarmInstallFromPlan`: slate's install from `plan.from` (pre-fix F3) | `CacheNeverProvesFalseAbsence` | A re-gather after the ungated prune, over a head trimmed after its plan, gives an evicted key a slice that proves a durable record absent. |
+| `nc_ungated_rollback` | `RollbackGate <- MutRollbackUngated`: the plan rolls a mark back whether or not the bucket is settled (the pre-`b5751e75` rescan rule; slate's planted control) | `DetachedOnlyAfterFault` | With no fault at all, the re-gather starts under the queued advance, which lands first, and the committer drops the re-gather as Detached (its pages overlap). |
+| `nc_settle_before_publish` | `HeldPastWal <- MutSettleAtWal`: a group's receipts settle once it is remote-durable, before dispatch publishes its tails | `NoRegatherUnderInFlight` | The plan sees the bucket settled while `P.abs` still lags the durable boundary, rolls the mark back and re-gathers below the applied boundary. This is the order `882004d9` says no test isolates. |
+| `nc_no_plan_rollback` | `RollbackGate <- MutRollbackNever` (slate's planted "rollback removed") | `AbsorptionCompletes` | Now that the rescan only seeds work, nothing else heals a stranded mark. In the counterexample a dropped op leaves the mark at 2 over boundary 0; every later plan starts at the mark and finds no work, and the rescan re-pends the stream forever (with new data the gather would be Detached instead). |
+| `probe_scan_per_row` | `ScanView <- MutScanPerRow`: the Remote scan reads the trim point row by row instead of one snapshot (ASM-SLATEDB-DURABLE (j)) | `PagesAdmit` | After the ungated prune, a stale re-gather reads row 0; the three queued advances land and trim row 1; the scan stages `{0, 2}`, whose first-0 page disagrees with row 1's page, and the index is refused. The admission rests on dense chunks. Re-evaluated for the merge: the gated rollback never re-gathers while an advance can land, so the probe now needs the prune and three queued batches. |
 
 `LastRecoverableCopy` cannot be broken by a trim mutation that stays within
 the absorbed boundary, because H3 then guarantees the history copy. Its two
@@ -1159,36 +1140,32 @@ controls attack H3's ordering or the absorbed ceiling instead.
 | `FlushFailRecovered` | A failed or ambiguous history flush, then full absorption. |
 | `StaleDuplicateIgnored` | A stale or duplicate advance arrives and absorption still completes. |
 | `CrashRecovered` | A crash destroys in-flight work (a queued message, an applied-not-durable advance or a running gather), then full absorption. |
-| `GatherOverTrimmedPrefix` | A Remote-scan gather re-reads a range whose head is already trimmed. |
+| `GatherOverTrimmedPrefix` | A Remote-scan gather re-reads a range whose head is already trimmed (after the ungated prune). |
 | `StaleSnapshotLosesTail` | A snapshot more than one advance stale has part of its tail range trimmed (F2). |
 | `TwoAdvancesNotDurable` | Two advances are applied but not yet remotely durable. |
-| `MarkRolledBackInFlight` | The rescan rolls back a mark whose advance is still queued. |
-| `EvictedMarkPrunedInFlight` | A mark is pruned for an evictable handle while its advance is still queued. |
+| `EvictedMarkPrunedInFlight` | A mark is pruned for an evictable handle while its advance is still queued (the ungated prune, D6). |
 | `RingGatherBelowTrim` | A ring-served gather returns rows below the durable trim point. |
 | `WarmBridgeCovers` | A clean warm window extends a slice's proven coverage past its `indexed_to_offset`. |
-| `MisStartedAdvanceCompletes` | An advance whose chunk did not start at the boundary retires the stored bytes, and absorption then completes (the F1 fix path). |
 | `InstallStartsAbovePlan` | A re-gather whose scan skipped a trimmed head warms the cache over the rows it staged, a range starting above `plan.from` (the F3 fix path). |
-| `RefusalReplayed` | A refused chunk is rolled back and replayed from the boundary; every advance starts at the boundary (no recount) and absorption completes. |
-| `LateRefusalRecount` | A refusal settled after the stream's next chunk was planned leaves the mark raised; that chunk's advance starts above the boundary and recounts the refused chunk with its own. |
-| `RecountBeyondInFlight` | Two consecutive late refusals: an advance recounts 3 chunks, more than the 2 in flight at either refusal (TLA-016-F4). |
-| `OverlapAdmittedRescan`, `OverlapAdmittedPrune`, `OverlapAdmittedNewOwner` | A re-gather from a stale boundary (after the rescan rollback, the eviction prune, or by a new owner) writes a page that overlaps an earlier chunk's; the reader admits the key's pages and absorption completes (`d16559b3`). |
+| `RefusalHealed` | A refused advance strands the mark; the settled plan rolls it back and absorption completes. |
+| `MateDelaysRollback` | A plan keeps a stranded mark only because a bucket-sharing stream has an advance in flight, and absorption still completes. |
+| `OverlapAdmittedRefusedChain`, `OverlapAdmittedPrune`, `OverlapAdmittedNewOwner` | A re-gather over pages an earlier chunk wrote (after a refused chain, the ungated prune, or by a new owner) writes a page that overlaps that chunk's; the reader admits the key's pages and absorption completes (`d16559b3`). |
 
 ### Exclusions and what is not claimed
 
 - One stream, 3 offsets and equal-size records. Multi-stream `AbsorbedBatch`
   coalescing and the global trim budget appear only as the nondeterministic
-  per-operation allowance. Cross-stream effects (the shard maintenance row,
-  other streams' operations in a refused group) are inferred from code, not
+  per-operation allowance. The other streams of a settlement bucket are the
+  `mateBusy` toggle. Cross-stream effects (the shard maintenance row, other
+  streams' operations in a refused group) are inferred from code, not
   modelled.
-- The pending roster, due and threshold selection, pacing, budget deferral
-  and the v1/v2 lane seal are not modelled. The absorber may gather whenever
-  there is published unabsorbed data, which over-approximates scheduling.
-  In particular settling does not re-pend a stream, and the prune ignores
-  `pending`. Discovery liveness is TLA-017.
-- Time is not modelled: the tick, and how far the committer lags it, are
-  free. So a refusal may be settled before or after the stream's next chunk
-  is planned (a late refusal) as often as refusals allow. Production needs a
-  committer lagging at least one tick for the late case (TLA-016-F4).
+- The pending roster is one flag. Due and threshold selection, backoff,
+  pacing, budget deferral, `check_postings`' own-chunk refusal and the
+  v1/v2 lane seal are not modelled. Signals are never dropped (the rescan
+  covers a dropped signal). Discovery liveness is TLA-017.
+- Time is not modelled: the tick, the rescan cadence and how far the
+  committer lags are free. The liveness result says a refused quiet stream
+  heals eventually, not how soon.
 - The committer handles one batch per group. Coalescing several batches
   into one group, which refuses or lands them together, is approximated by
   consecutive single-batch groups with the same outcome, reachable only
@@ -1197,10 +1174,14 @@ controls attack H3's ordering or the absorbed ceiling instead.
   With `Pages`, a page is its key, first offset and offsets
   (ASM-HISTORY-PAGES). The reader is the admission predicate over each key's
   pages in the store. The cold load's own read, its caps and the envelope
-  fallback are not modelled. The cache's admission line, capped
-  loads, loads merging into a resident slice, the warm-record cap and idle
-  expiry, and failed seams are not modelled. The cache-bridge defect found during the F3 fix lived in
-  that gap.
+  fallback are not modelled. `keep_past`'s admission of an agreeing
+  duplicate page inside one chunk (`check_postings`) is not modelled. The
+  cache's admission line, capped loads, loads merging into a resident
+  slice, the warm-record cap and idle expiry, and failed seams are not
+  modelled. The cache-bridge defect found during the F3 fix lived in that
+  gap.
+- The plan's gate is one atomic step with the published-boundary read
+  (ASM-HISTORY-SETTLEMENT); memory orderings are not modelled.
 - SlateDB behaviour is assumed (ASM-SLATEDB-DURABLE), not verified.
 
 ---
@@ -1677,7 +1658,7 @@ adds a state.
 
 | Model | Configurations | Actions | Actions that added no state |
 |---|---|---|---|
-| HistoryAbsorb | `small` (31,506,682 states), `cache_cap2` (4,234,784), `pages_regather` (1,103,474), on the model with batch receipts (`d9aeaef`) and pages | 25 | none across the three runs; `small` has no cache actions, `cache_cap2` no crash, flush failure, refusal, drop or reader, `pages_regather` no cache, flush failure, refusal, drop or reader; `AbsorberSettle` fires only where a group is refused, so only in `small` |
+| HistoryAbsorb | `small` (5,254,914 states), `ledger_small` (19,579,296, with the bucket mate), `cache_cap2` (1,231,603), `pages_regather` (945,441), on the model reworked for the merge `3a24eace` | 23 | none across the four runs; `small` has no cache actions and no bucket mate, `ledger_small` no cache actions, `cache_cap2` no crash, flush failure, refusal, drop, reader or mate, `pages_regather` no cache, flush failure, drop, reader or mate. Within `CommitAbsorbed` the Detached branch fires (276,692 times in `small`); the Diverged branch never does, as `LedgerExact` implies, and fires only under the `Retires` mutation |
 | ReadCompose | `durable_keyed_small` (12,482,967, before the TLA-018-F3 fix), `applied_unfiltered_expanded` (19,384,259, rerun after the fix) | 17 | `WLosePostings`, `WLoseCanonical`: probe-only actions, disabled in every baseline; they fire in the probes' counterexamples. `RResync` (new) adds 12,884 distinct states in `applied_unfiltered_expanded` |
 | ReachGC | `small` (3,938,288), `expanded` (27,990,301) | 18 | none across the two runs; `small` has no user checkpoint (`CkCreate`, `CkRelease`) |
 | ForkPin | `baseline` (3,374,329), `liveness_backfill` (564,266), both after the TLA-019-F4 fix | 16 | none across the two runs; `baseline` has no `Rollout`, `Backfill` or `BackfillFinish` (the index predates every delete), which `liveness_backfill` covers |
@@ -1702,10 +1683,9 @@ The action counts exclude `Init` and `Terminated`.
 
 | Evidence trace | Finding | Recorded on |
 |---|---|---|
-| `TLA-016_ledger_under_retire.trace.txt`, `TLA-016_ledger_over_retire.trace.txt`, `TLA-016_liveness_stall.trace.txt` | TLA-016-F1 | the pre-fix model (labelled) |
-| `TLA-016_cache_false_absence.trace.txt` | TLA-016-F3 | the pre-fix model (labelled) |
-| `TLA-016_recount_beyond_in_flight.trace.txt` | TLA-016-F4 | the current model: the driver log of `witness-RecountBeyondInFlight` |
-| `TLA-016_overlap_admitted_rescan.trace.txt`, `TLA-016_overlap_admitted_prune.trace.txt`, `TLA-016_overlap_admitted_new_owner.trace.txt` | overlapping postings pages (fixed by `d16559b3`) | the current model: the driver logs of `witness-OverlapAdmittedRescan`, `-Prune` and `-NewOwner` |
+| `TLA-016_ledger_under_retire.trace.txt`, `TLA-016_ledger_over_retire.trace.txt`, `TLA-016_liveness_stall.trace.txt` | TLA-016-F1 | the pre-fix, pre-merge model (labelled) |
+| `TLA-016_cache_false_absence.trace.txt` | TLA-016-F3 | the pre-fix, pre-merge model (labelled) |
+| `TLA-016_overlap_admitted_refused_chain.trace.txt`, `TLA-016_overlap_admitted_prune.trace.txt`, `TLA-016_overlap_admitted_new_owner.trace.txt` | overlapping postings pages (fixed by `d16559b3`; they still arise) | the current model: the driver logs of `witness-OverlapAdmittedRefusedChain`, `-Prune` and `-NewOwner` |
 | `TLA-018_applied_keyed_skip.trace.txt` | TLA-018-F1 | the pre-fix model (labelled) |
 | `TLA-018_applied_stale_cursor.trace.txt` | TLA-018-F3 | the pre-fix model (labelled): the driver log of the former `known-defect-stale-applied-cursor` |
 | `TLA-019_reader_view_deleted.trace.txt` | TLA-019-F1 (withdrawn) | the model without the compactor checkpoint (labelled) |

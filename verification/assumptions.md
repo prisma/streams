@@ -510,7 +510,11 @@ actions to these contracts.
   `FORK_DEBT_SWEEP_SECS`, 300 s by default, and runs one backfill step per
   round until the one-time backfill records completion). Their attempts are
   fairly scheduled in the liveness checks; for the reconciler that is weak
-  fairness per marker and per backfill step (`ReconcilerFairness`). A
+  fairness per marker and per backfill step (`ReconcilerFairness`). In
+  TLA-016 the rescan's fairness is load-bearing: since `b5751e75` it only
+  seeds the pending roster, and it is the only step that re-pends a quiet
+  stream whose advance was refused or dropped, so such a stream heals within
+  one rescan period (about 10 minutes at the default tick). A
   fork-reference debt on a child tombstone is repaid by the reconciler
   (`repair_tombstone`, or a release from the marker when the child's name
   was recreated), or when a client issues `DELETE` for that child again.
@@ -598,24 +602,66 @@ actions to these contracts.
 ### ASM-HISTORY-EVICTION
 
 - **Scope:** TLA-016 (`MarkPrune`).
-- **Statement:** `evict_idle_handles` evicts only a handle that nothing but
+- **Statement:** The sweep's `submitted.retain` (`src/history/worker.rs`)
+  keeps a lane mark while the stream is pending or its resident handle's
+  published absorbed boundary trails the mark; it is not gated on the
+  stream's settlement receipts (slate's decision D6), so a non-resident
+  handle's mark can be pruned while its advance is queued.
+  `evict_idle_handles` evicts only a handle that nothing but
   the map references. Committer batches, dispatch, ring publication, readers
   and waiters hold clones; a queued `AbsorbedBatch` holds none. A reloaded
   handle reads the Memory-level tail row for both `durable` and `applied`.
 - **Origin:** `ShardEngine::evict_idle_handles` and
-  `ShardEngine::stream_handle` (`src/shard.rs`).
-- **Invalidation:** a change to handle ownership or to the reload path.
+  `ShardEngine::stream_handle` (`src/shard.rs`); the sweep in
+  `Absorber::run` (`src/history/worker.rs`).
+- **Invalidation:** a change to handle ownership or to the reload path; a
+  prune gated on settlement (then `NoRegatherUnderInFlight` would hold
+  without its prune antecedent).
 - **Standing:** established by code reading; that dispatch holds a clone
   until publication rests on the function's documentation.
 
+### ASM-HISTORY-SETTLEMENT
+
+- **Scope:** TLA-016 (`AbsorberPlan`, `WalDurable`, `Dispatch`;
+  `NoRegatherUnderInFlight`).
+- **Statement:** A submitted advance's receipt (`SubmitReceipt`) drops only
+  once the advance can no longer move or publish a boundary: at staging for
+  a Detached, Diverged, duplicate, cross-layout or dropped advance, with a
+  refused or retired group, or, for an Exact advance, when
+  `dispatch_durable` drops the group at the end of its loop iteration,
+  after it has published that group's tails. The drop is a Release
+  `fetch_sub` and `Submissions::settled` an Acquire load, and only the
+  absorber task submits, so a plan that reads its stream's bucket at zero
+  also reads every boundary published before the last receipt dropped, and
+  the bucket stays at zero until that task submits again. The model
+  therefore takes the gate, the published-boundary read and the rollback
+  as one step.
+- **Origin:** `Submissions`, `SubmitReceipt`, `CopiedBytes` and
+  `DurableEffects::receipts` (`src/shard/commit_plan.rs`);
+  `advance_boundary` (`src/shard/transaction/maintenance.rs`);
+  `ShardEngine::dispatch_durable` (`src/shard.rs`); `plan_reads`
+  (`src/history/gather.rs`); `b5751e75`, residuals in `882004d9`.
+- **Enforcement / evidence:** `shard::maintenance_tests::a_receipted_advance_settles_only_after_its_group_is_durable`
+  and `a_refused_advance_settles_with_its_group`,
+  `shard::commit_plan::tests::a_stream_settles_when_its_last_receipt_drops`,
+  and the Loom models in `src/shard/commit_plan/loom_tests.rs`. `882004d9`
+  records that no test isolates the drop after the tails and that the Loom
+  models also pass with Relaxed orderings. `nc-settle-before-publish` shows
+  the order is load-bearing: receipts that settle at WAL durability let a
+  plan re-gather below the applied boundary.
+- **Invalidation:** a receipt dropped before its group's tails are
+  published (for example effects split across tasks); a second task that
+  submits advances; weaker orderings without the durable mutex's ordering.
+- **Standing:** established by code reading; the drop order is pinned by
+  no single test.
+
 ### ASM-HISTORY-PAGES
 
-- **Scope:** TLA-016 (`Pages`: `NoStraddledChunk`, `PagesAdmit`,
-  `Witness_OverlapAdmitted`).
+- **Scope:** TLA-016 (`Pages`: `PagesAdmit`, `Witness_OverlapAdmitted`).
 - **Statement:** A gathered chunk writes one postings page per routing key
   it carries, listing that key's offsets among the rows it staged. The page
   is keyed by (route, incarnation, key hash, bucket, first offset)
-  (`stage_postings`, `postings_key`), so a later page with the same key and
+  (`stage_checked`, `postings_key`), so a later page with the same key and
   first offset replaces it, and pages of different first offsets coexist.
   The model abstracts a page to (key, first offset, offsets); page encoding,
   buckets and the 32 KiB page split are not modelled. The page's span runs
@@ -626,8 +672,9 @@ actions to these contracts.
   exactly the accumulated offsets over the common span. It keeps only the
   part past that end; any disagreement refuses the key's whole index
   (POSTINGS_CORRUPT).
-- **Origin:** `stage_rows` and `stage_postings` (`src/history/gather.rs`);
-  `append_page_runs` and `keep_past` (`src/postings.rs`, d16559b3).
+- **Origin:** `note_frames`, `check_postings` and `stage_checked`
+  (`src/history/gather.rs`); `append_page_runs` and `keep_past`
+  (`src/postings.rs`, d16559b3).
 - **Invalidation:** a page key or split that depends on anything but the
   key, bucket and first offset; a page that omits a staged offset of its key
   inside its span; a change to the reader's admission of overlapping pages.

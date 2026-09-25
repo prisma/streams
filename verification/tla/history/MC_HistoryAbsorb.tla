@@ -11,8 +11,8 @@ EXTENDS HistoryAbsorb
 \* records 0 and 1 belong to K1, record 2 to K2.
 MCKeys == {"K1", "K2"}
 MCKeyOf == [o \in 0..2 |-> IF o = 2 THEN "K2" ELSE "K1"]
-\* The same map over four offsets (the N = 4 shapes: recount, pages and the
-\* recount witness): record 3 belongs to K1.
+\* The same map over four offsets (the N = 4 page shape): record 3 belongs
+\* to K1.
 MCKeyOf4 == [o \in 0..3 |-> IF o = 2 THEN "K2" ELSE "K1"]
 \* Every record under one key (the scan-snapshot probe): a page then spans
 \* every row between its first and last offset.
@@ -22,8 +22,8 @@ MCKeyOfOne == [o \in 0..2 |-> "K1"]
 \* rows are staged in the (WAL-less) partition memtable, before part.flush().
 MutSubmitBeforeFlush(a) == a.ph \in {"staged", "flushed"}
 
-\* NC canonical-only: stage_postings is dropped from the WriteBatch, so only
-\* canonical frames become durable for the advanced range.
+\* NC canonical-only: the postings pages are dropped from the WriteBatch, so
+\* only canonical frames become durable for the advanced range.
 MutPostingsNotWritten(h, S) == h
 
 \* NC trim-to-proposed: the advancing op trims toward the newly proposed
@@ -43,27 +43,32 @@ MutTickTrimToNext(t) == t.next
 \* a duplicate Absorbed op raises trim_safe_to to the LIVE boundary.
 MutSafeRaisedOnDuplicate == TRUE
 
-\* NC pre-fix TLA-016-F1 (before "An absorption advance retires exactly the
-\* bytes of the range it moves the boundary over"): the committer retires
-\* the byte count of the gather's chunk [from, upto), whatever range it
-\* actually moves the boundary over.
-MutRetireChunkBytes(m, prev, newAbs) == m.b
+\* NC pre-fix TLA-016-F1 (slate's planted control for 9c6675d7,
+\* `if copied.from != tail.absorbed && false`): retire_absorbed ignores
+\* `from`, so every advancing op retires its chunk's byte count from the
+\* boundary, whatever range it moves the boundary over.
+MutRetireIgnoringFrom(m, prev) == TRUE
 
 \* NC pre-fix TLA-016-F3 (before the fix that names the warm install by the
 \* rows the gather staged): the install claims coverage from plan.from,
 \* whatever the scan returned.
 MutWarmInstallFromPlan(a) == a.from
 
-\* NC pre-fix receipts (before "A refused absorption group rolls its lane
-\* marks back, so a recount covers only chunks in flight"): the absorber
-\* never learns that a group was refused, so settling rolls no mark back;
-\* only the dirty-index rescan heals it.
-MutSettleNeverRollsBack == FALSE
+\* NC ungated rollback (slate's planted control for b5751e75, the plan_reads
+\* gate replaced by `true`; the pre-fix rescan rule): a stranded-looking
+\* mark is rolled back even while an advance of the stream is in flight.
+MutRollbackUngated == TRUE
 
-\* NC replay-unbounded: plan_read ignores replay_to, so the replay of a
-\* refused chunk re-reads up to the durable end and can straddle pages a
-\* failed (ambiguous) flush already wrote above the refused chunk's end.
-MutPlanUptoIgnoresReplay(m, from, next) == next
+\* NC no plan rollback (slate's planted control "plan_reads rollback
+\* removed"): nothing rolls a stranded mark back, now that the rescan only
+\* seeds work.
+MutRollbackNever == FALSE
+
+\* NC settle-before-publish: a group's receipts settle once it is remote-
+\* durable instead of after dispatch_durable has published its tails (the
+\* order 882004d9 records as resting on the drop at the end of the dispatch
+\* loop's iteration).
+MutSettleAtWal(h) == FALSE
 
 \* PROBE scan-per-row (dependency contract ASM-SLATEDB-DURABLE (j)): the
 \* Remote scan observes the trim point row by row instead of reading the
