@@ -133,3 +133,66 @@ fn a_typed_refusal_is_relayed_and_an_untyped_answer_keeps_its_transport_class() 
         assert_eq!(format!("{:?}", peer_refusal(status, body)), class);
     }
 }
+
+/// A relayed page's continuation recovers at the page's own durable
+/// position and fits its next position; an owner's page that breaks either
+/// is malformed, whatever the other says.
+#[test]
+fn a_relayed_continuation_recovers_at_the_page_durable_position_and_fits_next() {
+    use crate::application::read::{
+        Continuation, ReadCommand, ReadMode, ReadPosition, ReadResultKind, ReadStart,
+    };
+    let descriptor = crate::sse::feed::tests::test_desc("relayed-continuation");
+    let segment = descriptor.resolve_segment("").seg_id;
+    let at = |after| ReadPosition { segment, after };
+    let command = ReadCommand {
+        descriptor: descriptor.clone(),
+        key: None,
+        start: ReadStart::Beginning,
+        selector: None,
+        mode: ReadMode::Replay,
+        visibility: crate::shard::Deliver::Applied,
+        max_bytes: 4096,
+        tail_max_bytes: 4096,
+        allow_remote: true,
+        refresh: false,
+    };
+    // A page ending at `next` with durable position 1 whose continuation
+    // recovers at `recover`.
+    let page = |recover: u64, next: u64| WireReadPage {
+        epoch: descriptor.stream_epoch.clone(),
+        records: Vec::new(),
+        next: at(next),
+        durable: Some(at(1)),
+        continuation: WireContinuation::Continues(Continuation::from_parts(
+            [1; 16], recover, recover, [0; 16],
+        )),
+        pending_from: None,
+        up_to_date: true,
+        closed: false,
+        kind: ReadResultKind::Data,
+        segmented: false,
+        identity: [0; 16],
+        scan_from: 0,
+        end: next,
+    };
+    let relayed = page(1, 3)
+        .into_outcome(&command, segment)
+        .unwrap_or_else(|error| panic!("a consistent continuation: {error:?}"));
+    assert_eq!(
+        relayed.continuation,
+        Some(Continuation::from_parts([1; 16], 1, 1, [0; 16]))
+    );
+    for (recover, next, why) in [
+        (0, 3, "it recovers below the page's durable position"),
+        (1, 1, "it does not fit the page's next position"),
+    ] {
+        assert!(
+            matches!(
+                page(recover, next).into_outcome(&command, segment),
+                Err(RemoteSpanError::InvalidResponse(_))
+            ),
+            "{why}"
+        );
+    }
+}

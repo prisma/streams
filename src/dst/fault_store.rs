@@ -177,6 +177,9 @@ struct FaultState {
     /// Per-class GETs (in flight now, most ever in flight at once): how a
     /// scenario proves a reader fetches concurrently.
     gets_in_flight: Mutex<HashMap<ObjClass, (u64, u64)>>,
+    /// Per-class largest bounded GET, in bytes: how a scenario proves a
+    /// reader fetches ahead in windows of the size it configured.
+    largest_gets: Mutex<HashMap<ObjClass, u64>>,
     hold: Mutex<Option<Hold>>,
     coverage: Arc<Coverage>,
     injected_latency: AtomicU64,
@@ -350,6 +353,7 @@ impl FaultStore {
                 occurrences: Mutex::new(HashMap::new()),
                 op_counts: Mutex::new(HashMap::new()),
                 gets_in_flight: Mutex::new(HashMap::new()),
+                largest_gets: Mutex::new(HashMap::new()),
                 hold: Mutex::new(None),
                 coverage: Arc::new(Coverage::default()),
                 injected_latency: AtomicU64::new(0),
@@ -389,6 +393,17 @@ impl FaultStore {
             .unwrap()
             .get(&class)
             .map_or(0, |flight| flight.1)
+    }
+
+    /// The largest bounded GET of one class so far, in bytes.
+    pub(crate) fn largest_get(&self, class: ObjClass) -> u64 {
+        self.st
+            .largest_gets
+            .lock()
+            .unwrap()
+            .get(&class)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Operations of one (verb, class) so far — the protocol-cost ledger.
@@ -492,7 +507,13 @@ impl ObjectStore for FaultStore {
         // content. A store that returns wrong bytes is outside the
         // object-store contract, and simulating one would test a system we
         // do not have and cannot ship against.
-        let _flight = GetInFlight::enter(&self.st, ObjClass::of(location.as_ref()));
+        let class = ObjClass::of(location.as_ref());
+        if let Some(object_store::GetRange::Bounded(range)) = &options.range {
+            let mut largest = self.st.largest_gets.lock().unwrap();
+            let entry = largest.entry(class).or_insert(0);
+            *entry = (*entry).max(range.end.saturating_sub(range.start));
+        }
+        let _flight = GetInFlight::enter(&self.st, class);
         let lose = self.st.gate(StoreOp::Get, location.as_ref()).await?;
         let res = self.inner.get_opts(location, options).await;
         if lose && res.is_ok() {

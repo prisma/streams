@@ -357,6 +357,24 @@ mod tests {
     }
 
     #[test]
+    fn records_from_the_continued_position_on_are_not_part_of_the_observation() {
+        // The client observed [1, 3); a verification page that also holds
+        // the records at and past 3 still proves exactly that.
+        let claim = Continuation::after_page(
+            None,
+            0,
+            &batch(&[(0, "a"), (1, "b"), (2, "c")]),
+            at(3),
+            at(1),
+            H1,
+            &key(),
+        )
+        .unwrap();
+        let wider = page(&[(1, "b"), (2, "c"), (3, "d"), (4, "e")], 5, true);
+        assert!(claim.observed_in(&wider, 3, &key()));
+    }
+
+    #[test]
     fn a_session_started_at_the_applied_tail_cannot_be_verified() {
         // "now" at applied tail 4 with durable frontier 2: offsets [2, 4)
         // were never observed, so another history can never prove them.

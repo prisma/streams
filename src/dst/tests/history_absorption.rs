@@ -647,7 +647,9 @@ async fn misaligned_absorbed_chunk_retires_stored_bytes_or_refuses_the_group() {
 /// the gather did. Over 6,144 stored records (~1,600 blocks) with no block
 /// cache and 10 ms per SST read, it issues a handful of requests, several
 /// in flight at once, where one block per request would be ~1,600 reads in
-/// series. An aligned advance reads nothing.
+/// series. Like the gather, it reads ahead in 2 MiB windows: the stored
+/// range splits into as many equal requests as it has 2 MiB windows. An
+/// aligned advance reads nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() {
     let slow_sst_reads = FaultPlan {
@@ -717,6 +719,10 @@ async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() 
     // The last record's chunk at boundary 0: the committer recounts all of
     // [0, 6144) at its read level.
     let next = 24 * 256;
+    let stored = durable_tail(&engine, lagging, 1, |_| true)
+        .await
+        .unwrap()
+        .unabsorbed_bytes;
     let before = sst_reads();
     engine
         .submit_absorbed_batch_v2(vec![(lagging, next - 1, next, 1)])
@@ -733,6 +739,13 @@ async fn mis_started_recount_reads_ahead_and_an_aligned_advance_reads_nothing() 
     assert!(
         reads <= 32,
         "the recount read one block per request: {reads} SST reads"
+    );
+    let window = stored.div_ceil(stored.div_ceil(2 << 20));
+    assert!(
+        store.largest_get(ObjClass::Sst) >= window,
+        "the recount read ahead less than 2 MiB at a time: its largest SST read \
+         was {} bytes of a {window}-byte window",
+        store.largest_get(ObjClass::Sst)
     );
     assert!(
         store.peak_gets_in_flight(ObjClass::Sst) >= 2,

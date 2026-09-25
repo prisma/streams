@@ -86,9 +86,19 @@ async fn raw_read(
     continuation: Option<&str>,
     page: bool,
 ) -> (u16, Headers, serde_json::Value) {
-    let target = InternalTarget::of(desc, desc.resolve_segment("").seg_id)
-        .unwrap()
-        .headers();
+    let target = InternalTarget::of(desc, desc.resolve_segment("").seg_id).unwrap();
+    raw_read_at(addr, &target, offset, continuation, page).await
+}
+
+/// [`raw_read`] addressed to one segment of `tp`.
+async fn raw_read_at(
+    addr: std::net::SocketAddr,
+    target: &InternalTarget,
+    offset: &str,
+    continuation: Option<&str>,
+    page: bool,
+) -> (u16, Headers, serde_json::Value) {
+    let target = target.headers();
     let mut headers = vec![
         ("authorization", "Bearer dst-internal-token"),
         ("stream-encryption-key", PRISMA_KEY),
@@ -646,4 +656,55 @@ async fn a_continuation_carries_across_provisional_pages_and_is_verified_over_bo
     let out = applied_read(&state2.read_service(), &desc, start, ReadMode::Replay).await;
     assert_eq!(offsets(&out), [3], "a continuation over a durable suffix");
     engine_shutdown(&state2).await;
+}
+
+/// A relayed continuation over offsets that hold other records than it
+/// digested: it names the unknown writer history, so the owner reads
+/// `[recover, at)` back and refuses it with the recovery position.
+fn replaced(recover: u64) -> String {
+    Continuation::from_parts([0; 16], recover, recover, [9; 16]).to_header()
+}
+
+/// A relayed continuation's refusal names its recovery position in the
+/// offset vocabulary of the stream: a plain offset while the stream has one
+/// segment, an epoch-qualified offset of the child once a split has given
+/// it a lineage. A continuation that cannot belong to the offset it
+/// arrives with is an invalid cursor, never a history check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary() {
+    let _serial = super::fixture_failpoints::gap_lock().lock().await;
+    let store: Arc<dyn ObjectStore> = mem();
+    let (state, addr) = stream_with_one_durable_record(&store, "").await;
+    for body in [br#"{"n":1}"#, br#"{"n":2}"#] {
+        assert_eq!(append(addr, "", body).await, 200);
+    }
+    let at = Offset::before(2).encode();
+    let desc = descriptor(&state).await;
+    let (status, _, body) = raw_read(addr, &desc, &at, Some(&replaced(2)), false).await;
+    assert_eq!(status, 400, "a continuation that does not fit: {body}");
+    assert_eq!(body["error"]["code"], "invalid_offset", "{body}");
+    let refused = async |desc: &crate::registry::StreamDesc, segment: u32, at: &str| {
+        let target = InternalTarget::of(desc, segment).unwrap();
+        let (status, headers, body) =
+            raw_read_at(addr, &target, at, Some(&replaced(1)), false).await;
+        assert_eq!(status, 409, "{body}");
+        assert_eq!(body["error"]["code"], "cursor_beyond_tail", "{body}");
+        headers["stream-durable-offset"].clone()
+    };
+    assert_eq!(refused(&desc, 0, &at).await, Offset::before(1).encode());
+
+    let sref = state.deployment.raw_adapter_sref("tp");
+    assert!(crate::scaler3::execute_split(&state, &sref, 0, 1 << 63).await);
+    for body in [br#"{"n":3}"#, br#"{"n":4}"#] {
+        assert_eq!(append(addr, "", body).await, 200);
+    }
+    let desc = descriptor(&state).await;
+    let child = desc.resolve_segment("").seg_id;
+    assert_ne!(child, 0, "the split moved the key to a child");
+    let at = crate::offsets::encode_ep(child, Offset::before(2));
+    assert_eq!(
+        refused(&desc, child, &at).await,
+        crate::offsets::encode_ep(child, Offset::before(1))
+    );
+    engine_shutdown(&state).await;
 }

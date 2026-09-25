@@ -953,6 +953,19 @@
     "scenarios": []
   },
   {
+    "name": "a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4a100336f6367fef5a8e169227e30ce92e892b2144589de2c5cf40616110049e",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
+    ],
+    "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_release_parked_across_recreation_cannot_touch_the_replacement",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3861,7 +3874,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "8a3ddb6a5af682a4578cbd309aaa05f084d670aad02af52b1756fb9cee6b5e62",
+    "function_sha256": "8c70c40172ddc2de90e6c3a55d5dc01afce356ce8f3e52009fe4f4b922844a2c",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN"
