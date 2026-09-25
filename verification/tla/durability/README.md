@@ -26,7 +26,22 @@ committer is a negative control.
 Nothing beyond the recorded constants, bounds, assumptions and exclusions is
 claimed. No TLC run proves that the Rust code refines these models. The bridge
 is the action-to-code tables below. Their file:line references were checked
-against commit ab73296.
+against commit ab73296 and updated to the merge of slate at `3a24eace`.
+
+**Merge of slate at `3a24eace` (no model change).** In the committer, the merge
+changed only the absorbed-advance path, which is TLA-016's. An
+`AbsorbedBatch` no longer carries a landing receipt. `CommitTransaction::absorbed`
+no longer reads the store. A group's `DurableEffects` holds the absorber's
+submission receipts and drops them with the group; they send no reply.
+Append, close and fence staging, publication, attachment, dispatch,
+retirement and `write_failed` are unchanged. `EngineShutdown::settle` and
+`ShardDirectory::shutdown` change only how a process stop reports a failed
+storage close. The rebalancer now moves a shard only to an active ring member.
+The eager move-in now opens a shard only when the published view names this
+node its owner. `ServingOwnership`'s `Move` already chooses the other of two
+ring members, and `OpenStart` already requires `IsMine`. Both changes
+therefore only remove behaviours the model never had. The open counters moved
+from process statics into each gate.
 
 ## 1. How to run
 
@@ -66,8 +81,8 @@ java -XX:+UseParallelGC -Xmx3g -cp ../../../target/quality-tools/tla2tools.jar t
 |---|---|---|
 | `PublicationOpen`, `Register` | `CommitHandoff::publication` (commit_handoff.rs:35-37), called by `CommitTransaction::publish` (publish.rs:17-103) | Held under the `ShardEngine::in_flight` std mutex through every applied-mirror update and the push; never across an await |
 | `AttachVerdict`, `AttachToNewest` | `CommitHandoff::attach` (commit_handoff.rs:39-52), called by `CommitTransaction::join_prior_barrier` (finalize.rs:45-60) | Under `in_flight`, with `dispatch_gate` held |
-| `TakeDurable`, `AfterTakeDurable` | `CommitHandoff::take_durable` (commit_handoff.rs:54-60), called by `ShardEngine::dispatch_durable` (shard.rs:3011) | Under `in_flight`, with `dispatch_gate` held for the whole dispatch |
-| `RetireStranded`, `RetireHandoff` | `CommitHandoff::retire` (commit_handoff.rs:62-68), called by `ShardEngine::begin_close` (shard.rs:1879-1885) | Under `in_flight`, together with the `closed` flag store |
+| `TakeDurable`, `AfterTakeDurable` | `CommitHandoff::take_durable` (commit_handoff.rs:54-60), called by `ShardEngine::dispatch_durable` (shard.rs:2954) | Under `in_flight`, with `dispatch_gate` held for the whole dispatch |
+| `RetireStranded`, `RetireHandoff` | `CommitHandoff::retire` (commit_handoff.rs:62-68), called by `ShardEngine::begin_close` (shard.rs:1859-1865) | Under `in_flight`, together with the `closed` flag store |
 
 Linearizability of the four methods under the mutex is Loom's claim
 (`src/shard/commit_handoff/loom_tests.rs`, ASM-DURABILITY-1), not TLC's.
@@ -135,7 +150,7 @@ restarts in between. The claim has these parts:
 **Requirement anchors.** DST-EXPANSION-SPEC §9.1: D1-D4 per verdict kind; D5,
 met only error-for-error for the direct replies of TLA-005-F4; D6, D7, D8 and
 D10; and W1's publication order, the tail-before-ack order in
-`dispatch_durable` (shard.rs:3020-3056).
+`dispatch_durable` (shard.rs:2963-2999).
 
 **Assumptions used.** ASM-SLATEDB-DURABLE (a)-(c), ASM-OBJSTORE-CAS,
 ASM-DURABILITY-1 to -4 and -7 to -9. The safety checks use no fairness.
@@ -159,7 +174,7 @@ ASM-DURABILITY-1 to -4 and -7 to -9. The safety checks use no fairness.
 | `X` | A plain append: record `x`, key `k2`, no producer |
 | `Y` | Producer `p` seq 0 with hash `hY` |
 | `S` | Y's retry |
-| `C` | A producer-less, empty `AppendFinish::Close` request. `try_enqueue` turns it into `CommitOp::Close` (shard.rs:1807-1820), staged by `CommitTransaction::close` (maintenance.rs:172-201). It closes by writing the tail, with no record. On a closed stream it is the idempotent no-write success |
+| `C` | A producer-less, empty `AppendFinish::Close` request. `try_enqueue` turns it into `CommitOp::Close` (shard.rs:1787-1800), staged by `CommitTransaction::close` (maintenance.rs:192-224). It closes by writing the tail, with no record. On a closed stream it is the idempotent no-write success |
 
 The committer drains any non-empty prefix of its channel into one group, then
 stages it in order against the applied mirror. A producer row missing from the
@@ -172,9 +187,9 @@ failed after apply. After that the load fails, and the request is answered
 
 | Model action | Production function(s) | Atomicity justification or dependency contract |
 |---|---|---|
-| `Issue(r)` | `ShardEngine::try_enqueue`, `try_command` (shard.rs:1804-1857); `application/append/submit.rs:79-85` | `try_command` checks `is_closed`, then `try_send`. A refusal is non-definitive. An op still in the channel when the committer exits is answered `Moved` (shard.rs:2472-2496) |
+| `Issue(r)` | `ShardEngine::try_enqueue`, `try_command` (shard.rs:1783-1837); `application/append/submit.rs:79-85` | `try_command` checks `is_closed`, then `try_send`. A refusal is non-definitive. An op still in the channel when the committer exits is answered `Moved` (shard.rs:2421-2445) |
 | `Deliver`, `LoseReply`, `GiveUp` | Client and transport; the `submit.rs` append deadline (submit.rs:86-93) | Response loss after dispatch; a client deadline with no server cancellation |
-| `CommitTake` | `committer_loop` (shard.rs:2467-2566); `CommitTransaction::run` and `stage` (mod.rs:50-189); `append` (append.rs:19-144); `decide_producer` (commit_plan.rs:88-143); `accept_append` (append.rs:145-245); `close` (maintenance.rs:172-201); `load_producer_chain` (shard.rs:2088-2100) | Committer-local: staging touches only the overlay and `DurableEffects` (ASM-DURABILITY-2). A closed engine rejects the whole group with `Moved` (mod.rs:52-57, shard.rs:2502-2509). A producer-row load reads the Db with default options. `DbRead` is the latest applied batch until `closed_result` is written. A failed load answers `Internal` directly. A `billing_rows` failure (mod.rs:58-67) answers the whole group `Internal` with no state change and is not modelled separately |
+| `CommitTake` | `committer_loop` (shard.rs:2416-2515); `CommitTransaction::run` and `stage` (mod.rs:47-186); `append` (append.rs:19-144); `decide_producer` (commit_plan.rs:92-147); `accept_append` (append.rs:145-245); `close` (maintenance.rs:192-224); `load_producer_chain` (shard.rs:2043-2055) | Committer-local: staging touches only the overlay and `DurableEffects` (ASM-DURABILITY-2). A closed engine rejects the whole group with `Moved` (mod.rs:53-58, shard.rs:2451-2458). A producer-row load reads the Db with default options. `DbRead` is the latest applied batch until `closed_result` is written. A failed load answers `Internal` directly. A `billing_rows` failure (mod.rs:59-68) answers the whole group `Internal` with no state change and is not modelled separately |
 | `CommitWriteOk` | `CommitTransaction::write` (finalize.rs:170-195): the one `db.write_with_options` | ASM-SLATEDB-DURABLE (a): the batch is applied, not durable |
 | `CommitWriteFail` | `write` -> `Err` -> `write_failed` (finalize.rs:196, 202-206) | ASM-DURABILITY-7, pre-apply: the Db is unchanged. `write_failed` calls `begin_close`, then rejects the group `Internal`, in one step with the stranded groups' `Moved` (see `WriteError`). Unbounded when the Db is closed or the batch writer has exited |
 | `CommitWriteFailApplied` | slatedb `DbInner::write_batch` (batch_write.rs:262-306): WAL buffer and memtable, then `track_recent_committed_write_batch` (:290), which makes the batch visible to default reads, then `maybe_freeze_current_memtable()?` (:306). `WriteBatchEventHandler::handle` answers `Err` (:134) before `run_lifecycle` writes `closed_result` (dispatcher.rs:358). Then `write_failed` (finalize.rs:202-206) | ASM-DURABILITY-7, post-apply. The batch writer exits (`writerDead`); reads stay open until `DbCloseResult`. The retirement is in the same step as the error. Between the error and `retire()` only dispatch claims of earlier durable groups and other retirements can interleave. They do not depend on the failed batch and are modelled as earlier steps. `WriteErrorRetires` is the mutation point |
@@ -182,9 +197,9 @@ failed after apply. After that the load fails, and the request is answered
 | `DbCloseResult` | `run_lifecycle` writes `closed_result` (dispatcher.rs:358) | A separate step, because it runs on the batch-writer task after the committer was answered |
 | `CommitPublish` | `CommitTransaction::publish` (publish.rs:17-103) | One step under `in_flight`. A terminal handoff rejects with `Moved` and publishes nothing (publish.rs:25-31) |
 | `CommitAttach` | `finish` -> `has_writes` false -> `join_prior_barrier` (finalize.rs:12-19, 45-60) | The gate, `attach` and the reply are one step. The gate excludes the dispatcher for the whole step, and a Durable verdict stays justified if retirement interleaves, because durability is monotone. TLA-006 splits this step |
-| `WalLand`, `WalReport`, `WalFail` | SlateDB WAL flush (the pump's `flush_with_options`, shard.rs:1554; SlateDB `flush_interval`), `DbStatus.durable_seq`, `close_reason` | ASM-SLATEDB-DURABLE (b)(c). Landing stops within the incarnation only when the WAL flusher is dead. `durable_seq` is not reported after the Db closed |
-| `BeginClose` | `ShardEngine::begin_close` (shard.rs:1876-1934), called from `acker_loop` on `close_reason` (shard.rs:3085-3089) or externally (`ShardDirectory::retire`, `RequiredExit`) | `retire()` runs under `in_flight`. The retirer alone owns the stranded groups and rejects them `Moved` (shard.rs:1917-1919). One step, because no other actor can reach the stranded vector |
-| `DispatchClaim`, `DispatchVisible`, `DispatchReply` | `dispatch_durable` (shard.rs:3006-3071): `take_durable` under the gate (:3011), then the ring publish (:3026) and `handle.state.durable` (:3046), then the acks (:3055) | The claim is one step under `in_flight`. Visibility and replies are separate steps, which is more permissive than production (ASM-DURABILITY-3). `ReplyPhases` is the mutation point of that order |
+| `WalLand`, `WalReport`, `WalFail` | SlateDB WAL flush (the pump's `flush_with_options`, shard.rs:1540; SlateDB `flush_interval`), `DbStatus.durable_seq`, `close_reason` | ASM-SLATEDB-DURABLE (b)(c). Landing stops within the incarnation only when the WAL flusher is dead. `durable_seq` is not reported after the Db closed |
+| `BeginClose` | `ShardEngine::begin_close` (shard.rs:1855-1913), called from `acker_loop` on `close_reason` (shard.rs:3028-3032) or externally (`ShardDirectory::retire`, `RequiredExit`) | `retire()` runs under `in_flight`. The retirer alone owns the stranded groups and rejects them `Moved` (shard.rs:1897-1899). One step, because no other actor can reach the stranded vector |
+| `DispatchClaim`, `DispatchVisible`, `DispatchReply` | `dispatch_durable` (shard.rs:2949-3014): `take_durable` under the gate (:2954), then the ring publish (:2969) and `handle.state.durable` (:2989), then the acks (:2998) | The claim is one step under `in_flight`. Visibility and replies are separate steps, which is more permissive than production (ASM-DURABILITY-3). `ReplyPhases` is the mutation point of that order |
 | `Restart` | A process crash, or a reopen after retirement: `Db::builder().build()` replays the object store | Erases every volatile variable. Any written prefix from `landed` on may have landed: an in-flight PUT, the close flush, or a PUT whose failure reply was lost |
 
 **Constants and bounds.** Every configuration binds the five mutation points
@@ -323,8 +338,8 @@ That is what makes `LateSuccessWasClaimedLive` falsifiable (TLA-006-F3).
 
 | Model action | Production function(s) | Atomicity justification |
 |---|---|---|
-| `Issue`, `Cancel` | `try_command` (shard.rs:1837-1857); receiver drop in `submit.rs` | As TLA-005 |
-| `Take` | `committer_loop` (shard.rs:2467-2566), `CommitTransaction::run` (mod.rs:50-57) | As TLA-005 |
+| `Issue`, `Cancel` | `try_command` (shard.rs:1816-1837); receiver drop in `submit.rs` | As TLA-005 |
+| `Take` | `committer_loop` (shard.rs:2416-2515), `CommitTransaction::run` (mod.rs:51-58) | As TLA-005 |
 | `WriteOk` | `CommitTransaction::write` (finalize.rs:170-195) | ASM-SLATEDB-DURABLE (a). `lateWrite` records a batch written after retirement |
 | `WriteRefused` | `write` on a closed Db or after the batch writer exited (`check_closed`), then `write_failed` (finalize.rs:202-206) | Nothing is applied. The committer retires the handoff (`RetireOnWriteError`) and answers `Internal`. Fair, because the committer keeps running |
 | `WriteFailPreApply` | `write` -> `Err` on an open Db (`EmptyBatch`, or a clock or WAL-buffer error before the memtable write), then `write_failed` | ASM-DURABILITY-7, pre-apply. The committer retires the handoff and answers `Internal`. A bounded fault |
@@ -333,9 +348,9 @@ That is what makes `LateSuccessWasClaimedLive` falsifiable (TLA-006-F3).
 | `DbCloseResult` | `run_lifecycle` writes `closed_result` (dispatcher.rs:358) | A separate step, as in TLA-005 |
 | `Publish` | `CommitTransaction::publish` (publish.rs:17-103) via `PublicationOp` | One `in_flight` step |
 | `AttachGate`, `AttachDecide`, `AttachReply` | `join_prior_barrier` (finalize.rs:45-60): `dispatch_gate.lock().await`, then `attach` under `in_flight` via `AttachOp`, then `reply`/`reject` after unlocking while still holding the gate | Three steps, so retirement may interleave between the verdict and the reply |
-| `Claim`, `Replies` | `dispatch_durable` (shard.rs:3006-3071) via `TakeOp`, used by the acker and the pump. Both serialize on `dispatch_gate`, so one completer process is faithful | The claim runs under `in_flight`; the effects run after unlocking, under the gate |
-| `AckerClose`, `ExternalClose` | `begin_close` (shard.rs:1876-1934), called from `acker_loop` on `close_reason` (shard.rs:3085-3089), or from `ShardDirectory::retire` / `RequiredExit` (lifecycle.rs:122-135) | `retire()` and the `closed` store run under `in_flight`, via `StrandedOp` (`DoBeginClose`) |
-| `RejectStranded` | `begin_close` after unlocking: `group.effects.reject(AppendErr::Moved)` (shard.rs:1917-1919) | A separate step, because other actors interleave. After a write error production rejects them inside the committer's call, so the separate step is more permissive |
+| `Claim`, `Replies` | `dispatch_durable` (shard.rs:2949-3014) via `TakeOp`, used by the acker and the pump. Both serialize on `dispatch_gate`, so one completer process is faithful | The claim runs under `in_flight`; the effects run after unlocking, under the gate |
+| `AckerClose`, `ExternalClose` | `begin_close` (shard.rs:1855-1913), called from `acker_loop` on `close_reason` (shard.rs:3028-3032), or from `ShardDirectory::retire` / `RequiredExit` (lifecycle.rs:146-159) | `retire()` and the `closed` store run under `in_flight`, via `StrandedOp` (`DoBeginClose`) |
+| `RejectStranded` | `begin_close` after unlocking: `group.effects.reject(AppendErr::Moved)` (shard.rs:1897-1899) | A separate step, because other actors interleave. After a write error production rejects them inside the committer's call, so the separate step is more permissive |
 | `AbortCommitter` | `drive_shutdown` (tasks/shutdown.rs:176-209) aborts a worker still running after `WORKER_GRACE` (lifecycle.rs:10, 53-75) | Only at an await of a staged transaction: handle or producer loads, `db.write`, or the gate. The dropped `db.write` may still apply. Every owned sender and the channel are dropped |
 | `Land`, `Report`, `WalFail` | SlateDB, as TLA-005 | ASM-SLATEDB-DURABLE |
 
@@ -434,7 +449,7 @@ Under those conditions, the claim has these parts:
 - Uncertain movement is never turned into success. No success exists without
   durable evidence. Every non-serving outcome (NotOwner, Wait/opening, Moved,
   Internal, timeout) is non-definitive in the product mapping
-  (`definitively_rejected`, contract.rs:285-297).
+  (`definitively_rejected`, contract.rs:307-319).
 
 **Requirement anchors.** T11 (reconciled wording, `docs/dst/DST-EXPANSION-SPEC.md` §9.12.1, pending the spec owner's confirmation); T12, D1, D7,
 P4 and R1; T10, only in the sense that a stale router cannot make a producer
@@ -463,15 +478,15 @@ winning, so an overwritten acknowledged offset is visible.
 
 | Model action | Production function(s) | Atomicity justification / dependency |
 |---|---|---|
-| `Move`, `Observe(n)` | Rebalancer override CAS; fleet loop `set_view` (fleet.rs:797); `OwnershipService::set_view` (ownership.rs:156) | A complete authority snapshot is replaced under one lock |
-| `Send(r, n)` | `ShardDirectory::resolve` (shard_directory.rs:238-296): a foreign owner -> `NotOwner`; a live resident -> `try_enqueue`; otherwise `OpenGate::get_or_open` -> Wait. Also `effective_owner`/`foreign_owner` (ownership.rs:76-99) | Resolution reads the view and the serving map. Appends are never relayed (ASM-DURABILITY-5) |
+| `Move`, `Observe(n)` | Rebalancer override CAS; fleet loop `set_view` (fleet.rs:798); `OwnershipService::set_view` (ownership.rs:156) | A complete authority snapshot is replaced under one lock |
+| `Send(r, n)` | `ShardDirectory::resolve` (shard_directory.rs:234-304): a foreign owner -> `NotOwner`; a live resident -> `try_enqueue`; otherwise `OpenGate::get_or_open` -> Wait. Also `effective_owner`/`foreign_owner` (ownership.rs:76-99) | Resolution reads the view and the serving map. Appends are never relayed (ASM-DURABILITY-5) |
 | `GiveUp(r)` | Client deadline | The server continues |
 | `Commit(e)` | The committer: staging, `db.write`, then `publish` or `join_prior_barrier` (as TLA-005). On a closed Db, `write_failed` (finalize.rs:202-206) retires the engine and answers `Internal` | Merged into one step. Retirement between the write and the publish only turns the reply into `Moved`, which the close path already produces. The closed-Db branch closes the engine in the same step (`CloseEngineWith`) |
 | `Land(e)` | SlateDB WAL SST put-if-absent at the writer's next id (`tablestore.rs` `write_sst_in_object_store`, `PutMode::Create`); the `durable_seq` report | ASM-SLATEDB-FENCE, via `LandOp`. Three outcomes: the batch lands; the id is taken, giving `Fenced`; or, with `AmbiguousPut`, the batch lands but the reply is lost, and the retry sees `AlreadyExists`, a spurious `Fenced` with the batch durable and never reported |
 | `Claim(e)`, `Reply(e)` | `dispatch_durable`, via `ClaimOp` | As TLA-006. `Reply` stays enabled after close (the late durable response) |
-| `AckerClose(e)`, `Yield(n)` | `acker_loop` on `close_reason` (Fenced); the fleet-tick "possession yields" (fleet.rs:818-843) and `resolve`'s retire on a foreign owner, both via `ShardDirectory::retire` (shard_directory.rs:434) -> `begin_close` | Serving-map removal and `begin_close` are one step. The stranded groups and the queue get `Moved` |
-| `Terminate(e)` | Engine storage close (`EngineTasks::begin_close`, lifecycle.rs:53-75, under `WORKER_GRACE`); the `OpenGate` `closing` gate (sharddir.rs:253) | A node cannot reopen until its old engine has terminated. A close may flush, may find the Db already closed, or may be **abandoned** (the grace is exceeded, or a non-fence failure) with a PUT in flight. Then any prefix of the buffer, as one SST, may still land later |
-| `OpenStart(n)`, `OpenFence(e)`, `OpenReady(e)` | `OpenGate::get_or_open` (sharddir.rs:479), single-flight. The opener is `Db::builder().build()` (bootstrap.rs:485-489): `FenceableManifest::init_writer`, `fence_and_init`, the final refresh (`RefreshOp`), replay. Then `ShardEngine::start` and serving-map insertion | Three steps, via `ReadyGate` and `RefreshOp`. Epoch order and fence order can differ, and a superseded opener fails its refresh |
+| `AckerClose(e)`, `Yield(n)` | `acker_loop` on `close_reason` (Fenced); the fleet-tick "possession yields" (fleet.rs:819-843) and `resolve`'s retire on a foreign owner, both via `ShardDirectory::retire` (shard_directory.rs:445) -> `begin_close` | Serving-map removal and `begin_close` are one step. The stranded groups and the queue get `Moved` |
+| `Terminate(e)` | Engine storage close (`EngineTasks::begin_close`, lifecycle.rs:53-75, under `WORKER_GRACE`); the `OpenGate` `closing` gate (sharddir.rs:247) | A node cannot reopen until its old engine has terminated. A close may flush, may find the Db already closed, or may be **abandoned** (the grace is exceeded, or a non-fence failure) with a PUT in flight. Then any prefix of the buffer, as one SST, may still land later |
+| `OpenStart(n)`, `OpenFence(e)`, `OpenReady(e)` | `OpenGate::get_or_open` (sharddir.rs:454), single-flight. The opener is `Db::builder().build()` (bootstrap.rs:481-487): `FenceableManifest::init_writer`, `fence_and_init`, the final refresh (`RefreshOp`), replay. Then `ShardEngine::start` and serving-map insertion | Three steps, via `ReadyGate` and `RefreshOp`. Epoch order and fence order can differ, and a superseded opener fails its refresh |
 | `Crash(n)` | Process crash | Volatile engine state is erased. Any prefix of the buffer, as one in-flight SST, may still land (`ZombieLand`). The restarted process bootstraps with no ring (ASM-DURABILITY-6) |
 | `ZombieLand(e)` | A dead engine's in-flight conditional PUT reaching the object store | One conditional PUT at the dead writer's next id: all its batches land, or none do if the id is taken |
 
@@ -714,7 +729,7 @@ regression test reaches this error through SlateDB's `write-batch-post-commit`
 failpoint and checks that the original is answered `Internal`. Recovery of the
 batch after a reopen is shown by the model only.
 
-Code: `src/shard/transaction/finalize.rs:170-206`, `src/application/append/contract.rs:276`, `src/application/append/contract.rs:285-297`.
+Code: `src/shard/transaction/finalize.rs:170-206`, `src/application/append/contract.rs:298`, `src/application/append/contract.rs:307-319`.
 
 **TLA-005-F3 -- An empty-entry producer Accept is classified as a no-write transaction** (classification: none; source-inspection note, latent)
 
@@ -735,7 +750,7 @@ decision: a unit test in `src/shard/transaction_tests.rs` that pins one of two
 behaviours. Either an empty-entry producer append persists its producer row,
 or it is refused before staging.
 
-Code: `src/shard/transaction/finalize.rs:35-40`, `src/shard/transaction/append.rs:152-187`, `src/application/creation/initialization.rs:63`, `src/application/creation/initialization.rs:120-125`, `src/application/creation.rs:248-256`, `src/application/append/content.rs:64-70`.
+Code: `src/shard/transaction/finalize.rs:35-40`, `src/shard/transaction/append.rs:152-187`, `src/application/creation/initialization.rs:63`, `src/application/creation/initialization.rs:120-125`, `src/application/creation.rs:257-266`, `src/application/append/content.rs:64-70`.
 
 **TLA-005-F4 -- Replies sent outside `DurableEffects`; D5 holds only error-for-error; `SealSuperseded` was unbarriered (now fixed as TLA-002-F2)** (classification: none; scope note)
 
@@ -816,7 +831,7 @@ so `run` answers every later group `Moved` and `attach` returns `Retired`.
   committer still seeds its mirrors from a Memory-level read. After the fix
   this can only happen on the retired engine (ASM-DURABILITY-9; TLA-018).
 
-Code: `src/shard/transaction/finalize.rs:170-206`, `src/shard/transaction/mod.rs:50-57`, `src/shard/transaction/append.rs:27-70`, `src/shard.rs:1876-1934`, `src/shard.rs:2088-2100`, `src/shard.rs:2467-2566`, `src/shard/commit_handoff.rs:39-52`, `slatedb@0717cc1:slatedb/src/batch_write.rs:121-135`, `slatedb@0717cc1:slatedb/src/batch_write.rs:262-332`, `slatedb@0717cc1:slatedb/src/dispatcher.rs:337-358`, `slatedb@0717cc1:slatedb/src/wal_buffer.rs:562-570`.
+Code: `src/shard/transaction/finalize.rs:170-206`, `src/shard/transaction/mod.rs:51-58`, `src/shard/transaction/append.rs:27-70`, `src/shard.rs:1855-1913`, `src/shard.rs:2043-2055`, `src/shard.rs:2416-2515`, `src/shard/commit_handoff.rs:39-52`, `slatedb@0717cc1:slatedb/src/batch_write.rs:121-135`, `slatedb@0717cc1:slatedb/src/batch_write.rs:262-332`, `slatedb@0717cc1:slatedb/src/dispatcher.rs:337-358`, `slatedb@0717cc1:slatedb/src/wal_buffer.rs:562-570`.
 Traces: `evidence/TLA-005_pre-fix_read-window.trace.txt` and `evidence/TLA-005_pre-fix_read-window-refusal.trace.txt` (pre-fix model), `evidence/TLA-005_nc-write-error-keeps-staging.trace.txt`, `evidence/TLA-005_nc-write-error-keeps-staging-refusal.trace.txt`, `evidence/TLA-006_nc-write-error-keeps-staging.trace.txt` (current model).
 
 **TLA-005-F6 -- The DST group-failure injection does not go through `write_failed`** (classification: none; test-mapping note)
@@ -857,7 +872,7 @@ false success), but the liveness claim is conditional on ASM-SLATEDB-DURABLE
 
 Disposition: recorded. The existing held-WAL tests already hold the WAL.
 
-Code: `src/shard.rs:1940-1981`, `src/application/append/submit.rs:69-93`.
+Code: `src/shard.rs:1919-1961`, `src/application/append/submit.rs:69-93`.
 Trace: `evidence/TLA-006_nc-no-storage-progress.trace.txt`.
 
 **TLA-006-F3 -- The first version's `LateSuccessWasClaimedLive` was vacuous** (classification: model defect; fixed in the model)
@@ -872,7 +887,7 @@ Disposition: fixed in the model. The ghost is now `decidedLive`, the
 mutation points. `nc_attach_ignore_terminal` (M1) and
 `nc_admit_after_close_acked` violate `LateSuccessWasClaimedLive`.
 
-Code: `src/shard/commit_handoff.rs:39-60`, `src/shard/transaction/finalize.rs:45-60`, `src/shard.rs:3006-3011`.
+Code: `src/shard/commit_handoff.rs:39-60`, `src/shard/transaction/finalize.rs:45-60`, `src/shard.rs:2949-2954`.
 Trace: `evidence/TLA-006_nc-attach-ignore-terminal.trace.txt`.
 
 Existing real-code tests mapped to TLA-006: `shard::commit_handoff::loom_tests::quality_loom_held_wal_retry_cannot_turn_retirement_into_durability`, `shard::commit_handoff::loom_tests::quality_loom_publication_and_durable_claim_have_one_terminal_owner`, `shard::commit_handoff::loom_tests::quality_handoff_attachment_moves_each_reply_once`, `shard::retirement_tests::r17b_durable_dispatch_claim_before_retirement_keeps_its_completion`, `shard::retirement_tests::r17b_late_successful_write_settles_without_publishing_retired_effects`, `shard::retirement_tests::r17b_retirement_before_duplicate_attachment_cannot_erase_remote_dependency`, and the F5 regression.
@@ -904,7 +919,7 @@ ring preference. The cost of the design is availability, not safety.
 Disposition: recorded. A readiness gate on the first ring view would be a
 design change for the owner to decide.
 
-Code: `src/ownership.rs:76-99`, `src/fleet.rs:747-843`, `src/shard_directory.rs:238-296`.
+Code: `src/ownership.rs:76-99`, `src/fleet.rs:748-843`, `src/shard_directory.rs:234-304`.
 Trace: `evidence/TLA-011_nc-ring-grants-storage.trace.txt`.
 
 **TLA-011-F3 -- DST T11 contradicts the roadmap §1.5 late-durable-response boundary** (classification: specification-defect, in the requirement text)
@@ -930,7 +945,7 @@ least as strong as `AckedDurable`, `HigherEpochCoversAcks`,
 the rewording first proposed here, which did not name the storage fence or
 the higher-epoch replay condition.
 
-Code: `src/shard.rs:3006-3011`, `src/shard/commit_handoff.rs:1-13`.
+Code: `src/shard.rs:2949-2954`, `src/shard/commit_handoff.rs:1-13`.
 
 Existing real-code tests mapped to TLA-011: `dst::dst_tests::producer_handoff::producer_state_survives_a_handoff_and_suppresses_duplicates`, `dst::dst_tests::producer_handoff::ambiguous_commit_survives_handoff_and_dedupes`, `history::tests::absorber_exits_when_shard_engine_is_fenced`, `shard_directory::directory_tests::foreign_shard_is_refused_with_its_owner_and_never_opened`, `dst::dst_tests::runtime_retirement::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement`.
 

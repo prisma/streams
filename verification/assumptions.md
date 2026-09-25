@@ -443,7 +443,7 @@ actions to these contracts.
   (`write_manifest`, reached through `write_state_safely` →
   `write_manifest_safely`), whose comment calls the 900 s lifetime an
   interim choice. Repository: `manifest_poll_interval` 300 s for history
-  partitions (`src/history.rs:501`) and billing (`src/billing.rs:1516`), and
+  partitions (`src/history.rs:493`) and billing (`src/billing.rs:1509`), and
   `manifest_poll_ms` for shard DBs (`src/config/validation.rs:51`).
 - **Enforcement / evidence:** the real-code tests
   `dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view`
@@ -649,12 +649,12 @@ actions to these contracts.
   retirement answers `Internal` and drops its streams' cached seal fences; a
   group stranded by an engine close answers `Moved` and may still become
   durable.
-- **Origin:** `src/shard/commit_plan.rs` `DurableEffects` (36-79);
+- **Origin:** `src/shard/commit_plan.rs` `DurableEffects` (36-83);
   `src/shard/transaction/append.rs` 96-101 and 139-141;
-  `src/shard/transaction/maintenance.rs` 109-146 and 191-223;
-  `src/shard/transaction/mod.rs` `reject` (191-207);
+  `src/shard/transaction/maintenance.rs` 110-147 and 192-224;
+  `src/shard/transaction/mod.rs` `reject` (187-203);
   `src/shard/transaction/finalize.rs` (`join_prior_barrier`, `write_failed`);
-  `src/shard.rs` `begin_close` (1876-1935).
+  `src/shard.rs` `begin_close` (1855-1913).
 - **Enforcement / evidence:** source inspection; DST
   `a_fence_waits_for_durability_before_reporting_closed`,
   `a_superseded_final_waits_for_its_fence_to_be_durable`, and
@@ -676,9 +676,9 @@ actions to these contracts.
   already staged; those may still become durable while their callers are told
   `Moved`. The next `resolve` in the (new) owner opens a new engine over the
   same durable state.
-- **Origin:** `src/shard_directory.rs` `resolve` (238-297) and `retire`
-  (434-456); `src/shard.rs` `begin_close` (1876-1935) and the committer's
-  shutdown path (2467-2500); SlateDB writer fencing on open.
+- **Origin:** `src/shard_directory.rs` `resolve` (234-304) and `retire`
+  (445-467); `src/shard.rs` `begin_close` (1855-1913) and the committer's
+  shutdown path (2416-2449); SlateDB writer fencing on open.
 - **Enforcement / evidence:** source inspection of the engine. SlateDB writer
   fencing is TLA-011's subject; this group does not check it.
 - **Invalidation:** a SlateDB revision; an open or fencing change; an engine
@@ -695,8 +695,8 @@ actions to these contracts.
   No deletion, prefix scan, fork, split, merge or history path removes or
   lowers it.
 - **Origin:** commit "A seal takeover's fence outlives the engine that recorded
-  it"; `src/shard.rs` 189-195; `src/shard/transaction/maintenance.rs` 89-108
-  and 136-167.
+  it"; `src/shard.rs` 191-197; `src/shard/transaction/maintenance.rs` 90-109
+  and 156-187.
 - **Enforcement / evidence:** source inspection: one writer and one reader, and
   every shard prefix scan starts with a sentinel or a longer prefix. The golden
   test `golden_layout4_seal_fence_key_bytes` pins the key.
@@ -710,7 +710,7 @@ actions to these contracts.
 - **Statement:** fences, closes and appends for a segment travel one FIFO
   committer queue (`try_seal_fence`, `try_close` and `try_enqueue` all go
   through `try_command`).
-- **Origin:** `src/shard.rs` 1804-1856.
+- **Origin:** `src/shard.rs` 1783-1834.
 - **Enforcement / evidence:** source inspection.
 - **Invalidation:** separate queues or priorities.
 - **Standing:** established (source).
@@ -726,8 +726,8 @@ actions to these contracts.
   segment close carries its generation and is modelled as a close queued at the
   owner.
 - **Origin:** `src/application/append/submit.rs` 18-25;
-  `src/shard_directory.rs` 238-297; `src/application/lifecycle.rs` 874-879;
-  `src/application/topology.rs` 72-80.
+  `src/shard_directory.rs` 234-304; `src/application/lifecycle.rs` 874-879;
+  `src/application/topology.rs` 62-70.
 - **Enforcement / evidence:** source inspection.
 - **Invalidation:** an ownership check before the claim; server-side forwarding
   of appends.
@@ -751,11 +751,11 @@ actions to these contracts.
   that installed a claim releases it on a definitive refusal. The model's
   shapes V4, V5 and V5A place an exact retry on an instance with lower limits.
 - **Origin:** `src/application/append/content.rs` 14-127 (`parse_content`,
-  `stored_records`); `src/application/append/close.rs` 71-121 and 159-223
+  `stored_records`); `src/application/append/close.rs` 71-121 and 159-226
   (the owed claim, the synthetic lane, `install_intent`);
-  `src/application/lifecycle/raw_close.rs` 45-55; `src/usage.rs` 327-340;
-  `src/product.rs` 1661-1767; docs/seal-transitions.md "Limit reductions and
-  accepted finals".
+  `src/application/lifecycle/raw_close.rs` 45-55; `src/usage.rs` 329-344;
+  `src/product.rs` 1527-1630 and `src/product/seal_request.rs` 45-69;
+  docs/seal-transitions.md "Limit reductions and accepted finals".
 - **Enforcement / evidence:** source inspection, confirmed by two independent
   refutation attempts of TLA-003-F4; TLA-003-F4 and F5 were reproduced on real
   code with two instances over one store
@@ -794,7 +794,7 @@ actions to these contracts.
 - **Scope:** TLA-001, TLA-002, TLA-003.
 - **Statement:** `stream_epoch` is drawn fresh from 16 random bytes on every
   create and recreate and is never reused.
-- **Origin:** `src/application/creation.rs` `fresh_desc` (207-220).
+- **Origin:** `src/application/creation.rs` `fresh_desc` (211-224).
 - **Enforcement / evidence:** the runtime's entropy source.
 - **Invalidation:** deterministic or reused epochs.
 - **Standing:** established (probabilistic).
@@ -804,7 +804,7 @@ actions to these contracts.
 - **Scope:** TLA-001.
 - **Statement:** `desc_path` is injective over (project, name), so two projects
   that share a name never share a descriptor object.
-- **Origin:** `src/registry.rs` `desc_path` (882-898).
+- **Origin:** `src/registry.rs` `desc_path` (873-889).
 - **Enforcement / evidence:** source inspection (hex of both components);
   `registry::tests::same_name_two_projects_share_no_identity`.
 - **Invalidation:** a path layout change.
@@ -851,7 +851,7 @@ actions to these contracts.
 - **Statement:** every `decide` closure passed to `mutate_incarnation` is
   `impl Fn(&StreamDesc)` and captures no interior mutability, so a value
   returned with `Applied` is the winning attempt's own decision.
-- **Origin:** `src/registry.rs` 1157-1165; the production call sites.
+- **Origin:** `src/registry.rs` 1106-1115; the production call sites.
 - **Enforcement / evidence:** the type system plus source inspection (no call
   site captures a `Cell`, `RefCell`, atomic or `Mutex`);
   `registry::tests::typed_mutation_never_leaks_a_lost_attempts_decision`. Not

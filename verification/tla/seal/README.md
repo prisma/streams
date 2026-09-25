@@ -248,11 +248,11 @@ are in the tables.
   held.
 - **Fix.** Commit "A SealSuperseded refusal waits until the fence behind it is
   durable". `seal_authorizes` and `close` put `SealSuperseded` in the group's
-  replies (`maintenance.rs` 109-146, 191-223), so it is sent once everything
+  replies (`maintenance.rs` 110-147, 192-224), so it is sent once everything
   staged before it is durable; a failed group answers `Internal` and a retired
   engine `Moved`, which keep the claim. An unreadable fence row still answers
   `Internal` at once. `CommitTransaction::reject` drops the rejected group's
-  cached seal fences (`transaction/mod.rs` 191-207), so the next consult
+  cached seal fences (`transaction/mod.rs` 187-203), so the next consult
   re-reads the row.
 - **Model.** `ImmediateRefusal` no longer includes `SealSuperseded`.
   `MaxHeldFence = 1` stages one fence group before its durability; the group
@@ -290,7 +290,7 @@ are in the tables.
 - **Fix.** Commit "A raw close that takes over an abandoned final claim writes
   its own record". When `begin_sealing_for_close` returns this operation's
   generation for a Final intent, the plan owes that final and the Sealing
-  refusal is cleared (`close.rs` 204-207 today).
+  refusal is cleared (`close.rs` 207-210 today).
 - **Model.** `ClaimedFinalPlan` applies that update after a raw final's claim
   CAS, in `FClaim` and in `TInstall`.
 - **Checks.** `baseline-renewal`, `baseline-shared-lane`,
@@ -341,7 +341,7 @@ are in the tables.
   publishes its intent". `content::stored_records` is the one definition of
   the records an append stores and of their refusal. The product seal builds
   the final's exact wire body once, checks it with `stored_records` right
-  after the capacity check and before the claim (`product.rs` 1757-1767), and
+  after the capacity check and before the claim (`product.rs` 1620-1630), and
   submits that same body.
 - **Model.** `ProductPreIntentRefuses` now includes `"ceiling"`.
 - **Checks.** `baseline-validation` and `baseline-validation-product` pass
@@ -374,8 +374,8 @@ are in the tables.
   renews nor releases the claim", option (a) of the earlier decision.
   `prepare_close` only finds the owed claim (now only for a close, F6) and
   keeps the generation it observed (`close.rs` 71-85); `install_intent` renews
-  only when nothing was refused or deferred (`close.rs` 174-176,
-  `renew_owed_final` 225-252). An ingest 413 is answered before the claim is
+  only when nothing was refused or deferred (`close.rs` 174-179,
+  `renew_owed_final` 228-257). An ingest 413 is answered before the claim is
   touched. An over-ceiling record stays a deferred refusal: the retry carries
   the observed generation without renewing, so the committer still answers a
   committed final as its duplicate, and the retry marks and seals it.
@@ -412,7 +412,7 @@ are in the tables.
   closed with `sealed=false`, `sealing=None`, and A answered 503).
 - **Fix.** The same commit, option (c): `begin_sealing_for_close` reports
   whether this attempt installed the claim (`lifecycle.rs` 431-432,
-  `ClosePlan::installed_claim`, `close.rs` 196-198), and `complete_raw_close`
+  `ClosePlan::installed_claim`, `close.rs` 199-201), and `complete_raw_close`
   releases on a definitive refusal only for the installing attempt
   (`raw_close.rs` 45-55). Its content was valid where the claim was taken, so
   its refusal rests on committer state every attempt shares. A joined or
@@ -512,6 +512,38 @@ next request is never conditioned on the answer's class (`Issue`), so the
 change does not alter any reachable state. `SuccessProvesOutcome` constrains
 only 2xx answers.
 
+The merge of slate at `3a24eace` brings in commit "A raw close whose seal
+intent failed transiently answers retryable, not sealed" (`839135a4`).
+`install_intent` now answers a claim that failed with `SealError::Storage` or
+`SealError::Resumable` as 503 `seal_incomplete`, not 409 `sealed`
+(`intent_refused`, `close.rs` 264-279). A failed owed renewal is now 503
+`seal_incomplete` instead of 503 `internal`. The models already answer those
+branches `retryable` (`FClaim`'s unreadable-descriptor and lost-reply
+branches, and `TFenceLost`). No property or client step reads a non-2xx
+class, so the models are unchanged.
+
+### Merge of slate at `3a24eace` (no model change)
+
+- **TLA-001.** `Registry::recreate` now records the replaced incarnation's
+  closure debt (`record_replaced`, `registry/replaced.rs`) before the fork-debt
+  index (`index_overwritten_debt`). Both writes come before the descriptor
+  PUT. A failure in either returns `Err` and leaves the descriptor
+  unwritten, which is the outcome `RecreateRead`'s failure branch already
+  produces. `record_replaced` is idempotent, so a retried attempt writes it
+  again with no effect. The body is now encoded once, before the loop.
+- **TLA-002 and TLA-003.** The merge keeps this branch's seal close: renewal
+  after validation, release only by the installing attempt and resumption
+  only by a close. The
+  product seal's body parsing moved to `product/seal_request.rs`. For a final
+  in enforce mode it also checks the append scope before any claim. That is
+  another pre-intent refusal (`Validity = "pre"`). The fresh-bucket 413
+  measures stored bytes on every surface; the product seal and the raw
+  `parse_content` already measured them. Slate's segment-map changes
+  (`729c52ac`, `85017d84`) change split and merge publication, which is
+  topology (TLA-004) and outside these models. The committer changes are the
+  absorber's (TLA-016); fence, close, append and rejection staging are
+  unchanged.
+
 ### What remains open
 
 - docs/seal-transitions.md "Limit reductions and accepted finals" records
@@ -589,35 +621,35 @@ only 2xx answers.
 | Action | Production | Atomicity |
 |---|---|---|
 | `Start`, `StartDelete` | callers of `Registry::mutate_incarnation` (claim, reservation, install, renew, release, mark, publish; deletion) | local |
-| `Read` | `registry.rs` `mutate_incarnation` 1166-1197: `invalidate`, `store.get` (failure: `ReadUnavailable`), `decode_desc`, epoch check (1178), `decide` (1181), identity re-check (1186), `ConditionalUpdateToken::from_etag` (1195) | one GET (ASM-OBJSTORE-CAS); the rest is local and pure (ASM-SEAL-DECIDE-FN) |
-| `Cas` | `mutate_incarnation` 1198-1233: `put_opts(PutMode::Update)`; `Ok` is `Applied`, `Precondition` re-reads and re-decides, other errors are `AmbiguousCompletion`, five attempts end in `Conflict` (1235). The server's store sends every conditional request once (`src/bootstrap/s3_store.rs` 90-101, 138-144: `S3Store::put_opts` and `copy_opts` route `PutMode::Create`, `PutMode::Update` and `CopyMode::Create` to the client built with `max_retries: 0`, 50-67), so `Precondition` answers the only request | one request: atomic compare-and-write; the reply is separate |
-| `BeginRecreate`, `RecreateRead`, `RecreateCas` | `creation/claim.rs` `resolve` recreate arm (44-83) → `Registry::recreate` (1009-1062), its PUT through the same single-request client; the client's retry resolves against its own replacement | same contract, with read-failure, lost-reply and failed-dispatch branches |
+| `Read` | `registry.rs` `mutate_incarnation` 1115-1146: `invalidate`, `store.get` (failure: `ReadUnavailable`), `decode_desc`, epoch check (1127), `decide` (1130), identity re-check (1135), `ConditionalUpdateToken::from_etag` (1144) | one GET (ASM-OBJSTORE-CAS); the rest is local and pure (ASM-SEAL-DECIDE-FN) |
+| `Cas` | `mutate_incarnation` 1147-1183: `put_opts(PutMode::Update)`; `Ok` is `Applied`, `Precondition` re-reads and re-decides, other errors are `AmbiguousCompletion`, five attempts end in `Conflict` (1184). The server's store sends every conditional request once (`src/bootstrap/s3_store.rs` 90-101, 138-144: `S3Store::put_opts` and `copy_opts` route `PutMode::Create`, `PutMode::Update` and `CopyMode::Create` to the client built with `max_retries: 0`, 50-67), so `Precondition` answers the only request | one request: atomic compare-and-write; the reply is separate |
+| `BeginRecreate`, `RecreateRead`, `RecreateCas` | `creation/claim.rs` `resolve` recreate arm (46-85) → `Registry::recreate` (984-1040), its PUT through the same single-request client; the client's retry resolves against its own replacement. Before the PUT, each attempt records what it replaces: its closure debt (`record_replaced`, 1017; `registry/replaced.rs` 129-153), then any fork debt (`index_overwritten_debt`, 1018; `registry/fork_debt.rs` 193-201). Either write's error returns `Err` with the descriptor unwritten, as a failed read does, so `RecreateRead`'s failure branch is that outcome too | same contract, with read-failure (also the pre-write debt records), lost-reply and failed-dispatch branches |
 
 ### TLA-002 and TLA-003 mapping
 
 | Action | Production | Atomicity |
 |---|---|---|
-| `Issue` | a product `:seal` or seal-with-final (`product.rs`), or a raw POST with `stream-closed` | local |
-| `FValidate` | product: the pre-intent checks (`product.rs` 1661-1767: capacity 1744-1756, record ceiling 1757-1767), reached only by a request they refuse. Raw: `close::prepare_close` (`append/close.rs` 19-122: the owed claim, only for a close, 71-81; the observed generation 82-85; `sealed_reject_new` 100-112) → `content::parse_content` (`content.rs` 14-91: deferred refusals 30-73 through `stored_records` 99-127, capacity 81-89) → `install_intent` (152-223): an owed retry renews only when nothing was refused or deferred (174-176); a fresh close installs, skipped when sealed, owed or deferred (177) | a read of a possibly cached descriptor; staleness is an earlier read plus delay |
-| `FClaim` | product: `seal_final` → `enter_sealing` (`lifecycle.rs` 383) → `claim_seal` (193) → `enter_sealing_cas` (168) → `decide_claim` (`claims.rs` 68-126). Raw, fresh: `install_intent` → `begin_sealing_for_close` (`lifecycle.rs` 416-441, answering whether it installed, 431-432); the plan records `installed_claim` and owes the final (`close.rs` 196-207). Raw, owed: `renew_owed_final` (`close.rs` 225-252) → `renew_owed_claim` (`lifecycle.rs` 450), after `parse_content` | one `mutate_incarnation`; the local verdict after a renewal is merged |
+| `Issue` | a product `:seal` or seal-with-final (`product.rs`; its body parsed by `product/seal_request.rs`), or a raw POST with `stream-closed` | local |
+| `FValidate` | product: the pre-intent checks (`product.rs` 1527-1630: the body and, for a final in enforce mode, the append scope, `seal_request` in `product/seal_request.rs` 45-69; capacity 1613-1619, record ceiling 1620-1630), reached only by a request they refuse. Raw: `close::prepare_close` (`append/close.rs` 19-122: the owed claim, only for a close, 71-81; the observed generation 82-85; `sealed_reject_new` 100-112) → `content::parse_content` (`content.rs` 14-89: deferred refusals 30-73 through `stored_records` 99-127, capacity 82-87) → `install_intent` (152-226): an owed retry renews only when nothing was refused or deferred (174-179); a fresh close installs, skipped when sealed, owed or deferred (180) | a read of a possibly cached descriptor; staleness is an earlier read plus delay |
+| `FClaim` | product: `seal_final` → `enter_sealing` (`lifecycle.rs` 383) → `claim_seal` (193) → `enter_sealing_cas` (168) → `decide_claim` (`claims.rs` 68-126). Raw, fresh: `install_intent` → `begin_sealing_for_close` (`lifecycle.rs` 416-441, answering whether it installed, 431-432); the plan records `installed_claim` and owes the final (`close.rs` 199-210). Raw, owed: `renew_owed_final` (`close.rs` 228-257) → `renew_owed_claim` (`lifecycle.rs` 450), after `parse_content`. A raw claim or renewal the registry could not read or write, or a resumable claim round, answers 503 `seal_incomplete` (`intent_refused`, `close.rs` 264-279; `renew_owed_final` 249-255), the model's `retryable`; another seal's claim or a settled refusal answers 409 `sealed` | one `mutate_incarnation`; the local verdict after a renewal is merged |
 | `TReserve` | `take_over_abandoned` reservation CAS (`lifecycle.rs` 272-289); a decline returns to `claim_seal`'s loop (200) | one CAS |
-| `TFence` | `fence_segment_for_key` (856-893): `resolve(Adoption::Internal)` (874-879; a non-owner answers Resumable) → `try_seal_fence` (`shard.rs` 1829) | enqueue at the owner |
-| `ProcessFence` | `CommitTransaction::fence` (`maintenance.rs` 155-186): `seal_fence` (89-108: the cache, else the durable row; a read error answers `Internal`), raise the cache, write the row in the group, acknowledge in `effects.acks` | one queue element; the reply after the group's durability |
-| `FenceGroupDurable`, `FenceGroupRejected` | the staged fence group becomes durable and its replies are released (`DurableEffects`), or it is rejected without an engine retirement: `CommitTransaction::reject` (`transaction/mod.rs` 191-207) answers `Internal` and drops the cached fences (only with `MaxHeldFence = 1`) | separate steps for a staged fence group |
+| `TFence` | `fence_segment_for_key` (856-893): `resolve(Adoption::Internal)` (874-879; a non-owner answers Resumable) → `try_seal_fence` (`shard.rs` 1808) | enqueue at the owner |
+| `ProcessFence` | `CommitTransaction::fence` (`maintenance.rs` 156-187): `seal_fence` (90-109: the cache, else the durable row; a read error answers `Internal`), raise the cache, write the row in the group, acknowledge in `effects.acks` | one queue element; the reply after the group's durability |
+| `FenceGroupDurable`, `FenceGroupRejected` | the staged fence group becomes durable and its replies are released (`DurableEffects`), or it is rejected without an engine retirement: `CommitTransaction::reject` (`transaction/mod.rs` 187-203) answers `Internal` and drops the cached fences (only with `MaxHeldFence = 1`) | separate steps for a staged fence group |
 | `TFenceLost` | a fence answered `Moved` or `Internal` ("fence refused") or dropped → Resumable (`lifecycle.rs` 888-892) | local |
-| `TInstall` | `install_reserved_claim` (349-381) with the newest-reservation check (365); take_over_abandoned answers `Installed` (328), so a raw final's plan has `installed_claim` and owes its final (`close.rs` 196-207) | one CAS |
+| `TInstall` | `install_reserved_claim` (349-381) with the newest-reservation check (365); take_over_abandoned answers `Installed` (328), so a raw final's plan has `installed_claim` and owes its final (`close.rs` 199-210) | one CAS |
 | `TBehalfMark` | a closed fence: `mark_final_committed(old)` (526) then `run_seal(old)` (`lifecycle.rs` 297-313) | the reply is local; one CAS |
 | `FCheck` | product `prepare_close` `seal_auth` check (`close.rs` 58-70); a failure is `SealSuperseded` and `seal_final` releases exactly (`lifecycle.rs` 126-135) | a read, then the release CAS |
-| `Enqueue` | `execute_once` (`append.rs` 246-395) → `submit` (`submit.rs` 18-25: `NotOwner` for a non-owner) → sheds → `try_enqueue` (79-85) | enqueue at the owner; unbounded pre-queue window |
-| `ProcessAppend` | `CommitTransaction::append` (`transaction/append.rs` 19-142): `decide_producer` (`commit_plan.rs` 88-143), closed tail (71-95), deferred content error (96-102), `seal_authorizes` (139-141; `maintenance.rs` 109-146: `SealSuperseded` joins the group's replies; `seal_authorized` `commit_plan.rs` 145-150) | one queue element; a refusal other than `BadBody` or `Internal` waits for the group's durability |
-| `ProcessClose` | `CommitTransaction::close` (`maintenance.rs` 191-223): the fence is consulted only for an open segment; `SealSuperseded` joins the group's replies | one queue element |
-| `FAnswer`, `FRelease`, `FMark`, `FRawDup` | `seal_final` (`lifecycle.rs` 84-161) and `complete_raw_close` (`raw_close.rs` 23-96: a definitive refusal releases only for the installing attempt, 45-55): `final_err_disposition` (`claims.rs` 241-260), `definitively_rejected` (`contract.rs` 285-297, via `product.rs` 1813), `abandon_seal_intent` (`lifecycle.rs` 487-518), `mark_final_committed` (527-567) | local classification merged with its CAS |
-| `RsPrep`, `RsClose`, `RsCloseFailed`, `RsPublish` | `run_seal` (576) → `prepare_execution` (593-701) → `close_claimed_segments` (705-770) → `topology::seal_segment_identity` (`topology.rs` 43-91) → `close_segment_on_engine` (99) or `relay_segment_close` (143) → `publish_sealed` (774-848) | read and CAS merged; enqueue at the owner; CAS and proof read merged |
-| `APrep`, `AReceive` | product `refuse_if_sealed` (`product.rs` 1937); raw `prepare_close`: the owed-claim filter requires a close (`close.rs` 71-80), `sealed_reject_new`, and without a producer the closed-tail refusal at once (100-112) | a read; local (the pre-fix renewal branch merges its CAS) |
+| `Enqueue` | `execute_once` (`append.rs` 267-414) → `submit` (`submit.rs` 18-25: `NotOwner` for a non-owner) → sheds → `try_enqueue` (79-85) | enqueue at the owner; unbounded pre-queue window |
+| `ProcessAppend` | `CommitTransaction::append` (`transaction/append.rs` 19-142): `decide_producer` (`commit_plan.rs` 92-147), closed tail (71-95), deferred content error (96-102), `seal_authorizes` (139-141; `maintenance.rs` 110-147: `SealSuperseded` joins the group's replies; `seal_authorized` `commit_plan.rs` 149-154) | one queue element; a refusal other than `BadBody` or `Internal` waits for the group's durability |
+| `ProcessClose` | `CommitTransaction::close` (`maintenance.rs` 192-224): the fence is consulted only for an open segment; `SealSuperseded` joins the group's replies | one queue element |
+| `FAnswer`, `FRelease`, `FMark`, `FRawDup` | `seal_final` (`lifecycle.rs` 84-161) and `complete_raw_close` (`raw_close.rs` 23-96: a definitive refusal releases only for the installing attempt, 45-55): `final_err_disposition` (`claims.rs` 241-260), `definitively_rejected` (`contract.rs` 307-319, via `product.rs` 1676), `abandon_seal_intent` (`lifecycle.rs` 487-518), `mark_final_committed` (527-567) | local classification merged with its CAS |
+| `RsPrep`, `RsClose`, `RsCloseFailed`, `RsPublish` | `run_seal` (576) → `prepare_execution` (593-701) → `close_claimed_segments` (705-770) → `topology::seal_segment_identity` (`topology.rs` 42-81) → `close_segment_on_engine` (89) or `relay_segment_close` (133) → `publish_sealed` (774-848) | read and CAS merged; enqueue at the owner; CAS and proof read merged |
+| `APrep`, `AReceive` | product `refuse_if_sealed` (`product.rs` 1790); raw `prepare_close`: the owed-claim filter requires a close (`close.rs` 71-80), `sealed_reject_new`, and without a producer the closed-tail refusal at once (100-112) | a read; local (the pre-fix renewal branch merges its CAS) |
 | `Lapse` | `decide_claim` `abandoned` (`claims.rs` 95) | environment |
 | `Cancel`, `Timeout` | a dropped handler; `APPEND_TIMEOUT` (`submit.rs` 86-93) | the handler vanishes; queued work stays |
 | `Crash` | a process crash | erases that process's handlers, and the engine if it owned the shard |
-| `Replace` | `ShardDirectory::retire` (`shard_directory.rs` 434-456) → `begin_close` (`shard.rs` 1876-1935): queued and stranded groups answer `Moved`; a stranded append, close or fence may still become durable. The next `resolve` opens an engine whose `seal_fences` cache (`shard.rs` 1178, 1389) is empty and reads the row | erases queue and cache; may move ownership; handlers survive |
+| `Replace` | `ShardDirectory::retire` (`shard_directory.rs` 445-467) → `begin_close` (`shard.rs` 1855-1913): queued and stranded groups answer `Moved`; a stranded append, close or fence may still become durable. The next `resolve` opens an engine whose `seal_fences` cache (`shard.rs` 1163, 1370) is empty and reads the row | erases queue and cache; may move ownership; handlers survive |
 
 ### Properties
 
@@ -828,7 +860,7 @@ generated states. The union leaves 10 expressions unevaluated:
 
 - the missing-ETag overwrite branch (reachable only in
   `nc-missing-etag-overwrite`; production refuses a missing ETag,
-  `registry.rs` 1195);
+  `registry.rs` 1144);
 - a recreate that loses its CAS, with the conflict it returns (the instance
   has no concurrent creator);
 - the two client-retry branches of `Cas` and `RecreateCas` (reachable only

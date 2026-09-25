@@ -565,8 +565,8 @@ durable, acknowledged record 0. The unfiltered applied branch saw the hole
 but answered an honest partial with no progress.
 
 **Fix, as modelled.** `Deliver::durability()` is the one mapping used by the
-scan and by `ShardEngine::visible_absorbed` (`src/shard/record.rs:212-217`,
-`:233-256`), so the race check reads the absorbed boundary at the scan's own
+scan and by `ShardEngine::visible_absorbed` (`src/shard/record.rs:232-237`,
+`:253-276`), so the race check reads the absorbed boundary at the scan's own
 level. An applied scan that sees an applied trim adopts the applied boundary
 and re-serves the prefix from history, which the gather flushed before it
 submitted the advance. In the model this is `RaceBoundary`.
@@ -611,7 +611,7 @@ records:
 - A page that ends past the durable frontier returns a `Continuation`
   (`src/application/read_continuation.rs:104-109`): the writer history that
   served it (the shard prefix and `ShardEngine.writer_epoch`,
-  `src/shard.rs:1135`, `:1374`), the recovery offset (the durable resume
+  `src/shard.rs:1131`, `:1361`), the recovery offset (the durable resume
   cursor), a digest start and a keyed, chained digest of the records the
   client observed from the digest start (`Continuation::after_page`,
   `read_continuation.rs:120-151`, called at `read_request.rs:655-666`).
@@ -668,7 +668,7 @@ repeat a writer epoch (ASM-HISTORY-FENCED-VIEW).
 ### TLA-018-F2 — H11 is not fully enforced at the reader (open obligation, owner decision)
 
 The keyed reader treats zero postings pages as proof that a range has no
-matches (`docs/ROUTING-V3.md`; `read_history2_keyed`, `src/history.rs:972`).
+matches (`docs/ROUTING-V3.md`; `read_history2_keyed`, `src/history.rs:916`).
 The unfiltered scan, the corruption envelope and `execute_postings_plan` all
 skip a missing canonical row and still complete. The probes show the
 consequence: `probe-lost-durable-postings` and `probe-lost-durable-canonical`
@@ -806,7 +806,7 @@ the states the reconciler now repairs.
   (`ReconcilerFairness`, ASM-HISTORY-ACTORS).
 - Tombstones from before the index carry debt with no marker. Each reconciler
   round first runs one step of the one-time backfill
-  (`Registry::backfill_fork_debt`, `fork_debt.rs:263-321`;
+  (`Registry::backfill_fork_debt`, `fork_debt.rs:290-348`;
   `reconcile.rs:275-318`), which walks the catalog and indexes every
   debt-bearing tombstone, then records completion and never runs again. In
   the model, with `Legacy`, child deletes before `Rollout` write no marker,
@@ -815,9 +815,12 @@ the states the reconciler now repairs.
 - A recreation of the child's name overwrites its tombstone and the debt on
   it. `Registry::recreate`, the one recreate CAS every create surface uses,
   now indexes a debt the stored tombstone still carries before it writes the
-  replacement (`src/registry.rs:1034`; `Registry::index_overwritten_debt`,
-  `src/registry/fork_debt.rs:193-202`); a failed marker write fails the
-  recreation before anything changed. This closes the residual the model
+  replacement (`src/registry.rs:1018`; `Registry::index_overwritten_debt`,
+  `src/registry/fork_debt.rs:193-201`); a failed marker write fails the
+  recreation before anything changed. Since the merge of slate at
+  `3a24eace`, the replaced incarnation's closure debt is recorded first
+  (`record_replaced`, `src/registry.rs:1017`), and its failure also fails the
+  recreation before the marker and the CAS. This closes the residual the model
   found in the first version of this fix (below). In the model `ForkBegin`
   of a child that recreates a name marks the overwritten debt when the new
   binary runs (mutation point `IndexOverwritten`).
@@ -1206,6 +1209,15 @@ controls attack H3's ordering or the absorbed ceiling instead.
 
 Modules `ReadCompose.tla` and `MC_ReadCompose.tla`.
 
+The merge of slate at `3a24eace` changes nothing this model maps. `read.rs`,
+`read_request.rs`, `read_continuation.rs`, the postings reader and the tail
+ring are unchanged. `record.rs` only splits the gather's range-read error by
+owner, and `history.rs` changes only the absorber's own state. Slate's typed
+cursor verdicts rename the decoder's refusals. Its offset codec
+(`offsets::encode`, `parse`, `parse_scalar`) carries the same
+`(segment, after)` position the model abstracts as an offset. The
+single-epoch descriptor (`796211d7`) removes branches no read reached.
+
 ### API semantics (defined before asserting completeness)
 
 - **`deliver=durable`** (the default everywhere: raw route, product reads,
@@ -1213,14 +1225,14 @@ Modules `ReadCompose.tla` and `MC_ReadCompose.tla`.
   continuation cursor promises the whole eligible prefix: every record of the
   selected key below it was delivered exactly once, with its durable content.
 - **`deliver=applied`** (product reads and long-poll only; SSE and forks
-  refuse it: `src/product.rs:2626`, `:2667`; `read_request.rs:154-155`). The
+  refuse it: `src/product.rs:2395`, `:2436`; `read_request.rs:154-155`). The
   tail may include applied, not yet durable records, marked with
   `Prisma-Pending-From`. Only the durable resume cursor carries a promise:
   `min(consumed, handle.durable.next)`, with `handle.durable.next` read after
   the page (`read_request.rs:648-652`). Records at or beyond it may be
   replaced after a crash or ownership move. The code's stated intent is that
   applied reads never see less than a durable reader
-  (`src/shard/record.rs:285-288`). A page that ends past the durable resume
+  (`src/shard/record.rs:305-308`). A page that ends past the durable resume
   cursor returns a provisional continuation (`KIND_KEY_V3`, TLA-018-F3 fix)
   bound to the writer history that served the suffix and a digest of what
   the client observed; the next read continues it only on that history or
@@ -1280,15 +1292,15 @@ its continuation: the serving engine, the digest start and the digest.
 | Model action | Production function(s) | Atomicity justification / dependency contract |
 |---|---|---|
 | `WAppend`, `WDurable`, `WDispatch`, `WAdvance`, `WTrim` | As TLA-016 (`CommitTransaction::append`, `absorbed` and `trim`; WAL durability; `dispatch_durable`) | As TLA-016. |
-| `WHistFlush` | A gather: one `WriteBatch` and `part.flush()` (`absorb_gather_v2_with` through `Absorber::commit`, `src/history/gather.rs:317-590`) | Collapsed into one step that raises the contiguous durable frontier `hF`. Justified by TLA-016's H3 and `LastRecoverableCopy` (ASM-HISTORY-WRITER). |
+| `WHistFlush` | A gather: one `WriteBatch` and `part.flush()` (`absorb_gather_v2_with` through `Absorber::commit`, `src/history/gather.rs:399-705`) | Collapsed into one step that raises the contiguous durable frontier `hF`. Justified by TLA-016's H3 and `LastRecoverableCopy` (ASM-HISTORY-WRITER). |
 | `WMove` | Ownership move: the new engine opens the shard DB, fencing the old writer, and loads the durable tail | ASM-HISTORY-FENCED-VIEW. The old engine keeps frozen, self-consistent views. |
 | `WLosePostings`, `WLoseCanonical` | **Not production.** Probe actions only | They violate ASM-SLATEDB-DURABLE or ASM-SLATEDB-GC. |
-| `RStart` | `ReadService::execute_read` (`read_request.rs:259-452`): `tail_state`, then `check_entry_start` (`:350-352`, `:693-707`) and the `start > end` guard (`:353-355`); snapshot in `execute_segment` (`src/application/read.rs:129`, `:145-164`) | Taken under the handle mutex. `StartAllowed` is `check_entry_start` (mutation point `ContinuationCheck`): the same engine continues; another engine continues only if `ObservedIn`, `verify_continuation`'s re-read of `[pfrom, pos)` (`:716-751`) on the current engine's applied view, matches the digest (`Continuation::observed_in`, `read_continuation.rs:176-186`); a V2 position starts only at or below `handle.durable.next` (`:704-706`). The re-read is one atomic observation of the current engine; it reads the same history and tail rows as a page. |
-| `RHist` | `decode_history_range` (`read.rs:719`) → `read_history2_scan` (`src/history.rs:921`) or `read_history2_keyed_cached` (`history.rs:1031`) → `PostingsCache::runs_for` (`src/postings_cache.rs:508`) → `execute_postings_plan` (`src/history/postings_read.rs:13`), or the corruption envelope; `PageBudget` | One step: rows below the boundary are immutable. A missing canonical row is skipped silently by every source, as in production (`history.rs:921-948`; `postings_read.rs:80-96`). Postings runs are abstracted by ASM-HISTORY-POSTINGS-CACHE. |
-| `RTailStart` | `ring_read` (`src/shard/tail_ring.rs:97`) and `proves_durable_ring` (`src/shard/record.rs:104`), or the start of `read_frames_until` (`record.rs:272`) | The ring returns durable copies with a density proof (ASM-HISTORY-RING); durable mode only (`record.rs:307`). |
-| `RTailStep` | One row of the scan at `deliver.durability()`: Remote for durable, Memory for applied (`record.rs:325`, `:212-217`) | Per row: the iterator is not treated as a snapshot. |
-| `RTailCheck` | `absorption_race` (`read.rs:789`) → `ShardEngine::visible_absorbed(hash, visibility)` (`read.rs:827`, `:837-841`; `record.rs:233-256`), then the loop decision in `execute_segment` | A `get` of the tail row at the scan's own level. The operator `RaceBoundary` is this read (F1 fix). |
-| `EndPage` | `page_progress` (`read.rs:625`), then `durable_resume.after = next.after.min(floor)` with `floor` read after the page (`read_request.rs:641-652`), then `Continuation::after_page` (`:655-666`; `read_continuation.rs:120-151`) | One page and one end-of-page handle read. The continuation's history is the page's engine (`WriterHistory::of(&engine)`); the digest restarts at the recovery offset when it reached the page start, else carries the continuation the page began at, else starts at the page start. |
+| `RStart` | `ReadService::execute_read` (`read_request.rs:259-452`): `tail_state`, then `check_entry_start` (`:350-352`, `:693-707`) and the `start > end` guard (`:353-355`); snapshot in `execute_segment` (`src/application/read.rs:130`, `:146-165`) | Taken under the handle mutex. `StartAllowed` is `check_entry_start` (mutation point `ContinuationCheck`): the same engine continues; another engine continues only if `ObservedIn`, `verify_continuation`'s re-read of `[pfrom, pos)` (`:716-751`) on the current engine's applied view, matches the digest (`Continuation::observed_in`, `read_continuation.rs:176-186`); a V2 position starts only at or below `handle.durable.next` (`:704-706`). The re-read is one atomic observation of the current engine; it reads the same history and tail rows as a page. |
+| `RHist` | `decode_history_range` (`read.rs:720`) → `read_history2_scan` (`src/history.rs:865`) or `read_history2_keyed_cached` (`history.rs:975`) → `PostingsCache::runs_for` (`src/postings_cache.rs:502`) → `execute_postings_plan` (`src/history/postings_read.rs:13`), or the corruption envelope; `PageBudget` | One step: rows below the boundary are immutable. A missing canonical row is skipped silently by every source, as in production (`history.rs:865-892`; `postings_read.rs:80-96`). Postings runs are abstracted by ASM-HISTORY-POSTINGS-CACHE. |
+| `RTailStart` | `ring_read` (`src/shard/tail_ring.rs:97`) and `proves_durable_ring` (`src/shard/record.rs:124`), or the start of `read_frames_until` (`record.rs:292`) | The ring returns durable copies with a density proof (ASM-HISTORY-RING); durable mode only (`record.rs:327`). |
+| `RTailStep` | One row of the scan at `deliver.durability()`: Remote for durable, Memory for applied (`record.rs:345`, `:232-237`) | Per row: the iterator is not treated as a snapshot. |
+| `RTailCheck` | `absorption_race` (`read.rs:790`) → `ShardEngine::visible_absorbed(hash, visibility)` (`read.rs:828`, `:838-842`; `record.rs:253-276`), then the loop decision in `execute_segment` | A `get` of the tail row at the scan's own level. The operator `RaceBoundary` is this read (F1 fix). |
+| `EndPage` | `page_progress` (`read.rs:626`), then `durable_resume.after = next.after.min(floor)` with `floor` read after the page (`read_request.rs:641-652`), then `Continuation::after_page` (`:655-666`; `read_continuation.rs:120-151`) | One page and one end-of-page handle read. The continuation's history is the page's engine (`WriterHistory::of(&engine)`); the digest restarts at the recovery offset when it reached the page start, else carries the continuation the page began at, else starts at the page start. |
 | `RReconnect` | The client resumes from `Prisma-Durable-Cursor` (applied mode), a V2 position | Client behaviour. |
 | `RResync` | `ReadFailure::HistoryReplaced` (`read_request.rs:747-750`), rendered as `409 cursor_beyond_tail` with `history_replaced` and the recovery cursor; the client resumes there | Enabled when another engine serves: a failing or partial re-read also refuses. Redelivery from the recovery cursor overwrites the client's content at and after it. |
 | `RError` | The page fails: the old engine is closed, or (history leg, current engine too when `AllowReadError`) a storage read fails, for example a transient object-store error | ASM-SLATEDB-GC (iii): an error, never a short success. The page ends with no delivery. |
@@ -1412,9 +1424,9 @@ obligation is split by invariant ownership.
 The only physical deletions the repository performs itself are shard-log row
 trims (`maintenance.rs`), which TLA-016 covers. Every other object deletion is
 SlateDB's internal collector, configured per DB: history partitions in
-`history_settings` (`src/history.rs:464-535`; GC interval
+`history_settings` (`src/history.rs:456-527`; GC interval
 `HISTORY_GC_INTERVAL_SECS`, 600 s by default; upstream `min_age` 300 s;
-`manifest_poll_interval` 300 s at `:501`), shard DBs in
+`manifest_poll_interval` 300 s at `:493`), shard DBs in
 `src/config/validation.rs`. Stream deletion is logical: a registry tombstone
 (`src/application/creation/deletion.rs`); rows are never deleted. Production
 creates no user checkpoints and no `DbReader`s (the compactor writes its own
@@ -1490,28 +1502,28 @@ child name (`Prev`), and whether the binary with the index is deployed.
 
 | Model action | Production function(s) | Atomicity justification / dependency contract |
 |---|---|---|
-| `FlushUpload`, `FlushCommit` | SlateDB memtable flush: L0 upload, then the manifest write; a conflict with the compactor's newer manifest makes the writer load and merge it first, so `wv` is current afterwards. The history partition flushes from `Absorber::commit` (`src/history/gather.rs:563`) | Two separate steps. The manifest write does not re-check object existence (ASM-SLATEDB-GC). |
+| `FlushUpload`, `FlushCommit` | SlateDB memtable flush: L0 upload, then the manifest write; a conflict with the compactor's newer manifest makes the writer load and merge it first, so `wv` is current afterwards. The history partition flushes from `Absorber::commit` (`src/history/gather.rs:671`) | Two separate steps. The manifest write does not re-check object existence (ASM-SLATEDB-GC). |
 | `CompactStart` / `CompactUpload` / `CompactCommit` | Embedded compactor configured by `history_settings`; its commit is `write_manifest` in SlateDB `compactor_state_protocols.rs`: a checkpoint on the stored manifest with a 900 s lifetime, then the manifest swap | The job is recorded (low watermark) before the output upload. The checkpoint write and the swap are two CAS writes, merged into one step: in between, the live manifest still names the inputs. Mutation point `CompactionCheckpoint`. The compactor does not refresh the writer's view (ASM-SLATEDB-GC iv). |
-| `WriterPoll` | `PollManifest` every `manifest_poll_interval` (300 s), which merges the stored manifest (`src/history.rs:501`) | Atomic merge under the DB state lock. It may happen at any time; `Tick` forces it within `PollInterval` ticks of the view going stale (ASM-SLATEDB-COMPACTION-CHECKPOINT). |
+| `WriterPoll` | `PollManifest` every `manifest_poll_interval` (300 s), which merges the stored manifest (`src/history.rs:493`) | Atomic merge under the DB state lock. It may happen at any time; `Tick` forces it within `PollInterval` ticks of the view going stale (ASM-SLATEDB-COMPACTION-CHECKPOINT). |
 | `Tick` | Wall-clock time | Blocked while the writer view has been stale for `PollInterval` ticks or a read has run for `ReadSpan` ticks; forgets an expired compactor checkpoint. |
 | `OrphanUpload` | A fenced old writer's flush whose manifest CAS fails (ASM-HISTORY-FENCED-VIEW) | The object exists but is never referenced. |
 | `Advance` | `CommitTransaction::absorbed`, submitted only after `part.flush()` returned `Ok` (TLA-016 H3). Mutation point `AdvanceBacked` | — |
 | `CkCreate` / `CkRelease` | Upstream user-checkpoint API. **The repository never creates one** | Models the upstream contract only (`UseCheckpoint`). The compactor's checkpoint is `CompactCommit`'s. |
-| `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:719`; `read_history2*`, `src/history.rs:900-1103`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
+| `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:720`; `read_history2*`, `src/history.rs:844-1047`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
 | `GcReadCompactions` → `GcReadManifest` → `GcList` → `GcDelete`* → `GcFinish` | Upstream `GarbageCollector::run_gc_task` → `remove_expired_checkpoints`, then `CompactedGcTask::collect` (SlateDB `0717cc1`, `garbage_collector.rs`, `garbage_collector/compacted_gc.rs`) | Compactions are read before the manifest; the manifest read includes the manifests of unexpired checkpoints (`CheckpointRefs`; expiry is checked at that step, which can only make deletion earlier); then the list, then per-object deletes. At most one pass per tick. |
-| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:1003-1061`), which indexes the debt of the stored tombstone first (`:1034`; `fork_debt.rs:193-202`) | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
+| `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:984-1040`), which first records the replaced incarnation's closure debt (`:1017`; `registry/replaced.rs:129-153`) and then indexes the debt of the stored tombstone (`:1018`; `fork_debt.rs:193-201`), both before its CAS | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. The closure-debt record is billing state and touches no fork reference. If it fails, the recreation fails before the marker and the CAS, as a create that never ran. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
 | `ForkInstall` | `anchor::install`: `mutate_incarnation(source, forked epoch)` (`src/application/creation/anchor.rs:78`) | One CAS bound to the forked incarnation (ASM-OBJSTORE-CAS). Idempotent when already installed; declines on a soft, tombstoned or recreated source. Mutation point `InstallFence`. |
 | `ForkPostCheck` | `anchor.rs:134-182`: if the child incarnation vanished (lookup by name, bound to its epoch), release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The source presence check is by name, with no epoch check. |
 | `CreatorCrash` | The create request dies before its post-check | Bounded fault. |
 | `SourceDelete` | `delete_lifecycle` → `delete_transition` (`deletion.rs:249`, `:492`) | Soft versus tombstone is decided inside the CAS. Mutation point `DeleteDecision`. |
 | `SourceRecreate` | A create under the same name after the tombstone; blocked while soft-deleted (F5) | New incarnation with no children. |
-| `IndexDebt` | `delete_lifecycle` writes the child incarnation's fork-debt marker before the tombstone write (`record_fork_debt`, `deletion.rs:290-294`; `fork_debt.rs:148-176`) | One PUT. A failed write fails the delete before anything changed; a delete that dies here leaves a marker on a live child, which the reconciler defers. |
+| `IndexDebt` | `delete_lifecycle` writes the child incarnation's fork-debt marker before the tombstone write (`record_fork_debt`, `deletion.rs:290-294`; `fork_debt.rs:150-176`) | One PUT. A failed write fails the delete before anything changed; a delete that dies here leaves a marker on a live child, which the reconciler defers. |
 | `ChildDelete` | `delete_transition` on the child: the tombstone records `parent_ref_pending` in the same write | One CAS. After the rollout it requires the marker (mutation point `WriteAhead`); before it (`Legacy`) the old binary writes none. |
 | `InRequestRelease` | The same request's `release_fork_ref(source, fork_id, source_epoch)`, `clear_parent_debt` when conclusive, then `settle_marker` (`deletion.rs:350-352`, `:72`, `:37`, `:451-459`) | The epoch check and the CAS are bound to one snapshot; an incarnation change is conclusive. One step. The marker removal is best effort (it may fail and stay) and only after a conclusive release (mutation point `SettleMarker`). |
 | `RequestAbandon` | A crash or cancellation after the tombstone CAS | Bounded fault. The debt persists on the tombstone and the marker in the index. |
 | `RetryDelete` | The **client** re-issues `DELETE` → `delete_lifecycle` → `repair_tombstone` (`deletion.rs:273-274`, `:372`) | Only while the name still holds the child's tombstone. Its fairness is the operator `ClientRetryFairness`, used only by `LiveSpecClientRetries`. |
 | `Reconcile` | `fork-debt-reconcile` (`reconcile.rs:326-356`), one marker of a page (`settle`, `:202-261`): `repair_tombstone` for a tombstone with debt, marker removal for one without, `release_fork_ref` from the marker for a recreated name, deferral for a live child | One step per marker: each CAS in it is idempotent and a restart re-reads the marker. Mutation points `MarkerView`, `ReleaseId`, `SettleMarker`. Weakly fair per marker (`ReconcilerFairness`, ASM-HISTORY-ACTORS). |
-| `Rollout` / `Backfill` / `BackfillFinish` | Deploying the binary with the index; one backfill step per reconciler round (`Registry::backfill_fork_debt`, `fork_debt.rs:263-321`; `reconcile.rs:275-296`) indexing each debt-bearing tombstone it walks, until the walk records `complete` and never runs again (`fork_debt.rs:279-281`, `:298-303`) | The walk's page order, persisted progress and ETag-conditional write are abstracted: until it completes, the backfill may index any unindexed debt-bearing tombstone that still holds its name, and it completes only when none is left (after the rollout no delete creates one). Without `Legacy` the index predates every delete, so the backfill starts complete. Mutation point `BackfillOn`. |
+| `Rollout` / `Backfill` / `BackfillFinish` | Deploying the binary with the index; one backfill step per reconciler round (`Registry::backfill_fork_debt`, `fork_debt.rs:290-348`; `reconcile.rs:275-296`) indexing each debt-bearing tombstone it walks, until the walk records `complete` and never runs again (`fork_debt.rs:306-308`, `:326-330`) | The walk's page order, persisted progress and ETag-conditional write are abstracted: until it completes, the backfill may index any unindexed debt-bearing tombstone that still holds its name, and it completes only when none is left (after the rollout no delete creates one). Without `Legacy` the index predates every delete, so the backfill starts complete. Mutation point `BackfillOn`. |
 
 ### Assumptions
 
