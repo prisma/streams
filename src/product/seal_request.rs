@@ -1,7 +1,6 @@
 //! The collection seal's request body (Stage 8 §7.2): parsed once, before
 //! any claim, and a final record authorized as the append it is.
-use super::{auth_failure_response, enforce_customer, perr};
-use crate::http::AppState;
+use super::{AppState, auth_failure_response, enforce_customer, perr};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
