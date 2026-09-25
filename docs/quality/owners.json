@@ -2407,6 +2407,14 @@
       "path": "src/tasks/exits.rs",
       "reason": "Item 38 stop deadline: the deadline thread sleeps out the bound off the executor, then ends the process.",
       "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::exit_failed",
+      "path": "src/tasks/exits.rs",
+      "reason": "Item 38 stop deadline: the process's last stderr line is written on a named OS thread of its own and waited for at most 250 ms, so a full pipe or another thread's held stderr lock cannot hold the exit; the thread is never joined because the process is ending either way.",
+      "syntax": "std::thread::Builder::new"
     }
   ]
 }

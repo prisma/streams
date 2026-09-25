@@ -14,9 +14,11 @@
 #
 # It copies every file of deploy/<app> except node_modules (index.ts,
 # supervise.ts, downloader.ts, package.json, bun.lock) over the staged
-# copy, runs `bun install` when node_modules is missing or the manifest
-# changed, and exits non-zero if any source still differs. Files the repo
-# does not have are left alone and listed.
+# copy, runs `bun install` until one has succeeded for the staged manifest
+# (a marker in node_modules records it, so a failed install is retried by
+# the next run, and its output is shown), and exits non-zero if any
+# source still differs or the staged directory holds a file the repo does
+# not (`--path .` would deploy it; remove it by hand).
 set -euo pipefail
 APP=${1:?usage: stage-app.sh <app-server|app-lb|app-gen> <staged app directory>}
 DIR=${2:?usage: stage-app.sh <app-server|app-lb|app-gen> <staged app directory>}
@@ -30,8 +32,6 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)/deploy/$APP"
 mkdir -p "$DIR"
 
 CHANGED=""
-INSTALL=0
-[ -d "$DIR/node_modules" ] || INSTALL=1
 for f in "$SRC"/*; do
   name=$(basename "$f")
   [ "$name" = node_modules ] && continue
@@ -42,11 +42,19 @@ for f in "$SRC"/*; do
   if ! cmp -s "$f" "$DIR/$name"; then
     cp "$f" "$DIR/$name"
     CHANGED="$CHANGED $name"
-    case "$name" in package.json|bun.lock) INSTALL=1 ;; esac
   fi
 done
-if [ "$INSTALL" = 1 ]; then
-  (cd "$DIR" && bun install --silent)
+# Installed means: an install succeeded for exactly this manifest.
+MANIFEST=$(cat "$DIR/package.json" "$DIR/bun.lock" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+MARKER="$DIR/node_modules/.stage-app-installed"
+if [ "$(cat "$MARKER" 2>/dev/null)" != "$MANIFEST" ]; then
+  LOCKED=""
+  [ -f "$DIR/bun.lock" ] && LOCKED=--frozen-lockfile
+  if ! (cd "$DIR" && bun install $LOCKED); then
+    echo "stage-app: bun install failed in $DIR; refusing to deploy" >&2
+    exit 1
+  fi
+  echo "$MANIFEST" > "$MARKER"
 fi
 
 # The refusal: whatever happened above, deploy only the repo's sources.
@@ -64,4 +72,8 @@ for f in "$DIR"/*; do
   [ "$name" = node_modules ] && continue
   [ -e "$SRC/$name" ] || EXTRA="$EXTRA $name"
 done
-echo "staged deploy/$APP -> $DIR (updated:${CHANGED:- nothing}${EXTRA:+; not in the repo, left alone:$EXTRA})"
+if [ -n "$EXTRA" ]; then
+  echo "stage-app: $DIR holds files deploy/$APP does not:$EXTRA; the deploy would ship them; remove them and rerun" >&2
+  exit 1
+fi
+echo "staged deploy/$APP -> $DIR (updated:${CHANGED:- nothing})"

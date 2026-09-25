@@ -179,7 +179,7 @@
           "panic"
         ]
       },
-      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root is bounded at 30 s off the executor once it is requested (item 38). A termination signal requests it only through the signal task, which runs on that executor: a SIGTERM that arrives when every executor worker is already blocked is never observed, arms no bound, and the process waits for the platform's SIGKILL, as before item 38. The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
+      "limitations": "The binary's process root answers a critical exit with its own ordered stop and exits 1 naming the loop; every stop of that root is bounded at 30 s off the executor once it is requested (item 38). A termination signal requests it only through the signal task, which runs on that executor: a SIGTERM that arrives when every executor worker is already blocked is never observed, arms no bound, and the process waits for the platform's SIGKILL, as before item 38. The deadline's own stderr line names the stop's cause (the critical exit, or a signal's request) and is waited for at most 250 ms on a thread of its own, so a closed or full stderr cannot hold the exit. The deploy wrapper exits with the child's code after a served binary's death once it has been ready for 60 s, so Compute replaces it (item 39); Compute's replacement itself has no receipt until a cloud run.",
       "execution": "requires_final_head_receipt",
       "tests": [
         {
@@ -200,7 +200,7 @@
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "the_process_root_bounds_its_stop_off_the_executor",
-          "sha256": "6a069cd2b1f56941fc361c4e2782197f67fcd3879483b97dff44520401591b29"
+          "sha256": "d7c6beacafdae397a9fc96a2c49aa51d746b1cb88f273787b305e6e5551e4c97"
         },
         {
           "file": "src/tasks/exits/tests.rs",
@@ -211,6 +211,11 @@
           "file": "src/tasks/exits/tests.rs",
           "name": "the_stop_deadline_exits_even_when_stderr_is_closed",
           "sha256": "d7af0438bebbd9b6cf138b82ee5d88abe25331436d5557b1e02c05d6d92cd584"
+        },
+        {
+          "file": "src/tasks/exits/tests.rs",
+          "name": "the_stop_deadline_exits_even_when_stderr_is_full",
+          "sha256": "e4b4a7040dc6d72cc7e479225e20f62b388b130231c98d79438a687138a52e87"
         },
         {
           "file": "src/tasks/exits/tests.rs",
@@ -232,7 +237,7 @@
         {
           "file": "src/tasks/exits/tests.rs",
           "name": "helper_exit",
-          "sha256": "0b31f97cf7fb9c4b5e656fa2744753e61bfb6aa946515db6a6dbe64f908c906d"
+          "sha256": "f44f6303a27b120c5084ea48afbfdedf1b683745fc739bdd60c63b02a8bb0220"
         },
         {
           "file": "src/tasks/exits/tests.rs",

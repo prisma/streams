@@ -427,8 +427,9 @@ The campaign scripts deploy from copies of `deploy/<app>` under
 `$SOAK_HOME`; `bench/stage-app.sh` re-stages each copy from the repo before
 every deploy (`bench/soak/deploy-region.sh`, `mt-tenants.sh`,
 `wc-ladder.sh`, `bench/fleet/setup-fleet.sh`, `deploy-fleet.sh`) and
-refuses one that still differs. Any other deploy from a copied app
-directory must run it first.
+refuses one that still differs, holds a file the repo does not, or whose
+`bun install` has not succeeded for its manifest. Any other deploy from a
+copied app directory must run it first.
 
 Once a stop is requested — a critical loop's exit, or a SIGTERM/SIGINT the
 binary has observed — streams-slate bounds it at 30 s on a thread of its
@@ -516,7 +517,7 @@ drop writes that would have succeeded.
 | first requests after idle are slow | scale-to-zero wake + connection-pool warmup | expected; the 4 s pool idle timeout (§3.1) exists for exactly this |
 | a URL that worked before now 503s, service looks healthy | **preview domains are per-version**: a redeploy mints a new one and retires the old | re-resolve after every deploy: `compute versions list --project P --service S \| awk '$2=="running"{print $3}'` |
 | domain returns a JSON `binary_exited` body | the binary died at boot — before it ever accepted on `$PORT`, or within its first 60 s — and the wrapper holds the port to explain it | read `exitCode` + `stderrTail` in the body — usually a missing required env var, wrong arch, or a store it cannot open |
-| instance replaced (exit 1); its log has `critical task <name> exited while the runtime was running: <outcome>; requesting the ordered stop, bounded at 30s` | a critical loop ended after the binary had been serving for 60 s: the process root stopped the runtime and exited 1 (item 38), and the wrapper exited with it, so Compute reprovisioned (item 39) | that line names the loop and how it ended; read the loop's own error line before it. The log usually ends in `Error: critical task <name> …`, but a stop that outlives its 30 s bound ends in `stop deadline: a stop was requested 30s ago and has not finished; exiting …` with no `Error:` line, so the escalation line is the record of the cause. The same exit within the first 60 s (e.g. `usage-rollup` with `ROLLUP=1` and a rollup DB the instance cannot open) is held as a `binary_exited` body instead; a loop that fails the same way after every boot can still end as the crash-loop zombie (first row), so fix its cause |
+| instance replaced (exit 1); its log has `critical task <name> exited while the runtime was running: <outcome>; requesting the ordered stop, bounded at 30s` | a critical loop ended after the binary had been serving for 60 s: the process root stopped the runtime and exited 1 (item 38), and the wrapper exited with it, so Compute reprovisioned (item 39) | that line names the loop and how it ended; read the loop's own error line before it. The log usually ends in `Error: critical task <name> …`, but a stop that outlives its 30 s bound ends in `stop deadline: a stop was requested 30s ago and has not finished (cause: critical task <name> …); exiting` on stderr with no `Error:` line; that line and the escalation line both name the cause. The same exit within the first 60 s (e.g. `usage-rollup` with `ROLLUP=1` and a rollup DB the instance cannot open) is held as a `binary_exited` body instead; a loop that fails the same way after every boot can still end as the crash-loop zombie (first row), so fix its cause |
 | parallel deploys fail with `EEXIST` | concurrent `bunx` invocations race on the shared package cache | fan out regions **sequentially**, or pre-warm with one call |
 | `--service` calls all fail after a scripted deploy | the script captured the **version** id (`cpv_…`) that `deploy` prints, not the **service** id (`cps_…`) | take service ids from `services list` only |
 

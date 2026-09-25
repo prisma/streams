@@ -61,8 +61,10 @@ is never replaced, where the old binary at least kept serving. The
 campaign scripts deploy from copies of these directories under
 `$SOAK_HOME` (they carry `node_modules`), and a copy staged before item 39
 still holds every death. `bench/stage-app.sh <app> <dir>` re-stages a copy
-from here, every file except `node_modules`, installs dependencies when
-they are missing or changed, and fails if any file still differs;
+from here, every file except `node_modules`, runs `bun install` until
+one has succeeded for the staged manifest (a failure is shown and retried
+by the next run), and fails if any file still differs or the copy holds a
+file this directory does not (the deploy would ship it);
 `bench/soak/deploy-region.sh`, `mt-tenants.sh`, `wc-ladder.sh`,
 `bench/fleet/setup-fleet.sh` and `deploy-fleet.sh` run it before every
 deploy. Run it yourself before deploying any other copy.

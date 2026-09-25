@@ -277,15 +277,21 @@ const WEDGED: &str = "executor wedged";
 /// The bounded root's escalation, logged with its cause (name and outcome).
 const CAUSE_LOGGED: &str = "critical task fleet exited while the runtime was running: \
      Failed(\"gone\"); requesting the ordered stop, bounded at 200ms";
-const EXPIRED: &str = "stop deadline: a stop was requested 200ms ago and has not finished; \
-     exiting (a critical exit that caused it is logged above)";
+/// The deadline's own line, with the stop's cause: a signal's request here.
+const EXPIRED: &str = "stop deadline: a stop was requested 200ms ago and has not finished \
+     (cause: a termination signal requested it); exiting";
+/// The deadline's line after a critical exit names that exit.
+const EXPIRED_CAUSE: &str = "(cause: critical task fleet exited while the runtime was running: \
+     Failed(\"gone\")); exiting";
 
-/// Whether the parent keeps reading the helper's stderr, or closes its read
-/// end at once so that every later write to it fails (EPIPE).
+/// Whether the parent keeps reading the helper's stderr, closes its read
+/// end at once so that every later write to it fails (EPIPE), or keeps it
+/// open, unread and full, so that every later write to it blocks.
 #[derive(PartialEq)]
 enum Stderr {
     Read,
     Closed,
+    Full,
 }
 
 /// Kills and reaps the helper on every exit path.
@@ -319,12 +325,27 @@ fn drained(helper: &mut Helper) -> String {
 /// write ends, so a drain would never return (skeptic C1).
 async fn helper_exit(how: &str, stderr: Stderr) -> (Option<i32>, String) {
     let exe = std::env::current_exe().expect("test binary path");
+    // Full: `yes` fills the pipe, then blocks while `reader` stays open
+    // and unread, so every later write to it blocks too.
+    let (reader, writer) = std::io::pipe().expect("a pipe for the helper's stderr");
+    let (child_stderr, _filler) = if stderr == Stderr::Full {
+        let filler = Command::new("yes")
+            .stdout(Stdio::from(
+                writer.try_clone().expect("the pipe's write end"),
+            ))
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the pipe's filler");
+        (Stdio::from(writer), Some(Helper(filler)))
+    } else {
+        (Stdio::piped(), None)
+    };
     let child = Command::new(exe)
         .args([HELPER_TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env_clear()
         .env(HELPER_MARKER, how)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(child_stderr)
         .spawn()
         .expect("spawn the stop-deadline helper");
     let mut helper = Helper(child);
@@ -344,6 +365,7 @@ async fn helper_exit(how: &str, stderr: Stderr) -> (Option<i32>, String) {
         drop(helper.0.kill());
         drop(helper.0.wait());
     }
+    drop(reader);
     let transcript = drained(&mut helper);
     let status =
         exited.unwrap_or_else(|_| panic!("the deadline never ended the helper:\n{transcript}"));
@@ -361,7 +383,7 @@ async fn the_process_root_bounds_its_stop_off_the_executor() {
     assert!(transcript.contains(ESCALATED), "{transcript}");
     assert!(transcript.contains(CAUSE_LOGGED), "{transcript}");
     assert!(transcript.contains(WEDGED), "{transcript}");
-    assert!(transcript.contains(EXPIRED), "{transcript}");
+    assert!(transcript.contains(EXPIRED_CAUSE), "{transcript}");
 }
 
 /// T7. Owner decision D1: a termination signal's request arms the same
@@ -382,6 +404,16 @@ async fn a_requested_stop_of_the_process_root_is_bounded_off_the_executor() {
 #[tokio::test]
 async fn the_stop_deadline_exits_even_when_stderr_is_closed() {
     let (code, transcript) = helper_exit("request", Stderr::Closed).await;
+    assert_eq!(code, Some(1), "{transcript}");
+    assert!(transcript.contains(WEDGED), "{transcript}");
+}
+
+/// T11. Nor does it wait for a message that cannot be written: with the
+/// helper's stderr a full pipe nobody reads, the deadline's write blocks,
+/// and the process still exits 1 shortly after its deadline.
+#[tokio::test]
+async fn the_stop_deadline_exits_even_when_stderr_is_full() {
+    let (code, transcript) = helper_exit("request", Stderr::Full).await;
     assert_eq!(code, Some(1), "{transcript}");
     assert!(transcript.contains(WEDGED), "{transcript}");
 }

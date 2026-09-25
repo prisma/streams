@@ -165,7 +165,12 @@ fn outcome_of(ended: &Result<TaskResult, Box<dyn Any + Send>>) -> TaskOutcome {
 /// Any other supervisor has no bound to arm.
 pub(super) fn arm_root_deadline(inner: &Inner) {
     if let Some(&deadline) = inner.root.get() {
-        inner.stop_armed.call_once(|| arm_stop_deadline(deadline));
+        // A critical exit records itself before it publishes the stop, so the
+        // cause at arm time is the stop's own; a signal's request has none.
+        let cause = inner.stop_cause.get().map(ToString::to_string);
+        inner
+            .stop_armed
+            .call_once(|| arm_stop_deadline(deadline, cause));
     }
 }
 
@@ -174,35 +179,58 @@ pub(super) fn arm_root_deadline(inner: &Inner) {
 /// whose root was asked to stop is ending either way, and so it also bounds
 /// the runtime's teardown after `run` returns, which otherwise waits for
 /// every blocking task. A thread that cannot be started cannot bound the
-/// stop, so the process ends at once instead (owner decision D3). The
-/// stop's cause, when a critical exit requested it, is already on the log.
+/// stop, so the process ends at once instead (owner decision D3). Its
+/// lines name the stop's cause, `cause` (a critical exit), or a signal's
+/// request, so the bound's own record does not depend on the stdout log.
 #[expect(
     clippy::disallowed_methods,
     reason = "arm_stop_deadline; the process root's bound on its ordered stop must run where a wedged executor cannot hold it, and it ends the process rather than being joined; a supervised task would share the executor it has to outlive"
 )]
-fn arm_stop_deadline(after: Duration) {
+fn arm_stop_deadline(after: Duration, cause: Option<String>) {
+    let cause = cause.unwrap_or_else(|| "a termination signal requested it".into());
+    let at_deadline = format!(
+        "stop deadline: a stop was requested {after:?} ago and has not finished \
+         (cause: {cause}); exiting"
+    );
     let armed = std::thread::Builder::new()
         .name("stop-deadline".into())
         .spawn(move || {
             std::thread::sleep(after);
-            exit_failed(format_args!(
-                "stop deadline: a stop was requested {after:?} ago and has not finished; \
-                 exiting (a critical exit that caused it is logged above)"
-            ));
+            exit_failed(at_deadline);
         });
     if let Err(error) = armed {
-        exit_failed(format_args!(
-            "stop deadline: cannot bound the requested stop ({error}); exiting now"
+        exit_failed(format!(
+            "stop deadline: cannot bound the requested stop ({error}; cause: {cause}); \
+             exiting now"
         ));
     }
 }
 
-/// Ends the process with code 1 after writing `line` to stderr, best effort:
+/// How long the process waits for its last stderr line before it exits
+/// anyway.
+const LAST_LINE_WAIT: Duration = Duration::from_millis(250);
+
+/// Ends the process with code 1, after writing `line` to stderr best effort:
 /// the bound must not depend on its message. `eprintln!` panics when the
-/// write fails (a closed pipe gives EPIPE), and a panic would end only the
-/// calling thread and leave the stop unbounded.
-fn exit_failed(line: std::fmt::Arguments<'_>) -> ! {
-    drop(writeln!(std::io::stderr(), "{line}"));
+/// write fails (a closed pipe gives EPIPE), and a write blocks for good on a
+/// full pipe nobody reads or behind another thread's held stderr lock; so
+/// the line is written on a thread of its own and waited for at most
+/// `LAST_LINE_WAIT`. With no thread to write it, the process ends silently.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "exit_failed; the process's last line is written on a thread of its own so a blocked stderr cannot hold the exit; the thread is never joined, since the process ends either way"
+)]
+fn exit_failed(line: String) -> ! {
+    let (written, heard) = std::sync::mpsc::channel();
+    let writer = std::thread::Builder::new()
+        .name("stop-deadline-line".into())
+        .spawn(move || {
+            drop(writeln!(std::io::stderr(), "{line}"));
+            drop(written.send(()));
+        });
+    if writer.is_ok() {
+        drop(heard.recv_timeout(LAST_LINE_WAIT));
+    }
     std::process::exit(1)
 }
 
