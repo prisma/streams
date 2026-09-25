@@ -964,7 +964,7 @@
         {
           "file": "src/shard/maintenance_tests.rs",
           "name": "a_receipted_advance_settles_only_after_its_group_is_durable",
-          "sha256": "59a946c996533694c358718727472b07c9a571ba067233044d454e4251dceea5"
+          "sha256": "6d7324cf78a3cfa500c80ff7c22d4147262c8c1de4e0a183b966bc720813bf43"
         },
         {
           "file": "src/shard/maintenance_tests.rs",

@@ -533,12 +533,20 @@ before marking it complete."
   to validate sustained churn beyond the ~905 s residence horizon and actual
   memory use in the Compute profile (≈36 first-seen projects/s at 32,768 is
   an estimate).
-- **Absorber receipt ordering.** A receipt settles only after
-  `dispatch_durable` has published the group's tails because the receipts
-  drop at the end of that loop's iteration. Make the drop explicit after the
-  tails loop, and make `shard::maintenance_tests` R5a assert on the first
-  observation of `settled` that the durable boundary is already published.
-  `src/shard.rs` is at its ceiling, so offset the line.
+- **Absorber receipt ordering (test done; explicit drop not possible).**
+  `a_receipted_advance_settles_only_after_its_group_is_durable` now asserts
+  the durable boundary is published at the first observation of `settled`.
+  That assertion is timing-bound: with the receipts dropped at the top of
+  the dispatch iteration instead it passed 60 of 60 runs. The explicit
+  `drop(group.effects.receipts)` after the tails loop grows
+  `ShardEngine::dispatch_durable`'s excepted scope (`unwrap_used`,
+  `let_underscore_must_use`, `cast_possible_truncation`,
+  `excessive_nesting`: one line, three syntax facts, an ordinary call), so
+  it needs an owner-approved growth row or a restructuring of that function
+  (for example moving the tail publication into a method that owns the
+  drop, which then needs its own lock-poisoning decision). The receipts
+  still drop at the end of the iteration, after the tails, as
+  `DurableEffects::receipts` documents.
 - **`parse_month` (done, edge change #59):** a signed month ("2026-+9")
   answered a zero row; it now requires ASCII digits and answers 400
   `invalid_month`.

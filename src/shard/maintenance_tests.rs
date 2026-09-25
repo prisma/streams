@@ -481,11 +481,12 @@ async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
     );
     assert_eq!(handle.state.lock().unwrap().durable.absorbed, 0);
     store.release_hold();
-    wait_for("the advance durable", || {
-        handle.state.lock().unwrap().durable.absorbed == 4
-    })
-    .await;
     wait_for("the durable advance settled", || submissions.settled(&h)).await;
+    let published = handle.state.lock().unwrap().durable.absorbed;
+    assert_eq!(
+        published, 4,
+        "an advance settled before its boundary was published"
+    );
     engine.begin_close();
 }
 
