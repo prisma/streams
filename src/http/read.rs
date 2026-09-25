@@ -151,11 +151,7 @@ fn raw_position_start(
         None => Ok(ReadStart::Beginning),
         Some("now") => Ok(ReadStart::Now),
         Some(raw) => {
-            let segmented = desc
-                .segments
-                .as_ref()
-                .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
-            if segmented {
+            if segmented(desc) {
                 let (segment, offset) =
                     crate::offsets::parse_ep(raw).map_err(|_| ReadFailure::InvalidCursor)?;
                 Ok(ReadStart::Position(ReadPosition {
@@ -294,11 +290,7 @@ async fn respond_read(
             .get("streams-internal-read-page")
             .and_then(|v| v.to_str().ok())
             == Some("1");
-    let segmented = command
-        .descriptor
-        .segments
-        .as_ref()
-        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
+    let segmented = segmented(&command.descriptor);
     match state.read_service().execute_read(command).await {
         Ok(out) if page => axum::Json(crate::application::read_remote::WireReadPage::from_outcome(
             &out,
@@ -405,6 +397,14 @@ pub(crate) fn read_payload(
     }
     body.freeze()
 }
+/// Whether the stream has split or is splitting, so its raw offsets name a
+/// segment: one rule for parsing a client's offset and rendering ours.
+fn segmented(desc: &StreamDesc) -> bool {
+    desc.segments
+        .as_ref()
+        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
+}
+
 fn raw_position(position: ReadPosition, segmented: bool) -> String {
     let offset = Offset::before(position.after);
     if segmented {
@@ -586,11 +586,7 @@ pub(crate) async fn serve_read_sse(
         None => return failure(ReadFailure::MissingKey),
     };
     let epoch = desc.epoch();
-    let segmented = desc
-        .segments
-        .as_ref()
-        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some());
-    if !segmented {
+    if !segmented(&desc) {
         let route = desc.resolve_segment(command.selector.as_deref().unwrap_or(""));
         let engine = match state
             .shards
