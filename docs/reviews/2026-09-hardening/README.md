@@ -61,6 +61,12 @@ The reviewer grouped the remaining work into four packages. Commits are on
    - Usage `?streamId=` read another stream's usage outside the prefix grant
      (found by item 73's review): now authorized by the name the rollup
      recorded for the id (7549e28a, e347fb1a; edge change #53).
+   - Second review (2026-09-25): project usage totals need an unrestricted
+     grant and a final-record seal needs the append scope (1d4d8660,
+     d58ebf15); the wrapper's held diagnostic is generic, it forwards the
+     platform's stop, and staging refuses hidden files (b7f6dc3a); a
+     recreation records the replaced incarnation's storage close as a
+     durable debt (2ba4bc47); item 50 option (a) (45f8711c).
    - The split-time 500 (release hold, below): 5a6f9f56, 9c6675d7, b5751e75,
      b2a8001f; and F3, a registry read failure in an append's retry
      re-preparation answered a non-retryable 500 at the split boundary
@@ -128,42 +134,79 @@ dropped gather and for an engine retirement that drops two chained advances.
 Pre-fix, the same overlap arose whenever a rescan rolled back first, and a
 refused chain left a phantom ledger instead. See docs/HISTORY-V2.md.
 
-Closure is the owner's call. The criterion (a causal fix plus a red
-regression) is met on the evidence above; the attribution stays probable.
+**Closed by the owner on 2026-09-25** (second external review of 9813d1cb):
+"Closed: a causal absorber-accounting defect matching the observed failure
+class is fixed and regression-covered. Attribution of the original incident
+remains probable." Limits that stay explicit:
 
-## Open for the owner
+- This was not a demonstrated append-during-split failure: the corrected
+  investigation places the 500 before the split, and the capacity test joins
+  its clients before splitting, so this evidence does not certify concurrent
+  append/split behaviour.
+- The two throughput-ratio misses (1.73 and 1.77 against 1.8) remain misses:
+  correctness acceptance and performance acceptance are separate, and
+  "consistent with host contention" is not a proven explanation.
+- The overlapping-postings residual is a separate issue, accepted for this
+  closure because the reader has a bounded canonical fallback
+  (`o4a_stored_overlapping_pages_cannot_skip_a_canonical_match` tests overlap
+  handling). Still to do: a composed test that creates the refused/chained
+  state and reads it through the public path; stale-page repair is scheduled.
 
-- Ratify or reverse edge changes #53 (usage `streamId`, high by the rubric),
-  #54 (F3, low) and #55 (raw close 409 -> 503, medium), each recorded by its
-  implementer in `edge-changes.md`.
-- Close HOLD-SPLIT-500, or name what else closure needs.
-- Project usage totals (`GET /v1/projects/{project}/usage`) answer any
-  `streams.usage.read` credential whatever its prefix grant, so a
-  prefix-limited credential can subtract its streams from the total
-  (pre-existing, low): refuse it for prefix-limited credentials, or document
-  that project totals are visible to any usage reader.
-- `:seal` with a `final` body appends a record under
-  `streams.lifecycle.manage` alone (pre-existing): whether it should also
-  demand `streams.records.append`.
-- The effective-configuration decisions (`effective-config-diff.md`), bug #7
-  migration design (a boot-time copy is a startup rewrite), item 40's drain
-  scope, item 50's sizing, F2 (a retiring engine's written group) and F1's
-  cross-instance route (both have plans).
+## Owner decisions from the second external review (2026-09-25)
+
+| Question | Decision | State on `slate` |
+| --- | --- | --- |
+| Edge #53 usage `?streamId=` | Ratified | 7549e28a, e347fb1a |
+| Edge #54 F3 retry re-preparation | Ratified | 0f4cd8c1 |
+| Edge #55 transient raw close | Ratified; normalize the owed-claim renewal failure | 839135a4; renewal failure now 503 `seal_incomplete` (1d4d8660) |
+| HOLD-SPLIT-500 | Closed (narrow claim, above) | 5a6f9f56..b2a8001f, 882004d9 |
+| Restricted credentials and project-wide usage | Denied: `usage.read` AND an unrestricted effective grant | 1d4d8660 (edge #56) |
+| `:seal` with a final record | Needs `lifecycle.manage` AND `records.append` | 1d4d8660, d58ebf15 (edge #57) |
+| Staging hidden files, stray entries | Refuse before install; fresh allowlisted directory | b7f6dc3a |
+| Held wrapper diagnostic | Generic and unhealthy; details only in the log | b7f6dc3a |
+| Wrapper signal forwarding | Bounded forwarding | b7f6dc3a (Compute lifecycle still to verify) |
+| Idle-expiry recreation billing | Release blocker: durable, generation-fenced cleanup obligation | 2ba4bc47 (closure debts) |
+| Item 50 | Option (a): preserve live bindings, cap 32,768, reject `HANDLE_IDLE_EVICT_SECS=0` | 45f8711c (holder rule added beside the counted pin; the pin's full retirement not done) |
+| Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |
+| Bug #7 | Option (b), explicit migration; activation gated on a real-DB rehearsal | Not started |
+| Item 40 | Separate Critical heartbeat, progress and eligibility | Not started |
+| F1 | Authenticated fleet-internal seal-fence operation | Not started |
+| F2 | Keep the unknown-outcome model; public append/seal plus successor composition test | Not started |
+
+### Deployment gates (block deployment sign-off, not merging)
+
+- Compute validation of the wrapper -> binary -> platform lifecycle (startup,
+  readiness, restart, signal delivery, memory pressure, rollback).
+- The Compute deployment owner enumerates every target project and exports
+  its redacted configuration; comparison and boot validation re-run on the
+  final candidate with the actual persisted namespace constraints (the
+  archived comparison's "HEAD" is an earlier revision).
+- A release-posture Compute family (production fleet authentication, usage
+  and audit configuration); the static fleet-auth bridge stays a benchmark
+  exception.
+- Upstream idle compatibility with the 120 s header timeout, with margin, or
+  an explicit validated timeout.
+- Bug #7 rehearsal on a consistent copy of a real rollup database before its
+  format-changing activation.
+- Release-wide verification on one final artifact: the mutation campaign over
+  the whole hardening range, including billing, rollup, product and usage
+  owners the per-push plan does not select. Per-push runs so far (for
+  example 81 mutants over 26c555dd..9813d1cb) are not that campaign.
 
 ## Follow-ups found in review, not done
 
-- Recreating a name over an incarnation that expired while idle never closes
-  that incarnation's billing gauge, so month close keeps carrying its storage
-  (pre-existing, medium; wider than the crash-only residual `tombstone_walk`
-  accepts).
-- A heal after a refused chain should delete the stream's stale postings
-  pages in [durable, mark) (the residual above).
+- Typed classification of an append's first registry read: a transient store
+  failure still answers 500 there (F3 plan D2). Today the registry reports an
+  injected or real store failure and a descriptor corruption with the same
+  error shape, so the fix needs a typed registry read error first; corruption
+  must stay a fail-closed 500.
+- Stale-page repair after a refused chain: a heal should delete the stream's
+  stale postings pages in [durable, mark), plus the composed public-read test.
+- Item 50's plan retires the counted admission pin in favour of the holder
+  rule alone; the holder rule now sits beside the pin.
+- Closure debts (2ba4bc47): tests for month crossing, owner movement mid-debt
+  and a crash between the debt write and the replacing write.
 - `parse_month` accepts a `+` sign ("2026-+9"), answering a zero row instead
   of 400 `invalid_month` (pre-existing, low).
-- An append's first registry read still answers 500 on a transient store
-  failure (F3 plan D2); a close's failed renewal of an owed claim answers 503
-  `internal` where its intent failure answers 503 `seal_incomplete`.
-- The deploy wrapper does not forward SIGTERM/SIGINT to the binary
-  (pre-existing).
 - `dst::dst_tests::admission_maintenance::first_request_waits_for_restoration_then_sees_the_restored_ledger`
   orders its request with fixed sleeps and failed once under host load.
