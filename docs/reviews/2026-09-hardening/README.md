@@ -20,7 +20,10 @@ repository rather than in a session scratchpad.
 | `report/external-review-claims.json` | The reviewer's claims, each checked against the tree by independent read-only passes. |
 | `edge-changes.md` | A before/after contract record for each of the 52 edge changes, grouped by risk (5 high, 11 medium, 36 low), each checked against its commit. One record (#45) did not match its recorded text: an infinite scaler cooldown disables a stream's first transition too, not only re-scaling. |
 | `effective-config-diff.md` | The old-vs-new (v0.2.0-rc.4 vs HEAD) effective-configuration comparison for every deployment family: verdicts, changed fields, notices, and what the owner must decide before deploy (evidence in `evidence/effective-config/2026-09-24/`). |
-| `plans/` | The implementation plans the program worked from (68 files, one directory per planning round). Each plan names the tree it was written against; line numbers and scratch paths are as of that tree. |
+| `NEXT-WORK.md` | The handoff: every task not done after the second external review, in the owner's priority order, with the owner's decision text, current state, design, tests and gates for each. |
+| `plans/` | The implementation plans the program worked from, one directory per planning round (`plans18`-`plans20` hold the item 40, item 50, 38/39, absorber, F1, F2, F3, bug #7 and effective-config plans). Each plan names the tree it was written against; line numbers and scratch paths are as of that tree. |
+| `evidence/split-investigation.json` | The split-boundary investigation and its skeptic's corrections (the hold's timing figures, F1, F2, F3). |
+| `evidence/refused-chain-probe.patch` | The review probe that builds a refused chain's overlapping postings pages (NEXT-WORK item 1). |
 | `evidence/gate-b12-capacity-leg-500.log` | The failed local gate leg: one append answered 500 right after a split in `post_split_throughput_scales` (the release hold). |
 | `evidence/gate-b12-gate-output.txt` | The whole gate run that leg belongs to. |
 

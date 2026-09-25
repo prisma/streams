@@ -1,0 +1,128 @@
+diff --git a/src/history/bounded_discovery_tests.rs b/src/history/bounded_discovery_tests.rs
+index 2343eb30..f54927e5 100644
+--- a/src/history/bounded_discovery_tests.rs
++++ b/src/history/bounded_discovery_tests.rs
+@@ -481,3 +481,123 @@ async fn a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber() {
+     assert!(pages_tile(&engine, x).await, "X's postings pages overlap");
+     engine.begin_close();
+ }
++
++// ---- review probes (not for commit) --------------------------------------
++
++/// Probe F1: G1 [0,4) waits in the held committer; G2 chains from G1's mark
++/// ([4,8)), as an unsettled stream must; the group carrying both is refused.
++/// Both receipts settle, the next gather rolls the mark back and heals from
++/// the durable boundary. The ledger is exact, but G2's pages are still in
++/// the partition and overlap the heal's.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn probe_a_refused_chain_heals_with_overlapping_pages() {
++    let (engine, absorber, store) = rig("probe-refused-chain").await;
++    let hash = [0x4a; 16];
++    let handle = engine.stream_handle(hash).await.unwrap();
++    let mut stored = Vec::new();
++    for _ in 0..4 {
++        append_stored(&engine, hash, &mut stored).await;
++    }
++    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
++    let held: Vec<_> = (0..4).map(|_| enqueue_record(&engine, hash)).collect();
++    wait_until("four records applied behind a held WAL write", || {
++        engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1
++            && handle.state.lock().unwrap().applied.next == 8
++    })
++    .await;
++    let gate = engine.test_hold_commit().await;
++    let g1 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
++    assert_eq!(g1.advanced.first().map(|a| a.1), Some(4), "G1 gathers [0, 4)");
++    store.release_hold();
++    for answer in held {
++        answer.await.unwrap().unwrap();
++    }
++    for offset in 4..8 {
++        stored.push(stored_len(&engine, &hash, offset).await.unwrap());
++    }
++    let g2 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
++    assert_eq!(g2.advanced.first().map(|a| a.1), Some(8), "G2 chains [4, 8)");
++    engine.fail_next_absorbed_group();
++    drop(gate);
++    wait_until("the chained group refused", || engine.group_failures_tripped() >= 1).await;
++    append_stored(&engine, hash, &mut stored).await; // offset 8, FIFO behind the refusal
++    let g3 = absorber.absorb_gather_v2(&[hash]).await.unwrap();
++    eprintln!("PROBE F1 G3 advanced={:?}", g3.advanced);
++    append_stored(&engine, hash, &mut stored).await; // offset 9, FIFO behind G3
++    let tail = applied_tail(&engine, hash).await;
++    eprintln!(
++        "PROBE F1 tail absorbed={} next={} ledger={} stored[9]={} shard={}",
++        tail.absorbed,
++        tail.next,
++        tail.unabsorbed_bytes,
++        stored[9],
++        engine.maintenance_snapshot().unabsorbed_frame_bytes
++    );
++    assert_eq!(tail.absorbed, 9, "the refused chain was not healed");
++    assert_eq!(tail.unabsorbed_bytes, stored[9], "the healed ledger is not exact");
++    let part = engine.history_partition().await.unwrap();
++    let before = POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed);
++    let (frames, _, _) = read_history2(
++        &part,
++        RouteHash(hash),
++        SegmentHash(hash),
++        0,
++        9,
++        Some(""),
++        1 << 20,
++    )
++    .await
++    .unwrap();
++    let after = POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed);
++    let tiles = pages_tile(&engine, hash).await;
++    eprintln!(
++        "PROBE F1 keyed read frames={} POSTINGS_CORRUPT delta={} pages_tile={tiles}",
++        frames.len(),
++        after - before
++    );
++    engine.begin_close();
++    assert!(tiles, "the healed stream's postings pages overlap");
++}
++
++/// Probe F2: a quiet refused stream X whose bucket-mate Y has an advance in
++/// flight is classified no_work although its durable backlog [0, 4) is
++/// unabsorbed; the worker then drops X from pending until the next rescan.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn probe_a_quiet_refused_stream_is_no_work_under_a_busy_bucket() {
++    let (engine, absorber, _store) = rig("probe-quiet-refused").await;
++    let x = [0x58; 16];
++    let mut y = [0x33; 16];
++    y[14] = 0x58;
++    y[15] = 0x58;
++    let (mut xs, mut ys) = (Vec::new(), Vec::new());
++    for _ in 0..4 {
++        append_stored(&engine, x, &mut xs).await;
++    }
++    engine.fail_next_absorbed_group();
++    let g1 = absorber.absorb_gather_v2(&[x]).await.unwrap();
++    assert_eq!(g1.advanced.first().map(|a| a.1), Some(4));
++    wait_until("X's group refused", || engine.group_failures_tripped() >= 1).await;
++    append_stored(&engine, y, &mut ys).await; // FIFO behind the refusal
++    let gate = engine.test_hold_commit().await;
++    let gy = absorber.absorb_gather_v2(&[y]).await.unwrap();
++    assert_eq!(gy.advanced.first().map(|a| a.1), Some(1));
++    let gx = absorber.absorb_gather_v2(&[x]).await.unwrap();
++    let tx = applied_tail(&engine, x).await;
++    eprintln!(
++        "PROBE F2 gx advanced={:?} no_work={:?} deferred={:?}; X tail absorbed={} next={} ledger={}",
++        gx.advanced.len(),
++        gx.no_work.len(),
++        gx.deferred_budget.len(),
++        tx.absorbed,
++        tx.next,
++        tx.unabsorbed_bytes
++    );
++    drop(gate);
++    engine.begin_close();
++    assert!(
++        !gx.no_work.contains(&x),
++        "a stream with durable backlog [{}, {}) was classified no_work",
++        tx.absorbed,
++        tx.next
++    );
++}
