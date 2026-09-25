@@ -43,6 +43,24 @@ defined here.
 
 ## Numeric domains
 
+### ASM-LINEAGE-CONTRACT
+
+- **Scope:** KANI-005.
+- **Statement:** a lineage handed to `locate_in_spans` is nonempty, its first
+  span starts at logical 0, each next span starts where the previous sealed
+  span ends, every span but the tail is sealed (has a cap), and no span's
+  start plus cap exceeds `u64::MAX`.
+- **Origin:** `Lineage::build` in `src/sse/source.rs`: it lays spans out from
+  `let mut logical = 0u64` and advances `logical += c` by each sealed cap, and
+  it refuses a lineage with a live span before the tail
+  (`LineageBuildError::IncompatibleTopology`). The single-segment source's
+  `span_sig` is the one span `(seg, 0, None)`.
+- **Enforcement / evidence:** KANI-005 quantifies over one to four spans built
+  that way with full-width caps. `build` refuses an empty lineage ("lineage has
+  no span for the lane's key point"). Not proved: that `logical += c` cannot
+  overflow (an unchecked add over sealed caps, which are record counts); the
+  harness assumes it.
+
 ### ASM-OFFSET-DOMAIN
 
 - **Scope:** KANI-001, KANI-002, KANI-003.

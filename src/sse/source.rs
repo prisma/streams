@@ -956,3 +956,6 @@ use spans::{locate_in_spans, remote_span_verdict};
 #[cfg(test)]
 #[path = "source/tests.rs"]
 mod tests;
+
+#[cfg(kani)]
+mod proofs;

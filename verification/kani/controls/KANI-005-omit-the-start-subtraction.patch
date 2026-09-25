@@ -1,0 +1,12 @@
+diff --git a/src/sse/source/spans.rs b/src/sse/source/spans.rs
+--- a/src/sse/source/spans.rs
++++ b/src/sse/source/spans.rs
+@@ -22,7 +22,7 @@
+             _ => {
+                 return WirePosition {
+                     seg_id: *seg,
+-                    local_after: logical_after - start,
++                    local_after: logical_after,
+                 };
+             }
+         }

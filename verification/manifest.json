@@ -170,6 +170,67 @@
       ]
     },
     {
+      "id": "KANI-005",
+      "kind": "kani",
+      "title": "Logical-to-segment span positioning",
+      "status": "pass-with-recorded-scope",
+      "owner": "SSE lineage source",
+      "source_paths": [
+        "src/sse/source/spans.rs"
+      ],
+      "verification_paths": [
+        "src/sse/source/proofs.rs"
+      ],
+      "requirements": [
+        "H9"
+      ],
+      "models": [
+        "TLA-012",
+        "TLA-015",
+        "TLA-021",
+        "TLA-027"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER",
+        "ASM-LINEAGE-CONTRACT"
+      ],
+      "input_scope": "locate_in_spans over one to four spans laid out as Lineage::build does (first at 0, contiguous sealed caps, only the tail live) with full-width caps and every u64 logical position",
+      "checks": [
+        {
+          "id": "KANI-005/positions",
+          "role": "baseline",
+          "harness": "sse::source::proofs::kani_005_a_position_maps_to_the_span_that_holds_it",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-005/nc-inclusive-sealed-end",
+          "role": "negative-control",
+          "harness": "sse::source::proofs::kani_005_a_position_maps_to_the_span_that_holds_it",
+          "patch": "verification/kani/controls/KANI-005-inclusive-sealed-end.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a sealed span below the tail holds only positions before its end"
+          }
+        },
+        {
+          "id": "KANI-005/nc-omit-the-start-subtraction",
+          "role": "negative-control",
+          "harness": "sse::source::proofs::kani_005_a_position_maps_to_the_span_that_holds_it",
+          "patch": "verification/kani/controls/KANI-005-omit-the-start-subtraction.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the local offset is relative to its span's start"
+          }
+        }
+      ],
+      "regressions": [
+        "sse::source::tests::linearized_cursor_space_roundtrips"
+      ]
+    },
+    {
       "id": "KANI-036",
       "kind": "kani",
       "title": "Producer stale-epoch and new-epoch admission",

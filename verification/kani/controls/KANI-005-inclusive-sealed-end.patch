@@ -1,0 +1,12 @@
+diff --git a/src/sse/source/spans.rs b/src/sse/source/spans.rs
+--- a/src/sse/source/spans.rs
++++ b/src/sse/source/spans.rs
+@@ -18,7 +18,7 @@
+ ) -> WirePosition {
+     for (seg, start, cap) in spans {
+         match cap.map(|c| start + c) {
+-            Some(e) if logical_after >= e => continue,
++            Some(e) if logical_after > e => continue,
+             _ => {
+                 return WirePosition {
+                     seg_id: *seg,

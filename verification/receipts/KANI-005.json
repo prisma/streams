@@ -1,0 +1,107 @@
+{
+  "checks": [
+    {
+      "check": "KANI-005/positions",
+      "covers": 4,
+      "covers_satisfied": 4,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "08fd5a8e64afe0e2e716eb807327a88717010c13680306df51d7df42eb73b083",
+      "role": "baseline",
+      "seconds": 89.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-005/nc-inclusive-sealed-end",
+      "covers": 4,
+      "covers_satisfied": 3,
+      "expected": "fail:a sealed span below the tail holds only positions before its end",
+      "failed_checks": [
+        "\"a sealed span below the tail holds only positions before its end\""
+      ],
+      "log_sha256": "63cf04cc35aec41cf58857792082cebe5938f6ee7eaa1b4a6e4088bc11a8a384",
+      "mutated": {
+        "src/sse/source/spans.rs": {
+          "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
+          "control": "52aab2d7c7a7b6146d03b5eea6cc951cb4deb2494c1adf0bc719eaff0e9b8c04"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 82.0,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-005/nc-omit-the-start-subtraction",
+      "covers": 4,
+      "covers_satisfied": 4,
+      "expected": "fail:the local offset is relative to its span's start",
+      "failed_checks": [
+        "\"the local offset is relative to its span's start\""
+      ],
+      "log_sha256": "40a98cbaa18d59559c7152db8cbe84def7c82cf8b860bf3a0b477c378e99e5c4",
+      "mutated": {
+        "src/sse/source/spans.rs": {
+          "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
+          "control": "ea616b419965e0d31776d849c2fe6ac6863216042575d195757a9d217bdc9369"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 78.2,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-005",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
+      "ASM-LINEAGE-CONTRACT": "ce6f37d8d180ff751216f81cd4f7df089b1a743437c7fd52e895f1266c41ad90"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/sse/source/proofs.rs": "1208aed7d27bf84facbb400465ad281ad45a4d54502be6ab2c33ce979de3c08c",
+      "src/sse/source/spans.rs": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
+      "verification/kani/controls/KANI-005-inclusive-sealed-end.patch": "22f65bf26bf482be629f9776601d35ba3b236c46b2e21c1a82e758c725f19d0e",
+      "verification/kani/controls/KANI-005-omit-the-start-subtraction.patch": "a025b99bde16bca4cbc1d6a406702d3f83c7d7f9604720b2bbc13b04c36b2e62"
+    },
+    "manifest_entry": "d0751145b1237d370edcb97d0f4bb96c5ea1a593702616f8b748cd14ba9ddeeb",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "4f43c38459d509c90870641c8c473043d2fdce687c6e5f7a3255796549226383",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "7499ec194cf16e2b64c14e2439edbd8cddda39ea"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

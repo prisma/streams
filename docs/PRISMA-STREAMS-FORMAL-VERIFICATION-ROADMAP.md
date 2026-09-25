@@ -110,6 +110,7 @@ design check (§7.7).
 | KANI-001 | pass-with-recorded-scope | 1 / 1 / 0 | Offset round trip over every segment ordinal below 2^30 and every `u64` `next` (`src/offsets/proofs.rs`), retargeted to slate's codec at the merge; the full-width finding is open (§0.4). The `String` wrapper stays with the unit tests (ASM-OFFSET-DOMAIN). | to be recorded at `d83af9a4` | — |
 | KANI-002 | pass-with-recorded-scope | 1 / 1 / 0 | `-1` and `next` 0 name start-of-stream; a token resumes at its `next`, `u64::MAX` included. | to be recorded at `d83af9a4` | — |
 | KANI-003 | pass-with-recorded-scope | 1 / 1 / 0 | Token injectivity and order below 2^30. | to be recorded at `d83af9a4` | — |
+| KANI-005 | pass-with-recorded-scope | 1 / 2 / 0 | `locate_in_spans` (`src/sse/source/proofs.rs`) over one to four spans laid out as `Lineage::build` lays them (first at 0, contiguous sealed caps, only the tail live) with full-width caps and every `u64` position: the answer's span starts at or before the position, its local offset is relative to that start, a sealed span below the tail holds only positions before its end, and no earlier sealed span holds it (so a one-past boundary belongs to the next span at local zero). | recorded with its commit | ASM-LINEAGE-CONTRACT |
 | KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | to be recorded at `d83af9a4` | — |
 | KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | to be recorded at `d83af9a4` | — |
 | KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | to be recorded at `d83af9a4` | — |
@@ -1301,6 +1302,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 <a id="kani-005"></a>
 ### KANI-005 — Logical-to-segment span positioning
+
+**Status:** pass-with-recorded-scope (implemented 2026-09-25; manifest entry KANI-005, 1 baseline and 2 negative controls: an inclusive sealed end, and an omitted start subtraction). The constructor contract is assumed, not proved (ASM-LINEAGE-CONTRACT): `build` refuses an empty lineage and a live span before the tail, but its `logical += c` is an unchecked add. No finding in `locate_in_spans` itself.
 
 **Priority:** P1 · **Build route:** Direct  
 **Source owners:** [`src/sse/source/spans.rs`](src/sse/source/spans.rs); [`src/application/read_range.rs`](src/application/read_range.rs)
