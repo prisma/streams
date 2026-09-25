@@ -203,12 +203,13 @@ remains probable." Limits that stay explicit:
   injected or real store failure and a descriptor corruption with the same
   error shape, so the fix needs a typed registry read error first; corruption
   must stay a fail-closed 500.
-- Stale-page repair after a refused chain: a heal should delete the stream's
-  stale postings pages in [durable, mark), plus the composed public-read test.
+- Stale-page repair after a refused chain: superseded by d16559b3 (readers
+  admit agreeing overlaps); the composed public-read test is b059e4a2.
 - Item 50's plan retires the counted admission pin in favour of the holder
   rule alone; the holder rule now sits beside the pin.
-- Closure debts (2ba4bc47): tests for month crossing, owner movement mid-debt
-  and a crash between the debt write and the replacing write.
+- Closure debts (2ba4bc47; the settlement pass's starvation fixed in
+  40dbf0d3): tests for month crossing, owner movement mid-debt and a crash
+  between the debt write and the replacing write.
 - `parse_month` accepts a `+` sign ("2026-+9"), answering a zero row instead
   of 400 `invalid_month` (pre-existing, low).
 - `dst::dst_tests::admission_maintenance::first_request_waits_for_restoration_then_sees_the_restored_ledger`

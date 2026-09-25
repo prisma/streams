@@ -124,6 +124,14 @@ before writing):
 
 ## 1. Composed test: a refused chain's overlapping pages read exactly
 
+**Done: b059e4a2** (`history::bounded_discovery_tests::a_refused_chains_overlapping_pages_still_read_exactly`).
+The merge of `slate-kani-and-tla` changed the premise below: readers now admit
+an overlapping page whose offsets agree with those already admitted (d16559b3),
+so the refused-chain state no longer falls back to the envelope scan. The test
+pins exact reads through `read_history2` and `read_history2_keyed_cached` and
+honest paging under a small budget. The text below is kept as the original
+handoff.
+
 **Owner decision.** Part of closing HOLD-SPLIT-500: "Add the composed test that
 creates the specific refused/chained-advance state and reads it through the
 public path. Preserve exact filtering, honest continuation cursors, and
@@ -197,7 +205,9 @@ terminal path closes it); otherwise close each owned segment at the debt's
 finds nothing open; the last settlement deletes the debt. Test:
 `dst::dst_tests::billing_controller::a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage`.
 
-**Bug to fix first (medium).** `Registry::replaced_page` lists the whole
+**Bug fixed: 40dbf0d3** (the pass now resumes from a cursor on
+`BillingService`; test `the_closure_debt_pass_reaches_a_debt_behind_waiting_ones`).
+Original note: **Bug to fix first (medium).** `Registry::replaced_page` lists the whole
 prefix, sorts, and keeps the first 64 debts. `settle_replaced` therefore
 always examines the same first 64. Debts that stay waiting (their
 incarnation is still stored and dead, or their segments belong to other
@@ -450,6 +460,12 @@ which bucket, who runs it; plan D8).
 ---
 
 ## 8. Stale-page repair after a refused chain
+
+**Superseded by the merge (d16559b3):** a reader admits an overlapping page
+whose offsets agree with those already admitted and keeps the part past them;
+only a disagreeing overlap is still corruption (envelope fallback). Repair is
+needed only if a schedule can produce a disagreeing overlap; that is the
+question left. The text below is kept as the original handoff.
 
 **Owner decision.** "Schedule stale-page repair, but do not keep the original
 hold open indefinitely."
