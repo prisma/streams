@@ -739,25 +739,9 @@ impl PersistedDescriptor {
         let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
         let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
         if let Some(map) = &self.segments {
-            // Live segment containing the point; a well-formed map has
-            // exactly one. A malformed map (no live cover) falls back to
-            // sealed-any-cover so the caller's refresh path can heal.
-            let live = map
-                .segments
-                .iter()
-                .find(|s| s.is_live() && s.contains(point));
-            // No live cover = mid-transition (a seal published before
-            // its successors, or a scaler died between the two): pick
-            // the NEWEST sealed cover — the deepest lineage point, the
-            // one whose successor the refresh will reveal — never a
-            // long-superseded ancestor.
-            let chosen = live.or_else(|| {
-                map.segments
-                    .iter()
-                    .filter(|s| s.contains(point))
-                    .max_by_key(|s| (s.created_ms, s.seg_id))
-            });
-            if let Some(seg) = chosen {
+            // The live cover, or mid-transition the newest sealed one, so
+            // the caller's refresh path can heal.
+            if let Some(seg) = map.route(point) {
                 let shard_route = self.segment_route(seg);
                 return SegRoute {
                     seg_id: seg.seg_id,

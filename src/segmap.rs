@@ -55,18 +55,16 @@ impl SegmentDesc {
 
 impl SegmentDesc {
     /// Each edge must preserve allocation order, overlap and seal authority.
-    fn validate_lineage(&self, map: &SegmentMap) -> Result<(), String> {
-        use std::collections::HashSet;
+    fn validate_lineage(&self, map: &SegmentMap) -> Result<(), TopologyError> {
         let parents = self.predecessors.iter().map(|id| (id, false));
         let children = self.successors.iter().map(|id| (id, true));
-        let mut seen = HashSet::new();
+        // At most two parents and two children: a scan, not a hashed set.
+        let mut seen = Vec::new();
         for (id, successor) in parents.chain(children) {
-            if !seen.insert((successor, *id)) || *id == self.seg_id {
-                return Err(format!(
-                    "segment {} has duplicate/self reference",
-                    self.seg_id
-                ));
+            if seen.contains(&(successor, *id)) || *id == self.seg_id {
+                return Err(TopologyError::RepeatedReference(self.seg_id));
             }
+            seen.push((successor, *id));
             // Allocation order: a successor is newer and a predecessor older.
             let reversed = if successor {
                 *id <= self.seg_id
@@ -78,27 +76,19 @@ impl SegmentDesc {
             let other = match map.get(*id) {
                 Some(other) => other,
                 None if !successor && !reversed => continue,
-                None => {
-                    return Err(format!(
-                        "segment {} references missing segment {id}",
-                        self.seg_id
-                    ));
-                }
+                None => return Err(TopologyError::MissingReference(self.seg_id, *id)),
             };
             if reversed {
-                return Err(format!(
-                    "segment {} has cyclic/reversed lineage",
-                    self.seg_id
-                ));
+                return Err(TopologyError::ReversedLineage(self.seg_id));
             }
             if other.lo >= self.hi || self.lo >= other.hi {
-                return Err("lineage ranges do not overlap".into());
+                return Err(TopologyError::DisjointLineage);
             }
             if successor && !other.predecessors.contains(&self.seg_id) {
-                return Err("successor does not reference parent".into());
+                return Err(TopologyError::MissingBacklink);
             }
             if !successor && other.is_live() {
-                return Err("predecessor remains live".into());
+                return Err(TopologyError::LivePredecessor);
             }
         }
         Ok(())
@@ -143,32 +133,95 @@ pub(crate) struct PendingTransition {
 }
 
 impl PendingTransition {
-    fn validate(&self, map: &SegmentMap) -> Result<(), String> {
+    fn validate(&self, map: &SegmentMap) -> Result<(), TopologyError> {
         let required = match self.kind.as_str() {
             "split" => 1,
             "merge" => 2,
-            _ => return Err("unknown transition kind".into()),
+            _ => return Err(TopologyError::UnknownTransition),
         };
         if self.segs.len() != required {
-            return Err("transition parent count is invalid".into());
+            return Err(TopologyError::TransitionParentCount);
         }
         if matches!(self.segs.as_slice(), [a, b] if a == b) {
-            return Err("transition repeats a parent".into());
+            return Err(TopologyError::RepeatedTransitionParent);
         }
         let parents = self
             .segs
             .iter()
-            .map(|id| {
-                map.get(*id)
-                    .ok_or_else(|| "transition parent is missing".to_string())
-            })
+            .map(|id| map.get(*id).ok_or(TopologyError::MissingTransitionParent))
             .collect::<Result<Vec<_>, _>>()?;
         match parents.as_slice() {
             [parent] if self.split_at <= parent.lo || self.split_at >= parent.hi => {
-                Err("split point is outside parent".into())
+                Err(TopologyError::SplitOutsideParent)
             }
-            [a, b] if a.hi != b.lo && b.hi != a.lo => Err("merge parents are not adjacent".into()),
+            [a, b] if a.hi != b.lo && b.hi != a.lo => Err(TopologyError::MergeNotAdjacent),
             _ => Ok(()),
+        }
+    }
+}
+
+/// Whether the `[lo, hi)` ranges tile the key space: sorted, the first starts
+/// at 0, each next one starts where the previous ends, and the last ends at
+/// `KEYSPACE_END` (so, by `SegmentDesc::contains`, holds it too). With every
+/// range nonempty, each key then lies in exactly one (KANI-028).
+fn tiles_keyspace(ranges: &mut [(u64, u64)]) -> bool {
+    ranges.sort_unstable();
+    ranges.first().map(|range| range.0) == Some(0)
+        && ranges.last().map(|range| range.1) == Some(KEYSPACE_END)
+        && ranges.windows(2).all(|pair| pair[0].1 == pair[1].0)
+}
+
+/// Why a persisted topology is refused. Typed rather than formatted where it
+/// is found, so validation allocates nothing and the KANI-028 proof need
+/// not model formatting; `Display` gives the registry's message.
+#[derive(Debug, PartialEq)]
+pub(crate) enum TopologyError {
+    Empty,
+    DuplicateSegment(u32),
+    BeyondAllocator(u32),
+    EmptyRange(u32),
+    IncompleteSeal(u32),
+    LiveWithSuccessors(u32),
+    RepeatedReference(u32),
+    /// The segment and the id it references.
+    MissingReference(u32, u32),
+    ReversedLineage(u32),
+    DisjointLineage,
+    MissingBacklink,
+    LivePredecessor,
+    Coverage,
+    UnknownTransition,
+    TransitionParentCount,
+    RepeatedTransitionParent,
+    MissingTransitionParent,
+    SplitOutsideParent,
+    MergeNotAdjacent,
+}
+
+impl std::fmt::Display for TopologyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("explicit map is empty"),
+            Self::DuplicateSegment(id) => write!(f, "duplicate segment {id}"),
+            Self::BeyondAllocator(id) => write!(f, "segment {id} exceeds allocator"),
+            Self::EmptyRange(id) => write!(f, "segment {id} has empty/reversed range"),
+            Self::IncompleteSeal(id) => write!(f, "segment {id} has incomplete seal metadata"),
+            Self::LiveWithSuccessors(id) => write!(f, "live segment {id} has successors"),
+            Self::RepeatedReference(id) => write!(f, "segment {id} has duplicate/self reference"),
+            Self::MissingReference(id, other) => {
+                write!(f, "segment {id} references missing segment {other}")
+            }
+            Self::ReversedLineage(id) => write!(f, "segment {id} has cyclic/reversed lineage"),
+            Self::DisjointLineage => f.write_str("lineage ranges do not overlap"),
+            Self::MissingBacklink => f.write_str("successor does not reference parent"),
+            Self::LivePredecessor => f.write_str("predecessor remains live"),
+            Self::Coverage => f.write_str("terminal segments do not exactly cover keyspace"),
+            Self::UnknownTransition => f.write_str("unknown transition kind"),
+            Self::TransitionParentCount => f.write_str("transition parent count is invalid"),
+            Self::RepeatedTransitionParent => f.write_str("transition repeats a parent"),
+            Self::MissingTransitionParent => f.write_str("transition parent is missing"),
+            Self::SplitOutsideParent => f.write_str("split point is outside parent"),
+            Self::MergeNotAdjacent => f.write_str("merge parents are not adjacent"),
         }
     }
 }
@@ -208,11 +261,21 @@ impl SegmentMap {
         self.segments.iter().filter(|s| s.is_live())
     }
 
-    /// The live segment owning hashed key `k`. The partition invariant
-    /// guarantees exactly one.
-    #[cfg(test)]
-    fn route(&self, k: u64) -> Option<&SegmentDesc> {
-        self.live().find(|s| s.contains(k))
+    /// The segment hashed key `k` routes to: the live segment containing it
+    /// (a validated map has at most one), or, with no live cover
+    /// (mid-transition: a seal published before its successors, or a scaler
+    /// that died between the two), the NEWEST sealed cover — the deepest
+    /// lineage point, the one whose successor the refresh will reveal —
+    /// never a long-superseded ancestor. A validated map's terminal segments
+    /// cover every key, `KEYSPACE_END` included, so it always answers
+    /// (KANI-028).
+    pub(crate) fn route(&self, k: u64) -> Option<&SegmentDesc> {
+        self.live().find(|s| s.contains(k)).or_else(|| {
+            self.segments
+                .iter()
+                .filter(|s| s.contains(k))
+                .max_by_key(|s| (s.created_ms, s.seg_id))
+        })
     }
 
     pub(crate) fn get(&self, seg_id: u32) -> Option<&SegmentDesc> {
@@ -222,33 +285,33 @@ impl SegmentMap {
     /// Validate persisted topology, including sealed predecessor coverage and
     /// partially closed transitions. Requiring every segment to be live would
     /// reject legitimate recovery states; terminal leaves must cover keyspace.
-    pub(crate) fn validate(&self) -> Result<(), String> {
-        use std::collections::HashSet;
+    pub(crate) fn validate(&self) -> Result<(), TopologyError> {
         if self.segments.is_empty() {
-            return Err("explicit map is empty".into());
+            return Err(TopologyError::Empty);
         }
-        let mut ids = HashSet::new();
-        for segment in &self.segments {
-            if !ids.insert(segment.seg_id) {
-                return Err(format!("duplicate segment {}", segment.seg_id));
+        // A linear scan, like each `get` the lineage check makes: a map holds
+        // tens of segments, and a hashed set seeds from the OS random source,
+        // which the KANI-028 proof cannot model.
+        for (i, segment) in self.segments.iter().enumerate() {
+            if self
+                .segments
+                .iter()
+                .take(i)
+                .any(|earlier| earlier.seg_id == segment.seg_id)
+            {
+                return Err(TopologyError::DuplicateSegment(segment.seg_id));
             }
             if segment.seg_id >= self.next_seg_id {
-                return Err(format!("segment {} exceeds allocator", segment.seg_id));
+                return Err(TopologyError::BeyondAllocator(segment.seg_id));
             }
             if segment.lo >= segment.hi {
-                return Err(format!(
-                    "segment {} has empty/reversed range",
-                    segment.seg_id
-                ));
+                return Err(TopologyError::EmptyRange(segment.seg_id));
             }
             if segment.sealed_ms.is_some() != segment.sealed_next_offset.is_some() {
-                return Err(format!(
-                    "segment {} has incomplete seal metadata",
-                    segment.seg_id
-                ));
+                return Err(TopologyError::IncompleteSeal(segment.seg_id));
             }
             if segment.is_live() && !segment.successors.is_empty() {
-                return Err(format!("live segment {} has successors", segment.seg_id));
+                return Err(TopologyError::LiveWithSuccessors(segment.seg_id));
             }
         }
         for segment in &self.segments {
@@ -260,12 +323,8 @@ impl SegmentMap {
             .filter(|segment| segment.successors.is_empty())
             .map(|segment| (segment.lo, segment.hi))
             .collect();
-        leaves.sort_unstable();
-        if leaves.first().map(|range| range.0) != Some(0)
-            || leaves.last().map(|range| range.1) != Some(KEYSPACE_END)
-            || !leaves.windows(2).all(|ranges| ranges[0].1 == ranges[1].0)
-        {
-            return Err("terminal segments do not exactly cover keyspace".into());
+        if !tiles_keyspace(&mut leaves) {
+            return Err(TopologyError::Coverage);
         }
         if let Some(pending) = &self.pending {
             pending.validate(self)?;
@@ -276,13 +335,7 @@ impl SegmentMap {
     /// Partition invariant: live segments exactly tile [0, KEYSPACE_END).
     pub(crate) fn check_partition(&self) -> bool {
         let mut ranges: Vec<(u64, u64)> = self.live().map(|s| (s.lo, s.hi)).collect();
-        ranges.sort_unstable();
-        if ranges.first().map(|range| range.0) != Some(0)
-            || ranges.last().map(|range| range.1) != Some(KEYSPACE_END)
-        {
-            return false;
-        }
-        ranges.windows(2).all(|w| w[0].1 == w[1].0)
+        tiles_keyspace(&mut ranges)
     }
 
     /// Split `seg_id` at `split_at` (exclusive upper of the low child).
@@ -486,7 +539,8 @@ mod tests {
                 started_ms: 4,
                 seal_gen: 1,
             });
-            assert_eq!(map.validate().err().as_deref(), error, "{:?}", map.pending);
+            let refused = map.validate().err().map(|error| error.to_string());
+            assert_eq!(refused.as_deref(), error, "{:?}", map.pending);
         }
     }
 
@@ -509,35 +563,35 @@ mod tests {
             .segments
             .retain(|segment| segment.seg_id != a);
         assert_eq!(
-            missing_successor.validate().unwrap_err(),
+            missing_successor.validate().unwrap_err().to_string(),
             format!("segment 0 references missing segment {a}")
         );
 
         let mut repeated = map.clone();
         repeated.segments[0].successors.push(a);
         assert_eq!(
-            repeated.validate().unwrap_err(),
+            repeated.validate().unwrap_err().to_string(),
             "segment 0 has duplicate/self reference"
         );
 
         let mut missing_backlink = map.clone();
         missing_backlink.segments[1].predecessors.clear();
         assert_eq!(
-            missing_backlink.validate().unwrap_err(),
+            missing_backlink.validate().unwrap_err().to_string(),
             "successor does not reference parent"
         );
 
         let mut disjoint = map.clone();
         disjoint.segments[2].predecessors.push(a);
         assert_eq!(
-            disjoint.validate().unwrap_err(),
+            disjoint.validate().unwrap_err().to_string(),
             "lineage ranges do not overlap"
         );
 
         let mut reverse = map;
         reverse.segments[1].predecessors.push(b);
         assert_eq!(
-            reverse.validate().unwrap_err(),
+            reverse.validate().unwrap_err().to_string(),
             format!("segment {a} has cyclic/reversed lineage")
         );
     }
@@ -576,6 +630,23 @@ mod tests {
         );
     }
 
+    /// A child sealed before its own successors are published leaves its
+    /// keys without a live cover: they route to that child, the newest
+    /// sealed cover, never to the parent it replaced.
+    #[test]
+    fn a_key_without_a_live_cover_routes_to_its_newest_sealed_cover() {
+        let mut m = SegmentMap::initial("root", 1);
+        let (a, b) = m
+            .split(0, KEYSPACE_END / 2, 0, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
+        let low = m.segments.iter_mut().find(|s| s.seg_id == a).unwrap();
+        low.sealed_ms = Some(3);
+        low.sealed_next_offset = Some(0);
+        assert!(m.validate().is_ok() && !m.check_partition());
+        assert_eq!(m.route(1).unwrap().seg_id, a);
+        assert_eq!(m.route(KEYSPACE_END).unwrap().seg_id, b);
+    }
+
     /// A split must leave both children a non-empty range.
     #[test]
     fn a_split_point_on_the_parents_bounds_is_refused() {
@@ -604,10 +675,7 @@ mod tests {
         early.segments[0].hi = KEYSPACE_END - 1;
         for map in [late, early] {
             assert!(!map.check_partition());
-            assert_eq!(
-                map.validate().unwrap_err(),
-                "terminal segments do not exactly cover keyspace"
-            );
+            assert_eq!(map.validate().unwrap_err(), TopologyError::Coverage);
         }
     }
 
@@ -683,3 +751,6 @@ mod tests {
         assert_eq!(m, spent, "a refused split opens no child");
     }
 }
+
+#[cfg(kani)]
+mod proofs;

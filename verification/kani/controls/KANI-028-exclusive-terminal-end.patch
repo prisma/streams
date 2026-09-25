@@ -1,0 +1,12 @@
+diff --git a/src/segmap.rs b/src/segmap.rs
+--- a/src/segmap.rs
++++ b/src/segmap.rs
+@@ -46,7 +46,7 @@
+ 
+ impl SegmentDesc {
+     pub(crate) fn contains(&self, k: u64) -> bool {
+-        k >= self.lo && (k < self.hi || (self.hi == KEYSPACE_END && k == KEYSPACE_END))
++        k >= self.lo && k < self.hi
+     }
+     pub(crate) fn is_live(&self) -> bool {
+         self.sealed_ms.is_none()

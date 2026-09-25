@@ -596,6 +596,23 @@ the roadmap's unimplemented list
 - **KANI-005 (done):** `locate_in_spans` positioning, `src/sse/source/proofs.rs`,
   assumption ASM-LINEAGE-CONTRACT (the lineage constructor's unchecked
   `logical += c` is assumed not to overflow).
+- **KANI-028 (done):** the coverage rule (`tiles_keyspace`, used by
+  `SegmentMap::validate` and `check_partition`), `contains` and `route`,
+  `src/segmap/proofs.rs`, one harness per count of one to four segments.
+  Whole-map `validate` is out of Kani's reach (over two symbolic segments it
+  did not finish in 45 minutes: vectors inside the map's vector lose their
+  constant lengths), so the harnesses check the rule it applies. `validate`
+  now scans for duplicates instead of hashing (Kani cannot model the random
+  seed) and reports a typed `TopologyError` (same messages);
+  `Registry::resolve_segment`'s choice moved into `SegmentMap::route`. Open
+  for KANI-031 (lineage): with no live cover, `route` prefers the sealed
+  cover with the latest `created_ms`, a wall clock that `validate` does not
+  order along lineage, so clock skew between scalers can make it pick an
+  ancestor over its sealed descendant. Appends answer a retryable 503 for
+  any sealed route; check what keyed reads and SSE do before choosing to
+  order by `seg_id` (allocation order, which `validate` enforces along
+  lineage). Harness lesson for KANI-029 to KANI-031: keep the number of
+  segments concrete per harness and call pure helpers, not `validate`.
 - **KANI-006 (ready, held for the owner):** the postings varint codec, on branch
   `formal/kani-006` (FORMAL_OK, 4 checks, no finding). It cannot land without
   an owner decision: `src/postings.rs` is compiled by path into

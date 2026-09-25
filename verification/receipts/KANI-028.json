@@ -1,0 +1,159 @@
+{
+  "checks": [
+    {
+      "check": "KANI-028/one-segment",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "bbc41cd7f0503dcda1e200cec0ad17849769b387438da77be1cba613d4041d70",
+      "role": "baseline",
+      "seconds": 35.8,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-028/two-segments",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "e8536b4ce50dfb9b0971ef784289103f2c8775a6eae4ae33724a1be32be3115d",
+      "role": "baseline",
+      "seconds": 47.3,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-028/three-segments",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "2a3c1a26b79dd17f84ea8d54c5b8c1c82a9a0156cde966082bf57b285a6a1e26",
+      "role": "baseline",
+      "seconds": 52.5,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-028/four-segments",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "8958bd624fa7c7e32baa16a138bbd5137c552f2f05ad9d6daf8db665793b940d",
+      "role": "baseline",
+      "seconds": 66.6,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-028/nc-accept-a-one-point-gap",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:every key lies in exactly one terminal segment",
+      "failed_checks": [
+        "\"every key lies in exactly one terminal segment\""
+      ],
+      "log_sha256": "6855f291c328ee9330f1c34fb99192fd4e31c8c5f8ce93298ae250b5a35ae019",
+      "mutated": {
+        "src/segmap.rs": {
+          "baseline": "235942bb6b5767fd1ec62ede32b1c60933a8e458f63abf47e94f2f910bdf6ced",
+          "control": "d1a7d9084050baa40f3a75e889e74c14893ca61feaf2e4a6611e158154826bb8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 47.5,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-028/nc-exclusive-terminal-end",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:every key lies in exactly one terminal segment",
+      "failed_checks": [
+        "\"every key lies in exactly one terminal segment\""
+      ],
+      "log_sha256": "e8eb9ae0f505a6dd693633b16a017a3c1f941df664fafc4c52deb42ae8d26aa8",
+      "mutated": {
+        "src/segmap.rs": {
+          "baseline": "235942bb6b5767fd1ec62ede32b1c60933a8e458f63abf47e94f2f910bdf6ced",
+          "control": "d28ec787be69ab524f23c64d336ebe4c16f54d606a7f5807d5aed0dc4ace1847"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 34.3,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-028/nc-route-only-live-covers",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:the route answers every key with the segment that holds it",
+      "failed_checks": [
+        "\"the route answers every key with the segment that holds it\""
+      ],
+      "log_sha256": "c4ef0de35a43a39c535d9bc6443eada344fe8caaec7978fa5ce8fe6b83af7625",
+      "mutated": {
+        "src/segmap.rs": {
+          "baseline": "235942bb6b5767fd1ec62ede32b1c60933a8e458f63abf47e94f2f910bdf6ced",
+          "control": "d74991d09498f5fe458e6a5352d2c22452a28f39bd33ee2f1ae61114ab68b588"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 32.8,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-028",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/segmap.rs": "235942bb6b5767fd1ec62ede32b1c60933a8e458f63abf47e94f2f910bdf6ced",
+      "src/segmap/proofs.rs": "59831b5d92004bbbd19d03a8d18cfc44b3366c90395583e11dba24f3aab4c3a9",
+      "verification/kani/controls/KANI-028-accept-a-one-point-gap.patch": "c88803458b02a431182fa37b7973701f7d6f51347d3ead5c4922a4be75b26fc1",
+      "verification/kani/controls/KANI-028-exclusive-terminal-end.patch": "50f710cd65d86324ff3796f4e11c6e26ddda3b8057265942d9dd82451e0443c3",
+      "verification/kani/controls/KANI-028-route-only-live-covers.patch": "9bb6a87a23430e652bcccbdbd969e94c8d472b0caf91e682f90f40ea7c563f60"
+    },
+    "manifest_entry": "76f6ddeef0b6e27fe4188ab076576422ab4264bf7640a3da8475daab2dcb7bde",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "03f40d682c88a061ebd4f5e5e6bd272700dc5d320e2e745247ed70a39adbdb83",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "59e1497914085e26df03fc6f8c085cf938674aba"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

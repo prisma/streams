@@ -95,6 +95,11 @@ Each case now has a negative test in `scripts/quality/test_formal.py`.
   at `d83af9a4`, `formal.py check` fails KANI-001–003 and TLA-016, whose
   check sets changed, and reports the other 13 stale, because the merge
   changed source owners, assumption entries or manifest entries of each.
+  On slate, KANI-001–003 and TLA-016 were re-recorded at `f10b997e`
+  (`7d52d78d`) and the twelve receipts slate's later changes left stale at
+  `7499ec19` (`bd9d9e7e`, run in a separate worktree six at a time, so a
+  receipt's dirty flag there reflects only sibling receipts written by the
+  same batch); `formal.py check --fresh` then reports none stale.
 
 ### 0.3 Obligation status
 
@@ -111,6 +116,7 @@ design check (§7.7).
 | KANI-002 | pass-with-recorded-scope | 1 / 1 / 0 | `-1` and `next` 0 name start-of-stream; a token resumes at its `next`, `u64::MAX` included. | to be recorded at `d83af9a4` | — |
 | KANI-003 | pass-with-recorded-scope | 1 / 1 / 0 | Token injectivity and order below 2^30. | to be recorded at `d83af9a4` | — |
 | KANI-005 | pass-with-recorded-scope | 1 / 2 / 0 | `locate_in_spans` (`src/sse/source/proofs.rs`) over one to four spans laid out as `Lineage::build` lays them (first at 0, contiguous sealed caps, only the tail live) with full-width caps and every `u64` position: the answer's span starts at or before the position, its local offset is relative to that start, a sealed span below the tail holds only positions before its end, and no earlier sealed span holds it (so a one-past boundary belongs to the next span at local zero). | recorded with its commit | ASM-LINEAGE-CONTRACT |
+| KANI-028 | pass-with-recorded-scope | 4 / 3 / 0 | `tiles_keyspace`, the coverage rule `SegmentMap::validate` applies to its terminal segments and `check_partition` to its live ones, with `SegmentDesc::contains` and `SegmentMap::route` (`src/segmap/proofs.rs`), one harness per count of one to four nonempty ranges with full-width bounds, and every `u64` routing point: exactly one range holds each point (`KEYSPACE_END` in the range ending there), and a map of terminal segments over them, each live or a sealed leaf, routes the point to that segment. `validate` itself (duplicate identities, seal metadata), lineage and pending transitions are outside it. | recorded with its commit | — |
 | KANI-036 | pass-with-recorded-scope | 1 / 2 / 0 | `decide_producer`: stale and new epoch admission, over full-width `u64` values and symbolic hashes (`src/shard/commit_plan/proofs.rs`). | to be recorded at `d83af9a4` | — |
 | KANI-037 | pass-with-recorded-scope | 1 / 3 / 0 | Duplicates, conflicts and replay results. | to be recorded at `d83af9a4` | — |
 | KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | to be recorded at `d83af9a4` | — |
@@ -1672,6 +1678,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 <a id="kani-028"></a>
 ### KANI-028 — Segment partition validation and routing uniqueness
+
+**Status:** pass-with-recorded-scope (implemented 2026-09-26; manifest entry KANI-028, 4 baselines and 3 negative controls: a tiling rule that accepts a one-point gap or overlap, a `contains` without the terminal-range convention, and a `route` without its sealed-cover fallback). The proof targets the coverage rule, not the whole `validate`: Kani could not finish `validate` over even two symbolic segments in 45 minutes, because the checker loses track of the (empty) lineage vectors held inside the map's vector, so the lineage loops and the length of the sort input stay symbolic, and a sort of symbolic length explores every sort strategy. Production changes that made the proof possible, none changing behavior: `validate` scans for duplicate identities instead of using hashed sets (whose seed comes from the OS random source, which Kani cannot model); it reports a typed `TopologyError` whose `Display` keeps every message, instead of formatting a `String` where it finds the fault; the tiling rule is one function, `tiles_keyspace`, shared with `check_partition`; and `Registry::resolve_segment`'s choice of segment moved into `SegmentMap::route`. With a validated map's terminal segments tiling the key space, the `unreachable!` after `resolve_segment`'s choice cannot be reached. Duplicate identities and seal metadata stay with the unit tests, lineage and pending transitions with KANI-031. An open question for KANI-031: when no live segment holds a point, `route` prefers the sealed cover with the latest `created_ms`, a wall-clock value that `validate` does not order along lineage, so after clock skew between scalers it can pick an ancestor over its sealed descendant. Appends answer a retryable 503 for any sealed route; keyed reads have not been checked. No finding in the coverage rule itself.
 
 **Priority:** P0 · **Build route:** Direct  
 **Source owners:** [`src/segmap.rs`](src/segmap.rs)

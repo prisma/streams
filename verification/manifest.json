@@ -231,6 +231,105 @@
       ]
     },
     {
+      "id": "KANI-028",
+      "kind": "kani",
+      "title": "Segment partition validation and routing uniqueness",
+      "status": "pass-with-recorded-scope",
+      "owner": "Segment map",
+      "source_paths": [
+        "src/segmap.rs"
+      ],
+      "verification_paths": [
+        "src/segmap/proofs.rs"
+      ],
+      "requirements": [
+        "T1",
+        "T10"
+      ],
+      "models": [
+        "TLA-004",
+        "TLA-009",
+        "TLA-010",
+        "TLA-012",
+        "TLA-025"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "tiles_keyspace (the coverage rule SegmentMap::validate applies to its terminal segments and check_partition to its live ones), SegmentDesc::contains and SegmentMap::route, over one to four nonempty ranges with full-width symbolic bounds (one harness per count) and every u64 routing point; the map routed over has one terminal segment per range, each live or a sealed leaf with any creation time. SegmentMap::validate itself, duplicate identities, seal metadata, lineage and pending transitions are outside it",
+      "checks": [
+        {
+          "id": "KANI-028/one-segment",
+          "role": "baseline",
+          "harness": "segmap::proofs::kani_028_one_segment_holds_every_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-028/two-segments",
+          "role": "baseline",
+          "harness": "segmap::proofs::kani_028_two_segments_hold_every_key_once",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-028/three-segments",
+          "role": "baseline",
+          "harness": "segmap::proofs::kani_028_three_segments_hold_every_key_once",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-028/four-segments",
+          "role": "baseline",
+          "harness": "segmap::proofs::kani_028_four_segments_hold_every_key_once",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-028/nc-accept-a-one-point-gap",
+          "role": "negative-control",
+          "harness": "segmap::proofs::kani_028_two_segments_hold_every_key_once",
+          "patch": "verification/kani/controls/KANI-028-accept-a-one-point-gap.patch",
+          "expect": {
+            "result": "fail",
+            "property": "every key lies in exactly one terminal segment"
+          }
+        },
+        {
+          "id": "KANI-028/nc-exclusive-terminal-end",
+          "role": "negative-control",
+          "harness": "segmap::proofs::kani_028_one_segment_holds_every_key",
+          "patch": "verification/kani/controls/KANI-028-exclusive-terminal-end.patch",
+          "expect": {
+            "result": "fail",
+            "property": "every key lies in exactly one terminal segment"
+          }
+        },
+        {
+          "id": "KANI-028/nc-route-only-live-covers",
+          "role": "negative-control",
+          "harness": "segmap::proofs::kani_028_one_segment_holds_every_key",
+          "patch": "verification/kani/controls/KANI-028-route-only-live-covers.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the route answers every key with the segment that holds it"
+          }
+        }
+      ],
+      "regressions": [
+        "segmap::tests::initial_routes_everything",
+        "segmap::tests::split_then_route_then_successors",
+        "segmap::tests::a_key_without_a_live_cover_routes_to_its_newest_sealed_cover",
+        "segmap::tests::a_keyspace_that_starts_late_or_ends_early_is_neither_covered_nor_partitioned"
+      ]
+    },
+    {
       "id": "KANI-036",
       "kind": "kani",
       "title": "Producer stale-epoch and new-epoch admission",
