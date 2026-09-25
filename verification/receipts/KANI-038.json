@@ -6,18 +6,18 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "73dfd40e6b7d018d92ffc4efc5feba0f524650f724fb04338613452a4de8d9cc",
+      "log_sha256": "bb14ea68760fd4f1f98a2ab55c7b1d701528d9be881991cd7b216f41d3efa29c",
       "role": "baseline",
-      "seconds": 23.7,
+      "seconds": 22.1,
       "verdict": "pass"
     },
     {
       "check": "KANI-038/exhausted",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e24e870d89b2d08d36ea5f61d1435aa8698a0f80bee1719bec9b3b67089e08c0",
+      "log_sha256": "63b7deff3ade98864d0e6714b596aac5521a4bf2d950563c4f2fd5774d67dad8",
       "role": "baseline",
-      "seconds": 21.6,
+      "seconds": 21.8,
       "verdict": "pass"
     },
     {
@@ -28,15 +28,15 @@
       "failed_checks": [
         "\"the adjacent sequence is admitted unless the collection is closed\""
       ],
-      "log_sha256": "aa7fc5816110f3b6a69e07e250370c2eb0aa88fb6b46d4274834a316e2b8d20c",
+      "log_sha256": "af28a254d6d31e8fd661cb8596e55e53cc97045bcfaa655c54add95953d5cefd",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
-          "control": "e054d440a980d68fe6d6b1c9ad9a1a5e92af7c3bfab2d93d863013ecb26963af"
+          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
+          "control": "14e2802f59fcdaae1cbb7c8209de01f0741a756c0fc6ddfde375aa60ede04d18"
         }
       },
       "role": "negative-control",
-      "seconds": 21.3,
+      "seconds": 21.6,
       "verdict": "fail"
     },
     {
@@ -47,15 +47,15 @@
       "failed_checks": [
         "\"a sequence beyond the successor is a gap naming the successor\""
       ],
-      "log_sha256": "49cf384f0000d3549aa166f56e56ee8d61cc5a7451fa9fb197d127778bb03ab4",
+      "log_sha256": "60fe142a9d76789c01d2428a1411360a4b26d3bc59a1b7a53cb1e790bf4f32d7",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
-          "control": "0d77f6b1779fbdd04b7071402fdc1082c0551c8f420cc138f6dd6008a5e584e8"
+          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
+          "control": "263c95f99a8f7c22f3ad3e84388d00f2c22ae2f40fdb3a6e94193dc16a13d4a3"
         }
       },
       "role": "negative-control",
-      "seconds": 21.8,
+      "seconds": 21.6,
       "verdict": "fail"
     }
   ],
@@ -73,7 +73,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/shard/commit_plan.rs": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+      "src/shard/commit_plan.rs": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
       "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
       "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch": "05216c8200f89353e4e075df14e1df17b068ea69fb91bc8c124d7d0780e57c6b",
       "verification/kani/controls/KANI-038-inclusive-gap.patch": "59b968d78c75b4a01aaec4e8c5f15948bda1003455bcea32d5b7d72f90a1160a"
@@ -100,10 +100,10 @@
       }
     }
   },
-  "inputs_sha256": "41e9a11653baa1021272d5d0e3d38d465d969ba296da6c1ee2c7752dcf702753",
+  "inputs_sha256": "8c754ebcaa71ec9990f2fe45d82cf673d1790f6a0f54af70c25621c560bda93c",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "d83af9a4b28dac204e9c044e2f8cdd3f39eb4946"
   },
   "schema": 2,
   "tools": {

@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e915a4bf6fdb29ebe84d4c8ddfb633c4aa0bd415b1fd50f29fdb372a7b52e29a",
+      "log_sha256": "17d099802dd1163d763b2d7aa7f18483aa0edeedab4a65675793a7918c842a3e",
       "role": "baseline",
-      "seconds": 136.9,
+      "seconds": 122.0,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the raw surface follows the contract\""
       ],
-      "log_sha256": "1dd27299fcb668c9ad318251d7b58c0248ad80f138def9271bef90d49fe33901",
+      "log_sha256": "8cc882bb5a454b6f96ac8c5555bd5ac8e40b72e20b92ce88304392ea3347c5d5",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "27722776fa954e6f4a6a2ef6879dddec941698dff5a3b54b4e2cf64917de1ea2",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 138.3,
+      "seconds": 123.8,
       "verdict": "fail"
     },
     {
@@ -38,15 +38,15 @@
       "failed_checks": [
         "\"the product surface agrees with the raw surface\""
       ],
-      "log_sha256": "454aad57ecce1bcd5073d90aa0a6b15e917e51d33d2ebdc3f5f6d2a094fc3606",
+      "log_sha256": "9700311b9ecf45b11ab169cd361fe137b36d89b20a39f791190577e7d2dab37a",
       "mutated": {
         "src/application/append/contract.rs": {
-          "baseline": "fefbe17dc356061d8ff884317e3af3fd4113e7f10c3ddcafe287283d027d22da",
-          "control": "fb820c3ca75d86e653f079ba40af1a30eed861332fae33487f4c1719e96e6d60"
+          "baseline": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
+          "control": "6f4c5f3d12c8cc40ff73b60f2069e7abc058c8509c9c3760207dfb71e566b988"
         }
       },
       "role": "negative-control",
-      "seconds": 135.5,
+      "seconds": 127.8,
       "verdict": "fail"
     }
   ],
@@ -63,7 +63,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/application/append/contract.rs": "fefbe17dc356061d8ff884317e3af3fd4113e7f10c3ddcafe287283d027d22da",
+      "src/application/append/contract.rs": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
       "src/application/lifecycle/claims.rs": "27722776fa954e6f4a6a2ef6879dddec941698dff5a3b54b4e2cf64917de1ea2",
       "src/application/lifecycle/claims/proofs.rs": "d44a48a2bbc0294bc37d33ebb1cbd8e54fa874093d5918d6053915efc86c2f6d",
       "verification/kani/controls/KANI-042-producer-gap-releases-debt.patch": "54b9227da1cd26c88ebb20ace82f64b8a80afeb092dc23f6e839cc16007ea3cc",
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "30562cdb85228021d942d4a6885e6edab7d08023961782c62841607cf66ffcb5",
+  "inputs_sha256": "c36773120984d492e79191b4f987d7e0ebbab85d79df1774434f44e2e2da4f40",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "d83af9a4b28dac204e9c044e2f8cdd3f39eb4946"
   },
   "schema": 2,
   "tools": {

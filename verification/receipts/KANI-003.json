@@ -2,52 +2,32 @@
   "checks": [
     {
       "check": "KANI-003/injective-ordered",
-      "covers": 1,
-      "covers_satisfied": 1,
+      "covers": 3,
+      "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "60cf05bc8a9bc94da679e248a64d8db90d7b9e8f6073a098f7b41f37851244cf",
+      "log_sha256": "964e1ba9fec2778a8907df9e4108cebd915f6f862a94f6da5a1e61e304130242",
       "role": "baseline",
-      "seconds": 40.4,
+      "seconds": 23.9,
       "verdict": "pass"
     },
     {
-      "check": "KANI-003/nc-swap-sequence-halves",
-      "covers": 1,
-      "covers_satisfied": 1,
-      "expected": "fail:token order is tuple order",
+      "check": "KANI-003/nc-reverse-digit-order",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:token byte order is position order",
       "failed_checks": [
-        "\"token order is tuple order\""
+        "\"token byte order is position order\""
       ],
-      "log_sha256": "bb5f8785616d521646f63cac56beac340a03f506c3bcf83899f9e654bdca7345",
+      "log_sha256": "5baf3e0dcbb43da50df315ed563956d81f9462f57ad76db8690196b272c2436e",
       "mutated": {
         "src/offsets.rs": {
-          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-          "control": "48f127b63d40e4db0f8ba4ac6dbd31e8e75b9a8029b3f1e082afa1bee866afb1"
+          "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+          "control": "319c29855449154d697ccc5625a090a409f98151155005daaa706a839af63f34"
         }
       },
       "role": "negative-control",
-      "seconds": 38.6,
-      "verdict": "fail"
-    },
-    {
-      "check": "KANI-003/nc-drop-an-epoch-bit",
-      "covers": 1,
-      "covers_satisfied": 1,
-      "expected": "fail:distinct tuples have distinct tokens",
-      "failed_checks": [
-        "\"distinct tuples have distinct tokens\"",
-        "\"token order is tuple order\""
-      ],
-      "log_sha256": "f952ff56686534f2e55b763e72079891ca41d6da5a08d1dba480bf17a8eb676c",
-      "mutated": {
-        "src/offsets.rs": {
-          "baseline": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-          "control": "878377bda97870f81ae437c0385b3cefb0db2ed91457b618053ca550ada3e26f"
-        }
-      },
-      "role": "negative-control",
-      "seconds": 38.0,
+      "seconds": 26.1,
       "verdict": "fail"
     }
   ],
@@ -57,7 +37,7 @@
     "assumptions": {
       "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
-      "ASM-OFFSET-DOMAIN": "6230ea5c9d5b7adf8d65021741845c17dc6d8003ab216a3e0cffb3a79e5d5de2"
+      "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
       "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
@@ -65,12 +45,11 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/offsets.rs": "c1643eff84a77ec6cda8c0a4a699420c305a11885e6ad351efed31bcb9ee0fd9",
-      "src/offsets/proofs.rs": "d33cc88fcf9bc1d835feec80035976f433b0391bf8103fe3db73e0f46638540c",
-      "verification/kani/controls/KANI-003-drop-an-epoch-bit.patch": "cb0a63804a93589723a2956e0415285e7bc1afa0da8fdbfecf826b558ed19690",
-      "verification/kani/controls/KANI-003-swap-sequence-halves.patch": "41fe8573de5faad8d41187fe69a5183e48b18ff3183c6f6fcde112eecf64de77"
+      "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
+      "src/offsets/proofs.rs": "24cd67416837a468ba4d0e735e360c2bc031b71c77b599ca63e7512845da8fa3",
+      "verification/kani/controls/KANI-003-reverse-digit-order.patch": "2338efd6cc47df5236794c5903fcd970e6d09855441ed6eedea09ce3ec818ca2"
     },
-    "manifest_entry": "96c5d4ae68db0b53523d4a320550a982c9521e09f11104885bbfe253d5803da0",
+    "manifest_entry": "eb52e4b5e0e7718cb552b936bb1509ed75a230ec7b430023783c8027f4a1ac50",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -92,10 +71,10 @@
       }
     }
   },
-  "inputs_sha256": "6ab20b9030af48274ada6eeebf231f5b9383eff504d49b218a1908a6035a3a55",
+  "inputs_sha256": "5a214aa40385e9dcccf5dd2ed4b0d0c40756c059e2e0c7173c64999a00b3baff",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "d83af9a4b28dac204e9c044e2f8cdd3f39eb4946"
   },
   "schema": 2,
   "tools": {
