@@ -371,3 +371,6 @@ pub(crate) async fn read_frames_until(
 tokio::task_local! {
     pub(crate) static TEST_MARKER_HOLD: (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>);
 }
+
+#[cfg(kani)]
+mod proofs;

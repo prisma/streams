@@ -613,6 +613,10 @@ the roadmap's unimplemented list
   order by `seg_id` (allocation order, which `validate` enforces along
   lineage). Harness lesson for KANI-029 to KANI-031: keep the number of
   segments concrete per harness and call pure helpers, not `validate`.
+- **KANI-017 (done):** stored-record admission (`decode_row`),
+  `src/shard/record/proofs.rs`, with the routing-key length fixed per
+  harness (0 and 4 bytes); a symbolic length makes the checker validate
+  UTF-8 of every length (it did not finish in 40 minutes).
 - **KANI-006 (ready, held for the owner):** the postings varint codec, on branch
   `formal/kani-006` (FORMAL_OK, 4 checks, no finding). It cannot land without
   an owner decision: `src/postings.rs` is compiled by path into

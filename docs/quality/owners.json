@@ -2275,6 +2275,14 @@
     {
       "category": "macro-dsl",
       "count": 2,
+      "owner": "crate::admission",
+      "path": "src/shard/record/proofs.rs",
+      "reason": "Kani proof harness for KANI-017 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
       "owner": "crate::tiled",
       "path": "src/segmap/proofs.rs",
       "reason": "Kani proof harness for KANI-028 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",

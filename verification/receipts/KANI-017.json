@@ -1,0 +1,138 @@
+{
+  "checks": [
+    {
+      "check": "KANI-017/keyless-row",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "e73bea909ed68b32f93e4882fb5d496dc21ed9864acfc3de1b93446bd31a6772",
+      "role": "baseline",
+      "seconds": 40.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-017/keyed-row",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "f04fc26121cb02a8baf42d4c0d4f3dafadd3026379bd7735564eecefda44d307",
+      "role": "baseline",
+      "seconds": 152.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-017/nc-skip-the-offset-comparison",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:an admitted frame carries its key's offset",
+      "failed_checks": [
+        "\"an admitted frame carries its key's offset\""
+      ],
+      "log_sha256": "50027be03e775e41d791a2a671bd8e01eb7a35e4c745d9ab6c42382f05405a82",
+      "mutated": {
+        "src/shard/record.rs": {
+          "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
+          "control": "76d140e88553acf50d211362648f919c309cb8f4d6af0d6af87b871edca13f55"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 37.3,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-017/nc-check-a-short-prefix",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:an admitted row's key is its stream's prefix and one offset",
+      "failed_checks": [
+        "\"an admitted row's key is its stream's prefix and one offset\""
+      ],
+      "log_sha256": "79d8715c0f0f9477f41ca34950643a1f8dd5066a2b3b93722b052c9177729f42",
+      "mutated": {
+        "src/shard/record.rs": {
+          "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
+          "control": "c44a6808cb495b84309ff252860c49dce94631b8d7c95d31072d9f49a3e480c8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-017/nc-allow-trailing-bytes",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:an admitted row is exactly one whole frame with its tag",
+      "failed_checks": [
+        "\"an admitted row is exactly one whole frame with its tag\""
+      ],
+      "log_sha256": "b16430ee01b7bb95177cf2fd8699a054a48787363eec382ea09517d1f0e5320d",
+      "mutated": {
+        "src/shard/record.rs": {
+          "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
+          "control": "ef1ddb24202136a6bb7b89e8ede0a9cfd16a0279c45e266ab92fc349ff623796"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.9,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-017",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/crypto.rs": "e9b44ce92c076771c68413f326fc795a859c614e9ecc5e09daa7a9c5377a3432",
+      "src/shard/record.rs": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
+      "src/shard/record/proofs.rs": "47856cb42ad7ef6c650939b8c7cca466a40e0189fa0febd4dee72298138f97d4",
+      "verification/kani/controls/KANI-017-allow-trailing-bytes.patch": "d0e5a1680f8cabf65bb67ac7f7e880f703b8a057912cb9634b5b24f231428367",
+      "verification/kani/controls/KANI-017-check-a-short-prefix.patch": "91482b8a30b78e3fef55dbe7fabeeadbf82c7f8ab41b424c6f7a77bb84fa3f39",
+      "verification/kani/controls/KANI-017-skip-the-offset-comparison.patch": "717e8c31170c39876e14a384935925d2481ebcf94f17fd49bd4ee895ea5d8e57"
+    },
+    "manifest_entry": "a81d47c076f1b171794d6e5b4f8ef48d1fc4c33e148cb98d4bb60e0e6b8fad38",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "4e65176394245de4c34d0f0977cc4cde1404022ce4451b68f644a6e5725a639e",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "4a0a9e52cb71591f81ad42f79b853d33c456fbaa"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

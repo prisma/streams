@@ -1,0 +1,12 @@
+diff --git a/src/shard/record.rs b/src/shard/record.rs
+--- a/src/shard/record.rs
++++ b/src/shard/record.rs
+@@ -80,7 +80,7 @@
+             .header_len
+             .saturating_add(4)
+             .saturating_add(frame.ciphertext.len())
+-            != raw.len()
++            > raw.len()
+     {
+         return Err(RecordCorruption::Frame);
+     }

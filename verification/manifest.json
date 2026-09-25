@@ -231,6 +231,85 @@
       ]
     },
     {
+      "id": "KANI-017",
+      "kind": "kani",
+      "title": "Stored record key and frame offset agreement",
+      "status": "pass-with-recorded-scope",
+      "owner": "Stored-record admission",
+      "source_paths": [
+        "src/shard/record.rs",
+        "src/crypto.rs"
+      ],
+      "verification_paths": [
+        "src/shard/record/proofs.rs"
+      ],
+      "requirements": [
+        "D8",
+        "H2"
+      ],
+      "models": [
+        "TLA-016",
+        "TLA-018",
+        "TLA-042"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "decode_row (and through it decode_at and crypto::decode_frame) over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix record_key gives a symbolic stream hash; the routing-key length field is fixed per harness at 0 and 4 bytes (the key bytes symbolic), every other field, including the version byte, the offset and the ciphertext length, is symbolic",
+      "checks": [
+        {
+          "id": "KANI-017/keyless-row",
+          "role": "baseline",
+          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-017/keyed-row",
+          "role": "baseline",
+          "harness": "shard::record::proofs::kani_017_a_keyed_row_is_admitted_only_under_its_own_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-017/nc-skip-the-offset-comparison",
+          "role": "negative-control",
+          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "patch": "verification/kani/controls/KANI-017-skip-the-offset-comparison.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted frame carries its key's offset"
+          }
+        },
+        {
+          "id": "KANI-017/nc-check-a-short-prefix",
+          "role": "negative-control",
+          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "patch": "verification/kani/controls/KANI-017-check-a-short-prefix.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted row's key is its stream's prefix and one offset"
+          }
+        },
+        {
+          "id": "KANI-017/nc-allow-trailing-bytes",
+          "role": "negative-control",
+          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "patch": "verification/kani/controls/KANI-017-allow-trailing-bytes.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted row is exactly one whole frame with its tag"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::record_scan_tests::r08a_record_boundary_validates_namespace_extent_and_offset"
+      ]
+    },
+    {
       "id": "KANI-028",
       "kind": "kani",
       "title": "Segment partition validation and routing uniqueness",
