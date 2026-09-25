@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "80337ae001d2402d057ed8434e19b2a62a1e1d54c654f34bb3729e707c585755",
+      "log_sha256": "b2426e0197d9e0c7a7799bf041bf6b3a13049ea4ea7407f9ab3ecd37de27e5f0",
       "role": "baseline",
-      "seconds": 25.2,
+      "seconds": 165.7,
       "verdict": "pass"
     },
     {
@@ -20,15 +20,15 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "a8e9f47fb35118542a3303980f6360bf37fd504733f6a8653e8df48abfecf9d3",
+      "log_sha256": "bba44890c5cbd9ccaaba242cc50173a29d677af75d91042f0acfa8d784b27668",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
-          "control": "a2d182b9cd46f72db7c28e6b6566aeec51a0ced29f101bea2f30e9cb0da2d1b0"
+          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
+          "control": "c9dc4f58422f7651b2c865eac0f6fa0e862f5f797f53996791aa177be4dcaa69"
         }
       },
       "role": "negative-control",
-      "seconds": 24.9,
+      "seconds": 39.8,
       "verdict": "fail"
     },
     {
@@ -39,15 +39,15 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
-      "log_sha256": "7a29b12340f0fe03cbbb81c6903b3e1221042696b2b84a036246cd2d797c34aa",
+      "log_sha256": "d981120e102259a0bf0038330beff8309d9e8a2de4512c5582a58ac5516185e1",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
-          "control": "85cef6189d54b72caf740debd7a6f76cb38ec37219c4396c366bdec3812a7cdf"
+          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
+          "control": "e5f27998f4c7f3b6a4f8b6752c800533b41f61eb80c71b7fed6c4c6bfa49313c"
         }
       },
       "role": "negative-control",
-      "seconds": 24.0,
+      "seconds": 61.0,
       "verdict": "fail"
     },
     {
@@ -58,15 +58,15 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "3534c71b20ddd62081d0869954980c3de78161d052033c7de74c568f49f12c2c",
+      "log_sha256": "07410827480cea60176326a9e1c852c72f5ae13382dfcd25a13946cf433d4bba",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
-          "control": "65926a9b981d777d698e66564ffb59ebf35d85ddfde1dc2783a9761a231d087c"
+          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
+          "control": "a382387d604ed5c11618a77014f034b4d1ad90a4e80450014c27dabb5caaac9d"
         }
       },
       "role": "negative-control",
-      "seconds": 24.2,
+      "seconds": 59.9,
       "verdict": "fail"
     }
   ],
@@ -84,7 +84,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/shard/commit_plan.rs": "225ac7006e518d8b9799570d516f644c41521f73cdee6a299896668009c57938",
+      "src/shard/commit_plan.rs": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
       "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
       "verification/kani/controls/KANI-037-closure-before-duplicate.patch": "8084545cac28b51625a02d68439f9e977c7e15c3e82fc7f132c7b764a659f974",
       "verification/kani/controls/KANI-037-ignore-hash-conflict.patch": "58192885768bc0f733e7d5f26300dbc30d58707f550fb6f6e6f732fee1250bf3",
@@ -112,10 +112,10 @@
       }
     }
   },
-  "inputs_sha256": "4edce3622e3b16e073adc120094680bdca0b077306a174f6431dca4e050265ca",
+  "inputs_sha256": "ff8b35d6b69da3fb8fda0c621dd7b77ae00f8d69019acb12bbc72e22ae170e52",
   "run_on": {
     "dirty_tree": false,
-    "revision": "3f386070737b30416fe13d27ff05a314bde2377f"
+    "revision": "7499ec194cf16e2b64c14e2439edbd8cddda39ea"
   },
   "schema": 2,
   "tools": {
