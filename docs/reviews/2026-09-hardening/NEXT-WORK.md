@@ -626,6 +626,32 @@ the roadmap's unimplemented list
 - **KANI-046 (done):** the absorbed boundary and trim frontier
   (`retire_absorbed`, `trim_target` in `src/shard/commit_plan.rs`, which the
   committer's absorb and trim steps now share), `src/shard/commit_plan/proofs.rs`.
+- **KANI-047 (tried, not landed; one finding):** `ShardMaintenance::no_progress_secs`
+  (`src/shard.rs`) computes `now_ms - self.last_progress_ms` unchecked: a
+  harness over full-width clocks finds the subtraction overflowing (a debug
+  panic, a release wrap) when the two differ by more than 2^63 ms, which
+  only a corrupt row or a wildly wrong clock can produce. The fix,
+  `now_ms.saturating_sub(..)` (or `now_ms.max(last) - last`, since `last`
+  is positive there), sits inside the function's `cast_sign_loss`
+  exception, whose syntax facts the gate holds: run the gate first, and if
+  it reports growth, propose the row or move the arithmetic out of scope. The codec (`decode_shard_maint_row`) and delta (`apply_delta`)
+  harnesses cannot be built: Kani 0.68's compiler panics (intrinsics.rs:243,
+  an intrinsic whose output is not `i32`) on code that reaches `anyhow`.
+  Checking them needs anyhow-free cores (a typed error, as `TopologyError`
+  did for the segment map).
+- **KANI-040 (tried, not landed):** a harness over `decide_claim` must build a
+  `StreamDesc`, and `StreamDesc::try_from` runs the whole descriptor
+  validation (hex epoch, name, topology): over symbolic claim fields it did
+  not finish in 16 minutes. A pure decision core (sealed, the claim, pending
+  topology, the counter, the operation id, now → decline / renew / install)
+  that `decide_claim` applies to the descriptor would make it cheap; that
+  touches `decide_claim`'s `expect_used` exception scope (a shrink), and
+  `src/application/lifecycle/claims.rs` feeds TLA-002, TLA-003 and KANI-042.
+  Related KANI-041 note: every seal-generation allocation (`claims.rs` twice,
+  `lifecycle.rs` twice, `topology.rs` twice) is an unchecked
+  `seal_gen_counter += 1`, which would wrap after 2^64 claims; a checked
+  allocator would need a decline path at each site, all inside excepted
+  scopes.
 - **KANI-006 (ready, held for the owner; rechecked 2026-09-26):** the postings
   varint codec, on branch `formal/kani-006` (1496cbd9, FORMAL_OK, 4 checks, no
   finding). The blocker still holds. `src/postings.rs` is compiled by path
