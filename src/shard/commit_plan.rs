@@ -300,7 +300,8 @@ pub(super) enum AbsorbRetirement {
 
 /// Retire an advancing absorbed op against the stream's tail. Only a copy
 /// that starts exactly at the absorbed boundary moves it; the ledger is
-/// checked, never clamped.
+/// checked, never clamped. The boundary it leaves becomes trimmable: one
+/// advance of lag keeps an in-flight reader's range (KANI-046).
 pub(super) fn retire_absorbed(
     tail: &mut TailFields,
     upto: u64,
@@ -312,9 +313,19 @@ pub(super) fn retire_absorbed(
     let Some(remaining) = tail.unabsorbed_bytes.checked_sub(copied.len) else {
         return AbsorbRetirement::Diverged;
     };
+    tail.trim_safe_to = tail.trim_safe_to.max(tail.absorbed);
     tail.absorbed = upto.min(tail.next);
     tail.unabsorbed_bytes = remaining;
     AbsorbRetirement::Exact
+}
+
+/// The offset physical trimming may reach in one step: never past
+/// `trim_safe_to` or the absorbed boundary, and at most `allowed` records
+/// past `trimmed` (KANI-046).
+pub(super) fn trim_target(tail: &TailFields, allowed: u64) -> u64 {
+    tail.trim_safe_to
+        .min(tail.absorbed)
+        .min(tail.trimmed.saturating_add(allowed))
 }
 
 #[cfg(test)]
@@ -338,13 +349,18 @@ mod tests {
         let retire = |from, upto, len| {
             let mut tail = start.clone();
             let outcome = retire_absorbed(&mut tail, upto, &CopiedBytes::new(from, len));
-            (outcome, tail.absorbed, tail.unabsorbed_bytes)
+            (
+                outcome,
+                tail.absorbed,
+                tail.unabsorbed_bytes,
+                tail.trim_safe_to,
+            )
         };
-        assert_eq!(retire(4, 6, 60), (AbsorbRetirement::Exact, 6, 40));
-        assert_eq!(retire(2, 6, 60), (AbsorbRetirement::Detached, 4, 100));
-        assert_eq!(retire(6, 8, 60), (AbsorbRetirement::Detached, 4, 100));
-        assert_eq!(retire(4, 6, 101), (AbsorbRetirement::Diverged, 4, 100));
-        assert_eq!(retire(4, 9, 100), (AbsorbRetirement::Exact, 8, 0));
+        assert_eq!(retire(4, 6, 60), (AbsorbRetirement::Exact, 6, 40, 4));
+        assert_eq!(retire(2, 6, 60), (AbsorbRetirement::Detached, 4, 100, 0));
+        assert_eq!(retire(6, 8, 60), (AbsorbRetirement::Detached, 4, 100, 0));
+        assert_eq!(retire(4, 6, 101), (AbsorbRetirement::Diverged, 4, 100, 0));
+        assert_eq!(retire(4, 9, 100), (AbsorbRetirement::Exact, 8, 0, 4));
     }
 
     /// A stream settles when the last receipt of its bucket drops; another

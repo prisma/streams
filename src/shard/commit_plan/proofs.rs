@@ -5,8 +5,12 @@
 //! calls the production function with full-width `u64` epochs, sequences,
 //! offsets and fences, symbolic 16-byte hashes, both tail-closure flags and
 //! every sealed state. The producer id is not an input of these decisions,
-//! so it stays empty.
-use super::{ProducerDecision, decide_producer, seal_authorized};
+//! so it stays empty. KANI-046 (the absorbed boundary and the trim frontier)
+//! calls `retire_absorbed` and `trim_target` on full-width frontiers.
+use super::{
+    AbsorbRetirement, CopiedBytes, ProducerDecision, decide_producer, retire_absorbed,
+    seal_authorized, trim_target,
+};
 use crate::shard::{AppendAck, AppendErr, ProducerReq, SealedReject, TailFields};
 
 fn any_request() -> ProducerReq {
@@ -270,5 +274,132 @@ fn kani_039_seal_generation_truth_table() {
     kani::cover!(
         generation.is_none() && closing && fence > 0,
         "an untagged close after a fence"
+    );
+}
+
+/// A tail as the committer keeps it: `trimmed <= trim_safe_to <= absorbed
+/// <= next`, every frontier full width.
+fn frontier_tail() -> TailFields {
+    let tail = TailFields {
+        next: kani::any(),
+        absorbed: kani::any(),
+        trimmed: kani::any(),
+        trim_safe_to: kani::any(),
+        unabsorbed_bytes: kani::any(),
+        ..TailFields::default()
+    };
+    kani::assume(
+        tail.trimmed <= tail.trim_safe_to
+            && tail.trim_safe_to <= tail.absorbed
+            && tail.absorbed <= tail.next,
+    );
+    tail
+}
+
+/// KANI-046: one trim step reaches past neither `trim_safe_to` nor the
+/// absorbed boundary, never moves `trimmed` back, and deletes at most its
+/// budget, a budget that would pass `u64::MAX` included.
+#[kani::proof]
+fn kani_046_a_trim_step_stays_behind_the_safe_boundary() {
+    let tail = frontier_tail();
+    let allowed: u64 = kani::any();
+    let target = trim_target(&tail, allowed);
+    assert!(
+        target <= tail.trim_safe_to && target <= tail.absorbed,
+        "a trim never passes the safe boundary"
+    );
+    assert!(target >= tail.trimmed, "a trim never moves backwards");
+    assert!(
+        target - tail.trimmed <= allowed,
+        "a trim deletes at most its budget"
+    );
+    kani::cover!(
+        target == tail.trim_safe_to && target < tail.absorbed,
+        "a trim reaches the safe boundary, one advance behind"
+    );
+    kani::cover!(
+        allowed > 0 && target - tail.trimmed == allowed && target < tail.trim_safe_to,
+        "the budget stops a trim"
+    );
+    kani::cover!(
+        tail.trimmed.checked_add(allowed).is_none(),
+        "a budget past u64::MAX saturates"
+    );
+}
+
+/// KANI-046: an advance that starts at the boundary moves it forward to its
+/// end, never past the log's next offset, retires exactly its copied bytes
+/// and makes the old boundary trimmable, keeping the frontiers ordered; any
+/// other advance changes nothing. `upto` is past the boundary, as the
+/// committer's caller requires before it retires an advance.
+#[kani::proof]
+fn kani_046_an_advance_moves_the_boundary_forward_within_the_log() {
+    let before = frontier_tail();
+    let upto: u64 = kani::any_where(|upto: &u64| *upto > before.absorbed);
+    let copied = CopiedBytes::new(kani::any(), kani::any());
+    let mut after = before.clone();
+    let outcome = retire_absorbed(&mut after, upto, &copied);
+    let unchanged = |a: &TailFields, b: &TailFields| {
+        (
+            a.next,
+            a.ts,
+            a.logical,
+            a.trimmed,
+            a.closed,
+            a.history_v2,
+            a.route,
+        ) == (
+            b.next,
+            b.ts,
+            b.logical,
+            b.trimmed,
+            b.closed,
+            b.history_v2,
+            b.route,
+        ) && a.seq == b.seq
+    };
+    assert!(
+        unchanged(&before, &after),
+        "a retirement moves only the boundary and its ledger"
+    );
+    if outcome == AbsorbRetirement::Exact {
+        assert!(
+            before.absorbed <= after.absorbed && after.absorbed <= after.next,
+            "the boundary moves forward within the log"
+        );
+        assert!(
+            after.unabsorbed_bytes.checked_add(copied.len) == Some(before.unabsorbed_bytes),
+            "exactly the copied bytes retire"
+        );
+        assert!(
+            after.trim_safe_to == before.absorbed,
+            "the old boundary becomes trimmable"
+        );
+        assert!(
+            after.trimmed <= after.trim_safe_to && after.trim_safe_to <= after.absorbed,
+            "the frontiers stay ordered"
+        );
+    } else {
+        assert!(
+            (after.absorbed, after.unabsorbed_bytes, after.trim_safe_to)
+                == (
+                    before.absorbed,
+                    before.unabsorbed_bytes,
+                    before.trim_safe_to
+                ),
+            "a refused advance changes nothing"
+        );
+    }
+    kani::cover!(
+        outcome == AbsorbRetirement::Exact && upto > before.next,
+        "an advance past the log is held to its next offset"
+    );
+    kani::cover!(
+        outcome == AbsorbRetirement::Diverged,
+        "a claim larger than the ledger moves nothing"
+    );
+    kani::cover!(
+        outcome == AbsorbRetirement::Detached,
+        "an advance that does not start at the boundary moves nothing"
     );
 }

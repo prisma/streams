@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5d062b18a5fd52efbb092ec42f1523d772aae42bfb9e69f31b44a806c62edfc3",
+      "log_sha256": "ce7a524af6f8c731348ba1ff6e806530b4f8c78cabc280f118eec231106c3c1c",
       "role": "baseline",
-      "seconds": 36.2,
+      "seconds": 31.1,
       "verdict": "pass"
     },
     {
@@ -19,15 +19,15 @@
       "failed_checks": [
         "\"a lower epoch is stale, whatever the sequence, hashes or closure\""
       ],
-      "log_sha256": "c8d0f687a6aacf6ff05312797a767b226698ad6d4e16ba8ff44d62fe6f0fd793",
+      "log_sha256": "caa19e24a939c74c9ee6b5400c9e3a4ef9bbd36148aa29b7bc00ad2394ea456f",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "909a45164b11f94f780fb5b13aa9297bca776bf4d976d5b07cd5cf911b6e3335"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "0ad5b66d493ccac2ccfa17137472758becf6c7e7829cd54d6c3316bd94a173ee"
         }
       },
       "role": "negative-control",
-      "seconds": 35.5,
+      "seconds": 31.9,
       "verdict": "fail"
     },
     {
@@ -38,15 +38,15 @@
       "failed_checks": [
         "\"a new epoch must start at sequence 0\""
       ],
-      "log_sha256": "b98f56aef04ec4851e031d4804bc3dbc86502c60baf6ce31f12a50d5a7a57e81",
+      "log_sha256": "e98aebc4c668b1b8bd93d74c811a62ec76b20bc75c1edfcd5440ef9b7039ebad",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "83f47df6b66fc65d0cedca84d7b9a04e85f544b2ae30169bda010649e53ab7fc"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "7f15b78860f4c1dd6cff6a3e30ec47e863bd6bb0ce6fddd6bb694e0594107352"
         }
       },
       "role": "negative-control",
-      "seconds": 65.6,
+      "seconds": 31.0,
       "verdict": "fail"
     }
   ],
@@ -64,8 +64,8 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/shard/commit_plan.rs": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+      "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "verification/kani/controls/KANI-036-accept-a-lower-epoch.patch": "a41605ccfa79e1ce80c672deccace628bafa23d7ab28cdaf9249eaf54c6ac42a",
       "verification/kani/controls/KANI-036-new-epoch-may-skip-zero.patch": "3d5ba9d6416c09de5930b78f7e29a29f44646925b57f31af0627767fc49a5cdf"
     },
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "3267d8ae29ecd55ec542fa1801aac81c3fa3b687bbcaa9072d6d6d03946b7455",
+  "inputs_sha256": "57c087695381a67566c67c569afede12df49abcea087ff96e0bc4096fb1bb42d",
   "run_on": {
-    "dirty_tree": false,
-    "revision": "7499ec194cf16e2b64c14e2439edbd8cddda39ea"
+    "dirty_tree": true,
+    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
   },
   "schema": 2,
   "tools": {

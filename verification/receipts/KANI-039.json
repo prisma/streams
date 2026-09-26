@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "bed3156db823f7b896dd447fb02582e5b2359e3bf7fe9f5e4abb90f2dcb46de3",
+      "log_sha256": "560566724f902053912f127837a6a0b3ca06b51440d281d9b52300a794185876",
       "role": "baseline",
-      "seconds": 63.0,
+      "seconds": 29.5,
       "verdict": "pass"
     },
     {
@@ -19,15 +19,15 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "05f7be95358d5324c84121efaad0ac3e6db744355c829933e96845e63e5e6c91",
+      "log_sha256": "59a0ac739412dc1014c91f26683f26c5e3400114671af25a53f1645e78bedb70",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "32dc1e4921a174af551aa876bb594b29d5149a363763fb8d18aafeade05d297c"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "6d7c57c214be639ad5d0d836bbd79960a2ef3f66cb9c853c9acf57c8ec1e1f00"
         }
       },
       "role": "negative-control",
-      "seconds": 38.3,
+      "seconds": 29.2,
       "verdict": "fail"
     },
     {
@@ -38,15 +38,15 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "c3b3fd15ee2cb3ef81e9b4364567fed5eaef35f82842db8d11268adde3d54db6",
+      "log_sha256": "4c99911af8279378d999c008d5f5d77e16f6c9aab8cafef2ab6dbf5e260010df",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "cee4b9426c25009f2bd56290b5c528ff9471c58409c5bbd2c1946b212d063137"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "ca03ed9026f5d577fd642d0c422370f36797d4e04307e1c8a722fc62ad6c9b3a"
         }
       },
       "role": "negative-control",
-      "seconds": 64.9,
+      "seconds": 28.8,
       "verdict": "fail"
     }
   ],
@@ -63,8 +63,8 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/shard/commit_plan.rs": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+      "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "verification/kani/controls/KANI-039-fence-equality-refused.patch": "9e87e79f49ad48209ebfc4ba552b6cc100d14ff534c03760fa8a9ff75fd36d67",
       "verification/kani/controls/KANI-039-untagged-close-after-fence.patch": "620146734a28af3a7514a3f2afd7ea57ff96f40652b71f89242420f60942cdda"
     },
@@ -90,10 +90,10 @@
       }
     }
   },
-  "inputs_sha256": "e1d8b5b2370de7f4da784b1c2b396e997c685d5d7d986f7a87972d8bcb0c7df7",
+  "inputs_sha256": "0081f5135f90c86955e237c671fbea327420a88590a86c22905599a80c720c3b",
   "run_on": {
-    "dirty_tree": false,
-    "revision": "7499ec194cf16e2b64c14e2439edbd8cddda39ea"
+    "dirty_tree": true,
+    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
   },
   "schema": 2,
   "tools": {

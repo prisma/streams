@@ -741,6 +741,85 @@
       ]
     },
     {
+      "id": "KANI-046",
+      "kind": "kani",
+      "title": "Absorption and trim frontier arithmetic",
+      "status": "pass-with-recorded-scope",
+      "owner": "committer frontier decisions",
+      "source_paths": [
+        "src/shard/commit_plan.rs",
+        "src/shard/transaction/maintenance.rs"
+      ],
+      "verification_paths": [
+        "src/shard/commit_plan/proofs.rs"
+      ],
+      "requirements": [
+        "H3",
+        "H4"
+      ],
+      "models": [
+        "TLA-016",
+        "TLA-018",
+        "TLA-019"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "retire_absorbed and trim_target over full-width u64 frontiers of a tail the committer keeps ordered (trimmed <= trim_safe_to <= absorbed <= next), a symbolic copied range and ledger, and a symbolic trim budget; retire_absorbed with upto past the boundary, as its caller (CommitTransaction::absorbed in src/shard/transaction/maintenance.rs) requires. The callers' deletes of [trimmed, target) and trimmed = max(trimmed, target) are in scope by inspection only",
+      "checks": [
+        {
+          "id": "KANI-046/trim-step",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-046/advance",
+          "role": "baseline",
+          "harness": "shard::commit_plan::proofs::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-046/nc-trim-past-the-safe-boundary",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
+          "patch": "verification/kani/controls/KANI-046-trim-past-the-safe-boundary.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a trim never passes the safe boundary"
+          }
+        },
+        {
+          "id": "KANI-046/nc-wrap-the-trim-budget",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
+          "patch": "verification/kani/controls/KANI-046-wrap-the-trim-budget.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a trim never moves backwards"
+          }
+        },
+        {
+          "id": "KANI-046/nc-boundary-past-the-log",
+          "role": "negative-control",
+          "harness": "shard::commit_plan::proofs::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
+          "patch": "verification/kani/controls/KANI-046-boundary-past-the-log.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the boundary moves forward within the log"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary"
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

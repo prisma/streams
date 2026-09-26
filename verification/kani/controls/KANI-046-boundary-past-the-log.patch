@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -314,7 +314,7 @@
+         return AbsorbRetirement::Diverged;
+     };
+     tail.trim_safe_to = tail.trim_safe_to.max(tail.absorbed);
+-    tail.absorbed = upto.min(tail.next);
++    tail.absorbed = upto;
+     tail.unabsorbed_bytes = remaining;
+     AbsorbRetirement::Exact
+ }

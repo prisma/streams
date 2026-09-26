@@ -2274,6 +2274,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_046_a_trim_step_stays_behind_the_safe_boundary",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-046 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
+      "path": "src/shard/commit_plan/proofs.rs",
+      "reason": "Kani proof harness for KANI-046 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::admission",
       "path": "src/shard/record/proofs.rs",

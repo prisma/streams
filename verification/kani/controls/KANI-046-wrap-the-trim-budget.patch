@@ -1,0 +1,12 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -325,7 +325,7 @@
+ pub(super) fn trim_target(tail: &TailFields, allowed: u64) -> u64 {
+     tail.trim_safe_to
+         .min(tail.absorbed)
+-        .min(tail.trimmed.saturating_add(allowed))
++        .min(tail.trimmed.wrapping_add(allowed))
+ }
+ 
+ #[cfg(test)]

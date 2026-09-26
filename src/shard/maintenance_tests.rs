@@ -334,6 +334,36 @@ async fn submit_advance(engine: &ShardEngine, hash: [u8; 16], from: u64, upto: u
         .await;
 }
 
+/// A trim step drains what an advance's budget left behind: the advance
+/// trims at most `max_trim_per_op` records below the old boundary, the rest
+/// stays trim debt, and each TrimTick moves `trimmed` on by the budget up to
+/// `trim_safe_to` and never past it (KANI-046's bound at both call sites).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trim_tick_drains_what_an_advances_budget_left() {
+    let (engine, _store) = rig("trim-debt").await;
+    let cfg = ShardConfig {
+        max_trim_per_op: 1,
+        ..ShardConfig::default()
+    };
+    let h = [0x2e; 16];
+    for _ in 0..8 {
+        append(&engine, h).await.unwrap();
+    }
+    let b04 = stored_bytes(&engine, &h, 0, 4).await;
+    let b48 = stored_bytes(&engine, &h, 4, 8).await;
+    engine.commit_group(vec![advance(h, 0, 4, b04)], &cfg).await;
+    engine.commit_group(vec![advance(h, 4, 8, b48)], &cfg).await;
+    let tail = applied(&engine, h).await;
+    let frontiers = (tail.absorbed, tail.trim_safe_to, tail.trimmed);
+    assert_eq!(frontiers, (8, 4, 1), "the advance trims one record behind");
+    for trimmed in [2, 3, 4, 4] {
+        engine.commit_group(vec![CommitOp::TrimTick], &cfg).await;
+        assert_eq!(applied(&engine, h).await.trimmed, trimmed);
+    }
+    assert!(engine.db.get(record_key(&h, 3)).await.unwrap().is_none());
+    assert!(engine.db.get(record_key(&h, 4)).await.unwrap().is_some());
+}
+
 /// Committer layer: in one group, an advance over [0, 4) and a second
 /// over [0, 8) that re-covers it. The first retires exactly, the second
 /// is dropped whole, and the append beside them commits; the ledger then

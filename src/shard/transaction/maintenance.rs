@@ -1,5 +1,5 @@
 use super::*;
-use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed};
+use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed, trim_target};
 impl CommitTransaction<'_> {
     pub(super) fn usage_ack(
         &mut self,
@@ -321,12 +321,8 @@ impl CommitTransaction<'_> {
             self.group_has_absorbed = true;
         }
         local.frames.retired_bytes += bytes.len;
-        local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
         let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-        let trim_to = local
-            .fields
-            .trim_safe_to
-            .min(local.fields.trimmed + allowed);
+        let trim_to = trim_target(&local.fields, allowed);
         for off in local.fields.trimmed..trim_to {
             self.batch.delete(record_key(&hash, off));
         }
@@ -341,9 +337,8 @@ impl CommitTransaction<'_> {
         true
     }
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {
-        let target = local.fields.trim_safe_to.min(local.fields.absorbed);
         let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-        let trim_to = target.min(local.fields.trimmed + allowed);
+        let trim_to = trim_target(&local.fields, allowed);
         for off in local.fields.trimmed..trim_to {
             self.batch.delete(record_key(&hash, off));
         }

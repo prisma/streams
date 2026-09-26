@@ -623,23 +623,45 @@ the roadmap's unimplemented list
   workable harness needs the leaf set computed from known indices and a
   cheaper form of that debug check (for example `tiles_keyspace` over a
   fixed-size array), which is a production change to decide deliberately.
-- **KANI-006 (ready, held for the owner):** the postings varint codec, on branch
-  `formal/kani-006` (FORMAL_OK, 4 checks, no finding). It cannot land without
-  an owner decision: `src/postings.rs` is compiled by path into
-  `tools/quality-invariants`, and three owner-approved exact-state rows in
-  `docs/quality/exception-growth.json` (`tools/quality-invariants/src/lib.rs`,
-  `crate::postings`, `dead_code`/`unreachable_pub`/`unused_imports`:
-  nested_items 126, scope_lines 1397, syntax_facts 2601) measure that whole
-  file. Declaring `#[cfg(kani)] mod proofs;` there changes those values, and
-  an agent may not update the rows. The branch also lacks the
-  `docs/quality/owners.json` macro-dsl rows for its `kani::cover!` sites (see
-  KANI-005's row). The same holds for any harness over a module the
-  invariants or fuzz crates include by path: `postings.rs` (so KANI-007 to
-  KANI-015's postings owners), `crypto.rs`, `tenant.rs`, `product_cursor.rs`,
-  `queue.rs`, `quota/bucket.rs`, `retained_bytes.rs`, `rollup/allocation.rs`,
+- **KANI-046 (done):** the absorbed boundary and trim frontier
+  (`retire_absorbed`, `trim_target` in `src/shard/commit_plan.rs`, which the
+  committer's absorb and trim steps now share), `src/shard/commit_plan/proofs.rs`.
+- **KANI-006 (ready, held for the owner; rechecked 2026-09-26):** the postings
+  varint codec, on branch `formal/kani-006` (1496cbd9, FORMAL_OK, 4 checks, no
+  finding). The blocker still holds. `src/postings.rs` is compiled by path
+  into both `tools/quality-invariants/src/lib.rs` and
+  `fuzz/fuzz_targets/postings.rs`, and six owner-approved exact-state rows in
+  `docs/quality/exception-growth.json` (both files, owner `crate::postings`,
+  each of `dead_code`, `unreachable_pub`, `unused_imports`) pin that module's
+  measure at nested_items 126, scope_lines 1397, syntax_facts 2601. The
+  branch's `#[cfg(kani)] mod proofs;` makes the gate report 131/1466/2716
+  (18 growth failures, 6 stale rows). `put_varint`/`get_varint` are private,
+  so no harness outside `crate::postings` can reach them, and every
+  descendant of the by-path module is measured whatever its cfg. Options for
+  the owner:
+  (a) a narrow gate rule: an exception's scope does not include a Kani
+      harness declared exactly as `#[cfg(kani)] mod proofs;` (the
+      `harness_layout` shape) nor its `proofs.rs`, since no lint build
+      compiles them; it changes no contract at HEAD and would also unblock
+      the other by-path owners below. An agent attempt at this change was
+      refused by the session's safety classifier as a CI bypass, so it
+      needs the owner to make or authorize it;
+  (b) the owner replaces the six rows with 131/1466/2716 and a rationale
+      naming KANI-006;
+  (c) a weaker harness through the pub(crate) page API (`encode_page`,
+      `decode_page`) hosted outside `crate::postings`, which needs no
+      decision but proves the codec only indirectly.
+  After (a) or (b): rebase the branch (conflicts only in the roadmap table
+  and the manifest; keep KANI-006's entry values unchanged and its receipt
+  stays valid), add two `docs/quality/owners.json` macro-dsl rows
+  (`crate::kani_006_every_u64_round_trips_and_consumes_its_encoding` and
+  `crate::kani_006_decoding_matches_the_wide_oracle`, 3 `kani::cover` each),
+  re-record TLA-016 (its source paths include `src/postings.rs`). The same
+  blocker applies to any harness over a module the invariants or fuzz
+  crates include by path: `postings.rs` (so KANI-007 to KANI-015's postings
+  owners), `crypto.rs`, `tenant.rs`, `product_cursor.rs`, `queue.rs`,
+  `quota/bucket.rs`, `retained_bytes.rs`, `rollup/allocation.rs`,
   `rollup/storage.rs`, and `application/read_{batch,budget,retention_probe}.rs`.
-  Those crates also needed a `build.rs` declaring `cfg(kani)` and
-  `#[rustfmt::skip]` on their by-path `mod postings;` (both on the branch).
 - **CI: formal shard 0 died whenever `verification/manifest.json` changed
   (resolved 2026-09-26 by the owner's choice, a smaller KANI-001: its two
   properties are separate harnesses and alphabet membership no longer goes

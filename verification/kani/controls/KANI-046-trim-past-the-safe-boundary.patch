@@ -1,0 +1,14 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -323,9 +323,7 @@
+ /// `trim_safe_to` or the absorbed boundary, and at most `allowed` records
+ /// past `trimmed` (KANI-046).
+ pub(super) fn trim_target(tail: &TailFields, allowed: u64) -> u64 {
+-    tail.trim_safe_to
+-        .min(tail.absorbed)
+-        .min(tail.trimmed.saturating_add(allowed))
++    tail.absorbed.min(tail.trimmed.saturating_add(allowed))
+ }
+ 
+ #[cfg(test)]

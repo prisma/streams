@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b2426e0197d9e0c7a7799bf041bf6b3a13049ea4ea7407f9ab3ecd37de27e5f0",
+      "log_sha256": "ae3a1256fe79f4be9a8dee820a89f5a12af67a5b65254f1d1391420a3c6f2b61",
       "role": "baseline",
-      "seconds": 165.7,
+      "seconds": 31.3,
       "verdict": "pass"
     },
     {
@@ -20,15 +20,15 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "bba44890c5cbd9ccaaba242cc50173a29d677af75d91042f0acfa8d784b27668",
+      "log_sha256": "4538338e5ab32d780277f9155858c169ac21677412296473276074a12db0896f",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "c9dc4f58422f7651b2c865eac0f6fa0e862f5f797f53996791aa177be4dcaa69"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "bcf07fce96dd868ab3393a04567e47f7baca19d19836bdca8eb1c078776cb237"
         }
       },
       "role": "negative-control",
-      "seconds": 39.8,
+      "seconds": 31.9,
       "verdict": "fail"
     },
     {
@@ -39,15 +39,15 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
-      "log_sha256": "d981120e102259a0bf0038330beff8309d9e8a2de4512c5582a58ac5516185e1",
+      "log_sha256": "2fa0c4aac3d820f676f8696c016864dc2a9d18acc9d680fbcba8e1e97d910253",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "e5f27998f4c7f3b6a4f8b6752c800533b41f61eb80c71b7fed6c4c6bfa49313c"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "fd59f57310f5b6d92d01e0ebe71d14a2870c691d62f75264a3325e518e6f3ee6"
         }
       },
       "role": "negative-control",
-      "seconds": 61.0,
+      "seconds": 31.3,
       "verdict": "fail"
     },
     {
@@ -58,15 +58,15 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "07410827480cea60176326a9e1c852c72f5ae13382dfcd25a13946cf433d4bba",
+      "log_sha256": "71a0d1fb3eada05172956e6a89cf23f6327a952c70fe7000444307c4a64127e1",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-          "control": "a382387d604ed5c11618a77014f034b4d1ad90a4e80450014c27dabb5caaac9d"
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "ad3b344ccf419a1e61c7c6ef05a0f584046365e1b8a0626694b3d9c4c26da493"
         }
       },
       "role": "negative-control",
-      "seconds": 59.9,
+      "seconds": 31.3,
       "verdict": "fail"
     }
   ],
@@ -84,8 +84,8 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/shard/commit_plan.rs": "482ed1150832014564702c514d489ed4222a9014ec760a93a6d5b48b4210fd1a",
-      "src/shard/commit_plan/proofs.rs": "b59824f9a1389366f94a0070f975d5d56cc2d52321eaea1bda57bff2d18feb72",
+      "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+      "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "verification/kani/controls/KANI-037-closure-before-duplicate.patch": "8084545cac28b51625a02d68439f9e977c7e15c3e82fc7f132c7b764a659f974",
       "verification/kani/controls/KANI-037-ignore-hash-conflict.patch": "58192885768bc0f733e7d5f26300dbc30d58707f550fb6f6e6f732fee1250bf3",
       "verification/kani/controls/KANI-037-older-duplicate-allocates.patch": "2862ba77d3c0b0c6682661457c7adfe74f1b8bf6d97418dda28e8ce571e33258"
@@ -112,10 +112,10 @@
       }
     }
   },
-  "inputs_sha256": "ff8b35d6b69da3fb8fda0c621dd7b77ae00f8d69019acb12bbc72e22ae170e52",
+  "inputs_sha256": "8dbf6c2c1c6207199dd687113f5917b47cf43a45f8226c7948566ce26852a2b0",
   "run_on": {
-    "dirty_tree": false,
-    "revision": "7499ec194cf16e2b64c14e2439edbd8cddda39ea"
+    "dirty_tree": true,
+    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
   },
   "schema": 2,
   "tools": {

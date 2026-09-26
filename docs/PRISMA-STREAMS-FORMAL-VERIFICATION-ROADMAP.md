@@ -123,6 +123,7 @@ design check (§7.7).
 | KANI-038 | pass-with-recorded-scope | 2 / 2 / 0 | Sequence gaps at the numeric boundary; a lane at `u64::MAX` only replays. | to be recorded at `d83af9a4` | — |
 | KANI-039 | pass-with-recorded-scope | 1 / 2 / 0 | `seal_authorized` over every generation, fence and closing flag. | to be recorded at `d83af9a4` | — |
 | KANI-042 | pass-with-recorded-scope | 1 / 2 / 0 | Every `AppendErr` variant against the debt-retention table, on the raw and product surfaces (`src/application/lifecycle/claims/proofs.rs`). | to be recorded at `d83af9a4` | — |
+| KANI-046 | pass-with-recorded-scope | 2 / 3 / 0 | `retire_absorbed` and `trim_target` (`src/shard/commit_plan/proofs.rs`) over full-width frontiers of an ordered tail (`trimmed <= trim_safe_to <= absorbed <= next`) and any trim budget: a trim step reaches neither `trim_safe_to` nor the absorbed boundary, never moves back and deletes at most its budget (a budget past `u64::MAX` saturates); an advance that starts at the boundary moves it forward, never past `next`, retires exactly its bytes and makes the old boundary trimmable, and any other advance changes nothing. The callers' deletes are in scope by inspection. | recorded with its commit | — |
 | TLA-001 | pass-with-recorded-scope | 2 / 5 / 9 | `RegistryCas.tla`: the `mutate_incarnation` and `recreate` retry loops against a single-request conditional PUT, at 2 attempts and at the production bound of 5. | to be recorded at `d83af9a4` | ASM-OBJSTORE-CAS (unestablished) |
 | TLA-002 | pass-with-recorded-scope | 12 / 11 / 16 | `SealProtocol.tla` (`MC_SealTakeover`): claims, renewal, takeover, the durable fence row, engine replacement, crash failover, and a fence group lost or rejected before it is durable. | to be recorded at `d83af9a4` | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
 | TLA-003 | pass-with-recorded-scope | 14 / 16 / 17 | `SealProtocol.tla` (`MC_FinalSeal`): final-record sealing on both surfaces, with validation skew between instances (V4, V5, V5A) and the same-id plain append (OP). No known defect remains. | to be recorded at `d83af9a4` | ASM-OBJSTORE-CAS (unestablished); ASM-SEAL-OPID (unestablished until KANI-043) |
@@ -1981,6 +1982,8 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 <a id="kani-046"></a>
 ### KANI-046 — Absorption and trim frontier arithmetic
+
+**Status:** pass-with-recorded-scope (implemented 2026-09-26; manifest entry KANI-046, 2 baselines and 3 negative controls: a trim bounded by the boundary instead of `trim_safe_to`, a wrapping budget, and a boundary not held to `next`). The frontier arithmetic moved into two pure functions in `src/shard/commit_plan.rs`, which `CommitTransaction::absorbed` and `trim` call: `retire_absorbed` now also makes the old boundary trimmable (its caller did it right after), and `trim_target` is the one trim bound both call sites share. Behaviour is unchanged for ordered tails; the absorb path's bound now also caps at the boundary, and a budget that would pass `u64::MAX` saturates instead of overflowing. `upto` past the boundary is the caller's precondition, assumed. No finding.
 
 **Priority:** P0 · **Build route:** Extract  
 **Source owners:** [`src/shard/transaction/maintenance.rs`](src/shard/transaction/maintenance.rs); [`src/history/gather.rs`](src/history/gather.rs)

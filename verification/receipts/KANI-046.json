@@ -1,71 +1,91 @@
 {
   "checks": [
     {
-      "check": "KANI-038/gaps",
-      "covers": 2,
-      "covers_satisfied": 2,
+      "check": "KANI-046/trim-step",
+      "covers": 3,
+      "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "32e4bc5c7a27dcfa7d53370f30981e834b5fb9421f506f083e193926b8efdf28",
+      "log_sha256": "20746023e7df5abf6aa97c085e52290a44cbdde6b22d9fd4f26069312a5d77ef",
       "role": "baseline",
-      "seconds": 32.3,
+      "seconds": 30.7,
       "verdict": "pass"
     },
     {
-      "check": "KANI-038/exhausted",
+      "check": "KANI-046/advance",
+      "covers": 3,
+      "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "a557ba372d511761aac0351584f554bbd8f9af340cb302736313ef7af24ef694",
+      "log_sha256": "2e1ed0d1ec90589f8783d8e66b6c52e31a8e02938eecc0fb50fb5705a4085a56",
       "role": "baseline",
-      "seconds": 30.4,
+      "seconds": 29.7,
       "verdict": "pass"
     },
     {
-      "check": "KANI-038/nc-inclusive-gap",
-      "covers": 2,
-      "covers_satisfied": 1,
-      "expected": "fail:the adjacent sequence is admitted unless the collection is closed",
+      "check": "KANI-046/nc-trim-past-the-safe-boundary",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:a trim never passes the safe boundary",
       "failed_checks": [
-        "\"the adjacent sequence is admitted unless the collection is closed\""
+        "\"a trim never passes the safe boundary\""
       ],
-      "log_sha256": "ea447fcada9f61dc38899d0e8786f03e92243032082ef4b7861a9a6938a5d4b3",
+      "log_sha256": "7ff39556a40aa0c61b49427013ed55559bcc7cef2c03a847a79fe53137d53b32",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
-          "control": "009f692976f81d319c9e10274151bd26ab7d8a7624571123762c68a5fe02a1fb"
+          "control": "f67e368a725275f29b0c011a742ffdc4224bcd64b70ce0b20934a41433ef0616"
         }
       },
       "role": "negative-control",
-      "seconds": 31.8,
+      "seconds": 29.1,
       "verdict": "fail"
     },
     {
-      "check": "KANI-038/nc-gap-names-wrong-successor",
-      "covers": 2,
-      "covers_satisfied": 1,
-      "expected": "fail:a sequence beyond the successor is a gap naming the successor",
+      "check": "KANI-046/nc-wrap-the-trim-budget",
+      "covers": 3,
+      "covers_satisfied": 2,
+      "expected": "fail:a trim never moves backwards",
       "failed_checks": [
-        "\"a sequence beyond the successor is a gap naming the successor\""
+        "\"a trim never moves backwards\""
       ],
-      "log_sha256": "f689df17d8746c942dba8651d6ee354fed408d7fc2c38594aa874d68390cbf61",
+      "log_sha256": "4e8acf31ec07ec1c75b1bbab8440545e533f2607ad4840a40be99a1f2eb54398",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
-          "control": "03d8dbeb2a139640b931beaa07a6eff9d882f22754e7beecc2a15d85a96c8c19"
+          "control": "b7be3962dff229b3b3e1b9475fbe137ccb5d1dbb039d5175263bb62c5be1c128"
         }
       },
       "role": "negative-control",
-      "seconds": 30.6,
+      "seconds": 28.7,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-046/nc-boundary-past-the-log",
+      "covers": 3,
+      "covers_satisfied": 2,
+      "expected": "fail:the boundary moves forward within the log",
+      "failed_checks": [
+        "\"the boundary moves forward within the log\""
+      ],
+      "log_sha256": "77f51147ae764d43046a58005d11db62f7de83582d4d898eec2fb0911cae5168",
+      "mutated": {
+        "src/shard/commit_plan.rs": {
+          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+          "control": "2c1d61b31e9ff25bd63c8636ea2744879f9c78b295614e7dbfadd0ed9113f767"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 30.1,
       "verdict": "fail"
     }
   ],
   "complete": true,
-  "id": "KANI-038",
+  "id": "KANI-046",
   "inputs": {
     "assumptions": {
       "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
-      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16",
-      "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
       "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
@@ -75,10 +95,12 @@
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
       "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
-      "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch": "05216c8200f89353e4e075df14e1df17b068ea69fb91bc8c124d7d0780e57c6b",
-      "verification/kani/controls/KANI-038-inclusive-gap.patch": "59b968d78c75b4a01aaec4e8c5f15948bda1003455bcea32d5b7d72f90a1160a"
+      "src/shard/transaction/maintenance.rs": "0f672668e9437ecd2caf88f197b81bcb7e2a3f131cf3d04cf7296be895898035",
+      "verification/kani/controls/KANI-046-boundary-past-the-log.patch": "236fd88b2a80b24c4c9f9e9cc5060438f242b7a412ea4fa4a3a3bc8f6a9e4ce5",
+      "verification/kani/controls/KANI-046-trim-past-the-safe-boundary.patch": "70992b4aab103423293966f35600547b98216513c19772c34bfbc38107d7a75a",
+      "verification/kani/controls/KANI-046-wrap-the-trim-budget.patch": "1406ffa749af0cf52e40ba7d566962d48ff72bf13370a20d8fa03ac892d38e4d"
     },
-    "manifest_entry": "bfcedb292784d0773bcc11a314bb4cd297809d93037d134f8cb339b5259159e4",
+    "manifest_entry": "1b4c433997740ce19ecd3b38c4f6c53348266fa1d6ac97fdab6a86228fdaa669",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -100,7 +122,7 @@
       }
     }
   },
-  "inputs_sha256": "57cabc619e94f31fc2d6241d6b8d71c6fcdf86b6f496be055b6993557276e277",
+  "inputs_sha256": "28624ce21618702b0c136b9213721b8c904898a530f97fba08028e24a6a21dcb",
   "run_on": {
     "dirty_tree": true,
     "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
