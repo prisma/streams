@@ -1,7 +1,7 @@
 diff --git a/src/segmap.rs b/src/segmap.rs
 --- a/src/segmap.rs
 +++ b/src/segmap.rs
-@@ -270,12 +270,7 @@
+@@ -282,12 +282,7 @@
      /// cover every key, `KEYSPACE_END` included, so it always answers
      /// (KANI-028).
      pub(crate) fn route(&self, k: u64) -> Option<&SegmentDesc> {
@@ -9,7 +9,7 @@ diff --git a/src/segmap.rs b/src/segmap.rs
 -            self.segments
 -                .iter()
 -                .filter(|s| s.contains(k))
--                .max_by_key(|s| (s.created_ms, s.seg_id))
+-                .max_by_key(|s| s.seg_id)
 -        })
 +        self.live().find(|s| s.contains(k))
      }

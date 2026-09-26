@@ -414,7 +414,8 @@
         "segmap::tests::initial_routes_everything",
         "segmap::tests::split_then_route_then_successors",
         "segmap::tests::a_key_without_a_live_cover_routes_to_its_newest_sealed_cover",
-        "segmap::tests::a_keyspace_that_starts_late_or_ends_early_is_neither_covered_nor_partitioned"
+        "segmap::tests::a_keyspace_that_starts_late_or_ends_early_is_neither_covered_nor_partitioned",
+        "segmap::tests::lineage_and_route_follow_allocation_whatever_the_clocks_say"
       ]
     },
     {

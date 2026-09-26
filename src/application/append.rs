@@ -354,14 +354,11 @@ async fn execute_once(
     };
     let producer_lineage: Vec<[u8; 16]> = match &desc.segments {
         Some(map) if map.segments.len() > 1 => {
-            let mut preds: Vec<&crate::segmap::SegmentDesc> = map
-                .segments
-                .iter()
-                .filter(|sg| sg.seg_id != seg.seg_id && sg.contains(seg.point) && !sg.is_live())
-                .collect();
-            preds.sort_by_key(|sg| std::cmp::Reverse((sg.created_ms, sg.seg_id)));
-            preds
+            // Nearest first: the committer stops at the first row it finds.
+            map.lineage()
                 .into_iter()
+                .rev()
+                .filter(|sg| sg.seg_id != seg.seg_id && sg.contains(seg.point) && !sg.is_live())
                 .map(|sg| desc.dynamic_segment_identity(sg.seg_id))
                 .collect()
         }

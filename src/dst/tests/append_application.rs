@@ -487,3 +487,109 @@ async fn r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_
     );
     engine_shutdown(&state).await;
 }
+
+/// A key in the low quarter: it stays in the low child of a split at the
+/// middle and of that child's split at the quarter, on the root's route.
+fn low_key() -> String {
+    (0..)
+        .map(|n| format!("k{n}"))
+        .find(|k| crate::registry::StreamDesc::key_point(k) < 1 << 61)
+        .unwrap()
+}
+
+/// Stamp the root 10 s after its newest descendant, as when the instance
+/// that recorded the first split ran ahead of those that published it.
+async fn skew_the_root(
+    state: &crate::http::AppState,
+    sref: &crate::tenant::TenantStreamRef,
+) -> crate::registry::StreamDesc {
+    let skewed = state.registry.update(sref, |desc| {
+        let map = desc.segments.as_mut().expect("a split map");
+        let newest = map.segments.iter().map(|s| s.created_ms).max().unwrap_or(0);
+        let root = map
+            .segments
+            .iter_mut()
+            .find(|s| s.seg_id == 0)
+            .expect("the root");
+        root.created_ms = newest + 10_000;
+    });
+    skewed.await.unwrap().expect("the stream")
+}
+
+/// An append of `seq` under `key`, as producer "skewed" or as Stream-Seq.
+fn keyed(
+    desc: &crate::registry::StreamDesc,
+    key: &str,
+    seq: u64,
+    stream_seq: bool,
+) -> AppendCommand {
+    let body: &'static [u8] = br#"{"n":1}"#;
+    let hash = crate::application::append::product_request_hash(
+        false,
+        key,
+        &desc.content_type,
+        body,
+        false,
+    );
+    let mut cmd = command(desc, "skewed", body);
+    cmd.routing_key = key.into();
+    cmd.request_hash = Some(hash);
+    if stream_seq {
+        cmd.producer = None;
+        cmd.sequence = Some(format!("{seq:03}"));
+    } else if let Some(producer) = cmd.producer.as_mut() {
+        producer.seq = seq;
+    }
+    cmd
+}
+
+/// Producer and Stream-Seq dedupe read the nearest sealed predecessor's row
+/// first, and "nearest" is lineage, not the wall clock that stamped
+/// `created_ms`. With the root stamped after its grandchildren, a retry
+/// across two splits must meet the row its first attempt wrote in the
+/// child: a producer retry answers as the duplicate it is, and a Stream-Seq
+/// retry is refused as a conflict, instead of either being written twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree() {
+    let (state, addr) = http_rig(mem()).await;
+    let app = state.append_service();
+    let key = low_key();
+    for (name, stream_seq) in [("skew-producer", false), ("skew-sequence", true)] {
+        let create = br#"{"format":{"kind":"json"}}"#;
+        let headers = [("prisma-encryption-key", PRISMA_KEY)];
+        let path = format!("/v1/streams/{name}");
+        assert_eq!(preq(addr, "PUT", &path, &headers, create).await.0, 201);
+        let sref = state.deployment.raw_adapter_sref(name);
+        let fresh = || async {
+            state.registry.invalidate(&sref);
+            state.registry.get(&sref).await.unwrap().unwrap()
+        };
+        let first = app
+            .execute(keyed(&fresh().await, &key, 0, stream_seq))
+            .await;
+        assert!(!first.unwrap().duplicate, "{name}");
+        assert!(crate::scaler3::execute_split(&state, &sref, 0, 1 << 63).await);
+        let child = app
+            .execute(keyed(&fresh().await, &key, 1, stream_seq))
+            .await
+            .unwrap();
+        assert!(!child.duplicate && child.seg_id != 0, "{name}");
+        assert!(crate::scaler3::execute_split(&state, &sref, child.seg_id, 1 << 62).await);
+        let desc = skew_the_root(&state, &sref).await;
+        let retry = app.execute(keyed(&desc, &key, 1, stream_seq)).await;
+        let answer = match retry {
+            Ok(out) => Ok(out.duplicate),
+            Err(error) => Err(error.code),
+        };
+        let expected = if stream_seq {
+            Err(AppendCode::SeqConflict)
+        } else {
+            Ok(true)
+        };
+        assert_eq!(
+            answer, expected,
+            "{name}: the child's row answers the retry"
+        );
+    }
+    engine_shutdown(&state).await;
+}

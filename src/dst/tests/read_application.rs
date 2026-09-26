@@ -759,3 +759,100 @@ async fn a_position_at_a_sealed_span_end_continues_in_its_successor() {
     );
     engine_shutdown(&state).await;
 }
+
+/// Transitions are stamped with the wall clock of whichever instance
+/// publishes them, so a parent can carry a later `created_ms` than its
+/// children (here the instance that recorded the split ran 10 s ahead of
+/// the one that published it). A keyed read follows the lineage anyway:
+/// the parent's records first, and `now` at the live child, never at the
+/// sealed parent as if the stream were closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_read_follows_the_lineage_when_the_clocks_disagree() {
+    let (state, addr) = http_rig(mem()).await;
+    let credentials = [("prisma-encryption-key", PRISMA_KEY)];
+    let create = preq(
+        addr,
+        "PUT",
+        "/v1/streams/skew",
+        &credentials,
+        br#"{"format":{"kind":"json"}}"#,
+    );
+    assert_eq!(create.await.0, 201);
+    let append = |n: u32| async move {
+        let headers = [
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "ga"),
+        ];
+        let body = format!("{{\"n\":{n}}}");
+        let status = preq(
+            addr,
+            "POST",
+            "/v1/streams/skew/records",
+            &headers,
+            body.as_bytes(),
+        );
+        assert_eq!(status.await.0, 200, "record {n}");
+    };
+    let sref = state.deployment.raw_adapter_sref("skew");
+    append(0).await;
+    append(1).await;
+    assert!(crate::scaler3::execute_split(&state, &sref, 0, 1 << 63).await);
+    append(2).await;
+    let skewed = state.registry.update(&sref, |desc| {
+        let map = desc.segments.as_mut().expect("a split map");
+        let newest = map.segments.iter().map(|s| s.created_ms).max().unwrap_or(0);
+        let root = map
+            .segments
+            .iter_mut()
+            .find(|s| s.seg_id == 0)
+            .expect("the root");
+        root.created_ms = newest + 10_000;
+    });
+    let desc = skewed.await.unwrap().expect("the stream");
+    let spans = crate::application::read::ReadTopology::new(&desc, Some("ga")).spans;
+    let child = spans.iter().map(|s| s.seg_id).max().expect("a child");
+    let lineage: Vec<u32> = spans.iter().map(|s| s.seg_id).collect();
+    assert_eq!(
+        lineage,
+        [0, child],
+        "the parent before the child that owns the key"
+    );
+    let keyed = |start: ReadStart| ReadCommand {
+        start,
+        selector: Some("ga".into()),
+        refresh: false,
+        ..command(&desc)
+    };
+    let reads = state.read_service();
+    let read = |start| reads.execute_read(keyed(start));
+    let first = read(ReadStart::Beginning).await.unwrap();
+    let served: Vec<_> = first
+        .records
+        .iter()
+        .map(|r| (r.off, r.rkey.as_str()))
+        .collect();
+    assert_eq!(served, [(0, "ga"), (1, "ga")], "the parent's records first");
+    let now = read(ReadStart::Now).await.unwrap();
+    assert_eq!(
+        (now.next.segment, now.closed),
+        (child, false),
+        "now is the live child"
+    );
+    let scan = crate::application::read_scan::ScanCommand {
+        descriptor: desc.clone(),
+        key: skey(),
+        cursor: None,
+        max_bytes: 1,
+        now_ms: 0,
+        lifetime_ms: 60_000,
+    };
+    let partial = reads.execute_scan(scan).await.unwrap().continuation;
+    let snapshot: Vec<u32> = partial
+        .expect("a partial scan")
+        .segments
+        .iter()
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(snapshot, [0, 1, 2], "a scan snapshot walks the lineage too");
+    engine_shutdown(&state).await;
+}

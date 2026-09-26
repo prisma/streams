@@ -392,20 +392,18 @@ type ConsumerSegment = (u32, [u8; 16], [u8; 16], Option<u64>);
 
 fn consumer_segments(desc: &StreamDesc) -> Vec<ConsumerSegment> {
     match &desc.segments {
-        Some(map) if !map.segments.is_empty() => {
-            let mut v: Vec<_> = map.segments.iter().collect();
-            v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
-            v.iter()
-                .map(|sg| {
-                    (
-                        sg.seg_id,
-                        desc.dynamic_segment_identity(sg.seg_id),
-                        desc.segment_route(sg),
-                        sg.sealed_next_offset,
-                    )
-                })
-                .collect()
-        }
+        Some(map) if !map.segments.is_empty() => map
+            .lineage()
+            .iter()
+            .map(|sg| {
+                (
+                    sg.seg_id,
+                    desc.dynamic_segment_identity(sg.seg_id),
+                    desc.segment_route(sg),
+                    sg.sealed_next_offset,
+                )
+            })
+            .collect(),
         _ => {
             let ro = desc.resolve_segment("");
             vec![(ro.seg_id, ro.identity, ro.shard_route, None)]
@@ -783,5 +781,25 @@ impl ConsumerService {
             cursor,
             tail: local.max(remote),
         })
+    }
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    /// A consumer walks predecessors first, so it walks allocation order:
+    /// a root stamped after its children (the instance that recorded the
+    /// split ran ahead of the one that published it) still comes first.
+    #[test]
+    fn consumer_segments_walk_the_lineage_whatever_the_clocks_say() {
+        let mut map = crate::segmap::SegmentMap::initial("", 9_000);
+        let (low, high) = map.split(0, 1 << 63, 0, [1; 16], [2; 16], 5_000).unwrap();
+        let mut persisted = crate::sse::feed::tests::test_desc("walk").to_persisted();
+        persisted.segments = Some(map);
+        let desc = crate::registry::StreamDesc::try_from(persisted).unwrap();
+        let walk: Vec<u32> = super::consumer_segments(&desc)
+            .iter()
+            .map(|s| s.0)
+            .collect();
+        assert_eq!(walk, [0, low, high]);
     }
 }

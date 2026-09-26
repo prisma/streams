@@ -261,12 +261,24 @@ impl SegmentMap {
         self.segments.iter().filter(|s| s.is_live())
     }
 
+    /// Every segment in lineage order, oldest first. Allocation order is
+    /// lineage order: `validate` makes each successor's id exceed its
+    /// predecessors'. `created_ms` is the wall clock of whichever instance
+    /// published a transition, so it can run backwards along the lineage and
+    /// orders nothing.
+    pub(crate) fn lineage(&self) -> Vec<&SegmentDesc> {
+        let mut segments: Vec<_> = self.segments.iter().collect();
+        segments.sort_by_key(|s| s.seg_id);
+        segments
+    }
+
     /// The segment hashed key `k` routes to: the live segment containing it
-    /// (a validated map has at most one), or, with no live cover
-    /// (mid-transition: a seal published before its successors, or a scaler
-    /// that died between the two), the NEWEST sealed cover — the deepest
-    /// lineage point, the one whose successor the refresh will reveal —
-    /// never a long-superseded ancestor. A validated map's terminal segments
+    /// (a validated map has at most one), or, with no live cover (a sealed
+    /// leaf, which `validate` admits as a recovery state though split and
+    /// merge never write one: they publish the successors with the seal),
+    /// the NEWEST sealed cover in allocation order — the deepest lineage
+    /// point — never a long-superseded ancestor, whatever the clocks that
+    /// stamped `created_ms` said. A validated map's terminal segments
     /// cover every key, `KEYSPACE_END` included, so it always answers
     /// (KANI-028).
     pub(crate) fn route(&self, k: u64) -> Option<&SegmentDesc> {
@@ -274,7 +286,7 @@ impl SegmentMap {
             self.segments
                 .iter()
                 .filter(|s| s.contains(k))
-                .max_by_key(|s| (s.created_ms, s.seg_id))
+                .max_by_key(|s| s.seg_id)
         })
     }
 
@@ -645,6 +657,28 @@ mod tests {
         assert!(m.validate().is_ok() && !m.check_partition());
         assert_eq!(m.route(1).unwrap().seg_id, a);
         assert_eq!(m.route(KEYSPACE_END).unwrap().seg_id, b);
+    }
+
+    /// Scaler clocks disagree: the instance that published the root's split
+    /// ran ahead of the one that later split its low child, so the
+    /// grandchildren carry an EARLIER `created_ms` than the child they
+    /// replaced. Lineage is allocation order, not clock order: every
+    /// segment in `lineage`, and with no live cover a key routes to its
+    /// sealed leaf, never to the clock-newer ancestor.
+    #[test]
+    fn lineage_and_route_follow_allocation_whatever_the_clocks_say() {
+        let mut m = SegmentMap::initial("root", 1_000);
+        let mid = KEYSPACE_END / 2;
+        let (a, b) = m.split(0, mid, 0, [1; 16], [2; 16], 9_000).unwrap();
+        let (c, d) = m.split(a, mid / 2, 0, [3; 16], [4; 16], 5_000).unwrap();
+        m.segments.reverse(); // no reader relies on vector order
+        let ids: Vec<u32> = m.lineage().iter().map(|s| s.seg_id).collect();
+        assert_eq!(ids, [0, a, b, c, d]);
+        let leaf = m.segments.iter_mut().find(|s| s.seg_id == c).unwrap();
+        leaf.sealed_ms = Some(6_000);
+        leaf.sealed_next_offset = Some(0);
+        assert!(m.validate().is_ok() && !m.check_partition());
+        assert_eq!(m.route(1).unwrap().seg_id, c, "not the sealed ancestor");
     }
 
     /// A split must leave both children a non-empty range.

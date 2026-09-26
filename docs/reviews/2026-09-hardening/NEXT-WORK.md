@@ -604,15 +604,12 @@ the roadmap's unimplemented list
   constant lengths), so the harnesses check the rule it applies. `validate`
   now scans for duplicates instead of hashing (Kani cannot model the random
   seed) and reports a typed `TopologyError` (same messages);
-  `Registry::resolve_segment`'s choice moved into `SegmentMap::route`. Open
-  for KANI-031 (lineage): with no live cover, `route` prefers the sealed
-  cover with the latest `created_ms`, a wall clock that `validate` does not
-  order along lineage, so clock skew between scalers can make it pick an
-  ancestor over its sealed descendant. Appends answer a retryable 503 for
-  any sealed route; check what keyed reads and SSE do before choosing to
-  order by `seg_id` (allocation order, which `validate` enforces along
-  lineage). Harness lesson for KANI-029 to KANI-031: keep the number of
-  segments concrete per harness and call pure helpers, not `validate`.
+  `Registry::resolve_segment`'s choice moved into `SegmentMap::route`. Its
+  open question (sealed covers ordered by `created_ms`) turned out to be a
+  production bug at four sites, fixed as edge change #60
+  (`SegmentMap::lineage`, allocation order). Harness lesson for KANI-029 to
+  KANI-031: keep the number of segments concrete per harness and call pure
+  helpers, not `validate`.
 - **KANI-017 (done):** stored-record admission (`decode_row`),
   `src/shard/record/proofs.rs`, with the routing-key length fixed per
   harness (0 and 4 bytes); a symbolic length makes the checker validate

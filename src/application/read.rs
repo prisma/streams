@@ -590,10 +590,10 @@ pub(crate) struct ReadPosition {
 
 impl ReadTopology {
     pub(crate) fn new(descriptor: &StreamDesc, selector: Option<&str>) -> Self {
-        let mut spans = descriptor
+        let mut spans: Vec<_> = descriptor
             .segments
             .as_ref()
-            .map(|m| m.segments.clone())
+            .map(|m| m.lineage().into_iter().cloned().collect())
             .unwrap_or_default();
         if spans.is_empty() {
             let resolved = descriptor.resolve_segment(selector.unwrap_or(""));
@@ -613,9 +613,6 @@ impl ReadTopology {
         if let Some(key) = selector {
             let point = StreamDesc::key_point(key);
             spans.retain(|s| s.contains(point));
-            spans.sort_by_key(|s| (s.created_ms, s.seg_id));
-        } else {
-            spans.sort_by_key(|s| s.seg_id);
         }
         Self {
             descriptor: descriptor.clone(),

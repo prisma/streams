@@ -100,8 +100,7 @@ impl ReadService {
         now_ms: i64,
         lifetime_ms: i64,
     ) -> Result<ScanCursor, ReadFailure> {
-        let mut spans = super::read::ReadTopology::new(desc, None).spans;
-        spans.sort_by_key(|span| (span.created_ms, span.seg_id));
+        let spans = super::read::ReadTopology::new(desc, None).spans;
         let mut segments = Vec::with_capacity(spans.len());
         for span in spans {
             let end = match span.sealed_next_offset {

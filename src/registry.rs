@@ -739,8 +739,8 @@ impl PersistedDescriptor {
         let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
         let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
         if let Some(map) = &self.segments {
-            // The live cover, or mid-transition the newest sealed one, so
-            // the caller's refresh path can heal.
+            // The live cover, or for a sealed leaf the newest sealed one
+            // (SegmentMap::route), so the caller's refresh path can heal.
             if let Some(seg) = map.route(point) {
                 let shard_route = self.segment_route(seg);
                 return SegRoute {

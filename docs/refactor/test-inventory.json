@@ -579,6 +579,17 @@
     ]
   },
   {
+    "name": "a_keyed_read_follows_the_lineage_when_the_clocks_disagree",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "2f7bff4884ed20d390de03451f1df15e791593c0db68e3d5d7770c525119b1aa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_lagging_owner_moves_its_shard_only_to_an_active_member",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1113,6 +1124,17 @@
     "scenarios": [
       "SEL-016"
     ]
+  },
+  {
+    "name": "a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "46b5cffecec53170b604cdbe3ee2d287cb3b8ca825ed3881c59ac552ad0bfd14",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
   },
   {
     "name": "a_retry_asking_for_the_longest_delay_is_not_redelivered_at_once",

@@ -284,9 +284,8 @@ impl std::fmt::Display for LineageBuildError {
 
 impl LineageSource {
     /// Build the lane's span chain from a descriptor's segment map
-    /// (mirrors the legacy keyed-lineage construction: segments
-    /// containing the lane's key point, ordered by
-    /// `(created_ms, seg_id)`).
+    /// (mirrors the keyed read's construction: segments containing the
+    /// lane's key point, in lineage order, `SegmentMap::lineage`).
     #[expect(
         clippy::excessive_nesting,
         reason = "LineageSource::build; the chain build nests the owner, engine and handle resolution inside each segment's span; flattening it would separate the span from the owner it was built under"

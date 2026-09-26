@@ -14,12 +14,12 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| high | 5 | 1 | 2 | 0 | 0 | 0 | 8 |
+| high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
 | medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
 | low | 6 | 2 | 8 | 9 | 10 | 4 | 39 |
-| **Total** | **16** | **4** | **16** | **9** | **10** | **4** | **59** |
+| **Total** | **16** | **4** | **17** | **9** | **10** | **4** | **60** |
 
-59 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#59 have not been checked against their commits by an independent pass.
+60 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#60 have not been checked against their commits by an independent pass.
 
 ### Index
 
@@ -83,9 +83,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 56 | 1d4d8660 | Project usage totals need an unrestricted stream grant | product | high | owner decision |
 | 57 | 1d4d8660 | A seal carrying a final record needs records.append as well as lifecycle.manage | product | high | owner decision |
 | 58 | 7499ec19 | An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500 | both | low | owner-directed (typed classification) |
-| 59 | this record's commit | A usage month with a sign is refused as `invalid_month` | product | low | handoff item (NEXT-WORK §10) |
+| 59 | 6328de31 | A usage month with a sign is refused as `invalid_month` | product | low | handoff item (NEXT-WORK §10) |
+| 60 | this record's commit | Segment lineage is ordered by allocation, not by wall clock, on every surface | both | high | owner-delegated ("use your own judgement") |
 
-## High risk (8)
+## High risk (9)
 
 In each of these changes, a request that used to succeed can now fail permanently. Each risk reason states how narrow the affected inputs are and, where it applies, why the earlier success was incorrect.
 
@@ -232,6 +233,30 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - src/dst/tests/security_seal.rs::a_final_record_seal_needs_append_as_well_as_lifecycle (red with the check disabled: (200, "") for {"final":{"n":2}}; asserts no record, not sealed, ordinary append and the refused producer triple still land; plain seals with no body and with {} under lifecycle alone; the final-record seal with both scopes)
 - **Risk reason:** High by the rubric's letter (a 200 now fails permanently); the earlier 200 let a credential append without the append scope.
 - **Check against commit:** Owner decision; written with the change.
+
+### #60 (this record's commit) — Segment lineage is ordered by allocation, not by wall clock, on every surface
+
+- **Program item:** the KANI-028 open question on `SegmentMap::route`'s tie-break, which the owner left to the implementer's judgement on 2026-09-26. The investigation found the same wall-clock order at four reachable sites.
+- **Surface:** both
+- **Endpoint:** keyed reads on segmented streams: raw GET /v1/stream/{name} with a key, product GET /v1/streams/{name}/records with a routing key, their long-polls and SSE/live-feed lineages; product consumers' pulls; snapshot scans; and appends with a producer or Stream-Seq on segmented streams.
+- **Condition:** a transition's parent carries a later `created_ms` than its successors. `created_ms` is the wall clock (`SystemTime`) of whichever instance writes the transition: the root segment is stamped when the first split's intent is recorded, its children when another instance may publish them, often well under a second later. So a clock skew between instances larger than that gap, or a backward step, inverts the order. `validate` orders lineage by allocation (every successor's id exceeds its predecessors'), never by clock.
+- **Before:** four sites ordered lineage by `(created_ms, seg_id)`:
+  - keyed reads (`ReadTopology::new`): a read from the beginning served a child's records before its parent's, and `offset=now` or a tail started at the sealed parent, answering raw `Stream-Closed: true` or product `Prisma-Sealed: true` for a stream that is open; keyed SSE could refuse the lineage (raw 400 `invalid_offset`, product 400 `invalid_cursor`);
+  - producer and Stream-Seq dedupe (`execute_once`'s nearest-first predecessor list): the committer met a farther predecessor's stale row first, so a retry after two splits was written a second time (a producer retry answered `duplicate: false`; a Stream-Seq retry was accepted), a producer's reused sequence with a different body was accepted, and a stale-epoch producer was accepted;
+  - product consumers (`consumer_segments`): the walk visited a child before its undrained parent, so records of a key could be delivered out of order;
+  - snapshot scans: the cursor listed children before their parents.
+  `SegmentMap::route`'s fallback also preferred the clock-newest sealed cover, but no production map reaches it (map segments are sealed only by split and merge, which publish the successors in the same write).
+- **After:** all of them use `SegmentMap::lineage` (allocation order); dedupe reads it nearest first. Under skew: a producer retry answers as a duplicate; a Stream-Seq retry answers 409 `seq_conflict`; a reused producer sequence with a different body answers 409 `producer_sequence_reused`; a stale-epoch producer answers 403 `producer_stale`; keyed reads serve the parent first and `now` starts at the live child. Without clock skew nothing changes: phase-B commits are serialized, so allocation order and clock order agree. The one remaining `created_ms` read is the merge controller's age check (`src/scaler3/controller.rs`), a wall-clock cooldown, not an ordering.
+- **Retry semantics:** under skew, three answers that used to be a 200 (and a second write, or an accepted stale producer) become permanent refusals: 409 `seq_conflict`, 409 `producer_sequence_reused` and 403 `producer_stale`, the answers the same requests get on an unsplit stream. A producer retry that used to write twice now answers as the duplicate it is.
+- **Who is affected:** segmented streams whose transitions were written by instances whose clocks disagree.
+- **Pinning tests:**
+  - src/dst/tests/read_application.rs::a_keyed_read_follows_the_lineage_when_the_clocks_disagree (red: spans `[2, 0]`, the first page the child's record, `now` at the sealed parent with `closed: true`, the scan snapshot `[1, 2, 0]`)
+  - src/dst/tests/append_application.rs::a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree (red: the producer retry answered `duplicate: false` and was written again; the Stream-Seq retry was accepted instead of 409 `seq_conflict`)
+  - src/application/consumer.rs::lineage_tests::consumer_segments_walk_the_lineage_whatever_the_clocks_say (red: `[1, 2, 0]`)
+  - src/segmap.rs::tests::lineage_and_route_follow_allocation_whatever_the_clocks_say (red: route answered the sealed ancestor 1, not the leaf 3; it also pins that `lineage` sorts a map whose vector is not in id order)
+  - NOT pinned: the reused-sequence and stale-epoch producer answers under skew, which follow from the same nearest-first list.
+- **Risk reason:** high by the rubric's letter: under skew, requests that used to succeed (a Stream-Seq retry, a reused producer sequence, a stale-epoch producer) now fail permanently. Each earlier success was wrong: it wrote a record twice or admitted a producer the stream had fenced, violating the dedupe contract the same requests get without a split. Reads, consumers and scans change only from a wrong order or a false closed signal to the lineage order.
+- **Check against commit:** written with the change.
 
 ## Medium risk (12)
 
@@ -1134,7 +1159,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** low: a 500 on a transient failure becomes the retryable 503 its neighbouring reads (#8, #54) already answer; corruption is unchanged. The raw code stays `internal` (no new wire code); the product handler's own descriptor reads (for example `product_seal`'s) are not changed here.
 - **Check against commit:** written with the change.
 
-### #59 (this record's commit) — A usage month with a sign is refused as `invalid_month`
+### #59 (6328de31) — A usage month with a sign is refused as `invalid_month`
 
 - **Program item:** NEXT-WORK §10, "`parse_month` accepts a `+` sign".
 - **Surface:** product
