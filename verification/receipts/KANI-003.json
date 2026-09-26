@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f9d2a2c8267090fc495aff9c344fb3b68896290a14bbe7963240e3f86e4e9e91",
+      "log_sha256": "9e4bf37c06b914a509b788a8524f02bde0041f65d0becb4caf6a57cbdff58599",
       "role": "baseline",
-      "seconds": 99.6,
+      "seconds": 34.8,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"token byte order is position order\""
       ],
-      "log_sha256": "c6c56ac1d26cf5c23a7fe5c839adeceda399b700e6f2d5c6e0eacabdf966609a",
+      "log_sha256": "ab5f6452733483e06f8e7456acca9dea9c4a7faa8539f0c01f24168a15bf3d96",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 140.8,
+      "seconds": 32.9,
       "verdict": "fail"
     }
   ],
@@ -46,7 +46,7 @@
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
       "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
-      "src/offsets/proofs.rs": "24cd67416837a468ba4d0e735e360c2bc031b71c77b599ca63e7512845da8fa3",
+      "src/offsets/proofs.rs": "333f354a482670b03e71bf8c9c04819f9a1e1d5e4968e187175e2c84f25a8bc4",
       "verification/kani/controls/KANI-003-reverse-digit-order.patch": "2338efd6cc47df5236794c5903fcd970e6d09855441ed6eedea09ce3ec818ca2"
     },
     "manifest_entry": "eb52e4b5e0e7718cb552b936bb1509ed75a230ec7b430023783c8027f4a1ac50",
@@ -71,10 +71,10 @@
       }
     }
   },
-  "inputs_sha256": "5a214aa40385e9dcccf5dd2ed4b0d0c40756c059e2e0c7173c64999a00b3baff",
+  "inputs_sha256": "27e933a9617ebd65d95cb249b84daad9b1697be5c82a15412c3ab90a0f6500d8",
   "run_on": {
-    "dirty_tree": false,
-    "revision": "f10b997e53fd8881972e5eaafffa7dc6c6c7ad30"
+    "dirty_tree": true,
+    "revision": "8cfdc14300ef72d11833d186096b33fbf7c66cbd"
   },
   "schema": 2,
   "tools": {

@@ -8,7 +8,11 @@
 //! doc of `src/offsets.rs`); what the codec does above it, and its lax
 //! reading of non-canonical tokens, await review item 88's wire decision.
 //! Loops are fixed at 26 digits and a 32-symbol alphabet, so `unwind(40)`
-//! covers them with Kani's unwinding checks left on.
+//! covers them with Kani's unwinding checks left on. KANI-001's two
+//! properties are separate harnesses, and alphabet membership is a plain
+//! loop rather than `slice::contains`, whose `u8` specialisation is the
+//! word-at-a-time `memchr`: together they peaked near 15 GB and did not fit
+//! CI's 16 GB runner; apart, each needs under 5 GB.
 use super::{ALPHABET, OffsetError, digits, parse, read};
 
 /// The epochs that round-trip: the padding shifts the top two bits out.
@@ -22,18 +26,27 @@ fn read_token(token: [u8; 26]) -> Result<(u32, u64), OffsetError> {
     read(token.into_iter().map(char::from))
 }
 
-/// KANI-001: every admitted epoch and every `next` survive the codec, as
-/// exactly 26 alphabet chars.
+/// KANI-001: every admitted epoch and every `next` are spelled in exactly
+/// 26 canonical alphabet chars.
+#[kani::proof]
+#[kani::unwind(40)]
+fn kani_001_every_digit_is_a_canonical_symbol() {
+    let token = digits(admitted_epoch(), kani::any());
+    assert!(
+        token
+            .iter()
+            .all(|digit| ALPHABET.iter().any(|symbol| symbol == digit)),
+        "every char is a canonical alphabet symbol"
+    );
+}
+
+/// KANI-001: every admitted epoch and every `next` survive the codec.
 #[kani::proof]
 #[kani::unwind(40)]
 fn kani_001_every_admitted_epoch_and_next_round_trips() {
     let epoch = admitted_epoch();
     let next: u64 = kani::any();
     let token = digits(epoch, next);
-    assert!(
-        token.iter().all(|digit| ALPHABET.contains(digit)),
-        "every char is a canonical alphabet symbol"
-    );
     assert!(
         read_token(token) == Ok((epoch, next)),
         "epoch and next survive the round trip"

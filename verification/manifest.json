@@ -28,12 +28,21 @@
         "ASM-KANI-COMPILER",
         "ASM-OFFSET-DOMAIN"
       ],
-      "input_scope": "every epoch below 2^30 (the documented round-trip domain) and every u64 next through digits, the bytes encode collects, and read, the value computation parse runs after its \"-1\" and length gates; fixed 26 digits, loops unwound to 40 with unwinding checks on",
+      "input_scope": "every epoch below 2^30 (the documented round-trip domain) and every u64 next through digits, the bytes encode collects, and read, the value computation parse runs after its \"-1\" and length gates; fixed 26 digits, loops unwound to 40 with unwinding checks on; the canonical-alphabet and round-trip properties are separate harnesses",
       "checks": [
         {
           "id": "KANI-001/round-trip",
           "role": "baseline",
           "harness": "offsets::proofs::kani_001_every_admitted_epoch_and_next_round_trips",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "KANI-001/canonical-digits",
+          "role": "baseline",
+          "harness": "offsets::proofs::kani_001_every_digit_is_a_canonical_symbol",
           "expect": {
             "result": "pass"
           },

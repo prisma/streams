@@ -643,8 +643,10 @@ the roadmap's unimplemented list
   `rollup/storage.rs`, and `application/read_{batch,budget,retention_probe}.rs`.
   Those crates also needed a `build.rs` declaring `cfg(kani)` and
   `#[rustfmt::skip]` on their by-path `mod postings;` (both on the branch).
-- **CI: formal shard 0 dies whenever `verification/manifest.json` changes
-  (owner decision).** A manifest change selects every obligation
+- **CI: formal shard 0 died whenever `verification/manifest.json` changed
+  (resolved 2026-09-26 by the owner's choice, a smaller KANI-001: its two
+  properties are separate harnesses and alphabet membership no longer goes
+  through `memchr`; the re-recorded checks peaked at 4.9 GB).** A manifest change selects every obligation
   (`SELECTION_INPUTS` in `scripts/quality/formal.py`), so shard 0 runs
   KANI-001's round trip, whose CBMC process peaks near 15 GB resident
   (measured locally 2026-09-26: 7.8 GB after 6 minutes, 14.95 GB at 8
