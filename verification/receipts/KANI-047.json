@@ -1,0 +1,180 @@
+{
+  "checks": [
+    {
+      "check": "KANI-047/shard-row",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "7d91cb9c3bb8f180d4bbf4e99d0612a436acc94d3ae4d2a86f000ef3d7ffe1b8",
+      "role": "baseline",
+      "seconds": 32.1,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-047/dirty-row",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "212ec7df60def944d30e74308c6ac9ea05c27daa787630c9c63291529d7017d9",
+      "role": "baseline",
+      "seconds": 29.5,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-047/delta",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "ca70a4cf2a2aa2e7586b25e8f4b5440b42060bc83208327f7c14fbaa5ad31c64",
+      "role": "baseline",
+      "seconds": 28.1,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-047/stall-signal",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "7b4851613d6b29d242ec673a474b74bf508c819d0e8e3f2231af6c92f8cb1f01",
+      "role": "baseline",
+      "seconds": 36.9,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-047/nc-read-a-short-row-as-zero-debt",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "fail:an unsupported row is refused",
+      "failed_checks": [
+        "\"an unsupported row is refused\""
+      ],
+      "log_sha256": "d2c545ff0375460bee9010010d3dd883b78b4a23033b17a029f9f462d4aecce0",
+      "mutated": {
+        "src/shard/maintenance_row.rs": {
+          "baseline": "f33016bc2db48449057f7aaaffae0ac72bcabacc6667acef9a9bf4533409c56f",
+          "control": "780df7f7a5028b06f32712a06568bd80b4606cf3ba0cdc317b6ae8b294aac80c"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 32.1,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-047/nc-accept-an-unknown-dirty-extension",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "fail:a dirty row decodes its complete fields or is refused",
+      "failed_checks": [
+        "\"a dirty row decodes its complete fields or is refused\""
+      ],
+      "log_sha256": "a8412666d64c2d6ea1afdbd908f5b760534531080b7c9cba0812851960809926",
+      "mutated": {
+        "src/shard.rs": {
+          "baseline": "c0b388edda2555e8a1f8c46bb0981d889f65f114fc78d85bf596bca17737684b",
+          "control": "be19489c7347a6b977b1c6227f76e45a2ba35737bd984ab8f329cd767ff95f39"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 30.4,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-047/nc-retire-past-the-backlog",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "fail:a delta moves the backlog by exactly its bytes",
+      "failed_checks": [
+        "\"a delta moves the backlog by exactly its bytes\""
+      ],
+      "log_sha256": "ce36fa379db4d29507383a670db1efb3d2fe9ca8da124e9ca691214b75106666",
+      "mutated": {
+        "src/shard/maintenance_row.rs": {
+          "baseline": "f33016bc2db48449057f7aaaffae0ac72bcabacc6667acef9a9bf4533409c56f",
+          "control": "c4b7ceaac28cdfe51cb90b471ab0f2a60621a6d93ff992c32a15e0bfa244c1ad"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 28.2,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-047/nc-subtract-the-clocks-unchecked",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:subtract with overflow",
+      "failed_checks": [
+        "attempt to subtract with overflow"
+      ],
+      "log_sha256": "45fca9cfd61a49f7c614daf04593eb768fdb78e69d246cb76c8170ebd3c2ceca",
+      "mutated": {
+        "src/shard/maintenance_row.rs": {
+          "baseline": "f33016bc2db48449057f7aaaffae0ac72bcabacc6667acef9a9bf4533409c56f",
+          "control": "7252e787b46ad3c6c6dc4f6f1aad638563fe21091f166ae9e42baa674b4410fe"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 26.7,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-047",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "src/shard.rs": "c0b388edda2555e8a1f8c46bb0981d889f65f114fc78d85bf596bca17737684b",
+      "src/shard/maintenance_row.rs": "f33016bc2db48449057f7aaaffae0ac72bcabacc6667acef9a9bf4533409c56f",
+      "src/shard/maintenance_row/proofs.rs": "6842cd35f4d8faf3ddabe3154477d2459f8b910e532f12c29a8695f3d0bb9cdf",
+      "verification/kani/controls/KANI-047-accept-an-unknown-dirty-extension.patch": "3f2f03a984c199cde9d02c419fd77c5baa5ff0b18e6d4db782c280dec41e6f89",
+      "verification/kani/controls/KANI-047-read-a-short-row-as-zero-debt.patch": "aaa7a0f14d2dd909eb733bfa0364f1b84efbdb1b5a214105b119ef3474575a73",
+      "verification/kani/controls/KANI-047-retire-past-the-backlog.patch": "8e56f5205d28e1c762a6b6da06a847fc20978044e4cfcdbded9d2f6f39ab6a95",
+      "verification/kani/controls/KANI-047-subtract-the-clocks-unchecked.patch": "d1e79f3a3a4dc385c67312cbde58e56aabc3fe4a99f333a0b674ed660b08b744"
+    },
+    "manifest_entry": "92f3b25a54c892bcec9df7597b01db6d398b80d0ac1d12733969c508bd4ed72b",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "ca6181db30d52acc51b028718fb7cc3bad9fff72f5be22a1e2bb3bf8dc46d5c6",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "520b7b79f884eef4fc50724405d3c333d80d8276"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

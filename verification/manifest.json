@@ -886,6 +886,110 @@
       ]
     },
     {
+      "id": "KANI-047",
+      "kind": "kani",
+      "title": "Dirty/maintenance metadata codecs and debt deltas",
+      "status": "pass-with-recorded-scope",
+      "owner": "shard maintenance summaries",
+      "source_paths": [
+        "src/shard/maintenance_row.rs",
+        "src/shard.rs"
+      ],
+      "verification_paths": [
+        "src/shard/maintenance_row/proofs.rs"
+      ],
+      "requirements": [
+        "H7",
+        "R5"
+      ],
+      "models": [
+        "TLA-016"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "encode_shard_maint/decode_shard_maint_row and dirty_value/decode_dirty_value over every value and every stored length up to one past the longest layout (symbolic bytes), ShardMaintenance::apply_delta over full-width counters, deltas and clock, and no_progress_secs over full-width clocks",
+      "checks": [
+        {
+          "id": "KANI-047/shard-row",
+          "role": "baseline",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_shard_row_decodes_exactly_or_is_refused",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-047/dirty-row",
+          "role": "baseline",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-047/delta",
+          "role": "baseline",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_delta_never_clears_live_debt",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-047/stall-signal",
+          "role": "baseline",
+          "harness": "shard::maintenance_row::proofs::kani_047_the_stall_signal_survives_clock_extremes",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-047/nc-read-a-short-row-as-zero-debt",
+          "role": "negative-control",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_shard_row_decodes_exactly_or_is_refused",
+          "patch": "verification/kani/controls/KANI-047-read-a-short-row-as-zero-debt.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an unsupported row is refused"
+          }
+        },
+        {
+          "id": "KANI-047/nc-accept-an-unknown-dirty-extension",
+          "role": "negative-control",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
+          "patch": "verification/kani/controls/KANI-047-accept-an-unknown-dirty-extension.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a dirty row decodes its complete fields or is refused"
+          }
+        },
+        {
+          "id": "KANI-047/nc-retire-past-the-backlog",
+          "role": "negative-control",
+          "harness": "shard::maintenance_row::proofs::kani_047_a_delta_never_clears_live_debt",
+          "patch": "verification/kani/controls/KANI-047-retire-past-the-backlog.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a delta moves the backlog by exactly its bytes"
+          }
+        },
+        {
+          "id": "KANI-047/nc-subtract-the-clocks-unchecked",
+          "role": "negative-control",
+          "harness": "shard::maintenance_row::proofs::kani_047_the_stall_signal_survives_clock_extremes",
+          "patch": "verification/kani/controls/KANI-047-subtract-the-clocks-unchecked.patch",
+          "expect": {
+            "result": "fail",
+            "property": "subtract with overflow"
+          }
+        }
+      ],
+      "regressions": [
+        "shard::maintenance_tests::apply_delta_is_checked_and_tracks_progress",
+        "shard::maintenance_tests::codec_roundtrips_v2_and_refuses_v1_values"
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

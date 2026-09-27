@@ -2290,6 +2290,38 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::kani_047_a_shard_row_decodes_exactly_or_is_refused",
+      "path": "src/shard/maintenance_row/proofs.rs",
+      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
+      "path": "src/shard/maintenance_row/proofs.rs",
+      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::kani_047_a_delta_never_clears_live_debt",
+      "path": "src/shard/maintenance_row/proofs.rs",
+      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_047_the_stall_signal_survives_clock_extremes",
+      "path": "src/shard/maintenance_row/proofs.rs",
+      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::kani_046_a_trim_step_stays_behind_the_safe_boundary",
       "path": "src/shard/commit_plan/proofs.rs",

@@ -1,0 +1,16 @@
+diff --git a/src/shard/maintenance_row.rs b/src/shard/maintenance_row.rs
+--- a/src/shard/maintenance_row.rs
++++ b/src/shard/maintenance_row.rs
+@@ -138,9 +138,9 @@
+     if v.len() == 16 {
+         return Ok(ShardMaintRow::LegacyPayloadUnit);
+     }
+-    let row: &[u8; 40] = v
+-        .try_into()
+-        .map_err(|_| MaintenanceError::UnsupportedRow(v.len()))?;
++    let Ok(row): Result<&[u8; 40], _> = v.try_into() else {
++        return Ok(ShardMaintRow::Exact(ShardMaintenance::default()));
++    };
+     if row[0] != SHARD_MAINT_V2 {
+         return Err(MaintenanceError::UnsupportedRow(v.len()));
+     }

@@ -1,0 +1,18 @@
+diff --git a/src/shard/maintenance_row.rs b/src/shard/maintenance_row.rs
+--- a/src/shard/maintenance_row.rs
++++ b/src/shard/maintenance_row.rs
+@@ -71,13 +71,7 @@
+             .unabsorbed_frame_bytes
+             .checked_add(added_frame_bytes)
+             .ok_or(MaintenanceError::Overflow)?;
+-        let next =
+-            available
+-                .checked_sub(retired_frame_bytes)
+-                .ok_or(MaintenanceError::OverRetirement {
+-                    retire: retired_frame_bytes,
+-                    available,
+-                })?;
++        let next = available.saturating_sub(retired_frame_bytes);
+         let mut out = self;
+         out.version = out.version.saturating_add(1);
+         out.unabsorbed_frame_bytes = next;

@@ -28,6 +28,7 @@ mod commit_plan;
 mod history_partition;
 mod lane_rows;
 mod lifecycle;
+mod maintenance_row;
 mod tail_ring;
 mod transaction;
 use commit_plan::{
@@ -39,6 +40,9 @@ pub(crate) use commit_plan::{
 };
 use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;
+#[cfg(test)]
+pub(crate) use maintenance_row::decode_shard_maint;
+pub(crate) use maintenance_row::{ShardMaintRow, decode_shard_maint_row, encode_shard_maint};
 
 pub(crate) fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
@@ -332,112 +336,6 @@ pub(crate) struct ShardMaintenance {
     /// does not become permanently old while absorption keeps making
     /// progress under continuous traffic.
     pub last_progress_ms: i64,
-}
-
-impl ShardMaintenance {
-    /// Apply a committed delta. Retiring more than exists is an ERROR,
-    /// not a saturation: it means the two sides of the accounting have
-    /// diverged, and clamping would hide exactly the class of unit bug
-    /// this type exists to prevent.
-    pub(crate) fn apply_delta(
-        self,
-        added_frame_bytes: u64,
-        retired_frame_bytes: u64,
-        now_ms: i64,
-    ) -> anyhow::Result<Self> {
-        let available = self
-            .unabsorbed_frame_bytes
-            .checked_add(added_frame_bytes)
-            .ok_or_else(|| anyhow::anyhow!("maintenance byte overflow"))?;
-        anyhow::ensure!(
-            retired_frame_bytes <= available,
-            "maintenance retirement exceeds backlog: retire={} available={}",
-            retired_frame_bytes,
-            available,
-        );
-        let next = available - retired_frame_bytes;
-        let mut out = self;
-        out.version = out.version.saturating_add(1);
-        out.unabsorbed_frame_bytes = next;
-        if next == 0 {
-            out.backlog_started_ms = 0;
-            out.last_progress_ms = 0;
-        } else {
-            if self.unabsorbed_frame_bytes == 0 && added_frame_bytes > 0 {
-                out.backlog_started_ms = now_ms;
-                out.last_progress_ms = now_ms;
-            }
-            if retired_frame_bytes > 0 {
-                out.last_progress_ms = now_ms;
-            }
-        }
-        Ok(out)
-    }
-
-    /// Seconds since maintenance last made durable progress, while a
-    /// backlog is outstanding. Zero when there is nothing to do.
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "ShardMaintenance::no_progress_secs; the elapsed milliseconds are clamped at zero before the division; a checked conversion would only restate the clamp"
-    )]
-    pub(crate) fn no_progress_secs(self, now_ms: i64) -> u64 {
-        if self.unabsorbed_frame_bytes == 0 || self.last_progress_ms <= 0 {
-            0
-        } else {
-            ((now_ms - self.last_progress_ms).max(0) / 1_000) as u64
-        }
-    }
-}
-
-const SHARD_MAINT_V2: u8 = 2;
-
-pub(crate) fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
-    let mut v = [0u8; 40];
-    v[0] = SHARD_MAINT_V2;
-    v[8..16].copy_from_slice(&m.version.to_le_bytes());
-    v[16..24].copy_from_slice(&m.unabsorbed_frame_bytes.to_le_bytes());
-    v[24..32].copy_from_slice(&m.backlog_started_ms.to_le_bytes());
-    v[32..40].copy_from_slice(&m.last_progress_ms.to_le_bytes());
-    v
-}
-
-/// Row classification (R26-4). The R24 row was 16 untagged PAYLOAD-unit
-/// bytes: on compressible data it overstates the frame backlog, but on
-/// small incompressible frames the encoding overhead (headers, auth
-/// tag) makes frames LARGER than payload, so it can also understate —
-/// and an understated ledger makes the first exact retirement look like
-/// over-retirement, which the checked accounting refuses forever. The
-/// legacy value is therefore never trusted as frame bytes in either
-/// direction: the opener rebuilds from the durable tails instead.
-pub(crate) enum ShardMaintRow {
-    Exact(ShardMaintenance),
-    LegacyPayloadUnit,
-}
-
-pub(crate) fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> {
-    match v.len() {
-        16 => Ok(ShardMaintRow::LegacyPayloadUnit),
-        40 if v[0] == SHARD_MAINT_V2 => Ok(ShardMaintRow::Exact(ShardMaintenance {
-            version: u64::from_le_bytes(v[8..16].try_into()?),
-            unabsorbed_frame_bytes: u64::from_le_bytes(v[16..24].try_into()?),
-            backlog_started_ms: i64::from_le_bytes(v[24..32].try_into()?),
-            last_progress_ms: i64::from_le_bytes(v[32..40].try_into()?),
-        })),
-        _ => anyhow::bail!("unsupported shard maintenance row ({} bytes)", v.len()),
-    }
-}
-
-/// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
-/// is an error here — callers that can meet one go through
-/// `decode_shard_maint_row` and the rebuild path.
-#[cfg(test)]
-pub(crate) fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
-    match decode_shard_maint_row(v)? {
-        ShardMaintRow::Exact(m) => Ok(m),
-        ShardMaintRow::LegacyPayloadUnit => {
-            anyhow::bail!("legacy payload-unit maintenance row; rebuild required")
-        }
-    }
 }
 
 /// Load this shard's durable maintenance state, or rebuild it from the

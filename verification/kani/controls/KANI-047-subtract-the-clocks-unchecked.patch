@@ -1,0 +1,12 @@
+diff --git a/src/shard/maintenance_row.rs b/src/shard/maintenance_row.rs
+--- a/src/shard/maintenance_row.rs
++++ b/src/shard/maintenance_row.rs
+@@ -104,7 +104,7 @@
+         if self.unabsorbed_frame_bytes == 0 || self.last_progress_ms <= 0 {
+             0
+         } else {
+-            u64::try_from(now_ms.saturating_sub(self.last_progress_ms)).unwrap_or(0) / 1_000
++            u64::try_from((now_ms - self.last_progress_ms)).unwrap_or(0) / 1_000
+         }
+     }
+ }

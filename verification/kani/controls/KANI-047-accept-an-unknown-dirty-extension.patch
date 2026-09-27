@@ -1,0 +1,12 @@
+diff --git a/src/shard.rs b/src/shard.rs
+--- a/src/shard.rs
++++ b/src/shard.rs
+@@ -436,7 +436,7 @@
+ pub(crate) fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
+     // Preserve complete legacy fields (16/24 bytes) and current v2 (32).
+     // Partial fields or unknown extensions are corrupt, never an empty marker.
+-    if !matches!(v.len(), 16 | 24 | 32) {
++    if !matches!(v.len(), 16 | 24 | 32 | 33) {
+         return None;
+     }
+     let g8 = |o: usize| u64::from_le_bytes(v[o..o + 8].try_into().unwrap());

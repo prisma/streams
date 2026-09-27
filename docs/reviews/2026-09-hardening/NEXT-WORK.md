@@ -626,19 +626,12 @@ the roadmap's unimplemented list
 - **KANI-046 (done):** the absorbed boundary and trim frontier
   (`retire_absorbed`, `trim_target` in `src/shard/commit_plan.rs`, which the
   committer's absorb and trim steps now share), `src/shard/commit_plan/proofs.rs`.
-- **KANI-047 (tried, not landed; one finding):** `ShardMaintenance::no_progress_secs`
-  (`src/shard.rs`) computes `now_ms - self.last_progress_ms` unchecked: a
-  harness over full-width clocks finds the subtraction overflowing (a debug
-  panic, a release wrap) when the two differ by more than 2^63 ms, which
-  only a corrupt row or a wildly wrong clock can produce. The fix,
-  `now_ms.saturating_sub(..)` (or `now_ms.max(last) - last`, since `last`
-  is positive there), sits inside the function's `cast_sign_loss`
-  exception, whose syntax facts the gate holds: run the gate first, and if
-  it reports growth, propose the row or move the arithmetic out of scope. The codec (`decode_shard_maint_row`) and delta (`apply_delta`)
-  harnesses cannot be built: Kani 0.68's compiler panics (intrinsics.rs:243,
-  an intrinsic whose output is not `i32`) on code that reaches `anyhow`.
-  Checking them needs anyhow-free cores (a typed error, as `TopologyError`
-  did for the segment map).
+- **KANI-047 (done 2026-09-27):** the maintenance summaries,
+  `src/shard/maintenance_row/proofs.rs`: the shard row and dirty rows decode
+  exactly or are refused, a delta cannot clear live debt, and the stall
+  signal survives clock extremes (the overflow found on 2026-09-26 is fixed:
+  `no_progress_secs` saturates). The row's impl and codec moved to
+  `src/shard/maintenance_row.rs` with a typed `MaintenanceError`.
 - **KANI-040 (tried, not landed):** a harness over `decide_claim` must build a
   `StreamDesc`, and `StreamDesc::try_from` runs the whole descriptor
   validation (hex epoch, name, topology): over symbolic claim fields it did
