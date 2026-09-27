@@ -1,0 +1,12 @@
+diff --git a/src/application/lifecycle/claims.rs b/src/application/lifecycle/claims.rs
+--- a/src/application/lifecycle/claims.rs
++++ b/src/application/lifecycle/claims.rs
+@@ -98,7 +98,7 @@
+     if let Some(claim) = &current.sealing {
+         // The plain seal's empty id owns nothing: it may only join a claim
+         // that owes no final record, whatever id that claim carries.
+-        let ours = !op_id.is_empty() && claim.operation_id == op_id;
++        let ours = !op_id.is_empty();
+         let may_join = op_id.is_empty() && !claim.owes_final();
+         if ours || may_join {
+             return ClaimStep::Renew(crate::registry::SealState {

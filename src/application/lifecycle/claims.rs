@@ -60,19 +60,34 @@ pub(crate) enum SealClaim {
     Completed,
 }
 
-/// An attempt-local decision. No captured output can leak from a CAS that lost.
-#[expect(
-    clippy::expect_used,
-    reason = "decide_claim; the persisted copy carries the claim the match just observed; a fallible write would add a branch no observed claim reaches"
-)]
-pub(super) fn decide_claim(
-    current: &StreamDesc,
+/// What a seal attempt does with the claim state it read, before anything is
+/// written: `decide_claim` applies it to the descriptor. Pure, so the
+/// decision matrix is checked on its own (KANI-040).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ClaimStep {
+    /// Leave the descriptor unchanged and answer this.
+    Decline(EnterSeal),
+    /// Renew the observed claim: the same operation and intent under the
+    /// next generation, claimed now.
+    Renew(crate::registry::SealState),
+    /// Install this operation's claim under the next generation.
+    Install(crate::registry::SealState),
+}
+
+/// The seal-claim decision matrix over a descriptor's persisted state:
+/// a terminal seal answers completed (its own operation) or sealed; the
+/// claim's own operation, or a plain seal joining a claim that owes no
+/// final record, renews it; any other request meets a conflict, or an
+/// abandoned final-bearing claim it may take over; pending topology
+/// declines; otherwise the request installs its claim.
+pub(super) fn claim_step(
+    current: &crate::registry::PersistedDescriptor,
     op_id: &str,
     intent: &crate::registry::SealIntent,
     now: i64,
-) -> Mutation<EnterSeal> {
+) -> ClaimStep {
     if current.sealed {
-        return Mutation::Decline(
+        return ClaimStep::Decline(
             if current.seal_op.as_deref() == Some(op_id) && !op_id.is_empty() {
                 EnterSeal::AlreadyCompleted
             } else {
@@ -80,20 +95,20 @@ pub(super) fn decide_claim(
             },
         );
     }
-    let mut next = current.to_persisted();
     if let Some(claim) = &current.sealing {
-        let ours = claim.operation_id == op_id;
+        // The plain seal's empty id owns nothing: it may only join a claim
+        // that owes no final record, whatever id that claim carries.
+        let ours = !op_id.is_empty() && claim.operation_id == op_id;
         let may_join = op_id.is_empty() && !claim.owes_final();
         if ours || may_join {
-            next.seal_gen_counter += 1;
-            let generation = next.seal_gen_counter;
-            let renewed = next.sealing.as_mut().expect("claim was observed");
-            renewed.claim_generation = generation;
-            renewed.claimed_ms = now;
-            return Mutation::Write(next, EnterSeal::AlreadyOurs { generation });
+            return ClaimStep::Renew(crate::registry::SealState {
+                claimed_ms: now,
+                claim_generation: current.seal_gen_counter + 1,
+                ..claim.clone()
+            });
         }
         let abandoned = now.saturating_sub(claim.claimed_ms) > crate::registry::SEAL_CLAIM_MS;
-        return Mutation::Decline(if claim.owes_final() && abandoned {
+        return ClaimStep::Decline(if claim.owes_final() && abandoned {
             EnterSeal::AbandonedClaim {
                 old_op: claim.operation_id.clone(),
                 old_gen: claim.claim_generation,
@@ -112,17 +127,40 @@ pub(super) fn decide_claim(
         .as_ref()
         .is_some_and(|map| map.pending.is_some())
     {
-        return Mutation::Decline(EnterSeal::PendingTopology);
+        return ClaimStep::Decline(EnterSeal::PendingTopology);
     }
-    next.seal_gen_counter += 1;
-    let generation = next.seal_gen_counter;
-    next.sealing = Some(crate::registry::SealState {
+    ClaimStep::Install(crate::registry::SealState {
         operation_id: op_id.to_string(),
         intent: intent.clone(),
         claimed_ms: now,
-        claim_generation: generation,
-    });
-    Mutation::Write(next, EnterSeal::Installed { generation })
+        claim_generation: current.seal_gen_counter + 1,
+    })
+}
+
+/// An attempt-local decision. No captured output can leak from a CAS that
+/// lost: a declined step writes nothing, and a written claim's generation
+/// is the one the descriptor's allocator now holds.
+pub(super) fn decide_claim(
+    current: &StreamDesc,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+    now: i64,
+) -> Mutation<EnterSeal> {
+    let (claim, result) = match claim_step(current, op_id, intent, now) {
+        ClaimStep::Decline(reason) => return Mutation::Decline(reason),
+        ClaimStep::Renew(claim) => {
+            let generation = claim.claim_generation;
+            (claim, EnterSeal::AlreadyOurs { generation })
+        }
+        ClaimStep::Install(claim) => {
+            let generation = claim.claim_generation;
+            (claim, EnterSeal::Installed { generation })
+        }
+    };
+    let mut next = current.to_persisted();
+    next.seal_gen_counter = claim.claim_generation;
+    next.sealing = Some(claim);
+    Mutation::Write(next, result)
 }
 
 /// Identity of a seal-with-final operation: the record it promised,
@@ -277,5 +315,36 @@ mod tests {
             id(record, "k", Some(("p", "1", "0"))),
             "a9302ad7eada99064917c2f48a645981"
         );
+    }
+
+    /// The plain seal's empty id owns no claim: it joins a claim only when
+    /// that claim owes no final record, even one whose own id is empty,
+    /// which no writer produces (KANI-040).
+    #[test]
+    fn a_plain_seal_never_joins_a_claim_that_owes_a_final_record() {
+        use super::{ClaimStep, EnterSeal, claim_step};
+        use crate::registry::{SealIntent, SealState};
+        let mut desc = crate::sse::feed::tests::test_desc("claims").to_persisted();
+        desc.seal_gen_counter = 1;
+        desc.sealing = Some(SealState {
+            operation_id: String::new(),
+            intent: SealIntent::Final {
+                routing_key: String::new(),
+                request_hash: String::new(),
+                final_committed: false,
+            },
+            claimed_ms: 1,
+            claim_generation: 1,
+        });
+        let plain = claim_step(&desc, "", &SealIntent::Empty, 2);
+        assert!(
+            matches!(plain, ClaimStep::Decline(EnterSeal::Conflicting(_))),
+            "{plain:?}"
+        );
+        if let Some(claim) = desc.sealing.as_mut() {
+            claim.intent = SealIntent::Empty;
+        }
+        let joined = claim_step(&desc, "", &SealIntent::Empty, 2);
+        assert!(matches!(joined, ClaimStep::Renew(ref claim) if claim.claim_generation == 2));
     }
 }

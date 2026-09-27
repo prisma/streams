@@ -632,18 +632,14 @@ the roadmap's unimplemented list
   signal survives clock extremes (the overflow found on 2026-09-26 is fixed:
   `no_progress_secs` saturates). The row's impl and codec moved to
   `src/shard/maintenance_row.rs` with a typed `MaintenanceError`.
-- **KANI-040 (tried, not landed):** a harness over `decide_claim` must build a
-  `StreamDesc`, and `StreamDesc::try_from` runs the whole descriptor
-  validation (hex epoch, name, topology): over symbolic claim fields it did
-  not finish in 16 minutes. A pure decision core (sealed, the claim, pending
-  topology, the counter, the operation id, now → decline / renew / install)
-  that `decide_claim` applies to the descriptor would make it cheap; that
-  touches `decide_claim`'s `expect_used` exception scope (a shrink), and
-  `src/application/lifecycle/claims.rs` feeds TLA-002, TLA-003 and KANI-042.
-  Related KANI-041 note: every seal-generation allocation (`claims.rs` twice,
-  `lifecycle.rs` twice, `topology.rs` twice) is an unchecked
-  `seal_gen_counter += 1`, which would wrap after 2^64 claims; a checked
-  allocator would need a decline path at each site, all inside excepted
+- **KANI-040 (done 2026-09-27):** the seal-claim decision matrix,
+  `claim_step` in `src/application/lifecycle/claims.rs`, which
+  `decide_claim` applies. One hardening: the plain seal's empty id no longer
+  counts as an empty-id claim's own operation (unreachable, pinned by a unit
+  test). Still open, KANI-041: every seal-generation allocation
+  (`claims.rs` twice, `lifecycle.rs` twice, `topology.rs` twice) is an
+  unchecked `seal_gen_counter + 1`, which would wrap after 2^64 claims; a
+  checked allocator needs a decline path at each site, inside excepted
   scopes.
 - **KANI-006 (done 2026-09-27):** the postings varint codec,
   `src/postings/proofs.rs`. The owner chose option (b): the six

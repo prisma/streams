@@ -1,57 +1,76 @@
 {
   "checks": [
     {
-      "check": "KANI-042/disposition",
+      "check": "KANI-040/decision-matrix",
       "covers": 3,
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5ad4dee21eed7e56e51f62899dc2dde5bb992f98f259dc08ecf3ae41608c4d41",
+      "log_sha256": "06ccc0311460ac0d06fc7ed0997efd7f2dccb6bea873cc7c11a307f29a0f64b1",
       "role": "baseline",
-      "seconds": 158.4,
+      "seconds": 66.0,
       "verdict": "pass"
     },
     {
-      "check": "KANI-042/nc-producer-gap-releases-debt",
+      "check": "KANI-040/nc-plain-seal-joins-owed-final",
       "covers": 3,
       "covers_satisfied": 3,
-      "expected": "fail:the raw surface follows the contract",
+      "expected": "fail:a plain seal never joins a claim that owes a final record",
       "failed_checks": [
-        "\"the raw surface follows the contract\""
+        "\"a plain seal never joins a claim that owes a final record\""
       ],
-      "log_sha256": "85e12898e6cfa4525878f040a1e6e36aa5eed405a0202bdacee5b1c0124d2c0c",
+      "log_sha256": "f26657f9f71b45eb47cc7194f12a8d6ae24bc08b89d0df034f5ba8e4b6c5124a",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-          "control": "b95d5fd33b96d85b19db6f646cc807b9f7f81593c67c8d310461a31d724b537d"
+          "control": "044d06b0f1cd37448cd3a780461dc4c5bf66f4c6b0fba7b979a8301c4269acb5"
         }
       },
       "role": "negative-control",
-      "seconds": 166.3,
+      "seconds": 64.9,
       "verdict": "fail"
     },
     {
-      "check": "KANI-042/nc-product-surface-drifts",
+      "check": "KANI-040/nc-renew-the-wrong-operation",
       "covers": 3,
       "covers_satisfied": 3,
-      "expected": "fail:the product surface agrees with the raw surface",
+      "expected": "fail:only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it",
       "failed_checks": [
-        "\"the product surface agrees with the raw surface\""
+        "\"only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it\""
       ],
-      "log_sha256": "1fc17da3f65eab5f3fdee7a3ce9cae9a22a2156a8a117580a43a9eb123d2a38e",
+      "log_sha256": "cd7bcb300a861b2173124e7feee09afa47e827543a0555b66a0c3d252ad2b79e",
       "mutated": {
-        "src/application/append/contract.rs": {
-          "baseline": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
-          "control": "6f4c5f3d12c8cc40ff73b60f2069e7abc058c8509c9c3760207dfb71e566b988"
+        "src/application/lifecycle/claims.rs": {
+          "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
+          "control": "58ae716a6d93134d397cf62a10053cb6fbb9efc3c04616fe8144f36464438fe5"
         }
       },
       "role": "negative-control",
-      "seconds": 166.8,
+      "seconds": 61.4,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-040/nc-install-without-a-claim",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:a declined step carries no installation",
+      "failed_checks": [
+        "a declined step carries no installation"
+      ],
+      "log_sha256": "da8e9d44a8fddd5cc08a218d0a4069d8de4f068fc8710ad052dd1b464acbbe96",
+      "mutated": {
+        "src/application/lifecycle/claims.rs": {
+          "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
+          "control": "6a5be81f94895e2136e56f09a3eb7f2d33c62a2fe681e180f37c4755ea43e95e"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 66.2,
       "verdict": "fail"
     }
   ],
   "complete": true,
-  "id": "KANI-042",
+  "id": "KANI-040",
   "inputs": {
     "assumptions": {
       "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
@@ -63,13 +82,13 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
-      "src/application/append/contract.rs": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
       "src/application/lifecycle/claims.rs": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
       "src/application/lifecycle/claims/proofs.rs": "2de246594a201c843a214a210c6a44dcb1597563dc90b961c4d5cda2b1e466a9",
-      "verification/kani/controls/KANI-042-producer-gap-releases-debt.patch": "54b9227da1cd26c88ebb20ace82f64b8a80afeb092dc23f6e839cc16007ea3cc",
-      "verification/kani/controls/KANI-042-product-surface-drifts.patch": "a06ae1caac5e87713204749e602a83bad2fae904d1b20d791d40e250df7d9140"
+      "verification/kani/controls/KANI-040-install-without-a-claim.patch": "10f0886c2f9583be570a8ed9c0bd2f6a9b7c418a6844a38f9d6f1eaf9a1f5b18",
+      "verification/kani/controls/KANI-040-plain-seal-joins-owed-final.patch": "698984591d099647a684c74217847c969ebebf30b912129085deaa3cbea095ca",
+      "verification/kani/controls/KANI-040-renew-the-wrong-operation.patch": "104a6500498cc4f7792e3ccb04eb1c610a9b9c9e90ad5deaa6df6ddc0b4978c4"
     },
-    "manifest_entry": "e7a8f77adb6c3dea9434f4f1ac4667ede26a3691415a0985c1fa96d9e30617d8",
+    "manifest_entry": "89c118ff478bc35cd32636d16ba01a97f791fbeff8b608fcb2ce759becd71104",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -91,7 +110,7 @@
       }
     }
   },
-  "inputs_sha256": "aa871bb454341b6beabf30df83b006776dd282a7de02d7d9909b7a56f2bd34a7",
+  "inputs_sha256": "b18a6f8b12153949bc705ec098aa46e9b318dacee3da9c13b6904588020725cc",
   "run_on": {
     "dirty_tree": true,
     "revision": "520b7b79f884eef4fc50724405d3c333d80d8276"

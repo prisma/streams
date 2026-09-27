@@ -1,0 +1,14 @@
+diff --git a/src/application/lifecycle/claims.rs b/src/application/lifecycle/claims.rs
+--- a/src/application/lifecycle/claims.rs
++++ b/src/application/lifecycle/claims.rs
+@@ -127,7 +127,9 @@
+         .as_ref()
+         .is_some_and(|map| map.pending.is_some())
+     {
+-        return ClaimStep::Decline(EnterSeal::PendingTopology);
++        return ClaimStep::Decline(EnterSeal::Installed {
++            generation: current.seal_gen_counter + 1,
++        });
+     }
+     ClaimStep::Install(crate::registry::SealState {
+         operation_id: op_id.to_string(),

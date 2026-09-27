@@ -747,6 +747,77 @@
       ]
     },
     {
+      "id": "KANI-040",
+      "kind": "kani",
+      "title": "Seal claim decision matrix and exact-operation renewal",
+      "status": "pass-with-recorded-scope",
+      "owner": "seal lifecycle claims",
+      "source_paths": [
+        "src/application/lifecycle/claims.rs"
+      ],
+      "verification_paths": [
+        "src/application/lifecycle/claims/proofs.rs"
+      ],
+      "requirements": [
+        "T4",
+        "T5"
+      ],
+      "models": [
+        "TLA-001",
+        "TLA-002",
+        "TLA-003",
+        "TLA-004"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "claim_step over a persisted descriptor in every state validation admits (sealed with its operation, a claim of any of three operations with an empty, owed or committed final intent, pending topology), three requesting operations (the plain seal's empty id and two others), both intents, full-width clock and claim times, and an allocator below u64::MAX; decide_claim's application of the step to the descriptor is by inspection and unit tests",
+      "checks": [
+        {
+          "id": "KANI-040/decision-matrix",
+          "role": "baseline",
+          "harness": "application::lifecycle::claims::proofs::kani_040_the_seal_claim_decision_matrix",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-040/nc-plain-seal-joins-owed-final",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_040_the_seal_claim_decision_matrix",
+          "patch": "verification/kani/controls/KANI-040-plain-seal-joins-owed-final.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a plain seal never joins a claim that owes a final record"
+          }
+        },
+        {
+          "id": "KANI-040/nc-renew-the-wrong-operation",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_040_the_seal_claim_decision_matrix",
+          "patch": "verification/kani/controls/KANI-040-renew-the-wrong-operation.patch",
+          "expect": {
+            "result": "fail",
+            "property": "only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it"
+          }
+        },
+        {
+          "id": "KANI-040/nc-install-without-a-claim",
+          "role": "negative-control",
+          "harness": "application::lifecycle::claims::proofs::kani_040_the_seal_claim_decision_matrix",
+          "patch": "verification/kani/controls/KANI-040-install-without-a-claim.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a declined step carries no installation"
+          }
+        }
+      ],
+      "regressions": [
+        "application::lifecycle::claims::tests::a_plain_seal_never_joins_a_claim_that_owes_a_final_record"
+      ]
+    },
+    {
       "id": "KANI-042",
       "kind": "kani",
       "title": "Final-append error disposition",
