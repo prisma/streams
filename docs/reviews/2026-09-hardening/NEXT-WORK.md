@@ -631,7 +631,10 @@ the roadmap's unimplemented list
   exactly or are refused, a delta cannot clear live debt, and the stall
   signal survives clock extremes (the overflow found on 2026-09-26 is fixed:
   `no_progress_secs` saturates). The row's impl and codec moved to
-  `src/shard/maintenance_row.rs` with a typed `MaintenanceError`.
+  `src/shard/maintenance_row.rs` with a typed `MaintenanceError`, a registered
+  mutation owner (`maintenance_row`) whose first run missed four mutants, now
+  all caught (the refusal words, an append not moving the progress clock, the
+  stall signal's two guards; one equivalent condition removed).
 - **KANI-040 (done 2026-09-27):** the seal-claim decision matrix,
   `claim_step` in `src/application/lifecycle/claims.rs`, which
   `decide_claim` applies. One hardening: the plain seal's empty id no longer
@@ -680,5 +683,7 @@ the roadmap's unimplemented list
   changing it makes all receipts stale and CI's formal job re-runs every
   obligation. Leave it to the formal program's owner.
 - **Stale receipts:** re-recorded on 2026-09-25 for the twelve obligations
-  whose inputs slate's changes had moved (see the receipts commit).
+  whose inputs slate's changes had moved (see the receipts commit), and on
+  2026-09-27 for TLA-002, TLA-003, TLA-005, TLA-006, TLA-011, TLA-016 and
+  KANI-047 after KANI-006, KANI-047 and KANI-040.
 
