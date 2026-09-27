@@ -19,6 +19,7 @@ fn apply_delta_is_checked_and_tracks_progress() {
     // Later append: the backlog-start clock must NOT restart.
     let m = m.apply_delta(500, 0, 9_000).unwrap();
     assert_eq!(m.backlog_started_ms, 5_000, "backlog start must not reset");
+    assert_eq!(m.last_progress_ms, 5_000, "an append is not progress");
 
     // Retirement refreshes the PROGRESS clock — the stall signal is
     // "time since durable progress", not "age of oldest record",
@@ -38,6 +39,58 @@ fn apply_delta_is_checked_and_tracks_progress() {
     assert!(
         ShardMaintenance::default().apply_delta(10, 11, 1).is_err(),
         "retiring more than exists must fail"
+    );
+}
+
+/// The stall signal reads zero unless there is both a backlog and a
+/// progress clock: a stored row from before any progress cannot prove
+/// its age (the opener starts its clock), and an empty ledger has
+/// nothing to stall.
+#[test]
+fn no_progress_needs_a_backlog_and_a_clock() {
+    let unclocked = ShardMaintenance {
+        unabsorbed_frame_bytes: 10,
+        ..ShardMaintenance::default()
+    };
+    assert_eq!(unclocked.no_progress_secs(99_000), 0);
+    let drained = ShardMaintenance {
+        last_progress_ms: 5_000,
+        ..ShardMaintenance::default()
+    };
+    assert_eq!(drained.no_progress_secs(99_000), 0);
+    let stalled = ShardMaintenance {
+        unabsorbed_frame_bytes: 10,
+        last_progress_ms: 5_000,
+        ..ShardMaintenance::default()
+    };
+    assert_eq!(stalled.no_progress_secs(99_000), 94);
+}
+
+/// KANI-047: the typed refusals keep the words the commit failure and
+/// the logs carried while they were `anyhow` errors.
+#[test]
+fn maintenance_refusals_keep_their_words() {
+    assert_eq!(
+        ShardMaintenance::default()
+            .apply_delta(10, 11, 1)
+            .unwrap_err()
+            .to_string(),
+        "maintenance retirement exceeds backlog: retire=11 available=10"
+    );
+    let full = ShardMaintenance {
+        unabsorbed_frame_bytes: u64::MAX,
+        ..ShardMaintenance::default()
+    };
+    assert_eq!(
+        full.apply_delta(1, 0, 1).unwrap_err().to_string(),
+        "maintenance byte overflow"
+    );
+    assert_eq!(
+        decode_shard_maint_row(&[2u8; 39])
+            .err()
+            .map(|error| error.to_string())
+            .as_deref(),
+        Some("unsupported shard maintenance row (39 bytes)")
     );
 }
 

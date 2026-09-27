@@ -61,7 +61,8 @@ impl ShardMaintenance {
             out.backlog_started_ms = 0;
             out.last_progress_ms = 0;
         } else {
-            if self.unabsorbed_frame_bytes == 0 && added_frame_bytes > 0 {
+            // A backlog out of an empty ledger: its bytes were just added.
+            if self.unabsorbed_frame_bytes == 0 {
                 out.backlog_started_ms = now_ms;
                 out.last_progress_ms = now_ms;
             }
