@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "20746023e7df5abf6aa97c085e52290a44cbdde6b22d9fd4f26069312a5d77ef",
+      "log_sha256": "088db7e2243c99750d263169b29a6b8eac755f266d702c45fc36d6226f3e7175",
       "role": "baseline",
-      "seconds": 30.7,
+      "seconds": 29.5,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2e1ed0d1ec90589f8783d8e66b6c52e31a8e02938eecc0fb50fb5705a4085a56",
+      "log_sha256": "c3b745c0d1f73b6134783ba15d65b9a97c34f5760b7084a8ac7960f49cde7fbe",
       "role": "baseline",
-      "seconds": 29.7,
+      "seconds": 29.8,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"a trim never passes the safe boundary\""
       ],
-      "log_sha256": "7ff39556a40aa0c61b49427013ed55559bcc7cef2c03a847a79fe53137d53b32",
+      "log_sha256": "a986504eb0c6cce244eb667561725f2cafb06f8f687bbde2f6ce8ce415156e33",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 29.1,
+      "seconds": 44.8,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"a trim never moves backwards\""
       ],
-      "log_sha256": "4e8acf31ec07ec1c75b1bbab8440545e533f2607ad4840a40be99a1f2eb54398",
+      "log_sha256": "b6b6d3de89a0cec98b01575e93301c97aa781a2318e1a97e5b4af4c0f5f1a084",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 28.7,
+      "seconds": 55.6,
       "verdict": "fail"
     },
     {
@@ -68,7 +68,7 @@
       "failed_checks": [
         "\"the boundary moves forward within the log\""
       ],
-      "log_sha256": "77f51147ae764d43046a58005d11db62f7de83582d4d898eec2fb0911cae5168",
+      "log_sha256": "73fe8dafdff0466e9e97e739c2fc8953ce749367a54399380e962df9d86ad605",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -76,7 +76,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 30.1,
+      "seconds": 84.5,
       "verdict": "fail"
     }
   ],
@@ -92,7 +92,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "src/shard/transaction/maintenance.rs": "0f672668e9437ecd2caf88f197b81bcb7e2a3f131cf3d04cf7296be895898035",
@@ -122,10 +122,10 @@
       }
     }
   },
-  "inputs_sha256": "28624ce21618702b0c136b9213721b8c904898a530f97fba08028e24a6a21dcb",
+  "inputs_sha256": "baf8043fc361ce2f978bfad55bf399f9369b46a1f3fbcf77af25cde87ef114f5",
   "run_on": {
     "dirty_tree": true,
-    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

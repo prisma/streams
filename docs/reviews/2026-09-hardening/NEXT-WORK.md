@@ -27,99 +27,10 @@ Contents:
 
 ## 0. How work is done in this repository
 
-**Branch and commits.** Work directly on `slate` (no PRs; the owner's call).
-One behaviour per commit. The title is a sentence stating the behaviour
-("A usage streamId is served only for an incarnation of the stream the URL
-names"); the body says why, what changed, the red/green evidence (exact
-panic text), controls, and ledger changes. End every message with:
-
-```text
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-```
-
-**Red first.** Every behaviour change starts with a test that fails on the
-unfixed tree; paste the exact failure into the commit message. Assert exact
-state (ledger bytes, record counts, stored rows), not only "no 500". Plant a
-wrong fix where cheap and show the test catches it.
-
-**Owner decisions.** Anything client-visible is an edge change: add a record
-to `edge-changes.md` (same format as #53-#57: surface, endpoint, condition,
-before, after, retry semantics, who is affected, pinning tests, risk reason)
-and update `docs/refactor/WIRE-MATRIX.md`. Where the owner has not decided,
-write the options down and ask; never self-approve. An agent never adds rows
-to `docs/quality/exception-growth.json` and never edits an `#[expect]`
-reason to absorb growth (`docs/RUST-QUALITY.md`, `AGENTS.md`).
-
-**Gates before every push** (all on the commit being pushed):
-
-```bash
-scripts/quality.sh                      # must end QUALITY_OK
-cargo test --release --lib              # full suite (1,335 at a079315c)
-bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts
-node scripts/platform-e2e.mjs && node scripts/platform-e2e-negative.mjs   # when HTTP, boot or lifecycle changed
-```
-
-The mutation leg, exactly as CI selects it (zero MISSED and TIMEOUT
-required):
-
-```bash
-export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
-       QUALITY_BEFORE_SHA=$(git rev-parse origin/slate) QUALITY_BASE_REF=origin/slate
-scripts/quality/mutations.sh
-```
-
-`scripts/quality.sh` needs Python 3.11 or newer as `python3` on `PATH`.
-It also runs the formal-verification check (`formal.py check`: an invalid
-or mismatched receipt fails, a stale one is reported). A change to code a
-Kani proof or TLA+ model maps makes its receipt stale; the release gate
-requires them fresh. The toolchain setup and the commands to run or refresh
-an obligation are in `verification/README.md`, "Setting up the toolchain".
-
-**Ratchet rules that shape the code** (the gates enforce them; plan for them
-before writing):
-
-- An excepted scope (an item carrying `#[expect(...)]`) may not grow: its
-  contract measures `scope_lines`, `nested_items` and `syntax_facts`, and an
-  `unwrap_used`/`expect_used` contract also fingerprints every ordinary call
-  spelling and every path spelling, counted per site. Method calls
-  (`x.foo()`) are not fingerprinted; `foo(x)`, `Ok(..)`, a new local's path
-  and `self` are. Put new logic in a new function outside the scope and reach
-  it by a method call. Removing an exception (by making the code fallible)
-  is always allowed.
-- A file over 1,000 lines may not exceed its line count at `origin/slate`
-  (physical lines, comments included). At a079315c: `src/shard.rs` 3,139,
-  `src/http.rs` 3,118, `src/product.rs` 4,024, `src/billing.rs` 2,151,
-  `src/registry.rs` 1,452, `src/auth.rs` 1,637, `src/history.rs` 1,655.
-  Offset additions by trimming, or add a module.
-- DST test files (`src/dst/tests/*.rs`) stay at or under 1,000 lines. A new
-  one needs a `#[path]` module line in `src/dst/dst_tests.rs`, a
-  `by-path-module` row in `docs/quality/owners.json`, and
-  `python3 scripts/test-inventory.py --write`.
-- `docs/refactor/review-mechanisms.json` pins test function hashes; after
-  editing a pinned test, re-pin it and run
-  `python3 scripts/review-evidence.py --check`.
-- The architecture gate counts reverse-dependency edges per file: a new file
-  naming `crate::http` fails. Import `AppState` through the parent module
-  (`use super::AppState`), as `src/product/seal_request.rs` and
-  `src/billing/replaced.rs` do.
-- `pub(super)` on a field under an exception adds a `super` path fact to its
-  contract. Keep such fields private and add accessor methods.
-
-**Traps.**
-- `scripts/quality/mutations.sh` lists mutants from the live checkout, per
-  owner. Editing or committing while it runs fails it with "Diff content
-  doesn't match source file". Run it in a separate `git worktree`.
-- `scripts/quality.sh` expects its build under the checkout's own
-  `target/`: `CARGO_TARGET_DIR` breaks its Python tests. In a worktree,
-  symlink `target` to a warm build instead.
-- `verification_plan.py` needs `QUALITY_HEAD_SHA` to be the checked-out HEAD.
-- Clippy denies `drop()` of a `Copy` value (use `.ok()`),
-  `result_large_err` for `Result<_, Response>` (box it or use a small error
-  enum), and deep nesting (factor helpers early).
-- macOS's `/bin/bash` 3.2 treats an empty array as unbound under `set -u`
-  (use `${a[@]+"${a[@]}"}`).
-- `dst::dst_tests::topology_scaling::post_split_throughput_scales` fails its
-  1.8x ratio under host load; rerun it alone when the host is idle.
+The working agreement, environment, verification ladder, ratchet rules,
+formal and mutation recipes, records and known traps that used to live here
+are in the repository's operating manual, [`AGENTS.md`](../../../AGENTS.md),
+which every agent loads. This file is only the queue of open work.
 
 ---
 
@@ -673,17 +584,14 @@ the roadmap's unimplemented list
 - **KANI-004 (not started):** the offset parser's alphabet and aliases depends
   on the pending wire decision on lax token reading (review item 88 step 2,
   pinned by `offsets::tests::non_canonical_tokens_keep_their_lax_reading`).
-- **Driver flake on macOS (not fixed):** `scripts/quality/formal.py` `stop_group`
-  raises `PermissionError` from `os.killpg(pgid, 0)` when macOS answers EPERM
-  for a group whose only members are killed, unreaped children, so
-  `test_formal.TlcIsolation.test_6_a_{timeout,cancellation}_kills_the_whole_process_tree`
-  fail intermittently in `scripts/quality.sh` on macOS (Linux CI answers
-  ESRCH). The fix is one `except PermissionError: pass` in that loop (13 of 13
-  runs passed with it), but the driver is an input to every receipt, so
-  changing it makes all receipts stale and CI's formal job re-runs every
-  obligation. Leave it to the formal program's owner.
-- **Stale receipts:** re-recorded on 2026-09-25 for the twelve obligations
-  whose inputs slate's changes had moved (see the receipts commit), and on
-  2026-09-27 for TLA-002, TLA-003, TLA-005, TLA-006, TLA-011, TLA-016 and
-  KANI-047 after KANI-006, KANI-047 and KANI-040.
+- **Driver flake on macOS (fixed 2026-09-27):** `stop_group` in
+  `scripts/quality/formal.py` now waits while macOS answers EPERM for a
+  killed group whose members are not yet reaped (it raised `PermissionError`
+  and failed `test_formal.TlcIsolation.test_6_a_*` in about a quarter of
+  local `scripts/quality.sh` runs under load). Pinned by
+  `test_6_a_group_that_answers_eperm_while_it_drains_is_awaited`. The driver
+  is an input of every receipt, so all 24 were re-recorded in the same
+  commit, in parallel with `scripts/dev/formal_batch.py`.
+- **Stale receipts:** none; all 24 were re-recorded on 2026-09-27 with the
+  driver fix above. `python3 scripts/dev/formal_batch.py status` lists them.
 

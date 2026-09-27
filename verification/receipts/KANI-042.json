@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5ad4dee21eed7e56e51f62899dc2dde5bb992f98f259dc08ecf3ae41608c4d41",
+      "log_sha256": "cb929fddfd113b88c10e3fa59beaee899f4d564f8d56b17edee43c9e2d1f88f5",
       "role": "baseline",
-      "seconds": 158.4,
+      "seconds": 168.7,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the raw surface follows the contract\""
       ],
-      "log_sha256": "85e12898e6cfa4525878f040a1e6e36aa5eed405a0202bdacee5b1c0124d2c0c",
+      "log_sha256": "93d3b03a813afeed97e923296b9e29949d02c3587b1a5e23cabb29ff330d59d9",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 166.3,
+      "seconds": 161.4,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the product surface agrees with the raw surface\""
       ],
-      "log_sha256": "1fc17da3f65eab5f3fdee7a3ce9cae9a22a2156a8a117580a43a9eb123d2a38e",
+      "log_sha256": "0b971ff526ae9df454144c356e4fc559fefc5bb2ba06343dc327fb56c0dbae70",
       "mutated": {
         "src/application/append/contract.rs": {
           "baseline": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 166.8,
+      "seconds": 187.0,
       "verdict": "fail"
     }
   ],
@@ -62,7 +62,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/append/contract.rs": "70bee3ece5ae33aa571f9a1f6ba247598da4c7227623b4f77fa59739fb303d0c",
       "src/application/lifecycle/claims.rs": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
       "src/application/lifecycle/claims/proofs.rs": "2de246594a201c843a214a210c6a44dcb1597563dc90b961c4d5cda2b1e466a9",
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "aa871bb454341b6beabf30df83b006776dd282a7de02d7d9909b7a56f2bd34a7",
+  "inputs_sha256": "3875871074ccc7729f1ff99164fbc6b2701ff2c003577895103e18dba9d61011",
   "run_on": {
     "dirty_tree": true,
-    "revision": "520b7b79f884eef4fc50724405d3c333d80d8276"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

@@ -22,8 +22,8 @@ of it says that Prisma Streams as a whole is verified.
 ## Setting up the toolchain
 
 The tools are pinned in `quality-tools.toml` (under `[formal]`) and installed by
-`scripts/install-formal-tools.py`, all under `target/quality-tools/`. Nothing is
-installed globally.
+`scripts/install-formal-tools.py`, under `target/quality-tools/`; Kani keeps
+its CBMC bundle in `~/.kani/` and its nightly compiler in rustup.
 
 ### Prerequisites
 
@@ -88,9 +88,17 @@ Run only what a diff affects:
 python3 scripts/quality/formal.py run --changed-from origin/slate --out target/formal/changed
 ```
 
-To write or refresh `verification/receipts/<ID>.json`, add `--record`. Do that
-only on a clean tree that will not change during the run: the driver fails a
-run whose inputs change mid-run.
+To write or refresh `verification/receipts/<ID>.json`, add `--record`. The
+inputs of the obligation must not change during the run: the driver fails a
+run whose inputs change mid-run. Re-record from a committed tree, in the
+background, with the parallel helper (it runs `formal.py run --record` per
+obligation, longest first, in its own worktree at `HEAD`, and copies back
+only receipts whose inputs still match the live checkout):
+
+```bash
+python3 scripts/dev/formal_batch.py cost                 # what this change stales / CI re-runs
+python3 scripts/dev/formal_batch.py rerecord --stale     # or --ids KANI-047 TLA-016, or --all
+```
 
 ### Practical notes
 
@@ -105,9 +113,51 @@ run whose inputs change mid-run.
   mkdir -p target && ln -s /path/to/main/checkout/target/quality-tools target/quality-tools
   ```
 
-- Cost: on a busy 8-core laptop the full set takes about 1.7 hours of Kani and
-  3-6 hours of TLC. The slowest single checks are KANI-001 (about 30 minutes)
-  and the TLA-016 and TLA-018 baselines (15-30 minutes each).
+- Cost, from the receipts (2026-09-27, M1 Ultra): 24 obligations, 349
+  checks, about 1.3 hours of Kani and 4.8 hours of TLC serially; the
+  slowest obligations are TLA-002 (66 min), TLA-019 (57 min) and TLA-018
+  (49 min), the slowest check TLA-019/fork-baseline-legacy (about 25 min).
+  Every Kani check recompiles the crate first (about 30 s), whatever its
+  verification time. With 6-8 obligations in parallel a full re-record
+  takes about an hour, bounded by TLA-002.
+- What stales what: an obligation's receipt digests its `source_paths`,
+  `verification_paths` and check files, its manifest entry and assumption
+  text, the `[formal]`/`[slatedb]` pins, `scripts/quality/formal.py`,
+  `Cargo.toml` and `Cargo.lock` (so those three stale every receipt), and for
+  Kani also `build.rs` and `rust-toolchain.toml`. Any byte counts, comments
+  included. Editing the manifest, `quality-tools.toml` or `formal.py` makes
+  CI run every obligation. `python3 scripts/dev/formal_batch.py cost <paths>`
+  prints the cost of an edit before you make it.
+
+### Kani harness lessons
+
+Measured in this repository; each cost 10-45 minutes to find.
+
+- Harnesses that finish in minutes use stack arrays from `kani::any()`,
+  concrete sizes (one `#[kani::proof]` per size, through a const-generic
+  helper) and pure production functions extracted for the purpose. A
+  symbolic slice length into `sort_unstable` or `str::from_utf8` explodes.
+- `HashMap`/`HashSet` fail: their `RandomState` seed calls an unsupported
+  foreign function. Scan instead.
+- Anything reaching `anyhow` makes Kani 0.68's compiler panic
+  (`intrinsics.rs:243`); `format!`/`String` error paths are symbolically
+  executed and slow. Give the checked core a typed error enum with `Display`.
+- Vectors held inside a `Vec` element lose their constant length, so whole
+  `SegmentMap::validate` and `StreamDesc::try_from` are out of reach; check
+  the pure rule they apply. Kani builds with debug assertions, so a
+  `debug_assert!` over such data is explored too.
+- `[u8]::contains` goes through word-at-a-time `memchr`: in one harness with
+  a round trip it pushed KANI-001's CBMC to about 15 GB and killed CI's 16 GB
+  runner (no log, "lost communication"). Split harnesses; if a formal shard
+  dies with no output, measure the CBMC process's memory locally.
+- A negative control passes only when its expected property is among the
+  FAILED checks; a Rust `assert!` that fires first ends the path, so order
+  assertions so the targeted one is reached. Controls are `git apply`
+  patches with context lines: `python3 scripts/dev/formal_batch.py preflight`
+  checks they still apply after you edit their files.
+- Iterate on one harness with the driver's own command:
+  `cargo kani --lib --output-format regular --exact --harness <module::proofs::fn>`
+  (after `. scripts/dev/env.sh`); count `Unwinding loop` lines to profile.
 - CI: the `formal` job in `.github/workflows/rust-quality.yml` installs the
   same pins with the same script and runs the affected obligations across six
   shards.

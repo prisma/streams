@@ -139,8 +139,15 @@ def tracked_sources(root=ROOT):
     return sources
 
 
+def syntax_binary():
+    # quality.sh builds the scanner with plain cargo, which honours
+    # CARGO_TARGET_DIR (relative to the root, where the scripts run).
+    target = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target')
+    return Path(os.environ.get('QUALITY_SYNTAX', target / 'debug/streams-quality-syntax'))
+
+
 def syntax(sources):
-    binary = Path(os.environ.get('QUALITY_SYNTAX', ROOT / 'target/debug/streams-quality-syntax'))
+    binary = syntax_binary()
     fragments = json.loads((ROOT / 'docs/quality/syntax-fragments.json').read_text())
     skipped = {}
     for path, entry in fragments.items():

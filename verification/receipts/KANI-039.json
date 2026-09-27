@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "560566724f902053912f127837a6a0b3ca06b51440d281d9b52300a794185876",
+      "log_sha256": "2eb9bb842f6b68c1bf75c1e553f10c92e31d0106a0068256a069418d9d0d9a52",
       "role": "baseline",
-      "seconds": 29.5,
+      "seconds": 48.8,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "59a0ac739412dc1014c91f26683f26c5e3400114671af25a53f1645e78bedb70",
+      "log_sha256": "6ad6981e1326f52c690b0e880f806678e501bf02861443594df15e90ec1b8a83",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 29.2,
+      "seconds": 132.1,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "4c99911af8279378d999c008d5f5d77e16f6c9aab8cafef2ab6dbf5e260010df",
+      "log_sha256": "0a5c27a99908de0ca004fdfd26c68068fcbaf31d4246be06186f8b0579edb3b6",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 28.8,
+      "seconds": 82.2,
       "verdict": "fail"
     }
   ],
@@ -62,7 +62,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "verification/kani/controls/KANI-039-fence-equality-refused.patch": "9e87e79f49ad48209ebfc4ba552b6cc100d14ff534c03760fa8a9ff75fd36d67",
@@ -90,10 +90,10 @@
       }
     }
   },
-  "inputs_sha256": "0081f5135f90c86955e237c671fbea327420a88590a86c22905599a80c720c3b",
+  "inputs_sha256": "008d2d66f55c86b23ac1dc46a558a57bb5ec97ea0deea2fa0bae1193e25abfff",
   "run_on": {
     "dirty_tree": true,
-    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "7a56339a803876d22cf98126d7e8fa235d0cd30771df828338ac11e5388a6e46",
+      "log_sha256": "62b9065a004753bdef45fc8ea77fb24c628851a661b252df6c8b6fd3d8bdc112",
       "role": "baseline",
-      "seconds": 43.4,
+      "seconds": 36.2,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0d46a38d5770bc78a9bf1a8faaa2f2a6f2da2630354ea199405e40cbb484fc47",
+      "log_sha256": "7b44bb53a7e36068e927af837094f6915d39457f06c0131c659c2b3f12135401",
       "role": "baseline",
-      "seconds": 41.0,
+      "seconds": 36.1,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"an unterminated or overflowing run is refused\""
       ],
-      "log_sha256": "17505df4ebe259ec588b207d24e0336fbedcd48433968298166a2293cbf7ac47",
+      "log_sha256": "a0b153f83d61a68588a1fa28bf6f1ccfd2964986ca87d5e7aaa56331a645f024",
       "mutated": {
         "src/postings.rs": {
           "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 47.8,
+      "seconds": 47.9,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"the value survives the round trip\""
       ],
-      "log_sha256": "1dc37cb323bde9985f0d470a412fffde89ca3fb79d45c259597438099de22c88",
+      "log_sha256": "4203119156f6d1436d7d3db315434003bb35732c9bbcc2e0669f96ff729f0ddb",
       "mutated": {
         "src/postings.rs": {
           "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 41.1,
+      "seconds": 54.3,
       "verdict": "fail"
     }
   ],
@@ -73,7 +73,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/postings.rs": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
       "src/postings/proofs.rs": "36ed31a0655ced4f497cc745f0d200d5867acf5463964841242fb0d6c9ee5845",
       "verification/kani/controls/KANI-006-allow-an-overflowing-final-byte.patch": "4b559eef1bc26d5433771081ebb16cea8b333e7fe4b72c51361263127d4c0ba7",
@@ -101,10 +101,10 @@
       }
     }
   },
-  "inputs_sha256": "bf036001ba13fd0a2a692c5d542205257d8b2072fb822a32d577b78492603968",
+  "inputs_sha256": "f0874b2bafa9bc2214539598468ae515fbd56a9a98b2f1a29ed8327114ff983f",
   "run_on": {
     "dirty_tree": true,
-    "revision": "01851b262f7ba992e218e2e7eec5388072338b45"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

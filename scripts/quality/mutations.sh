@@ -3,5 +3,6 @@
 # intentionally only the stable local/CI entry point.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/lib/python.sh
 exec python3 scripts/quality/mutation_driver.py \
   --out "${QUALITY_MUTANTS_OUT:-target/quality-mutations}"

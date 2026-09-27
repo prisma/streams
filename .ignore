@@ -1,0 +1,45 @@
+# ripgrep default-search exclusions for immutable or historical bulk.
+# No gate reads this file. Include everything with: rg --no-ignore-dot
+#
+# Precisely: no gate's result depends on it. The Python gates use os.walk and
+# open(), `git grep` ignores it, and cargo-mutants copies the tree with .ignore
+# disabled. The one gate tool that honours it is `cargo machete`
+# (scripts/quality.sh), and only to find Cargo.toml manifests, so never list a
+# directory that holds a Cargo.toml.
+#
+# Rules for entries: only bulk that nobody edits and that dominates search
+# hits. Ledgers an agent edits stay visible (docs/quality/owners.json,
+# exception-growth.json, source-allowances.json, policy.json, everything in
+# docs/refactor/, verification/manifest.json, verification/receipts/).
+# Hidden files stay readable by path; docs/README.md says what each holds.
+# Search the root or one directory at a time. With several path arguments
+# (rg X src docs), ripgrep 15.1.0 applies this file only intermittently; that
+# fails open, showing the hidden files.
+# Measured when added, over 7 core identifiers: 2,192 -> 1,090 hit lines,
+# 412 -> 305 files.
+
+# Adoption diagnostics, sha256-pinned in docs/quality/policy.json (1.7 MB).
+/docs/quality/legacy-diagnostics.json
+/docs/quality/legacy-diagnostics-linux.json
+
+# September 2026 hardening program: per-round implementation plans (4 MB),
+# raw evidence and the end-of-batch report. The directory's live files
+# (README.md, NEXT-WORK.md, edge-changes.md, effective-config-diff.md) stay
+# visible.
+/docs/reviews/2026-09-hardening/plans/
+/docs/reviews/2026-09-hardening/evidence/
+/docs/reviews/2026-09-hardening/report/
+
+# A July 2026 performance diff.
+/docs/reviews/*.patch
+
+# Published read-experiment measurements (3.8 MB), checked by
+# scripts/read-experiments/followup/verify_published.py.
+/docs/read-experiments/followup/*.json
+
+# The WP-00 restructuring work package, written against 685ea035 (192 KB).
+/codereview1.md
+
+# The August 2026 multitenancy conversion map (190 KB). Its line anchors decay
+# by design; scripts/multitenancy-audit.sh is the enforcement now.
+/docs/MULTITENANCY-MAP.md

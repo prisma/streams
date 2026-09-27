@@ -3,27 +3,39 @@
 # formatting must already be clean, a clippy BUILD failure fails the
 # gate (compiler errors are not warning fingerprints), and each test leg
 # must show the tests it names RAN: cargo exits 0 with `ok. 0 passed`
-# when a filter or --exact name matches nothing. Output lands in $OUT.
+# when a filter or --exact name matches nothing. Output lands in $OUT
+# (or the first argument), default target/gate/gate.txt in this checkout,
+# so concurrent checkouts never share it. Its last line is GATEDONE or
+# GATEFAIL-<stage>; the terminal gets one line per stage and, on failure,
+# the tail of the log that failed.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-OUT=${OUT:-/tmp/gate.txt}
 cd "$HERE"
+source scripts/lib/python.sh
+OUT=${1:-${OUT:-target/gate/gate.txt}}
+mkdir -p "$(dirname "$OUT")"
 : > "$OUT"
+stage() { echo "gate: $1 ... (log: $2)"; }
+fail() {
+  echo "GATEFAIL-$1" >> "$OUT"
+  echo "GATEFAIL-$1: see $2" >&2
+  tail -n 60 "$2" >&2
+  exit 1
+}
 # One mandatory entry point for local and CI source/dependency policy.
+stage quality "$OUT"
 if ! scripts/quality.sh >> "$OUT" 2>&1; then
-  echo GATEFAIL-quality >> "$OUT"
-  exit 1
+  fail quality "$OUT"
 fi
+stage suite "$OUT.suite.log"
 if ! cargo test --locked --release --lib -- --skip post_split_throughput_scales > "$OUT.suite.log" 2>&1; then
-  echo GATEFAIL-suite >> "$OUT"
-  exit 1
+  fail suite "$OUT.suite.log"
 fi
 grep -E '^test result: ok' "$OUT.suite.log" >> "$OUT"
 # The suite holds every inventoried test but the one capacity leg below.
 if ! python3 scripts/quality/tests_ran.py "$OUT.suite.log" \
   --inventory docs/refactor/test-inventory.json --skipped 1 >> "$OUT" 2>&1; then
-  echo GATEFAIL-suite-ran >> "$OUT"
-  exit 1
+  fail suite-ran "$OUT"
 fi
 # The capacity-mechanism measurement OWNS the machine — its own stated
 # precondition. Inside the parallel suite, contention lands one-sidedly
@@ -31,15 +43,15 @@ fi
 # only ever understates the ratio: round-9 measured 1.73-1.80 in-suite
 # against 1.8x, with healthy baselines. External host load still
 # depresses it — the test's own failure text says how to distinguish.
+stage capacity "$OUT.capacity.log"
 if ! cargo test --locked --release --lib post_split_throughput_scales -- \
   --exact dst::dst_tests::topology_scaling::post_split_throughput_scales > "$OUT.capacity.log" 2>&1; then
-  echo GATEFAIL-capacity >> "$OUT"
-  exit 1
+  fail capacity "$OUT.capacity.log"
 fi
 grep -E '^test result: ok' "$OUT.capacity.log" >> "$OUT"
 if ! python3 scripts/quality/tests_ran.py "$OUT.capacity.log" \
   --exact dst::dst_tests::topology_scaling::post_split_throughput_scales >> "$OUT" 2>&1; then
-  echo GATEFAIL-capacity-ran >> "$OUT"
-  exit 1
+  fail capacity-ran "$OUT"
 fi
 echo GATEDONE >> "$OUT"
+echo GATEDONE

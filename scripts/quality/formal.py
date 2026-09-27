@@ -484,6 +484,10 @@ def stop_group(process):
             os.killpg(process.pid, 0)
         except ProcessLookupError:
             return
+        except PermissionError:
+            # macOS answers EPERM while a killed member waits for its new
+            # parent to reap it: the group is not gone yet, so keep waiting.
+            pass
         time.sleep(0.05)
 
 

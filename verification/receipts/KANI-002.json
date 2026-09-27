@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "99855b07dcdb2877b08b0843cad4b77c3d259b811431a11ba857cc862e4e33de",
+      "log_sha256": "066a4b611d59680cad4e5844aba6e7938d2a27d001cb0eb158c9f021e15ebb56",
       "role": "baseline",
-      "seconds": 449.6,
+      "seconds": 428.2,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a token resumes at the next it was issued for\""
       ],
-      "log_sha256": "b9426ea038deca061308e2b4ca34667226691239e8f387060a60b007cc38f2c3",
+      "log_sha256": "fd365689298e2e1a533d5bfcfaa00ae9eb395617fe0db1a22df9f1aa0d9c7449",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 428.8,
+      "seconds": 448.9,
       "verdict": "fail"
     }
   ],
@@ -44,7 +44,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/read_range.rs": "83fbc175a94f531938aea356347dc905d7ecbae85a30133130de0d2117786cd5",
       "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
       "src/offsets/proofs.rs": "333f354a482670b03e71bf8c9c04819f9a1e1d5e4968e187175e2c84f25a8bc4",
@@ -72,10 +72,10 @@
       }
     }
   },
-  "inputs_sha256": "981a14b2a991c2f92bf9203e0609ddbb2e58c0bb27bf7b28d7f344e0342e4ea7",
+  "inputs_sha256": "6509057488ce1740a33bf1ac35458c343792c38aaa244eeb1277f1fdb31b4021",
   "run_on": {
     "dirty_tree": true,
-    "revision": "8cfdc14300ef72d11833d186096b33fbf7c66cbd"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

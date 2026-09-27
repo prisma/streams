@@ -92,15 +92,28 @@ jobs:
         run: scripts/quality/nightly.sh miri
       - name: Diff-scoped read-owner mutants
         if: env.CHECK_MUTANTS == 'true'
+        # rust-cache exports CARGO_INCREMENTAL=0 to every later step, which
+        # overrides the incremental build [profile.quality] declares: each
+        # mutant was a full rebuild (127-222 s against 25-65 s locally).
+        # Same mutants, tests and timeouts; only the rebuild is incremental.
+        env:
+          CARGO_INCREMENTAL: "1"
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-latest
-    # The first-spike receipts took about 1.7 h of Kani and 5.7 h of TLC on
-    # a heavily loaded 8-core laptop; the longest check (the KANI-001 round
-    # trip) took an hour. The obligations are split over the shards by their
-    # position in the sorted manifest, so a new obligation always lands in
-    # one; the slowest shard measured about 3 h. A push or pull request runs
-    # only what its diff affects.
+    # The receipts record 24 obligations at about 6.1 h of serial check time
+    # on a loaded laptop (Kani 1.3 h, TLC 4.8 h); on these runners TLC takes
+    # roughly 0.6x its local time and Kani about the same. The longest single
+    # check is TLA-019/fork-baseline-legacy (about 1530 s locally); the longest
+    # obligation, TLA-002 (39 checks, about 66 min locally and 39 min here),
+    # bounds the slowest shard. Every obligation has one fixed shard:
+    # scripts/quality/formal_shards.py deals the whole manifest out longest
+    # first by each receipt's recorded seconds (an hour for an obligation
+    # without one) and fails unless each lands in exactly one shard, so no
+    # job's selection can drop one. Each shard then runs the part of its share
+    # the diff affects (all of it on a schedule). A full run takes about
+    # 40-50 min on its slowest shard, where splitting by position in the
+    # sorted IDs took 72-90 min.
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -125,17 +138,23 @@ jobs:
           FORMAL_SHARDS: 6
         run: |
           set -euo pipefail
-          ids=()
-          while IFS= read -r id; do ids+=("$id"); done < <(python3 -c 'import json, os, sys; ids = sorted(o["id"] for o in json.load(open("verification/manifest.json"))["obligations"]); n, k = int(os.environ["FORMAL_SHARDS"]), int(os.environ["FORMAL_SHARD"]); sys.stdout.write("".join(i + "\n" for j, i in enumerate(ids) if j % n == k))')
-          if (( ${#ids[@]} == 0 )); then
+          # The shard's fixed share of the whole manifest, longest first. The
+          # selector's output is assigned, not read through a process
+          # substitution, so a failing selector fails the step instead of
+          # emptying the shard.
+          shard=$(python3 scripts/quality/formal_shards.py --shards "$FORMAL_SHARDS" --shard "$FORMAL_SHARD" --all)
+          if [[ -z "$shard" ]]; then
             echo "FORMAL_OK: shard $FORMAL_SHARD holds no obligation"
             exit 0
           fi
           args=()
-          for id in "${ids[@]}"; do args+=(--id "$id"); done
+          while IFS= read -r id; do args+=(--id "$id"); done <<< "$shard"
+          echo "shard $FORMAL_SHARD of $FORMAL_SHARDS runs: $(tr '\n' ' ' <<< "$shard")"
           if [[ "$QUALITY_EVENT_NAME" == schedule ]]; then
             python3 scripts/quality/formal.py run "${args[@]}"
           else
+            # The driver selects what the diff affects and intersects it with
+            # this shard's --id list (FORMAL_OK when nothing is left).
             base=$(python3 -c 'import sys; sys.path.insert(0, "scripts/quality"); import common; print(common.verification_comparison().comparison_revision)')
             python3 scripts/quality/formal.py run --changed-from "$base" "${args[@]}"
           fi

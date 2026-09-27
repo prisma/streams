@@ -104,7 +104,7 @@ class MutationOwnership(unittest.TestCase):
         self.assertEqual(sum(len(entry.sources) for entry in OWNERS), len(source_map()))
 
     def test_prior_table_parser_recovers_every_current_owner_without_execution(self):
-        source = Path('scripts/quality/mutation_owners.py').read_text()
+        source = (Path(__file__).resolve().parent / 'mutation_owners.py').read_text()
         self.assertEqual(
             declared_source_map(source),
             {path: owner.name for path, owner in source_map().items()},

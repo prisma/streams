@@ -2,6 +2,7 @@
 # Pinned source builds, with upstream lockfiles. Add target/quality-tools/bin to PATH.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib/python.sh
 TOOL_ROOT="$(pwd)/target/quality-tools"
 VERSIONS=$(mktemp)
 trap 'rm -f "$VERSIONS"' EXIT

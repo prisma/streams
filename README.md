@@ -62,7 +62,7 @@ The service exposes **two HTTP surfaces**:
 | 2 h soak | flat p50 at saturation, zero deaths |
 | chaos (kill N−2 under load) | survivors absorb, zero data loss |
 
-Full history: [docs/BENCHMARKS.md](./docs/BENCHMARKS.md),
+Full history: [BENCHMARKS.md](./BENCHMARKS.md),
 [EXPERIMENT-PILOT.md](./EXPERIMENT-PILOT.md), [REPORT.md](./REPORT.md).
 
 ## Quick start — the SDK (recommended)
@@ -163,6 +163,9 @@ pin, DST scenario count).
 
 ## Repository layout
 
+Agents and contributors start with [AGENTS.md](./AGENTS.md) (how to work and
+verify here) and [docs/README.md](./docs/README.md) (a map of every document).
+
 ```
 src/            server crate (streams-slate) + bins
   http.rs       both HTTP surfaces + admission + debug endpoints
@@ -174,6 +177,7 @@ src/            server crate (streams-slate) + bins
   crypto.rs     stream-key envelope (AES-GCM)
   fleet.rs      heartbeats, load vector, desired-count computation
   dst/          deterministic simulation tests
+                (all 51 modules: python3 scripts/dev/impact.py --codemap)
 sdk/            @prisma/streams TypeScript client SDK (canonical entry point)
 conformance/    the pinned Durable Streams suite runner
 scripts/        field gate, release provenance, analysis

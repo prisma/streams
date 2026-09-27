@@ -6,18 +6,18 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "15cc87413202d74d12c12ab8b0207e468bed42f32e7b6842c732d7d8699f2fc4",
+      "log_sha256": "72eba751a3c656e446f99d2f6df508b763d62ea1a4a6c6494acce1128c583dfb",
       "role": "baseline",
-      "seconds": 328.8,
+      "seconds": 358.1,
       "verdict": "pass"
     },
     {
       "check": "KANI-001/canonical-digits",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "90b4bc51a8baf7a488cf77c8fbe0fbf13173f27b4ce74f60d00001fa8952e301",
+      "log_sha256": "0a935f88bb8c919e92777d8ca082d3d6d1fab2b98408d21bbae299bb7532c737",
       "role": "baseline",
-      "seconds": 292.6,
+      "seconds": 272.7,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "985ab5295b01b40dd69196106e6149a8f83c25b6d07c69faf0a2eb393121e8fb",
+      "log_sha256": "813cb46e4ce4575ca8981b1d66918f3d851fd43e6ecc6987753bcfd11ad0aea0",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 371.5,
+      "seconds": 361.8,
       "verdict": "fail"
     }
   ],
@@ -53,7 +53,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/offsets.rs": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
       "src/offsets/proofs.rs": "333f354a482670b03e71bf8c9c04819f9a1e1d5e4968e187175e2c84f25a8bc4",
       "verification/kani/controls/KANI-001-drop-top-admitted-epoch-bit.patch": "cf0e1dfa44732818bd7ed43372deb76cc97427424629ea7894568b017186d012"
@@ -80,10 +80,10 @@
       }
     }
   },
-  "inputs_sha256": "339b3f330e5f35c712eb13b8b5ddc43a9c8c2d724a4d8b11db509495640cd6c2",
+  "inputs_sha256": "5c3fee037277f5ec18fb553bba05f03e13f13fa46c1bde742bef635b7af0c67e",
   "run_on": {
     "dirty_tree": true,
-    "revision": "8cfdc14300ef72d11833d186096b33fbf7c66cbd"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

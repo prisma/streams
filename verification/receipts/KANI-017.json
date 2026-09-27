@@ -6,7 +6,7 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e73bea909ed68b32f93e4882fb5d496dc21ed9864acfc3de1b93446bd31a6772",
+      "log_sha256": "45003acf304cd69be463a7bac41e9428132df0bda619f3ab408ad4d71b3db33a",
       "role": "baseline",
       "seconds": 40.0,
       "verdict": "pass"
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f04fc26121cb02a8baf42d4c0d4f3dafadd3026379bd7735564eecefda44d307",
+      "log_sha256": "ec2fd680a04b073b098f99c77b465407bc1373399c78c72a827802b1bfeaf886",
       "role": "baseline",
-      "seconds": 152.4,
+      "seconds": 158.1,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"an admitted frame carries its key's offset\""
       ],
-      "log_sha256": "50027be03e775e41d791a2a671bd8e01eb7a35e4c745d9ab6c42382f05405a82",
+      "log_sha256": "a4e68c03561ae9a63c6f61dae990a43a5aab6854a5d1846316ff2b612e4f7844",
       "mutated": {
         "src/shard/record.rs": {
           "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 37.3,
+      "seconds": 39.4,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"an admitted row's key is its stream's prefix and one offset\""
       ],
-      "log_sha256": "79d8715c0f0f9477f41ca34950643a1f8dd5066a2b3b93722b052c9177729f42",
+      "log_sha256": "59c1ed9b3df34e414da502f77843e34f218f621acb4d539c8f45e09d1bf9b60e",
       "mutated": {
         "src/shard/record.rs": {
           "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 36.8,
+      "seconds": 38.7,
       "verdict": "fail"
     },
     {
@@ -68,7 +68,7 @@
       "failed_checks": [
         "\"an admitted row is exactly one whole frame with its tag\""
       ],
-      "log_sha256": "b16430ee01b7bb95177cf2fd8699a054a48787363eec382ea09517d1f0e5320d",
+      "log_sha256": "9578ddfadcee3d914479faf3c16854ba09dacc85535e49dc0d012c0b348d0ff0",
       "mutated": {
         "src/shard/record.rs": {
           "baseline": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
@@ -76,7 +76,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 36.9,
+      "seconds": 63.5,
       "verdict": "fail"
     }
   ],
@@ -92,7 +92,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/crypto.rs": "e9b44ce92c076771c68413f326fc795a859c614e9ecc5e09daa7a9c5377a3432",
       "src/shard/record.rs": "f84cf2126e268f17fe1b5ae3eac13d9ead39a3960803a7427004042906f5d238",
       "src/shard/record/proofs.rs": "47856cb42ad7ef6c650939b8c7cca466a40e0189fa0febd4dee72298138f97d4",
@@ -122,10 +122,10 @@
       }
     }
   },
-  "inputs_sha256": "4e65176394245de4c34d0f0977cc4cde1404022ce4451b68f644a6e5725a639e",
+  "inputs_sha256": "1b12f4d73fe7ccdd5d81c4488cbc164186567d9cae847030667d3edcedfa6ad9",
   "run_on": {
     "dirty_tree": true,
-    "revision": "4a0a9e52cb71591f81ad42f79b853d33c456fbaa"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

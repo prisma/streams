@@ -39,11 +39,14 @@ real time.
 
 ## 1. Current status — and what it is not
 
-`src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
-over the real single-node data plane**. Thirty-four scenarios, ~40 seconds:
+`src/dst/mod.rs` + `src/dst/tests/*.rs` (registered in `src/dst/dst_tests.rs`)
+is a **seeded fault-injection suite over the real single-node data plane**:
+about 580 tests, listed in `docs/refactor/test-inventory.json`. Run them with
+the rest of the lib suite, or one contract module at a time (dev profile; see
+`AGENTS.md` §3):
 
 ```bash
-cargo test --release dst
+cargo test --locked --lib -- dst::dst_tests::
 ```
 
 It is **not** whole-system deterministic simulation, and an earlier
@@ -660,8 +663,13 @@ whole-binary harness.
 ## Running
 
 ```bash
-cargo test --release dst
+cargo test --locked --lib -- dst::dst_tests::              # every scenario, dev profile
+cargo test --locked --lib -- dst::dst_tests::reads_raw::   # one contract module
 ```
+
+Timing-sensitive scenarios need `--release` on an idle host; the capacity
+scenario `dst::dst_tests::topology_scaling::post_split_throughput_scales`
+runs alone (`scripts/gate.sh` does both).
 
 To widen a sweep, add seeds to the arrays in the scenario tests; each seed
 is an independent execution with an independent fault schedule.

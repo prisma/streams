@@ -639,6 +639,23 @@ class TlcIsolation(unittest.TestCase):
         self.assertEqual((verdict, seen[0][1]), ('pass', True))
         self.assertFalse(seen[0][0].parent.exists())
 
+    def test_6_a_group_that_answers_eperm_while_it_drains_is_awaited(self):
+        # macOS answers EPERM for a group whose last members are killed but
+        # not yet reaped by their new parent; only ESRCH means it is gone.
+        replies = iter([PermissionError(), PermissionError(), ProcessLookupError()])
+        probes = []
+
+        def killpg(pid, sig):
+            if sig == 0:
+                probes.append(pid)
+                raise next(replies)
+
+        process = mock.Mock(returncode=0, pid=4242)
+        with mock.patch.object(formal.os, 'killpg', killpg), \
+                mock.patch.object(formal.time, 'sleep', lambda _: None):
+            formal.stop_group(process)
+        self.assertEqual(probes, [4242, 4242, 4242])
+
     def test_6_a_timeout_kills_the_whole_process_tree(self):
         _, code, timed_out, _ = formal.run_process(self.TREE, self.cwd, timeout=1)
         self.assertEqual((code, timed_out), (None, True))

@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "27f02588516a580c2305d63e89d2bef26dd27f07fec167f5e7b0d03958d7e6ed",
+      "log_sha256": "0c154758dcc8db657712d9e350c1775dc0d352f64274a5192a04787c13178295",
       "role": "baseline",
-      "seconds": 34.4,
+      "seconds": 48.4,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d482c588464e278e8d921d63c612a214b86e1903d87975763e785db17b7ab82a",
+      "log_sha256": "fa65315234d84a5b73b2ecdb04532010b3cb3cb40b21ed163ab1a34f1d2bf85d",
       "role": "baseline",
-      "seconds": 43.5,
+      "seconds": 48.8,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1f6161fccc9a4744a607d943c3014d2be35def9dc331eaf493524fc57ebe9294",
+      "log_sha256": "a375347f32263c426bd3b545de852f4e724cd392d7673c5966c26a34ca5f68ac",
       "role": "baseline",
-      "seconds": 48.0,
+      "seconds": 57.5,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "02abec2cc9aaa927bfba9b88e7bebf8484de30a695decdbfbd14c17d09f32197",
+      "log_sha256": "a5bc1517be20be456eefcf1b64030bbc8492cd8a56755c4ee99047e53f73ad3b",
       "role": "baseline",
-      "seconds": 57.7,
+      "seconds": 64.7,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "6bc5ad24d9f664e0e09f34714aa59229c265122e2cccbb5ee1890afd4de0b6fe",
+      "log_sha256": "05ff7f33f370da19d875ab3536281925a4102060f899f4b8185e9b1d687102e1",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 44.1,
+      "seconds": 47.5,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "325b33cc51bb3e6aadbcfe54022447bc6b00c75e5130e8e8e29da3a345e80c18",
+      "log_sha256": "0cbaf1c49b7ef7a7d6a57868dfee6faa839aa9d1c42c099822ce3499fce023d4",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 32.1,
+      "seconds": 72.4,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"the route answers every key with the segment that holds it\""
       ],
-      "log_sha256": "5892415486734b247da22e8119e4efe38f5764abfd64f9ec392ba33ae9dee218",
+      "log_sha256": "8002f5e294914946da4e6b30fb156f9945e81ffd74628de11b9557f95f2d6ec4",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 31.7,
+      "seconds": 34.6,
       "verdict": "fail"
     }
   ],
@@ -114,7 +114,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/segmap.rs": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
       "src/segmap/proofs.rs": "59831b5d92004bbbd19d03a8d18cfc44b3366c90395583e11dba24f3aab4c3a9",
       "verification/kani/controls/KANI-028-accept-a-one-point-gap.patch": "c88803458b02a431182fa37b7973701f7d6f51347d3ead5c4922a4be75b26fc1",
@@ -143,10 +143,10 @@
       }
     }
   },
-  "inputs_sha256": "bf7c7c26a517ffb391da26c873ceedc9981800a1a2f7f0e5ca2d1a0cea300ffb",
+  "inputs_sha256": "658052774fcb6de90114a6080f459a482220028aa05937f6c052743ca5ba2f9d",
   "run_on": {
     "dirty_tree": true,
-    "revision": "dcd910c35c31fb60eb255bef656b809ae0c01930"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

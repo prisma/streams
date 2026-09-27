@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/lib/python.sh
 NIGHTLY=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["nightly"])')
 HOST=$(rustc "+$NIGHTLY" -vV | sed -n 's/^host: //p')
 [[ -n "$HOST" ]]

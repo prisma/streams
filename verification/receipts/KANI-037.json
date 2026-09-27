@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ae3a1256fe79f4be9a8dee820a89f5a12af67a5b65254f1d1391420a3c6f2b61",
+      "log_sha256": "f4232dfb4d9f8566bd9d87f94e2e066bd17f9fabb21a8f98199360e588c73741",
       "role": "baseline",
-      "seconds": 31.3,
+      "seconds": 59.8,
       "verdict": "pass"
     },
     {
@@ -20,7 +20,7 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "4538338e5ab32d780277f9155858c169ac21677412296473276074a12db0896f",
+      "log_sha256": "746f0c879ae24794b0c5a903c8747528684b62042531e12910f16828979034bd",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -28,7 +28,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 31.9,
+      "seconds": 45.7,
       "verdict": "fail"
     },
     {
@@ -39,7 +39,7 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
-      "log_sha256": "2fa0c4aac3d820f676f8696c016864dc2a9d18acc9d680fbcba8e1e97d910253",
+      "log_sha256": "b34588a471c49c006a5a084e614363f004274bd55893fb6c12c565c901d96c75",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -47,7 +47,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 31.3,
+      "seconds": 54.7,
       "verdict": "fail"
     },
     {
@@ -58,7 +58,7 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "71a0d1fb3eada05172956e6a89cf23f6327a952c70fe7000444307c4a64127e1",
+      "log_sha256": "da34b4dba960acb67e8c0f4c12499015d559299ba8dc309a5fc0ccef5f743b1e",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
@@ -66,7 +66,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 31.3,
+      "seconds": 84.3,
       "verdict": "fail"
     }
   ],
@@ -83,7 +83,7 @@
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
-      "scripts/quality/formal.py": "24527412225e057817663982da36beb0119b98c051c411fb8a637179a1bb9380",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "verification/kani/controls/KANI-037-closure-before-duplicate.patch": "8084545cac28b51625a02d68439f9e977c7e15c3e82fc7f132c7b764a659f974",
@@ -112,10 +112,10 @@
       }
     }
   },
-  "inputs_sha256": "8dbf6c2c1c6207199dd687113f5917b47cf43a45f8226c7948566ce26852a2b0",
+  "inputs_sha256": "90c9c2394f0d524d0fd293b20c81bfd7cf3d5220a3130553fb881a1521aa589d",
   "run_on": {
     "dirty_tree": true,
-    "revision": "ea43bab1b49e200115fdb6f3bf92d31dbb6c41d7"
+    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
   },
   "schema": 2,
   "tools": {

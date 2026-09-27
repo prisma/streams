@@ -9,6 +9,7 @@
 # judges it (every result ok, the floor reached, each --exact name ran).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib/python.sh
 log=$1
 shift
 expect=()
@@ -23,4 +24,6 @@ fi
 shift
 mkdir -p "$(dirname "$log")"
 cargo test "$@" 2>&1 | tee "$log"
-python3 scripts/quality/tests_ran.py "$log" "${expect[@]}"
+# bash 3.2 (macOS /bin/bash) treats an empty "${expect[@]}" as unbound
+# under set -u; this form expands to nothing instead.
+python3 scripts/quality/tests_ran.py "$log" ${expect[@]+"${expect[@]}"}
