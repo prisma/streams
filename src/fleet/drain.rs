@@ -99,13 +99,20 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
                 if !standing.draining() {
                     standing.begin_draining();
                 }
-                track(state, &mut closing);
+                track(
+                    state
+                        .shards
+                        .engines_by_prefix()
+                        .into_iter()
+                        .map(|(prefix, engine)| (prefix, engine.shutdown_handle())),
+                    &mut closing,
+                );
                 let drained = ViewedBeat {
                     boot_id: state.runtime.identity.boot_id.clone(),
                     seq: standing.draining_from().unwrap_or(u64::MAX),
                 };
                 let mut pending = not_yet_excluded(&takers, instance, &drained);
-                pending.extend(still_held(state, &closing).await);
+                pending.extend(holdings(state, &closing).await.pending());
                 pending
             }
             Err(unreadable) => vec![unreadable],
@@ -117,7 +124,7 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
         if now >= deadline {
             return DrainOutcome::TimedOut { pending };
         }
-        tokio::time::sleep_until(deadline.min(now + POLL)).await;
+        tokio::time::sleep(POLL.min(deadline.saturating_duration_since(now))).await;
     }
 }
 
@@ -149,11 +156,12 @@ fn drainable(takers: &[&Heartbeat]) -> bool {
     !takers.is_empty() && takers.iter().all(|peer| peer.seq > 0)
 }
 
-/// Every engine this runtime holds now, added to those the drain waits on.
-fn track(state: &AppState, closing: &mut Vec<(String, EngineShutdown)>) {
-    for (prefix, engine) in state.shards.engines_by_prefix() {
-        if !closing.iter().any(|(held, _)| *held == prefix) {
-            closing.push((prefix, engine.shutdown_handle()));
+/// Adds each of `held` (a shard and its close handle) that the drain does
+/// not wait on yet to `closing`: once seen, a shard's close is waited on.
+fn track<H>(held: impl IntoIterator<Item = (String, H)>, closing: &mut Vec<(String, H)>) {
+    for (prefix, handle) in held {
+        if !closing.iter().any(|(tracked, _)| *tracked == prefix) {
+            closing.push((prefix, handle));
         }
     }
 }
@@ -186,32 +194,58 @@ fn not_yet_excluded(takers: &[&Heartbeat], instance: &str, drained: &ViewedBeat)
         .collect()
 }
 
-/// Each shard this runtime still holds or is opening, and each engine it
-/// held whose close has not settled or failed.
-async fn still_held(state: &AppState, closing: &[(String, EngineShutdown)]) -> Vec<String> {
-    let mut held: Vec<String> = state
-        .shards
-        .held_prefixes()
-        .into_iter()
-        .map(|prefix| format!("shard {prefix} still held"))
-        .collect();
-    let opening = state.shards.open_stats()["in_flight"].as_u64().unwrap_or(0);
-    if opening > 0 {
-        held.push(format!("{opening} shard opens in flight"));
-    }
+/// What this runtime still holds, as one observation: the shards it
+/// serves, its opens in flight, and how each close the drain waits on has
+/// settled (`None`: not yet).
+struct Holdings {
+    held: Vec<String>,
+    opening: u64,
+    closes: Vec<(String, Settled)>,
+}
+
+/// How a close has settled: `None` while it has not.
+type Settled = Option<Result<(), String>>;
+
+async fn holdings(state: &AppState, closing: &[(String, EngineShutdown)]) -> Holdings {
+    let mut closes = Vec::with_capacity(closing.len());
     for (prefix, engine) in closing {
-        match engine.settle(Duration::ZERO).await {
-            None => held.push(format!("shard {prefix} still closing")),
-            Some(Err(error)) => held.push(format!("shard {prefix} close failed: {error}")),
-            Some(Ok(())) => {}
-        }
+        closes.push((prefix.clone(), engine.settle(Duration::ZERO).await));
     }
-    held
+    Holdings {
+        held: state.shards.held_prefixes(),
+        opening: state.shards.open_stats()["in_flight"].as_u64().unwrap_or(0),
+        closes,
+    }
+}
+
+impl Holdings {
+    /// Each shard still held or opening, and each close unsettled or
+    /// failed: a failed close is not a handoff either.
+    fn pending(self) -> Vec<String> {
+        let mut pending: Vec<String> = self
+            .held
+            .into_iter()
+            .map(|prefix| format!("shard {prefix} still held"))
+            .collect();
+        if self.opening > 0 {
+            pending.push(format!("{} shard opens in flight", self.opening));
+        }
+        for (prefix, settled) in self.closes {
+            match settled {
+                None => pending.push(format!("shard {prefix} still closing")),
+                Some(Err(error)) => pending.push(format!("shard {prefix} close failed: {error}")),
+                Some(Ok(())) => {}
+            }
+        }
+        pending
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BUDGET, SUPERVISED, ViewedBeat, drainable, not_yet_excluded, takers};
+    use super::{
+        BUDGET, Holdings, SUPERVISED, ViewedBeat, drainable, not_yet_excluded, takers, track,
+    };
     use crate::fleet::Heartbeat;
     use std::time::Duration;
 
@@ -286,5 +320,48 @@ mod tests {
                 "streams-6 has not read this instance's drain"
             ]
         );
+    }
+
+    #[test]
+    fn a_shard_seen_once_has_its_close_waited_on_once() {
+        let mut closing = Vec::new();
+        track([("a".to_string(), 1), ("b".to_string(), 2)], &mut closing);
+        track([("a".to_string(), 3), ("c".to_string(), 4)], &mut closing);
+        assert_eq!(
+            closing,
+            [
+                ("a".to_string(), 1),
+                ("b".to_string(), 2),
+                ("c".to_string(), 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn anything_still_held_opening_or_closing_is_pending() {
+        let holdings = Holdings {
+            held: vec!["p1".into()],
+            opening: 2,
+            closes: vec![
+                ("p2".into(), None),
+                ("p3".into(), Some(Err("fenced write failed".into()))),
+                ("p4".into(), Some(Ok(()))),
+            ],
+        };
+        assert_eq!(
+            holdings.pending(),
+            [
+                "shard p1 still held",
+                "2 shard opens in flight",
+                "shard p2 still closing",
+                "shard p3 close failed: fenced write failed"
+            ]
+        );
+        let settled = Holdings {
+            held: Vec::new(),
+            opening: 0,
+            closes: vec![("p4".into(), Some(Ok(())))],
+        };
+        assert!(settled.pending().is_empty());
     }
 }
