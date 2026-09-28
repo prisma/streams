@@ -17,6 +17,7 @@
 //! deletion's stamp comes after it, so a slower, staler writer never moves
 //! it back.
 use super::{PersistedDescriptor, Registry, StreamDesc};
+use crate::tenant::TenantStreamRef;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 
@@ -65,13 +66,12 @@ fn close_instant(desc: &StreamDesc) -> Option<i64> {
     desc.logical_close_ms.or(desc.expires_at_ms)
 }
 
-fn debt_path(desc: &StreamDesc) -> ObjPath {
-    let sref = desc.sref();
+fn debt_path(sref: &TenantStreamRef, epoch: &str) -> ObjPath {
     ObjPath::from(format!(
         "{REPLACED_ROOT}{}/{}/{}.json",
         crate::crypto::hex(sref.project_id().as_bytes()),
         crate::crypto::hex(sref.name().as_str().as_bytes()),
-        crate::crypto::hex(desc.stream_epoch.as_bytes()),
+        crate::crypto::hex(epoch.as_bytes()),
     ))
 }
 
@@ -133,7 +133,7 @@ impl Registry {
         let Some(close_ms) = close_instant(dead) else {
             return Ok(());
         };
-        let path = debt_path(dead);
+        let path = debt_path(&dead.sref(), &dead.stream_epoch);
         for _ in 0..5 {
             let (mode, settled) = match self.read_debt(&path).await? {
                 Some((_, known)) if known.close_ms >= close_ms => return Ok(()),
@@ -222,5 +222,16 @@ impl Registry {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    /// The instant the closure debt of incarnation `epoch` of `sref` closes
+    /// its storage at, or `None` when no debt names that incarnation.
+    pub(crate) async fn replaced_close_ms(
+        &self,
+        sref: &TenantStreamRef,
+        epoch: &str,
+    ) -> Result<Option<i64>, object_store::Error> {
+        let debt = self.read_debt(&debt_path(sref, epoch)).await?;
+        Ok(debt.map(|(_, debt)| debt.close_ms))
     }
 }

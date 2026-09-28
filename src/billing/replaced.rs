@@ -4,9 +4,13 @@
 //! it owns, at the persisted instant the debt carries, exactly as the walk
 //! closes a terminal descriptor it can still find.
 use super::walk::{Pass, walk_engine_budgeted};
-use super::{AppState, WALK_CLOSE_SUBMITS, sweep_resident_budget, walk_settle};
+use super::{
+    AppState, SegmentBillingMetaV1, WALK_CLOSE_SUBMITS, sweep_resident_budget, walk_settle,
+};
 use crate::registry::StreamDesc;
 use crate::registry::replaced::DebtEntry;
+use crate::shard::ShardEngine;
+use crate::tenant::TenantStreamRef;
 use std::sync::Arc;
 
 /// Debts one sweep examines; the rest wait for the next sweep.
@@ -154,4 +158,41 @@ async fn settle_segment(
         walk_settle(state, &state.shards.prefix_for(&route)).await;
     }
     pass
+}
+
+/// The drain's close of a dirty row whose name no longer holds its
+/// incarnation (gone, or recreated under a new epoch). A recreation records
+/// the incarnation's closure debt before it replaces the descriptor, so the
+/// row closes at the instant the debt persisted, whichever closer meets it
+/// first; only a row no debt names closes at the drain's clock. `false`
+/// leaves the row dirty for the next round (a failed debt read or submit).
+pub(super) async fn close_replaced_row(
+    state: &Arc<AppState>,
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    row_ref: &TenantStreamRef,
+    meta: &SegmentBillingMetaV1,
+) -> bool {
+    let close_ms = match state
+        .registry
+        .replaced_close_ms(row_ref, &meta.stream_id)
+        .await
+    {
+        Ok(close_ms) => close_ms.unwrap_or_else(super::billing_now_ms),
+        Err(error) => {
+            tracing::warn!(
+                "closure-debt read failed for {} (row stays dirty): {error}",
+                meta.stream_name
+            );
+            return false;
+        }
+    };
+    if let Err(error) = engine.submit_billing_close(hash, close_ms).await {
+        tracing::warn!(
+            "billing close submit failed for {} (row stays dirty): {error}",
+            meta.stream_name
+        );
+        return false;
+    }
+    true
 }

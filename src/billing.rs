@@ -1000,15 +1000,9 @@ pub(crate) async fn drain_once(
                 }
                 Ok(_) if meta.owned_frame_bytes_current > 0 => {
                     // Name gone entirely, or recreated under a new
-                    // epoch: this incarnation is terminal either way.
-                    // No persisted stamp survives the replacement —
-                    // account to now (residual documented at the
-                    // tombstone walk).
-                    if let Err(e) = engine.submit_billing_close(hash, billing_now_ms()).await {
-                        tracing::warn!(
-                            "billing close submit failed for {} (row stays dirty): {e}",
-                            meta.stream_name
-                        );
+                    // epoch: this incarnation is terminal either way, and
+                    // closes at the instant its closure debt persisted.
+                    if !replaced::close_replaced_row(state, &engine, hash, &row_ref, &meta).await {
                         continue;
                     }
                 }
