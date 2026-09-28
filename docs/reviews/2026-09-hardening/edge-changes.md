@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
 | medium | 5 | 1 | 6 | 0 | 0 | 0 | 12 |
-| low | 6 | 2 | 8 | 9 | 10 | 4 | 39 |
-| **Total** | **16** | **4** | **17** | **9** | **10** | **4** | **60** |
+| low | 6 | 2 | 8 | 11 | 10 | 4 | 41 |
+| **Total** | **16** | **4** | **17** | **11** | **10** | **4** | **62** |
 
-60 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#60 have not been checked against their commits by an independent pass.
+62 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#62 have not been checked against their commits by an independent pass. #61 and #62 are item 40's first two steps, which the owner decided in the second review.
 
 ### Index
 
@@ -85,6 +85,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 58 | 7499ec19 | An append's first registry read that fails on the store answers retryable 503; a corrupt descriptor stays 500 | both | low | owner-directed (typed classification) |
 | 59 | 6328de31 | A usage month with a sign is refused as `invalid_month` | product | low | handoff item (NEXT-WORK §10) |
 | 60 | this record's commit | Segment lineage is ordered by allocation, not by wall clock, on every surface | both | high | owner-delegated ("use your own judgement") |
+| 61 | 764a964f | The heartbeat has its own task, and the ring drops a live instance whose controller stopped progressing | fleet-internal | low | owner decision (item 40) |
+| 62 | bc2c0c93 | A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it | fleet-internal | low | owner decision (item 40) |
 
 ## High risk (9)
 
@@ -481,7 +483,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** Medium: a status and code on an error case that raw clients may branch on changes (409 sealed becomes 503 seal_incomplete), as record #8 did for the append's refresh read (409 becomes 503). The earlier 409 was wrong, because the collection was not sealed. No code is new: seal_incomplete is already a raw append answer.
 - **Check against commit:** Not checked by an independent pass. **Ratified by the owner on 2026-09-25**, with one follow-up done in the same batch as #56/#57: a close resuming an owed final whose claim renewal cannot be written (only a registry read or write failure) answered 503 `internal`; it now answers 503 `seal_incomplete` like the rest of the close step (src/application/append/close.rs::install_intent; no dedicated test: the renewal's store failure needs an owed final whose operation matches the close's own).
 
-## Low risk (39)
+## Low risk (41)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1171,6 +1173,43 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Who is affected:** callers that send a signed month; they received an empty row, never another month's data.
 - **Pinning tests:** src/dst/tests/security_usage.rs::a_signed_month_is_refused_on_both_usage_routes (red: 200 for `2026-+9`); src/billing/tests.rs::month_math_round_trips.
 - **Risk reason:** low: only malformed input changes, from an empty 200 to the documented 400.
+- **Check against commit:** written with the change.
+
+### #61 (764a964f) — The heartbeat has its own task, and the ring drops a live instance whose controller stopped progressing
+
+- **Program item:** item 40, step 1 (owner decision, second review; NEXT-WORK §4)
+- **Surface:** fleet-internal
+- **Endpoint:** Coordination document `fleet/<instance>.json` (object store) and the ring every instance and the pilot router derive from the heartbeat set (`fleet::planning::active_members`, `src/bin/pilot/lb.rs::active_ring`). No HTTP endpoint.
+- **Condition:** (a) Every beat. (b) A fleet tick that does not publish an ownership view for 139 s while its process keeps running (a stuck controller, or every pass abandoned by its deadline or a failed required read). (c) A heartbeat PUT the store holds.
+- **Before:** The fleet tick published the heartbeat as its first step, so the heartbeat's period was the whole pass, and its age was the only ring input (member while < 30 s old, this instance always). (b) A stuck tick stopped the heartbeat, so after 30 s every ring dropped the instance. (c) A held or failing heartbeat PUT skipped the rest of the pass: the ring, peer table, yields, return-home, rebalancer and desired count stopped.
+- **After:** A Critical supervised task, `fleet-heartbeat`, publishes the heartbeat every 2 s regardless of the tick. Each beat adds `boot_id` and `progress_age_ms` (how long ago the tick last published its ownership view, measured on the publisher's monotonic clock). A candidate stays in the ring while its heartbeat is < 30 s old (this instance is exempt) and its progress age is < 139 s (3 x the 45 s pass deadline + 2 x the 2 s period). A heartbeat without `progress_age_ms` (an earlier version) counts as progressing. (b) The heartbeat keeps its cadence, and every ring, the instance's own included, drops it once its progress age reaches 139 s. (c) The tick runs its pass; only the next beat is delayed. The pilot router's ring mirror applies the same rule.
+- **Retry semantics:** None on any client surface. Indirectly, a stuck controller keeps its shards for up to 139 s instead of 30 s. The data plane of such an instance still serves; fencing, not heartbeat freshness, still prevents two writers.
+- **Who is affected:** Fleet peers, the pilot router and operators reading heartbeat documents (two new fields). Mixed-version rollouts: an earlier-version reader ignores the new fields and judges by `ts_ms` alone, so it can keep a stuck new-version instance in its ring (availability only; fencing holds).
+- **Pinning tests:**
+  - src/dst/tests/fleet_controller.rs::a_stuck_tick_keeps_its_heartbeat_but_not_its_progress
+  - src/dst/tests/fleet_controller.rs::a_held_heartbeat_does_not_stop_the_tick
+  - src/dst/tests/fleet_controller.rs::a_store_brownout_slows_the_tick_without_churning_the_ring
+  - src/fleet/planning.rs::tests (liveness, progress and fallback boundaries)
+  - src/bin/pilot/lb.rs::tests::the_mirror_drops_a_live_instance_whose_controller_stopped_progressing
+- **Risk reason:** low: fleet control plane only; no HTTP status, code or header changes. The progress deadline is derived from the pass budgets, so a brownout within them does not churn the ring (pinned by the two-instance brownout test).
+- **Check against commit:** written with the change.
+
+### #62 (bc2c0c93) — A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it
+
+- **Program item:** item 40, step 2
+- **Surface:** fleet-internal
+- **Endpoint:** `fleet/<instance>.json` and the ring (as #61). No HTTP endpoint.
+- **Condition:** (a) The runtime's readiness verdict fails: its task supervisor is stopping or lost a Critical loop, or its shard directory reports a cell failure, never opened a shard, or could not close one. (b) The runtime stops (a termination signal, or a Critical exit under the process root).
+- **Before:** (a) The instance stayed in every ring while its heartbeat was fresh; peers kept routing its shards to it while its `/health` answered 503. (b) The heartbeat stopped with the tick; peers kept the instance in their rings until its last heartbeat was 30 s old.
+- **After:** Each beat carries `withdrawn: <reason>` while the verdict fails, and every ring, the instance's own included, drops it at the next pass. When its tasks are cancelled, the heartbeat publishes one last beat, bounded by 3 s inside the ordered stop's 10 s join grace, that always carries `withdrawn`. Peers drop a stopping instance within one pass. The pilot router's mirror drops a withdrawn instance too.
+- **Retry semantics:** None on any client surface. Indirectly, peers take over a withdrawn or stopping instance's shards seconds after the event instead of after 30 s, so clients see `409 not_ring_owner` + `Streams-Replay-To` pointing at a live owner sooner.
+- **Who is affected:** Fleet peers, the pilot router and operators (one new field). A stop now takes up to 3 s longer when the store does not answer the last beat. Earlier-version readers ignore `withdrawn`.
+- **Pinning tests:**
+  - src/dst/tests/fleet_controller.rs::a_critical_loop_failure_withdraws_the_instance_from_every_ring
+  - src/dst/tests/fleet_controller.rs::a_stopping_runtime_publishes_its_withdrawal
+  - src/dst/tests/fleet_controller.rs::r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry (shutdown budget 4 s: the held heartbeat case ends in the bounded last beat)
+  - src/fleet/planning.rs::tests::a_withdrawn_instance_leaves_every_ring_itself_included
+- **Risk reason:** low: fleet control plane only. A withdrawn instance's shards move while it still runs, which fencing makes safe; a failed close keeps withdrawing the whole instance, as readiness already did.
 - **Check against commit:** written with the change.
 
 ## Discrepancies
