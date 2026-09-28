@@ -17,6 +17,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Multitenancy and authorization | `security_*`, `quota_enforcement`, `quota_read_volume` |
 | Accounting and admission | `billing_*`, `admission_*` |
 | Runtime ownership and recovery | `runtime_isolation`, `runtime_open_gate`, `runtime_retirement`, `runtime_sweep` |
+| Fleet coordination (heartbeat liveness, controller progress, ring view) | `fleet_controller` |
 
 `oracle_model` is registered under the reference-model owner
 (`dst::runtime::tests`). `fault_substrate` is registered under the object-store

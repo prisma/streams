@@ -82,6 +82,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::run",
+      "path": "src/fleet/heartbeat.rs",
+      "reason": "The heartbeat task selects between supervised cancellation and its beat timer, then between cancellation and its bounded publication; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::macro(proptest)",
       "path": "src/postings/validated/properties.rs",

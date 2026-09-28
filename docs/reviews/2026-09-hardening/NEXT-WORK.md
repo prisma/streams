@@ -261,6 +261,56 @@ heartbeat (must lose eligibility), critical-loop failure (instance-wide
 withdrawal via item 38), multi-instance drain (no concurrent writers; the
 drain timeout is reported as a timeout).
 
+**Progress (2026-09-28).** Step 1 landed: liveness and controller progress.
+- The heartbeat is its own Critical task, `fleet-heartbeat`
+  (`src/fleet/heartbeat.rs`), on a 2 s interval; the tick no longer
+  publishes. Each beat carries `boot_id` and `progress_age_ms`: how long
+  ago the tick last published its ownership view, measured on the
+  publisher's monotonic clock (a restore or a time step cannot move it).
+- The ring (`fleet::planning::active_members`) keeps a candidate only while
+  its heartbeat is < 30 s old (this instance is exempt: it is running) and
+  its progress age is below `PROGRESS_DEADLINE_MS` = 3 x 45 s pass deadline
+  + 2 x 2 s period = 139 s. A pass publishes after its reads and may spend
+  the rest of its deadline on moves, so two healthy publications can lie
+  two deadlines and a period apart (92 s); one pass abandoned at its
+  deadline adds a period and a deadline. The pilot's ring mirror applies
+  the same rule.
+- Tests: `a_stuck_tick_keeps_its_heartbeat_but_not_its_progress`,
+  `a_held_heartbeat_does_not_stop_the_tick`,
+  `a_store_brownout_slows_the_tick_without_churning_the_ring` (two
+  instances, 600 ms per store operation), planner boundary tests. r09's
+  heartbeat case now proves the heartbeat task cancels cooperatively
+  (re-pinned).
+
+**Remaining steps, with the Fable design review's findings (2026-09-28).**
+- Step 2, serving eligibility and instance-wide withdrawal. A Critical exit
+  under the process root cancels every task at once, so no later beat can
+  report `serving=false` (H1): the heartbeat task publishes one final,
+  bounded (~3 s, inside the 10 s join grace) withdrawing beat when it is
+  cancelled, and a two-rig DST shows the peer drops it within one pass, not
+  30 s. The instance-wide verdict comes from the task supervisor plus the
+  shard directory's engine-failure and never-opened reasons;
+  `ShardDirectory::unready_reason` must be split into that verdict and a
+  withdrawn-prefix list (M1). A stuck tick also leaves this instance
+  serving from a stale view; an expired view should withdraw it.
+- Step 3, scoped withdrawal for a failed close: not inside
+  `OwnershipService::effective_owner` (it has its own fingerprinted
+  contract) but as an `OwnershipView` method or as an override; return-home
+  must not hand the prefix back to its withdrawer; if every member
+  withdraws a prefix, withdrawals for it are ignored (M1).
+- Step 4, planned drain. Name arbitration by CAS on the heartbeat PUT, not
+  by comparing `boot_id` clocks (H2); a draining process yields and reports
+  `Superseded`. The drain bound must fit the deploy wrapper's 35 s SIGKILL
+  (`deploy/app-server/supervise.ts`) and arm the off-executor deadline at
+  drain start (H3). Completion is "every live peer's heartbeat lists me in
+  `excluded`" (peers echo their view, never a cross-host time comparison,
+  H4) and every retired engine settled (M3); the outcome is a typed
+  `DrainOutcome` (complete, timed out naming what was pending,
+  superseded). Hook: extract the signal-task spawn from `bootstrap::run`
+  and register a stop preface from `fleet::start_configured` (M5).
+  `/readyz` while draining is an edge decision (M8); COMPUTE-SPEC §5.2's
+  one-shard-at-a-time handoff needs amending or honouring.
+
 ---
 
 ## 5. F1: two different things carry this name

@@ -146,8 +146,14 @@ OWNERS = (
     owner('crypto_decrypt', 'src/crypto/decrypt.rs', 'crypto::'),
     owner('crypto_decrypt_tests', 'src/crypto/decrypt/tests.rs', 'crypto::'),
     owner('fleet_outbox', 'src/fleet/outbox.rs', 'fleet::'),
-    owner('fleet_repository', 'src/fleet/repository.rs', 'fleet::'),
+    # The repository hands each runtime its standing; only the rigs read a
+    # standing back through a published heartbeat.
+    owner('fleet_repository', 'src/fleet/repository.rs', 'fleet:: dst_tests::fleet_controller::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
+    owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    owner('fleet_standing', 'src/fleet/standing.rs', 'fleet::'),
+    # The beat loop and the tick's pressure reading are proven by the rigs.
+    owner('fleet_heartbeat', 'src/fleet/heartbeat.rs', 'fleet:: dst_tests::fleet_controller::'),
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),

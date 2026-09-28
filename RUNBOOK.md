@@ -346,10 +346,14 @@ was death (§3.6).
 
 ## 6. Fleet mode: how it actually works
 
-- **Heartbeats**: every 2 s each instance PUTs
+- **Heartbeats**: every 2 s each instance's `fleet-heartbeat` task PUTs
   `<FLEET_PREFIX>/fleet/<instance>.json`: rps, ack_p50_ms, cpu_pct
   (getrusage), inflight/inflight_peak, rss_mb, wal_put_p50/p99_ms,
-  out_inflight/peak, owned_shards. Staleness > 10 s = not live.
+  out_inflight/peak, owned_shards, boot_id, and `progress_age_ms` (how long
+  ago its fleet tick last published an ownership view). Staleness > 10 s =
+  not live. The ring drops an instance whose heartbeat is > 30 s old, or
+  whose `progress_age_ms` reached 139 s: a live process whose controller is
+  stuck.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across

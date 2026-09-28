@@ -2690,7 +2690,7 @@
     },
     {
       "category": "macro-dsl",
-      "count": 9,
+      "count": 8,
       "owner": "crate::start",
       "path": "src/fleet.rs",
       "syntax": "fleet_io"

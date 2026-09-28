@@ -17,6 +17,8 @@ struct HeldDocument {
     write: bool,
     entered: AtomicU64,
     gate: tokio::sync::Semaphore,
+    /// Every GET and PUT first waits this long: a store brownout.
+    delay: Duration,
 }
 impl std::fmt::Display for HeldDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,6 +26,19 @@ impl std::fmt::Display for HeldDocument {
     }
 }
 impl HeldDocument {
+    /// Parks every PUT (`write`) or GET of `path` until the test closes the
+    /// gate; every other operation passes at once.
+    fn held(inner: Arc<dyn ObjectStore>, path: &'static str, write: bool) -> Self {
+        HeldDocument {
+            inner,
+            path,
+            write,
+            entered: AtomicU64::new(0),
+            gate: tokio::sync::Semaphore::new(0),
+            delay: Duration::ZERO,
+        }
+    }
+
     #[expect(
         clippy::let_underscore_must_use,
         reason = "HeldDocument::enter; the permit is the park itself and is released the moment the test grants it; a held permit would keep the document entered after the test released it"
@@ -43,6 +58,7 @@ impl ObjectStore for HeldDocument {
         body: PutPayload,
         opts: object_store::PutOptions,
     ) -> object_store::Result<object_store::PutResult> {
+        tokio::time::sleep(self.delay).await;
         self.enter(path, true).await;
         self.inner.put_opts(path, body, opts).await
     }
@@ -58,6 +74,7 @@ impl ObjectStore for HeldDocument {
         path: &Path,
         opts: object_store::GetOptions,
     ) -> object_store::Result<object_store::GetResult> {
+        tokio::time::sleep(self.delay).await;
         self.enter(path, false).await;
         self.inner.get_opts(path, opts).await
     }
@@ -124,13 +141,7 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
             )
             .await
             .unwrap();
-        let store = Arc::new(HeldDocument {
-            inner: inner.clone(),
-            path,
-            write,
-            entered: AtomicU64::new(0),
-            gate: tokio::sync::Semaphore::new(0),
-        });
+        let store = Arc::new(HeldDocument::held(inner.clone(), path, write));
         let rig = http_rig_build(
             mem(),
             RigRuntime::first(),
@@ -157,7 +168,7 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
         })
         .await
         .expect("target storage operation must be entered");
-        if path != "fleet/desired.json" {
+        if path == "fleet/overrides.json" {
             assert_eq!(
                 rig.state.ownership.view(),
                 prior,
@@ -411,16 +422,6 @@ async fn seed_ring_of_two(store: &Arc<dyn ObjectStore>, entries: &[(&str, &str)]
     }
 }
 
-/// `instance`'s own heartbeat stamp. A tick publishes its heartbeat before
-/// its first read, so a newer stamp proves the previous tick ran to its end.
-async fn heartbeat_stamp(store: &Arc<dyn ObjectStore>, instance: &str) -> i64 {
-    let path = Path::from(format!("fleet/{instance}.json"));
-    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
-    serde_json::from_slice::<crate::fleet::Heartbeat>(&bytes)
-        .unwrap()
-        .ts_ms
-}
-
 /// Item 34: the ring ignores an override whose target is not a member
 /// (`effective_owner`, the router mirror), so that target must never open
 /// the shard: the open would fence the ring's real owner, the next tick
@@ -431,11 +432,17 @@ async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
     seed_ring_of_two(&inner, &[("00", "streams-9")]).await;
     peer_heartbeat(&inner, "streams-1", 0, 0.0).await;
     peer_heartbeat(&inner, "streams-2", 0, 0.0).await;
+    // Never parks (its gate is open): it counts the tick's overrides reads,
+    // one per pass.
+    let store = Arc::new(HeldDocument {
+        gate: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
+        ..HeldDocument::held(inner.clone(), "fleet/overrides.json", false)
+    });
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            fleet_store: Some(inner.clone()),
+            fleet_store: Some(store.clone()),
             instance: Some("streams-9".into()),
             ..Default::default()
         },
@@ -461,15 +468,15 @@ async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
         Some("streams-1"),
         "the ring ignores an override to a non-member"
     );
-    let published = heartbeat_stamp(&inner, "streams-9").await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while heartbeat_stamp(&inner, "streams-9").await <= published
-        && tokio::time::Instant::now() < deadline
-    {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The pass that published the ring has read the overrides; a later
+    // pass's read proves that pass, and its eager opens, ran to their end.
+    let published = store.entered.load(Ordering::SeqCst);
+    settled(Duration::from_secs(10), || {
+        store.entered.load(Ordering::SeqCst) > published
+    })
+    .await;
     assert!(
-        heartbeat_stamp(&inner, "streams-9").await > published,
+        store.entered.load(Ordering::SeqCst) > published,
         "a second tick must run"
     );
     assert_eq!(
@@ -595,4 +602,247 @@ async fn the_rings_owner_opens_every_overridden_shard_it_is_assigned_at_the_tick
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
+}
+
+/// A single-instance ring's coordination documents: desired count 1, no
+/// overrides.
+async fn seed_ring_of_one(store: &Arc<dyn ObjectStore>) {
+    for (path, body) in [
+        (
+            "fleet/desired.json",
+            r#"{"count":1,"epoch":1,"reason":"seed","computed_at_ms":0}"#,
+        ),
+        ("fleet/overrides.json", r#"{"entries":{}}"#),
+    ] {
+        store
+            .put(&Path::from(path), PutPayload::from(body))
+            .await
+            .unwrap();
+    }
+}
+
+/// Item 40, the owner's contract: process liveness and controller progress
+/// are separate facts. The heartbeat has its own supervised task, so a fleet
+/// tick stuck in a coordination read (a wedged controller, or a store that
+/// never answers that document) keeps publishing its liveness every beat,
+/// while the progress it publishes stays at the tick's last completed pass:
+/// peers see a live process whose controller is not progressing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
+    let inner = mem();
+    seed_ring_of_one(&inner).await;
+    let store = Arc::new(HeldDocument::held(
+        inner.clone(),
+        "fleet/overrides.json",
+        false,
+    ));
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(store.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    settled(Duration::from_secs(5), || {
+        store.entered.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    assert_eq!(
+        store.entered.load(Ordering::SeqCst),
+        1,
+        "the tick must reach the held overrides read"
+    );
+    let mut beats = std::collections::BTreeMap::new();
+    let window = tokio::time::Instant::now() + Duration::from_secs(7);
+    while tokio::time::Instant::now() < window {
+        if let Ok(result) = inner.get(&Path::from("fleet/streams-1.json")).await {
+            let doc: serde_json::Value =
+                serde_json::from_slice(&result.bytes().await.unwrap()).unwrap();
+            beats.insert(
+                doc["ts_ms"].as_i64().unwrap(),
+                doc["progress_age_ms"].as_i64(),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        store.entered.load(Ordering::SeqCst),
+        1,
+        "the tick must stay parked in the held read for the whole window"
+    );
+    assert!(
+        beats.len() >= 3,
+        "a stuck tick must not stop the heartbeat: {} distinct beats in 7 s",
+        beats.len()
+    );
+    let ages: Vec<i64> = beats
+        .values()
+        .map(|age| age.expect("every beat publishes its controller's progress"))
+        .collect();
+    let (first, last) = (beats.keys().next().unwrap(), beats.keys().last().unwrap());
+    assert!(
+        ages.windows(2).all(|pair| pair[0] < pair[1]),
+        "no pass completed, so the published progress age only grows: {beats:?}"
+    );
+    assert!(
+        ages[ages.len() - 1] - ages[0] + 250 >= last - first,
+        "the progress age must grow with the wall clock between beats: {beats:?}"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// Item 40: the heartbeat PUT is no longer the tick's first step, so a
+/// publication the store holds cannot keep the controller from reading its
+/// authority and publishing its ownership view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_heartbeat_does_not_stop_the_tick() {
+    let inner = mem();
+    seed_ring_of_one(&inner).await;
+    let store = Arc::new(HeldDocument::held(
+        inner.clone(),
+        "fleet/streams-1.json",
+        true,
+    ));
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(store.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    rig.state
+        .ownership
+        .set_view(vec!["prior-owner".into()], std::collections::HashMap::new());
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    settled(Duration::from_secs(5), || {
+        store.entered.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    let ring = vec!["streams-1".to_string()];
+    settled(Duration::from_secs(6), || {
+        rig.state.ownership.ring_active() == ring
+    })
+    .await;
+    assert_eq!(
+        store.entered.load(Ordering::SeqCst),
+        1,
+        "the heartbeat PUT must still be held"
+    );
+    assert_eq!(
+        rig.state.ownership.ring_active(),
+        ring,
+        "the tick must publish the ring while its heartbeat PUT is held"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(
+        report.aborted.is_empty(),
+        "a held heartbeat PUT must cancel cooperatively: {report:?}"
+    );
+    engine_shutdown(&rig.state).await;
+}
+
+/// Item 40, the owner's brownout requirement: a slow store stretches every
+/// fleet pass to several tick periods, and that is not a stuck controller.
+/// The heartbeat keeps its own cadence, the progress deadline is derived
+/// from the budgets a pass may use, so neither instance ever leaves the
+/// other's ring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
+    let inner = mem();
+    for (path, body) in [
+        (
+            "fleet/desired.json",
+            r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#,
+        ),
+        ("fleet/overrides.json", r#"{"entries":{}}"#),
+    ] {
+        inner
+            .put(&Path::from(path), PutPayload::from(body))
+            .await
+            .unwrap();
+    }
+    let store = Arc::new(HeldDocument {
+        delay: Duration::from_millis(600),
+        ..HeldDocument::held(inner.clone(), "", false)
+    });
+    let mut rigs = Vec::new();
+    for (incarnation, instance) in [(0, "streams-1"), (1, "streams-2")] {
+        let rig = http_rig_build(
+            mem(),
+            RigRuntime::incarnation(incarnation),
+            HttpRigOptions {
+                fleet_store: Some(store.clone()),
+                instance: Some(instance.into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(crate::fleet::start_configured(
+            rig.state.clone(),
+            &rig.tasks
+        ));
+        rigs.push(rig);
+    }
+    let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
+    let both = || {
+        rigs.iter()
+            .all(|rig| rig.state.ownership.ring_active() == ring)
+    };
+    settled(Duration::from_secs(25), both).await;
+    assert!(
+        both(),
+        "both instances must converge on the two-member ring"
+    );
+    let mut beats = std::collections::BTreeMap::new();
+    let window = tokio::time::Instant::now() + Duration::from_secs(12);
+    while tokio::time::Instant::now() < window {
+        assert!(both(), "a brownout must not churn the ring");
+        for instance in ["streams-1", "streams-2"] {
+            let path = Path::from(format!("fleet/{instance}.json"));
+            let bytes = inner.get(&path).await.unwrap().bytes().await.unwrap();
+            let beat: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            beats.insert(
+                (instance, beat["ts_ms"].as_i64()),
+                beat["progress_age_ms"].as_u64(),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for instance in ["streams-1", "streams-2"] {
+        let ages: Vec<Option<u64>> = beats
+            .iter()
+            .filter(|((name, _), _)| *name == instance)
+            .map(|(_, age)| *age)
+            .collect();
+        assert!(
+            ages.len() >= 5,
+            "{instance} must keep its heartbeat cadence through the brownout: {} beats in 12 s",
+            ages.len()
+        );
+        let passes = ages.windows(2).filter(|pair| pair[1] < pair[0]).count();
+        assert!(
+            passes >= 1,
+            "{instance}'s controller must keep completing passes: {ages:?}"
+        );
+    }
+    for rig in &rigs {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+        engine_shutdown(&rig.state).await;
+    }
 }

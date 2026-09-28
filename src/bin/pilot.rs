@@ -107,7 +107,8 @@ struct FleetView {
     /// Per-upstream-index: (rps, ack_p50_ms, live, cpu_pct) from heartbeats.
     heartbeats: Vec<(f64, f64, bool, f64)>,
     /// Ring active set (instance names): first `desired` ordinal instances
-    /// minus any heartbeat-dark >30 s (mirrors the servers' R2 view), with
+    /// minus any heartbeat-dark >30 s or no longer progressing (mirrors the
+    /// servers' R2 view), with
     /// an unfiltered fallback so a fully-asleep fleet still gets woken.
     active: Vec<String>,
     /// Shard bit-prefixes from the data namespace's topology.json.

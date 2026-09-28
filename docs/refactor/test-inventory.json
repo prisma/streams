@@ -566,6 +566,17 @@
     ]
   },
   {
+    "name": "a_held_heartbeat_does_not_stop_the_tick",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "01c7b4109f064b7f62966ea77437f1f27f82be053ddce95761909b793c6900e6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_hung_open_is_deadlined_and_its_late_engine_reaped",
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
@@ -1462,6 +1473,19 @@
     "scenarios": []
   },
   {
+    "name": "a_store_brownout_slows_the_tick_without_churning_the_ring",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "60bb1a1844a0863c8d8ddf6f4e9df6c12010e09df2902396733dae79d0a803b9",
+    "mechanisms": [],
+    "configuration": [
+      "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#,"
+    ],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1475,6 +1499,17 @@
     "scenarios": [
       "DUR-008"
     ]
+  },
+  {
+    "name": "a_stuck_tick_keeps_its_heartbeat_but_not_its_progress",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4db98539b11b08c904d53ae5588eef525b68d5804d854014c209733e9dd4b16b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
   },
   {
     "name": "a_superseded_close_cannot_write_or_close",
@@ -2002,7 +2037,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d19ee9a723eb3b46520dcff849a6fc745a0a63f28ab1f9bebd88c166e2894e2e",
+    "function_sha256": "6d117d600013cf2e42754bac93b89289f93e55703a3de23618409c1eeff5d7b4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -5533,7 +5568,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3d48ff56002fa435e755ab32813206fd2c76b840baeb231eb0353892c27c8a2a",
+    "function_sha256": "5cce8787011f78938aa59b7db924b0d5fba5b011d5447f2557ea8d857d9fc5f6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",

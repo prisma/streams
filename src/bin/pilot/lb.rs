@@ -287,7 +287,8 @@ fn overrides_of(o: &Value) -> HashMap<String, String> {
 }
 
 /// Every ordinal's heartbeat, as (rps, ack_p50_ms, live, cpu_pct) in the
-/// view plus its age in ms (i64::MAX when unreadable).
+/// view plus its ring age in ms (i64::MAX when unreadable, or when its
+/// controller stopped progressing).
 async fn poll_heartbeats(
     store: &Arc<dyn ObjectStore>,
     n_up: usize,
@@ -304,12 +305,20 @@ async fn poll_heartbeats(
     ages_ms
 }
 
+/// The controller progress the servers require of a ring member
+/// (`fleet::planning::PROGRESS_DEADLINE_MS`; the pilot does not link the
+/// server library).
+const PROGRESS_DEADLINE_MS: u64 = 139_000;
+
 fn heartbeat_entry(heartbeat: Option<&Value>, now_ms: i64) -> ((f64, f64, bool, f64), i64) {
     let Some(h) = heartbeat else {
         return ((0.0, 0.0, false, 0.0), i64::MAX);
     };
     let age = now_ms - h["ts_ms"].as_i64().unwrap_or(0);
     let live = age < 10_000;
+    // A live process whose controller stopped progressing has left every
+    // server's ring, so the mirror treats it as dark.
+    let progressing = h["progress_age_ms"].as_u64().unwrap_or(0) < PROGRESS_DEADLINE_MS;
     let gauge = |key: &str| {
         if live {
             h[key].as_f64().unwrap_or(0.0)
@@ -319,12 +328,13 @@ fn heartbeat_entry(heartbeat: Option<&Value>, now_ms: i64) -> ((f64, f64, bool, 
     };
     (
         (gauge("rps"), gauge("ack_p50_ms"), live, gauge("cpu_pct")),
-        age,
+        if progressing { age } else { i64::MAX },
     )
 }
 
 /// Ring active set: first `desired` ordinal instances minus the >30s-dark
-/// (same rule as the servers' R2 check). Fallback: everyone asleep →
+/// and those whose controller stopped progressing (the servers' rule,
+/// `fleet::planning::active_members`). Fallback: everyone asleep →
 /// unfiltered, so the first request wakes the ordinal owner.
 fn active_ring(d: usize, ages_ms: &[i64]) -> Vec<String> {
     let active: Vec<String> = (1..=d)
@@ -471,4 +481,22 @@ async fn serve(lb: Arc<Lb>) {
         .unwrap();
     println!("pilot lb listening on :{port}");
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_ring, heartbeat_entry};
+
+    #[test]
+    fn the_mirror_drops_a_live_instance_whose_controller_stopped_progressing() {
+        let ring_age =
+            |beat: &str| heartbeat_entry(Some(&serde_json::from_str(beat).unwrap()), 10_000).1;
+        let ages = [
+            ring_age(r#"{"ts_ms": 9000, "progress_age_ms": 138999}"#),
+            ring_age(r#"{"ts_ms": 9000, "progress_age_ms": 139000}"#),
+            ring_age(r#"{"ts_ms": 9000}"#),
+        ];
+        assert_eq!(ages, [1_000, i64::MAX, 1_000]);
+        assert_eq!(active_ring(3, &ages), ["streams-1", "streams-3"]);
+    }
 }

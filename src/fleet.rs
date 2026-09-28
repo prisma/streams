@@ -16,15 +16,20 @@ use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+mod heartbeat;
 mod outbox;
 mod planning;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
+mod standing;
 pub(crate) use repository::{FleetDocument, FleetRepository};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct Heartbeat {
     pub instance: String,
+    /// When this beat was published (publisher clock). Its own supervised
+    /// task publishes every beat, so its age is process liveness only
+    /// (`fleet::heartbeat`).
     pub ts_ms: i64,
     pub rps: f64,
     /// p50 of commit durable-wait over the last 15 s across owned shards
@@ -87,6 +92,17 @@ pub(crate) struct Heartbeat {
     /// platform (not the instance's peers) knows it otherwise.
     #[serde(default)]
     pub url: String,
+    /// The publishing runtime's boot identity: Compute reuses ordinal
+    /// names across deploys, so the name alone cannot tell two processes
+    /// apart.
+    #[serde(default)]
+    pub boot_id: String,
+    /// How long before this beat the publisher's fleet tick last completed
+    /// a pass (monotonic): controller progress, judged apart from liveness
+    /// (`planning::active_members`). Absent from a version whose tick
+    /// stamped the heartbeat itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_age_ms: Option<u64>,
 }
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
@@ -346,6 +362,11 @@ pub(crate) struct Desired {
 
 struct FleetCfg {
     instance: String,
+    /// The pause between passes, and the deadline that abandons a pass
+    /// (`planning::TICK_PERIOD`, `planning::PASS_DEADLINE`: the progress
+    /// deadline peers apply is derived from them).
+    tick: Duration,
+    pass_deadline: Duration,
     /// Legacy assumed-capacity dimension (req/s per instance). 0 disables
     /// it — measured CPU replaced it as the primary signal.
     capacity_rps: u64,
@@ -407,6 +428,8 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
         let cli = &state.config.cli;
         FleetCfg {
             instance: cli.instance_name.clone(),
+            tick: planning::TICK_PERIOD,
+            pass_deadline: planning::PASS_DEADLINE,
             capacity_rps: cli.scale_rps_capacity,
             edge_slots: cli.scale_edge_slots,
             target_util: (cli.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
@@ -420,6 +443,8 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
             max: cli.fleet_max,
         }
     };
+    state.fleet.standing().mark_progress();
+    heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
     start(state, cfg, tasks);
     true
 }
@@ -460,10 +485,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         // The ONE authority: the same repository the drainer and the
         // operator view read through.
         let repository = state.fleet.clone();
-        let mut ewma_rps = 0.0f64;
-        let mut last_ops = 0u64;
         let mut eager_after: Option<String> = None;
-        let mut last_tick = Instant::now();
         let mut below_since: Option<Instant> = None;
         let mut lat_breach_since: Option<Instant> = None;
         let mut cpu_breach_since: Option<Instant> = None;
@@ -473,8 +495,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         let mut last_move: Option<Instant> = None;
         let rebalance_lag_secs: u64 = state.config.fleet.rebalance_lag_secs;
         let rebalance_cooldown: u64 = state.config.fleet.rebalance_move_cooldown_secs;
-        let mut last_cpu = cpu_time_secs();
-        let mut ewma_cpu = 0.0f64;
         // (ring_active, overrides) as last observed — the parked-session
         // wake fires only on real ownership-view changes.
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
@@ -491,12 +511,12 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         'ticks: loop {
             tokio::select! {
                 _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                _ = tokio::time::sleep(cfg.tick) => {}
             }
             // This owner reads fresh authority each tick. Interrupted reads
             // publish nothing; interrupted CAS writes retain their document
             // and event outbox for authoritative retry on the next tick.
-            let pass_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+            let pass_deadline = tokio::time::Instant::now() + cfg.pass_deadline;
             macro_rules! fleet_io {
                 ($operation:expr) => {
                     tokio::select! {
@@ -507,87 +527,9 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     }
                 };
             }
-            let ops = state.admission.fleet_ops();
-            let dt = last_tick.elapsed().as_secs_f64().max(0.001);
-            last_tick = Instant::now();
-            let inst_rps = (ops - last_ops) as f64 / dt;
-            last_ops = ops;
-            ewma_rps = if ewma_rps == 0.0 {
-                inst_rps
-            } else {
-                ewma_rps * 0.6 + inst_rps * 0.4
-            };
-            let cpu_now = cpu_time_secs();
-            let inst_cpu = ((cpu_now - last_cpu) / dt * 100.0).max(0.0);
-            last_cpu = cpu_now;
-            ewma_cpu = if ewma_cpu == 0.0 {
-                inst_cpu
-            } else {
-                ewma_cpu * 0.6 + inst_cpu * 0.4
-            };
-
-            // 1. Heartbeat (single writer per object: plain PUT).
-            let (owned, ack_p50_ms, wedge_prefix, wedge_max_ms) = {
-                let shards: std::collections::HashMap<
-                    String,
-                    std::sync::Arc<crate::shard::ShardEngine>,
-                > = state.shards.engines_by_prefix().into_iter().collect();
-                let owned: Vec<String> = shards.keys().cloned().collect();
-                let (wedge_prefix, wedge_max_ms) = shards
-                    .iter()
-                    .map(|(p, e)| (p.clone(), e.wedge_ms()))
-                    .max_by_key(|(_, w)| *w)
-                    .unwrap_or((String::new(), 0));
-                let cutoff = now_ms() - 15_000;
-                let mut waits: Vec<u32> = Vec::new();
-                for eng in shards.values() {
-                    waits.extend(
-                        eng.timings
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .filter(|g| g.ts_ms >= cutoff)
-                            .map(|g| g.durable_wait_us),
-                    );
-                }
-                waits.sort_unstable();
-                let p50 = waits
-                    .get(waits.len() / 2)
-                    .map(|us| *us as f64 / 1000.0)
-                    .unwrap_or(0.0);
-                (
-                    owned,
-                    (p50 * 10.0).round() / 10.0,
-                    wedge_prefix,
-                    wedge_max_ms,
-                )
-            };
-            let (inflight_now, inflight_peak) = state.admission.swap_peak();
-            let (wal_put_p50_ms, wal_put_p99_ms, out_inflight, out_inflight_peak) =
-                crate::store_timing::heartbeat_summary();
-            let hb = Heartbeat {
-                instance: cfg.instance.clone(),
-                ts_ms: now_ms(),
-                rps: (ewma_rps * 10.0).round() / 10.0,
-                ack_p50_ms,
-                cpu_pct: (ewma_cpu * 10.0).round() / 10.0,
-                inflight: inflight_now,
-                inflight_peak,
-                rss_mb: (rss_bytes() as f64 / 1048576.0 * 10.0).round() / 10.0,
-                wal_put_p50_ms,
-                wal_put_p99_ms,
-                out_inflight,
-                out_inflight_peak,
-                owned_shards: owned,
-                draining: false,
-                absorb_lag_max_secs: state.runtime.usage.absorb_lag_max(),
-                wedge_max_ms,
-                url: state.config.fleet.self_url.clone(),
-            };
-            if let Err(e) = fleet_io!(repository.publish_heartbeat(&cfg.instance, &hb)) {
-                tracing::warn!("heartbeat put failed: {e}");
-                continue;
-            }
+            // 1. This instance's own pressure (its heartbeat is published
+            // by its own task, `fleet::heartbeat`).
+            let (wedge_prefix, wedge_max_ms, my_lag) = state.fleet_pressure();
 
             // 2. Live set + fleet load.
             let mut total_rps = 0.0f64;
@@ -596,8 +538,8 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             let mut live = 0u64;
             let mut max_loaded_p50 = 0.0f64;
             let mut max_loaded_cpu = 0.0f64;
-            let mut hb_age_ms: std::collections::HashMap<String, i64> =
-                std::collections::HashMap::new();
+            // Each heartbeat's liveness and controller-progress ages.
+            let mut hb_age_ms = std::collections::HashMap::new();
             // Fresh peers' load (cpu, absorb lag), for rebalance targets.
             let mut peer_load: std::collections::HashMap<String, (f64, u64)> =
                 std::collections::HashMap::new();
@@ -611,7 +553,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 Err(error) => { tracing::warn!(%error, "fleet snapshot deferred; ownership view retained"); continue; }
             };
             for other in heartbeats {
-                hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
+                hb_age_ms.insert(other.instance.clone(), other.ages(now_ms()));
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
                     let eff_lag = other
                         .absorb_lag_max_secs
@@ -748,9 +690,10 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             // Publish the ring's ACTIVE set for the R2 ownership check:
             // the first `desired` ordinal instances, dropping any that have
             // been heartbeat-dark >30 s (wedged — requests would have woken
-            // a merely-sleeping one). Self is always fresh (just wrote).
-            // Falls back to the unfiltered ordinal set if filtering empties
-            // it (bootstrap: everyone asleep, first request must land).
+            // a merely-sleeping one) or whose controller stopped completing
+            // passes (`planning::active_members`). Falls back to the
+            // unfiltered ordinal set if filtering empties it (bootstrap:
+            // everyone asleep, first request must land).
             let active = planning::active_members(cur_count, &cfg.instance, &hb_age_ms);
             {
                 // fleet/urls.json overrides heartbeat-published URLs: on
@@ -797,6 +740,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     // synchronous replacement cannot expose a mixed ring/map.
                     state.ownership.set_view(active.clone(), map);
                     state.peer.set_peers(peer_urls.clone());
+                    state.fleet.standing().mark_progress();
                 }
 
                 // Round-11.4: when the OWNERSHIP VIEW changed, wake
@@ -967,9 +911,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     }
                 }
 
-                let my_lag = hb
-                    .absorb_lag_max_secs
-                    .max((hb.wedge_max_ms / 1000).max(0) as u64);
                 lag_hot_ticks = if my_lag > rebalance_lag_secs {
                     lag_hot_ticks + 1
                 } else {

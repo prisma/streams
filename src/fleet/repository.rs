@@ -37,11 +37,22 @@ const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10
 #[derive(Clone, Default)]
 pub(crate) struct FleetRepository {
     store: Option<Arc<dyn ObjectStore>>,
+    /// What this runtime's heartbeat states beyond liveness. It lives with
+    /// the repository the heartbeat is published through, so each runtime
+    /// has its own.
+    standing: Arc<super::standing::Standing>,
 }
 
 impl FleetRepository {
     pub(crate) fn new(store: Option<Arc<dyn ObjectStore>>) -> Self {
-        Self { store }
+        Self {
+            store,
+            standing: Arc::default(),
+        }
+    }
+
+    pub(crate) fn standing(&self) -> &super::standing::Standing {
+        &self.standing
     }
 
     /// Whether this runtime participates in fleet coordination.
