@@ -35,7 +35,7 @@
 // wrapper then exits with the child's code whatever its policy: the platform
 // is stopping the instance, so the death is neither held nor served. A child
 // that has not exited FORWARD_GRACE_MS after the first forwarded signal
-// (streams-slate bounds its own stop at 110 s: a planned drain's 80 s and
+// (streams-slate bounds its own stop at 175 s: a planned drain's 145 s and
 // its 30 s ordered stop, plus up to 250 ms for its last line) is killed, and
 // the wrapper exits 137.
 
@@ -49,9 +49,9 @@ const READY_PROBE_MS = 250;
 const READY_UPTIME_MS = 60_000;
 /// How long a child may take to stop after a forwarded SIGTERM/SIGINT before
 /// the wrapper kills it: the binary's own stop bound (a fleet instance's
-/// planned drain, 80 s, then its 30 s ordered stop: `fleet::drain::SUPERVISED`
+/// planned drain, 145 s, then its 30 s ordered stop: `fleet::drain::SUPERVISED`
 /// and `PROCESS_STOP_DEADLINE`), its last line's 250 ms, and margin.
-const FORWARD_GRACE_MS = 115_000;
+const FORWARD_GRACE_MS = 180_000;
 
 export type DeathPolicy = {
   /// "exit": a ready child's death ends the wrapper too, so the platform

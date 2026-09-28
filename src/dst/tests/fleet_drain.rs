@@ -142,6 +142,20 @@ async fn a_planned_drain_hands_every_shard_to_its_peer_before_the_stop() {
         "the record the draining instance acknowledged is the peer's to serve: {}",
         String::from_utf8_lossy(&body)
     );
+    let json = [("content-type", "application/json")];
+    let append = format!("/v1/stream/{name}");
+    let refused = hreq(draining.addr, "POST", &append, &json, br#"[{"n":2}]"#)
+        .await
+        .0;
+    assert_eq!(
+        refused, 409,
+        "the drained instance refuses a write it no longer owns"
+    );
+    let (_, _, body) = hreq(peer.addr, "GET", &format!("{append}?offset=-1"), &[], b"").await;
+    assert!(
+        !String::from_utf8_lossy(&body).contains(r#""n":2"#),
+        "no write lands through the drained instance"
+    );
     for rig in [&draining, &peer] {
         assert!(
             rig.tasks
@@ -301,6 +315,11 @@ async fn a_requested_stop_drains_the_fleet_runtime_first() {
         "while it drains the instance serves and says it drains"
     );
     assert_eq!(peer.state.ownership.ring_active(), ["streams-2"]);
+    assert_eq!(
+        draining.state.fleet.standing().drain_outcome(),
+        Some(DrainOutcome::HandedOff),
+        "the drain the stop ran is recorded as a handoff"
+    );
     for rig in [&draining, &peer] {
         assert!(
             rig.tasks
@@ -371,4 +390,181 @@ async fn probe_health(addr: std::net::SocketAddr) -> Option<(u16, String)> {
     let status = response.split(' ').nth(1)?.parse().ok()?;
     let body = response.split("\r\n\r\n").nth(1)?.to_string();
     Some((status, body))
+}
+
+/// A fleet store the test rigs: reads of its `parked` document never answer
+/// (a tick parked on `fleet/overrides.json` never publishes a view, while
+/// the heartbeat keeps beating), and writes of its `pinned` document always
+/// lose their CAS (the count the test seeded holds).
+#[derive(Debug)]
+struct RiggedFleet {
+    inner: Arc<dyn ObjectStore>,
+    /// A coordination document whose reads never answer.
+    parked: Option<&'static str>,
+    /// A coordination document whose writes always lose their CAS.
+    pinned: Option<&'static str>,
+}
+
+impl std::fmt::Display for RiggedFleet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rigged-fleet")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for RiggedFleet {
+    async fn put_opts(
+        &self,
+        path: &Path,
+        body: PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        if self.pinned == Some(path.as_ref()) {
+            return Err(object_store::Error::Precondition {
+                path: path.to_string(),
+                source: "pinned by the test".into(),
+            });
+        }
+        self.inner.put_opts(path, body, opts).await
+    }
+    async fn put_multipart_opts(
+        &self,
+        path: &Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(path, opts).await
+    }
+    async fn get_opts(
+        &self,
+        path: &Path,
+        opts: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        if self.parked == Some(path.as_ref()) {
+            std::future::pending::<()>().await;
+        }
+        self.inner.get_opts(path, opts).await
+    }
+    fn delete_stream(
+        &self,
+        paths: futures_util::stream::BoxStream<'static, object_store::Result<Path>>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(paths)
+    }
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        opts: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, opts).await
+    }
+}
+
+/// The owner's contract, with a real second instance: a peer whose tick
+/// never publishes a view that read the drain (parked in a coordination
+/// read, heartbeat still live) keeps the drain from completing, and the
+/// drain says so when its budget runs out; it never reports a handoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_a_live_peer_never_reads_times_out_and_names_it() {
+    let (data, fleet) = (mem(), mem());
+    seed_ring(&fleet, 2).await;
+    let draining = start(&data, &fleet, 0, "streams-1").await;
+    let parked: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
+        inner: fleet.clone(),
+        parked: Some("fleet/overrides.json"),
+        pinned: None,
+    });
+    let peer = start(&data, &parked, 1, "streams-2").await;
+    let beating = tokio::time::timeout(Duration::from_secs(10), async {
+        while fleet
+            .head(&Path::from("fleet/streams-2.json"))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(beating, "the parked peer still publishes its heartbeat");
+    let outcome = drain(&draining.state, "streams-1", Duration::from_secs(3)).await;
+    let DrainOutcome::TimedOut { pending } = outcome else {
+        panic!("a drain its live peer never read must time out: {outcome:?}");
+    };
+    assert!(
+        pending.contains(&"streams-2 has not read this instance's drain".to_string()),
+        "{pending:?}"
+    );
+    for rig in [&draining, &peer] {
+        assert!(
+            rig.tasks
+                .shutdown(Duration::from_secs(5))
+                .await
+                .aborted
+                .is_empty()
+        );
+        engine_shutdown(&rig.state).await;
+    }
+}
+
+/// With a desired count of one, a live peer above the count cannot take the
+/// sole member's ownership (every ring falls back to it), so the drain says
+/// there is no peer at once, announces nothing, and does not wait out its
+/// budget. The count is pinned: the rigs report the whole test process's
+/// CPU, so a busy run would otherwise scale the fleet out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_member_within_the_count_has_no_peer_to_hand_off_to() {
+    let data = mem();
+    let seeded = mem();
+    seed_ring(&seeded, 1).await;
+    let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
+        inner: seeded,
+        parked: None,
+        pinned: Some("fleet/desired.json"),
+    });
+    let member = start(&data, &fleet, 0, "streams-1").await;
+    let above = start(&data, &fleet, 1, "streams-2").await;
+    let beating = tokio::time::timeout(Duration::from_secs(10), async {
+        while fleet
+            .head(&Path::from("fleet/streams-2.json"))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(beating, "the peer above the count publishes its heartbeat");
+    let started = tokio::time::Instant::now();
+    let outcome = drain(&member.state, "streams-1", Duration::from_secs(30)).await;
+    assert_eq!(outcome, DrainOutcome::NoPeer);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        !member.state.fleet.standing().draining(),
+        "nothing is announced"
+    );
+    for rig in [&member, &above] {
+        assert!(
+            rig.tasks
+                .shutdown(Duration::from_secs(5))
+                .await
+                .aborted
+                .is_empty()
+        );
+        engine_shutdown(&rig.state).await;
+    }
 }

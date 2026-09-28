@@ -246,6 +246,17 @@
     "scenarios": []
   },
   {
+    "name": "a_drain_a_live_peer_never_reads_times_out_and_names_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e8c37c48fd439eb8ae1089bcd1becd35eee4ee840eafe62d77c73d599d920854",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_drain_a_peer_never_acknowledges_times_out_and_names_it",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -858,7 +869,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a54954b8fe28e2cde3b4a96c2b43525980f9e307a2bccaec176f7785b0f4b7ea",
+    "function_sha256": "951f2d22b17f241d9d2e1588f35278bd12553529c6f9a8dc2dff69effcb8a61b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -1178,7 +1189,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "10d50ace63b475615d0bf5608b482593afeba766c472222fcfbd6928542666e0",
+    "function_sha256": "970f7a947e50ea349139298429dbaa25fb661ff3bec648718fea4270de818b24",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -1396,6 +1407,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_sole_member_within_the_count_has_no_peer_to_hand_off_to",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "946f802e4902a2fbffeee9032605d31d8d839b0e69f09ff6d86e86a245e23b71",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
     "scenarios": []
   },
   {

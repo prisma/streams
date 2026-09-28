@@ -384,6 +384,14 @@ impl ShardDirectory {
         self.inner.shards.read().unwrap().keys().cloned().collect()
     }
 
+    /// What this directory still owes a stop, as its gate sees it in one
+    /// observation: every engine whose close the gate still holds (settled
+    /// or not) and how many opens are still running, reaping ones included.
+    /// A planned drain waits on it (`fleet::drain`).
+    pub(crate) fn pending_work(&self) -> (Vec<crate::shard::EngineShutdown>, usize) {
+        self.inner.gate.shutdown_pending()
+    }
+
     /// Stops admission and observes the same retirement owners on every call.
     /// A deadline cancels observers only; late opens and database closes remain
     /// fenced in the gate until their owners establish termination. A close

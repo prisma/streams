@@ -58,16 +58,48 @@ impl super::Heartbeat {
 
 impl Candidacy {
     /// Whether a peer with this candidacy is a ring member: one that can
-    /// take ownership over, and whose own view a drain waits for.
+    /// take ownership over.
     pub(super) fn takes_ownership(&self) -> bool {
         member(false, Some(self))
     }
+
+    /// Whether this heartbeat is live on the reader's clock.
+    pub(super) fn live(&self) -> bool {
+        self.age_ms < RING_LIVENESS_MS
+    }
+
+    /// Whether a peer's views keep being published: its heartbeat is live
+    /// and its controller progresses. A drain waits for every such peer to
+    /// read it, whatever the peer's own standing.
+    pub(super) fn publishes_views(&self) -> bool {
+        self.live() && self.progress_age_ms < PROGRESS_DEADLINE_MS
+    }
+}
+
+/// Whether a ring of `count` keeps a member other than `instance`: another
+/// of the first `count` ordinals takes ownership. Without one, every ring
+/// falls back to the ordinal set, which holds `instance` again, so its
+/// ownership cannot be handed off.
+// mt-lint: allow(name-keyed-map): fleet instance -> its published candidacy
+pub(super) fn another_member(
+    count: u64,
+    instance: &str,
+    candidacies: &HashMap<String, Candidacy>,
+) -> bool {
+    (1..=count.max(1))
+        .map(|index| format!("streams-{index}"))
+        .any(|name| {
+            name != instance
+                && candidacies
+                    .get(&name)
+                    .is_some_and(Candidacy::takes_ownership)
+        })
 }
 
 /// The ring's active members: the first `count` ordinal instances that have
-/// neither withdrawn nor begun a planned drain, whose controller published a completed pass within the
-/// progress deadline of their latest heartbeat and, for a peer, whose
-/// heartbeat is still live.
+/// neither withdrawn nor begun a planned drain, whose controller published a
+/// completed pass within the progress deadline of their latest heartbeat
+/// and, for a peer, whose heartbeat is still live.
 /// This instance is running (its own tick is asking), so its liveness is not
 /// judged, and it is kept when the listing missed its heartbeat. Every
 /// instance judges every candidate, itself included, from the same
@@ -124,7 +156,10 @@ pub(super) fn trusted_urls(
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidacy, PROGRESS_DEADLINE_MS, RING_LIVENESS_MS, active_members};
+    use super::{
+        Candidacy, PROGRESS_DEADLINE_MS, RING_LIVENESS_MS, active_members, another_member,
+    };
+    use std::collections::HashMap;
 
     const NOW: i64 = 1_000_000;
 
@@ -225,6 +260,40 @@ mod tests {
         assert!(peer[0].1.takes_ownership());
         let this = [draining("streams-1"), beat("streams-2", 0, Some(0))];
         assert_eq!(ring(2, &this), ["streams-2"]);
+    }
+
+    #[test]
+    fn a_handoff_needs_another_member_within_the_count() {
+        let candidacies = |beats: &[(String, Candidacy)]| beats.iter().cloned().collect();
+        let two = candidacies(&[beat("streams-1", 0, Some(0)), beat("streams-2", 0, Some(0))]);
+        assert!(another_member(2, "streams-1", &two));
+        assert!(
+            !another_member(1, "streams-1", &two),
+            "streams-2 is above the count"
+        );
+        assert!(another_member(1, "streams-2", &two));
+        let stuck = candidacies(&[
+            beat("streams-1", 0, Some(0)),
+            beat("streams-2", 0, Some(PROGRESS_DEADLINE_MS)),
+        ]);
+        assert!(!another_member(2, "streams-1", &stuck));
+        assert!(!another_member(2, "streams-1", &HashMap::new()));
+    }
+
+    #[test]
+    fn a_live_progressing_peer_publishes_views_whatever_its_standing() {
+        let peer = |extra: &str| {
+            let document = format!(
+                r#"{{"instance":"streams-2","ts_ms":{NOW},"rps":0.0,"owned_shards":[],"draining":false{extra}}}"#
+            );
+            let heartbeat: crate::fleet::Heartbeat = serde_json::from_str(&document).unwrap();
+            heartbeat.candidacy(NOW)
+        };
+        assert!(peer("").publishes_views());
+        assert!(peer(r#","withdrawn":"x""#).publishes_views());
+        assert!(!peer(&format!(r#","progress_age_ms":{PROGRESS_DEADLINE_MS}"#)).publishes_views());
+        assert!(beat("streams-2", RING_LIVENESS_MS - 1, Some(0)).1.live());
+        assert!(!beat("streams-2", RING_LIVENESS_MS, Some(0)).1.live());
     }
 
     #[test]

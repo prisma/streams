@@ -24,6 +24,7 @@
 //! nothing. Every other supervisor's owner answers for its loops.
 
 mod drain;
+pub(crate) use drain::DRAINING;
 mod exits;
 mod refusal;
 mod shutdown;
@@ -221,6 +222,9 @@ struct Inner {
     preface: Mutex<Option<drain::StopPreface>>,
     /// Whether that drain has begun.
     draining: AtomicBool,
+    /// The critical loops that ended cooperatively during the drain (its
+    /// consequence, not a failure: the signal loop that asked for it).
+    drain_ended: Mutex<Vec<&'static str>>,
 }
 
 impl Inner {
@@ -389,6 +393,7 @@ impl TaskSupervisor {
                 armed: OnceLock::new(),
                 preface: Mutex::new(None),
                 draining: AtomicBool::new(false),
+                drain_ended: Mutex::new(Vec::new()),
             }),
         }
     }

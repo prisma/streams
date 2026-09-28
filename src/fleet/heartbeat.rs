@@ -128,14 +128,13 @@ pub(crate) struct Heartbeat {
     #[serde(default)]
     pub seq: u64,
     /// Which draining beat of each draining candidate the publisher's
-    /// current ownership view read. A peer's planned drain waits until
-    /// every taker's view read one of its draining beats and `ring` leaves
-    /// it out (`fleet::drain`). Empty from an earlier version.
+    /// current ownership view read and leaves out. A peer's planned drain
+    /// waits until every peer's view has read one of its draining beats and
+    /// left it out (`fleet::drain`). It holds only live draining candidates,
+    /// so it stays small whatever the fleet's size. Empty from an earlier
+    /// version.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub viewed: standing::Viewed,
-    /// The publisher's current ring view (its active members).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ring: Vec<String>,
 }
 
 /// Start this runtime's heartbeat beside its fleet tick.
@@ -273,10 +272,19 @@ impl Sampler {
             progress_age_ms: state.fleet.standing().progress_age_ms(),
             withdrawn: state.withdrawal(),
             seq,
-            viewed: state.fleet.standing().viewed(),
-            ring: state.ownership.ring_active(),
+            viewed: left_out(state),
         }
     }
+}
+
+/// The draining beats this runtime's published view read, less any whose
+/// instance the view still holds (the ring's fallback can): read before the
+/// ring, so a view published in between can only hold an entry back.
+fn left_out(state: &AppState) -> standing::Viewed {
+    let mut viewed = state.fleet.standing().viewed();
+    let ring = state.ownership.ring_active();
+    viewed.retain(|instance, _| !ring.contains(instance));
+    viewed
 }
 
 impl AppState {
@@ -285,9 +293,12 @@ impl AppState {
     /// or lost a Critical loop, or a shard directory that reports a cell
     /// failure, never opened a shard, or could not close one.
     fn withdrawal(&self) -> Option<String> {
-        self.tasks
-            .readiness_reason()
-            .or_else(|| self.shards.unready_reason())
+        let tasks = self.tasks.readiness_reason();
+        if tasks.as_deref() == Some(crate::tasks::DRAINING) {
+            // A cell failure says more than the drain that is under way.
+            return self.shards.unready_reason().or(tasks);
+        }
+        tasks.or_else(|| self.shards.unready_reason())
     }
 
     /// This runtime's own maintenance pressure as its rebalancer judges it

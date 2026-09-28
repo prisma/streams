@@ -356,23 +356,29 @@ was death (§3.6).
   it). Staleness > 10 s = not live. The ring drops an instance whose
   heartbeat is > 30 s old, whose `progress_age_ms` reached 139 s (a live
   process whose controller is stuck), that published `withdrawn`, or that
-  is `draining`. Each beat also carries its per-boot `seq`, the instance's
-  current `ring` view, and in `viewed` which draining beat of each draining
-  candidate that view read.
+  is `draining`. Each beat also carries its per-boot `seq` and, in
+  `viewed`, which draining beat of each live draining peer its current view
+  read and left out.
 - **Planned drain** (item 40): SIGTERM/SIGINT to a fleet instance first
   drains it, before any loop is cancelled. It publishes `draining` at once,
   keeps beating and serving (the listener stays open; `/health` answers
-  503 `runtime draining`, and the draining beat carries the same text in
-  `withdrawn`), yields its shards as every ring drops it, and waits until it holds
-  nothing (no shard, open or unsettled close) and every peer that takes
-  ownership has published a view that read its drain (`viewed`) and leaves
-  it out (`ring`). The log line names the outcome: `planned drain
-  complete`, `no peer can take ownership through a drain` (a fleet of one,
-  or a peer of an earlier version, which would keep routing here: then no
-  drain is announced), or `planned drain timed out` with what was pending.
-  The drain is bounded at 79 s and the process stop at 110 s in all; the
-  wrapper kills at 115 s. A second signal during the drain is not observed
-  (the signal loop ends after the first); SIGKILL stops at once.
+  503 `runtime draining`, or a critical loop's failure if one fails
+  meanwhile, and the draining beat's `withdrawn` says the same or names a
+  cell failure), yields its shards as every ring drops it, and waits until
+  it holds nothing (no shard, no open still running, no close unsettled)
+  and every peer whose views keep being published has published one that
+  read its drain and left it out (`viewed`). The log line names the
+  outcome: `planned drain complete`; `no peer can take ownership through a
+  drain` (no other ring member within the desired count, or a peer of an
+  earlier version, which would keep routing here: then nothing is
+  announced; or every peer went away during the drain); `planned drain
+  failed` (a shard close failed, which waiting cannot change); or `planned
+  drain timed out` with what was pending. The drain is bounded at 144 s,
+  derived from what it waits for, and the process stop at 175 s in all
+  (armed when the drain begins, even for a drain that ends at once); the
+  wrapper kills at 180 s. A second signal during the drain is not observed
+  (the signal loop ends after the first); SIGKILL stops at once, with no
+  ordered stop, as any kill does.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across

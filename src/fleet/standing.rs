@@ -42,6 +42,8 @@ pub(crate) struct Standing {
     read: Mutex<Viewed>,
     /// The draining beats the published ownership view was computed from.
     viewed: Mutex<Viewed>,
+    /// How this runtime's planned drain ended, once it has.
+    drained: Mutex<Option<super::drain::DrainOutcome>>,
 }
 
 impl Default for Standing {
@@ -55,6 +57,7 @@ impl Default for Standing {
             beat_now: tokio::sync::Notify::new(),
             read: Mutex::new(Viewed::new()),
             viewed: Mutex::new(Viewed::new()),
+            drained: Mutex::new(None),
         }
     }
 }
@@ -120,6 +123,19 @@ impl Standing {
     pub(crate) fn draining_from(&self) -> Option<u64> {
         let first = self.draining_from.load(Ordering::SeqCst);
         (first > 0).then_some(first)
+    }
+
+    /// The planned drain ended with `outcome`.
+    pub(crate) fn record_drain(&self, outcome: super::drain::DrainOutcome) {
+        if let Ok(mut drained) = self.drained.lock() {
+            *drained = Some(outcome);
+        }
+    }
+
+    /// How the planned drain ended; `None` before it has.
+    #[cfg(test)]
+    pub(crate) fn drain_outcome(&self) -> Option<super::drain::DrainOutcome> {
+        self.drained.lock().ok().and_then(|drained| drained.clone())
     }
 
     /// Resolves when a beat is asked for ahead of its period.

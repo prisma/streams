@@ -81,7 +81,7 @@ impl FleetRepository {
 
     /// Complete bounded populations. An incomplete/invalid snapshot is
     /// an error, so the controller retains its prior ownership view.
-    /// The fleet tick's read, and only the tick's: the draining beats it
+    /// The fleet tick's read, and only the tick's: the live draining beats it
     /// finds are recorded as those its next published view read
     /// (`Standing::mark_progress`). Every other reader peeks.
     pub(crate) async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
@@ -89,7 +89,7 @@ impl FleetRepository {
         self.standing.read(
             beats
                 .iter()
-                .filter(|beat| beat.draining)
+                .filter(|beat| beat.draining && beat.candidacy(crate::shard::now_ms()).live())
                 .map(|beat| {
                     let viewed = super::standing::ViewedBeat {
                         boot_id: beat.boot_id.clone(),
@@ -483,14 +483,20 @@ mod viewed_tests {
     use std::sync::Arc;
 
     /// A drain's completion rests on `viewed` naming the beats the published
-    /// view read, so only the tick's read may record them, and only draining
-    /// beats are recorded.
+    /// view read, so only the tick's read may record them, and only live
+    /// draining beats are recorded (a stopped instance's last document stays
+    /// behind, draining, for good).
     #[tokio::test]
     async fn only_the_ticks_read_records_the_draining_beats_its_view_read() {
         let store = Arc::new(InMemory::new());
-        for (instance, draining) in [("streams-1", true), ("streams-2", false)] {
+        let now = crate::shard::now_ms();
+        for (instance, draining, ts_ms) in [
+            ("streams-1", true, now),
+            ("streams-2", false, now),
+            ("streams-3", true, now - 60_000),
+        ] {
             let document = format!(
-                r#"{{"instance":"{instance}","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":{draining},"boot_id":"b","seq":7}}"#
+                r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"owned_shards":[],"draining":{draining},"boot_id":"b","seq":7}}"#
             );
             store
                 .put(
@@ -502,13 +508,13 @@ mod viewed_tests {
         }
         let repository = FleetRepository::new(Some(store));
         let (listed, _) = repository.operator_snapshot().await;
-        assert_eq!(listed.map(|beats| beats.len()), Some(2));
+        assert_eq!(listed.map(|beats| beats.len()), Some(3));
         repository.standing().mark_progress();
         assert!(
             repository.standing().viewed().is_empty(),
             "the operator's read is not what the tick's view read"
         );
-        assert_eq!(repository.read_heartbeat_set().await.unwrap().len(), 2);
+        assert_eq!(repository.read_heartbeat_set().await.unwrap().len(), 3);
         repository.standing().mark_progress();
         let viewed = repository.standing().viewed();
         assert_eq!(viewed.keys().collect::<Vec<_>>(), ["streams-1"]);

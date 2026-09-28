@@ -5,11 +5,18 @@
 //! While the drain runs every loop keeps running (the heartbeat, the fleet
 //! tick, the server that hands requests on), so the runtime keeps its
 //! liveness and its fencing until its ownership has moved.
-use super::{Inner, Policy, ShutdownRequest, TaskMonitor, TaskResult, TaskSupervisor, exits};
+use super::{
+    Inner, Phase, Policy, ShutdownRequest, TaskMonitor, TaskResult, TaskState, TaskSupervisor,
+    exits,
+};
+use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+/// What a draining runtime's readiness answers.
+pub(crate) const DRAINING: &str = "runtime draining";
 
 /// A registered drain: what it runs, and its bound.
 pub(super) struct StopPreface {
@@ -41,15 +48,32 @@ impl TaskSupervisor {
 }
 
 impl TaskMonitor {
-    /// Why this runtime does not serve, as its readiness answers it: a
-    /// runtime whose planned drain has begun is draining. Its signal loop
-    /// ended when it asked for the drain, so `unready_reason` alone would
-    /// name that loop as a terminated critical task.
+    /// Why this runtime does not serve, as its readiness answers it. While a
+    /// planned drain runs, the runtime is draining: the critical loops that
+    /// ended as its consequence (the signal loop that asked for it) are not
+    /// failures, but any other critical loop that ended still is, and once
+    /// the stop has begun the supervisor's own answer holds again.
     pub(crate) fn readiness_reason(&self) -> Option<String> {
-        if self.inner.upgrade().is_some_and(|inner| inner.draining()) {
-            return Some("runtime draining".into());
+        let Some(inner) = self.inner.upgrade() else {
+            return self.unready_reason();
+        };
+        if !inner.draining() || inner.phase() != Phase::Running {
+            return self.unready_reason();
         }
-        self.unready_reason()
+        let ended = inner
+            .drain_ended
+            .lock()
+            .map(|ended| ended.clone())
+            .unwrap_or_default();
+        let failed = inner.snapshot().into_iter().find(|task| {
+            task.policy == Policy::Critical
+                && task.state == TaskState::Exited
+                && !ended.contains(&task.name)
+        });
+        Some(failed.map_or_else(
+            || DRAINING.into(),
+            |task| format!("critical task terminated: {}", task.name),
+        ))
     }
 }
 
@@ -59,12 +83,19 @@ impl Inner {
         self.draining.load(Ordering::SeqCst)
     }
 
+    /// The critical loop `label` ended cooperatively during the drain.
+    pub(super) fn ended_by_drain(&self, label: &'static str) {
+        if let Ok(mut ended) = self.drain_ended.lock() {
+            ended.push(label);
+        }
+    }
+
     /// Begins the registered drain, once: arms a process root's stop bound,
     /// extended by the drain's budget, then runs the drain as a supervised
-    /// loop whose own end requests the stop. Returns whether the stop now
-    /// follows a drain. A request while the drain runs does not wait for it
-    /// (the stop follows at once), and a registry a panic poisoned runs no
-    /// drain.
+    /// loop whose own end requests the stop, even if the drain panics.
+    /// Returns whether the stop now follows a drain. A request while the
+    /// drain runs does not wait for it (the stop follows at once), and a
+    /// registry a panic poisoned runs no drain.
     pub(super) fn begin_drain(self: &Arc<Self>) -> bool {
         let taken = match self.preface.lock() {
             Ok(mut preface) => {
@@ -88,9 +119,15 @@ impl Inner {
         };
         supervisor
             .spawn("drain", Policy::Noncritical, move |cancel| async move {
+                let drained = std::panic::AssertUnwindSafe(tokio::time::timeout(budget, run()))
+                    .catch_unwind();
                 tokio::select! {
                     _ = cancel.cancelled() => {}
-                    _ = tokio::time::timeout(budget, run()) => {}
+                    ended = drained => {
+                        if ended.is_err() {
+                            tracing::error!("the planned drain panicked; stopping without it");
+                        }
+                    }
                 }
                 stop.stop_now();
                 TaskResult::Done
@@ -268,10 +305,74 @@ mod tests {
             monitor.unready_reason().as_deref(),
             Some("critical task terminated: signal")
         );
+        assert_eq!(monitor.readiness_reason().as_deref(), Some(super::DRAINING));
+        assert!(
+            supervisor
+                .shutdown(Duration::from_secs(1))
+                .await
+                .aborted
+                .is_empty()
+        );
+    }
+
+    /// A failing critical loop during a drain is still a failure on the
+    /// readiness answer, and once the stop begins the supervisor's own
+    /// answer holds again.
+    #[tokio::test]
+    async fn a_drain_does_not_mask_a_failure_or_the_stop() {
+        let supervisor = TaskSupervisor::new();
+        let monitor = supervisor.monitor();
+        let registered = supervisor
+            .set_stop_preface(Duration::from_secs(60), || Box::pin(std::future::pending()));
+        assert!(registered);
+        signal_loop(&supervisor);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while monitor.readiness_reason().is_none() && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(monitor.readiness_reason().as_deref(), Some(super::DRAINING));
+        let failing = supervisor.spawn("fleet", Policy::Critical, |_| async {
+            TaskResult::Failed("repository gone".into())
+        });
+        assert!(failing.is_ok());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while monitor.readiness_reason().as_deref() == Some(super::DRAINING)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::task::yield_now().await;
+        }
         assert_eq!(
             monitor.readiness_reason().as_deref(),
-            Some("runtime draining")
+            Some("critical task terminated: fleet")
         );
+        supervisor.shutdown_request().request();
+        assert_eq!(
+            monitor.readiness_reason().as_deref(),
+            Some("runtime shutting down"),
+            "a second request stops at once, and the stop outranks the drain"
+        );
+        assert!(
+            supervisor
+                .shutdown(Duration::from_secs(1))
+                .await
+                .aborted
+                .is_empty()
+        );
+    }
+
+    /// A drain that panics still ends in the stop it was run for.
+    #[tokio::test]
+    async fn a_panicking_drain_still_stops_the_runtime() {
+        let supervisor = TaskSupervisor::new();
+        polite(&supervisor, "http");
+        let drain = async {
+            panic!("drain panicked");
+        };
+        let registered =
+            supervisor.set_stop_preface(Duration::from_secs(60), move || Box::pin(drain));
+        assert!(registered);
+        supervisor.shutdown_request().request();
+        stop_requested(&supervisor, "a panicking drain still requests the stop").await;
         assert!(
             supervisor
                 .shutdown(Duration::from_secs(1))

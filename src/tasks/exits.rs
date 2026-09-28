@@ -132,19 +132,21 @@ impl ExitWatch {
         let Some(inner) = self.supervisor.upgrade() else {
             return;
         };
-        let Some(&deadline) = inner.root.get() else {
-            return;
-        };
         let exit = CriticalExit {
             name: self.label,
             outcome: outcome_of(ended),
         };
         // A planned drain lets loops end cooperatively (the signal loop ends
-        // right after it requests the drain); only a failure stops the
-        // runtime before the drain does.
+        // right after it requests the drain): recorded as its consequence on
+        // any supervisor, so readiness does not report it as a failure; only
+        // a failure stops a process root before the drain does.
         if inner.draining() && exit.outcome == TaskOutcome::Finished {
+            inner.ended_by_drain(self.label);
             return;
         }
+        let Some(&deadline) = inner.root.get() else {
+            return;
+        };
         if stop_on_exit(&inner.cancel_tx, &inner.stop_cause, exit.clone()) {
             // Bounded first: the log line below writes to stdout, which can
             // block, and a published stop must never be left unbounded.

@@ -326,28 +326,45 @@ Step 2 landed: serving eligibility and instance-wide withdrawal.
   made them stale; `ShutdownRequest::request` begins the drain instead, and
   the signal loop's own `Done` during a drain is its consequence while a
   failing Critical exit still stops at once. The process root's bound is
-  armed at drain start with the drain's bound added (H3): 79 s drain
-  (derived: draining beat's PUT 10 s, a peer pass 2 + 45 s, the peer's next
-  beat 2 + 10 s, shard closes 10 s), 1 s to record the outcome, 30 s stop:
-  110 s; the wrapper's forward grace is 115 s. Completion: this runtime
-  holds nothing (no shard, open in flight, or unsettled or failed close,
-  M3) and every peer that takes ownership has published a view that read
-  one of its draining beats (`viewed`, recorded by the tick's own
-  heartbeat-set read and promoted when it publishes the view; boot id and
-  beat sequence, no clocks, H4) and leaves it out (`ring`: the ordinal
-  fallback could otherwise keep it). A peer of an earlier version (no
-  `seq`) means no drain: `NoPeer` at once, never announced. Outcomes:
-  `HandedOff`, `NoPeer`, `TimedOut { pending }`. A first design that
-  trusted each peer's echoed ring alone reported `HandedOff` from a ring a
-  peer published before it had seen the drainer; the second Fable review
-  (2026-09-28) found eleven more gaps, all fixed or documented. Tests: `dst_tests::fleet_drain` (two instances
-  sharing data and fleet stores: the peer serves the acknowledged record;
-  a peer that never acknowledges times out and is named; a fleet of one;
-  the wiring through a requested stop) and `tasks::drain`.
+  armed at drain start with the drain's bound added (H3). The drain's
+  budget is derived from what it waits for, each at its own bound: its
+  draining beat (a PUT in flight, then its own: 2 x 10 s), a peer's view
+  that read it (a pass in flight, a period, the next pass: 45 + 2 + 45 s),
+  that view's echo (a beat in flight, a period, its own PUT: 10 + 2 + 10 s)
+  and shard closes (10 s): 144 s; 1 s to record the outcome; 30 s stop:
+  175 s in all; the wrapper's forward grace is 180 s. Completion: this
+  runtime holds nothing (no shard, no open still running, reaping ones
+  included, no unsettled close, all from the open gate's own observation,
+  M3) and every peer whose views keep being published (live and
+  progressing, whatever its own standing) has published one that read one
+  of its draining beats and left it out (`viewed`: recorded by the tick's
+  own heartbeat-set read, promoted when it publishes the view, and
+  filtered at each beat by the view's ring, so the ordinal fallback cannot
+  count; boot id and beat sequence, no clocks, H4; it holds live draining
+  peers only, so it stays small). The drain begins only when the ring would
+  keep another member within the desired count and no waited peer is of
+  an earlier version (no `seq`); otherwise `NoPeer` at once, never
+  announced. Outcomes: `HandedOff`, `NoPeer` (also when every peer went
+  away during the drain), `Failed` (a failed close, final), `TimedOut {
+  pending }` (also when the fleet cannot be read within a document deadline
+  before anything is announced). The outcome is logged from a pure,
+  tested report and recorded in the runtime's standing. While a drain runs,
+  readiness answers `runtime draining` unless another critical loop failed
+  (then that failure) or the stop has begun. A first design that trusted
+  each peer's echoed ring alone reported `HandedOff` from a ring a peer
+  published before it had seen the drainer; two Fable reviews (2026-09-28)
+  found the remaining gaps, all fixed or documented. Tests:
+  `dst_tests::fleet_drain` (two instances sharing data and fleet stores:
+  the peer serves the acknowledged record while the drain runs and a write
+  through the drained instance is refused; a live peer whose tick is parked
+  keeps the drain from completing and is named; a synthetic peer that
+  never reads; an earlier-version peer; a fleet of one; a sole member
+  within the count; the wiring through a signal-shaped stop, which records
+  `HandedOff`) and `tasks::drain`.
 - Still open, for the owner: name arbitration when a replacement process
   reuses an ordinal name (H2: CAS on the heartbeat PUT, a draining process
   yields as `Superseded`); whether Compute's own stop grace allows
-  the 110 s bound (D10); a second termination signal during a drain is not
+  the 175 s bound (D10); a second termination signal during a drain is not
   observed (the signal loop in `bootstrap::run` ends after the first);
   COMPUTE-SPEC §5.2's one-shard-at-a-time handoff
   (the drain yields every shard at its first excluded pass).

@@ -40,13 +40,14 @@ curl -s https://<domain>/
 
 A SIGTERM or SIGINT to the wrapper is forwarded to the binary, and the
 wrapper exits with the binary's code whatever its policy (the platform is
-stopping the instance). A binary still running 115 s after the first
-forwarded signal (streams-slate bounds its own stop at 110 s: a fleet
-instance's planned drain, at most 80 s, then its 30 s ordered stop, plus up
-to 250 ms for its last stderr line) is killed, and the wrapper exits 137.
+stopping the instance). A binary still running 180 s after the first
+forwarded signal (streams-slate bounds its own stop at 175 s: a fleet
+instance's planned drain, at most 145 s, then its 30 s ordered stop, plus
+up to 250 ms for its last stderr line) is killed, and the wrapper exits 137.
 Whether Compute itself waits that long between its stop signal and a kill
-is not verified (D10): a platform kill cuts the drain short, and the
-instance then stops as it did before item 40, fenced but not handed off.
+is not verified (D10): a platform kill ends the process at once, with no
+ordered stop (as any kill does), and whatever the drain had not yet handed
+off is taken over by fencing, as before item 40.
 
 A binary that dies after it was ready — it accepted on `$PORT` and had
 been up for 60 s, counted on the monotonic clock from the spawn (owner
