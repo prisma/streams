@@ -136,11 +136,10 @@ mod tests {
             !supervisor.cancellation().is_cancelled(),
             "the stop waits for the drain"
         );
-        assert_eq!(
-            finished.await,
-            Ok(false),
-            "every loop runs while the drain does"
-        );
+        let drained = tokio::time::timeout(Duration::from_secs(5), finished)
+            .await
+            .expect("a requested stop runs the registered drain");
+        assert_eq!(drained, Ok(false), "every loop runs while the drain does");
         stop_requested(&supervisor, "the drain's end requests the stop").await;
         let report = supervisor.shutdown(Duration::from_secs(1)).await;
         assert!(report.aborted.is_empty(), "{report:?}");
