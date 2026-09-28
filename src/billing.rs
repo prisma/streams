@@ -38,7 +38,6 @@ mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
 pub(crate) mod replaced;
 mod walk;
-use walk::walk_engine_budgeted;
 
 // ---------------------------------------------------------------------
 // Reserved system streams
@@ -1896,10 +1895,6 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// records a closure debt first, which `replaced::settle_replaced`
 /// settles after this walk (an idle expiry or a crash-lost delete close
 /// no longer leaves that incarnation's gauge open).
-#[expect(
-    clippy::excessive_nesting,
-    reason = "tombstone_walk; the walk nests the close stamp and the submit verdict inside each tombstone's engine branch; flattening them would separate the verdict from the tombstone it closes"
-)]
 pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.billing.usage_key().is_none() {
         return;
@@ -1929,67 +1924,12 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
             .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
             .unwrap_or_else(|| vec![0]);
         for sid in seg_ids {
-            let Some(route) = d.segment_route_by_id(sid) else {
-                tracing::error!(
-                    segment = sid,
-                    "billing sweep encountered missing validated segment"
-                );
+            // Foreign routes are skipped — every instance walks the same
+            // registry and closes what IT owns. A deferred segment STOPS
+            // the walk, which resumes AT THIS PAGE next sweep (R30).
+            if walk::walk_segment(state, d, sid, terminal).await == walk::Pass::Stop {
                 state.billing.set_sweep_walk_cursor(after.clone());
                 return;
-            };
-            // Foreign routes are skipped — every instance walks the
-            // same registry and closes what IT owns.
-            let budget = sweep_resident_budget(&state.config.billing);
-            let Ok((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
-                // Deferred (budget full) or open-contended: STOP and
-                // resume AT THIS PAGE next sweep — the continuation
-                // is what makes deferral fair instead of starving
-                // later terminal descriptors (R30).
-                state.billing.set_sweep_walk_cursor(after.clone());
-                return;
-            };
-            let hash = d.dynamic_segment_identity(sid);
-            let meta = match engine.load_billing_meta(hash).await {
-                Ok(Some(meta)) => meta,
-                Ok(None) => continue,
-                Err(error) => {
-                    tracing::error!("billing sweep metadata read failed: {error}");
-                    state.billing.set_sweep_walk_cursor(after.clone());
-                    return;
-                }
-            };
-            if meta.stream_id != d.stream_epoch {
-                continue;
-            }
-            if terminal && meta.owned_frame_bytes_current > 0 {
-                let close_ms = if d.deleted {
-                    d.logical_close_ms.unwrap_or_else(billing_now_ms)
-                } else {
-                    d.expires_at_ms.unwrap_or_else(billing_now_ms)
-                };
-                tracing::info!(
-                    "tombstone walk: closing {}#{sid} ({} B) at persisted {}",
-                    d.sref(),
-                    meta.owned_frame_bytes_current,
-                    close_ms
-                );
-                if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
-                    tracing::warn!("tombstone-walk close failed for {}: {e}", d.sref());
-                } else {
-                    WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            } else if retained
-                && !meta.retained_by_forks
-                && let Err(e) = engine.submit_billing_retained(hash, true).await
-            {
-                tracing::warn!("tombstone-walk retain failed for {}: {e}", d.sref());
-            }
-            if ours {
-                // Scheduler-opened for this descriptor: close it or
-                // keep it as an indebted budgeted resident NOW —
-                // never accumulate walk opens across the page.
-                let prefix = state.shards.prefix_for(&route);
-                walk_settle(state, &prefix).await;
             }
         }
     }
