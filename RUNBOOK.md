@@ -362,9 +362,8 @@ was death (§3.6).
 - **Planned drain** (item 40): SIGTERM/SIGINT to a fleet instance first
   drains it, before any loop is cancelled. It publishes `draining` at once,
   keeps beating and serving (the listener stays open; `/health` answers
-  503 `critical task terminated: signal`, and the draining beat carries the
-  same text in `withdrawn`, since the signal loop ends when it asks for the
-  drain), yields its shards as every ring drops it, and waits until it holds
+  503 `runtime draining`, and the draining beat carries the same text in
+  `withdrawn`), yields its shards as every ring drops it, and waits until it holds
   nothing (no shard, open or unsettled close) and every peer that takes
   ownership has published a view that read its drain (`viewed`) and leaves
   it out (`ring`). The log line names the outcome: `planned drain

@@ -19,7 +19,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | low | 6 | 2 | 8 | 11 | 10 | 4 | 41 |
 | **Total** | **16** | **4** | **17** | **11** | **10** | **5** | **63** |
 
-63 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#63 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 awaits the owner's ratification.
+63 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#63 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text.
 
 ### Index
 
@@ -87,7 +87,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 60 | this record's commit | Segment lineage is ordered by allocation, not by wall clock, on every surface | both | high | owner-delegated ("use your own judgement") |
 | 61 | 764a964f | The heartbeat has its own task, and the ring drops a live instance whose controller stopped progressing | fleet-internal | low | owner decision (item 40) |
 | 62 | bc2c0c93 | A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it | fleet-internal | low | owner decision (item 40) |
-| 63 | this record's commit | A fleet instance drains its ownership before a termination signal stops it | process | medium | owner decision (item 40); awaits ratification |
+| 63 | this record's commit | A fleet instance drains its ownership before a termination signal stops it | process | medium | owner decision (item 40); ratified 2026-09-28 |
 
 ## High risk (9)
 
@@ -491,7 +491,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Endpoint:** SIGTERM/SIGINT handling of a fleet instance (`FLEET_PREFIX` set): `ShutdownRequest::request` (src/tasks.rs), `tasks::drain`, `fleet::drain`; `GET /health` / `GET /readyz` during the drain; the deploy wrapper's forward grace (deploy/app-*/supervise.ts). `fleet/<instance>.json` gains `seq`, `ring`, `viewed` and a live `draining` flag.
 - **Condition:** a termination signal to a runtime whose fleet loop runs and whose every peer that takes ownership publishes `seq` (this version). A runtime without a fleet, a fleet of one, a fleet with a peer of an earlier version, and a stop a critical exit requested stop as before.
 - **Before:** The signal cancelled every loop at once: the listener closed (connections refused), the heartbeat stopped, and peers took the instance's shards over after its last beat (step 2: its last, withdrawing beat). The stop was bounded at 30 s; the wrapper killed the binary 35 s after forwarding the signal.
-- **After:** The runtime first drains, with every loop still running: it publishes `draining` at once (and `withdrawn: critical task terminated: signal`, since the signal loop has ended), keeps beating and serving, and its ring and every peer's drop it, so its tick yields its shards and their new owners open them (fencing it). The drain ends when it holds nothing and every peer that takes ownership has published a view that read its drain and leaves it out, or at 79 s; then it stops as before. While it drains, `/health` answers 503 `critical task terminated: signal`; requests for shards already moved answer 409 `not_ring_owner` + `Streams-Replay-To` the new owner; requests for shards it still holds are served. The log names the outcome: `planned drain complete`, `no peer can take ownership through a drain`, or `planned drain timed out` with what was pending. The whole stop is bounded at 110 s (armed when the drain begins); the wrapper kills at 115 s. During the drain a critical loop's `Done` does not stop the process; a failure stops it at once. A second signal during the drain is not observed.
+- **After:** The runtime first drains, with every loop still running: it publishes `draining` at once (and `withdrawn: runtime draining`), keeps beating and serving, and its ring and every peer's drop it, so its tick yields its shards and their new owners open them (fencing it). The drain ends when it holds nothing and every peer that takes ownership has published a view that read its drain and leaves it out, or at 79 s; then it stops as before. While it drains, `/health` answers 503 `runtime draining` (`TaskMonitor::readiness_reason`: the drain outranks the signal loop's own end); requests for shards already moved answer 409 `not_ring_owner` + `Streams-Replay-To` the new owner; requests for shards it still holds are served. The log names the outcome: `planned drain complete`, `no peer can take ownership through a drain`, or `planned drain timed out` with what was pending. The whole stop is bounded at 110 s (armed when the drain begins); the wrapper kills at 115 s. During the drain a critical loop's `Done` does not stop the process; a failure stops it at once. A second signal during the drain is not observed.
 - **Retry semantics:** Clients of a stopping instance see 409 + `Streams-Replay-To` (a live owner) or a served request, where they saw connection refused and then 409s pointing at the stopped instance until peers dropped it. `/health` is 503 for the drain's duration.
 - **Who is affected:** Platform and router: the listener stays open up to 80 s longer after a stop signal and reports 503. Operators: new log lines; a fleet instance's stop takes longer (typically a few seconds; up to 110 s), and a second Ctrl-C does not cut it short. Whether Compute's own stop grace allows 110 s is unverified (D10); a platform kill cuts the drain short and the instance stops as before item 40.
 - **Pinning tests:**
@@ -500,9 +500,9 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - src/dst/tests/fleet_drain.rs::a_peer_of_an_earlier_version_means_no_drain
   - src/dst/tests/fleet_drain.rs::a_fleet_of_one_has_no_peer_to_hand_off_to
   - src/dst/tests/fleet_drain.rs::a_requested_stop_drains_the_fleet_runtime_first
-  - src/tasks/drain.rs::tests (drain before cancel, budget, first registration, second request, process root)
+  - src/tasks/drain.rs::tests (drain before cancel, budget, first registration, second request, readiness while draining, process root)
   - src/fleet/repository.rs::viewed_tests::only_the_ticks_read_records_the_draining_beats_its_view_read
-- **Risk reason:** medium: it changes what a stopping instance answers and how long its stop takes. Fencing still rules out two writers; acknowledged data is durable before the ack, and the peer serves it while the drain runs (pinned). The `/health` text during the drain names the signal loop, which reads like a failure; a clearer text needs a change the growth ledger does not allow without the owner.
+- **Risk reason:** medium: it changes what a stopping instance answers and how long its stop takes. Fencing still rules out two writers; acknowledged data is durable before the ack, and the peer serves it while the drain runs (pinned). RATIFIED by the owner on 2026-09-28.
 - **Check against commit:** written with the change.
 
 ## Low risk (41)

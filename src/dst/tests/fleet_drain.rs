@@ -273,12 +273,16 @@ async fn a_requested_stop_drains_the_fleet_runtime_first() {
     let cancellation = draining.tasks.cancellation();
     let mut announced_while_running = false;
     let mut withdrawn = serde_json::Value::Null;
+    let mut health = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while !cancellation.is_cancelled() && tokio::time::Instant::now() < deadline {
         let beat = published(&fleet, "streams-1").await;
         if beat["draining"] == true {
             announced_while_running |= !cancellation.is_cancelled();
             withdrawn = beat["withdrawn"].clone();
+        }
+        if beat["draining"] == true && health.is_none() {
+            health = probe_health(draining.addr).await;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -290,7 +294,12 @@ async fn a_requested_stop_drains_the_fleet_runtime_first() {
         announced_while_running,
         "the drain is announced before any loop is cancelled"
     );
-    assert_eq!(withdrawn, "critical task terminated: signal");
+    assert_eq!(withdrawn, "runtime draining");
+    assert_eq!(
+        health,
+        Some((503, "runtime draining".to_string())),
+        "while it drains the instance serves and says it drains"
+    );
     assert_eq!(peer.state.ownership.ring_active(), ["streams-2"]);
     for rig in [&draining, &peer] {
         assert!(
@@ -347,4 +356,19 @@ fn signal_loop(rig: &HttpRig) {
         },
     );
     assert!(spawned.is_ok());
+}
+
+/// `GET /health` on `addr`: its status and body, or `None` when the
+/// listener has already closed (a drain that ended first).
+async fn probe_health(addr: std::net::SocketAddr) -> Option<(u16, String)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+    let request = format!("GET /health HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.ok()?;
+    let response = String::from_utf8_lossy(&response);
+    let status = response.split(' ').nth(1)?.parse().ok()?;
+    let body = response.split("\r\n\r\n").nth(1)?.to_string();
+    Some((status, body))
 }

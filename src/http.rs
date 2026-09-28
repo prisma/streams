@@ -1650,7 +1650,7 @@ async fn product_list_axum(
 /// opened synchronously at startup, so a 503 here means startup-order
 /// bugs or a lost OnceLock, and the platform should not route yet.
 async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
-    if let Some(reason) = state.tasks.unready_reason() {
+    if let Some(reason) = state.tasks.readiness_reason() {
         return (StatusCode::SERVICE_UNAVAILABLE, reason).into_response();
     }
     // Review item 6: in shadow/enforce an instance is NOT ready until

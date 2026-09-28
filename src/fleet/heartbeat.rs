@@ -286,7 +286,7 @@ impl AppState {
     /// failure, never opened a shard, or could not close one.
     fn withdrawal(&self) -> Option<String> {
         self.tasks
-            .unready_reason()
+            .readiness_reason()
             .or_else(|| self.shards.unready_reason())
     }
 

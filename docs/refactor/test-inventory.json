@@ -1178,7 +1178,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d31253c5c26d23d5d95904559fec623cecf370559866549ef7ad28bf30ad996c",
+    "function_sha256": "10d50ace63b475615d0bf5608b482593afeba766c472222fcfbd6928542666e0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",

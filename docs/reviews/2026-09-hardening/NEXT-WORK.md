@@ -314,6 +314,11 @@ Step 2 landed: serving eligibility and instance-wide withdrawal.
   as an `OwnershipView` method or an override; return-home must not hand
   the prefix back; if every member withdraws a prefix, ignore withdrawals
   for it (M1).
+- Edge record #63 (the drain's process-surface change) was RATIFIED by the
+  owner on 2026-09-28, with the clearer readiness text: `/health` answers
+  503 `runtime draining` during a drain (M8), through a new
+  `TaskMonitor::readiness_reason` rather than a grown `unready_reason`, so
+  no exception row was needed.
 - Step 4 landed: planned drain. A requested stop runs the drain the fleet
   registered (`TaskSupervisor::set_stop_preface`, `tasks::drain`) before
   any loop is cancelled. `bootstrap::run` is untouched: its approved growth
@@ -341,10 +346,7 @@ Step 2 landed: serving eligibility and instance-wide withdrawal.
   the wiring through a requested stop) and `tasks::drain`.
 - Still open, for the owner: name arbitration when a replacement process
   reuses an ordinal name (H2: CAS on the heartbeat PUT, a draining process
-  yields as `Superseded`); `/health` during a drain answers 503 `critical
-  task terminated: signal` (the signal loop ended when it asked for the
-  drain; a clearer text needs a change inside `TaskMonitor::unready_reason`,
-  whose contract would grow; M8); whether Compute's own stop grace allows
+  yields as `Superseded`); whether Compute's own stop grace allows
   the 110 s bound (D10); a second termination signal during a drain is not
   observed (the signal loop in `bootstrap::run` ends after the first);
   COMPUTE-SPEC §5.2's one-shard-at-a-time handoff

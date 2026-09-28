@@ -5,7 +5,7 @@
 //! While the drain runs every loop keeps running (the heartbeat, the fleet
 //! tick, the server that hands requests on), so the runtime keeps its
 //! liveness and its fencing until its ownership has moved.
-use super::{Inner, Policy, ShutdownRequest, TaskResult, TaskSupervisor, exits};
+use super::{Inner, Policy, ShutdownRequest, TaskMonitor, TaskResult, TaskSupervisor, exits};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -37,6 +37,19 @@ impl TaskSupervisor {
             run: Box::new(run),
         });
         true
+    }
+}
+
+impl TaskMonitor {
+    /// Why this runtime does not serve, as its readiness answers it: a
+    /// runtime whose planned drain has begun is draining. Its signal loop
+    /// ended when it asked for the drain, so `unready_reason` alone would
+    /// name that loop as a terminated critical task.
+    pub(crate) fn readiness_reason(&self) -> Option<String> {
+        if self.inner.upgrade().is_some_and(|inner| inner.draining()) {
+            return Some("runtime draining".into());
+        }
+        self.unready_reason()
     }
 }
 
@@ -232,6 +245,40 @@ mod tests {
             TaskResult::Done
         })
         .unwrap();
+    }
+
+    /// A draining runtime's readiness says it drains. Its signal loop has
+    /// ended (it asked for the drain), and `unready_reason` alone would name
+    /// that loop as a terminated critical task.
+    #[tokio::test]
+    async fn a_draining_runtime_answers_readiness_as_draining() {
+        let supervisor = TaskSupervisor::new();
+        polite(&supervisor, "http");
+        let monitor = supervisor.monitor();
+        assert_eq!(monitor.readiness_reason(), None);
+        let registered = supervisor
+            .set_stop_preface(Duration::from_secs(60), || Box::pin(std::future::pending()));
+        assert!(registered);
+        signal_loop(&supervisor);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while monitor.unready_reason().is_none() && tokio::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            monitor.unready_reason().as_deref(),
+            Some("critical task terminated: signal")
+        );
+        assert_eq!(
+            monitor.readiness_reason().as_deref(),
+            Some("runtime draining")
+        );
+        assert!(
+            supervisor
+                .shutdown(Duration::from_secs(1))
+                .await
+                .aborted
+                .is_empty()
+        );
     }
 
     /// On the process root: the drain's budget extends the stop's bound; the
