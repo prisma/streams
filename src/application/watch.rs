@@ -141,10 +141,9 @@ impl WatchService {
         if key_ids.is_empty() {
             return None;
         }
-        let journal = self.touch.journal(
-            descriptor.storage_hash(),
-            crate::crypto::RouteHash::for_stream(&descriptor.sref()),
-        );
+        let journal = self
+            .touch
+            .journal(descriptor.storage_hash(), descriptor.route_hash());
         Some(crate::shard::TouchFeed {
             journal,
             key_ids,
@@ -321,7 +320,7 @@ impl WatchService {
         // stream's route shard; anywhere else it is replayed to the owner.
         // Full resolution keeps the engine resident, so its close retires
         // this journal and wakes the waiter the moment the ring moves.
-        let stream_route = crate::crypto::RouteHash::for_stream(&descriptor.sref());
+        let stream_route = descriptor.route_hash();
         self.shards
             .resolve(&stream_route.0, crate::shard_directory::Adoption::External)
             .await

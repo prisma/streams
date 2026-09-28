@@ -369,10 +369,9 @@ async fn execute_once(
             .scaler
             .note_append(&desc, &seg, bytes as u64, entries.len() as u64);
     }
-    state.usage.link_storage(
-        crate::crypto::RouteHash::for_stream(&desc.sref()),
-        crate::crypto::SegmentHash(seg.identity),
-    );
+    state
+        .usage
+        .link_storage(desc.route_hash(), crate::crypto::SegmentHash(seg.identity));
     let kv = command.key_version;
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(seg.identity, key, epoch);

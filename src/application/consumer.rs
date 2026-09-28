@@ -416,7 +416,7 @@ async fn consumer_config_op(
     desc: &StreamDesc,
     op: crate::queue::QueueOp,
 ) -> Result<crate::queue::QueueOut, ConsumerFailure> {
-    let route = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
+    let route = desc.route_hash().0;
     let engine = state.engine_for(&route).await?;
     engine
         .submit_queue(desc.storage_hash(), op)

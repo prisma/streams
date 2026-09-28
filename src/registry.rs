@@ -402,6 +402,7 @@ pub(crate) struct SegRoute {
 pub(crate) struct StreamDesc {
     persisted: PersistedDescriptor,
     epoch: [u8; 16],
+    identity: identity::Identity,
 }
 
 impl std::ops::Deref for StreamDesc {
@@ -421,7 +422,12 @@ impl TryFrom<PersistedDescriptor> for StreamDesc {
     type Error = object_store::Error;
     fn try_from(persisted: PersistedDescriptor) -> Result<Self, Self::Error> {
         let epoch = validate_descriptor(&persisted)?;
-        Ok(Self { persisted, epoch })
+        let identity = identity::Identity::of(&persisted);
+        Ok(Self {
+            persisted,
+            epoch,
+            identity,
+        })
     }
 }
 
@@ -680,92 +686,6 @@ impl PersistedDescriptor {
     pub(crate) fn key_point(routing_key: &str) -> u64 {
         let h = crate::crypto::stream_hash(routing_key);
         u64::from_be_bytes(h[..8].try_into().expect("hash prefix"))
-    }
-
-    /// Engine identity of a dynamic-map segment (ROUTING-V3 §2).
-    /// Segment 0 is ALWAYS `storage_hash()` — that equality is what
-    /// makes every pre-v3 total-order stream already-migrated, with its
-    /// whole history as segment 0 and zero data movement.
-    pub(crate) fn dynamic_segment_identity(&self, seg_id: u32) -> [u8; 16] {
-        if seg_id == 0 {
-            return self.storage_hash();
-        }
-        crate::crypto::SegmentHash::for_segment(&self.sref(), &self.stream_epoch, seg_id).0
-    }
-
-    /// THE unified routing resolution (ROUTING-V3 §1-2): routing key →
-    /// the segment that owns it right now. Handles every layout:
-    ///
-    /// - descriptor-resident dynamic map (`segments: Some`) — the v3
-    ///   model; selects the live segment containing the key point;
-    /// - everything else — the implicit single-segment map: segment 0,
-    ///   identity `storage_hash()`, parent's shard route. This arm IS
-    ///   the old total-order behavior, unchanged to the byte.
-    ///
-    /// Legacy `scaling` descriptors are routed by their child-stream
-    /// machinery upstream of this call until PR4 folds them in; this
-    /// function never sees their parent appends.
-    /// The physical shard route of one segment: its persisted
-    /// route_hash when assigned (split children get real, independent
-    /// routes — review blocker 1: a split must add capacity, not just
-    /// lineage), the shard-prefix hash for prefix-pinned segments, and
-    /// the parent stream route for the implicit/seg-0 case.
-    pub(crate) fn segment_route(&self, seg: &crate::segmap::SegmentDesc) -> [u8; 16] {
-        if seg.route_hash != [0u8; 16] {
-            seg.route_hash
-        } else if seg.shard_prefix.is_empty() {
-            crate::crypto::RouteHash::for_stream(&self.sref()).0
-        } else {
-            crate::crypto::stream_hash(&seg.shard_prefix)
-        }
-    }
-
-    /// Unknown explicit segments have no routing authority. The parent
-    /// route belongs only to the absent-map implicit segment zero.
-    pub(crate) fn segment_route_by_id(&self, seg_id: u32) -> Option<[u8; 16]> {
-        match &self.segments {
-            Some(map) => map.get(seg_id).map(|segment| self.segment_route(segment)),
-            None if seg_id == 0 => Some(crate::crypto::RouteHash::for_stream(&self.sref()).0),
-            None => None,
-        }
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "PersistedDescriptor::resolve_segment; the first eight bytes of a sixteen-byte hash always form a u64 prefix; a fallible conversion would add an error path no input can reach"
-    )]
-    pub(crate) fn resolve_segment(&self, routing_key: &str) -> SegRoute {
-        let parent_route = crate::crypto::RouteHash::for_stream(&self.sref()).0;
-        let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
-        let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
-        if let Some(map) = &self.segments {
-            // The live cover, or for a sealed leaf the newest sealed one
-            // (SegmentMap::route), so the caller's refresh path can heal.
-            if let Some(seg) = map.route(point) {
-                let shard_route = self.segment_route(seg);
-                return SegRoute {
-                    seg_id: seg.seg_id,
-                    identity: self.dynamic_segment_identity(seg.seg_id),
-                    shard_route,
-                    sealed: !seg.is_live(),
-                    point,
-                    key_hash,
-                    lo: seg.lo,
-                    hi: seg.hi,
-                };
-            }
-            unreachable!("validated explicit topology covers every routing point");
-        }
-        SegRoute {
-            seg_id: 0,
-            identity: self.storage_hash(),
-            shard_route: parent_route,
-            sealed: false,
-            point,
-            key_hash,
-            lo: 0,
-            hi: crate::segmap::KEYSPACE_END,
-        }
     }
 }
 
@@ -1429,6 +1349,7 @@ mod catalog;
 #[cfg(test)]
 mod failpoints;
 pub(crate) mod fork_debt;
+mod identity;
 pub(crate) mod replaced;
 #[cfg(test)]
 mod resolution_tests;

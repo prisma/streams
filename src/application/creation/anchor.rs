@@ -25,11 +25,7 @@ pub(super) async fn install(
         && created
     {
         if let Err(e) = engine
-            .seed_fork_tail(
-                hash,
-                crate::crypto::RouteHash::for_stream(&desc.sref()).0,
-                fc.boundary,
-            )
+            .seed_fork_tail(hash, desc.route_hash().0, fc.boundary)
             .await
         {
             return Err(CreationError::new(

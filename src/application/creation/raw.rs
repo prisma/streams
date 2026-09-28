@@ -89,10 +89,7 @@ impl CreationService {
         // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
         // router can compute placement without knowing the stream epoch; the
         // record keyspace keeps using storage/segment hashes.
-        let engine = match state
-            .resolve(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
-            .await
-        {
+        let engine = match state.resolve(&desc.route_hash().0).await {
             Ok(e) => e,
             Err(r) => return Err(r),
         };

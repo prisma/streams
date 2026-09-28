@@ -462,7 +462,7 @@ async fn resume_incarnation(
             if d.sealed || d.sealing.is_some() {
                 return Mutation::Decline(false);
             }
-            let Some(low_route) = d.segment_route_by_id(seg_id) else {
+            let Some(low_route) = current.segment_route_by_id(seg_id) else {
                 return Mutation::Decline(false);
             };
             let stream = d.sref();
@@ -582,7 +582,7 @@ async fn resume_merge(
             if d.sealed || d.sealing.is_some() {
                 return Mutation::Decline(false);
             }
-            let Some(child_route) = d.segment_route_by_id(a_id) else {
+            let Some(child_route) = current.segment_route_by_id(a_id) else {
                 return Mutation::Decline(false);
             };
             let Some(map) = d

@@ -96,7 +96,7 @@ pub(super) async fn seed(
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash,
-            route: crate::crypto::RouteHash::for_stream(&desc.sref()).0,
+            route: desc.route_hash().0,
             entries,
             routing_key: String::new(),
             key_hash: crate::crypto::stream_hash(""),
@@ -126,10 +126,7 @@ pub(super) async fn seed(
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
-            usage: state
-                .runtime
-                .usage
-                .counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0),
+            usage: state.runtime.usage.counters(&desc.route_hash().0),
             seal_gen: None,
             billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
                 std::sync::Arc::new(crate::billing::BillingRef {

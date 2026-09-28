@@ -47,8 +47,8 @@ stream-hash	src/product.rs	key_hash: crate::crypto::stream_hash(routing_key),
 stream-hash	src/product/read_cursor.rs	key_hash: crate::crypto::stream_hash(self.routing_key),
 stream-hash	src/product/read_cursor.rs	let key_hash = crate::crypto::stream_hash(self.routing_key);
 stream-hash	src/registry.rs	/// is an ordinary key at stream_hash("")'s position.
-stream-hash	src/registry.rs	crate::crypto::stream_hash(&seg.shard_prefix)
 stream-hash	src/registry.rs	let h = crate::crypto::stream_hash(routing_key);
+stream-hash	src/registry/identity.rs	crate::crypto::stream_hash(&seg.shard_prefix)
 stream-hash	src/registry/resolution_tests.rs	assert_eq!(r.shard_route, stream_hash("shard-07"));
 stream-hash	src/registry/resolution_tests.rs	assert_ne!(r.shard_route, stream_hash("t"));
 stream-hash	src/rollup.rs	crate::crypto::hex(&crate::crypto::stream_hash(name))
