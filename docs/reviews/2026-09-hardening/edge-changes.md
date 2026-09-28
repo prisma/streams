@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
 | medium | 5 | 1 | 6 | 0 | 0 | 1 | 13 |
-| low | 6 | 2 | 8 | 11 | 10 | 4 | 41 |
-| **Total** | **16** | **4** | **17** | **11** | **10** | **5** | **63** |
+| low | 7 | 2 | 8 | 11 | 10 | 4 | 42 |
+| **Total** | **17** | **4** | **17** | **11** | **10** | **5** | **64** |
 
-63 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#63 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record).
+64 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#64 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54 and awaits the owner's ratification.
 
 ### Index
 
@@ -88,6 +88,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 61 | 764a964f | The heartbeat has its own task, and the ring drops a live instance whose controller stopped progressing | fleet-internal | low | owner decision (item 40) |
 | 62 | bc2c0c93 | A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it | fleet-internal | low | owner decision (item 40) |
 | 63 | this record's commit | A fleet instance drains its ownership before a termination signal stops it | process | medium | owner decision (item 40); ratified 2026-09-28 |
+| 64 | this record's commit | A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable | product | low | owner direction (#54, item 3); awaits ratification |
 
 ## High risk (9)
 
@@ -508,7 +509,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: it changes what a stopping instance answers and how long its stop takes. Fencing still rules out two writers; acknowledged data is durable before the ack, and the peer serves it while the drain runs, and a write through the drained instance is refused (pinned). RATIFIED by the owner on 2026-09-28. AMENDED after ratification, following a second adversarial review: the drain's bound became 144 s (derived; it was 79 s), the whole stop 175 s (was 110 s) and the wrapper's grace 180 s (was 115 s); the drain now also ends at once when no other member within the desired count exists, reports `failed` for a failed close, and the heartbeat's ring echo was dropped for a bounded `viewed`.
 - **Check against commit:** written with the change.
 
-## Low risk (41)
+## Low risk (42)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1236,6 +1237,21 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/dst/tests/fleet_controller.rs::r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry (shutdown budget 4 s: the held heartbeat case ends in the bounded last beat)
   - src/fleet/planning.rs::tests::a_withdrawn_instance_leaves_every_ring_itself_included
 - **Risk reason:** low: fleet control plane only. A withdrawn instance's shards move while it still runs, which fencing makes safe; a failed close keeps withdrawing the whole instance, as readiness already did.
+- **Check against commit:** written with the change.
+
+### #64 (this record's commit) — A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable
+
+- **Program item:** NEXT-WORK item 3's remainder, the owner's direction when ratifying #54 ("typed error classification and its own regression")
+- **Surface:** product
+- **Endpoint:** `GET /v1/streams/{name}` (`product_metadata`), `GET /v1/streams/{name}:scan` (`product_scan`), `POST /v1/streams/{name}/records` (`product_append_inner`'s own read), `GET /v1/streams/{name}/usage[/current]` (`product_usage`). Not yet: `POST /v1/streams/{name}:seal` (`product_seal`) and `GET /v1/streams/{name}/records` (`product_read`), whose exception scopes carry exact growth rows that only the owner can re-approve; they still answer as before.
+- **Condition:** The handler's own descriptor read fails: on the store, or because the stored descriptor does not decode or validate.
+- **Before:** Both answered 500 `internal` with `retryable: true` and the store's error text. The SDK retries only 429 and 503, so a store blip was not retried, while corruption, which a retry reads again, was marked retryable.
+- **After:** A store failure answers 503 `temporarily_unavailable`, `retryable: true`, `retry-after: 1`, with a generic message; nothing was read or written for the request. Corruption (`registry::cache::is_corrupt_descriptor`, as #58) answers 500 `internal`, `retryable: false`. The collection listing, the fleet-internal receivers, `:seal` and the keyed read are unchanged.
+- **Retry semantics:** Clients and the SDK now retry a transient registry read on these routes after 1 s; they no longer retry corruption.
+- **Who is affected:** Product clients during store blips (fewer surfaced errors) and operators (a corrupt descriptor is now a final 500 on every route, as it already was for appends).
+- **Pinning tests:**
+  - src/dst/tests/product_descriptor_reads.rs::a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_is_not (red before: `GET /v1/streams/{name}` answered `(500, "internal", true, None)`)
+- **Risk reason:** low: only error answers change, toward the classification the append path already uses.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

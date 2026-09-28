@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 
+use super::internal::DescriptorReadAnswer;
 use super::{
     READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES, SCAN_TTL_MS, debit_read_bytes, perr, product_key,
     q_num, render_product_read_failure, strict_query,
@@ -65,15 +66,7 @@ pub(super) async fn product_scan(
                 false,
             );
         }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return e.descriptor_read_answer(),
     };
     let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),

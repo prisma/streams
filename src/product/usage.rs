@@ -1,5 +1,6 @@
 //! The customer usage API (docs/OBSERVABILITY-BILLING.md §10): the per-stream
 //! and per-project usage answers, read from the rollup with point reads.
+use super::internal::DescriptorReadAnswer;
 use super::*;
 
 // ---- customer usage API (docs/OBSERVABILITY-BILLING.md §10) ----------
@@ -158,15 +159,7 @@ pub(super) async fn product_usage(
                 false,
             );
         }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return e.descriptor_read_answer(),
     };
     let now = crate::shard::now_ms();
     let (cy, cm) = crate::billing::utc_year_month(now);

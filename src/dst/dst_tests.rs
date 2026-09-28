@@ -255,6 +255,9 @@ mod consumer_dlq;
 #[path = "tests/read_application.rs"]
 mod read_application;
 
+#[path = "tests/product_descriptor_reads.rs"]
+mod product_descriptor_reads;
+
 #[path = "tests/runtime_journals.rs"]
 mod runtime_journals;
 

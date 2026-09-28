@@ -2847,6 +2847,14 @@
       "path": "src/tasks/exits.rs",
       "reason": "Item 38 stop deadline: the process's last stderr line is written on a named OS thread of its own and waited for at most 250 ms, so a full pipe or another thread's held stderr lock cannot hold the exit; the thread is never joined because the process is ending either way.",
       "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::product_descriptor_reads",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Product descriptor-read classification (item 3, edge change #64): every product handler that reads its own descriptor answers a store failure with a retryable 503 and a corrupt descriptor with a 500 that is not retryable; compiled and executed with DST.",
+      "syntax": "path = \"tests/product_descriptor_reads.rs\""
     }
   ]
 }

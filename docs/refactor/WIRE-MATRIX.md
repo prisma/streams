@@ -83,6 +83,8 @@ Route registration: `src/http.rs:1819-1827`. Wildcard dispatch: `product_entry_a
 
 **Legacy-input rejection** (`reject_legacy_inputs`, `src/product.rs:125-181`): headers `stream-encryption-key, stream-key, stream-profile, stream-touch-templates, stream-queue-max-deliveries, stream-ordering, stream-segments, stream-scaling, stream-ttl, stream-expires-at` → 400 `unknown_field`; query keys `key`, `offset` → 400 `unknown_field`; `routingKey` on non-GET/HEAD → 400 `unknown_field`.
 
+**Descriptor read failures** (`product::DescriptorReadAnswer`, edge change #64): when a handler's own descriptor read fails on the store (metadata, `:scan`, `/records` append, `/usage`), the answer is 503 `temporarily_unavailable`, `retryable: true`, `retry-after: 1`: nothing was read or written for the request. A stored descriptor that does not decode or validate (`registry::cache::CorruptDescriptor`) answers 500 `internal`, `retryable: false`, fail-closed. `:seal` and the `/records` read still answer 500 `internal` `retryable: true` for both (their handlers' exception scopes carry exact growth rows); the collection listing (`product_list`) and the fleet-internal receivers are unchanged.
+
 **Quota refusals** (`quota_refusal_response`, `src/product.rs:846-913`): 429 `stream_limit` (not retryable), 429 `queued_bytes`, 429 `project_rate_limit` (+`retry-after`), 429 `project_concurrency_limit`, 503 `project_tracker_capacity`, 429 `project_memory_pressure` (`retry-after: 1`). `strict_query` rejects unknown/duplicate query keys with 400 `unknown_parameter` / `duplicate_parameter` (`src/product.rs:3629-3665`).
 
 ### 2.1 `OPTIONS /v1/streams/{*name}` — preflight

@@ -922,6 +922,17 @@
     "scenarios": []
   },
   {
+    "name": "a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_is_not",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "871564ff755457367db07812822a36ed62286b17c6e69e9ccedf8723660b105b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/product_descriptor_reads.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_final_never_writes_into_a_recreated_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -21,6 +21,7 @@ use serde_json::json;
 
 use crate::http::AppState;
 use crate::registry::{StreamDesc, WatchDefinition};
+use internal::DescriptorReadAnswer;
 
 /// Reserved protocol control namespace (appendix §2.6): never a
 /// customer stream name, on either surface.
@@ -1455,13 +1456,7 @@ async fn product_metadata(
             None,
             false,
         ),
-        Err(e) => perr(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &e.to_string(),
-            None,
-            true,
-        ),
+        Err(e) => e.descriptor_read_answer(),
     }
 }
 
@@ -1912,15 +1907,7 @@ async fn product_append_inner(
                 false,
             );
         }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return e.descriptor_read_answer(),
     };
     if let Some(r) = refuse_if_sealed(&desc, seal_after) {
         return r;
