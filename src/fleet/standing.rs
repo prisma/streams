@@ -182,6 +182,11 @@ mod tests {
         assert_eq!((standing.next_beat(), standing.next_beat()), (1, 2));
         assert!(!standing.draining());
         assert_eq!(standing.draining_from(), None);
+        let unasked = tokio::time::timeout(Duration::from_millis(50), standing.beat_requested());
+        assert!(
+            unasked.await.is_err(),
+            "no beat is asked for before a drain"
+        );
         standing.begin_draining();
         assert!(standing.draining());
         assert_eq!(standing.draining_from(), Some(3));
