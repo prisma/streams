@@ -26,10 +26,11 @@ pub(super) enum Pass {
 /// is used quietly (no adoption stamp — an internal touch must not leak it
 /// out of the rotation). A cold route opens only while scheduler-held
 /// engines are under budget, takes custody like any discovery open, and is
-/// closed (or retained as an indebted resident) right after its closures
-/// are submitted. Over budget, or an open that does not complete here, is
-/// `Err(Pass::Stop)`: the pass is DEFERRED and resumes at the same place
-/// next sweep, which is the continuation.
+/// closed (or retained as an indebted resident) by the caller right after
+/// its step on that segment, whatever the step found. Over budget, or an
+/// open that does not complete here, is `Err(Pass::Stop)`: the pass is
+/// DEFERRED and resumes at the same place next sweep, which is the
+/// continuation.
 pub(super) async fn walk_engine_budgeted(
     state: &Arc<AppState>,
     route: &[u8; 16],
@@ -59,12 +60,13 @@ pub(super) async fn walk_engine_budgeted(
 }
 
 /// The tombstone walk's step for segment `sid` of `d`, a descriptor it
-/// found terminal (`terminal`) or else fork-retained: the row of that
-/// incarnation is closed at the PERSISTED logical time while its gauge is
-/// open, or flagged `retained_by_forks`. A segment on another instance's
+/// found terminal (`terminal`) or else fork-retained, on the engine of the
+/// segment's shard (`close_or_retain`). A segment on another instance's
 /// shard is `Pass::Next`, skipped: its owner's walk closes it. A deferred
-/// or contended open, a segment the descriptor does not route, or a failed
-/// metadata read is `Pass::Stop`: the walk resumes at this page next sweep.
+/// or contended open, or a segment the descriptor does not route, is
+/// `Pass::Stop`: the walk resumes at this page next sweep. A shard this
+/// step cold-opened is settled after the step whatever it found, before
+/// the walk moves on.
 pub(super) async fn walk_segment(
     state: &Arc<AppState>,
     d: &StreamDesc,
@@ -83,6 +85,22 @@ pub(super) async fn walk_segment(
         Ok(acquired) => acquired,
         Err(pass) => return pass,
     };
+    let pass = close_or_retain(d, sid, terminal, &engine).await;
+    if ours {
+        // Scheduler-opened for this segment: close it or keep it as an
+        // indebted budgeted resident NOW, on every outcome of the step (no
+        // row, another incarnation's row, a failed read) — never
+        // accumulate walk opens across the page.
+        walk_settle(state, &state.shards.prefix_for(&route)).await;
+    }
+    pass
+}
+
+/// The row of `d`'s incarnation in segment `sid` on `engine`: closed at
+/// the PERSISTED logical time while its gauge is open (`terminal`), or
+/// flagged `retained_by_forks`. No row, or another incarnation's, is
+/// `Pass::Next`; a failed metadata read is `Pass::Stop`.
+async fn close_or_retain(d: &StreamDesc, sid: u32, terminal: bool, engine: &ShardEngine) -> Pass {
     let hash = d.dynamic_segment_identity(sid);
     let meta = match engine.load_billing_meta(hash).await {
         Ok(Some(meta)) => meta,
@@ -118,12 +136,6 @@ pub(super) async fn walk_segment(
         && let Err(e) = engine.submit_billing_retained(hash, true).await
     {
         tracing::warn!("tombstone-walk retain failed for {}: {e}", d.sref());
-    }
-    if ours {
-        // Scheduler-opened for this descriptor: close it or keep it as an
-        // indebted budgeted resident NOW — never accumulate walk opens
-        // across the page.
-        walk_settle(state, &state.shards.prefix_for(&route)).await;
     }
     Pass::Next
 }

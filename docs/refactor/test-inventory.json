@@ -1487,6 +1487,17 @@
     "scenarios": []
   },
   {
+    "name": "a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_next_segment",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9c50f3d8ff200e604716c87ea7ee1610a58d61a1653b4a45e1606be30fa33b95",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_signed_month_is_refused_on_both_usage_routes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

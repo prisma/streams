@@ -28,6 +28,9 @@ mod billing_closure_debts;
 #[path = "tests/billing_closure_owners.rs"]
 mod billing_closure_owners;
 
+#[path = "tests/billing_walk_custody.rs"]
+mod billing_walk_custody;
+
 #[path = "tests/billing_controller.rs"]
 mod billing_controller;
 

@@ -267,6 +267,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_walk_custody",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Tombstone-walk custody across a page: a shard the walk cold-opens for a segment with nothing to close is handed back before the next segment, so a gauged dead stream later on the page closes at its persisted expiry under the production sweep and resident budget; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_walk_custody.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_peer_compatibility",
       "path": "src/dst/dst_tests.rs",
       "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",
