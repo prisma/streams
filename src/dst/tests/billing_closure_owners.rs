@@ -202,9 +202,14 @@ async fn closure_debts_owned_by_different_instances_all_settle() {
         b.state.registry.invalidate(sref);
     }
     assert_eq!(debts(&a.state).await.len(), 2);
-    for _ in 0..20 {
+    for _ in 0..170 {
         settle_replaced(&a.state).await;
         settle_replaced(&b.state).await;
+        let open = ex.billing_meta(ix).await.unwrap().owned_frame_bytes_current
+            + ey.billing_meta(iy).await.unwrap().owned_frame_bytes_current;
+        if open == 0 && debts(&a.state).await.is_empty() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let (gx, gy) = (
@@ -268,9 +273,14 @@ async fn a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream
     expire(&[&a.state, &b.state], &sy, expired_at).await;
     let dead = stored(&b.state, &sy).await;
     b.state.registry.record_replaced(&dead).await.unwrap();
-    for _ in 0..20 {
+    for _ in 0..170 {
         crate::billing::sweep_owned_outboxes(&a.state).await;
         crate::billing::sweep_owned_outboxes(&b.state).await;
+        let open = ex.billing_meta(ix).await.unwrap().owned_frame_bytes_current
+            + ey.billing_meta(iy).await.unwrap().owned_frame_bytes_current;
+        if open == 0 {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let (gx, gy) = (

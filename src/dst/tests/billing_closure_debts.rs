@@ -327,8 +327,12 @@ async fn a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry() {
     raw_put(addr, "raw-dirty", &[JSON], b"").await;
     let debt = single_debt(&state, "after the raw recreation").await;
     assert_eq!(debt.debt.close_ms, expired_at);
-    // The drain's cadence, then the sweep's.
+    // The drain's cadence, then the sweep's. The drain's close lands before
+    // the sweep reads the row, so the drain is the one that closes it.
     crate::billing::drain_once(&state).await.expect("drain");
+    closed(&engine, id)
+        .await
+        .expect("the drain closes the replaced row");
     let got = sweep_until_closed(&state, &engine, id).await;
     sweep_until_settled(&state).await;
     assert_billed(
@@ -713,11 +717,11 @@ async fn a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass
     for _ in 0..3 {
         settle_replaced(&state).await;
     }
+    let after = engine.billing_meta(id).await.unwrap();
     assert!(
-        closed(&engine, id).await.is_none(),
+        after.owned_frame_bytes_current > 0,
         "the pass closed a live gauge"
     );
-    let after = engine.billing_meta(id).await.unwrap();
     assert_billed(&after, &live, "the pass touched a live row");
     assert!(
         debts(&state).await.is_empty(),
