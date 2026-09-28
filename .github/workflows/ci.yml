@@ -93,6 +93,12 @@ jobs:
           fi
       - name: Multitenancy audit (bare, never piped)
         run: bash scripts/multitenancy-audit.sh
+      # One release build of every test target the steps below run, so the
+      # runner compiles them in parallel; the lint step used to build the lib
+      # test harness alone (about 5 min) and the suite the rest after it
+      # (about 7 min). Both steps reuse these artifacts: same flags.
+      - name: Build the release test targets
+        run: cargo test --release --no-run
       - name: Multitenancy identity lint (exemption inventory)
         run: scripts/test-leg.sh target/legs/mt-lint.log --exact mt_lint::multitenancy_identity_lint -- --release --lib multitenancy_identity_lint -- --nocapture
       - name: Test (product conformance + dual-surface + DST + cost budgets)

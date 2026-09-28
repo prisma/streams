@@ -63,11 +63,11 @@ on 2026-09-27; CI runs on 4-vCPU `ubuntu-latest`.
   `set -u` write `${a[@]+"${a[@]}"}` for a possibly empty array).
 - **Python.** `/usr/bin/python3` is 3.9 and lacks `tomllib`; the tools need
   3.11+. These pick a newer one themselves: the bash entry points
-  (`scripts/quality.sh`, `gate.sh`, `test-leg.sh`, `quality/mutations.sh`,
-  `quality/nightly.sh`, `install-quality-tools.sh`, via `scripts/lib/python.sh`)
-  and `scripts/dev/*`. Every other `python3 scripts/...` call that imports
-  `tomllib` — `quality/formal.py`, `quality/gate.py`, `install-formal-tools.py`,
-  and the POSIX-sh `scripts/release-gate.sh` — needs the prefix
+  (`scripts/quality.sh`, `gate.sh`, `release-gate.sh`, `test-leg.sh`,
+  `quality/mutations.sh`, `quality/nightly.sh`, `install-quality-tools.sh`,
+  via `scripts/lib/python.sh`) and `scripts/dev/*`. Every other
+  `python3 scripts/...` call that imports `tomllib` — `quality/formal.py`,
+  `quality/gate.py`, `install-formal-tools.py` — needs the prefix
   `. scripts/dev/env.sh &&` (Python 3.12, `target/quality-tools/bin` with
   `kani`, `~/.cargo/bin` on `PATH`; unsets `RUSTUP_TOOLCHAIN`). Commands below
   that need it show it.
@@ -123,19 +123,20 @@ Climb only as far as the change needs; each rung repeats nothing below it.
   DST tests are `dst::dst_tests::<file>::<test>`; `src/dst/tests/README.md`
   is an orientation map of their contracts (not gate-checked).
 - **`scripts/gate.sh`** = `scripts/quality.sh` + the release lib suite
-  (inventory floor) + the capacity test alone. Never run `quality.sh` and
+  (inventory floor) + CI's other targets (the bins' unit tests and
+  `tests/pilot_membership.rs`) + the capacity test alone, so it runs every
+  Rust test CI's `cargo test --release` does. Never run `quality.sh` and
   then `gate.sh`: the gate already runs it. Output: `target/gate/gate.txt`
-  (or `OUT=`/first argument) plus `.suite.log`/`.capacity.log`; the terminal
+  (or `OUT=`/first argument) plus `.suite.log`/`.targets.log`/`.capacity.log`; the terminal
   gets one line per stage and ends `GATEDONE`, or `GATEFAIL-<stage>: see
   <log>` with that log's tail. `quality.sh` alone ends `QUALITY_OK`; a failed
   step prints `QUALITY_FAIL: exit <n> at scripts/quality.sh:<line>: <command>`.
 - **Capacity test** `dst::dst_tests::topology_scaling::post_split_throughput_scales`
   asserts a 1.8x ratio and fails under host load; the gate runs it alone.
   Rerun it alone on an idle host before debugging it.
-- **The local gate covers `--lib` only.** CI's `cargo test --release` also
-  runs 144 bin unit tests and `tests/pilot_membership.rs` (the pilot Loom
-  models): run `cargo test --locked --release --bins --test pilot_membership`
-  when `src/bin/**` or `tests/**` changed.
+- **Release gate:** `scripts/release-gate.sh` = `quality.sh` + every formal
+  receipt fresh + the debug-profile suite over every target + the capacity
+  test; `scripts/rc-certify.sh` and `scripts/promote-rc.sh` run it.
 
 ## 4. Waiting
 
@@ -281,7 +282,6 @@ Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 
 | Layer | Local command | Touching |
 |---|---|---|
-| Bins + integration | `cargo test --locked --release --bins --test pilot_membership` | `src/bin/**`, `tests/**` |
 | Property/Loom leg | `scripts/test-leg.sh target/legs/quality.log --min 15 -- --locked --release --lib quality_` | codecs, synchronisation |
 | Compiler fixtures | `python3 scripts/quality/compiler_fixtures.py --out target/fixtures-$(date +%s)` | proof-bearing types, `clippy.toml` |
 | Deploy wrapper | `bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts` | `deploy/**` |
@@ -351,5 +351,8 @@ record `docs/quality/pr19-merge-review.md`. Open work, in priority order:
   `crate::http` fails the architecture gate (import `AppState` via `super`).
 - Clippy denies `drop()` of a `Copy` value, `result_large_err` for
   `Result<_, Response>`, and nesting deeper than four.
-- Scheduled workflows run only from the default branch (`main`), so the
-  nightly legs in `ci.yml`/`rust-quality.yml` do not run for `slate`.
+- `slate` is the default branch (2026-09-28), so the nightly legs run for
+  it: the noisy-neighbor campaign (03:17 UTC) and rust-quality's full
+  formal run, fuzzing and seven-night mutation rotation (03:43 UTC). The
+  rotation's whole-file buckets hold 154-1,152 mutants a night, far beyond
+  its 240-minute job (NEXT-WORK "Nightly mutation rotation").

@@ -166,6 +166,12 @@ roll-forward.
 
 ## 3. Typed registry read error for an append's first read
 
+**Done: 7499ec19** (edge change #58): a store failure on an append's first
+registry read answers a retryable 503 (raw `internal`, product
+`temporarily_unavailable`), and a corrupt descriptor stays 500. Still open:
+the product handler's own descriptor reads (for example `product_seal`'s
+500 `retryable:true`). The original handoff follows.
+
 **Owner decision.** Ratifying #54: "The first registry read still returning
 500 for transient storage failure is a separate inconsistency. Fix it next
 with typed error classification and its own regression rather than
@@ -472,6 +478,39 @@ before marking it complete."
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
   close it; optional.
 - **Closure debts across a rollback:** see item 2's rollback note.
+- **Nightly mutation rotation (found 2026-09-28, when `slate` became the
+  default branch and the schedules started running).** The seven-night
+  rotation (`verification_plan.scheduled_owners`, RUST-QUALITY.md) runs
+  whole registered owners. Counted with `cargo mutants --list` over the next
+  seven buckets: 573, 631, 630, 154, 1,015, 846 and 1,152 mutants (about
+  5,000 in all; the largest owners are `shard` 378, `sse_feed` 346, `http`
+  270, `fleet` 262). At about 1 min per mutant locally and more on a 4-core
+  runner, no bucket but the smallest fits the job's 240 minutes, and whole
+  files have only ever been mutation-tested diff by diff, so MISSED mutants
+  are expected. The first scheduled run gives the real per-mutant cost with
+  incremental rebuilds (CARGO_INCREMENTAL=1 since ca260d30); size the design
+  from it: more buckets, `cargo mutants --shard k/n` inside large owners, a
+  runner matrix, and a MISSED backlog with dispositions. It is a policy
+  change (RUST-QUALITY.md's rotation), so the owner decides the shape.
+- **Deferred with reasons (2026-09-28):** the 83 `gap_lock` holders that
+  serialize about 126 s of CI's 154 s suite (drop the lock test by test,
+  loop each in the parallel suite); Kani recompiling the crate for every
+  check (compile once per obligation at the next deliberate `formal.py`
+  change, which stales every receipt anyway); `build.rs` embedding the git
+  HEAD, which rebuilds the crate after every commit (release provenance
+  depends on it); and the seven production files under critical prefixes
+  without a mutation owner (`src/application/read_range.rs`,
+  `read_retention_probe.rs`, `src/fleet/planning.rs`,
+  `src/shard/record/checked.rs`, `src/sse/budget.rs`, `src/sse/mod.rs`,
+  `src/tasks/signal.rs`): register each when it next changes;
+  `scripts/dev/impact.py` prints REGISTER FIRST. Two more are test code the
+  planner cannot see as such: `src/ops/batch_tests.rs` and
+  `src/shard/commit_handoff/loom_tests.rs` are declared `#[cfg(test)] mod`
+  by their parents but carry no inner `#![cfg(test)]`, and adding one reads
+  as a production change of an unregistered file (the planner strips test
+  code from base and head and compares), so CI refuses that commit. The
+  clean fix is a planner rule that honours the parent's `#[cfg(test)]`
+  declaration; it changes what the gate selects, so it is the owner's.
 
 ---
 

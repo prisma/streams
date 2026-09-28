@@ -199,8 +199,9 @@ bridging change carry measured costs (docs/PRISMA-STREAMS-FORMAL-VERIFICATION-RO
 
 ## Release checklist (the short form)
 
-1. `scripts/release-gate.sh` (fmt, clippy-vs-baseline, formal receipts
-   `check --fresh`, suite, deny).
+1. `scripts/release-gate.sh` (everything `scripts/quality.sh` checks, every
+   formal receipt `check --fresh`, the debug-profile suite over every
+   target, the capacity gate alone).
 1a. Mixed-version rules (§6) decided for this release; the provider
    contract suite (docs/PROVIDER-CONTRACT.md) run against the production
    provider, endpoint and configuration, with its log retained.

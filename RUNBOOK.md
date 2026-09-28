@@ -697,10 +697,12 @@ rollout and exit criteria live in [docs/STAGING.md](./docs/STAGING.md).
 
 Every substantive change runs, in order:
 
-1. `scripts/release-gate.sh` — fmt, clippy no-new-warnings (baseline in
-   `scripts/clippy-warning-baseline.txt`), the unit suite, `cargo deny check`
-   (advisories, licenses, bans, sources; exceptions live in `deny.toml` and
-   `SECURITY.md`).
+1. `scripts/release-gate.sh` — everything the commit gate
+   `scripts/quality.sh` checks (fmt, clippy with `-D warnings`, rustdoc,
+   `cargo deny check` for advisories, licenses, bans and sources with
+   exceptions in `deny.toml` and `SECURITY.md`, the source and evidence
+   ratchets), every formal receipt current, the full test suite and the
+   capacity gate.
 2. The **single-instance saturation benchmark** on Prisma Compute
    (`scripts/bench-fra-ab.sh`; procedure and pass thresholds in
    [AWS-readyness.md §5](./AWS-readyness.md)). One server, the pilot

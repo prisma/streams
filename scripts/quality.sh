@@ -14,7 +14,10 @@ mkdir -p "$QUALITY_OUT"
 trap 'echo "QUALITY_FAIL: exit $? at scripts/quality.sh:$LINENO: $BASH_COMMAND" >&2' ERR
 python3 -c 'import sys; sys.path.insert(0,"scripts/quality"); import config; problems=config.check(); print("\n".join(problems)); sys.exit(bool(problems))'
 # Compiles only; the mt-lint leg below waits for it and runs the test.
-cargo test --locked --release --lib --no-run > "$QUALITY_OUT/release-build.log" 2>&1 &
+# scripts/gate.sh widens it (QUALITY_RELEASE_TARGETS) to the targets its own
+# legs run, so one cargo invocation builds them all in parallel.
+read -r -a release_targets <<< "${QUALITY_RELEASE_TARGETS:---lib}"
+cargo test --locked --release "${release_targets[@]}" --no-run > "$QUALITY_OUT/release-build.log" 2>&1 &
 release_build=$!
 # A step that fails before that wait must not leave the compile running:
 # it would hold the build lock and CPU into the next run. rustc children go

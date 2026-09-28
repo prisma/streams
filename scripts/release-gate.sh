@@ -1,95 +1,41 @@
-#!/bin/sh
-# The LOCAL half of the release gate: fmt, clippy (fingerprint-gated),
-# formal-verification receipts (every claimed result current and valid),
-# workflow lint (actionlint, REQUIRED — the zero-jobs incident class),
-# the Rust/DST binary suite (capacity mechanism gate isolated so the
-# measurement owns the machine), and supply-chain checks (round 11.8:
-# livefeed IS the engine — the suite step is the engine coverage). It does NOT run the Durable Streams conformance
-# corpus, SDK smoke, field/capacity/handoff campaigns, or cross-owner
-# fan-out — those produce artifacts that scripts/rc-certify.sh
-# verifies against the release binary. R30 review: this scope
-# statement must match what the script runs.
-set -e
+#!/usr/bin/env bash
+# The LOCAL half of the release gate: everything the commit gate checks
+# (scripts/quality.sh: fmt, workflow lint, clippy with -D warnings over the
+# workspace and the source ratchet, rustdoc, cargo machete and deny, the
+# architecture/scenario/inventory/evidence gates, the multitenancy audit and
+# formal receipts' validity), plus what only a release requires: every
+# claimed formal result current (`check --fresh`), the Rust/DST suite in the
+# debug profile over every target, and the capacity mechanism gate isolated
+# so its measurement owns the machine. It does NOT run the Durable Streams
+# conformance corpus, SDK smoke, field/capacity/handoff campaigns, or
+# cross-owner fan-out — those produce artifacts that scripts/rc-certify.sh
+# verifies against the release binary. R30 review: this scope statement
+# must match what the script runs.
+set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib/python.sh
 
-echo "== structural and evidence ratchets =="
-python3 scripts/architecture-report.py --self-test
-python3 scripts/architecture-gate.py --self-test
-python3 scripts/architecture-gate.py --check
-python3 scripts/scenario-map-report.py --self-test
-python3 scripts/scenario-map-report.py --check
-python3 scripts/test-inventory.py --self-test
-python3 scripts/test-inventory.py --check
-python3 scripts/review-evidence.py --self-test
-python3 scripts/review-evidence.py --check
-python3 scripts/verify-rc-evidence.py --self-test --repo .
+echo "== commit-gate policy (scripts/quality.sh) =="
+scripts/quality.sh
+
 # A release needs a current receipt for every claimed formal result; the
 # commit gate (quality.sh) only reports staleness, and the formal CI job
-# runs what each change affects. Re-record with `formal.py run --record`.
+# runs what each change affects. Re-record with
+# `python3 scripts/dev/formal_batch.py rerecord`.
+echo "== formal receipts current =="
 python3 scripts/quality/formal.py check --fresh
-
-echo "== fmt =="
-cargo fmt --check
-
-echo "== clippy (all targets) =="
-# R30: no pipeline — POSIX sh reports the LAST command's status, so
-# `cargo clippy | tee | tail` passed even when clippy itself failed to
-# compile (a genuine false-green in the release gate).
-if ! cargo clippy --all-targets > /tmp/clippy.out 2>&1; then
-  cat /tmp/clippy.out
-  echo "FAIL: clippy did not complete"
-  exit 1
-fi
-tail -3 /tmp/clippy.out
-# R30: gate on exact warning FINGERPRINTS (message + file), not a
-# count. Counts were twice unsound: a stale-low baseline blocked clean
-# trees (round 18: recorded 114, real 345; R29: recorded 221 warm vs
-# 229 cold), and a count can stay flat while one warning disappears
-# and a NEW one appears. The baseline file is the reviewed allowlist;
-# refresh it only with a fingerprint diff in the commit message.
-python3 scripts/clippy-fingerprints.py /tmp/clippy.out > /tmp/clippy-fps.txt
-if ! NEW=$(comm -13 scripts/clippy-baseline-fingerprints.txt /tmp/clippy-fps.txt); then
-  echo "FAIL: fingerprint comparison failed"
-  exit 1
-fi
-if [ -n "$NEW" ]; then
-  echo "FAIL: NEW clippy warnings (not in the reviewed baseline):"
-  echo "$NEW"
-  exit 1
-fi
-GONE=$(comm -23 scripts/clippy-baseline-fingerprints.txt /tmp/clippy-fps.txt || true)
-if [ -n "$GONE" ]; then
-  echo "note: $(echo "$GONE" | wc -l | tr -d ' ') baseline warning(s) no longer fire; refresh the baseline"
-fi
-echo "clippy: no new warning fingerprints"
-
-echo "== multitenancy conversion audit =="
-scripts/multitenancy-audit.sh
-
-echo "== workflow lint =="
-# Round-9 review: an RC must never certify a tree whose workflows do
-# not parse (the 2026-08-25 zero-jobs incident class). Bare
-# invocation, matching the independent workflow-lint job.
-if command -v actionlint > /dev/null 2>&1; then
-  actionlint
-else
-  echo "FAIL: actionlint is required for release certification (brew install actionlint)"
-  exit 1
-fi
 
 # Each leg proves it ran what it names (scripts/test-leg.sh): cargo exits
 # 0 with `ok. 0 passed` when a filter or --exact name matches nothing.
 echo "== tests =="
-bash scripts/test-leg.sh target/release-gate/suite.log \
+scripts/test-leg.sh target/release-gate/suite.log \
   --inventory docs/refactor/test-inventory.json --skipped 1 \
-  -- --lib -- --skip post_split_throughput_scales
+  -- --locked --lib -- --skip post_split_throughput_scales
+scripts/test-leg.sh target/release-gate/targets.log --min 100 \
+  -- --locked --bins --test pilot_membership
 
 echo "== capacity mechanism gate (owns the machine) =="
-bash scripts/test-leg.sh target/release-gate/capacity.log --exact dst::dst_tests::topology_scaling::post_split_throughput_scales \
-  -- --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
-
-echo "== livefeed engine matrix =="
-echo "== supply chain =="
-cargo deny check
+scripts/test-leg.sh target/release-gate/capacity.log --exact dst::dst_tests::topology_scaling::post_split_throughput_scales \
+  -- --locked --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
 
 echo "RELEASE_GATE_LOCAL_OK"
