@@ -166,11 +166,17 @@ The gates enforce these; plan for them before writing
   its contract measures `scope_lines`, `nested_items`, `syntax_facts`, and an
   `unwrap_used`/`expect_used` contract fingerprints every call and path
   spelling (import aliases resolved — moving a type behind a `use` changes
-  them). Method calls are not fingerprinted. Put new logic in a new function
-  outside the scope, reached by a method call; removing an exception is
-  always allowed. Growth needs an owner-approved row: propose one (path,
-  owner, scope, lint, the gate's `after` values as metrics, rationale); the
-  owner adds it.
+  them). Method calls are not fingerprinted. Each fingerprint counts on its
+  own: removing ten uses of one path does not fund one use of another, a
+  call-site fingerprint includes its argument text, and a renamed local is a
+  new path (keep the old name, or change a method call instead). Put new
+  logic in a new function outside the scope, reached by a method call;
+  removing an exception is always allowed. Growth needs an owner-approved
+  row: propose one (path, owner, scope, lint, the gate's `after` values as
+  metrics, rationale); the owner adds it. A scope that already has a row is
+  frozen exactly: the row records its current values, so any change to it,
+  shrinking included, fails as `stale exception growth row` (today:
+  `bootstrap::run`). Hook new behaviour into something it already calls.
 - **By-path includes.** `src/{crypto,postings,tenant,retained_bytes,product_cursor,queue}.rs`,
   `src/quota/bucket.rs`, `src/rollup/{allocation,storage}.rs` and
   `src/application/read_{batch,budget,retention_probe}.rs` are compiled by
@@ -208,6 +214,7 @@ The gates enforce these; plan for them before writing
 | Gate message | Meaning and fix |
 |---|---|
 | `accepted exception grew without an approved growth row` | Shrink back (new function outside the scope) or propose a row; never touch the reason. |
+| `stale exception growth row` | A scope with an approved row changed (even by shrinking): restore it; only the owner updates the row. |
 | `unregistered source occurrence (N): (category, path, owner, syntax)` | Add a reasoned `owners.json` row, or remove the occurrence. |
 | `file growth: <path>` / architecture `FAIL` | Over the line or function ceiling: extract. |
 | `N obsolete source allowances` | `. scripts/dev/env.sh && python3 scripts/quality/gate.py --clippy <json> --prune`, with the clippy JSON of the run that reported it (`target/quality/clippy.jsonl` from quality.sh, `target/preflight/clippy.jsonl` from preflight) on the current tree. |
