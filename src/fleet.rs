@@ -103,6 +103,12 @@ pub(crate) struct Heartbeat {
     /// stamped the heartbeat itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_age_ms: Option<u64>,
+    /// Why this instance takes no new ownership (instance-wide withdrawal:
+    /// a lost Critical loop, a cell failure, or the runtime stopping);
+    /// absent while it may. Every ring drops a withdrawn instance, its own
+    /// included, while its heartbeat stays live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawn: Option<String>,
 }
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
@@ -538,7 +544,8 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             let mut live = 0u64;
             let mut max_loaded_p50 = 0.0f64;
             let mut max_loaded_cpu = 0.0f64;
-            // Each heartbeat's liveness and controller-progress ages.
+            // Each published heartbeat's candidacy: its liveness and
+            // controller-progress ages and its withdrawal.
             let mut hb_age_ms = std::collections::HashMap::new();
             // Fresh peers' load (cpu, absorb lag), for rebalance targets.
             let mut peer_load: std::collections::HashMap<String, (f64, u64)> =
@@ -553,7 +560,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 Err(error) => { tracing::warn!(%error, "fleet snapshot deferred; ownership view retained"); continue; }
             };
             for other in heartbeats {
-                hb_age_ms.insert(other.instance.clone(), other.ages(now_ms()));
+                hb_age_ms.insert(other.instance.clone(), other.candidacy(now_ms()));
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
                     let eff_lag = other
                         .absorb_lag_max_secs
@@ -690,10 +697,10 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             // Publish the ring's ACTIVE set for the R2 ownership check:
             // the first `desired` ordinal instances, dropping any that have
             // been heartbeat-dark >30 s (wedged — requests would have woken
-            // a merely-sleeping one) or whose controller stopped completing
-            // passes (`planning::active_members`). Falls back to the
-            // unfiltered ordinal set if filtering empties it (bootstrap:
-            // everyone asleep, first request must land).
+            // a merely-sleeping one), whose controller stopped completing
+            // passes, or that withdrew (`planning::active_members`). Falls
+            // back to the unfiltered ordinal set if filtering empties it
+            // (bootstrap: everyone asleep, first request must land).
             let active = planning::active_members(cur_count, &cfg.instance, &hb_age_ms);
             {
                 // fleet/urls.json overrides heartbeat-published URLs: on

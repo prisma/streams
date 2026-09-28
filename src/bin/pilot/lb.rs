@@ -287,8 +287,8 @@ fn overrides_of(o: &Value) -> HashMap<String, String> {
 }
 
 /// Every ordinal's heartbeat, as (rps, ack_p50_ms, live, cpu_pct) in the
-/// view plus its ring age in ms (i64::MAX when unreadable, or when its
-/// controller stopped progressing).
+/// view plus its ring age in ms (i64::MAX when unreadable, when its
+/// controller stopped progressing, or when it withdrew).
 async fn poll_heartbeats(
     store: &Arc<dyn ObjectStore>,
     n_up: usize,
@@ -316,9 +316,11 @@ fn heartbeat_entry(heartbeat: Option<&Value>, now_ms: i64) -> ((f64, f64, bool, 
     };
     let age = now_ms - h["ts_ms"].as_i64().unwrap_or(0);
     let live = age < 10_000;
-    // A live process whose controller stopped progressing has left every
-    // server's ring, so the mirror treats it as dark.
-    let progressing = h["progress_age_ms"].as_u64().unwrap_or(0) < PROGRESS_DEADLINE_MS;
+    // A live process whose controller stopped progressing, or that
+    // withdrew, has left every server's ring, so the mirror treats it as
+    // dark.
+    let progressing = h["progress_age_ms"].as_u64().unwrap_or(0) < PROGRESS_DEADLINE_MS
+        && h["withdrawn"].is_null();
     let gauge = |key: &str| {
         if live {
             h[key].as_f64().unwrap_or(0.0)
@@ -332,9 +334,9 @@ fn heartbeat_entry(heartbeat: Option<&Value>, now_ms: i64) -> ((f64, f64, bool, 
     )
 }
 
-/// Ring active set: first `desired` ordinal instances minus the >30s-dark
-/// and those whose controller stopped progressing (the servers' rule,
-/// `fleet::planning::active_members`). Fallback: everyone asleep →
+/// Ring active set: first `desired` ordinal instances minus the >30s-dark,
+/// those whose controller stopped progressing and those that withdrew (the
+/// servers' rule, `fleet::planning::active_members`). Fallback: everyone asleep →
 /// unfiltered, so the first request wakes the ordinal owner.
 fn active_ring(d: usize, ages_ms: &[i64]) -> Vec<String> {
     let active: Vec<String> = (1..=d)
@@ -495,8 +497,9 @@ mod tests {
             ring_age(r#"{"ts_ms": 9000, "progress_age_ms": 138999}"#),
             ring_age(r#"{"ts_ms": 9000, "progress_age_ms": 139000}"#),
             ring_age(r#"{"ts_ms": 9000}"#),
+            ring_age(r#"{"ts_ms": 9000, "withdrawn": "runtime stopping"}"#),
         ];
-        assert_eq!(ages, [1_000, i64::MAX, 1_000]);
-        assert_eq!(active_ring(3, &ages), ["streams-1", "streams-3"]);
+        assert_eq!(ages, [1_000, i64::MAX, 1_000, i64::MAX]);
+        assert_eq!(active_ring(4, &ages), ["streams-1", "streams-3"]);
     }
 }

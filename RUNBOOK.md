@@ -349,11 +349,13 @@ was death (§3.6).
 - **Heartbeats**: every 2 s each instance's `fleet-heartbeat` task PUTs
   `<FLEET_PREFIX>/fleet/<instance>.json`: rps, ack_p50_ms, cpu_pct
   (getrusage), inflight/inflight_peak, rss_mb, wal_put_p50/p99_ms,
-  out_inflight/peak, owned_shards, boot_id, and `progress_age_ms` (how long
-  ago its fleet tick last published an ownership view). Staleness > 10 s =
-  not live. The ring drops an instance whose heartbeat is > 30 s old, or
-  whose `progress_age_ms` reached 139 s: a live process whose controller is
-  stuck.
+  out_inflight/peak, owned_shards, boot_id, `progress_age_ms` (how long
+  ago its fleet tick last published an ownership view) and, when it takes
+  no new ownership, `withdrawn` (why: a lost Critical loop, a cell failure,
+  or the runtime stopping; a stopping runtime's last beat always carries
+  it). Staleness > 10 s = not live. The ring drops an instance whose
+  heartbeat is > 30 s old, whose `progress_age_ms` reached 139 s (a live
+  process whose controller is stuck), or that published `withdrawn`.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across

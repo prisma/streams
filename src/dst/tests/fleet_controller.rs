@@ -1,5 +1,5 @@
 //! Entered fleet I/O cancellation and complete ownership-view publication.
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::shard::now_ms;
@@ -175,7 +175,7 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
                 "unread overrides must not publish a new ring"
             );
         }
-        let report = rig.tasks.shutdown(Duration::from_millis(300)).await;
+        let report = rig.tasks.shutdown(Duration::from_secs(4)).await;
         assert!(
             report.aborted.is_empty(),
             "active fleet I/O must cancel cooperatively: {report:?}"
@@ -748,7 +748,7 @@ async fn a_held_heartbeat_does_not_stop_the_tick() {
         ring,
         "the tick must publish the ring while its heartbeat PUT is held"
     );
-    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
     assert!(
         report.aborted.is_empty(),
         "a held heartbeat PUT must cancel cooperatively: {report:?}"
@@ -764,40 +764,12 @@ async fn a_held_heartbeat_does_not_stop_the_tick() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
     let inner = mem();
-    for (path, body) in [
-        (
-            "fleet/desired.json",
-            r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#,
-        ),
-        ("fleet/overrides.json", r#"{"entries":{}}"#),
-    ] {
-        inner
-            .put(&Path::from(path), PutPayload::from(body))
-            .await
-            .unwrap();
-    }
-    let store = Arc::new(HeldDocument {
+    seed_ring_of_two(&inner, &[]).await;
+    let rigs = start_two(Arc::new(HeldDocument {
         delay: Duration::from_millis(600),
         ..HeldDocument::held(inner.clone(), "", false)
-    });
-    let mut rigs = Vec::new();
-    for (incarnation, instance) in [(0, "streams-1"), (1, "streams-2")] {
-        let rig = http_rig_build(
-            mem(),
-            RigRuntime::incarnation(incarnation),
-            HttpRigOptions {
-                fleet_store: Some(store.clone()),
-                instance: Some(instance.into()),
-                ..Default::default()
-            },
-        )
-        .await;
-        assert!(crate::fleet::start_configured(
-            rig.state.clone(),
-            &rig.tasks
-        ));
-        rigs.push(rig);
-    }
+    }))
+    .await;
     let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
     let both = || {
         rigs.iter()
@@ -845,4 +817,129 @@ async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
         assert!(report.aborted.is_empty(), "{report:?}");
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// `streams-1` and `streams-2`, each its own runtime with its fleet loop
+/// running, sharing the coordination `store`.
+async fn start_two(store: Arc<dyn ObjectStore>) -> Vec<HttpRig> {
+    let mut rigs = Vec::new();
+    for (incarnation, instance) in [(0, "streams-1"), (1, "streams-2")] {
+        let rig = http_rig_build(
+            mem(),
+            RigRuntime::incarnation(incarnation),
+            HttpRigOptions {
+                fleet_store: Some(store.clone()),
+                instance: Some(instance.into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(crate::fleet::start_configured(
+            rig.state.clone(),
+            &rig.tasks
+        ));
+        rigs.push(rig);
+    }
+    rigs
+}
+
+/// `instance`'s published heartbeat document, as every peer reads it.
+async fn published(store: &Arc<dyn ObjectStore>, instance: &str) -> serde_json::Value {
+    let path = Path::from(format!("fleet/{instance}.json"));
+    let bytes = store.get(&path).await.unwrap().bytes().await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Item 40, instance-wide withdrawal: a runtime whose supervisor lost a
+/// Critical loop publishes its withdrawal at its next beat, and every ring,
+/// its own included, drops it within a pass, not after the 30 s liveness
+/// window. (Under the process root the same loss cancels every task; the
+/// heartbeat's last beat then carries the withdrawal, as the next test pins.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_critical_loop_failure_withdraws_the_instance_from_every_ring() {
+    let inner = mem();
+    seed_ring_of_two(&inner, &[]).await;
+    let rigs = start_two(inner.clone()).await;
+    let rings_are = |ring: &[&str]| {
+        rigs.iter()
+            .all(|rig| rig.state.ownership.ring_active() == ring)
+    };
+    settled(Duration::from_secs(20), || {
+        rings_are(&["streams-1", "streams-2"])
+    })
+    .await;
+    assert!(
+        rings_are(&["streams-1", "streams-2"]),
+        "both rings must converge first"
+    );
+    assert!(
+        rigs[0]
+            .tasks
+            .spawn("probe", crate::tasks::Policy::Critical, |_| async {
+                crate::tasks::TaskResult::Failed("probe lost".into())
+            })
+            .is_ok()
+    );
+    settled(Duration::from_secs(10), || rings_are(&["streams-2"])).await;
+    assert!(
+        rings_are(&["streams-2"]),
+        "a lost Critical loop must withdraw its instance from every ring within a pass"
+    );
+    let withdrawn = published(&inner, "streams-1").await["withdrawn"].clone();
+    assert!(
+        withdrawn
+            .as_str()
+            .is_some_and(|reason| reason.contains("probe")),
+        "the heartbeat names the withdrawal: {withdrawn}"
+    );
+    for rig in &rigs {
+        assert!(
+            rig.tasks
+                .shutdown(Duration::from_secs(5))
+                .await
+                .aborted
+                .is_empty()
+        );
+        engine_shutdown(&rig.state).await;
+    }
+}
+
+/// Item 40: a stopping runtime does not simply go quiet and leave its peers
+/// to wait out the liveness window. Its heartbeat's last beat, bounded,
+/// withdraws it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopping_runtime_publishes_its_withdrawal() {
+    let inner = mem();
+    seed_ring_of_one(&inner).await;
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    let path = Path::from("fleet/streams-1.json");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while inner.head(&path).await.is_err() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        published(&inner, "streams-1").await["withdrawn"].is_null(),
+        "a running instance is not withdrawn"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    let withdrawn = published(&inner, "streams-1").await["withdrawn"].clone();
+    assert!(
+        withdrawn.is_string(),
+        "the last beat must withdraw the stopping instance: {withdrawn}"
+    );
+    engine_shutdown(&rig.state).await;
 }

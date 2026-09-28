@@ -282,17 +282,27 @@ drain timeout is reported as a timeout).
   heartbeat case now proves the heartbeat task cancels cooperatively
   (re-pinned).
 
+Step 2 landed: serving eligibility and instance-wide withdrawal.
+- Each beat carries `withdrawn`: the runtime's readiness verdict (a task
+  supervisor that is stopping or lost a Critical loop, or a shard directory
+  that reports a cell failure, never opened a shard, or could not close
+  one). Every ring, the instance's own included, drops a withdrawn
+  instance; the pilot mirror too.
+- A Critical exit under the process root cancels every task at once (the
+  review's H1), so the heartbeat's last beat, bounded by 3 s inside the
+  ordered stop's 10 s join grace, always withdraws the stopping runtime.
+  r09's shutdown budget is 4 s, not 300 ms, to cover that bound (re-pinned).
+- Tests: `a_critical_loop_failure_withdraws_the_instance_from_every_ring`
+  (two instances; both rings drop it within a pass),
+  `a_stopping_runtime_publishes_its_withdrawal`, planner and mirror tests.
+
 **Remaining steps, with the Fable design review's findings (2026-09-28).**
-- Step 2, serving eligibility and instance-wide withdrawal. A Critical exit
-  under the process root cancels every task at once, so no later beat can
-  report `serving=false` (H1): the heartbeat task publishes one final,
-  bounded (~3 s, inside the 10 s join grace) withdrawing beat when it is
-  cancelled, and a two-rig DST shows the peer drops it within one pass, not
-  30 s. The instance-wide verdict comes from the task supervisor plus the
-  shard directory's engine-failure and never-opened reasons;
-  `ShardDirectory::unready_reason` must be split into that verdict and a
-  withdrawn-prefix list (M1). A stuck tick also leaves this instance
-  serving from a stale view; an expired view should withdraw it.
+- A failed close still withdraws the whole instance, as readiness does
+  today; step 3 narrows it to the prefix (`ShardDirectory::unready_reason`
+  must be split into the instance-wide verdict and a withdrawn-prefix
+  list, M1). A stuck tick also leaves this instance serving from a stale
+  view; an expired view should withdraw it (a request-time change, so an
+  edge decision).
 - Step 3, scoped withdrawal for a failed close: not inside
   `OwnershipService::effective_owner` (it has its own fingerprinted
   contract) but as an `OwnershipView` method or as an override; return-home

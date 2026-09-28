@@ -202,6 +202,17 @@
     ]
   },
   {
+    "name": "a_critical_loop_failure_withdraws_the_instance_from_every_ring",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "828a85b0b79e5825443a971d7441a7cb53d6ff431be9f6227a28c4abcac6c67f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_debt_that_outlives_its_circles_raises_the_stale_alert",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -570,7 +581,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "01c7b4109f064b7f62966ea77437f1f27f82be053ddce95761909b793c6900e6",
+    "function_sha256": "51ebc51138162b1007af767127c56440c9c73e6671570eac4d6fdfa53ed3e0af",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -1473,15 +1484,24 @@
     "scenarios": []
   },
   {
+    "name": "a_stopping_runtime_publishes_its_withdrawal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "11253d2dded9d2b2727aa5954d9ad24b581545610633d67fc2c271d786d8d809",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_store_brownout_slows_the_tick_without_churning_the_ring",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "60bb1a1844a0863c8d8ddf6f4e9df6c12010e09df2902396733dae79d0a803b9",
+    "function_sha256": "315ebdf6b9cb6dc2600fcfbc3239d8059b26c72156935ece9cd5584cd1388912",
     "mechanisms": [],
-    "configuration": [
-      "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#,"
-    ],
+    "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
     "scenarios": []
   },
@@ -5568,7 +5588,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5cce8787011f78938aa59b7db924b0d5fba5b011d5447f2557ea8d857d9fc5f6",
+    "function_sha256": "1da52587341fd8de92daa5bf94cdf5e969f76c2ea0ccd06e0946b414e9d19c91",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",

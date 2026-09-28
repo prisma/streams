@@ -120,7 +120,9 @@ beats). Heartbeats double as the metrics feed — no separate telemetry channel
 is needed for scaling decisions. A heartbeat is published by its own
 supervised task, so a fresh one proves only that the process can publish;
 it separately carries how long ago the instance's fleet tick last completed
-an authority read (`progress_age_ms`), and ring eligibility requires both.
+an authority read (`progress_age_ms`) and any instance-wide withdrawal
+(`withdrawn`), and ring eligibility requires liveness, progress and no
+withdrawal. A stopping instance's last beat withdraws it.
 
 **The ring is derived, not stored.** Shard → instance assignment is
 **weighted rendezvous hashing** over (live, non-draining instance set +

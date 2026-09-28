@@ -9,6 +9,11 @@
 //! (`Heartbeat::progress_age_ms`); the ring planner judges the two apart
 //! (`planning::active_members`). A beat costs one PUT, and a slow or failed
 //! PUT delays only the next beat.
+//!
+//! A beat also carries this runtime's instance-wide withdrawal
+//! (`Heartbeat::withdrawn`), and a stopping runtime's last beat withdraws
+//! it: its peers drop it at their next pass instead of waiting out its
+//! liveness, while its fencing still holds for as long as it runs.
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +26,10 @@ const PERIOD: Duration = Duration::from_secs(2);
 /// Commits older than this no longer describe the durable-write cost; the
 /// store's WAL-PUT summary covers the same window.
 const ACK_WINDOW_MS: i64 = 15_000;
+/// The last beat's bound. The supervisor joins its tasks within its own
+/// grace (the ordered stop allows 10 s), so a store that no longer answers
+/// delays the stop by this much at most.
+const LAST_BEAT_DEADLINE: Duration = Duration::from_secs(3);
 
 /// Start this runtime's heartbeat beside its fleet tick.
 pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervisor) {
@@ -34,7 +43,8 @@ pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervis
     }
 }
 
-/// Publish a beat every period until cancelled.
+/// Publish a beat every period until cancelled, then a last, withdrawing
+/// one.
 async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> TaskResult {
     let mut sampler =
         Sampler::starting(Instant::now(), state.admission.fleet_ops(), cpu_time_secs());
@@ -45,19 +55,32 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
     beats.tick().await;
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => return TaskResult::Done,
+            _ = cancel.cancelled() => break,
             _ = beats.tick() => {}
         }
         sampler.observe(Instant::now(), state.admission.fleet_ops(), cpu_time_secs());
         let heartbeat = sampler.heartbeat(&state, &instance);
         let published = tokio::select! {
-            _ = cancel.cancelled() => return TaskResult::Done,
+            _ = cancel.cancelled() => break,
             published = state.fleet.publish_heartbeat(&instance, &heartbeat) => published,
         };
         if let Err(error) = published {
             tracing::warn!(%error, "heartbeat put failed");
         }
     }
+    let mut last = sampler.heartbeat(&state, &instance);
+    last.withdrawn
+        .get_or_insert_with(|| "runtime stopping".into());
+    let published = tokio::time::timeout(
+        LAST_BEAT_DEADLINE,
+        state.fleet.publish_heartbeat(&instance, &last),
+    );
+    match published.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "last heartbeat put failed"),
+        Err(_) => tracing::warn!("last heartbeat put timed out"),
+    }
+    TaskResult::Done
 }
 
 /// The smoothed request and CPU rates, and the previous reading, so each
@@ -137,11 +160,22 @@ impl Sampler {
             url: state.config.fleet.self_url.clone(),
             boot_id: state.runtime.identity.boot_id.clone(),
             progress_age_ms: state.fleet.standing().progress_age_ms(),
+            withdrawn: state.withdrawal(),
         }
     }
 }
 
 impl AppState {
+    /// Why this runtime takes no new ownership, instance-wide; `None` while
+    /// it may. It is the readiness verdict: a supervisor that is stopping
+    /// or lost a Critical loop, or a shard directory that reports a cell
+    /// failure, never opened a shard, or could not close one.
+    fn withdrawal(&self) -> Option<String> {
+        self.tasks
+            .unready_reason()
+            .or_else(|| self.shards.unready_reason())
+    }
+
     /// This runtime's own maintenance pressure as its rebalancer judges it
     /// at the tick: the most wedged shard it serves (prefix, ms) and its
     /// effective lag in seconds.

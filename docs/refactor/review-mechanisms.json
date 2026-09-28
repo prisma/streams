@@ -754,7 +754,7 @@
         {
           "file": "src/dst/tests/fleet_controller.rs",
           "name": "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry",
-          "sha256": "5cce8787011f78938aa59b7db924b0d5fba5b011d5447f2557ea8d857d9fc5f6"
+          "sha256": "1da52587341fd8de92daa5bf94cdf5e969f76c2ea0ccd06e0946b414e9d19c91"
         },
         {
           "file": "src/fleet/repository/document_tests.rs",
