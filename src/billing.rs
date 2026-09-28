@@ -37,6 +37,8 @@ pub(crate) use sweep_custody::SweepCustody;
 mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
 pub(crate) mod replaced;
+mod walk;
+use walk::walk_engine_budgeted;
 
 // ---------------------------------------------------------------------
 // Reserved system streams
@@ -1857,36 +1859,6 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     }
 }
 
-/// R29: the walk shares the scheduler budget BEFORE opening. An
-/// engine already resident is used quietly (no adoption stamp — an
-/// internal touch must not leak it out of the rotation). A cold route
-/// opens only while scheduler-held engines are under budget, takes
-/// custody like any discovery open, and is closed (or retained as an
-/// indebted resident) right after its closures are submitted. Over
-/// budget -> the descriptor is DEFERRED: the walk re-pages every
-/// sweep, which is the continuation.
-async fn walk_engine_budgeted(
-    state: &std::sync::Arc<crate::http::AppState>,
-    route: &[u8; 16],
-    budget: usize,
-) -> Option<(std::sync::Arc<crate::shard::ShardEngine>, bool)> {
-    let prefix = state.shards.prefix_for(route);
-    if let Some(e) = state.shards.open(&prefix) {
-        return Some((e, false)); // resident: quiet use, not ours to close
-    }
-    if scheduler_held(state) >= budget {
-        WALK_DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
-    let engine = state.engine_for_quiet(route).await.ok()?;
-    if mark(state, &prefix, &engine) {
-        Some((engine, true)) // scheduler-held: caller settles custody
-    } else {
-        // Custody declined (customer raced in): quiet use.
-        Some((engine, false))
-    }
-}
-
 /// After the walk finishes with a scheduler-opened engine: keep it as
 /// a budgeted resident if it carries debt, close it otherwise.
 async fn walk_settle(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
@@ -1968,7 +1940,7 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
             // Foreign routes are skipped — every instance walks the
             // same registry and closes what IT owns.
             let budget = sweep_resident_budget(&state.config.billing);
-            let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
+            let Ok((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
                 // Deferred (budget full) or open-contended: STOP and
                 // resume AT THIS PAGE next sweep — the continuation
                 // is what makes deferral fair instead of starving

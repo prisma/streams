@@ -3,23 +3,14 @@
 //! recreation replaced. Every instance runs it and closes only the segments
 //! it owns, at the persisted instant the debt carries, exactly as the walk
 //! closes a terminal descriptor it can still find.
-use super::{
-    AppState, WALK_CLOSE_SUBMITS, sweep_resident_budget, walk_engine_budgeted, walk_settle,
-};
+use super::walk::{Pass, walk_engine_budgeted};
+use super::{AppState, WALK_CLOSE_SUBMITS, sweep_resident_budget, walk_settle};
 use crate::registry::StreamDesc;
 use crate::registry::replaced::DebtEntry;
 use std::sync::Arc;
 
 /// Debts one sweep examines; the rest wait for the next sweep.
 const DEBTS_PER_SWEEP: usize = 64;
-
-/// Whether the pass goes on to the next debt or segment, or stops until the
-/// next sweep (a paused read, a deferred open).
-#[derive(PartialEq)]
-enum Pass {
-    Next,
-    Stop,
-}
 
 /// One pass over the cell's closure debts. A debt whose incarnation is
 /// still the stored one is judged by the stored descriptor: live (or
@@ -122,9 +113,12 @@ async fn settle_segment(
         return Pass::Next;
     };
     let budget = sweep_resident_budget(&state.config.billing);
-    let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
-        // Deferred or not ours to open now: the next sweep retries.
-        return Pass::Stop;
+    // Another instance's segment is skipped: its owner's own pass settles
+    // it. A deferred or contended open stops the pass, and the next sweep
+    // resumes at this debt.
+    let (engine, ours) = match walk_engine_budgeted(state, &route, budget).await {
+        Ok(acquired) => acquired,
+        Err(pass) => return pass,
     };
     let hash = dead.dynamic_segment_identity(sid);
     let pass = match engine.load_billing_meta(hash).await {
