@@ -451,3 +451,41 @@ async fn a_failed_close_beside_a_pending_one_is_reported_at_the_deadline() {
         "the failed close was dropped beside the pending one: {error}"
     );
 }
+
+/// What a stop still owes, as a planned drain reads it
+/// (`ShardDirectory::pending_work`): an idle directory owes nothing, and an
+/// open still running is owed.
+#[tokio::test]
+async fn pending_work_counts_an_open_still_running() {
+    use crate::shard_directory::{Adoption, OpenTiming, ShardDirectory};
+    let opener: crate::sharddir::OpenFn = Box::new(
+        |_prefix: String, _incarnation: crate::sharddir::EngineIncarnation| {
+            Box::pin(std::future::pending())
+        },
+    );
+    let dir = ShardDirectory::new(
+        ["00", "01", "10", "11"].map(str::to_string).to_vec(),
+        crate::ownership::OwnershipService::new(""),
+        OpenTiming {
+            open_deadline: Duration::from_secs(60),
+            open_wait: Duration::from_millis(30),
+        },
+        |_notifier| opener,
+    );
+    let (engines, opens) = dir.pending_work();
+    assert!(engines.is_empty());
+    assert_eq!(opens, 0, "an idle directory owes nothing");
+    let hash = (0u8..=255)
+        .map(|first| {
+            let mut hash = [0; 16];
+            hash[0] = first;
+            hash
+        })
+        .find(|hash| dir.prefix_for(hash) == "11")
+        .expect("a hash in 11");
+    let resolved = dir.resolve(&hash, Adoption::External).await;
+    assert!(resolved.is_err(), "the open is still running");
+    let (engines, opens) = dir.pending_work();
+    assert!(engines.is_empty());
+    assert_eq!(opens, 1, "the open still running is owed");
+}

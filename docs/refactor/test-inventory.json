@@ -250,7 +250,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "e8c37c48fd439eb8ae1089bcd1becd35eee4ee840eafe62d77c73d599d920854",
+    "function_sha256": "6525efb08434a5d7d00200d5f3179e25d54bd6f5b86ab329778b5a93437e3993",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -824,6 +824,17 @@
     "scenarios": [
       "SEL-018"
     ]
+  },
+  {
+    "name": "a_passing_read_error_before_announcing_is_retried",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e4ed7c46f185659a971f87fac63aea1331f4ae33b056883703633801191653dc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
   },
   {
     "name": "a_peer_of_an_earlier_version_means_no_drain",
@@ -1414,7 +1425,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "946f802e4902a2fbffeee9032605d31d8d839b0e69f09ff6d86e86a245e23b71",
+    "function_sha256": "5321a3e31c1ff017f9222362811f880ed8e95139e70161de4c0f06d7f5a724f7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -2177,6 +2188,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_unreadable_fleet_times_out_before_anything_is_announced",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e91b0ed04ef5576037661cf850ee30753742446a58278a778e822e3c149e8aba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
     "scenarios": []
   },
   {

@@ -42,3 +42,28 @@ fn an_infinite_cooldown_allows_a_first_split_and_never_a_merge() {
         Some(&1_000)
     );
 }
+
+/// A finite cooldown holds a stream's next split on the monotonic clock's own
+/// scale: a split 1 ms short of the cooldown is held and one at exactly the
+/// cooldown runs, however far the clock has run since boot.
+#[test]
+fn a_finite_cooldown_holds_the_next_split_at_any_clock_reading() {
+    let pol = ScalePolicy {
+        cooldown_secs: 10,
+        ..ScalePolicy::default()
+    };
+    let hot = test_desc("cooling").sref();
+    let mut s = State::default();
+    let last = 1_000_000_000;
+    s.last_transition_ms
+        .insert((hot.clone(), "epoch".into()), last);
+    let at = |s: &mut State, now| chosen(&evaluate_state(s, now, &pol, crate::usage::limits()));
+    for (now, splits) in [
+        (last + 9_999, vec![]),
+        (last + 10_000, vec!["cooling".into()]),
+    ] {
+        s.sketches
+            .insert((hot.clone(), 0), splittable("epoch", now));
+        assert_eq!(at(&mut s, now), (splits, vec![]), "at {now}");
+    }
+}

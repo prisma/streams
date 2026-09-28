@@ -403,6 +403,19 @@ struct RiggedFleet {
     parked: Option<&'static str>,
     /// A coordination document whose writes always lose their CAS.
     pinned: Option<&'static str>,
+    /// While set, every read and listing fails (an unreachable store).
+    unreachable: Arc<AtomicBool>,
+}
+
+impl RiggedFleet {
+    fn refusal(&self) -> Option<object_store::Error> {
+        self.unreachable
+            .load(Ordering::SeqCst)
+            .then(|| object_store::Error::Generic {
+                store: "rigged-fleet",
+                source: "unreachable".into(),
+            })
+    }
 }
 
 impl std::fmt::Display for RiggedFleet {
@@ -439,6 +452,9 @@ impl ObjectStore for RiggedFleet {
         path: &Path,
         opts: object_store::GetOptions,
     ) -> object_store::Result<object_store::GetResult> {
+        if let Some(refusal) = self.refusal() {
+            return Err(refusal);
+        }
         if self.parked == Some(path.as_ref()) {
             std::future::pending::<()>().await;
         }
@@ -455,12 +471,18 @@ impl ObjectStore for RiggedFleet {
         prefix: Option<&Path>,
     ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
     {
-        self.inner.list(prefix)
+        match self.refusal() {
+            Some(refusal) => Box::pin(futures_util::stream::once(async move { Err(refusal) })),
+            None => self.inner.list(prefix),
+        }
     }
     async fn list_with_delimiter(
         &self,
         prefix: Option<&Path>,
     ) -> object_store::Result<object_store::ListResult> {
+        if let Some(refusal) = self.refusal() {
+            return Err(refusal);
+        }
         self.inner.list_with_delimiter(prefix).await
     }
     async fn copy_opts(
@@ -486,6 +508,7 @@ async fn a_drain_a_live_peer_never_reads_times_out_and_names_it() {
         inner: fleet.clone(),
         parked: Some("fleet/overrides.json"),
         pinned: None,
+        unreachable: Arc::default(),
     });
     let peer = start(&data, &parked, 1, "streams-2").await;
     let beating = tokio::time::timeout(Duration::from_secs(10), async {
@@ -534,6 +557,7 @@ async fn a_sole_member_within_the_count_has_no_peer_to_hand_off_to() {
         inner: seeded,
         parked: None,
         pinned: Some("fleet/desired.json"),
+        unreachable: Arc::default(),
     });
     let member = start(&data, &fleet, 0, "streams-1").await;
     let above = start(&data, &fleet, 1, "streams-2").await;
@@ -567,4 +591,85 @@ async fn a_sole_member_within_the_count_has_no_peer_to_hand_off_to() {
         );
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// A fleet of one over a store the test can make unreachable, its desired
+/// count pinned at one.
+async fn reachable_until_told(data: &Arc<dyn ObjectStore>) -> (HttpRig, Arc<AtomicBool>) {
+    let seeded = mem();
+    seed_ring(&seeded, 1).await;
+    let unreachable = Arc::new(AtomicBool::new(false));
+    let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
+        inner: seeded,
+        parked: None,
+        pinned: Some("fleet/desired.json"),
+        unreachable: unreachable.clone(),
+    });
+    (start(data, &fleet, 0, "streams-1").await, unreachable)
+}
+
+/// A fleet that cannot be read before anything is announced: the drain gives
+/// up at one document deadline, well inside its budget, announces nothing,
+/// and names what it could not read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_fleet_times_out_before_anything_is_announced() {
+    let data = mem();
+    let (member, unreachable) = reachable_until_told(&data).await;
+    unreachable.store(true, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    let outcome = drain(&member.state, "streams-1", Duration::from_secs(25)).await;
+    let DrainOutcome::TimedOut { pending } = outcome else {
+        panic!("an unreadable fleet must time out: {outcome:?}");
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "gave up at one document deadline"
+    );
+    assert!(
+        pending.iter().any(|p| p.contains("unreadable")),
+        "{pending:?}"
+    );
+    assert!(
+        !member.state.fleet.standing().draining(),
+        "nothing is announced"
+    );
+    unreachable.store(false, Ordering::SeqCst);
+    assert!(
+        member
+            .tasks
+            .shutdown(Duration::from_secs(5))
+            .await
+            .aborted
+            .is_empty()
+    );
+    engine_shutdown(&member.state).await;
+}
+
+/// A read error before the document deadline is retried: once the fleet
+/// reads again, the drain reaches its real outcome (a fleet of one has no
+/// peer), not a timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_passing_read_error_before_announcing_is_retried() {
+    let data = mem();
+    let (member, unreachable) = reachable_until_told(&data).await;
+    unreachable.store(true, Ordering::SeqCst);
+    let readable_again = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        unreachable.store(false, Ordering::SeqCst);
+    };
+    let (outcome, ()) = futures_util::future::join(
+        drain(&member.state, "streams-1", Duration::from_secs(25)),
+        readable_again,
+    )
+    .await;
+    assert_eq!(outcome, DrainOutcome::NoPeer);
+    assert!(
+        member
+            .tasks
+            .shutdown(Duration::from_secs(5))
+            .await
+            .aborted
+            .is_empty()
+    );
+    engine_shutdown(&member.state).await;
 }
