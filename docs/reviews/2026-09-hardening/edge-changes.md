@@ -15,11 +15,11 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
-| medium | 5 | 1 | 6 | 0 | 0 | 1 | 13 |
+| medium | 5 | 1 | 7 | 0 | 0 | 1 | 14 |
 | low | 7 | 2 | 8 | 11 | 10 | 4 | 42 |
-| **Total** | **17** | **4** | **17** | **11** | **10** | **5** | **64** |
+| **Total** | **17** | **4** | **18** | **11** | **10** | **5** | **65** |
 
-64 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#64 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54 and awaits the owner's ratification.
+65 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#65 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54 and awaits the owner's ratification. #65 (billing in a fleet and across recreation, NEXT-WORK §2) awaits it too.
 
 ### Index
 
@@ -89,6 +89,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 62 | bc2c0c93 | A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it | fleet-internal | low | owner decision (item 40) |
 | 63 | this record's commit | A fleet instance drains its ownership before a termination signal stops it | process | medium | owner decision (item 40); ratified 2026-09-28 |
 | 64 | this record's commit | A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable | product | low | owner direction (#54, item 3); awaits ratification |
+| 65 | 1b65e15d, 61068487, 8182730e, db126ccd | Replaced and dead storage stops billing in a fleet, at the instant it ended | both | medium | owner direction (NEXT-WORK §2); awaits ratification |
 
 ## High risk (9)
 
@@ -262,7 +263,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high by the rubric's letter: under skew, requests that used to succeed (a Stream-Seq retry, a reused producer sequence, a stale-epoch producer) now fail permanently. Each earlier success was wrong: it wrote a record twice or admitted a producer the stream had fenced, violating the dedupe contract the same requests get without a split. Reads, consumers and scans change only from a wrong order or a false closed signal to the lineage order.
 - **Check against commit:** written with the change.
 
-## Medium risk (13)
+## Medium risk (14)
 
 These changes alter a status, error code or retry behaviour on an error case clients may branch on, or change the semantics of a successful path (redelivery timing, connection lifetime, subscription lifetime, new quota refusals).
 
@@ -508,6 +509,24 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - src/fleet/repository.rs::viewed_tests::only_the_ticks_read_records_the_draining_beats_its_view_read
 - **Risk reason:** medium: it changes what a stopping instance answers and how long its stop takes. Fencing still rules out two writers; acknowledged data is durable before the ack, and the peer serves it while the drain runs, and a write through the drained instance is refused (pinned). RATIFIED by the owner on 2026-09-28. AMENDED after ratification, following a second adversarial review: the drain's bound became 144 s (derived; it was 79 s), the whole stop 175 s (was 110 s) and the wrapper's grace 180 s (was 115 s); the drain now also ends at once when no other member within the desired count exists, reports `failed` for a failed close, and the heartbeat's ring echo was dropped for a bounded `viewed`.
 - **Check against commit:** written with the change.
+
+### #65 (commits 1b65e15d, 61068487, 8182730e, db126ccd) — Replaced and dead storage stops billing in a fleet, at the instant it ended
+
+- **Program item:** NEXT-WORK §2, the owner's release blocker for idle-expiry recreation billing; found by its closure-debt DSTs
+- **Surface:** both
+- **Endpoint:** No request changes. What changes is the storage the billing rows record and bill: `GET /v1/streams/{name}/usage[/current]`, the project usage routes, and the invoices built from the rollup, for streams recreated or ended on a fleet of two or more instances, or recreated while their billing row was still dirty.
+- **Condition:** (a) A fleet of two or more instances, where a replaced incarnation's closure debts (or its segments) live on shards different instances own. (b) A fleet of two or more, where the tombstone walk reaches a terminal descriptor on another instance's shard. (c) A recreation over an incarnation whose billing row was still dirty (not yet acked), when the drain reached the row before the closure-debt pass. (d) A walk page where a shard the walk cold-opened held nothing to close.
+- **Before:** (a) Each instance's closure-debt pass stopped at the first segment it may not open, so debts owned by different instances deadlocked and a replaced gauge stayed open, billing storage every month for good. (b) The walk stopped and re-read its page at a foreign route (a regression from R29), so in any fleet of two or more no instance walked past its first page holding another instance's dead stream: those tombstones were never closed or purged. (c) The drain closed the row at its own clock, over-billing storage from the expiry to the drain. (d) The walk kept that shard in scheduler custody, so at the resident budget a later segment on the page was deferred on every sweep.
+- **After:** (a) and (b) A segment or route on another instance's shard is skipped, and its owner closes it; a budget deferral or an open that does not complete still stops and resumes at the same place. (c) The drain closes a replaced row at its closure debt's persisted instant, falling back to its clock only when no debt names the row; a failed debt read keeps the row dirty. (d) The walk hands back every shard it opened, whatever the step found.
+- **Retry semantics:** None.
+- **Who is affected:** Customers and invoices on multi-instance deployments: storage for replaced and ended streams stops at the instant it ended instead of running on. Operators: tombstones on foreign shards are purged again.
+- **Pinning tests:**
+  - src/dst/tests/billing_closure_owners.rs::closure_debts_owned_by_different_instances_all_settle (a)
+  - src/dst/tests/billing_closure_owners.rs::a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream (b)
+  - src/dst/tests/billing_closure_debts.rs::a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry (c)
+  - src/dst/tests/billing_walk_custody.rs::a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_next_segment (d)
+- **Risk reason:** medium: it changes billed amounts. Every change moves them to what the persisted records say was owed; no amount grows.
+- **Check against commit:** written with the change. Still open, for the owner: B3 (a close that arrives after its month was finalized never corrects the rollup) and B5 (an expired source whose fork still reads it is walked closed); their tests are on branch closure-debt-policy.
 
 ## Low risk (42)
 
