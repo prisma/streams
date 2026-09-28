@@ -107,6 +107,13 @@ fn cooldown_ms(policy: &ScalePolicy) -> i64 {
     policy.cooldown_secs.saturating_mul(1000)
 }
 
+/// Whether a split may run: no record means no split yet, so even an infinite
+/// cooldown allows the first. Merges keep the sentinel age: under inf the
+/// controller refuses them by segment age, and a record would bar every split.
+fn cooled(last_ms: Option<&i64>, now_ms: i64, policy: &ScalePolicy) -> bool {
+    last_ms.is_none_or(|at| now_ms - at >= cooldown_ms(policy))
+}
+
 /// Every segment of a stream must stay cold for four times the split
 /// patience before the stream may merge; a patience past u32 saturates
 /// instead of wrapping into "merge at once".
@@ -392,13 +399,8 @@ fn evaluate_state(
             continue;
         }
         // Cooldown.
-        if now_ms
-            - cooldowns
-                .get(&(name.clone(), sk.epoch.clone()))
-                .copied()
-                .unwrap_or(i64::MIN / 2)
-            < cooldown_ms(pol)
-        {
+        let last_ms = cooldowns.get(&(name.clone(), sk.epoch.clone()));
+        if !cooled(last_ms, now_ms, pol) {
             continue;
         }
         // Both predicted children need meaningful load (≥ 15%).
@@ -637,6 +639,8 @@ impl Scaler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod first_transition;
 
     fn test_desc(name: &str) -> StreamDesc {
         crate::registry::PersistedDescriptor {
