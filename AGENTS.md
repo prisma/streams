@@ -282,6 +282,14 @@ export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
 scripts/quality/mutations.sh    # zero MISSED and TIMEOUT; ~1 min per mutant locally
 ```
 
+CI deals the same leg over the `mutants` job's four matrix jobs
+(`QUALITY_MUTANT_SHARD=k/4`, cargo-mutants `--shard`, round-robin): each
+tests every fourth selected mutant, together each one once. A diff across
+the fleet owners selects about 120 mutants whose tests include the fleet
+DSTs, which one 240 min job could not finish. Locally run it whole, or one
+share with the same variable. The driver stops at the first owner with a
+survivor: fix it, then re-run for the owners after it.
+
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 `scripts/quality/nightly.sh corpus` (under a minute).
 

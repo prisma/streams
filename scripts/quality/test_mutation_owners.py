@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
-from mutation_driver import mutation_command
+from mutation_driver import list_command, mutation_command
 from mutation_owners import (
     MutationOwner,
     OWNERS,
@@ -98,6 +100,23 @@ class MutationOwnership(unittest.TestCase):
         self.assertIn('--cargo-test-arg=sse::', command)
         self.assertIn('--cargo-test-arg=dst_tests::sse_delivery::', command)
         self.assertIn('--cargo-test-arg=dst_tests::livefeed_swap::', command)
+
+    def test_a_shard_lists_and_tests_its_round_robin_share_and_nothing_else(self):
+        entry = source_map()['src/sse/session.rs']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': '1/4'}):
+                run = mutation_command(entry, root, root / 'result', root / 'selected.diff')
+                listed = list_command(entry, root / 'selected.diff')
+            with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': ''}):
+                whole = mutation_command(entry, root, root / 'result', root / 'selected.diff')
+        for command in (run, listed):
+            self.assertEqual(command[-4:], ['--shard', '1/4', '--sharding', 'round-robin'])
+        self.assertNotIn('--shard', whole)
+        for invalid in ('4/4', '1', 'a/b', '2/1'):
+            with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': invalid}):
+                with self.assertRaises(ValueError):
+                    mutation_command(entry, Path('/tmp'), Path('/tmp/r'), None)
 
     def test_table_names_and_sources_are_unique(self):
         self.assertEqual(len({entry.name for entry in OWNERS}), len(OWNERS))

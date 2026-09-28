@@ -39,6 +39,20 @@ def cargo_test_args(filters):
     return args
 
 
+def shard_args():
+    """This job's share of every owner's mutants. CI runs the mutation leg as
+    several jobs of one selection (QUALITY_MUTANT_SHARD=k/n): each lists and
+    tests every n-th mutant, dealt round-robin, so together they test each
+    selected mutant exactly once. Unset: all of them."""
+    shard = os.environ.get('QUALITY_MUTANT_SHARD', '').strip()
+    if not shard:
+        return []
+    k, _, n = shard.partition('/')
+    if not (k.isdigit() and n.isdigit() and int(k) < int(n)):
+        raise ValueError(f'invalid QUALITY_MUTANT_SHARD {shard!r}: expected k/n with k < n')
+    return ['--shard', f'{int(k)}/{int(n)}', '--sharding', 'round-robin']
+
+
 def mutation_command(entry, out, output, diff):
     files = [f'{HARNESS_PREFIX}{path}' if entry.target == 'harness-lib' else path
              for path in entry.sources]
@@ -51,6 +65,7 @@ def mutation_command(entry, out, output, diff):
     command.extend(cargo_test_args(entry.test_filters))
     command.extend(('--profile', 'quality', '--jobs', '1', '--timeout', '90',
                     '--build-timeout', '600', '--gitignore', 'true', '--output', str(output)))
+    command.extend(shard_args())
     return command
 
 
@@ -61,6 +76,7 @@ def list_command(entry, diff, harness=False):
     for path in entry.sources:
         command.extend(('--file', f'{HARNESS_PREFIX}{path}' if harness else path))
     command.extend(('--package', 'streams-quality-invariants' if harness else 'streams-slate'))
+    command.extend(shard_args())
     return command
 
 
