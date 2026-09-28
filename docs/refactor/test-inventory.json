@@ -246,6 +246,17 @@
     "scenarios": []
   },
   {
+    "name": "a_drain_a_peer_never_acknowledges_times_out_and_names_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8b2d88f5b888d06c8b0f60251c4c057becb68321f5a0b383b48ff1b91e4150a3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -493,6 +504,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_seal.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_fleet_of_one_has_no_peer_to_hand_off_to",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "10765327792106e2da2b302e0c184d1855717167d1ec78cd9f8eca54031cc3cb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
     "scenarios": []
   },
   {
@@ -793,6 +815,17 @@
     ]
   },
   {
+    "name": "a_peer_of_an_earlier_version_means_no_drain",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "23bba0a52e964a0eddcbb89e6f117e70e212eee2ff5fdc1c27520f7bee686c27",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -819,6 +852,17 @@
     "scenarios": [
       "SEL-005"
     ]
+  },
+  {
+    "name": "a_planned_drain_hands_every_shard_to_its_peer_before_the_stop",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a54954b8fe28e2cde3b4a96c2b43525980f9e307a2bccaec176f7785b0f4b7ea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
   },
   {
     "name": "a_position_at_a_sealed_span_end_continues_in_its_successor",
@@ -1127,6 +1171,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_operations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_requested_stop_drains_the_fleet_runtime_first",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d31253c5c26d23d5d95904559fec623cecf370559866549ef7ad28bf30ad996c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
     "scenarios": []
   },
   {

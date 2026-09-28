@@ -23,6 +23,7 @@
 //! `exits`); a signal that no executor worker is free to observe asks for
 //! nothing. Every other supervisor's owner answers for its loops.
 
+mod drain;
 mod exits;
 mod refusal;
 mod shutdown;
@@ -30,8 +31,8 @@ mod shutdown;
 pub(crate) mod signal;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Once, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -212,9 +213,14 @@ struct Inner {
     /// On a process root: the first critical loop that ended before any stop
     /// was requested, the cause of the stop it then requested (item 38).
     stop_cause: OnceLock<exits::CriticalExit>,
-    /// On a process root: the stop's bound is armed once, by whichever asked
-    /// first, the critical exit or a termination signal (item 38, D1).
-    stop_armed: Once,
+    /// On a process root: the bound its stop was armed with, once, by
+    /// whichever asked first: the critical exit, a termination signal, or the
+    /// planned drain a signal began (item 38, D1; item 40).
+    armed: OnceLock<Duration>,
+    /// The planned drain a requested stop runs first, until it begins.
+    preface: Mutex<Option<drain::StopPreface>>,
+    /// Whether that drain has begun.
+    draining: AtomicBool,
 }
 
 impl Inner {
@@ -275,13 +281,27 @@ pub(crate) struct ShutdownRequest {
 }
 
 impl ShutdownRequest {
-    /// Requests the ordered stop. On a process root this also arms the
-    /// stop's bound off the executor (item 38, owner decision D1). The
-    /// signal task that calls it runs on the executor, so a signal that
-    /// arrives when every worker is already blocked never gets here.
+    /// Requests the ordered stop. A runtime that registered a planned drain
+    /// (`TaskSupervisor::set_stop_preface`) runs it first, and the drain's
+    /// own end stops it (item 40). On a process root this also arms the
+    /// stop's bound off the executor (item 38, owner decision D1), extended
+    /// by the drain's budget. The signal task that calls it runs on the
+    /// executor, so a signal that arrives when every worker is already
+    /// blocked never gets here.
     pub(crate) fn request(&self) {
+        let drains = self
+            .inner
+            .upgrade()
+            .is_some_and(|inner| inner.begin_drain());
+        if !drains {
+            self.stop_now();
+        }
+    }
+
+    /// The ordered stop at once: a stop with no drain, or a drain's end.
+    fn stop_now(&self) {
         if let Some(inner) = self.inner.upgrade() {
-            exits::arm_root_deadline(&inner);
+            exits::arm_root_deadline(&inner, Duration::ZERO);
             TaskSupervisor { inner }.cancel();
         }
     }
@@ -366,7 +386,9 @@ impl TaskSupervisor {
                 connection_panics: AtomicU64::new(0),
                 root: OnceLock::new(),
                 stop_cause: OnceLock::new(),
-                stop_armed: Once::new(),
+                armed: OnceLock::new(),
+                preface: Mutex::new(None),
+                draining: AtomicBool::new(false),
             }),
         }
     }

@@ -38,6 +38,8 @@ pub(super) struct Candidacy {
     progress_age_ms: u64,
     /// Whether it withdrew from new ownership, instance-wide.
     withdrawn: bool,
+    /// Whether it is handing its ownership off in a planned drain.
+    draining: bool,
 }
 
 impl super::Heartbeat {
@@ -49,12 +51,21 @@ impl super::Heartbeat {
             age_ms: now_ms - self.ts_ms,
             progress_age_ms: self.progress_age_ms.unwrap_or(0),
             withdrawn: self.withdrawn.is_some(),
+            draining: self.draining,
         }
     }
 }
 
+impl Candidacy {
+    /// Whether a peer with this candidacy is a ring member: one that can
+    /// take ownership over, and whose own view a drain waits for.
+    pub(super) fn takes_ownership(&self) -> bool {
+        member(false, Some(self))
+    }
+}
+
 /// The ring's active members: the first `count` ordinal instances that have
-/// not withdrawn, whose controller published a completed pass within the
+/// neither withdrawn nor begun a planned drain, whose controller published a completed pass within the
 /// progress deadline of their latest heartbeat and, for a peer, whose
 /// heartbeat is still live.
 /// This instance is running (its own tick is asking), so its liveness is not
@@ -87,6 +98,7 @@ fn member(is_self: bool, candidacy: Option<&Candidacy>) -> bool {
             (is_self || candidacy.age_ms < RING_LIVENESS_MS)
                 && candidacy.progress_age_ms < PROGRESS_DEADLINE_MS
                 && !candidacy.withdrawn
+                && !candidacy.draining
         }
         None => is_self,
     }
@@ -195,6 +207,23 @@ mod tests {
         let peer = [beat("streams-1", 0, Some(0)), withdrawn("streams-2")];
         assert_eq!(ring(2, &peer), ["streams-1"]);
         let this = [withdrawn("streams-1"), beat("streams-2", 0, Some(0))];
+        assert_eq!(ring(2, &this), ["streams-2"]);
+    }
+
+    #[test]
+    fn a_draining_instance_leaves_every_ring_itself_included() {
+        let draining = |instance: &str| {
+            let document = format!(
+                r#"{{"instance":"{instance}","ts_ms":{NOW},"rps":0.0,"owned_shards":[],"draining":true}}"#
+            );
+            let heartbeat: crate::fleet::Heartbeat = serde_json::from_str(&document).unwrap();
+            (instance.to_string(), heartbeat.candidacy(NOW))
+        };
+        let peer = [beat("streams-1", 0, Some(0)), draining("streams-2")];
+        assert_eq!(ring(2, &peer), ["streams-1"]);
+        assert!(!peer[1].1.takes_ownership());
+        assert!(peer[0].1.takes_ownership());
+        let this = [draining("streams-1"), beat("streams-2", 0, Some(0))];
         assert_eq!(ring(2, &this), ["streams-2"]);
     }
 

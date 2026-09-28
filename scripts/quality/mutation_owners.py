@@ -104,6 +104,7 @@ OWNERS = (
     owner('maintenance_row', 'src/shard/maintenance_row.rs', 'shard::'),
     owner('tasks_shutdown', 'src/tasks/shutdown.rs', 'tasks::'),
     owner('tasks_exits', 'src/tasks/exits.rs', 'tasks::'),
+    owner('tasks_drain', 'src/tasks/drain.rs', 'tasks::'),
     owner('runtime', 'src/runtime.rs', 'runtime::'),
     owner('runtime_telemetry', 'src/runtime/telemetry.rs', 'runtime::'),
     owner('product_cursor', 'src/product_cursor.rs', 'product_cursor::'),
@@ -149,11 +150,14 @@ OWNERS = (
     # The repository hands each runtime its standing; only the rigs read a
     # standing back through a published heartbeat.
     owner('fleet_repository', 'src/fleet/repository.rs', 'fleet:: dst_tests::fleet_controller::'),
+    # The drain's handoff is proven by the two-instance rigs.
+    owner('fleet_drain', 'src/fleet/drain.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
-    owner('fleet_heartbeat', 'src/fleet/heartbeat.rs', 'fleet:: dst_tests::fleet_controller::'),
+    owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain::'),
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),
@@ -167,7 +171,7 @@ OWNERS = (
     # The assembly and the tick are proven by DST rigs, not by module tests:
     # `fleet::` alone ran zero tests against a mutated `start_configured`.
     owner('fleet', 'src/fleet.rs',
-          'fleet:: dst_tests::fleet_controller:: dst_tests::runtime_isolation::'),
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::runtime_isolation::'),
     owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload:: security_usage:: debug_store_reports_this_runtimes_shard_opens debug_surface_ dst_tests::billing_readiness:: dst_tests::billing_operation_counts::raw_'),
     owner('http_debug', 'src/http/debug.rs', 'debug_surface_'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),

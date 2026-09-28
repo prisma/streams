@@ -260,6 +260,8 @@ mod runtime_journals;
 
 #[path = "tests/fleet_controller.rs"]
 mod fleet_controller;
+#[path = "tests/fleet_drain.rs"]
+mod fleet_drain;
 #[path = "tests/runtime_usage.rs"]
 mod runtime_usage;
 #[path = "tests/scaler_controller.rs"]

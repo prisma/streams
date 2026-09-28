@@ -139,10 +139,17 @@ impl ExitWatch {
             name: self.label,
             outcome: outcome_of(ended),
         };
+        // A planned drain lets loops end cooperatively (the signal loop ends
+        // right after it requests the drain); only a failure stops the
+        // runtime before the drain does.
+        if inner.draining() && exit.outcome == TaskOutcome::Finished {
+            return;
+        }
         if stop_on_exit(&inner.cancel_tx, &inner.stop_cause, exit.clone()) {
             // Bounded first: the log line below writes to stdout, which can
             // block, and a published stop must never be left unbounded.
-            arm_root_deadline(&inner);
+            arm_root_deadline(&inner, Duration::ZERO);
+            let deadline = inner.armed.get().copied().unwrap_or(deadline);
             tracing::error!(
                 task = self.label,
                 "{exit}; requesting the ordered stop, bounded at {deadline:?}"
@@ -161,16 +168,19 @@ fn outcome_of(ended: &Result<TaskResult, Box<dyn Any + Send>>) -> TaskOutcome {
 }
 
 /// A process root's stop is bounded once, by whichever asked first: its
-/// critical exit, or a termination signal's request (owner decision D1).
-/// Any other supervisor has no bound to arm.
-pub(super) fn arm_root_deadline(inner: &Inner) {
+/// critical exit, a termination signal's request (owner decision D1), or
+/// the planned drain that request began, whose budget, `drain`, extends the
+/// bound (item 40). Any other supervisor has no bound to arm.
+pub(super) fn arm_root_deadline(inner: &Inner, drain: Duration) {
     if let Some(&deadline) = inner.root.get() {
         // A critical exit records itself before it publishes the stop, so the
         // cause at arm time is the stop's own; a signal's request has none.
         let cause = inner.stop_cause.get().map(ToString::to_string);
-        inner
-            .stop_armed
-            .call_once(|| arm_stop_deadline(deadline, cause));
+        inner.armed.get_or_init(|| {
+            let bound = deadline + drain;
+            arm_stop_deadline(bound, cause);
+            bound
+        });
     }
 }
 

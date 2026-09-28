@@ -303,23 +303,52 @@ Step 2 landed: serving eligibility and instance-wide withdrawal.
   list, M1). A stuck tick also leaves this instance serving from a stale
   view; an expired view should withdraw it (a request-time change, so an
   edge decision).
-- Step 3, scoped withdrawal for a failed close: not inside
-  `OwnershipService::effective_owner` (it has its own fingerprinted
-  contract) but as an `OwnershipView` method or as an override; return-home
-  must not hand the prefix back to its withdrawer; if every member
-  withdraws a prefix, withdrawals for it are ignored (M1).
-- Step 4, planned drain. Name arbitration by CAS on the heartbeat PUT, not
-  by comparing `boot_id` clocks (H2); a draining process yields and reports
-  `Superseded`. The drain bound must fit the deploy wrapper's 35 s SIGKILL
-  (`deploy/app-server/supervise.ts`) and arm the off-executor deadline at
-  drain start (H3). Completion is "every live peer's heartbeat lists me in
-  `excluded`" (peers echo their view, never a cross-host time comparison,
-  H4) and every retired engine settled (M3); the outcome is a typed
-  `DrainOutcome` (complete, timed out naming what was pending,
-  superseded). Hook: extract the signal-task spawn from `bootstrap::run`
-  and register a stop preface from `fleet::start_configured` (M5).
-  `/readyz` while draining is an edge decision (M8); COMPUTE-SPEC §5.2's
-  one-shard-at-a-time handoff needs amending or honouring.
+- Step 3, scoped withdrawal. Determination (owner-delegated): a failed
+  close stays instance-wide. Its prefix can never reopen in this process
+  and only a restart heals it; step 2 already takes the instance out of
+  every ring within a pass, and the watchdog restarts it. Scoped withdrawal
+  fits a prefix that repeatedly fails to OPEN on one instance (the open
+  gate's strikes); that is a separate change, and it would move `/readyz`
+  semantics, an edge decision. Placement when it comes: not inside
+  `OwnershipService::effective_owner` (its own fingerprinted contract) but
+  as an `OwnershipView` method or an override; return-home must not hand
+  the prefix back; if every member withdraws a prefix, ignore withdrawals
+  for it (M1).
+- Step 4 landed: planned drain. A requested stop runs the drain the fleet
+  registered (`TaskSupervisor::set_stop_preface`, `tasks::drain`) before
+  any loop is cancelled. `bootstrap::run` is untouched: its approved growth
+  rows record exact values, so extracting the signal task (M5) would have
+  made them stale; `ShutdownRequest::request` begins the drain instead, and
+  the signal loop's own `Done` during a drain is its consequence while a
+  failing Critical exit still stops at once. The process root's bound is
+  armed at drain start with the drain's bound added (H3): 79 s drain
+  (derived: draining beat's PUT 10 s, a peer pass 2 + 45 s, the peer's next
+  beat 2 + 10 s, shard closes 10 s), 1 s to record the outcome, 30 s stop:
+  110 s; the wrapper's forward grace is 115 s. Completion: this runtime
+  holds nothing (no shard, open in flight, or unsettled or failed close,
+  M3) and every peer that takes ownership has published a view that read
+  one of its draining beats (`viewed`, recorded by the tick's own
+  heartbeat-set read and promoted when it publishes the view; boot id and
+  beat sequence, no clocks, H4) and leaves it out (`ring`: the ordinal
+  fallback could otherwise keep it). A peer of an earlier version (no
+  `seq`) means no drain: `NoPeer` at once, never announced. Outcomes:
+  `HandedOff`, `NoPeer`, `TimedOut { pending }`. A first design that
+  trusted each peer's echoed ring alone reported `HandedOff` from a ring a
+  peer published before it had seen the drainer; the second Fable review
+  (2026-09-28) found eleven more gaps, all fixed or documented. Tests: `dst_tests::fleet_drain` (two instances
+  sharing data and fleet stores: the peer serves the acknowledged record;
+  a peer that never acknowledges times out and is named; a fleet of one;
+  the wiring through a requested stop) and `tasks::drain`.
+- Still open, for the owner: name arbitration when a replacement process
+  reuses an ordinal name (H2: CAS on the heartbeat PUT, a draining process
+  yields as `Superseded`); `/health` during a drain answers 503 `critical
+  task terminated: signal` (the signal loop ended when it asked for the
+  drain; a clearer text needs a change inside `TaskMonitor::unready_reason`,
+  whose contract would grow; M8); whether Compute's own stop grace allows
+  the 110 s bound (D10); a second termination signal during a drain is not
+  observed (the signal loop in `bootstrap::run` ends after the first);
+  COMPUTE-SPEC §5.2's one-shard-at-a-time handoff
+  (the drain yields every shard at its first excluded pass).
 
 ---
 

@@ -32,7 +32,7 @@ const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
     reason = "MAX_MEMBERS; the member cap is a small u32 constant and usize is at least 32 bits on every supported target; a checked conversion is not available in a const"
 )]
 pub(super) const MAX_MEMBERS: usize = crate::config::FleetConfig::MAX_MEMBERS as usize;
-const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+pub(super) const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 pub(crate) struct FleetRepository {
@@ -81,7 +81,30 @@ impl FleetRepository {
 
     /// Complete bounded populations. An incomplete/invalid snapshot is
     /// an error, so the controller retains its prior ownership view.
+    /// The fleet tick's read, and only the tick's: the draining beats it
+    /// finds are recorded as those its next published view read
+    /// (`Standing::mark_progress`). Every other reader peeks.
     pub(crate) async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
+        let beats: Vec<Heartbeat> = self.read_population("fleet", true).await?;
+        self.standing.read(
+            beats
+                .iter()
+                .filter(|beat| beat.draining)
+                .map(|beat| {
+                    let viewed = super::standing::ViewedBeat {
+                        boot_id: beat.boot_id.clone(),
+                        seq: beat.seq,
+                    };
+                    (beat.instance.clone(), viewed)
+                })
+                .collect(),
+        );
+        Ok(beats)
+    }
+
+    /// The heartbeat set for any reader but the tick (a drain's poll, the
+    /// operator view): it is not recorded as what a view read.
+    pub(crate) async fn peek_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
         self.read_population("fleet", true).await
     }
 
@@ -291,7 +314,7 @@ impl FleetRepository {
         if !self.enabled() {
             return (None, None);
         }
-        let heartbeats = self.read_heartbeat_set().await.ok().map(|items| {
+        let heartbeats = self.peek_heartbeat_set().await.ok().map(|items| {
             items
                 .into_iter()
                 .filter_map(|hb| serde_json::to_value(hb).ok())
@@ -452,3 +475,49 @@ mod population_tests {
 #[cfg(test)]
 #[path = "repository/document_tests.rs"]
 mod document_tests;
+
+#[cfg(test)]
+mod viewed_tests {
+    use super::FleetRepository;
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
+    use std::sync::Arc;
+
+    /// A drain's completion rests on `viewed` naming the beats the published
+    /// view read, so only the tick's read may record them, and only draining
+    /// beats are recorded.
+    #[tokio::test]
+    async fn only_the_ticks_read_records_the_draining_beats_its_view_read() {
+        let store = Arc::new(InMemory::new());
+        for (instance, draining) in [("streams-1", true), ("streams-2", false)] {
+            let document = format!(
+                r#"{{"instance":"{instance}","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":{draining},"boot_id":"b","seq":7}}"#
+            );
+            store
+                .put(
+                    &Path::from(format!("fleet/{instance}.json")),
+                    PutPayload::from(document),
+                )
+                .await
+                .unwrap();
+        }
+        let repository = FleetRepository::new(Some(store));
+        let (listed, _) = repository.operator_snapshot().await;
+        assert_eq!(listed.map(|beats| beats.len()), Some(2));
+        repository.standing().mark_progress();
+        assert!(
+            repository.standing().viewed().is_empty(),
+            "the operator's read is not what the tick's view read"
+        );
+        assert_eq!(repository.read_heartbeat_set().await.unwrap().len(), 2);
+        repository.standing().mark_progress();
+        let viewed = repository.standing().viewed();
+        assert_eq!(viewed.keys().collect::<Vec<_>>(), ["streams-1"]);
+        assert_eq!(
+            (
+                viewed["streams-1"].boot_id.as_str(),
+                viewed["streams-1"].seq
+            ),
+            ("b", 7)
+        );
+    }
+}

@@ -355,7 +355,25 @@ was death (§3.6).
   or the runtime stopping; a stopping runtime's last beat always carries
   it). Staleness > 10 s = not live. The ring drops an instance whose
   heartbeat is > 30 s old, whose `progress_age_ms` reached 139 s (a live
-  process whose controller is stuck), or that published `withdrawn`.
+  process whose controller is stuck), that published `withdrawn`, or that
+  is `draining`. Each beat also carries its per-boot `seq`, the instance's
+  current `ring` view, and in `viewed` which draining beat of each draining
+  candidate that view read.
+- **Planned drain** (item 40): SIGTERM/SIGINT to a fleet instance first
+  drains it, before any loop is cancelled. It publishes `draining` at once,
+  keeps beating and serving (the listener stays open; `/health` answers
+  503 `critical task terminated: signal`, and the draining beat carries the
+  same text in `withdrawn`, since the signal loop ends when it asks for the
+  drain), yields its shards as every ring drops it, and waits until it holds
+  nothing (no shard, open or unsettled close) and every peer that takes
+  ownership has published a view that read its drain (`viewed`) and leaves
+  it out (`ring`). The log line names the outcome: `planned drain
+  complete`, `no peer can take ownership through a drain` (a fleet of one,
+  or a peer of an earlier version, which would keep routing here: then no
+  drain is announced), or `planned drain timed out` with what was pending.
+  The drain is bounded at 79 s and the process stop at 110 s in all; the
+  wrapper kills at 115 s. A second signal during the drain is not observed
+  (the signal loop ends after the first); SIGKILL stops at once.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across

@@ -91,6 +91,22 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::Inner::begin_drain",
+      "path": "src/tasks/drain.rs",
+      "reason": "The drain loop selects between supervised cancellation (a critical failure stops the runtime at once) and its budget-bounded drain; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_planned_drain_hands_every_shard_to_its_peer_before_the_stop",
+      "path": "src/dst/tests/fleet_drain.rs",
+      "reason": "The drain and its watcher run concurrently in one test task so the watcher samples while the drain waits; the compiler checks the join's expansion and both futures borrow the test's rigs.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::macro(proptest)",
       "path": "src/postings/validated/properties.rs",
       "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
@@ -2775,6 +2791,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
       "syntax": "path = \"tests/security_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_drain",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Planned-drain scenarios (item 40): two instances sharing data and fleet stores hand a shard over while the draining one keeps beating, a peer that never reads the drain times it out, a fleet of one has no peer, and a requested stop drains first; compiled and executed with DST.",
+      "syntax": "path = \"tests/fleet_drain.rs\""
     },
     {
       "category": "effect",

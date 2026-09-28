@@ -16,6 +16,8 @@ use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+/// This runtime's planned drain, run before a requested stop.
+pub(crate) mod drain;
 mod heartbeat;
 mod outbox;
 mod planning;
@@ -23,93 +25,8 @@ mod planning;
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
 mod standing;
+pub(crate) use heartbeat::Heartbeat;
 pub(crate) use repository::{FleetDocument, FleetRepository};
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct Heartbeat {
-    pub instance: String,
-    /// When this beat was published (publisher clock). Its own supervised
-    /// task publishes every beat, so its age is process liveness only
-    /// (`fleet::heartbeat`).
-    pub ts_ms: i64,
-    pub rps: f64,
-    /// p50 of commit durable-wait over the last 15 s across owned shards
-    /// (ms). The latency dimension of the load vector (§4.2): rps alone
-    /// deadlocks — a congested instance caps its own throughput signal.
-    #[serde(default)]
-    pub ack_p50_ms: f64,
-    /// Measured process CPU (user+sys) over the last heartbeat interval,
-    /// as % of one core. THE primary scaling signal: assumed-capacity
-    /// constants go stale every time the engine changes speed (run 5
-    /// scaled out at ~5 % utilization because SCALE_RPS_CAPACITY still
-    /// described the pre-pacing engine). Utilization is workload- and
-    /// version-independent.
-    #[serde(default)]
-    pub cpu_pct: f64,
-    /// In-flight HTTP requests at heartbeat time / windowed peak since the
-    /// last beat. Measures ADMITTED CONCURRENCY — the per-instance
-    /// resource the platform edge actually bounds (runs 6–8: the fleet
-    /// ceiling at 16–25 % CPU).
-    #[serde(default)]
-    pub inflight: i64,
-    #[serde(default)]
-    pub inflight_peak: i64,
-    /// Resident set size (MB). The 1 GB boxes die at ~RSS cap (the
-    /// block-cache epidemic); scaling and alarms need to see it.
-    #[serde(default)]
-    pub rss_mb: f64,
-    /// O14a: WAL PUT latency at the object_store client over the last 15 s
-    /// (ms) — the durable-commit path's raw store cost, same window as
-    /// ack_p50_ms so excursions correlate sample-for-sample.
-    #[serde(default)]
-    pub wal_put_p50_ms: u64,
-    #[serde(default)]
-    pub wal_put_p99_ms: u64,
-    /// Outbound object-store ops in flight now / peak. The platform egress
-    /// budget (~50 concurrent per instance) gates these; a pinned peak
-    /// during an ack excursion is the egress-exhaustion signature.
-    #[serde(default)]
-    pub out_inflight: i64,
-    #[serde(default)]
-    pub out_inflight_peak: i64,
-    pub owned_shards: Vec<String>,
-    pub draining: bool,
-    /// Age of the oldest unabsorbed bytes across owned shards (s). The
-    /// rebalance signal: sustained > REBALANCE_LAG_SECS means this host
-    /// cannot keep up with its shards' internal machinery and one should
-    /// move (SCALING.md §4).
-    #[serde(default)]
-    pub absorb_lag_max_secs: u64,
-    /// Worst wedge across owned shards (ms): blocked commit write or
-    /// stale durability. Complements absorb lag as the rebalance signal —
-    /// a backpressured shard sheds appends BEFORE they commit, so lag
-    /// (age of committed-but-unabsorbed bytes) never grows on a wedged
-    /// instance (ladder p4b D3: zero-flow vacuous run).
-    #[serde(default)]
-    pub wedge_max_ms: i64,
-    /// This instance's own base URL (SELF_URL env), published so peers
-    /// can fan segment-scoped work out to the owner — cross-owner
-    /// lineage reads and consumer sweeps need an address, and only the
-    /// platform (not the instance's peers) knows it otherwise.
-    #[serde(default)]
-    pub url: String,
-    /// The publishing runtime's boot identity: Compute reuses ordinal
-    /// names across deploys, so the name alone cannot tell two processes
-    /// apart.
-    #[serde(default)]
-    pub boot_id: String,
-    /// How long before this beat the publisher's fleet tick last completed
-    /// a pass (monotonic): controller progress, judged apart from liveness
-    /// (`planning::active_members`). Absent from a version whose tick
-    /// stamped the heartbeat itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress_age_ms: Option<u64>,
-    /// Why this instance takes no new ownership (instance-wide withdrawal:
-    /// a lost Critical loop, a cell failure, or the runtime stopping);
-    /// absent while it may. Every ring drops a withdrawn instance, its own
-    /// included, while its heartbeat stays live.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub withdrawn: Option<String>,
-}
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
@@ -451,6 +368,10 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     };
     state.fleet.standing().mark_progress();
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
+    let (drained, instance) = (state.clone(), cfg.instance.clone());
+    tasks.set_stop_preface(drain::SUPERVISED, move || {
+        Box::pin(drain::run(drained, instance))
+    });
     start(state, cfg, tasks);
     true
 }

@@ -13,16 +13,21 @@
 //! A beat also carries this runtime's instance-wide withdrawal
 //! (`Heartbeat::withdrawn`), and a stopping runtime's last beat withdraws
 //! it: its peers drop it at their next pass instead of waiting out its
-//! liveness, while its fencing still holds for as long as it runs.
+//! liveness, while its fencing still holds for as long as it runs. A beat
+//! also says when this runtime drains, and which beat of each candidate its
+//! current ownership view read, which a peer's planned drain waits on
+//! (`fleet::drain`).
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{AppState, Heartbeat, cpu_time_secs, rss_bytes};
+use serde::{Deserialize, Serialize};
+
+use super::{AppState, cpu_time_secs, rss_bytes, standing};
 use crate::shard::now_ms;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
 /// How often this instance publishes its heartbeat.
-const PERIOD: Duration = Duration::from_secs(2);
+pub(super) const PERIOD: Duration = Duration::from_secs(2);
 /// Commits older than this no longer describe the durable-write cost; the
 /// store's WAL-PUT summary covers the same window.
 const ACK_WINDOW_MS: i64 = 15_000;
@@ -30,6 +35,108 @@ const ACK_WINDOW_MS: i64 = 15_000;
 /// grace (the ordered stop allows 10 s), so a store that no longer answers
 /// delays the stop by this much at most.
 const LAST_BEAT_DEADLINE: Duration = Duration::from_secs(3);
+
+/// The heartbeat document, `fleet/<instance>.json`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct Heartbeat {
+    pub instance: String,
+    /// When this beat was published (publisher clock). Its own supervised
+    /// task publishes every beat, so its age is process liveness only
+    /// (`fleet::heartbeat`).
+    pub ts_ms: i64,
+    pub rps: f64,
+    /// p50 of commit durable-wait over the last 15 s across owned shards
+    /// (ms). The latency dimension of the load vector (§4.2): rps alone
+    /// deadlocks — a congested instance caps its own throughput signal.
+    #[serde(default)]
+    pub ack_p50_ms: f64,
+    /// Measured process CPU (user+sys) over the last heartbeat interval,
+    /// as % of one core. THE primary scaling signal: assumed-capacity
+    /// constants go stale every time the engine changes speed (run 5
+    /// scaled out at ~5 % utilization because SCALE_RPS_CAPACITY still
+    /// described the pre-pacing engine). Utilization is workload- and
+    /// version-independent.
+    #[serde(default)]
+    pub cpu_pct: f64,
+    /// In-flight HTTP requests at heartbeat time / windowed peak since the
+    /// last beat. Measures ADMITTED CONCURRENCY — the per-instance
+    /// resource the platform edge actually bounds (runs 6–8: the fleet
+    /// ceiling at 16–25 % CPU).
+    #[serde(default)]
+    pub inflight: i64,
+    #[serde(default)]
+    pub inflight_peak: i64,
+    /// Resident set size (MB). The 1 GB boxes die at ~RSS cap (the
+    /// block-cache epidemic); scaling and alarms need to see it.
+    #[serde(default)]
+    pub rss_mb: f64,
+    /// O14a: WAL PUT latency at the object_store client over the last 15 s
+    /// (ms) — the durable-commit path's raw store cost, same window as
+    /// ack_p50_ms so excursions correlate sample-for-sample.
+    #[serde(default)]
+    pub wal_put_p50_ms: u64,
+    #[serde(default)]
+    pub wal_put_p99_ms: u64,
+    /// Outbound object-store ops in flight now / peak. The platform egress
+    /// budget (~50 concurrent per instance) gates these; a pinned peak
+    /// during an ack excursion is the egress-exhaustion signature.
+    #[serde(default)]
+    pub out_inflight: i64,
+    #[serde(default)]
+    pub out_inflight_peak: i64,
+    pub owned_shards: Vec<String>,
+    /// The publisher is handing its ownership off in a planned drain: every
+    /// ring drops it while it keeps beating (`fleet::drain`).
+    pub draining: bool,
+    /// Age of the oldest unabsorbed bytes across owned shards (s). The
+    /// rebalance signal: sustained > REBALANCE_LAG_SECS means this host
+    /// cannot keep up with its shards' internal machinery and one should
+    /// move (SCALING.md §4).
+    #[serde(default)]
+    pub absorb_lag_max_secs: u64,
+    /// Worst wedge across owned shards (ms): blocked commit write or
+    /// stale durability. Complements absorb lag as the rebalance signal —
+    /// a backpressured shard sheds appends BEFORE they commit, so lag
+    /// (age of committed-but-unabsorbed bytes) never grows on a wedged
+    /// instance (ladder p4b D3: zero-flow vacuous run).
+    #[serde(default)]
+    pub wedge_max_ms: i64,
+    /// This instance's own base URL (SELF_URL env), published so peers
+    /// can fan segment-scoped work out to the owner — cross-owner
+    /// lineage reads and consumer sweeps need an address, and only the
+    /// platform (not the instance's peers) knows it otherwise.
+    #[serde(default)]
+    pub url: String,
+    /// The publishing runtime's boot identity: Compute reuses ordinal
+    /// names across deploys, so the name alone cannot tell two processes
+    /// apart.
+    #[serde(default)]
+    pub boot_id: String,
+    /// How long before this beat the publisher's fleet tick last completed
+    /// a pass (monotonic): controller progress, judged apart from liveness
+    /// (`planning::active_members`). Absent from a version whose tick
+    /// stamped the heartbeat itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_age_ms: Option<u64>,
+    /// Why this instance takes no new ownership (instance-wide withdrawal:
+    /// a lost Critical loop, a cell failure, or the runtime stopping);
+    /// absent while it may. Every ring drops a withdrawn instance, its own
+    /// included, while its heartbeat stays live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawn: Option<String>,
+    /// This beat's sequence number within its boot.
+    #[serde(default)]
+    pub seq: u64,
+    /// Which draining beat of each draining candidate the publisher's
+    /// current ownership view read. A peer's planned drain waits until
+    /// every taker's view read one of its draining beats and `ring` leaves
+    /// it out (`fleet::drain`). Empty from an earlier version.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub viewed: standing::Viewed,
+    /// The publisher's current ring view (its active members).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ring: Vec<String>,
+}
 
 /// Start this runtime's heartbeat beside its fleet tick.
 pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervisor) {
@@ -57,6 +164,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = beats.tick() => {}
+            () = state.fleet.standing().beat_requested() => {}
         }
         sampler.observe(Instant::now(), state.admission.fleet_ops(), cpu_time_secs());
         let heartbeat = sampler.heartbeat(&state, &instance);
@@ -140,6 +248,9 @@ impl Sampler {
         let (wal_put_p50_ms, wal_put_p99_ms, out_inflight, out_inflight_peak) =
             crate::store_timing::heartbeat_summary();
         let ts_ms = now_ms();
+        // The sequence first: a beat numbered from the drain's first on
+        // reads the drain that began before its number was taken.
+        let seq = state.fleet.standing().next_beat();
         Heartbeat {
             instance: instance.to_string(),
             ts_ms,
@@ -154,13 +265,16 @@ impl Sampler {
             out_inflight,
             out_inflight_peak,
             owned_shards: engines.into_iter().map(|(prefix, _)| prefix).collect(),
-            draining: false,
+            draining: state.fleet.standing().draining(),
             absorb_lag_max_secs: state.runtime.usage.absorb_lag_max(),
             wedge_max_ms,
             url: state.config.fleet.self_url.clone(),
             boot_id: state.runtime.identity.boot_id.clone(),
             progress_age_ms: state.fleet.standing().progress_age_ms(),
             withdrawn: state.withdrawal(),
+            seq,
+            viewed: state.fleet.standing().viewed(),
+            ring: state.ownership.ring_active(),
         }
     }
 }
