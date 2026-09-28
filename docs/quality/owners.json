@@ -251,6 +251,22 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_closure_debts",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_closure_debts.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_closure_owners",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Two-instance closure-debt scenarios (NEXT-WORK section 2, owner movement): each instance closes only the replaced segments it owns, debts owned by different instances settle, and the tombstone walk reaches a waiting debt's incarnation on its owner; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_closure_owners.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_peer_compatibility",
       "path": "src/dst/dst_tests.rs",
       "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",

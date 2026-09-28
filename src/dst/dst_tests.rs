@@ -22,6 +22,12 @@ mod admission_memory;
 #[path = "tests/billing_attribution.rs"]
 mod billing_attribution;
 
+#[path = "tests/billing_closure_debts.rs"]
+mod billing_closure_debts;
+
+#[path = "tests/billing_closure_owners.rs"]
+mod billing_closure_owners;
+
 #[path = "tests/billing_controller.rs"]
 mod billing_controller;
 

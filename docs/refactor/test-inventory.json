@@ -126,6 +126,17 @@
     "scenarios": []
   },
   {
+    "name": "a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d616ba02335eefbd75f6f492e354a64ed893f0cfc7c280e18c24466a8214ae06",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_owners.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crashed_creators_late_reference_is_released_without_a_client_retry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -224,6 +235,17 @@
     "scenarios": []
   },
   {
+    "name": "a_debt_written_before_a_crashed_replacement_waits_for_the_walk_and_settles_later",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0021b797125fb171e263d90a718aec18e27437f90af93a9260a669cf3ec63b49",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_declined_retirement_keeps_the_engine_and_arms_nothing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -243,6 +265,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "be555703a32148e902616aecdf50575ff3050e45c58348843723da54dbd3def4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
     "scenarios": []
   },
   {
@@ -727,6 +760,17 @@
     "scenarios": []
   },
   {
+    "name": "a_month_crossing_recreation_bills_storage_only_up_to_the_expiry_instant",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e80cfc83a12ac97de34cf4e810c308b9d3b71f69d49162394770de35b149856f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_non_closing_duplicate_releases_its_own_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1048,6 +1092,17 @@
     ]
   },
   {
+    "name": "a_raw_recreation_over_an_idle_expired_incarnation_closes_at_its_expiry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "939b133bb58bac8dab57bddae4eaa93ae46742958b018bd4ba99e9ce186c1e64",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_receive_after_delete_in_the_same_group_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1102,6 +1157,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass_drops",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "202401e6613488b90d6a4f2ebfa37a96cfcbe220baad36aa2fc44806f5a260eb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
     "scenarios": []
   },
   {
@@ -1432,6 +1498,17 @@
     "scenarios": []
   },
   {
+    "name": "a_soft_deleted_source_is_never_replaced_and_keeps_billing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ebf61ea0829d83b6bc7623424bf281356e69fbf58ad9d9117b3cbda63ba5c026",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_sole_member_within_the_count_has_no_peer_to_hand_off_to",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1454,6 +1531,17 @@
     "scenarios": [
       "QUE-011"
     ]
+  },
+  {
+    "name": "a_split_incarnation_settles_segment_by_segment_and_only_then_forgets_its_debt",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "00980899d87df44f467c145f44febcd1deb602b1080ac5745bb4da73afd4e9bb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
   },
   {
     "name": "a_split_the_allocator_cannot_number_keeps_its_intent_pending",
@@ -2425,6 +2513,17 @@
     ]
   },
   {
+    "name": "closure_debts_owned_by_different_instances_all_settle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "20c815c92aae9524de00cdfad5d52bb72fa27e54bef109613107fc71502ba36d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_owners.rs",
+    "scenarios": []
+  },
+  {
     "name": "cold_shard_maintenance_debt_survives_the_sweep_and_drains",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2907,6 +3006,17 @@
     "scenarios": [
       "SEC-010"
     ]
+  },
+  {
+    "name": "each_instance_closes_only_the_replaced_segments_it_owns",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2de08428a678107894c143b8c30acfcca0ec86dc5497e25c40205739f99b1db6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_owners.rs",
+    "scenarios": []
   },
   {
     "name": "enforce_denials_journal_to_audit_events",
