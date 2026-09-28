@@ -271,14 +271,16 @@ mod tests {
     #[test]
     fn the_ack_median_covers_only_the_window() {
         let now = 100_000;
+        // The stale sample and the window's edge each move the median.
         let waits = vec![
             (now - ACK_WINDOW_MS - 1, 900_000),
-            (now - ACK_WINDOW_MS, 3_000),
-            (now, 1_000),
-            (now - 1, 2_000),
-            (now - 2, 5_040),
+            (now - ACK_WINDOW_MS, 1_000),
+            (now, 3_000),
+            (now - 1, 5_000),
         ];
         assert_eq!(recent_p50_ms(waits, now), 3.0);
+        let even = vec![(now, 1_000), (now, 2_000), (now, 3_000), (now, 4_000)];
+        assert_eq!(recent_p50_ms(even, now), 3.0, "the upper median");
         assert_eq!(recent_p50_ms(Vec::new(), now), 0.0);
     }
 
