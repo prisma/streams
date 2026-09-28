@@ -186,8 +186,9 @@ impl CommitTransaction<'_> {
         }
         let ts = req.ts_hint_ms.unwrap_or_else(now_ms).max(local.fields.ts);
         let start = local.fields.next;
-        let cipher =
-            crate::crypto::FrameCipher::new(&req.subkey, &hash, self.cfg.frame_compression);
+        let cipher = local
+            .frames
+            .cipher(&req.subkey, &hash, self.cfg.frame_compression);
         let usage = req.usage.clone();
         let (mut pt_sum, mut frame_sum) = (0u64, 0u64);
         for (i, payload) in req.entries.iter().enumerate() {
