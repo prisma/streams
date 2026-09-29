@@ -173,8 +173,9 @@ morning's slower substrate had paced the identical binary to a survivable
   into an 8-minute L0-full flush wedge), `L0_MAX_SSTS` 32 for
   compaction-lag headroom (L0 count costs S3 objects, not RAM), absorber
   pass 32 MiB;
-- `ADMIT_RSS_SHED_MB` 550 — below the kill line with margin, so the shed
-  fires while the process can still serve;
+- `ADMIT_RSS_SHED_MB` 500, the default (this envelope first ran 550; the
+  OOM review of 2026-08-07 lowered it) — below the kill line with margin,
+  so the shed fires while the process can still serve;
 - note: before 2026-07-21 the RSS sampler only ran in fleet mode, so the
   shed was silently DEAD in standalone deployments (compared against a
   frozen 0). Fixed — the sampler is unconditional now.
@@ -248,7 +249,7 @@ itself (`resume_split`). `SCALE_FAULT_POINT=after_seal` and
 | env | default | pilot value | behavior |
 |---|---|---|---|
 | `ADMIT_MAX_INFLIGHT` | 0 (off) | 256 | above this many in-flight requests, `/v1/stream` gets `429 + Retry-After: 1` and a 25 ms tarpit. Direct-path instance capacity measured at ~510 concurrent; 256 is the guarded setting for router-fronted 1-CPU boxes |
-| `ADMIT_RSS_SHED_MB` | 0 (off) | 800 | writes (non-GET) get `429 + Retry-After: 2` while RSS exceeds this. Without it a 1-GB box OOM-dies at full throughput instead of shedding |
+| `ADMIT_RSS_SHED_MB` | 500 | 500 | appends (clients' and the server's own to its usage, audit and ops streams; not creates or deletes) get `429 + Retry-After: 2` after a 25 ms tarpit while sampled RSS plus the absorber's reserved bytes exceeds this (counted in MiB). Without it a 1-GB box OOM-dies at full throughput instead of shedding. The first pilot's 800 sat above the ~750 MB kill line and protected nothing; 0 turns it off |
 
 The A/B is stark (run 11): identical overload, guards off = all four
 instances dead in ~2 minutes; guards on = zero deaths, zero stalls, client
@@ -292,7 +293,7 @@ for i in 1 2 3 4; do
     -e SLATE_S3_REGION=auto -e SLATE_S3_ACCESS_KEY_ID=t -e SLATE_S3_SECRET_ACCESS_KEY=t \
     -e PATH_PREFIX=dockerfleet -e FLEET_PREFIX=dockerfleet -e INSTANCE_NAME=streams-$i \
     -e INITIAL_SHARDS=16 -e AUTH_TOKEN=devtoken -e TOKIO_WORKERS=3 \
-    -e ADMIT_MAX_INFLIGHT=256 -e ADMIT_RSS_SHED_MB=800 \
+    -e ADMIT_MAX_INFLIGHT=256 \
     streams-slate:local --listen 0.0.0.0:8080
 done
 ```
@@ -579,7 +580,7 @@ JSON; `/operator/runbook` serves this document (compiled into the binary).
 process at ~750 MB RSS on the pilot instance class, and the crash loop that
 follows is unrecoverable under load (each replacement replays WAL under full
 pressure and dies again — observed on slate-codex 2026-07-21). Therefore:
-`ADMIT_RSS_SHED_MB` defaults to 600 and must always sit well below the kill
+`ADMIT_RSS_SHED_MB` defaults to 500 and must always sit well below the kill
 line; steady-state feature budgets must sum ≤ 450 MB, leaving headroom for
 shard-open replay and compaction bursts.
 
@@ -588,7 +589,7 @@ shard-open replay and compaction bursts.
 | signal | healthy | investigate |
 |---|---|---|
 | ack_p50_ms | 50–65 under load | > 250 sustained 15 min (also the scale-out trigger) |
-| rss_mb | 190–300 | > 700 (shed starts at 800) |
+| rss_mb | 190–300 | > 450 (appends are shed at 500) |
 | cpu_pct | tracks load; 75 % = scale-out | pinned > 90 with low rps |
 | wal_put_p99 (heartbeat) | < 150 ms | > 300 ms sustained → run the §5 diagnosis |
 | out_inflight_peak | < 100 | — (no hard egress cap observed up to 258) |

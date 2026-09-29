@@ -365,6 +365,19 @@ fn shipped_fixed_memory_budgets_sum_to_336_mib() {
     assert_eq!(fixed / (1024 * 1024), 336);
 }
 
+/// The boot check warns when the fixed budgets plus 100 exceed the shed
+/// line. Shipped: 336 + 100 = 436 against 500. With the 192 MiB cache the
+/// sum was 400 and a 500 line sat on the boundary, so the two defaults
+/// belong together.
+#[test]
+fn shipped_shed_line_keeps_the_boot_checks_headroom() {
+    let c = load_with(&[]);
+    assert_eq!(c.cli.admit_rss_shed_mb, 500);
+    let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
+    assert_eq!(fixed_mb + 100, 436);
+    assert_eq!(c.cli.admit_rss_shed_mb - (fixed_mb + 100), 64);
+}
+
 #[test]
 fn env_overlay_applies_with_legacy_parse_semantics() {
     let c = load_with(&[
@@ -544,7 +557,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "PROJECT_MEMORY_RELEASE_PCT",
         "75",
     ),
-    ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "600"),
+    ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "500"),
     ("sse-max-connections", "SSE_MAX_CONNECTIONS", "10000"),
     (
         "admit-max-inflight-per-stream",
@@ -592,6 +605,28 @@ fn cli_surface_is_pinned() {
         actual, want,
         "CLI surface drifted; a rename/default change is a product decision, not a refactor"
     );
+}
+
+/// Each flag's help is its own: the RSS shed text sat on
+/// `--project-memory-pressure-bytes`, and `--admit-rss-shed-mb` had none.
+#[test]
+fn the_rss_shed_line_is_described_on_its_own_flag() {
+    let cmd = CliArgs::command();
+    let help = |flag: &str| {
+        cmd.get_arguments()
+            .find(|a| a.get_long() == Some(flag))
+            .and_then(|a| a.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default()
+    };
+    let shed = help("admit-rss-shed-mb");
+    assert!(shed.starts_with("RSS shed threshold (MB)"), "{shed:?}");
+    let pressure = help("project-memory-pressure-bytes");
+    assert!(
+        pressure.starts_with("Round-13: per-project memory-pressure"),
+        "{pressure:?}"
+    );
+    assert!(!pressure.contains("RSS shed"), "{pressure:?}");
 }
 
 #[test]

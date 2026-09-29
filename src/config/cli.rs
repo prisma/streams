@@ -469,12 +469,6 @@ pub struct CliArgs {
     #[arg(long, env = "SCALE_EDGE_LATENCY_MS", default_value_t = 1000)]
     pub(crate) scale_edge_latency_ms: u64,
 
-    /// RSS shed threshold (MB): 429 writes while RSS exceeds this.
-    /// Docker phase 1: without it a 1 GB cgroup OOM-kills the instance at
-    /// full throughput. MUST sit well below the platform kill line (the
-    /// slate-codex A/B died at ~750 MB anon RSS on Prisma Compute with the
-    /// shed configured at 800 — an unreachable guard protects nothing).
-    /// Default 600 for the ~750 MB pilot instance class; 0 = off.
     /// Round-13: per-project memory-pressure high watermark in bytes
     /// (0 = the backstop is off; the profile pins a certified value).
     #[arg(long, env = "PROJECT_MEMORY_PRESSURE_BYTES", default_value_t = 0)]
@@ -482,7 +476,17 @@ pub struct CliArgs {
     /// Hysteresis release point as a percentage of the high watermark.
     #[arg(long, env = "PROJECT_MEMORY_RELEASE_PCT", default_value_t = 75)]
     pub(crate) project_memory_release_pct: u64,
-    #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 600)]
+    /// RSS shed threshold (MB): 429 writes while RSS exceeds this.
+    /// Docker phase 1: without it a 1 GB cgroup OOM-kills the instance at
+    /// full throughput. MUST sit well below the platform kill line (the
+    /// slate-codex A/B died at ~750 MB anon RSS on Prisma Compute with the
+    /// shed configured at 800 — an unreachable guard protects nothing).
+    /// Counted in MiB, as sampled RSS plus the absorber's reserved bytes.
+    /// Default 500, the certified 1 GiB posture
+    /// (deploy/profiles/compute-1g.env). It assumes the default caches:
+    /// the fixed budgets sum to 336 MiB and boot warns when they leave
+    /// less than 100 below this line. 0 = off.
+    #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 500)]
     pub(crate) admit_rss_shed_mb: u64,
 
     /// Instance cap on live SSE subscriptions (#267): new subscriptions
@@ -636,7 +640,7 @@ impl CliArgs {
             scale_edge_latency_ms: 1000,
             project_memory_pressure_bytes: 0,
             project_memory_release_pct: 75,
-            admit_rss_shed_mb: 600,
+            admit_rss_shed_mb: 500,
             sse_max_connections: 10_000,
             admit_max_inflight_per_stream: 64,
             admit_max_inflight: 0,

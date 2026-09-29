@@ -897,5 +897,7 @@ implementer's judgement.
 Changed so far (package 2):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
-  cache: edge record #67. The profile keeps its lines: its sha256 is pinned
-  by release evidence and `bench/soak/oom-acceptance.sh` requires them.
+  cache (0b34b86f): edge record #67. The profile keeps its lines: its
+  sha256 is pinned by release evidence and `bench/soak/oom-acceptance.sh`
+  requires them.
+- The shed line, 500: edge record #68.
