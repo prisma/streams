@@ -492,11 +492,11 @@ pub struct CliArgs {
     /// Instance cap on live SSE subscriptions (#267): new subscriptions
     /// past the cap get a typed 503 subscription_capacity instead of
     /// subscriber RSS pushing UNRELATED appends over the write shed
-    /// line. 0 = unlimited. Default 10k is the certification rung of
-    /// the per-instance ladder (measured ~44 KB/parked conn after
-    /// #269 => ~440 MB at the cap); raising it is a deliberate
-    /// experimental posture, not part of default certification.
-    #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
+    /// line. 0 = unlimited (refused under the release posture). Default
+    /// 1,200 is the 1 GiB Compute class value: the public edge bounds
+    /// service concurrency near 1.2-1.4k (bench/WORKLOAD-CERT-PLAN.md).
+    /// A larger class sets its own cap once a ladder has measured it.
+    #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 1_200)]
     pub(crate) sse_max_connections: u64,
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
@@ -641,7 +641,7 @@ impl CliArgs {
             project_memory_pressure_bytes: 0,
             project_memory_release_pct: 75,
             admit_rss_shed_mb: 500,
-            sse_max_connections: 10_000,
+            sse_max_connections: 1_200,
             admit_max_inflight_per_stream: 64,
             admit_max_inflight: 0,
             scale_edge_slots: 140,

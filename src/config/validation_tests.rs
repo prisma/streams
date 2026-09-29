@@ -527,6 +527,27 @@ mod validate_boundary_tests {
     }
 
     #[test]
+    fn an_unset_subscription_cap_is_1200() {
+        let v = validate_with(|_| {}, &[]).expect("the shipped defaults must validate");
+        assert_eq!(
+            v.configured_capacity,
+            super::ConfiguredCapacity::Development(1_200)
+        );
+        let mut notices = Vec::new();
+        let e = super::resolve_effective_capacity(
+            super::ConfiguredCapacity::Release(std::num::NonZeroU64::new(1_200).unwrap()),
+            super::DescriptorLimits {
+                soft: None,
+                hard: std::num::NonZeroU64::new(4_096),
+            },
+            &mut notices,
+        )
+        .unwrap();
+        assert_eq!((e.sse_max_connections, e.configured), (1_200, 1_200));
+        assert!(notices.is_empty(), "{notices:?}");
+    }
+
+    #[test]
     fn deterministic_default_configuration_is_valid() {
         let v = validate_with(|_| {}, &[]).expect("the shipped defaults must validate");
         assert_eq!(v.config().cli.project_id, "proj_local");

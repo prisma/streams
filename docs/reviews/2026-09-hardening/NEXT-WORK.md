@@ -901,5 +901,6 @@ Changed so far (package 2):
   sha256 is pinned by release evidence and `bench/soak/oom-acceptance.sh`
   requires them.
 - The shed line, 500 (6fb8d8f0): edge record #68.
-- Feed retention, 64 MiB for the cell and half of it for one project:
-  edge record #69.
+- Feed retention, 64 MiB for the cell and half of it for one project
+  (18a6eaf6): edge record #69.
+- The cap on live subscriptions, 1,200: edge record #70.

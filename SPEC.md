@@ -365,7 +365,7 @@ share.
   | append body | 32 MB | router + engine reject |
   | response chunk | 8 MB | engine |
   | per-stream sustained appends | measured (engine, 2026-07-14 round 2): **12.4k req/s, 55k ev/s, 56 MB/s** peak; **~750 req/s / 48k ev/s / ~49 MB/s pinned-sustained** with absorber+trim active — the earlier ~0.4–1.7 MB/s figure was two config defaults (`l0_max_ssts_per_key`, manifest-poll staleness), not a compaction defect. Stated product limit: 5k req/s / 50k ev/s / 50 MB/s per ordered stream, latency floor 2× flush + PUT (EXPERIMENT-PILOT bench round 2) | admission token bucket + committer fair-share |
-  | per-stream live tail connections | 10,000 direct (unbounded via CDN/mux tier — OPERATIONS.md §4) | connection counter |
+  | live tail connections per instance | 1,200 direct by default (`SSE_MAX_CONNECTIONS`, the 1 GiB Compute class value; all streams of the instance share it; unbounded via CDN/mux tier — OPERATIONS.md §4) | connection counter: 503 `subscription_capacity`, `retry-after: 5` |
   | per-customer streams | 1,000,000 (D21) | create-time counter leases |
   | per-customer connections/cell | 100,000 | admission |
   | stream size / retention | unbounded bytes; retention configurable per stream, default none | TTL + archive tiering |
@@ -472,7 +472,8 @@ Resolved and promoted to the decision log: dynamic sharding (D3), ciphertext
 at the CDN + SDK decryption (D19), external key/auth service with a baseline
 CLI (D20), globally unique names at billions-of-streams scale (D21), 5 ms
 flush interval and single buckets per role (D22, D6). Conservative starting
-numbers retained: 10k conns/instance (revisit upward), 30 s max long-poll,
+numbers retained: 1,200 conns/instance on the 1 GiB class (10k was the
+certification rung; revisit upward after an in-VPC ladder), 30 s max long-poll,
 min 3 / max 64 instances.
 
 **Decisions still needing confirmation**

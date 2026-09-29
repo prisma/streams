@@ -15,11 +15,11 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
-| medium | 5 | 1 | 9 | 0 | 0 | 1 | 16 |
+| medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
 | low | 7 | 2 | 9 | 11 | 10 | 5 | 44 |
-| **Total** | **17** | **4** | **21** | **11** | **10** | **6** | **69** |
+| **Total** | **17** | **4** | **22** | **11** | **10** | **6** | **70** |
 
-69 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#69 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as does #69, the profile's feed retention as the default.
+70 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#70 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, and #70, its cap on live subscriptions.
 
 ### Index
 
@@ -93,7 +93,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 66 | 0b7840c7 | A storage close that reaches the rollup after its month was finalized corrects that month to the close instant, and no later month bills the closed segment | both | medium | owner decision (B3, 2026-09-29); ratified 2026-09-29 |
 | 67 | 823b3269, 648d7df4, 0b34b86f | A server started without settings runs the certified 1 GiB posture | process | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 68 | 6fb8d8f0 | A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
-| 69 | this record's commit | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 69 | 18a6eaf6 | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 70 | this record's commit | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 
 ## High risk (9)
 
@@ -267,7 +268,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high by the rubric's letter: under skew, requests that used to succeed (a Stream-Seq retry, a reused producer sequence, a stale-epoch producer) now fail permanently. Each earlier success was wrong: it wrote a record twice or admitted a producer the stream had fenced, violating the dedupe contract the same requests get without a split. Reads, consumers and scans change only from a wrong order or a false closed signal to the lineage order.
 - **Check against commit:** written with the change.
 
-## Medium risk (16)
+## Medium risk (17)
 
 These changes alter a status, error code or retry behaviour on an error case clients may branch on, or change the semantics of a successful path (redelivery timing, connection lifetime, subscription lifetime, new quota refusals).
 
@@ -577,6 +578,24 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
   - unchanged: src/admission.rs::rss_gate_counts_reserved_bytes (the gate itself)
 - **Risk reason:** medium: a request that was admitted is refused, on a server that sets nothing. The refusal is the one clients already handle, production is unchanged, and the lower line is the certified one. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #70 (this record's commit) — A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions
+
+- **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default."
+- **Surface:** both
+- **Endpoint:** raw `GET /v1/stream/{name}?live=sse`; product `GET /v1/streams/{name}/records:sse`. Operator: `GET /v1/debug/load` (`sse_max_connections`, `sse_configured_max_connections`, `sse_effective_max_connections`) and the boot notices about the descriptor ceiling.
+- **Condition:** An instance that does not set `SSE_MAX_CONNECTIONS` already holds 1,200 live SSE subscriptions and a further subscription arrives.
+- **Before:** The cap was 10,000 (clamped to 3,072 under the release posture on a platform with 4,096 descriptors, with the notice `SseCapClamped`; outside the release posture the notice `SseCapExceedsDescriptors` at every boot). Subscriptions 1,201 to 10,000 (or to 3,072) were admitted.
+- **After:** Subscription 1,201 is answered `503` with code `subscription_capacity`, message `instance at live-subscription capacity; retry another instance or later`, header `retry-after: 5`, before the stream opens. Subscriptions already open are not touched. `/v1/debug/load` reports 1200, and neither descriptor notice is logged on a platform with 4,096 descriptors. An explicit value, including 0 (unlimited, refused under the release posture), behaves as before.
+- **Retry semantics:** The refusal is retryable after 5 s and is released as soon as any subscription of the instance ends; in a fleet another instance may admit it. No new status or code: the same refusal, reached earlier.
+- **Who is affected:** Deployments without the profile that hold more than 1,200 concurrent SSE subscriptions on one instance. Production cells that source the profile already run 1,200. `docs/PERF-LIVEFEED.md` records that 10,000 admitted an all-solo geometry that fails near 5,000 on the 1 GiB class, so the old default admitted load the class cannot carry. A larger instance class must set the name.
+- **Pinning tests:**
+  - src/config/tests.rs::cli_surface_is_pinned (red-first: left `("sse-max-connections", "SSE_MAX_CONNECTIONS", "10000")`)
+  - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
+  - src/config/validation_tests.rs::an_unset_subscription_cap_is_1200 (new, red-first: left `Development(10000)`)
+  - unchanged: src/admission.rs::subscription_budget_is_exact (the refusal at the cap), src/config/validation_tests.rs::release_capacity_never_turns_the_sse_gate_off
+- **Risk reason:** medium: a subscription that was admitted is refused with a retryable 503, only where the name is unset. 1,200 is the 1 GiB Compute class value, not a measured capacity of every class. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Low risk (44)
@@ -1346,7 +1365,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** low: no answer changes and production sets every value already. It changes throughput and memory of a server that sets nothing, toward the only posture that was certified. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-### #69 (this record's commit) — A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell
+### #69 18a6eaf6 — A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell
 
 - **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default." That an unset project allowance is half of the cell, and not a fixed 32 MiB, is the implementer's choice under the owner's delegation: it gives the profile's 32 MiB at the default and stays valid for every cell a deployment sets.
 - **Surface:** both

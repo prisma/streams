@@ -558,7 +558,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "75",
     ),
     ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "500"),
-    ("sse-max-connections", "SSE_MAX_CONNECTIONS", "10000"),
+    ("sse-max-connections", "SSE_MAX_CONNECTIONS", "1200"),
     (
         "admit-max-inflight-per-stream",
         "ADMIT_MAX_INFLIGHT_PER_STREAM",

@@ -182,7 +182,8 @@ OUT-OF-REGION generator (the in-region hairpin path buffers SSE):
 1,000 → 2,500 → 5,000 → 7,500 → 10,000
 ```
 
-10,000 is the default SSE_MAX_CONNECTIONS rung; raising the cap is a
+10,000 is the top certification rung (the binary's default cap is 1,200;
+each rung sets SSE_MAX_CONNECTIONS); raising the cap past it is a
 deliberate experimental posture, not part of default certification.
 At each rung: park long enough for several heartbeat intervals,
 sparse writes, the 1,000 wps rotating workload, and separately the
