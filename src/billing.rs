@@ -1118,12 +1118,7 @@ pub(crate) async fn open_read_spool(
     if state.billing.read_spool_open() {
         return Ok(());
     }
-    let prefix = state
-        .config
-        .billing
-        .path_prefix_env
-        .clone()
-        .unwrap_or_default();
+    let prefix = state.config.cli.path_prefix.clone().unwrap_or_default();
     let sp = ReadSpool::open_with_cache(
         state.data_store.clone(),
         &prefix,

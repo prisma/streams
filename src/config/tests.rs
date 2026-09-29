@@ -198,6 +198,19 @@ fn billing_selectors_keep_their_exact_words() {
     assert!(cli.billing_required() && cli.runs_rollup());
 }
 
+/// PATH_PREFIX has one reader, the clap field `cli.path_prefix`: the
+/// overlay copies no second value into the billing knobs, and the startup
+/// summary prints none.
+#[test]
+fn path_prefix_is_not_a_billing_knob() {
+    assert_eq!(
+        load_with(&[("PATH_PREFIX", "x")]).billing,
+        load_with(&[]).billing
+    );
+    let summary = load_with(&[("PATH_PREFIX", "x")]).redacted_summary();
+    assert_eq!(summary["billing"].get("path_prefix_env"), None);
+}
+
 #[test]
 fn default_values_are_pinned() {
     // The no-environment posture, knob by knob. Every literal here is
@@ -245,7 +258,6 @@ fn default_values_are_pinned() {
     assert!(!c.cli.billing_required());
     assert!(c.billing.meter_enabled);
     assert!(!c.cli.runs_rollup());
-    assert_eq!(c.billing.path_prefix_env, None);
     assert_eq!(c.billing.outbox_sweep_secs, 300);
     assert_eq!(c.billing.telemetry_drain_secs, 2);
     assert_eq!(c.billing.metrics_interval_secs, 15);

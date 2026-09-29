@@ -5,8 +5,8 @@
 //!
 //! - **Fidelity over elegance.** Each field preserves the exact parse
 //!   expression, default and divergence of the site it replaced —
-//!   including known quirks (see `BillingConfig::path_prefix_env` and the
-//!   two readers of `COMPACT_MAX_SST_SIZE_BYTES`, which share one default).
+//!   including known quirks (see the two readers of
+//!   `COMPACT_MAX_SST_SIZE_BYTES`, which share one default).
 //!   Semantic cleanup is separate work (WP-13/WP-14), not the refactor.
 //! - **No secrets in the knob graph.** Key material, tokens and
 //!   credentials live only in `cli` (the parsed command line); the
@@ -203,10 +203,6 @@ pub struct HttpConfig {
 pub struct BillingConfig {
     /// BILLING_METER: metering on unless == "off" (per-append read).
     pub meter_enabled: bool,
-    /// RAW PATH_PREFIX env value. `open_read_spool` reads the env
-    /// directly (NOT `--path-prefix`), while `spawn_rollup` uses the clap
-    /// field — preserved as-is; WP-13 owns the unification.
-    pub path_prefix_env: Option<String>,
     /// OUTBOX_SWEEP_SECS, default 300.
     pub outbox_sweep_secs: u64,
     /// TELEMETRY_DRAIN_SECS, default 2. Also bounds the terminal drain
@@ -445,7 +441,6 @@ impl Default for BillingConfig {
     fn default() -> Self {
         Self {
             meter_enabled: true,
-            path_prefix_env: None,
             outbox_sweep_secs: 300,
             telemetry_drain_secs: 2,
             metrics_interval_secs: 15,

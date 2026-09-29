@@ -942,5 +942,19 @@ Changed so far (package 2, then package 1):
   `src/bootstrap.rs` still speaks of legacy compatibility options
   (TLA-011), and the comment above `gc_interval` in `src/history.rs` still
   names the alias (TLA-016, TLA-018, TLA-019; the file has no line
-  headroom). Not done in package 1: `--compactor-max-concurrent` and the
+  headroom). Not done in that commit: `--compactor-max-concurrent` and the
   second reader of `PATH_PREFIX`.
+- Package 1, `PATH_PREFIX` has one reader (edge record #75): the read
+  spool opens under the prefix clap resolved, as the stores and the rollup
+  do, so `--path-prefix` on argv moves the spool with them. The copy
+  `BillingConfig::path_prefix_env` and its key in the startup summary are
+  gone; the tool's pin of HEAD's leaves is 149 and `rename-map.json` pairs
+  the old leaf with `cli.path_prefix`. A deployment that gives the prefix
+  through the environment only (every family in the repository) keeps its
+  spool's location. For one that gave it on argv only and meters usage,
+  the spool moves from `P/telemetry/read-spool/<instance>` to
+  `P/P/telemetry/read-spool/<instance>`; nothing is migrated, rows left in
+  the old spool are not billed, and RUNBOOK §11 says how to upgrade
+  (`spool.depth` 0, then a graceful stop). No such deployment is known.
+  For the owner with the ratification: whether not migrating is right.
+  Still not done in package 1: `--compactor-max-concurrent`.

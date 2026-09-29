@@ -200,6 +200,19 @@ class RenameTest(unittest.TestCase):
                               {'cli.billing_mode': '"required"'}, RENAME)
         self.assertEqual([(r['kind'], r['effective']) for r in rows], [('paired', 'equal-effective')])
 
+    def test_pair_of_two_options_compares_the_inner_values(self):
+        rename = {'pairs': [{'old': 'billing.path_prefix_env', 'new': 'cli.path_prefix', 'none_equals': 'None'}],
+                  'added': [], 'removed': []}
+
+        def effective(old_env, prefix):
+            rows = ec.diff_leaves({'billing.path_prefix_env': old_env, 'cli.path_prefix': prefix},
+                                  {'cli.path_prefix': prefix}, rename)
+            return [(r['kind'], r['effective']) for r in rows]
+        self.assertEqual(effective('Some("soak")', 'Some("soak")'), [('paired', 'equal-effective')])
+        self.assertEqual(effective('None', 'None'), [('paired', 'equal-effective')])
+        # The prefix given on argv only: the old spool did not see it.
+        self.assertEqual(effective('None', 'Some("pp")'), [('paired', 'unequal')])
+
     def test_none_equals_the_clap_default(self):
         rows = ec.diff_leaves({'billing.mode_env': 'None', 'cli.billing_mode': '"off"'},
                               {'cli.billing_mode': '"off"'}, RENAME)

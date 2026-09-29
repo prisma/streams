@@ -71,7 +71,7 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
                    'bench/soak/wc-ladder.sh', 'scripts/bench-fra-ab.sh']
 # Pins (K9, E1, E2): a new field, knob or reader changes one of these and the
 # tool fails until the pin is updated deliberately.
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 150
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 149
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 
@@ -427,9 +427,10 @@ def diff_leaves(old, new, rename):
         if pair['new'] not in new:
             raise CoverageError(f"paired new path {pair['new']} missing")
         effective = unwrap_option(old[pair['old']], pair['none_equals'])
+        resolved = unwrap_option(new[pair['new']], pair['none_equals'])
         rows.append({'kind': 'paired', 'path': f"{pair['old']} ~ {pair['new']}", 'old': old[pair['old']],
                      'new': new[pair['new']],
-                     'effective': 'equal-effective' if effective == new[pair['new']] else 'unequal',
+                     'effective': 'equal-effective' if effective == resolved else 'unequal',
                      'commit': pair.get('commit'), 'edge_record': pair.get('edge_record')})
     for added in rename['added']:
         if added['new'] in new and added['new'] not in old:

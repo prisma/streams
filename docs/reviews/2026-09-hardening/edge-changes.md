@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 4 | 0 | 0 | 0 | 10 |
 | medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
-| low | 7 | 2 | 11 | 11 | 10 | 6 | 47 |
-| **Total** | **17** | **4** | **25** | **11** | **10** | **7** | **74** |
+| low | 7 | 2 | 11 | 11 | 10 | 7 | 48 |
+| **Total** | **17** | **4** | **25** | **11** | **10** | **8** | **75** |
 
-74 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#74 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record. #73 settles the refused storage close of a Db that had already failed; the owner left that call to the implementer on 2026-09-29, and the record awaits ratification. #74 removes eight setting names that did nothing (package 1 of `config-simplification.md`), on the same delegation; it awaits ratification.
+75 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#75 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record. #73 settles the refused storage close of a Db that had already failed; the owner left that call to the implementer on 2026-09-29, and the record awaits ratification. #74 removes eight setting names that did nothing (package 1 of `config-simplification.md`), on the same delegation; it awaits ratification. #75 gives `PATH_PREFIX` one reader, so that the read spool follows `--path-prefix` (the last row of package 1), on the same delegation; it awaits ratification.
 
 ### Index
 
@@ -98,7 +98,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 71 | fd093a39 | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 72 | 35dc7b3c | A billing close of a row that is already closed through its instant writes nothing | both | low | owner decision (2026-09-29); awaits ratification |
 | 73 | 464a1624 | A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart | both | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
-| 74 | this record's commit | The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone | process | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
+| 74 | a675d8ca | The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone | process | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
+| 75 | this record's commit | The read spool opens under the clap-resolved path prefix: PATH_PREFIX has one reader, and --path-prefix on argv moves the spool with the stores and the rollup | process | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
 
 ## High risk (10)
 
@@ -622,7 +623,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a subscription that was admitted is refused with a retryable 503, only where the name is unset. 1,200 is the 1 GiB Compute class value, not a measured capacity of every class. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-## Low risk (47)
+## Low risk (48)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1452,7 +1453,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** low: the change removes a permanent refusal in one interleaving and makes it answer as the two that already reopen. The race itself cannot be forced from outside SlateDB, so the red is the verdict as a function of what a returned close reports, and three tests read those reports from a real Db. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-### #74 (this record's commit) — The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone
+### #74 a675d8ca — The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone
 
 - **Program item:** NEXT-WORK §13, package 1 of `config-simplification.md` (settings that do nothing). Owner answer of 2026-09-29: "For other questions, please make your own judgement call." The answer contains no explicit approval of this package; the removal was made on that delegation.
 - **Surface:** process (operator-debug for the startup log)
@@ -1479,6 +1480,24 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
   - unchanged and green: the `scaler3::` suite (scaler behaviour did not move), src/bootstrap/tests.rs::active_absorber_options_reach_the_absorber_configuration (renamed; its block on the removed fields is gone)
 - **Risk reason:** low: no answer on the wire changes, and none of the names had an effect except the history GC alias, which nothing in the repository sets. The risks are a start that is refused for a process that still passes a removed argument, and the silent move to 600 s for a project that holds the alias with another value. The record states that the documented merge policy (15%, 180 evaluations, 64 segments) was never in force, so that the owner can open a scaler item if that policy is what the product should do. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #75 (this record's commit) — The read spool opens under the clap-resolved path prefix: PATH_PREFIX has one reader, and --path-prefix on argv moves the spool with the stores and the rollup
+
+- **Program item:** NEXT-WORK §13, package 1 of `config-simplification.md`, its last row (`PATH_PREFIX` read twice). Owner answer of 2026-09-29: "For other questions, please make your own judgement call." The answer contains no explicit approval of this change; it was made on that delegation.
+- **Surface:** process (operator-debug for the startup log)
+- **Endpoint:** None on the wire. The object-store location of the usage read spool's database; the startup log's `effective configuration (redacted)` line, section `billing`.
+- **Condition:** For the location: the path prefix is given as `--path-prefix` on argv (with or without `PATH_PREFIX` in the environment) and `USAGE_STREAM_KEY` is set, which is when the spool opens. For the startup log: always.
+- **Before:** The spool's path inside the data store used a copy of the environment value (`BillingConfig::path_prefix_env`), while the stores and the rollup used the value clap resolved (argv first, then the environment). With the prefix `P` on argv only, the data store was prefixed with `P` and the spool's own path had no prefix: its objects were at `P/telemetry/read-spool/<instance>/…`, while the rollup's were at `P/P/telemetry/usage-rollup/v2/p0/…`. With `P` on argv and another value `Q` in the environment, the spool was at `P/Q/telemetry/read-spool/<instance>/…`. The startup log printed `billing.path_prefix_env`.
+- **After:** The spool's path uses the value clap resolved, the same rule as the rollup: `P/P/telemetry/read-spool/<instance>/…` in both cases above. A deployment that gives the prefix through the environment only, which is every Compute family in the repository, keeps its location byte for byte. The startup log's `billing` section has no `path_prefix_env` key. No migration, second location or alias is written: stored formats have one layout, and the binary does not look for a spool at the old place.
+- **Retry semantics:** None (no client surface).
+- **Who is affected:** A deployment that passes the prefix on argv and meters usage. None is known: docs/GUIDE-COMPOSER.md passes `--path-prefix composer` without a usage key, so it opens no spool. For such a deployment, read batches that were sealed into the old spool and not yet appended to the `_usage` ledger when the old binary stopped stay at the old location and are not billed (an under-count, never an over-count). A graceful stop seals the active read window and runs one drain round, bounded by one drain cadence; it leaves the spool empty only when the ledger accepts that round. RUNBOOK §11 tells the operator to wait for `spool.depth` 0 and stop gracefully before the upgrade. Whether any Compute project passes the prefix on argv is visible only in the platform export (NEXT-WORK §11), which has not been run. Readers of the startup log lose one key.
+- **Pinning tests:**
+  - src/dst/tests/billing_readiness.rs::argv_path_prefix_places_the_read_spool_under_the_prefix (new, red-first: the seven objects the open wrote were listed under `telemetry/read-spool/solo/`, outside `pp/`)
+  - src/config/tests.rs::path_prefix_is_not_a_billing_knob (new, red-first: left `path_prefix_env: Some("x")`, right `path_prefix_env: None`; also pins that the summary has no such key)
+  - src/config/tests.rs::clap_owned_names_keep_their_environment_channel (unchanged: `PATH_PREFIX=pp` in the environment reaches `cli.path_prefix`)
+  - scripts/effective-config/test_effective_config.py: `RenameTest.test_pair_of_two_options_compares_the_inner_values` (new) and `PinTest` (149 leaves)
+- **Risk reason:** low: no answer on the wire changes and every deployment shape in the repository is unchanged. The risk is the under-count described above for a deployment shape nothing in the repository has, after a stop that left rows in the old spool. That a graceful stop empties the spool was read from `src/billing/telemetry_loop.rs` and not exercised. The choice not to migrate is the implementer's and is for the owner to ratify or reverse. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

@@ -68,6 +68,13 @@ runs; the 15% / 180 evaluations / 64 segments they listed was never
 implemented. Rows 3 (`--compactor-max-concurrent`) and 5 (`PATH_PREFIX`)
 are not changed yet.
 
+Status (2026-09-29, row 5): done, edge record #75. The read spool opens
+under the prefix clap resolved; `BillingConfig::path_prefix_env` and its key
+in the startup summary are gone; the tool's pin of HEAD's leaves is 149.
+Only a deployment that gives the prefix on argv and meters usage gets a new
+spool location, and none is known; nothing is migrated (RUNBOOK §11 has the
+upgrade step). Row 3 (`--compactor-max-concurrent`) is not changed yet.
+
 | Setting | Today | Proposed |
 |---|---|---|
 | `ABSORB_PASS_BYTES`, `ABSORB_CONCURRENCY`, `ABSORB_SMALL_BYTES` | accepted, ignored, startup notice | not declared |

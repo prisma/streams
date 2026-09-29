@@ -149,7 +149,8 @@ def cmd_report(args):
                    [[p['path'], p['old'], p['new'], p['kind'], fams(f, total),
                      proposed.get(k, {}).get('commit', ''), proposed.get(k, {}).get('intended', '')]
                     for k, (p, f) in sorted(value.items())])
-    lines += ['', 'Paired reader moves (46d4b7df, edge record #49), checked per family:', '']
+    lines += ['', 'Paired reader moves (46d4b7df, edge record #49; PATH_PREFIX: edge record #75), '
+              'checked per family:', '']
     lines += table(['pair', 'families'], [[k, fams(f, total)] for k, (_, f) in sorted(paired.items())])
     if derived:
         lines += ['', 'Derived values served by both binaries while booted (C11: /v1/debug/absorb `config`, '

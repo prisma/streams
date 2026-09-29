@@ -1,5 +1,5 @@
 {
-  "comment": "Every flattened path present on one side only must be declared here, or the run fails (K9). A pair compares the old path's value with the new path's value; none_equals is the Debug value a None on the old side stands for (the new field's clap default), so a family that leaves the name unset is not reported as unequal.",
+  "comment": "Every flattened path present on one side only must be declared here, or the run fails (K9). A pair compares the old path's value with the new path's value; none_equals is the Debug value a None on the old side stands for (the new field's clap default), so a family that leaves the name unset is not reported as unequal; a Some(..) on either side compares by its inner value.",
   "pairs": [
     {
       "old": "billing.mode_env",
@@ -16,6 +16,14 @@
       "commit": "46d4b7df",
       "edge_record": 49,
       "why": "ROLLUP: the same reader split as BILLING_MODE."
+    },
+    {
+      "old": "billing.path_prefix_env",
+      "new": "cli.path_prefix",
+      "none_equals": "None",
+      "commit": "the commit of edge record #75",
+      "edge_record": 75,
+      "why": "PATH_PREFIX had two readers (the clap value for the stores and the rollup, the environment copy BillingConfig.path_prefix_env for the read spool); HEAD reads only the clap value. Both sides are Options, so the pair compares their inner values. Equal-effective whenever the prefix is not given on argv."
     }
   ],
   "added": [
@@ -35,37 +43,37 @@
   "removed": [
     {
       "old": "cli.absorb_pass_bytes",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "v1 absorber option: stored and never read at rc.4, accepted and ignored with a warning since 99d5c098, not declared now"
     },
     {
       "old": "cli.absorb_concurrency",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "v1 absorber option: the same as cli.absorb_pass_bytes"
     },
     {
       "old": "cli.absorb_small_bytes",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "v1 absorber option: the same as cli.absorb_pass_bytes"
     },
     {
       "old": "scaler.cold_pct",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; a segment is cold below hot_pct x 0.05"
     },
     {
       "old": "scaler.cold_evals",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; a stream merges after hot_evals x 4 cold evaluations"
     },
     {
       "old": "scaler.max_segments",
-      "commit": "the commit of edge record #74",
+      "commit": "a675d8ca",
       "edge_record": 74,
       "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; no count of segments stops a split"
     }

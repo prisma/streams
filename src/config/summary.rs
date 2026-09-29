@@ -67,7 +67,6 @@ impl ServerConfig {
                 "sweep_maint_resident": self.billing.sweep_maint_resident,
                 "sweep_resident_quantum": self.billing.sweep_resident_quantum,
                 "alert_usage_outbox_dirty": self.billing.alert_usage_outbox_dirty,
-                "path_prefix_env": &self.billing.path_prefix_env,
             },
             "fleet": {
                 "allow_http_peers": self.fleet.allow_http_peers,

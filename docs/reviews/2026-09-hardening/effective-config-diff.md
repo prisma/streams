@@ -24,8 +24,11 @@ three v1 absorber options, the scaler names `SCALE_COLD_PCT`,
 removed leaves instead of values that became "not set", three `scaler.*`
 leaves are removed, and the merge-trap probe logs no warning: HEAD does not
 read `ABSORB_PASS_BYTES`. The binary's defaults also moved to the 1 GiB
-profile's values (edge records #67 to #71). No run of the tool has been made
-since these changes.
+profile's values (edge records #67 to #71). `PATH_PREFIX` has one reader
+since edge record #75: the read spool uses the prefix clap resolved, the
+split the last point of "Found in passing" describes (D11) is closed, and on
+the next run `billing.path_prefix_env` is paired with `cli.path_prefix`. No
+run of the tool has been made since these changes.
 
 ## Summary
 

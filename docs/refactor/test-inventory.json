@@ -2415,6 +2415,17 @@
     "scenarios": []
   },
   {
+    "name": "argv_path_prefix_places_the_read_spool_under_the_prefix",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0ee20ced63b631de16adceef2ddc64dcc1fad2dc879e550a50ff5f5364495dbf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
     "name": "argv_rollup_owner_is_unready_until_its_rollup_installs",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

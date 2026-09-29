@@ -78,7 +78,7 @@ environment on every deploy** — see the §8.3 trap.
 | `SLATE_S3_BUCKET` | `streams` | default bucket; `--ops-bucket` / `--shard-bucket` / `--data-bucket` flags override per role |
 | `SLATE_S3_REGION` | `us-east-1` | `auto` for Tigris |
 | `SLATE_S3_ACCESS_KEY_ID` / `SLATE_S3_SECRET_ACCESS_KEY` | `test` | |
-| `PATH_PREFIX` | — | key prefix inside the bucket; independent deployments can share a bucket. **Changing it = a fresh, empty keyspace** |
+| `PATH_PREFIX` | — | key prefix inside the bucket; independent deployments can share a bucket. **Changing it = a fresh, empty keyspace**. One value, given as the variable or as `--path-prefix` (the argument wins), places the stores, the usage rollup and the usage read spool (§11) |
 
 Provider requirements (strong read-after-write, conditional PUT/If-Match,
 durability): [OPERATIONS.md §1](./OPERATIONS.md). Tigris satisfies all of
@@ -695,6 +695,19 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   `history/…` (absorbed per-stream SSTs), `registry/…` (by-name),
   `fleet/`+`routers/` under `FLEET_PREFIX`. Everything except
   topology/fleet metadata is tenant-key ciphertext.
+- **Usage databases**: the read spool and the rollup are SlateDB databases
+  inside the prefixed data store, and their own paths repeat the prefix:
+  `PATH_PREFIX/PATH_PREFIX/telemetry/read-spool/<instance>/…` and
+  `PATH_PREFIX/PATH_PREFIX/telemetry/usage-rollup/v2/p0/…` (with no prefix:
+  `telemetry/read-spool/<instance>/…`, `telemetry/usage-rollup/v2/p0/…`).
+  Both follow the one resolved prefix, whether it came from the variable or
+  from `--path-prefix`. A binary before this rule read the spool's prefix
+  from the variable only: a deployment that gave the prefix on argv alone
+  kept its spool at `PATH_PREFIX/telemetry/read-spool/<instance>/…`, which
+  this binary does not read. Before upgrading such a deployment that meters
+  usage, wait for `spool.depth` 0 in `/operator/billing.json` and stop it
+  gracefully (the stop seals the read window and runs one drain round); rows
+  left in the old spool are not billed.
 - **GC**: WAL objects reaped per §3.2 after `MIN_AGE`; history SSTs retired
   by compaction; deletion protection, soft-delete windows and GDPR erasure:
   [OPERATIONS.md §2.4](./OPERATIONS.md).
@@ -782,7 +795,7 @@ owner) is open.
 |---|---|---|
 | `spool.open=false` | read spool failed to open (required mode refuses to boot in this state) | check store credentials/path; restart; reads meter in memory only in non-required mode |
 | `spool.depth` climbing | `_usage` ledger unreachable — sealed read batches accumulating durably | check the rollup/owner instance and store health; depth drains automatically on recovery |
-| `spool.quarantined > 0` (alert `read_spool_corruption`) | corrupt spool rows moved to `quarantine/` — those reads are NOT billed | inspect `telemetry/read-spool/<instance>` quarantine rows; recover or write off explicitly; the counter persists across restarts until the quarantine is cleared |
+| `spool.quarantined > 0` (alert `read_spool_corruption`) | corrupt spool rows moved to `quarantine/` — those reads are NOT billed | inspect the quarantine rows of the spool database (`telemetry/read-spool/<instance>` under the path prefix, §11); recover or write off explicitly; the counter persists across restarts until the quarantine is cleared |
 | alert `usage_outbox_lag` | dirty segment snapshots not acknowledged (threshold `ALERT_USAGE_OUTBOX_DIRTY`) | ledger append path down or committer wedged; see `drain.lastOkAgeSecs` |
 | `drain.lastOkAgeSecs` large | no successful drain round — ledger unreachable or scans failing CLOSED | financial scans defer on error by design; fix the store fault, drains self-heal |
 | `rollup.lastApplyAgeSecs` large with traffic | rollup consumer stalled (cursor not progressing) | check the ROLLUP=1 instance; the ledger retains everything, catch-up is automatic |

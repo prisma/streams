@@ -88,6 +88,34 @@ async fn argv_rollup_owner_is_unready_until_its_rollup_installs() {
     rig.shutdown().await;
 }
 
+/// `--path-prefix pp` on argv alone. The read spool took its prefix from a
+/// copy of the environment and opened outside the prefix the stores and
+/// the rollup use. With one reader it opens under the prefix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn argv_path_prefix_places_the_read_spool_under_the_prefix() {
+    use futures_util::TryStreamExt;
+    let store = mem();
+    let options = HttpRigOptions {
+        cli: |cli| cli.path_prefix = Some("pp".into()),
+        ..Default::default()
+    };
+    let rig = http_rig_build(store.clone(), RigRuntime::first(), options).await;
+    crate::billing::open_read_spool(&rig.state).await.unwrap();
+    let listed = store.list(None).try_collect::<Vec<_>>().await.unwrap();
+    let spool: Vec<String> = listed
+        .iter()
+        .map(|object| object.location.to_string())
+        .filter(|location| location.contains("telemetry/read-spool/"))
+        .collect();
+    assert!(!spool.is_empty(), "the open writes the spool's manifest");
+    let outside: Vec<String> = spool
+        .into_iter()
+        .filter(|location| !location.starts_with("pp/telemetry/read-spool/solo/"))
+        .collect();
+    assert_eq!(outside, Vec::<String>::new());
+    rig.shutdown().await;
+}
+
 /// Pin: with no --billing-mode anywhere the report shows clap's `off`
 /// default and the instance is ready without a spool, as it always was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
