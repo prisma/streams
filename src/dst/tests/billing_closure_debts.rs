@@ -970,14 +970,20 @@ async fn an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at
         .unwrap();
     assert!(lapsed);
     assert_never_replaced(&state, addr, &forked).await;
+    let id = forked.unforked.dynamic_segment_identity(0);
+    let mut got = None;
     for _ in 0..3 {
         crate::billing::sweep_owned_outboxes(&state).await;
         crate::billing::drain_once(&state).await.expect("drain");
+        // A submitted close lands before the next sweep reads the row: a
+        // sweep that finds the gauge still open closes it again, and every
+        // close is one more version.
+        got = closed(&forked.engine, id).await;
+        if got.is_some() {
+            break;
+        }
     }
-    let id = forked.unforked.dynamic_segment_identity(0);
-    let got = closed(&forked.engine, id)
-        .await
-        .expect("the walk closes the expired source's storage");
+    let got = got.expect("the walk closes the expired source's storage");
     assert_billed(
         &got,
         &expected_close(&forked.before, expired_at),
