@@ -31,7 +31,14 @@ the next run `billing.path_prefix_env` is paired with `cli.path_prefix`.
 `--compactor-max-concurrent` given on argv reaches the compactor since edge
 record #76 (the other half of that point); no leaf is added or removed by
 it, and the families, which set the name through the environment only, print
-the same value. No run of the tool has been made since these changes.
+the same value. The commit pipeline's defaults are the pump, a 10 ms gap
+and a 6 ms gather since edge record #77: on the next run
+`cli.wal_group_commit`, `cli.wal_flush_gap_ms` and
+`cli.wal_post_ack_gather_ms` differ wherever a family does not set the name
+(`defaults` all three; `platform-e2e` and `livefeed-canary`, which pass the
+gap on argv, the switch and the gather), and `fra-ab-server` keeps the
+switch at 0, which its script now sets, and gains the gap and the gather,
+which the tick does not read. No run of the tool has been made since these changes.
 
 ## Summary
 

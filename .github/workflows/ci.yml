@@ -335,10 +335,9 @@ jobs:
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
           KEY=$(./target/release/streams-keys generate)
-          # Group commit is required: the suite's property tests run
-          # ~240 sequential appends inside vitest's 5 s budget, and the
-          # default flush cadence makes them latency-marginal. This is
-          # what field deployments run anyway (see CONFORMANCE.md).
+          # Group commit is the default; the 2 ms gap keeps the suite's
+          # ~240 sequential appends inside vitest's 5 s budget (see
+          # CONFORMANCE.md).
           ./target/release/streams-slate --listen 127.0.0.1:8090 \
             --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
             --max-unflushed-bytes 67108864 \

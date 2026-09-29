@@ -903,7 +903,7 @@ item is in `evidence/config-audit-2026-09-29/detail.md`.
 be the default"; every other question of the page is left to the
 implementer's judgement.
 
-Changed so far (package 2, then package 1):
+Changed so far (package 2, then package 1, then package 3):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -976,3 +976,28 @@ Changed so far (package 2, then package 1):
   `--compactor-poll-ms` help text still say `L0_MAX_SSTS` 64 and that drain
   continuity comes from concurrent compactions; the defaults are 32 and
   one compaction.
+- Package 3, the commit pipeline (edge record #77): the binary's defaults
+  are `WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and
+  `WAL_POST_ACK_GATHER_MS=6`, what eight of the nine server families set.
+  A server that sets none of them runs the group-commit pump, and SlateDB's
+  own timer is its 1 s failsafe. Timing and the object-store request count
+  only: on the local rig the pump gave P1 +31% requests per second at p50
+  28.4 -> 15.7 ms for 2.2 times the WAL writes (`config-simplification.md`,
+  "Measured"); the field measurement on Tigris, where a WAL write costs
+  about 40 ms and a request, has not been made, and performance acceptance
+  is the owner's. First the provider contract's SlateDB writer was made to
+  flush as the configured pipeline does (under the pump nothing else
+  flushes before the failsafe), with two runners that hold the SlateDB and
+  HTTP cases under both pipelines. `scripts/bench-fra-ab.sh` sets
+  `WAL_GROUP_COMMIT=0` to stay comparable with its baseline. Changed
+  without an edit, for the owner to accept or pin: `bench/docker/compose.yml`
+  (gap 25 -> 10 ms, gather 0 -> 6 ms) and
+  `bench/docker/harness/cluster-deploy.sh` (gather 0 -> 6 ms). Not done:
+  deleting the switch, and `ShardConfig::default` (tests only; it stays
+  tick mode until the switch goes). To run before the push, one at a time:
+  conformance, the field gate, the platform e2e and its negative twin, the
+  LiveFeed certification and the SDK smoke; they start the binary with
+  `--flush-interval-ms 1 --wal-flush-gap-ms 2` or with nothing, so they move
+  from a tick to the pump. CONFORMANCE.md says that the ~8.6 ms per append
+  it records was a 1 ms tick and that the figure under the pump is not
+  recorded yet.

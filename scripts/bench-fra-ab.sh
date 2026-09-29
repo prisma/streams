@@ -81,7 +81,7 @@ server)
     --env SLATE_S3_ACCESS_KEY_ID=$(j accessKeyId) --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
     --env AUTH_TOKEN="$(cat $AUTH_TOKEN_FILE)" \
     --env PATH_PREFIX=bench --env INSTANCE_NAME=bench-server \
-    --env FLUSH_INTERVAL_MS=50 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
+    --env FLUSH_INTERVAL_MS=50 --env WAL_GROUP_COMMIT=0 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
     --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env TRIM_PER_OP=8192 \
     --env KEEP_AWAKE=1 \

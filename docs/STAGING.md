@@ -152,6 +152,7 @@ ROLLUP=1                            # exactly one instance per cell
 FLUSH_INTERVAL_MS=25
 WAL_GROUP_COMMIT=1
 WAL_FLUSH_GAP_MS=10
+WAL_POST_ACK_GATHER_MS=6
 FRAME_COMPRESS=1                    # removed a ~5-6x NIC amplification on sinmax
 MANIFEST_POLL_MS=1000
 COMPACTOR_POLL_MS=500

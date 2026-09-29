@@ -69,14 +69,18 @@ Implementing them re-opens this gate; until then the posture is
    header. Dev and conformance only, never a deployment flag.
 2. **A fresh bucket per run.** Suite streams accumulate; a reused
    namespace produces config-mismatch 409s by design.
-3. **Group commit** (`--flush-interval-ms 1 --wal-flush-gap-ms 2`). The
-   suite's fast-check property tests run ~240 sequential appends inside
-   vitest's 5 s budget. At the default cadence an append costs ~28 ms
-   against s3lite, so those tests are latency-marginal; with group
-   commit — what field deployments already run — appends drop to
-   ~8.6 ms and they pass consistently. Measured both ways (28.71 vs
-   28.54 ms per append, before and after the audit fixes), so the
-   marginality is the rig's flush cadence and not a code regression.
+3. **A 2 ms flush gap** (`--flush-interval-ms 1 --wal-flush-gap-ms 2`).
+   The suite's fast-check property tests run ~240 sequential appends
+   inside vitest's 5 s budget. Group commit is the binary's default since
+   2026-09-29: `--wal-flush-gap-ms 2` lowers the pump's gap from 10 ms to
+   2 ms, and `--flush-interval-ms 1` sets no cadence (under the pump
+   SlateDB's own timer is a 1 s failsafe). Until that date the default
+   was the 25 ms tick, at which an append cost ~28 ms against s3lite
+   (28.71 vs 28.54 ms per append, before and after the audit fixes), and
+   these flags selected a 1 ms tick, not the pump: the ~8.6 ms per append
+   recorded here measured that tick. The cost of an append under the
+   pump with these flags, and the suite's outcome under it, have not
+   been recorded here yet.
 
 The suite itself is never modified.
 

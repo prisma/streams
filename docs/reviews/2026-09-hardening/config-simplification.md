@@ -142,6 +142,26 @@ client-visible rows with the question above.
 
 ## Package 3: the commit pipeline, as one decision
 
+Status (2026-09-29, the three WAL settings): done, edge record #77, on the
+owner's delegation ("For other questions, please make your own judgement
+call"); the record awaits ratification. The binary's defaults are
+`WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and `WAL_POST_ACK_GATHER_MS=6`.
+The switch stays: `WAL_GROUP_COMMIT=0` selects the tick, and
+`scripts/bench-fra-ab.sh` now sets it, because its recorded baseline is the
+50 ms tick. Before the defaults moved, the provider contract's SlateDB
+writer was made to flush as the configured pipeline does, and the SlateDB
+and HTTP cases run under both pipelines on both local stores; no verdict
+differs between them. Not done: the second step (deleting the switch: one
+WAL path), and `ShardConfig::default` in `src/shard.rs`, which only tests
+read and which stays tick mode (about 60 test sites pair it with their own
+5 ms SlateDB timer; the file has no line headroom and feeds six receipts).
+Not run: the rigs that start the binary (conformance, the field gate, the
+platform e2e, the LiveFeed certification, the SDK smoke, the noisy-neighbour
+campaign); they change pipeline with this default and are to be run before
+the push. The field measurement on Tigris that the paragraph below asks for
+has not been made. The rows of the table below are not changed yet. The
+text that follows is the audit's and is not rewritten.
+
 `WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and `WAL_POST_ACK_GATHER_MS=6`
 are set together by eight of the nine server families; the binary defaults
 to tick mode (0, 0, 0). Changing one alone gives a combination nothing runs,

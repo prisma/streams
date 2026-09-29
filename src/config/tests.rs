@@ -577,9 +577,9 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("secret-access-key", "SLATE_S3_SECRET_ACCESS_KEY", "test"),
     ("initial-shards", "INITIAL_SHARDS", ""),
     ("flush-interval-ms", "FLUSH_INTERVAL_MS", "25"),
-    ("wal-group-commit", "WAL_GROUP_COMMIT", "0"),
-    ("wal-flush-gap-ms", "WAL_FLUSH_GAP_MS", "0"),
-    ("wal-post-ack-gather-ms", "WAL_POST_ACK_GATHER_MS", "0"),
+    ("wal-group-commit", "WAL_GROUP_COMMIT", "1"),
+    ("wal-flush-gap-ms", "WAL_FLUSH_GAP_MS", "10"),
+    ("wal-post-ack-gather-ms", "WAL_POST_ACK_GATHER_MS", "6"),
     ("wal-gather-skip-reqs", "WAL_GATHER_SKIP_REQS", "32"),
     ("wal-gather-skip-bytes", "WAL_GATHER_SKIP_BYTES", "1048576"),
     ("tail-ring-bytes", "TAIL_RING_BYTES", "0"),
@@ -721,6 +721,34 @@ fn cli_surface_is_pinned() {
     assert_eq!(
         actual, want,
         "CLI surface drifted; a rename/default change is a product decision, not a refactor"
+    );
+}
+
+/// A server that sets nothing runs the group-commit pump with a 10 ms gap
+/// and a 6 ms gather, and SlateDB's own timer is then the 1 s failsafe;
+/// `WAL_GROUP_COMMIT=0` still selects the tick at `FLUSH_INTERVAL_MS`.
+#[test]
+fn the_default_commit_pipeline_is_the_pump_and_the_switch_still_selects_the_tick() {
+    let pump = ServerConfig::load(test_cli(), &MapEnvironment::empty());
+    assert_eq!(
+        (
+            pump.cli.wal_group_commit,
+            pump.cli.wal_flush_gap_ms,
+            pump.cli.wal_post_ack_gather_ms,
+            pump.cli.flush_interval_ms,
+        ),
+        (1, 10, 6, 25)
+    );
+    assert_eq!(
+        validation::shard_settings(&pump.cli, &pump.engine).flush_interval,
+        Some(std::time::Duration::from_secs(1))
+    );
+    let mut tick = test_cli();
+    tick.wal_group_commit = 0;
+    let tick = ServerConfig::load(tick, &MapEnvironment::empty());
+    assert_eq!(
+        validation::shard_settings(&tick.cli, &tick.engine).flush_interval,
+        Some(std::time::Duration::from_millis(25))
     );
 }
 

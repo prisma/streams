@@ -47,25 +47,28 @@ pub struct CliArgs {
     /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
     /// degraded the per-DB durable watermark to ~0.3–1 s (EXPERIMENT-PILOT
     /// run 3). 25 ms keeps the ack floor ≈ flush + Tigris PUT ≈ 40 ms while
-    /// cutting WAL-object churn 5×.
+    /// cutting WAL-object churn 5×. With the group-commit pump (the
+    /// default) this is only the base of SlateDB's failsafe timer,
+    /// stretched to at least 1 s; it is the flush cadence only with
+    /// WAL_GROUP_COMMIT=0.
     #[arg(long, env = "FLUSH_INTERVAL_MS", default_value_t = 25)]
     pub(crate) flush_interval_ms: u64,
 
-    /// Group-commit WAL flushing (1 = on). A per-shard pump flushes the
-    /// WAL the moment the previous flush completes when commits are
-    /// waiting, so under load the flush cadence self-clocks to the WAL
-    /// PUT RTT instead of adding tick alignment (avg tick/2) on top of
-    /// the serial-PUT queue. flush_interval_ms then only acts as the
-    /// idle mint-rate floor (see --wal-flush-gap-ms) and SlateDB's own
-    /// timer is stretched to a 1 s failsafe.
-    #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 0)]
+    /// Group-commit WAL flushing (1 = on, the default; 0 = SlateDB's
+    /// fixed flush tick). A per-shard pump flushes the WAL the moment the
+    /// previous flush completes when commits are waiting, so under load
+    /// the flush cadence self-clocks to the WAL PUT RTT instead of adding
+    /// tick alignment (avg tick/2) on top of the serial-PUT queue. The
+    /// idle mint-rate floor is --wal-flush-gap-ms (flush_interval_ms when
+    /// that is 0) and SlateDB's own timer is stretched to a 1 s failsafe.
+    #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 1)]
     pub(crate) wal_group_commit: u8,
 
     /// Minimum start-to-start gap between pump flushes, ms. Bounds the
     /// WAL SST mint rate exactly like the old tick did (churn ceiling
     /// unchanged); irrelevant whenever the PUT RTT exceeds it. 0 = use
-    /// flush_interval_ms.
-    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 0)]
+    /// flush_interval_ms. 10 is what production runs.
+    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 10)]
     pub(crate) wal_flush_gap_ms: u64,
 
     /// Post-ACK gather window, ms (0 = off). After a busy WAL flush the
@@ -74,9 +77,10 @@ pub struct CliArgs {
     /// closed-loop producers' ack-triggered follow-ups join the next WAL
     /// instead of missing its freeze and paying a full extra PUT. Without
     /// it, append p50 at concurrency 2 measures ~2x concurrency 1.
-    /// Suggested 4-8. Adds at most this many ms to a busy flush cycle;
-    /// never delays an idle shard's first write.
-    #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
+    /// 6 is the soaked value (docs/SOAK5-REPORT.md). Adds at most this
+    /// many ms to a busy flush cycle; never delays an idle shard's first
+    /// write.
+    #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 6)]
     pub(crate) wal_post_ack_gather_ms: u64,
 
     /// Skip the gather window when the next WAL already holds at least
@@ -556,9 +560,9 @@ impl CliArgs {
             secret_access_key: "test".into(),
             initial_shards: None,
             flush_interval_ms: 25,
-            wal_group_commit: 0,
-            wal_flush_gap_ms: 0,
-            wal_post_ack_gather_ms: 0,
+            wal_group_commit: 1,
+            wal_flush_gap_ms: 10,
+            wal_post_ack_gather_ms: 6,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1_048_576,
             tail_ring_bytes: 0,

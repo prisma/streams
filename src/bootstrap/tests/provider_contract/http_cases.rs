@@ -260,13 +260,15 @@ async fn slatedb_wal_puts_answered_5xx(b: &Backend, faults: &HttpFaults) {
     let path = b.slate_path("http-wal");
     let writer = open(b, b.shard.clone(), &path).await;
     faults.arm(HttpFault::FailBeforeCommit, Some(IF_NONE_MATCH), "/wal/");
-    bounded_put(&writer, b"retried", b"landed").await.unwrap();
+    bounded_put(b, &writer, b"retried", b"landed")
+        .await
+        .unwrap();
     faults.arm(
         HttpFault::LoseReplyAfterCommit,
         Some(IF_NONE_MATCH),
         "/wal/",
     );
-    let written = bounded_put(&writer, b"lost", b"landed").await;
+    let written = bounded_put(b, &writer, b"lost", b"landed").await;
     assert!(
         written.as_ref().is_err_and(is_fenced),
         "{}: {written:?}",

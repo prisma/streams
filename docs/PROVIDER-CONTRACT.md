@@ -16,7 +16,7 @@ and SlateDB do with the answers.
 |---|---|
 | `store_cases.rs` | the raw contract: competing creates and updates, stale, fabricated and missing-object preconditions, ETag presence and stability, user metadata |
 | `registry_cases.rs` | `Registry::create`, `recreate` and `mutate_incarnation` through the store under test: missing ETags, lost replies, failed dispatches, a changed incarnation, racing registries |
-| `slatedb_cases.rs` | SlateDB writer fencing with the server's own settings, and ambiguous WAL PUTs |
+| `slatedb_cases.rs` | SlateDB writer fencing with the server's own settings, written through the configured commit pipeline, and ambiguous WAL PUTs |
 | `http_cases.rs` | s3lite only: 5xx answers before and after the emulator applied a PUT, below the S3 client: conditional PUTs are sent once and reach the registry and SlateDB as errors, unconditional PUTs are still retried |
 | `faults.rs` | a one-shot fault wrapper above the client: a lost reply (the PUT is applied, the caller gets an error) or a failed dispatch (the PUT never reaches the store), and ETag stripping on reads |
 | `s3lite_harness.rs` | the s3lite emulator served in-process on a loopback port, compiled from the binary's own `src/bin/s3lite/emulator.rs`, with an HTTP fault layer in front of it |
@@ -27,7 +27,12 @@ with `S3ConditionalPut::ETagMatch`, the timing connector and store wrapper,
 the pool settings and `PATH_PREFIX`, and `src/bootstrap/s3_store.rs`, which
 sends conditional PUTs through a client that never retries). The registry cases use the ops-bucket
 store and the SlateDB cases the shard-bucket store, as in production. SlateDB
-opens with `shard_settings`, the settings the server gives shard logs.
+opens with `shard_settings`, the settings the server gives shard logs. With
+group commit on (`WAL_GROUP_COMMIT=1`, the default), those settings make
+SlateDB's own flush timer a 1 s failsafe, and the suite's writer flushes the
+WAL explicitly after each write, as the shard's pump does; with it off the
+timer flushes. The pump's gap and gather are scheduling inside the shard
+engine and are not part of what the suite drives.
 
 ## Runners
 
@@ -35,9 +40,17 @@ opens with `shard_settings`, the settings the server gives shard logs.
 |---|---|---|
 | `in_memory_store_meets_the_provider_contract` | every test build | `object_store::memory::InMemory` (the reference semantics) |
 | `s3lite_through_the_production_client_meets_the_provider_contract` | every test build | s3lite over loopback HTTP, through the production client |
+| `in_memory_store_meets_the_slatedb_contract_under_each_commit_pipeline` | every test build | `InMemory`, the SlateDB cases with `WAL_GROUP_COMMIT` 0 and then 1 |
+| `s3lite_meets_the_slatedb_and_http_contract_under_each_commit_pipeline` | every test build | s3lite through the production client, the SlateDB and HTTP cases with `WAL_GROUP_COMMIT` 0 and then 1 |
 | `real_provider_meets_the_provider_contract` | `#[ignore]`d; runs only with `STREAMS_PROVIDER_CONTRACT=1` | the provider the environment names |
 
-The first two run in `scripts/gate.sh` and CI (`cargo test --lib`):
+The first two run the whole suite under the default pipeline. The two
+pipeline runners set the switch themselves, so both pipelines are covered
+whatever the default is, and each first proves that the pipeline is what
+made a write durable: under the pump SlateDB's own timer is set to 600 s for
+that one database, so a writer that did not flush would time out. The
+real-provider runner follows `WAL_GROUP_COMMIT` from its environment. The
+first four run in `scripts/gate.sh` and CI (`cargo test --lib`):
 
 ```sh
 cargo test --locked --lib provider_contract

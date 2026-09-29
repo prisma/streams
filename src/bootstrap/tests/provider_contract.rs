@@ -8,7 +8,9 @@
 //! Three runners share one suite. The in-memory store and the repository's
 //! s3lite emulator run in every test build; s3lite is served in-process
 //! from its own source and reached through the production client over
-//! HTTP. A real provider runs only when explicitly configured
+//! HTTP. Both also run the SlateDB cases under each commit pipeline
+//! (`WAL_GROUP_COMMIT`), whatever the default is. A real provider runs
+//! only when explicitly configured
 //! (`real_provider_meets_the_provider_contract`); passing it is
 //! qualification evidence for that endpoint, bucket and configuration at
 //! that time, not a property of the code.
@@ -22,6 +24,7 @@ mod slatedb_cases;
 mod store_cases;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
@@ -41,6 +44,11 @@ pub(super) struct Backend {
     shard: Arc<dyn ObjectStore>,
     /// The production SlateDB settings for this configuration.
     settings: slatedb::config::Settings,
+    /// Whether this configuration's server flushes the WAL from its
+    /// group-commit pump (`WAL_GROUP_COMMIT`): `shard_settings` then makes
+    /// SlateDB's own timer a 1 s failsafe, and the contract's writer
+    /// flushes as the pump does.
+    pump: bool,
     /// Run-unique key root for raw objects and SlateDB paths.
     root: String,
     /// Run-unique project id: registry descriptors live under it.
@@ -76,6 +84,7 @@ impl Backend {
             ops,
             shard,
             settings: crate::config::validation::shard_settings(&config.cli, &config.engine),
+            pump: config.cli.wal_group_commit != 0,
             root: format!("provider-contract/{run}"),
             project: format!("contract-{run}"),
             local,
@@ -151,12 +160,27 @@ async fn run_contract(b: &Backend) -> Observations {
 }
 
 /// The server's configuration with every flag at its default, pointed at
-/// `endpoint`.
-fn local_config(endpoint: &str) -> ServerConfig {
+/// `endpoint`; `group_commit` sets `WAL_GROUP_COMMIT` instead of leaving
+/// the default.
+fn local_config(endpoint: &str, group_commit: Option<u8>) -> ServerConfig {
     let mut cli = CliArgs::deterministic();
     cli.s3_endpoint = endpoint.into();
     cli.bucket = "provider-contract".into();
+    if let Some(group_commit) = group_commit {
+        cli.wal_group_commit = group_commit;
+    }
     ServerConfig::with_knob_defaults(cli)
+}
+
+/// Each commit pipeline and the period `shard_settings` gives SlateDB's
+/// own flush timer under it: the cadence under the tick, a failsafe under
+/// the pump.
+const PIPELINES: [(u8, Duration); 2] =
+    [(0, Duration::from_millis(25)), (1, Duration::from_secs(1))];
+
+fn assert_pipeline(b: &Backend, group_commit: u8, timer: Duration) {
+    assert_eq!(b.settings.flush_interval, Some(timer), "{}", b.name);
+    assert_eq!(b.pump, group_commit != 0, "{}", b.name);
 }
 
 fn production_stores(config: &ServerConfig) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>) {
@@ -173,7 +197,7 @@ fn production_stores(config: &ServerConfig) -> (Arc<dyn ObjectStore>, Arc<dyn Ob
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_memory_store_meets_the_provider_contract() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let config = local_config("http://127.0.0.1:1");
+    let config = local_config("http://127.0.0.1:1", None);
     let b = Backend::new("in-memory", store.clone(), store, &config, true);
     let observed = run_contract(&b).await;
     assert!(observed.metadata_round_trip, "InMemory keeps attributes");
@@ -184,7 +208,7 @@ async fn in_memory_store_meets_the_provider_contract() {
 async fn s3lite_through_the_production_client_meets_the_provider_contract() {
     let s3lite = s3lite_harness::S3lite::bind().await;
     let faults = s3lite.faults();
-    let config = local_config(&s3lite.endpoint());
+    let config = local_config(&s3lite.endpoint(), None);
     let (ops, shard) = production_stores(&config);
     let b = Backend::new("s3lite", ops, shard, &config, true);
     let observed = s3lite
@@ -199,6 +223,44 @@ async fn s3lite_through_the_production_client_meets_the_provider_contract() {
         "s3lite stores no user metadata; the SlateDB lost-reply case relies on knowing that"
     );
     assert!(!observed.etag_repeats_for_identical_content);
+}
+
+/// The SlateDB cases hold on the reference store under the tick and under
+/// the pump, and under each the pipeline itself makes a write durable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn in_memory_store_meets_the_slatedb_contract_under_each_commit_pipeline() {
+    for (group_commit, timer) in PIPELINES {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let config = local_config("http://127.0.0.1:1", Some(group_commit));
+        let b = Backend::new("in-memory", store.clone(), store, &config, true);
+        assert_pipeline(&b, group_commit, timer);
+        slatedb_cases::the_pipeline_flushes_a_write(&b).await;
+        slatedb_cases::run(&b, true).await;
+        b.cleanup().await;
+    }
+}
+
+/// The SlateDB and HTTP cases hold through the production client under the
+/// tick and under the pump. s3lite returns no put-id metadata, so this is
+/// where a lost WAL reply must report `Fenced` under an explicit flush.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn s3lite_meets_the_slatedb_and_http_contract_under_each_commit_pipeline() {
+    for (group_commit, timer) in PIPELINES {
+        let s3lite = s3lite_harness::S3lite::bind().await;
+        let faults = s3lite.faults();
+        let config = local_config(&s3lite.endpoint(), Some(group_commit));
+        let (ops, shard) = production_stores(&config);
+        let b = Backend::new("s3lite", ops, shard, &config, true);
+        assert_pipeline(&b, group_commit, timer);
+        s3lite
+            .serve_while(async {
+                slatedb_cases::the_pipeline_flushes_a_write(&b).await;
+                slatedb_cases::run(&b, false).await;
+                http_cases::run(&b, &faults).await;
+                b.cleanup().await;
+            })
+            .await;
+    }
 }
 
 /// The real-provider runner (docs/PROVIDER-CONTRACT.md). It reads the
