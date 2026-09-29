@@ -198,8 +198,7 @@ and every signal earns its place by a measured failure.**
 Scale-out publishes immediately; scale-in uses a conservative divisor
 (50 %), a 60 s sustain, and is blocked outright while the edge dimension
 is hot. All thresholds are env knobs (`SCALE_OUT_CPU_PCT`,
-`SCALE_IN_CPU_PCT`, `SCALE_CPU_SUSTAIN_SECS`, `SCALE_EDGE_LATENCY_MS`,
-`SCALE_RPS_CAPACITY` = envelope, 0 = off).
+`SCALE_IN_CPU_PCT`, `SCALE_CPU_SUSTAIN_SECS`, `SCALE_EDGE_LATENCY_MS`).
 
 
 ### 4.1 Mechanism

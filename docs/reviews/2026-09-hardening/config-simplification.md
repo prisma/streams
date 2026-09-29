@@ -262,8 +262,17 @@ default of 0 meant. The byte gate (`STORE_BULK_INFLIGHT_MAX_BYTES`) is not
 changed. For the owner: the R10 mechanism test
 `runtime_store_concurrency_is_shared_locally_and_independent_of_first_access`
 exercised the semaphore; it is rewritten on the byte gate under the same
-name and re-pinned in `docs/refactor/review-mechanisms.json`. The other
-three rows are not started.
+name and re-pinned in `docs/refactor/review-mechanisms.json`.
+
+Status (2026-09-29, third row): done, in one commit, edge record #83, on
+the owner's delegation; it awaits ratification. `SCALE_RPS_CAPACITY` is not
+an option (the argument is refused, the environment name is ignored) and
+the fleet's desired count has no assumed-capacity dimension; the reason
+string of `fleet/desired.json` ends `rps=R live=L`. Left for the owner: the
+field `CliArgs::scale_rps_capacity` stays, always 0, and the boot line
+still prints `cap=0 rps`, because `bootstrap::run` names the field and its
+exception rows are exact. The other two rows (`HISTORY_COMPACTOR`,
+`BILLING_METER`) are not started.
 
 | Setting | Today | Proposed |
 |---|---|---|

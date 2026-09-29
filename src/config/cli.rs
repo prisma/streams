@@ -373,11 +373,10 @@ pub struct CliArgs {
     #[arg(long, env = "FLEET_PREFIX")]
     pub(crate) fleet_prefix: Option<String>,
 
-    /// Legacy assumed-capacity scaling dimension (req/s per instance).
-    /// 0 disables it: measured CPU utilization (scale_out_cpu_pct) is the
-    /// primary signal — capacity constants go stale whenever the engine
-    /// changes speed (run 5 scaled out at ~5 % actual utilization).
-    #[arg(long, env = "SCALE_RPS_CAPACITY", default_value_t = 0)]
+    /// Not an argument, always 0: the scaler has no assumed-capacity
+    /// dimension (edge record #83). The field remains because
+    /// `bootstrap::run` names it in its boot line.
+    #[arg(skip)]
     pub(crate) scale_rps_capacity: u64,
 
     /// Scale-out utilization target (percent of fleet maximum). Both the

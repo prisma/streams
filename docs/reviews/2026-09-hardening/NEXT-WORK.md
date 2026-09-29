@@ -920,7 +920,7 @@ be the default"; every other question of the page is left to the
 implementer's judgement.
 
 Changed so far (package 2, then package 1, then package 3, then package 4,
-then the first two rows of package 5):
+then the first three rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1150,5 +1150,28 @@ then the first two rows of package 5):
   exact capacity afterwards, teardown) and its sha256 is re-pinned in
   `docs/refactor/review-mechanisms.json`; the sibling pinned test is
   untouched. The audit had listed the rewrite as a question for the owner.
-  The other three rows of package 5 are not started. The platform export
-  (§11) must show no project that holds `STORE_MAX_CONCURRENT` above 0.
+  The platform export (§11) must show no project that holds
+  `STORE_MAX_CONCURRENT` above 0.
+- Package 5, third row: the fleet's desired count has no assumed-capacity
+  dimension, and `SCALE_RPS_CAPACITY` is not an option (edge record #83,
+  one commit). `--scale-rps-capacity` is refused by clap and the
+  environment name is ignored without a message. The dimension was off by
+  default and in every deployment of the repository, so the fleet scales
+  as it did, on utilisation, edge slots, the hot instance, ack latency and
+  edge latency. Removed from `src/fleet.rs` (999 lines, 1,011 before): the
+  field `capacity_rps` of `FleetCfg`, `need_rps`, its place in the desired
+  count and in the shrink target, and the token `(need_rps)` of the reason
+  string in `fleet/desired.json` and in the log line "fleet desired",
+  which now ends `rps=R live=L`. The measured rate stays: it gates the
+  edge-latency dimension. The RUNBOOK §3.5 row and the name in
+  COMPUTE-SPEC §4 are gone. The tool's pin of HEAD's leaves stays 140,
+  because the field stays; the tool was not run. Receipt staled: TLA-011
+  (`src/fleet.rs`), 12.1 min; CI also selects the mutation leg of the
+  owner `fleet` and Miri, and neither was run. **Residue, for the owner's
+  next update of the rows of `bootstrap::run`** (with the residue of
+  package 4): the field `CliArgs::scale_rps_capacity`, which stays with
+  `#[arg(skip)]` and is always 0, and the boot line "fleet coordination on
+  (prefix=P, cap=0 rps)", which still prints it. The other two rows of
+  package 5 (`HISTORY_COMPACTOR`, `BILLING_METER`) are not started. The
+  platform export (§11) must show no project that passes the argument or
+  holds `SCALE_RPS_CAPACITY` above 0.

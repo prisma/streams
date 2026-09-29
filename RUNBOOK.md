@@ -219,7 +219,6 @@ standalone.
 | `SCALE_EDGE_SLOTS` | 140 | per-instance ingress-concurrency capacity through the platform front door (two-layer model, [PLATFORM-EDGE-REPORT.md](./PLATFORM-EDGE-REPORT.md)). Post-Conduit-fix guidance: recalibrate toward ~250 |
 | `SCALE_EDGE_LATENCY_MS` | 1000 | router-observed *client* latency breach: adds an instance AND blocks scale-in (server-side metrics cannot see client pain) |
 | `SCALE_IN_SECS` | 60 | hysteresis before any shrink |
-| `SCALE_RPS_CAPACITY` | 0 (off) | legacy assumed-capacity dimension. Leave off: capacity constants go stale every time the engine changes speed (we once scaled out at 5 % utilization on a stale constant) |
 
 Desired count = **max over all dimensions** (utilization, in-flight/slots,
 hot instance, ack latency, router-observed edge latency), clamped to

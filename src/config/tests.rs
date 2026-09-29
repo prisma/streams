@@ -611,7 +611,6 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("instance-name", "INSTANCE_NAME", "streams"),
     ("path-prefix", "PATH_PREFIX", ""),
     ("fleet-prefix", "FLEET_PREFIX", ""),
-    ("scale-rps-capacity", "SCALE_RPS_CAPACITY", "0"),
     ("scale-out-cpu-pct", "SCALE_OUT_CPU_PCT", "75"),
     ("scale-in-cpu-pct", "SCALE_IN_CPU_PCT", "50"),
     ("scale-cpu-sustain-secs", "SCALE_CPU_SUSTAIN_SECS", "20"),

@@ -272,6 +272,17 @@ async fn desired_doc(state: &Arc<crate::http::AppState>) -> crate::fleet::Desire
         .expect("the seeded desired document is always present")
 }
 
+/// The reason the scaler publishes ends with the measured rate and the live
+/// count: no need computed from an assumed capacity stands between them.
+fn assert_reason_ends_with_rate_and_live(reason: &str) {
+    let mut names = reason.rsplit(' ').map(|token| token.split('=').next());
+    assert_eq!(
+        (names.next().flatten(), names.next().flatten()),
+        (Some("live"), Some("rps")),
+        "the reason ends with the measured rate and the live count: {reason}"
+    );
+}
+
 /// Router reports are a bucket-writable input that only the scale decision
 /// consumes. One unreadable `routers/*.json` used to abandon the whole tick:
 /// the ring and peer table stayed stale, a shard the ring had moved away was
@@ -380,6 +391,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         "edge-slot dimension must scale out: {}",
         desired.count
     );
+    assert_reason_ends_with_rate_and_live(&desired.reason);
 
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(

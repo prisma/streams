@@ -1,18 +1,20 @@
 //! The settings that became constants: every retired flag is refused on
 //! argv, and every retired environment name is ignored. One file names
-//! them all (edge records #80 and #82).
+//! them all (edge records #80, #82 and #83).
 use super::tests::{load_with, run_helper_test};
 use super::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 use clap::Parser;
 
 /// Every value a retired name used to set, read where the server reads it:
 /// the GC options and the L0 caps the shard databases open with, the
-/// history sweep, and the gather thresholds `bootstrap::run` takes.
+/// history sweep, the gather thresholds `bootstrap::run` takes, and the
+/// assumed capacity its boot line prints.
 type RetiredValues = (
     ((Option<u64>, u64), (Option<u64>, u64), [Option<u64>; 3]),
     Option<u64>,
     (usize, usize),
     (u32, u64),
+    u64,
 );
 
 fn retired_values(config: &ServerConfig) -> RetiredValues {
@@ -39,6 +41,7 @@ fn retired_values(config: &ServerConfig) -> RetiredValues {
             config.cli.wal_gather_skip_reqs,
             config.cli.wal_gather_skip_bytes,
         ),
+        config.cli.scale_rps_capacity,
     )
 }
 
@@ -62,8 +65,10 @@ fn retired_names_helper() {
             Some(600),
             (48, 48),
             (32, 1_048_576),
+            0,
         ),
-        "GC cadences and age floors, the per-key L0 cap and the gather skips are constants"
+        "GC cadences and age floors, the per-key L0 cap, the gather skips and the absent \
+         assumed capacity are constants"
     );
 }
 
@@ -88,6 +93,7 @@ fn a_retired_name_in_the_environment_changes_nothing() {
             ("L0_MAX_SSTS_PER_KEY", "8"),
             ("WAL_GATHER_SKIP_REQS", "0"),
             ("WAL_GATHER_SKIP_BYTES", "7"),
+            ("SCALE_RPS_CAPACITY", "150"),
         ],
     );
     assert!(
@@ -105,10 +111,10 @@ fn a_retired_name_in_the_environment_changes_nothing() {
 /// The flags of the retired settings are refused like any other unknown
 /// argument, `--gc-max-interval-secs` (the alias retired before them) and
 /// the two flags of the gather pacing that was removed (edge record #81)
-/// included.
+/// and the flag of the scaler's assumed capacity (edge record #83) included.
 #[test]
 fn a_retired_flag_on_argv_is_refused() {
-    const FLAGS: [&str; 14] = [
+    const FLAGS: [&str; 15] = [
         "--wal-gc-interval-secs",
         "--wal-gc-min-age-secs",
         "--compactions-gc-interval-secs",
@@ -123,6 +129,7 @@ fn a_retired_flag_on_argv_is_refused() {
         "--data-bucket",
         "--absorb-pace-ms",
         "--absorb-pace-window-ms",
+        "--scale-rps-capacity",
     ];
     let parsed = FLAGS.map(|flag| {
         let argv = ["streams-slate", "--s3-endpoint", "http://e", flag, "1"];

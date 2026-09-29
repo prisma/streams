@@ -290,9 +290,6 @@ struct FleetCfg {
     /// deadline peers apply is derived from them).
     tick: Duration,
     pass_deadline: Duration,
-    /// Legacy assumed-capacity dimension (req/s per instance). 0 disables
-    /// it — measured CPU replaced it as the primary signal.
-    capacity_rps: u64,
     /// Per-instance admitted-concurrency capacity (edge slots). Measured
     /// on Prisma Compute via a calibrated-latency ladder: the edge admits
     /// ~48-50 concurrent requests per instance and queues the rest
@@ -353,7 +350,6 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
             instance: cli.instance_name.clone(),
             tick: planning::TICK_PERIOD,
             pass_deadline: planning::PASS_DEADLINE,
-            capacity_rps: cli.scale_rps_capacity,
             edge_slots: cli.scale_edge_slots,
             target_util: (cli.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
             scale_in_util: (cli.scale_in_cpu_pct as f64 / 100.0).clamp(0.05, 0.90),
@@ -528,13 +524,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             //    +1 even when fleet-average is low (shard skew). Damped.
             //    latency: sustained ack-p50 breach wants +1 (congestion
             //    that doesn't show as CPU — e.g. object-store slowness).
-            //    rps: legacy assumed-capacity dim, only if capacity_rps>0.
             let need_util = (total_cores_used / cfg.target_util).ceil() as u64;
-            let need_rps = if cfg.capacity_rps > 0 {
-                (total_rps / (cfg.target_util * cfg.capacity_rps as f64).max(1.0)).ceil() as u64
-            } else {
-                0
-            };
             // Edge-slot dimension: in-flight requests vs the measured
             // per-instance admission budget. This is the resource that
             // actually bound runs 6-8 (servers at 16-25 % CPU): once
@@ -573,7 +563,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 0
             };
             let need = need_util
-                .max(need_rps)
                 .max(need_slots)
                 .max(need_latency)
                 .max(need_hot)
@@ -594,7 +583,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     0
                 };
                 ((total_cores_used / cfg.scale_in_util).ceil() as u64)
-                    .max(need_rps)
                     .max(slots_shrink)
                     .max(need_latency)
                     .max(need_hot)
@@ -968,7 +956,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 let next = Desired {
                     count: publish_count,
                     reason: format!(
-                        "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} ({need_rps}) live={live}",
+                        "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} live={live}",
                     ),
                     epoch,
                     computed_at_ms: now_ms(),
