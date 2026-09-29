@@ -831,9 +831,10 @@ async fn forked_source(state: &State, addr: Addr, src: &str, kid: &'static str) 
     }
 }
 
-/// Neither surface replaces a source its fork still reads, so no debt is
-/// written; its storage keeps billing, flagged retained, through the sweeps.
-async fn assert_retained_and_billed(state: &State, addr: Addr, forked: &Forked) {
+/// Neither surface replaces a source its fork still reads: no debt is
+/// written, its incarnation and fork children are unchanged, and the fork
+/// still reads through it.
+async fn assert_never_replaced(state: &State, addr: Addr, forked: &Forked) {
     let sref = forked.unforked.sref();
     let name = sref.name().as_str().to_string();
     let retained = stored(state, &sref).await;
@@ -869,6 +870,12 @@ async fn assert_retained_and_billed(state: &State, addr: Addr, forked: &Forked) 
             .len(),
         1
     );
+}
+
+/// A source its fork still reads is never replaced, and its storage keeps
+/// billing, flagged retained, through the sweeps.
+async fn assert_retained_and_billed(state: &State, addr: Addr, forked: &Forked) {
+    assert_never_replaced(state, addr, forked).await;
     for _ in 0..3 {
         crate::billing::sweep_owned_outboxes(state).await;
         crate::billing::drain_once(state).await.expect("drain");
@@ -902,5 +909,48 @@ async fn a_soft_deleted_source_is_never_replaced_and_keeps_billing() {
     let soft = stored(&state, &forked.unforked.sref()).await;
     assert!(soft.soft_deleted && !soft.deleted, "retained, not deleted");
     assert_retained_and_billed(&state, addr, &forked).await;
+    engine_shutdown(&state).await;
+}
+
+/// Owner decision (2026-09-29), expired source: a source that expires while
+/// its fork reads through it is retained for recreation
+/// (`creation::retained_for_forks`), so neither surface replaces it and no
+/// debt is written, and the fork still reads. Its storage, unlike a
+/// soft-deleted source's (above), stops billing at the expiry: the walk
+/// closes the row exactly at the persisted instant and does not flag it
+/// retained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (state, addr) = http_rig(mem()).await;
+    let forked = forked_source(&state, addr, "exp7", "exp7-kid").await;
+    let expired_at = crate::shard::now_ms() - 1;
+    let lapsed = state
+        .registry
+        .cas_update_retry(&forked.unforked.sref(), |d| {
+            d.expires_at_ms = Some(expired_at);
+            true
+        })
+        .await
+        .unwrap();
+    assert!(lapsed);
+    assert_never_replaced(&state, addr, &forked).await;
+    for _ in 0..3 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        crate::billing::drain_once(&state).await.expect("drain");
+    }
+    let id = forked.unforked.dynamic_segment_identity(0);
+    let got = closed(&forked.engine, id)
+        .await
+        .expect("the walk closes the expired source's storage");
+    assert_billed(
+        &got,
+        &expected_close(&forked.before, expired_at),
+        "the expired source stops billing at its expiry",
+    );
+    assert!(
+        !got.retained_by_forks,
+        "an expired source is not retained for billing"
+    );
     engine_shutdown(&state).await;
 }

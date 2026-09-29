@@ -224,6 +224,7 @@ Fork behavior is explicit:
 - inherited prefix bytes remain owned and billed to the source incarnation;
 - a fork is billed for bytes appended to its own suffix;
 - deleting a source while forks retain it keeps the source's storage line active with `retained_by_forks=true` until the shared prefix is no longer retained;
+- a source that EXPIRES while forks still read it is retained for recreation (neither surface replaces it) but its storage stops billing at its expiry instant, like any expired stream, and is not flagged `retained_by_forks` (owner decision, 2026-09-29; pinned by `billing_closure_debts::an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry`);
 - the fork dashboard additionally exposes `logical_view_bytes` and `shared_base_bytes` for clarity, but these are not both billed.
 
 This avoids double-billing copy-on-write data while preserving cost attribution.

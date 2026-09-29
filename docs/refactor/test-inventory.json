@@ -2138,6 +2138,17 @@
     ]
   },
   {
+    "name": "an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "40ee4a7a0465672549516960ff9ce29b387351c588d3d9f11d72a2b72ba3b926",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_extend_asking_for_the_longest_visibility_is_not_redelivered_at_once",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

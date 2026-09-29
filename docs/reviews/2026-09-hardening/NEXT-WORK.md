@@ -144,8 +144,13 @@ bugs. Three are fixed, each red first:
 A fourth fix (db126ccd) makes the walk hand back every shard it opened.
 Edge change #65 records all four.
 
-Still open, for the owner (policy; their red tests are on the local branch
-`closure-debt-policy`):
+The owner decided both policy questions on 2026-09-29. B5: an expired
+source its forks still read stops billing at its expiry, which is today's
+behaviour, now pinned by
+`an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry`.
+B3: a correction against a frozen (finalized) month is allowed, so a close
+that arrives late must correct its month and stop the carry. That fix is in
+progress. As originally written:
 
 - **B3.** A close snapshot that arrives after its month was finalized never
   corrects the rollup (`src/rollup/page.rs` `apply_snapshot`'s finalized
