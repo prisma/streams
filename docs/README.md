@@ -57,6 +57,7 @@ Do not read these whole. Find the heading first, then read only that range
 - [edge-changes.md](reviews/2026-09-hardening/edge-changes.md): before/after records #1-#60. Each new edge change adds a record in the same format.
 - [reviews/2026-09-hardening/README.md](reviews/2026-09-hardening/README.md): the hardening acceptance record, the owner's decisions from the second external review (2026-09-25), the split-500 release hold and the deployment gates.
 - [effective-config-diff.md](reviews/2026-09-hardening/effective-config-diff.md): rc.4 vs HEAD effective configuration for each deployment family. This is a deploy prerequisite.
+- [config-simplification.md](reviews/2026-09-hardening/config-simplification.md): the audit of every setting the binary reads (2026-09-29) and the five packages of simplifications proposed to the owner. Its per-setting detail is `reviews/2026-09-hardening/evidence/config-audit-2026-09-29/detail.md` (170 KB, hidden from `rg`; read one item by its `#### ` heading).
 
 **Operations and release**
 - [RUNBOOK.md](../RUNBOOK.md): build, configure, deploy, monitor, debug. It is compiled into the binary (`include_str!` in `src/operator.rs`), so an edit changes the build.

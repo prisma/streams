@@ -22,6 +22,7 @@ Contents:
 - [10. Smaller items](#10-smaller-items)
 - [11. Deployment gates (need the owner or the Compute owner)](#11-deployment-gates-need-the-owner-or-the-compute-owner)
 - [12. Formal verification: new obligations and what blocks them](#12-formal-verification-new-obligations-and-what-blocks-them)
+- [13. Configuration: fewer settings, and defaults that are what production runs](#13-configuration-fewer-settings-and-defaults-that-are-what-production-runs)
 
 ---
 
@@ -204,6 +205,59 @@ already 834 lines of its 1,000):
 - **Fork retention:** a fork-retained incarnation is never replaced
   (`recreatable` excludes it), so no debt; pin that the retained storage
   keeps billing.
+
+**Open, for the owner: a billing close applied to a row that is already
+closed (found 2026-09-29).** The committer applies every `BillingClose`:
+clock to the instant, gauge 0, `usage_version + 1`, row dirty
+(`src/shard/transaction/maintenance.rs` `billing_close`); `billing_retained`
+beside it changes nothing when the flag already matches.
+`submit_billing_close` only enqueues, four of the five submitters (walk,
+debt pass, the drain twice) decide on a plain read of gauge > 0, and hard
+delete reads nothing, so a second submitter that reads the row before the
+first close applied closes it again. Reachable on one instance: delete with
+the drain or the walk at normal latency, drain with drain when the committer
+lags past the 2 s drain period, walk with walk only if a close stays
+unapplied for a sweep period. Not reachable across instances (ring gate and
+writer fencing), after a failed submit, or by replay. Every submitter uses
+the persisted instant, so a repeated close changes no billed figure. It
+costs a row and a dirty-marker write, re-dirties a clean row (which can keep
+a sweep-opened engine resident), adds at most one `_usage` record and one
+ack, and makes the rollup rewrite the month row with zero delta, which moves
+`updatedAt` on the usage answer. Production reads the version only as an
+ordering and dedupe fence; tests read it as a close count, which is why
+`an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry`
+failed 2 runs in 40 until it waited for the close to land (7cef509c).
+
+- **(a) Leave the committer; say that a version is not a close count.**
+  Reword the field's description and the two comments that call the walk
+  idempotent (`src/billing.rs`, line-neutral: the file has no headroom) and
+  add a sentence to `docs/OBSERVABILITY-BILLING.md`. No stale receipt, no
+  mutants, no edge change. The costs above stay, and a test that asserts
+  one more version must wait for the close before it sweeps again.
+- **(b) A close that would change nothing is a no-op:** skip when the gauge
+  is 0 and the instant is not after `storage_accounted_through_ms`;
+  otherwise exactly today's behaviour (a later instant on a closed row
+  still moves the clock). A skip never touches the overlay's `dirty` (an
+  append earlier in the same group may have set it). Shape: a method on
+  `BillingOverlay` (`src/shard/transaction/overlay.rs`) that
+  `billing_close` calls, so its exception scope shrinks. Cost: five
+  receipts stale by digest (KANI-046, TLA-005, TLA-016, TLA-002, TLA-003;
+  no model mentions the close), and new shard-level tests, because no
+  `shard::` test applies a close today (two closes in one group and in two,
+  a later instant, an open gauge, a skip after an append). A client can
+  observe it only indirectly: `updatedAt` moves less often, and the version
+  digits inside later correction ids may be lower; whether that needs an
+  edge record is the owner's ruling.
+
+Recommendation: (b), batched with the next change under `src/shard`. The
+committer is the only place that sees both closes in order, so it is the
+only place where the guard is exact; it makes the walk's documented
+idempotence true and removes every cost above, and the bill cannot change
+because the skip applies only where today's close changes nothing but the
+version. Unconfirmed and separate: a close enqueued on an engine the walk
+cold-opened may be dropped when `walk_settle` retires that engine before
+the committer applies it (a lost close retried by the next sweep, not a
+double).
 
 Rollback note for the record: an older binary ignores the debt objects (they
 live outside the descriptor), so a rollback leaves debts unsettled until
@@ -819,3 +873,21 @@ the roadmap's unimplemented list
 - **Stale receipts:** none; all 24 were re-recorded on 2026-09-27 with the
   driver fix above. `python3 scripts/dev/formal_batch.py status` lists them.
 
+---
+
+## 13. Configuration: fewer settings, and defaults that are what production runs
+
+**Owner decision (2026-09-29).** The binary's default L0 cap is 32, the
+value the production profile sets (823b3269). The owner asked what else
+could be simpler.
+
+**The audit.** `config-simplification.md` in this directory: the binary
+reads 152 settings, the production profile sets 24 of them, 47 are set by
+nothing and 7 do nothing. Five packages, each for the owner to decide:
+settings that do nothing; the binary's defaults as the certified 1 GiB
+posture (the compaction and store lines first, because the new L0 default
+depends on them); the commit pipeline as one decision; settings nothing sets
+as constants; switches with one live path. The verified detail of every
+item is in `evidence/config-audit-2026-09-29/detail.md`.
+
+Nothing in the five packages is changed yet.
