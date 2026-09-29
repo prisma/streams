@@ -683,6 +683,20 @@ async fn post_apply_write_error(
         wal_parked.load(Ordering::SeqCst),
         handle.state.lock().unwrap().applied.next,
     );
+    // The engine retired at the failed write, so its storage close runs while
+    // the writer's exit is parked. SlateDB's close reads the status and then
+    // records its result; the writer records its result and then publishes
+    // the status. A close that lands between the writer's two steps returns
+    // the writer's error, so the close records its result before the writer
+    // resumes: parked, the writer records nothing.
+    if engine.is_closed() {
+        until(|| status.borrow().close_reason.is_some()).await;
+        assert_eq!(
+            status.borrow().close_reason,
+            Some(slatedb::CloseReason::Clean),
+            "only the engine's close records a result while the writer is parked"
+        );
+    }
     drop(window);
     fixture.finish().await;
     assert!(

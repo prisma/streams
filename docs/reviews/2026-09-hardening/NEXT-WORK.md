@@ -633,6 +633,31 @@ before marking it complete."
   the first append rewrote the maintenance row after the test's fat row. It
   now waits on observable events (the settlement, engine 1 closed, the
   request's shard open in flight) instead of fixed sleeps.
+- **Flaky test (done), and an engine question for the owner.**
+  `shard::retirement_tests::tla005_f5_a_failed_write_answers_nothing_from_its_batch`
+  failed about 1 run in 10 at its teardown with
+  `storage-close: Failed(... Unavailable error: io error (oops))`. Cause:
+  since f574d733 the engine begins its close in `write_failed`, before
+  SlateDB has recorded the writer's failure, so `Db::close` races the
+  writer's exit. SlateDB's close reads the status and then records its own
+  result without checking whether it won; the writer records its result and
+  then publishes the status (slatedb 0717cc1 `db.rs` 693-707,
+  `db_status.rs` 255-262). Close first, or writer first: the close answers
+  Ok. Close between the writer's two steps: its final flush is refused with
+  the writer's error and the storage close reports Failed. The test now
+  keeps the writer parked until the close has recorded Clean, which is the
+  ordering f574d733 already names as its cost. **Open, for the owner:**
+  production has the same three orderings after any post-apply write
+  failure, and a failed storage close is final: the engine stays
+  `ShuttingDown`, its prefix answers `shard_closing` on every open and
+  readiness fails until restart (`src/tasks/shutdown.rs`, `src/sharddir.rs`).
+  That is fail-safe and the window is narrow. Options: settle the close of
+  a Db that had already failed; have the finalizer wait, bounded, for the
+  writer's status when it retires through `write_failed`; or fix the read
+  and the write in SlateDB's close upstream. The first two edit
+  `src/shard/lifecycle.rs` or `history_partition.rs` (TLA-006 and TLA-011
+  receipts), and the comment in `lifecycle.rs` that no store fault produces
+  a failed close does not hold for the third ordering.
 - **SIGTERM on a fully wedged executor** is never observed (the signal task
   runs on that executor), so it arms no stop bound; documented in WIRE-MATRIX
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
