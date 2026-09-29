@@ -136,7 +136,7 @@
         {
           "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
-          "sha256": "9cc3ac6546ee1435af5200ee754f9e2b30af8704b79c5e74395ab9c566448b2b"
+          "sha256": "672c4972ea290835500d9398900d0bd9dd597e8873395e8b8ba898ad98508bdc"
         }
       ]
     },

@@ -267,6 +267,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_late_close",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A closure debt settled after its month and the next were invoiced (NEXT-WORK section 2, B3; edge change #66): the late close corrects the month to the expiry and reverses the later month's carry end to end through the production sweep, drain, rollup and month close; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_late_close.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_walk_custody",
       "path": "src/dst/dst_tests.rs",
       "reason": "Tombstone-walk custody across a page: a shard the walk cold-opens for a segment with nothing to close is handed back before the next segment, so a gauged dead stream later on the page closes at its persisted expiry under the production sweep and resident budget; compiler and the full DST suite exercise the module.",

@@ -149,8 +149,19 @@ source its forks still read stops billing at its expiry, which is today's
 behaviour, now pinned by
 `an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry`.
 B3: a correction against a frozen (finalized) month is allowed, so a close
-that arrives late must correct its month and stop the carry. That fix is in
-progress. As originally written:
+that arrives late must correct its month and stop the carry. **B3 is fixed**
+(edge change #66, awaiting the owner's ratification): a settled late figure
+(a month-final, or gauge 0) sets the month's floor exactly and records the
+signed difference as a correction; a gauge-0 late snapshot advances the
+segment state, so no month not yet closed bills the segment; each later
+month already carried from the stale gauge is reversed in the same page
+(a correction when finalized, in place between its carry and its freeze).
+Pinned by `billing_closure_debts::a_month_closed_before_settlement_still_bills_only_up_to_the_expiry_instant`,
+`billing_late_close.rs` and `src/rollup/page/late_close_tests.rs`. Left for
+the owner: a late snapshot that still owns bytes does not advance the
+segment state, a late non-settled snapshot still drops its same-version
+month-final, and a gauge-0 month-final inside its own month's
+carry-to-freeze window is still dropped. As originally written:
 
 - **B3.** A close snapshot that arrives after its month was finalized never
   corrects the rollup (`src/rollup/page.rs` `apply_snapshot`'s finalized

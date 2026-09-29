@@ -169,6 +169,7 @@ remains probable." Limits that stay explicit:
 | Held wrapper diagnostic | Generic and unhealthy; details only in the log | b7f6dc3a |
 | Wrapper signal forwarding | Bounded forwarding | b7f6dc3a (Compute lifecycle still to verify) |
 | Idle-expiry recreation billing | Release blocker: durable, generation-fenced cleanup obligation | 2ba4bc47 (closure debts) |
+| B3, a close after its month was finalized (decided 2026-09-29) | A correction against a frozen invoice is allowed: the month nets to what the shard recorded up to the close, later months bill 0 for the segment | Edge #66 (awaits ratification) |
 | Item 50 | Option (a): preserve live bindings, cap 32,768, reject `HANDLE_IDLE_EVICT_SECS=0` | 45f8711c (holder rule added beside the counted pin; the pin's full retirement not done) |
 | Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |
 | Bug #7 | Option (b), explicit migration; activation gated on a real-DB rehearsal | Not started |

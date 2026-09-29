@@ -1098,7 +1098,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Priority:** P1 · **Requirement anchors:** R7, billing rollup/settlement requirements  
 **Source owners:** [`src/rollup.rs`](src/rollup.rs); [`src/rollup/page.rs`](src/rollup/page.rs); [`src/rollup/reconciliation.rs`](src/rollup/reconciliation.rs); [`src/rollup/close.rs`](src/rollup/close.rs); [`src/rollup/totals.rs`](src/rollup/totals.rs)
 
-**Validate.** A ledger page is applied atomically with its cursor under the intended storage contract. Replaying an event does not double-count it. Corrections and month-close work preserve source-version identity and totals; incomplete reconciliation cannot publish a falsely final statement. Late events follow the adopted correction/reopen policy.
+**Validate.** A ledger page is applied atomically with its cursor under the intended storage contract. Replaying an event does not double-count it. Corrections and month-close work preserve source-version identity and totals; incomplete reconciliation cannot publish a falsely final statement. Late events follow the adopted correction/reopen policy: correction, never reopen (owner decision on B3, 2026-09-29; edge change #66). A settled late figure (a month-final, or a closed segment) corrects its finalized month in both directions, every later month carried from the superseded gauge is reversed, and on every finalized row frozen storage plus its storage corrections equals the sum of its segment floors.
 
 **Why valuable.** The ledger can be correct while a downstream cursor or partial month-close result creates incorrect bills. This checks that second durability boundary.
 
@@ -2765,7 +2765,7 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Priority:** P2 · **Build route:** Extract  
 **Source owners:** [`src/rollup/page.rs`](src/rollup/page.rs); [`src/rollup/close.rs`](src/rollup/close.rs); [`src/rollup/reconciliation.rs`](src/rollup/reconciliation.rs); [`src/rollup/totals.rs`](src/rollup/totals.rs)
 
-**Validate.** The deterministic plan for a bounded page preserves source/version idempotence, row totals, and cursor/finalization prerequisites. Missing or failed reconciliation evidence cannot become a final-close plan; bounded scans retain continuation debt.
+**Validate.** The deterministic plan for a bounded page preserves source/version idempotence, row totals, and cursor/finalization prerequisites. Missing or failed reconciliation evidence cannot become a final-close plan; bounded scans retain continuation debt. A late settled figure moves a floor by exactly its signed correction, and a carried-month reversal removes exactly the carry's figure (the policy TLA-037 names).
 
 **Why valuable.** Checks the local transformations that the rollup protocol treats as atomic effects.
 

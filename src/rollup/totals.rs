@@ -83,6 +83,37 @@ impl MonthRow {
     }
 }
 
+#[cfg(test)]
+impl MonthRow {
+    /// The storage identity every late snapshot and every carried-month
+    /// reversal keeps on a finalized row: its frozen storage plus its listed
+    /// storage corrections is the sum of its segment floors, and the
+    /// materialized correction sum agrees with the list.
+    pub(crate) fn assert_storage_telescopes(&self) {
+        let signed = |text: &str| text.parse::<i128>().ok();
+        let frozen = self
+            .frozen
+            .as_ref()
+            .and_then(|f| signed(&f.storage_byte_ms));
+        let listed: Option<i128> = self
+            .corrections
+            .iter()
+            .map(|c| signed(&c.storage_byte_ms_delta))
+            .sum();
+        let floors = i128::try_from(self.storage_byte_ms()).ok();
+        assert_eq!(
+            frozen.zip(listed).map(|(frozen, listed)| frozen + listed),
+            floors,
+            "frozen storage plus its corrections is not the sum of the floors"
+        );
+        let materialized = match self.corr.storage_byte_ms_delta.as_str() {
+            "" => Some(0),
+            text => signed(text),
+        };
+        assert_eq!(materialized, listed, "the correction sum is not the list");
+    }
+}
+
 impl AggRow {
     pub(super) fn invoice_meters(&self) -> InvoiceMeters {
         InvoiceMeters {

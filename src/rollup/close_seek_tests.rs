@@ -40,6 +40,9 @@ async fn r23_seek_boundaries_are_exclusive_and_prefix_bounded() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r23_close_visits_scale_linearly_across_chunk_restart() {
+    // July 2026 closes only on the real clock: a scenario that injects the
+    // billing clock holds the write lock while it does.
+    let _clock = crate::billing::billing_clock_lock().read().await;
     for n in [1001usize, 2002] {
         let db = Arc::new(
             Db::builder(

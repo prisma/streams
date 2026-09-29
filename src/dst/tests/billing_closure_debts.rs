@@ -345,7 +345,7 @@ async fn a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry() {
 }
 
 /// Resets the injected billing clock, even on panic.
-struct ClockReset;
+pub(super) struct ClockReset;
 impl Drop for ClockReset {
     fn drop(&mut self) {
         set_clock(0);
@@ -367,7 +367,7 @@ async fn roll_up(state: &State) {
 }
 
 /// Moves the billing clock to `at` and closes every month due there.
-async fn closed_months(state: &State, at: i64) -> Vec<String> {
+pub(super) async fn closed_months(state: &State, at: i64) -> Vec<String> {
     set_clock(at);
     let rollup = state.rollup.get().expect("the rig's rollup");
     let grace = state.config.billing.month_close_grace_ms;
@@ -377,7 +377,7 @@ async fn closed_months(state: &State, at: i64) -> Vec<String> {
 
 /// What `month` invoices for incarnation `epoch`: its frozen storage
 /// byte-ms plus corrections (zero without a row).
-async fn invoiced(state: &State, month: &str, epoch: &str) -> u128 {
+pub(super) async fn invoiced(state: &State, month: &str, epoch: &str) -> u128 {
     let rollup = state.rollup.get().expect("the rig's rollup");
     let row = rollup
         .month_row(month, "acct_test", "proj-test", epoch)
@@ -390,7 +390,7 @@ async fn invoiced(state: &State, month: &str, epoch: &str) -> u128 {
 }
 
 /// The gauge the rollup carries onto every later month for `epoch`.
-async fn carried_gauge(state: &State, epoch: &str) -> u64 {
+pub(super) async fn carried_gauge(state: &State, epoch: &str) -> u64 {
     let rollup = state.rollup.get().expect("the rig's rollup");
     let segments = rollup
         .stream_segment_states("acct_test", "proj-test", epoch)
@@ -402,19 +402,19 @@ async fn carried_gauge(state: &State, epoch: &str) -> u64 {
 /// January 2026 on the billing clock: `mx` bills one record from Jan 15,
 /// acked clean and rolled up, then expires idle at Jan 31 12:00. Creation
 /// judges liveness on the wall clock, months past both instants.
-struct IdleJanuary {
-    state: State,
+pub(super) struct IdleJanuary {
+    pub(super) state: State,
     addr: Addr,
     sref: Ref,
-    old: Desc,
+    pub(super) old: Desc,
     engine: Engine,
-    before: Meta,
-    expired_at: i64,
+    pub(super) before: Meta,
+    pub(super) expired_at: i64,
     /// Storage January owes: the gauge from Jan 15 to the expiry.
-    owed: u128,
+    pub(super) owed: u128,
 }
 
-async fn idle_january() -> IdleJanuary {
+pub(super) async fn idle_january() -> IdleJanuary {
     let (state, addr) = http_rig(mem()).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
@@ -454,7 +454,7 @@ async fn idle_january() -> IdleJanuary {
 /// Recreates `mx` at the current billing clock, appends to the new
 /// incarnation, settles the debt through the production sweep, and rolls
 /// the old row's close up. Returns the closed row.
-async fn recreate_and_settle(case: &IdleJanuary) -> Meta {
+pub(super) async fn recreate_and_settle(case: &IdleJanuary) -> Meta {
     raw_put(case.addr, "mx", &[JSON], b"").await;
     let (st, _, _) = hreq(case.addr, "POST", "/v1/stream/mx", &[JSON], br#"[{"n":2}]"#).await;
     assert_eq!(st, 204);
@@ -507,6 +507,41 @@ async fn a_month_crossing_recreation_bills_storage_only_up_to_the_expiry_instant
     assert!(
         invoiced(&case.state, "2026-02", &fresh.stream_epoch).await > 0,
         "the new incarnation bills February"
+    );
+    engine_shutdown(&case.state).await;
+}
+
+/// The month crossing when January's invoice closed BEFORE the replaced row
+/// was closed: the recreation lands after January's close grace, so the
+/// carry billed the still-open gauge to the boundary. The close at the
+/// January expiry then reaches the rollup late. The owner's requirement is
+/// unchanged: January bills up to the expiry, and February (and every later
+/// month) carries nothing for an incarnation whose storage closed in January.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_month_closed_before_settlement_still_bills_only_up_to_the_expiry_instant() {
+    let _clock = crate::billing::billing_clock_lock().write().await;
+    let _reset = ClockReset;
+    let case = idle_january().await;
+    let jan_close = month_start_ms(2026, 2) + DAY + HOUR;
+    assert_eq!(closed_months(&case.state, jan_close).await, ["2026-01"]);
+    let got = recreate_and_settle(&case).await;
+    assert_billed(
+        &got,
+        &expected_close(&case.before, case.expired_at),
+        "the replaced row closes at its January expiry",
+    );
+    let feb_close = month_start_ms(2026, 3) + DAY + HOUR;
+    assert_eq!(closed_months(&case.state, feb_close).await, ["2026-02"]);
+    let epoch = case.old.stream_epoch.as_str();
+    assert_eq!(
+        (
+            invoiced(&case.state, "2026-01", epoch).await,
+            invoiced(&case.state, "2026-02", epoch).await,
+            carried_gauge(&case.state, epoch).await,
+        ),
+        (case.owed, 0, 0),
+        "a close that reached the rollup after January closed never corrected \
+         January, and the rollup kept carrying the stale gauge into February"
     );
     engine_shutdown(&case.state).await;
 }

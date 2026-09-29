@@ -6,10 +6,11 @@
 
 use super::{
     AggRow, K_CURSOR, MonthRow, SegmentState, decode_json, get_json, k_month, k_name, k_project,
-    k_segment, k_source, month_spans, read_bytes,
+    k_segment, k_source, month_spans, month_start_ms, next_month, parse_month, read_bytes,
 };
 use crate::billing::{
-    ReadBatch, ReadRow, SegmentSnapshot, UsageCorrection, UsageEnvelope, UsagePayload,
+    BillingIdentity, ReadBatch, ReadRow, SegmentSnapshot, UsageCorrection, UsageEnvelope,
+    UsagePayload,
 };
 use slatedb::{Db, WriteBatch};
 use std::collections::HashMap;
@@ -345,7 +346,7 @@ impl<'a> Page<'a> {
             &id.stream_id,
             snap.segment_id,
         );
-        let mut st: SegmentState = match self.segs.get(&skey) {
+        let st: SegmentState = match self.segs.get(&skey) {
             Some(r) => r.clone(),
             None => get_json(self.db, &skey).await?,
         };
@@ -373,7 +374,7 @@ impl<'a> Page<'a> {
                 self.push_correction(&mut mr, correction).await?;
             }
             self.months.insert(mkey, mr);
-            return Ok(());
+            return self.close_later_months(skey, st, snap).await;
         }
         // Deltas against the last applied absolutes.
         let d_bytes = snap
@@ -383,6 +384,15 @@ impl<'a> Page<'a> {
         let new_ms: u128 = snap.storage_byte_ms_month.parse().unwrap_or(0);
         let old_ms: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
         let d_ms = new_ms.saturating_sub(old_ms);
+        // B3: only the carry extrapolates a floor past a later figure, so a
+        // settled figure below the floor is a close between this month's
+        // carry and its freeze. The row takes the figure below; the
+        // aggregates the carry credited give the excess back with it.
+        let excess = if settles(snap) {
+            old_ms.saturating_sub(new_ms)
+        } else {
+            0
+        };
         sm.usage_version = snap.usage_version;
         sm.ingest_bytes = snap.ingest_payload_bytes_month;
         sm.ingest_records = snap.ingest_records_month;
@@ -393,22 +403,7 @@ impl<'a> Page<'a> {
         mr.account_id = id.account_id.clone();
         mr.stream_name = id.stream_name.clone();
         self.months.insert(mkey, mr);
-        // Round-22 item 4: a rollover emits a month-FINAL and a live
-        // snapshot under the SAME usage_version. Whichever arrives
-        // second must still be able to advance the global state, or the
-        // next month's carry starts from the stale gauge/boundary — so
-        // same-version ties break on the storage clock.
-        let advances = snap.usage_version > st.usage_version
-            || (snap.usage_version == st.usage_version
-                && snap.storage_accounted_through_ms > st.storage_accounted_through_ms);
-        if advances {
-            st.usage_version = snap.usage_version;
-            st.owned_frame_bytes_current = snap.owned_frame_bytes_current;
-            st.storage_accounted_through_ms = snap.storage_accounted_through_ms;
-            st.stream_name = id.stream_name.clone();
-            st.account_id = id.account_id.clone();
-            self.segs.insert(skey, st);
-        }
+        self.advance_segment_state(skey, st, snap, snap.storage_accounted_through_ms);
         for (key, is_name) in [
             (
                 k_name(&snap.month, &id.account_id, &id.project_id, &id.stream_name),
@@ -426,6 +421,7 @@ impl<'a> Page<'a> {
             a.ingest_bytes += d_bytes;
             a.ingest_records += d_recs;
             a.add_storage(d_ms);
+            lower_storage(&mut a, excess)?;
             if is_name && !a.incarnations.contains(&id.stream_id) {
                 a.incarnations.push(id.stream_id.clone());
             }
@@ -433,10 +429,235 @@ impl<'a> Page<'a> {
         }
         Ok(())
     }
+
+    /// Round-22 item 4: a rollover emits a month-FINAL and a live
+    /// snapshot under the SAME usage_version. Whichever arrives
+    /// second must still be able to advance the global state, or the
+    /// next month's carry starts from the stale gauge/boundary — so
+    /// same-version ties break on the storage clock. `through` is the
+    /// accounted-through instant the advanced state records.
+    fn advance_segment_state(
+        &mut self,
+        skey: Vec<u8>,
+        mut st: SegmentState,
+        snap: &SegmentSnapshot,
+        through: i64,
+    ) -> bool {
+        let id = &snap.identity;
+        let advances = snap.usage_version > st.usage_version
+            || (snap.usage_version == st.usage_version
+                && snap.storage_accounted_through_ms > st.storage_accounted_through_ms);
+        if advances {
+            st.usage_version = snap.usage_version;
+            st.owned_frame_bytes_current = snap.owned_frame_bytes_current;
+            st.storage_accounted_through_ms = through;
+            st.stream_name = id.stream_name.clone();
+            st.account_id = id.account_id.clone();
+            self.segs.insert(skey, st);
+        }
+        advances
+    }
+
+    /// B3: a late close (gauge 0) is the segment's last word. It advances
+    /// the state every later carry reads, so a month not yet closed carries
+    /// nothing, and it reverses each month already carried from the
+    /// superseded gauge `st`. Its accounted-through instant never moves back
+    /// from what the carries accounted. `advances` is the only gate: a replay
+    /// or an older snapshot never advances, and when a newer state exists it
+    /// already fed the carries. When this one advances, no snapshot of a
+    /// later month at or above its version was applied, so every floor in
+    /// [its month's boundary, the carried instant) is pure carry. A late
+    /// snapshot that still owns bytes leaves the state alone.
+    async fn close_later_months(
+        &mut self,
+        skey: Vec<u8>,
+        st: SegmentState,
+        snap: &SegmentSnapshot,
+    ) -> anyhow::Result<()> {
+        if snap.owned_frame_bytes_current != 0 {
+            return Ok(());
+        }
+        let carried = st.clone();
+        let through = carried
+            .storage_accounted_through_ms
+            .max(snap.storage_accounted_through_ms);
+        if !self.advance_segment_state(skey, st, snap, through)
+            || carried.owned_frame_bytes_current == 0
+        {
+            return Ok(());
+        }
+        for month in carried_months(&snap.month, carried.storage_accounted_through_ms)? {
+            self.reverse_carried_month(snap, &carried, month).await?;
+        }
+        Ok(())
+    }
+
+    /// Reverses what the carry of `month` billed this segment from the
+    /// superseded state `carried`: a finalized month by a correction; a
+    /// month between its carry and its freeze in place, with its aggregates
+    /// (its freeze then bills the reversed floor, so a correction would
+    /// subtract twice). Anything but that carry's exact figure fails the page.
+    async fn reverse_carried_month(
+        &mut self,
+        snap: &SegmentSnapshot,
+        carried: &SegmentState,
+        (year, number): (i32, u32),
+    ) -> anyhow::Result<()> {
+        let id = &snap.identity;
+        let month = crate::billing::month_str(year, number);
+        let key = k_month(&month, &id.account_id, &id.project_id, &id.stream_id);
+        let mut row: MonthRow = match self.months.get(&key) {
+            Some(r) => r.clone(),
+            None => get_json(self.db, &key).await?,
+        };
+        let (next_year, next) = next_month(year, number);
+        let gauge = carried.owned_frame_bytes_current;
+        let amount = super::storage::byte_ms(
+            gauge,
+            month_start_ms(year, number),
+            month_start_ms(next_year, next),
+        );
+        let carry = row.segments.get_mut(&snap.segment_id).filter(|sm| {
+            sm.usage_version == 0
+                && sm.final_seen
+                && sm.gauge_bytes == gauge
+                && sm.storage_byte_ms.parse::<u128>().ok() == Some(amount)
+        });
+        let Some(sm) = carry else {
+            return Err(anyhow::anyhow!(
+                "{month} holds storage its carry did not bill from the superseded gauge"
+            ));
+        };
+        let reversed = i128::try_from(amount)
+            .map_err(|_| anyhow::anyhow!("carried byte-time exceeds a correction"))?;
+        sm.storage_byte_ms = "0".into();
+        sm.gauge_bytes = 0;
+        // The carry's own identity, so the aggregate keys it credited match.
+        let identity = BillingIdentity {
+            stream_name: carried.stream_name.clone(),
+            ..id.clone()
+        };
+        if row.finalized_at_ms.is_some() {
+            let c = reversal(snap, identity, &month, reversed);
+            self.push_correction(&mut row, c).await?;
+        } else {
+            self.uncarry(&month, &identity, amount).await?;
+        }
+        self.months.insert(key, row);
+        Ok(())
+    }
+
+    /// The exact inverse of the carry's aggregate credit
+    /// (`CarryPage::add_storage`), for a month not yet frozen.
+    async fn uncarry(
+        &mut self,
+        month: &str,
+        identity: &BillingIdentity,
+        amount: u128,
+    ) -> anyhow::Result<()> {
+        for key in [
+            k_name(
+                month,
+                &identity.account_id,
+                &identity.project_id,
+                &identity.stream_name,
+            ),
+            k_project(month, &identity.account_id, &identity.project_id),
+        ] {
+            let mut a: AggRow = match self.aggregates.get(&key) {
+                Some(r) => r.clone(),
+                None => get_json(self.db, &key).await?,
+            };
+            lower_storage(&mut a, amount)?;
+            self.aggregates.insert(key, a);
+        }
+        Ok(())
+    }
+}
+
+/// A late snapshot whose month figure is settled: a month-final, or a
+/// closed segment (gauge 0). Gauge 0 means closed because of three shard
+/// facts: a segment's gauge only grows (the append commit adds its frames),
+/// only `billing_close` zeroes it, and a closed incarnation takes no appends
+/// or renewals (`CreationService::delete` refuses a dead descriptor and
+/// `touch_ttl` an expired one). A zero gauge newer than a floor the carry
+/// built from a positive gauge therefore owns nothing from its storage clock
+/// on. A change to gauge semantics must revisit this rule.
+fn settles(snap: &SegmentSnapshot) -> bool {
+    snap.month_final || snap.owned_frame_bytes_current == 0
+}
+
+/// The months after `month` whose carry ran before `through`, oldest
+/// first. A span beyond the month close's own cap is no carry: it fails
+/// the page before any month is read.
+fn carried_months(month: &str, through: i64) -> anyhow::Result<Vec<(i32, u32)>> {
+    const MONTH_CLOSE_CAP: usize = 600;
+    let (mut year, mut number) =
+        parse_month(month).ok_or_else(|| anyhow::anyhow!("invalid snapshot month"))?;
+    let mut months = Vec::new();
+    loop {
+        (year, number) = next_month(year, number);
+        if month_start_ms(year, number) >= through {
+            return Ok(months);
+        }
+        anyhow::ensure!(
+            months.len() < MONTH_CLOSE_CAP,
+            "carried storage spans more than {MONTH_CLOSE_CAP} months"
+        );
+        months.push((year, number));
+    }
+}
+
+/// Takes back storage an aggregate was credited. More than it holds is a
+/// corrupt aggregate: it fails the page.
+fn lower_storage(a: &mut AggRow, amount: u128) -> anyhow::Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let held: u128 = a.storage_byte_ms.parse().unwrap_or(0);
+    let left = held
+        .checked_sub(amount)
+        .ok_or_else(|| anyhow::anyhow!("carried storage exceeds its aggregate"))?;
+    a.storage_byte_ms = left.to_string();
+    Ok(())
+}
+
+/// The correction that reverses a later month's carry of a segment the
+/// late snapshot `snap` closed: one per (snapshot, month), deterministic.
+fn reversal(
+    snap: &SegmentSnapshot,
+    identity: BillingIdentity,
+    month: &str,
+    reversed: i128,
+) -> UsageCorrection {
+    UsageCorrection {
+        identity,
+        month: month.to_owned(),
+        reason: format!(
+            "late segment snapshot v{} closed segment {} before {month}; its carried storage is reversed",
+            snap.usage_version, snap.segment_id
+        ),
+        correction_id: format!("corr/snap/{}/{month}", snap.deterministic_event_id()),
+        correction_version: 1,
+        source_event_id: snap.deterministic_event_id(),
+        created_at_ms: crate::billing::billing_now_ms(),
+        ingest_payload_bytes_delta: 0,
+        ingest_records_delta: 0,
+        read_payload_bytes_delta: 0,
+        read_records_delta: 0,
+        read_operations_delta: 0,
+        queue_operations_delta: 0,
+        append_requests_delta: 0,
+        storage_byte_ms_delta: (-reversed).to_string(),
+    }
 }
 
 /// A closed invoice keeps its frozen base; only dedupe floors and an explicit
 /// correction advance. Returning no correction still preserves the new floors.
+/// A settled figure (`settles`: a month-final, or a closed segment) is exact:
+/// the floor becomes it and the correction carries the signed difference, so
+/// frozen + corrections is always the sum of the floors (B3, owner decision
+/// of 2026-09-29). Any other late figure only raises storage.
 /// A byte-time difference wider than a correction's signed 128 bits cannot
 /// come from one month of a 64-bit gauge (31 d x u64::MAX is about 4.9e28,
 /// below 1.7e38): it refuses the page before any floor moves, so no
@@ -456,17 +677,22 @@ fn apply_late_snapshot(
     let d_recs = snap.ingest_records_month.saturating_sub(sm.ingest_records);
     let new_ms: u128 = snap.storage_byte_ms_month.parse().unwrap_or(0);
     let old_ms: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
-    let d_ms = i128::try_from(new_ms.saturating_sub(old_ms))
-        .map_err(|_| anyhow::anyhow!("late byte-time difference exceeds a correction"))?;
+    let settled = settles(snap);
+    let d_ms = late_storage_delta(settled, new_ms, old_ms)?;
     // Advance the floors FIRST (ends the segment borrow), so a
     // replay corrects exactly once; the deltas are already in
     // locals.
     sm.usage_version = snap.usage_version.max(sm.usage_version);
     sm.ingest_bytes = snap.ingest_payload_bytes_month.max(sm.ingest_bytes);
     sm.ingest_records = snap.ingest_records_month.max(sm.ingest_records);
-    sm.storage_byte_ms = new_ms.max(old_ms).to_string();
+    if settled {
+        sm.storage_byte_ms = new_ms.to_string();
+        sm.gauge_bytes = snap.owned_frame_bytes_current;
+    } else {
+        sm.storage_byte_ms = new_ms.max(old_ms).to_string();
+    }
     sm.final_seen = true;
-    if d_bytes > 0 || d_ms > 0 || d_recs > 0 {
+    if d_bytes > 0 || d_ms != 0 || d_recs > 0 {
         let c = UsageCorrection {
             identity: id.clone(),
             month: snap.month.clone(),
@@ -493,5 +719,19 @@ fn apply_late_snapshot(
     }
 }
 
+/// A late storage delta: signed for a settled figure (both operands are
+/// checked into i128 first, so the difference cannot overflow), upward only
+/// otherwise. Either fails before any floor moves.
+fn late_storage_delta(settled: bool, new_ms: u128, old_ms: u128) -> anyhow::Result<i128> {
+    let wide = |_| anyhow::anyhow!("late byte-time difference exceeds a correction");
+    if settled {
+        Ok(i128::try_from(new_ms).map_err(wide)? - i128::try_from(old_ms).map_err(wide)?)
+    } else {
+        i128::try_from(new_ms.saturating_sub(old_ms)).map_err(wide)
+    }
+}
+
+#[cfg(test)]
+mod late_close_tests;
 #[cfg(test)]
 mod tests;

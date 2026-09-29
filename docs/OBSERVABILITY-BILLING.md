@@ -555,7 +555,11 @@ At month close, the closer advances every active gauge to the exact UTC boundary
 - Default close grace: 24 hours.
 - Late records before close update the provisional month.
 - Late records after finalization create a versioned `usage_correction`; finalized rows are never silently rewritten.
-- Invoice generation stores the rollup version and correction set used.
+- A late segment snapshot after finalization corrects storage upward only, unless its figure is settled: a month-final, or a closed segment (gauge 0). A settled figure is exact: the segment's floor becomes it and the correction carries the signed difference, negative for a close the carry had extrapolated past (B3, owner decision of 2026-09-29; edge change #66). So for every finalized row, frozen storage plus its storage corrections is the sum of its segment floors.
+- A late close (gauge 0) also advances the segment state the month close carries, so no month not yet closed bills the segment, and it reverses in the same page every later month already carried from the superseded gauge: one correction (`corr/snap/<close event id>/<month>`) on a finalized month, or in place (floor and aggregates, no correction) on a month whose carry committed before its freeze. A close inside its own month's carry-to-freeze window lowers the name and project aggregates together with the stream row. After the month was finalized, the segment state's accounted-through instant never moves back from what the carries accounted; in the month's own carry-to-freeze window the open path still records the close instant, which every carry clamps with max(through, month start).
+- "Gauge 0 means closed" rests on shard facts: a gauge only grows on append, only the storage close zeroes it, and a closed incarnation takes no appends or renewals. A change to gauge semantics must revisit the rule (`settles`, `src/rollup/page.rs`).
+- A late snapshot that still owns bytes does not advance the segment state; a carried month holding anything but the carry's exact figure, an unreadable carried month, or a carried span beyond the month close's 600-month cap fails the rollup page whole.
+- Invoice generation stores the rollup version and correction set used; a negative `storage_byte_ms_delta` is a credit.
 
 ### 9.6 Immutable month artifacts
 

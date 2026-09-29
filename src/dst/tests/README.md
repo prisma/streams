@@ -16,7 +16,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Consumer delivery and deletion | `consumer_atomicity`, `consumer_delete`, `consumer_generations`, `consumer_product`, `consumer_saga` |
 | Watches and live delivery | `watch_observation`, `sse_delivery`, `livefeed_*` (incl. `livefeed_engine_retired`) |
 | Multitenancy and authorization | `security_*`, `quota_enforcement`, `quota_read_volume` |
-| Accounting and admission (incl. closure debts across recreation, crashes and instances: `billing_closure_debts`, `billing_closure_owners`; the walk's shard custody: `billing_walk_custody`) | `billing_*`, `admission_*` |
+| Accounting and admission (incl. closure debts across recreation, crashes and instances: `billing_closure_debts`, `billing_closure_owners`; a close that settles after its months were invoiced: `billing_late_close`; the walk's shard custody: `billing_walk_custody`) | `billing_*`, `admission_*` |
 | Runtime ownership and recovery | `runtime_isolation`, `runtime_open_gate`, `runtime_retirement`, `runtime_sweep` |
 | Fleet coordination (heartbeat liveness, controller progress, withdrawal, ring view, planned drain) | `fleet_controller`, `fleet_drain` |
 

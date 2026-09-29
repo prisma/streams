@@ -102,6 +102,17 @@
     ]
   },
   {
+    "name": "a_close_that_reaches_the_rollup_after_february_closed_reverses_february",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e9e05b10f6003dee94ad4da47eb4f5c4392469aa0cb297baf7fb47aee0364a36",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_late_close.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -757,6 +768,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_month_closed_before_settlement_still_bills_only_up_to_the_expiry_instant",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ada1228577235fe00bbfecfd84bc54f58d3bd81dfd2245a395ed0d4c5f7abee1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_closure_debts.rs",
     "scenarios": []
   },
   {

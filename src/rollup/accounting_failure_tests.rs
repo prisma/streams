@@ -101,6 +101,9 @@ async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
+    // July 2026 closes only on the real clock: a scenario that injects the
+    // billing clock holds the write lock while it does.
+    let _clock = crate::billing::billing_clock_lock().read().await;
     let db = Arc::new(
         Db::builder(
             "r14-corruption",
