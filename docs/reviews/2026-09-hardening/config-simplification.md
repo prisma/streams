@@ -75,6 +75,17 @@ Only a deployment that gives the prefix on argv and meters usage gets a new
 spool location, and none is known; nothing is migrated (RUNBOOK §11 has the
 upgrade step). Row 3 (`--compactor-max-concurrent`) is not changed yet.
 
+Status (2026-09-29, row 3): done, edge record #76. The argument is wired,
+not deleted: `with_knob_defaults` copies the value clap resolved (argv, then
+`COMPACTOR_MAX_CONCURRENT`, then 1) and the overlay no longer reads the
+name, as edge record #48 did for the poll interval. A process that holds
+only the environment name runs as before. New with it: a certified process
+(`MEMPROFILE_CERT=compute-1g`) that passes a concurrency other than 1 on
+argv does not start. Deleting the argument would have refused every process
+that passes it and would have let a malformed environment value through
+unnoticed. With this row every row of package 1 is done. The counts under
+"The numbers" are the audit's and are not rewritten.
+
 | Setting | Today | Proposed |
 |---|---|---|
 | `ABSORB_PASS_BYTES`, `ABSORB_CONCURRENCY`, `ABSORB_SMALL_BYTES` | accepted, ignored, startup notice | not declared |

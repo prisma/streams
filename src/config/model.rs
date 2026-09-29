@@ -73,8 +73,9 @@ pub struct EngineConfig {
     /// `crate::DEFAULT_COMPACTOR_POLL_MS`. Clap owns it: `with_knob_defaults`
     /// copies the resolved value so an argv override reaches every DB family.
     pub compactor_poll_ms: u64,
-    /// COMPACTOR_MAX_CONCURRENT, default 1. This and the four worker
-    /// values below default to the certified 1 GiB posture
+    /// `--compactor-max-concurrent` (env COMPACTOR_MAX_CONCURRENT),
+    /// default 1, clap-owned like the poll interval. This and the four
+    /// worker values below default to the certified 1 GiB posture
     /// (deploy/profiles/compute-1g.env), not to SlateDB's own 4 / 4 / 4 /
     /// 2 MiB / 256 MiB, under which a 32-input L0 merge stages about 1 GB.
     pub compactor_max_concurrent: usize,
@@ -327,11 +328,13 @@ impl RuntimeConfig {
 
 impl ServerConfig {
     /// The no-environment knob posture over `cli` (whose compactor poll
-    /// interval it carries). `load()` overlays the environment on top of
-    /// this, so `load(cli, empty_env)` is provably this value.
+    /// interval and compaction concurrency it carries). `load()` overlays
+    /// the environment on top of this, so `load(cli, empty_env)` is
+    /// provably this value.
     pub(crate) fn with_knob_defaults(cli: CliArgs) -> Self {
         let engine = EngineConfig {
             compactor_poll_ms: cli.compactor_poll_ms,
+            compactor_max_concurrent: cli.compactor_max_concurrent,
             ..EngineConfig::default()
         };
         Self {

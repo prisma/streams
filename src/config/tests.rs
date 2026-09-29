@@ -87,8 +87,8 @@ fn load_with_empty_environment_equals_knob_defaults() {
     let b = ServerConfig::load(test_cli(), &MapEnvironment::empty());
     assert_eq!(a, b);
     // And a different CLI changes only the CLI segment and the engine
-    // knob clap owns (the compactor poll interval) — knob defaults are
-    // environment-independent.
+    // knobs clap owns (the compactor poll interval and the compaction
+    // concurrency) — knob defaults are environment-independent.
     let c = CliArgs::try_parse_from([
         "streams-slate",
         "--s3-endpoint",
@@ -118,6 +118,89 @@ fn compactor_poll_given_on_argv_reaches_the_compactor_options() {
         options.poll_interval,
         std::time::Duration::from_millis(500),
         "--compactor-poll-ms on argv must reach the compactor"
+    );
+}
+
+/// Both concurrency limits of the options every DB family opens with.
+fn compaction_concurrency(config: &ServerConfig) -> (usize, usize) {
+    let options = config.engine.compactor_options();
+    (
+        options.max_concurrent_compactions,
+        options
+            .worker
+            .unwrap_or_default()
+            .max_concurrent_compactions,
+    )
+}
+
+/// `--compactor-max-concurrent` is clap-owned, as the poll interval is:
+/// a value given only on argv must reach both concurrency limits.
+#[test]
+fn compactor_concurrency_given_on_argv_reaches_the_compactor_options() {
+    let mut cli = test_cli();
+    cli.compactor_max_concurrent = 3;
+    let config = ServerConfig::load(cli, &MapEnvironment::empty());
+    assert_eq!(
+        compaction_concurrency(&config),
+        (3, 3),
+        "--compactor-max-concurrent on argv must reach the compactor"
+    );
+}
+
+/// Subject of `compactor_concurrency_on_argv_wins_over_the_environment`:
+/// inert unless the parent set the marker and the environment value.
+#[test]
+fn compactor_concurrency_precedence_helper() {
+    if ProcessEnvironment
+        .get("STREAMS_COMPACTOR_ARGV_CHECK")
+        .is_none()
+    {
+        return;
+    }
+    let cli = CliArgs::try_parse_from([
+        "streams-slate",
+        "--s3-endpoint",
+        "http://127.0.0.1:1",
+        "--compactor-max-concurrent",
+        "3",
+    ])
+    .unwrap();
+    let config = ServerConfig::load(cli, &ProcessEnvironment);
+    assert_eq!(compaction_concurrency(&config), (3, 3));
+}
+
+/// Clap's precedence holds to the compactor: with 3 on argv and 2 in the
+/// environment, every database compacts with 3.
+#[test]
+fn compactor_concurrency_on_argv_wins_over_the_environment() {
+    let out = run_helper_test(
+        "config::tests::compactor_concurrency_precedence_helper",
+        &[
+            ("STREAMS_COMPACTOR_ARGV_CHECK", "1"),
+            ("COMPACTOR_MAX_CONCURRENT", "2"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "argv did not win over the environment:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "compactor concurrency helper did not run"
+    );
+}
+
+/// `load()` shows clap's value, so this is the pin of the literal in
+/// `impl Default for EngineConfig`, which every rig that builds a
+/// `ShardConfig::default()` inherits: it is 1 and equals clap's default.
+#[test]
+fn the_rig_default_concurrency_is_the_clap_default() {
+    let rig = crate::config::EngineConfig::default().compactor_max_concurrent;
+    assert_eq!(
+        (rig, CliArgs::deterministic().compactor_max_concurrent),
+        (1, 1)
     );
 }
 
@@ -151,9 +234,9 @@ fn clap_owned_environment_helper() {
 }
 
 /// Item 32 pin: an environment-only deployment keeps every value of the
-/// five names clap and the overlay both read (BILLING_MODE, ROLLUP,
-/// PATH_PREFIX, COMPACTOR_POLL_MS, COMPACTOR_MAX_CONCURRENT): clap reads
-/// the process environment whenever argv is silent.
+/// five names clap owns (BILLING_MODE, ROLLUP, PATH_PREFIX,
+/// COMPACTOR_POLL_MS, COMPACTOR_MAX_CONCURRENT): clap reads the process
+/// environment whenever argv is silent, and the overlay reads none of them.
 #[test]
 fn clap_owned_names_keep_their_environment_channel() {
     let out = run_helper_test(

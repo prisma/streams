@@ -958,3 +958,21 @@ Changed so far (package 2, then package 1):
   (`spool.depth` 0, then a graceful stop). No such deployment is known.
   For the owner with the ratification: whether not migrating is right.
   Still not done in package 1: `--compactor-max-concurrent`.
+- Package 1, `--compactor-max-concurrent` reaches the compactor (edge
+  record #76): the argument was parsed and never read, and only the
+  environment overlay set the concurrency. Now `with_knob_defaults` copies
+  the value clap resolved (argv, then `COMPACTOR_MAX_CONCURRENT`, then 1)
+  and the overlay does not read the name, the rule edge record #48 gave
+  the poll interval. An environment-only deployment, which is every script
+  and family in the repository, runs as before. With both given, argv now
+  wins where the environment did. A process certified with
+  `MEMPROFILE_CERT=compute-1g` that passes a value other than 1 on argv
+  does not start (two lines name the value); before, the argument was
+  ignored and the process started. The literal 1 is written twice, in the
+  clap attribute and in `impl Default for EngineConfig`, which every rig
+  inherits through `ShardConfig::default()`; a test holds the two equal.
+  With this, package 1 is complete. Not changed, and stale since the
+  defaults moved: the `COMPACTOR_POLL_MS` row of RUNBOOK §3.2 and the
+  `--compactor-poll-ms` help text still say `L0_MAX_SSTS` 64 and that drain
+  continuity comes from concurrent compactions; the defaults are 32 and
+  one compaction.

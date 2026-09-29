@@ -27,8 +27,11 @@ read `ABSORB_PASS_BYTES`. The binary's defaults also moved to the 1 GiB
 profile's values (edge records #67 to #71). `PATH_PREFIX` has one reader
 since edge record #75: the read spool uses the prefix clap resolved, the
 split the last point of "Found in passing" describes (D11) is closed, and on
-the next run `billing.path_prefix_env` is paired with `cli.path_prefix`. No
-run of the tool has been made since these changes.
+the next run `billing.path_prefix_env` is paired with `cli.path_prefix`.
+`--compactor-max-concurrent` given on argv reaches the compactor since edge
+record #76 (the other half of that point); no leaf is added or removed by
+it, and the families, which set the name through the environment only, print
+the same value. No run of the tool has been made since these changes.
 
 ## Summary
 
