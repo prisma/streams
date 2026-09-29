@@ -51,7 +51,7 @@ tails, routing-key reads) re-architected so that:
 | D3 | **Dynamic shard topology** (extendible-hashing trie): shards are bit-prefixes of the stream hash; the service starts at **one shard** and splits a hot shard into its two children (doubling *that* shard) via SlateDB clone-with-projection; merges via manifest-union | separates the scaling unit from the isolation unit (stream); restores cross-stream WAL bundling; the PUT-cost floor and operational footprint scale *with actual usage* instead of a provisioned shard count; each split is one metadata-only operation on one shard, never a global resharding |
 | D4 | One **shard log** SlateDB per shard: ingest, durable+speculative tails, transient tail storage | group commit across all streams on the shard → PUT rate ∝ active shards (bounded), not active streams |
 | D5 | **Two-tier storage**: absorber drains shard log into per-stream **WAL-less SlateDBs** (history tier) | this is the no-dictionary path to ~90% compression (block zstd over plaintext inside the per-stream DB), gives exact per-stream physical size (manifest), and real byte deletion (prefix delete) |
-| D6 | **Three shared buckets** (ops, shard-logs, data; streams are prefixes), not per-stream buckets | avoids bucket-quota and provisioning friction at billions of streams; isolation moves into cryptography (D7); per-stream physical accounting comes from the per-stream DB manifest. Tigris has a global namespace with no per-prefix throughput limits, so bucket *pools* are unnecessary; splitting into pools remains a later option if provider limits ever appear |
+| D6 | **One shared bucket** for the three roles (ops, shard logs, data; roles and streams are key prefixes), not per-stream buckets. The decision was three shared buckets, one per role. The binary takes one bucket name (`SLATE_S3_BUCKET`) and one credential pair, and since 2026-09-29 it accepts no per-role bucket argument (edge record #80, which awaits the owner's ratification): a split of the roles over buckets is a code change | avoids bucket-quota and provisioning friction at billions of streams; isolation moves into cryptography (D7); per-stream physical accounting comes from the per-stream DB manifest. Tigris has a global namespace with no per-prefix throughput limits, so bucket *pools* are unnecessary; splitting into pools remains a later option if provider limits ever appear |
 | D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys** with deterministic nonces (see §3.7) | shard log stores per-record ciphertext; history tier uses SlateDB's `BlockTransformer` (encryption after compression) with the stream key; tenant deletion = crypto-erasure + async prefix delete |
 | D8 | No zstd dictionaries | complexity rejected; the history tier's block compression makes them unnecessary |
 | D9 | Tigris for **everything** (WAL + SSTs); no S3 Express | benchmarked ~14–18 ms small-object ops → durable tail latency ~25–45 ms; single provider, zero egress fees on Standard |
@@ -67,8 +67,8 @@ tails, routing-key reads) re-architected so that:
 | D19 | **The CDN caches ciphertext only**; decryption happens client-side in an SDK using HKDF per-routing-key subkeys | tenant payloads are never at rest decrypted in edge caches; a routing-key subkey grants access to exactly that key's records (e.g. one chat), enabling end-user-granular access |
 | D20 | Key lifecycle and authn/authz are **delegated to an external service**; this repo ships a baseline `streams-keys` CLI (generate stream keys, derive routing subkeys, encrypt/decrypt records) used for development and benchmarking | keeps the data plane key-stateless; the CLI pins the envelope format the future service must implement |
 | D21 | **Globally unique stream names**; registry sharded by name hash (`registry/by-name/…`) with per-customer listing markers (`registry/by-customer/…`); target scale **billions of streams total, up to 1M per customer** | one lookup path, no tenancy in the stream identity; idle streams cost only their registry object + settled SSTs |
-| D22 | `flush_interval ≥ max(25 ms, backend PUT p90)` (amended twice) | 5 ms minted WAL SSTs ~7× faster than SlateDB's WAL GC reaps them; the backlog degraded per-DB durable-watermark latency to 0.3–1 s (EXPERIMENT-PILOT run 3). 25 ms holds the ack floor at ≈ flush + PUT ≈ 40–60 ms and cuts WAL churn 5×. Bench round 2 adds the RTT rider: the WAL flusher PUTs serially, so a flush interval below the backend's PUT latency mints SSTs faster than one pipe can ship them (Tigris p50 ~45 ms → 25 ms flush = durable-wait p90 518 ms; 50 ms flush = p90 82 ms). Local/fast backends keep 25 ms |
-| D23 | **No open handle runs default background loops** (response to V4): shard logs poll their manifest at 30–60 s with no embedded compactor/GC (fencing correctness comes from CAS write failures, not polls); history-tier DBs are only ever open in one of three modes — absorber-open (`compactor_options: None`, `garbage_collector_options: None`, no polling), checkpoint-pinned read-open (no loops), or maintenance piggybacked on absorber opens — and absorption fires on bytes-or-age thresholds (~4 MB / ~5 min) so per-open costs amortize | turns idle cost from per-open-database (8.26 ops/s measured at defaults ≈ $10/mo each) into **per-shard baseline (~0.1 ops/s) + per-activity increments**; closed DBs cost zero; idle streams cost zero requests |
+| D22 | `flush_interval ≥ max(25 ms, backend PUT p90)` (amended twice) | 5 ms minted WAL SSTs ~7× faster than SlateDB's WAL GC reaps them; the backlog degraded per-DB durable-watermark latency to 0.3–1 s (EXPERIMENT-PILOT run 3). 25 ms holds the ack floor at ≈ flush + PUT ≈ 40–60 ms and cuts WAL churn 5×. Bench round 2 adds the RTT rider: the WAL flusher PUTs serially, so a flush interval below the backend's PUT latency mints SSTs faster than one pipe can ship them (Tigris p50 ~45 ms → 25 ms flush = durable-wait p90 518 ms; 50 ms flush = p90 82 ms). Local/fast backends keep 25 ms. **Under the group-commit pump, the binary's default since 2026-09-29 (edge record #77), this interval is the flush cadence no longer:** it is only the base of SlateDB's failsafe timer, stretched to at least 1 s. The pump flushes a shard's WAL when commits wait, one flush after the other (the serial shipping the RTT rider asks for), and starts a flush no sooner than `WAL_FLUSH_GAP_MS` (10 ms) after the previous one started, which permits more WAL objects per second than the 25 ms floor. The floor is the cadence only with `WAL_GROUP_COMMIT=0` |
+| D23 | **No open handle runs default background loops** (response to V4): shard logs poll their manifest at 30–60 s with no embedded compactor/GC (fencing correctness comes from CAS write failures, not polls); history-tier DBs are only ever open in one of three modes — absorber-open (`compactor_options: None`, `garbage_collector_options: None`, no polling), checkpoint-pinned read-open (no loops), or maintenance piggybacked on absorber opens — and absorption fires on bytes-or-age thresholds (~4 MB / 60 s by default; the age was ~5 min, the value this decision was made with, until 2026-09-29, edge record #78; the cost of absorbing at 60 s has not been measured) so per-open costs amortize | turns idle cost from per-open-database (8.26 ops/s measured at defaults ≈ $10/mo each) into **per-shard baseline (~0.1 ops/s) + per-activity increments**; closed DBs cost zero; idle streams cost zero requests |
 
 ## 3. Architecture
 
@@ -82,16 +82,24 @@ tails, routing-key reads) re-architected so that:
 ### 3.1 Storage layout
 
 ```
-ops bucket          control plane: stream registry (registry/by-name/<name>.json,
+ops role            control plane: stream registry (registry/by-name/<name>.json,
                     registry/by-customer/<cust>/<name>), topology.json (shard trie),
                     fleet heartbeats, desired.json, overrides.json, audit stream
-shard-log bucket    shard logs: shards/<bit-prefix>/ (SlateDB: WAL + SSTs)
-data bucket         history tier: streams/<hash>/ (per-stream WAL-less SlateDB:
+shard-log role      shard logs: shards/<bit-prefix>/ (SlateDB: WAL + SSTs)
+data role           history tier: streams/<hash>/ (per-stream WAL-less SlateDB:
                     manifest + SSTs)
 ```
 
-Single bucket per role; Tigris's global namespace has no per-prefix limits,
-so pooling is deferred until a provider limit demands it (D6).
+One bucket holds the three roles, each under its own key prefixes: the
+binary takes one bucket name (`SLATE_S3_BUCKET`) and one credential pair, and
+since 2026-09-29 it accepts no per-role bucket argument (edge record #80).
+Tigris's global namespace has no per-prefix limits, so a split over buckets
+or pools is deferred until a provider limit demands it, and is then a code
+change (D6). The key names in the block are the design's. Two that were
+checked against the code differ: the binary opens the history tier of a shard
+as the shared partition `shards/<bit-prefix>/history2/`, inside the shard's
+own prefix (`sharddir::history2_path`), and writes stream descriptors under
+`registry/v4/projects/`.
 
 ### 3.2 Shard topology (dynamic)
 
@@ -146,8 +154,11 @@ client append (+ stream key)
       records + tail pointers + auto-create meta, batch-locally staged
     → db.write(await_durable=false)   # ordered memtable/WAL-buffer apply
     → push {seqnum, acks, tail snapshots} in-flight
-  → SlateDB WAL flusher (flush_interval = 25 ms, D22) bundles everything
-    in the window into ONE WAL SST PUT to Tigris
+  → WAL flush: by default the per-shard group-commit pump, which flushes
+    when commits wait, no sooner than 10 ms after its previous flush started
+    (with WAL_GROUP_COMMIT=0: SlateDB's flusher, flush_interval = 25 ms; D22),
+    bundles everything written since the last flush into ONE WAL SST PUT to
+    Tigris
   → acker loop: durable_seq watermark passes seqnum
     → promote tails to readers' durable view, ACK requests,
       wake long-pollers, emit `persisted` events to speculative tails
@@ -198,7 +209,8 @@ key either). Absorption is idempotent (keys are offsets), so no cross-database
 transaction is needed around the cursor.
 
 Cost discipline (D23): absorption fires per stream on a bytes-or-age
-threshold (~4 MB accumulated or ~5 min since last absorption), and the
+threshold (~4 MB accumulated, or the oldest unabsorbed write 60 s old; the
+age was ~5 min until 2026-09-29, `ABSORB_AGE_SECS`, edge record #78), and the
 history DB is opened maintenance-free (no compactor, no GC, no polling),
 written in bulk with the F2 pattern (non-durable writes + one explicit
 `flush()`), optionally compacted while the key is in hand, and closed. A
@@ -472,7 +484,8 @@ share.
 Resolved and promoted to the decision log: dynamic sharding (D3), ciphertext
 at the CDN + SDK decryption (D19), external key/auth service with a baseline
 CLI (D20), globally unique names at billions-of-streams scale (D21), 5 ms
-flush interval and single buckets per role (D22, D6). Conservative starting
+flush interval (D22) and shared buckets, one bucket for every role since
+2026-09-29 (D6). Conservative starting
 numbers retained: 1,200 conns/instance on the 1 GiB class (10k was the
 certification rung; revisit upward after an in-VPC ladder), 30 s max long-poll,
 min 3 / max 64 instances.

@@ -174,7 +174,11 @@ set the name set 60 (the table's "seven of eight" is the audit's count);
 `fra-ab-server` sets 300 and keeps it, with its script. Not changed:
 `AbsorberConfig::default` in `src/history.rs`, which only tests read and
 which still says 300 (no line headroom; three receipts). Not run: the rigs
-that start the binary. The other three rows are not changed yet.
+that start the binary, among them the noisy-neighbour campaign (at its
+default `WINDOW_SECS=30`, as the promotion of a release candidate runs it,
+the victim's tail turns 60 s old near the end of the loaded window) and the docker
+ladder of `bench/docker/compose.yml`, a fleet that sets neither this name
+nor `REBALANCE_LAG_SECS`. The other three rows are not changed yet.
 
 Status (2026-09-29, `ADMIT_MAX_INFLIGHT` and
 `ADMIT_MAX_INFLIGHT_PER_STREAM`, rows 2 and 3 of the table below): done as
@@ -221,6 +225,16 @@ the gather skips and the buckets stay in `CliArgs`, not settable, because
 name for the append-latency dip). Not attempted: `TRIM_PER_OP`,
 `HANDLE_IDLE_EVICT_SECS`, the six billing and metrics names and
 `REBALANCE_MOVE_COOLDOWN_SECS`, which the page calls the owner's taste.
+So it calls three of the names above: the recommendation at the end of
+this section covers twelve names (the six GC names, the two gather skips,
+the per-key cap and the three buckets), and `TAIL_MAX_BYTES`,
+`SSE_H1_MAX_BUF` and `ABSORB_READ_PAR` are among "the others".
+`TAIL_MAX_BYTES` and `SSE_H1_MAX_BUF` were retired on the delegation, not
+on the recommendation, and they are the two names of the fourteen whose
+effect a client can observe on a deployment that set them (edge record
+#80, whose surface is both). The three bucket arguments were the
+three-bucket layout of SPEC.md D6; SPEC.md now says one bucket, for the
+owner to confirm or to revise.
 
 | Setting | Value |
 |---|---|

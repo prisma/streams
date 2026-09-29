@@ -664,7 +664,9 @@ before marking it complete."
   in the same commit, or they leave equivalent mutants. The owner also asked
   to validate sustained churn beyond the ~905 s residence horizon and actual
   memory use in the Compute profile (≈36 first-seen projects/s at 32,768 is
-  an estimate).
+  an estimate). Both figures are those of `ABSORB_AGE_SECS=300`; at 60, the
+  binary's default since 2026-09-29 and what the deployments set, the
+  horizon is ~665 s and the estimate ≈49 (edge record #78).
 - **Absorber receipt ordering (test done; explicit drop not possible).**
   `a_receipted_advance_settles_only_after_its_group_is_durable` now asserts
   the durable boundary is published at the first observation of `settled`.
@@ -1013,8 +1015,13 @@ then the five rows of package 5):
   HTTP cases under both pipelines. `scripts/bench-fra-ab.sh` sets
   `WAL_GROUP_COMMIT=0` to stay comparable with its baseline. Changed
   without an edit, for the owner to accept or pin: `bench/docker/compose.yml`
-  (gap 25 -> 10 ms, gather 0 -> 6 ms) and
-  `bench/docker/harness/cluster-deploy.sh` (gather 0 -> 6 ms). Not done:
+  (gap 25 -> 10 ms, gather 0 -> 6 ms),
+  `bench/docker/harness/cluster-deploy.sh` (gather 0 -> 6 ms) and the six
+  `bench/sse-probes` scripts, which set none of the three names (25 ms tick
+  -> pump, gap 10 ms, gather 6 ms; only `sse-matched-loaded.sh` reports
+  append and delivery-lag timing). `bench/livefeed-perf/run-one.sh` is not
+  changed: it runs the pinned arm binaries of 1834b726 and 3a8016e6, whose
+  defaults are the tick. Not done:
   deleting the switch, and `ShardConfig::default` (tests only; it stays
   tick mode until the switch goes). To run before the push, one at a time:
   conformance, the field gate, the platform e2e and its negative twin, the
@@ -1022,7 +1029,14 @@ then the five rows of package 5):
   `--flush-interval-ms 1 --wal-flush-gap-ms 2` or with nothing, so they move
   from a tick to the pump. CONFORMANCE.md says that the ~8.6 ms per append
   it records was a 1 ms tick and that the figure under the pump is not
-  recorded yet.
+  recorded yet. Green rigs will show that a pump runs (without one every
+  append waits for the 1 s failsafe), not that the gap is 10 ms and the
+  gather 6 ms: no rig reads the `pump` block of `/v1/debug/timings` or the
+  start line `WAL group-commit pump on`, and the rigs that pass
+  `--wal-flush-gap-ms 2` never run the default gap. For the owner: an
+  assertion on either in CI's SDK smoke step, which starts the binary
+  without the three names, would pin the default; it changes what a CI job
+  checks, so it was not added.
 - Package 3, the absorber's age threshold (edge record #78): the binary's
   default `ABSORB_AGE_SECS` is 60 (300 before), what eight of the nine
   families that set the name run. A server that does not set it absorbs a
@@ -1039,7 +1053,18 @@ then the five rows of package 5):
   oldest unabsorbed bytes, so the two defaults now meet; the fleet
   deployments set both to 60, and no run was made for this change. To run
   before the push, with the rigs listed above: they start the binary
-  without the name.
+  without the name. With them `scripts/mt-noisy-campaign.mjs` at its
+  default `WINDOW_SECS=30`, as `scripts/promote-rc.sh` runs it: the
+  victim's tail turns 60 s old near the end of the loaded window, so an
+  age-triggered absorption can fall in the loaded window and not in the
+  solo window, against locked thresholds. Changed without an edit:
+  `bench/docker/compose.yml`, a three-instance fleet that sets neither
+  `ABSORB_AGE_SECS` nor `REBALANCE_LAG_SECS` (300/60 -> 60/60), and the
+  `bench/sse-probes` scripts. Two effects the record gained after the
+  review of 2026-09-29: a stream seeded from the dirty index is published
+  at the threshold itself (60 s where it was 300 s), and a stream's handle
+  and its project's tracker entry are held about 665 s after a small last
+  append where they were held about 905 s.
 - Package 3, the two admission caps (edge record #79, medium): the
   binary's defaults are `ADMIT_MAX_INFLIGHT=512` (0, off, before) and
   `ADMIT_MAX_INFLIGHT_PER_STREAM=256` (64 before), what eight of the nine
@@ -1067,7 +1092,20 @@ then the five rows of package 5):
   before the push, with the rigs listed above and
   `scripts/mt-noisy-campaign.mjs`: they start the binary without the names,
   and whether one of them holds more than 512 requests in flight is not
-  determined.
+  determined (the noisy-neighbour campaign holds at most 1 + `NOISY`, 49 by
+  default). Changed without an edit: `bench/docker/compose.yml` with its
+  overlays, and the six `bench/sse-probes` scripts.
+  `bench/livefeed-perf/run-one.sh` is not changed (pinned arm binaries).
+  Pinned after the review of 2026-09-29: the survival refusal of a read, a
+  long-poll and the product surface at the default caps
+  (`the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps`).
+  For the owner, from that review: a product seal whose final record the
+  cap refuses keeps its Sealing claim, so ordinary appends answer 409
+  `sealed` until the seal is retried or taken over after 15 s; whether the
+  seal should check the cap before it claims, or release the claim on a
+  capacity refusal, is a client-visible change that was not made. A refused
+  `_ops_metrics` snapshot is dropped, not retried. Record #68 states the
+  same two things too strongly for the memory shed line.
 - Package 4, fourteen settings that nothing sets are constants (edge
   record #80, one commit): the five GC cadences and age floors of the shard
   databases (30/60 s, 30/120 s, 600 s; constants of `EngineConfig`) and the
@@ -1077,7 +1115,13 @@ then the five rows of package 5):
   (1 MiB) and the h1 read buffer (64 KiB). Eleven arguments are refused by
   clap and eleven environment names are ignored without a message; every
   value is the former default. `ABSORB_READ_PAR` stays a setting on
-  purpose; the other nine names of the package were not attempted. Two
+  purpose; the other nine names of the package were not attempted. The
+  plan recommended constants for twelve names (the GC intervals, the gather
+  skips, the per-key cap and the buckets) and called the others the owner's
+  taste: `TAIL_MAX_BYTES` and `SSE_H1_MAX_BUF` are among those others and
+  were retired on the delegation, and they are the two a client could
+  observe on a deployment that set them, so the record's surface is both
+  (corrected after the review of 2026-09-29). Two
   techniques: where `shard_settings` or the overlay was the reader, the
   field or the overlay line is gone; where `bootstrap::run` reads the field
   (the gather skips and the buckets), the field stays in `CliArgs` with
@@ -1098,7 +1142,14 @@ then the five rows of package 5):
   `gc_interval` in `src/history.rs` names `HISTORY_GC_INTERVAL_SECS` and
   its alias (TLA-016, TLA-018, TLA-019), and the comment above
   `tail_max_bytes` in `src/http.rs` says "Env TAIL_MAX_BYTES" (a critical
-  mutation prefix). For the owner with the ratification: the levers given
+  mutation prefix). Residue in the startup summary: the keys
+  `history.gc_interval_ms`, `http.tail_max_bytes` and `http.h1_max_buf`
+  still print, for values nothing outside the code can set, until the
+  fields leave the model (the summary never held the eleven clap settings,
+  so no summary line changed with this package). For the owner with the
+  ratification: SPEC.md D6 decided three shared buckets, one per role; no
+  configuration reaches that layout now, and SPEC.md (D6, §3.1, §8) says
+  one bucket since the correction, to confirm or to revise. The levers given
   up (stopping the quiet or history sweeps, a longer WAL retention, a
   larger h1 buffer) now need a rebuild; OPERATIONS.md specifies a 24 h WAL
   floor for a backup feature that is not built, and when it is, the floor
@@ -1122,7 +1173,10 @@ then the five rows of package 5):
   file's three receipts are staled by it anyway. Receipts staled: TLA-011
   (`src/bootstrap.rs`), TLA-016, TLA-018, TLA-019 (`src/history.rs`,
   `src/history/gather.rs`), 115.9 min serial; CI also selects the
-  mutation leg of the owner `bootstrap` and Miri. **Not done, for the
+  mutation leg of the owner `bootstrap` and Miri. The two environment
+  names had no test of their own; since the review of 2026-09-29 the child
+  process of `a_retired_name_in_the_environment_changes_nothing` holds
+  them, each with a value clap refused while it parsed them. **Not done, for the
   owner:** the counter `GATHER_LAST_PACE_MS` and its three reporters
   (`gather_last_pace_ms` on /v1/debug/load and in the ops gauges,
   `absorber.lastPaceMs` on /v1/debug/absorb) stay and report 0, because
@@ -1144,8 +1198,10 @@ then the five rows of package 5):
   run 12b, `STORE_MAX_CONCURRENT=48`) was a negative result. Removed: the
   field of `StorageConfig` and its overlay line, the semaphore of
   `StoreResources` with `permit` and its `#[expect]`, and the six call
-  sites in `src/store_timing.rs`. The byte gate is not changed. The tool's
-  pin of HEAD's leaves is 140; the tool was not run. No receipt is staled,
+  sites in `src/store_timing.rs`. The byte gate is not changed.
+  `docs/runtime-resources.md` still listed a store-I/O concurrency gate as
+  owned by the runtime and was corrected after the review of 2026-09-29.
+  The tool's pin of HEAD's leaves is 140; the tool was not run. No receipt is staled,
   and the files select no mutation leg and no Miri leg. **For the owner:**
   the R10 mechanism test
   `runtime_store_concurrency_is_shared_locally_and_independent_of_first_access`
@@ -1166,10 +1222,13 @@ then the five rows of package 5):
   edge latency. Removed from `src/fleet.rs` (999 lines, 1,011 before): the
   field `capacity_rps` of `FleetCfg`, `need_rps`, its place in the desired
   count and in the shrink target, and the token `(need_rps)` of the reason
-  string in `fleet/desired.json` and in the log line "fleet desired",
-  which now ends `rps=R live=L`. The measured rate stays: it gates the
+  string in `fleet/desired.json`, in the log line "fleet desired" and in
+  `GET /operator/data.json`, which relays the document as `fleet.desired`;
+  the string now ends `rps=R live=L`. The measured rate stays: it gates the
   edge-latency dimension. The RUNBOOK §3.5 row and the name in
-  COMPUTE-SPEC §4 are gone. The tool's pin of HEAD's leaves stays 140,
+  COMPUTE-SPEC §4 are gone; the `SCALE_LATENCY_MS` row of the same table
+  still explained the ack-latency dimension by an rps signal that scales
+  out and was corrected after the review of 2026-09-29. The tool's pin of HEAD's leaves stays 140,
   because the field stays; the tool was not run. Receipt staled: TLA-011
   (`src/fleet.rs`), 12.1 min; CI also selects the mutation leg of the
   owner `fleet` and Miri, and neither was run. **Residue, for the owner's
@@ -1191,7 +1250,9 @@ then the five rows of package 5):
   without a compactor and with L0 caps of 1,000,000 (`src/history.rs`,
   1,621 lines, 1,630 before). The certificate's guard against a disabled
   compactor stays. Given up: the bench hook for discard-mode runs
-  (`s3lite --discard-substr`), which no script used. The tool's pin of
+  (`s3lite --discard-substr`), which no script used; the help of that
+  argument still offered the mode for the history tier and was corrected
+  after the review of 2026-09-29. The tool's pin of
   HEAD's leaves is 139; the tool was not run. Receipts: TLA-016, TLA-018
   and TLA-019 list `src/history.rs` and were stale before this change, so
   the re-record that is already due does not grow; the files select no
@@ -1221,4 +1282,8 @@ then the five rows of package 5):
   that still holds `BILLING_METER=off` from the OOM review's experiments
   is billed for what it appends from the deploy onward; the platform
   export (§11) must be searched for the name before the binary is
-  deployed.
+  deployed. Such a project's appends also gain the committer's read and
+  write of the billing row, and answer 500 `internal` where that row
+  cannot be read or is invalid; the record said without a condition that
+  no answer of an append changes and was corrected after the review of
+  2026-09-29.

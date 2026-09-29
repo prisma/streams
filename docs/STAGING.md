@@ -90,8 +90,8 @@ since 2026-09-29 (edge record #80).
 
 | prefix | holds | note |
 |---|---|---|
-| `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) | the hot, ack-critical path (RUNBOOK §3.2) |
-| `history/`, `registry/` | history tier + registry | large, cold, read-heavy; different growth curve |
+| `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) and, under `shards/<id>/history2/`, that shard's history tier | the log is the hot, ack-critical path (RUNBOOK §3.2); the history tier is large, cold and read-heavy, and lives inside the shard's prefix so that it travels with the shard |
+| `registry/` | the stream registry | one JSON descriptor per stream, under `registry/v4/projects/` |
 | `fleet/`, `routers/`, topology | fleet metadata | tiny, high-frequency |
 
 Binaries live in a **second, separate bucket** (`streams-artifacts`) that

@@ -34,8 +34,9 @@ struct Args {
     latency_ms: u64,
     /// Bench mode: PUTs whose key contains this substring AND ends in
     /// ".sst" are acknowledged but their bodies dropped (metadata kept,
-    /// GET returns 500). Lets an in-memory emulator absorb an unbounded
-    /// history tier during sustained runs. Never used in correctness tests.
+    /// GET returns 500). Only for SSTs that nothing reads again: not for
+    /// the server's history databases, whose compactor is always on and
+    /// reads SST bodies back. Never used in correctness tests.
     #[arg(long)]
     discard_substr: Option<String>,
 }

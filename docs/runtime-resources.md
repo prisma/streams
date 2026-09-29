@@ -34,8 +34,10 @@ regression uses 1 MiB and 4 MiB body limits with a zero configured budget and
 proves separate floors, capacities and per-gather reservations (passed).
 
 The complete R10 ownership pass also makes telemetry cache capacity and billing
-readiness progress, usage/rate buckets and backlog maps, store-I/O concurrency
-and bulk gates, and operations/audit journals and alerts runtime-owned. All
+readiness progress, usage/rate buckets and backlog maps, the store-I/O bulk
+(byte) gate, and operations/audit journals and alerts runtime-owned (the pass
+also covered a store-I/O count gate, which was removed with
+`STORE_MAX_CONCURRENT` on 2026-09-29, edge record #82). All
 stores belonging to one runtime share one I/O handle; spool and rollup share
 one telemetry cache. Raw and product body collection read the immutable runtime
 configuration. A denied request, drained event, successful billing pass, or

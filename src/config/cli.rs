@@ -66,10 +66,10 @@ pub struct CliArgs {
     #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 1)]
     pub(crate) wal_group_commit: u8,
 
-    /// Minimum start-to-start gap between pump flushes, ms. Bounds the
-    /// WAL SST mint rate exactly like the old tick did (churn ceiling
-    /// unchanged); irrelevant whenever the PUT RTT exceeds it. 0 = use
-    /// flush_interval_ms. 10 is what production runs.
+    /// Minimum start-to-start gap between pump flushes, ms: bounds the
+    /// WAL SST mint rate as the tick did. 10 (what production runs) allows
+    /// more WAL objects per second than the 25 ms tick. Irrelevant when
+    /// the PUT RTT exceeds it. 0 = use flush_interval_ms.
     #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 10)]
     pub(crate) wal_flush_gap_ms: u64,
 
@@ -80,8 +80,8 @@ pub struct CliArgs {
     /// instead of missing its freeze and paying a full extra PUT. Without
     /// it, append p50 at concurrency 2 measures ~2x concurrency 1.
     /// 6 is the soaked value (docs/SOAK5-REPORT.md). Adds at most this
-    /// many ms to a busy flush cycle; never delays an idle shard's first
-    /// write.
+    /// many ms to a busy flush cycle; an idle shard's first write pays
+    /// only the 1 ms herd-settle before its flush, not the window.
     #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 6)]
     pub(crate) wal_post_ack_gather_ms: u64,
 
@@ -438,14 +438,14 @@ pub struct CliArgs {
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 256)]
     pub(crate) admit_max_inflight_per_stream: i64,
 
-    /// §12-lite admission backstop: shed /v1/stream requests with 429 +
-    /// Retry-After beyond this many in flight (0 = off). Protects the
-    /// durable path from queue collapse when offered load exceeds
-    /// capacity; pairs with closed-loop clients honoring Retry-After.
-    /// Default 512, what the deployments set. The count covers every
-    /// request on every route, so parked long-polls use it up; above four
-    /// times the cap every /v1/stream and /v1/streams request is refused
-    /// with 503 before authentication.
+    /// §12-lite admission backstop: beyond this many requests in flight an
+    /// authenticated append gets 429 + Retry-After: 1 after a 25 ms tarpit
+    /// (0 = off); reads, creates and deletes are not shed by the cap. Keeps
+    /// the durable path from queue collapse under overload; clients must
+    /// honor Retry-After. Default 512, what the deployments set. The count
+    /// covers every request on every route, so parked long-polls use it up;
+    /// above four times the cap every /v1/stream and /v1/streams request is
+    /// refused with 503 before authentication.
     #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 512)]
     pub(crate) admit_max_inflight: i64,
 

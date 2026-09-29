@@ -7350,6 +7350,17 @@
     "scenarios": []
   },
   {
+    "name": "the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bc7b80b53945bda1395411969facf6e888c392b1bdba0342e97e407c99f9e44e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_survival_refusal_is_marked_as_this_servers_answer",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

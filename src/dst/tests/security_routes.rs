@@ -828,6 +828,73 @@ async fn the_survival_refusal_is_marked_as_this_servers_answer() {
     engine_shutdown(&state).await;
 }
 
+/// The survival bound of a server that sets nothing: above four times the
+/// default instance cap (512, so 2,048 in flight) the middleware refuses by
+/// path alone, before authentication and whatever the method. A raw read, a
+/// raw long-poll, a product list, a product read and a product append get
+/// the refusal the raw append gets; a route that is not a stream path is
+/// served; and at exactly 2,048 in flight nothing is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps() {
+    const STREAM_PATHS: [(&str, &str); 6] = [
+        ("POST", "/v1/stream/any"),
+        ("GET", "/v1/stream/any"),
+        ("GET", "/v1/stream/any?offset=-1&live=long-poll"),
+        ("GET", "/v1/streams"),
+        ("GET", "/v1/streams/any/records"),
+        ("POST", "/v1/streams/any/records"),
+    ];
+    let store = mem();
+    let (state, addr) = http_rig_auth(store, "tok").await;
+    let cap = crate::config::CliArgs::deterministic().admit_max_inflight;
+    state.admission.set_max_inflight(cap);
+    // 2,048 held: the request that arrives is the 2,049th in flight.
+    state.admission.add_inflight_for_test(4 * cap);
+    for (method, path) in STREAM_PATHS {
+        let (st, h, body) = hreq(addr, method, path, &[], b"").await;
+        assert_eq!(
+            (
+                st,
+                String::from_utf8_lossy(&body).as_ref(),
+                h.get("retry-after").map(String::as_str),
+                h.get("content-type").map(String::as_str),
+                h.get("prisma-streams-origin").map(String::as_str),
+                h.get("x-content-type-options").map(String::as_str),
+            ),
+            (
+                503,
+                r#"{"error":{"code":"overloaded","message":"retry"}}"#,
+                Some("1"),
+                Some("application/json"),
+                Some("dst-instance"),
+                Some("nosniff"),
+            ),
+            "{method} {path}"
+        );
+    }
+    let (st, _, _) = hreq(addr, "GET", "/health", &[], b"").await;
+    let seen = state.admission.snapshot();
+    assert_eq!(
+        (st, seen.max_inflight, seen.shed.survival, seen.shed.total),
+        (200, 512, 6, 6),
+        "a route that is not a stream path is served, and each refusal is counted once"
+    );
+    // 2,047 held: the request that arrives is the 2,048th, at the bound.
+    state.admission.add_inflight_for_test(-1);
+    for (method, path) in STREAM_PATHS {
+        let (st, _, body) = hreq(addr, method, path, &[], b"").await;
+        assert_eq!(
+            st,
+            401,
+            "{method} {path}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+    assert_eq!(state.admission.snapshot().shed.survival, 6);
+    state.admission.add_inflight_for_test(1 - 4 * cap);
+    engine_shutdown(&state).await;
+}
+
 /// Every answer of the router carries the origin marker and `nosniff`: a
 /// handler's, an unmatched path's 404 and a wrong method's 405. The platform
 /// edge answers for a dead or unpublished service with an unmarked 404.

@@ -40,12 +40,12 @@ use crate::tenant::ProjectId;
 /// cert_rotation test below pins the shape). 16,384 holds the 10k
 /// population outright with headroom, at ~8 MiB worst-case tracker
 /// memory (~500 B/entry). Item 50 (owner decision, option (a)): an entry
-/// any holder still has is never evicted, and a resident stream's
-/// binding holds its project's entry for at least ~905 s after a small
-/// last append, so the cap is 32,768 (~16 MiB): the certified 20/s
-/// first-seen pacing holds 18,100 entries, and sustained first-seen
-/// churn of appending projects saturates near 32,768/905 = 36/s (an
-/// estimate, not a benchmark). Still a deliberate HARD ceiling: refusing
+/// any holder still has is never evicted, and a resident stream's binding
+/// holds its project's entry at least ~665 s after a small last append at
+/// the defaults (60 + 600 + 5). The cap of 32,768 (~16 MiB) was sized at
+/// ~905 s (ABSORB_AGE_SECS=300: 18,100 entries held at the certified 20/s
+/// first-seen pacing, saturation near 36/s); at 665 s that is 13,300 and
+/// 49/s (estimates, not benchmarks). Still a deliberate HARD ceiling: refusing
 /// to track (never merging strangers into shared buckets) remains the
 /// fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation.

@@ -335,9 +335,10 @@ jobs:
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
           KEY=$(./target/release/streams-keys generate)
-          # Group commit is the default; the 2 ms gap keeps the suite's
-          # ~240 sequential appends inside vitest's 5 s budget (see
-          # CONFORMANCE.md).
+          # Group commit is the default; --wal-flush-gap-ms 2 lowers the
+          # pump's gap from 10 ms to 2 ms. The suite runs ~240 sequential
+          # appends inside vitest's 5 s budget; its timing under the pump
+          # has not been recorded yet (CONFORMANCE.md, rig requirement 3).
           ./target/release/streams-slate --listen 127.0.0.1:8090 \
             --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
             --max-unflushed-bytes 67108864 \

@@ -1,6 +1,7 @@
-//! The settings that became constants: every retired flag is refused on
-//! argv, and every retired environment name is ignored. One file names
-//! them all (edge records #80, #82, #83, #84 and #85).
+//! The settings that became constants or were removed with their
+//! mechanism (edge records #80 to #85): every retired flag is refused on
+//! argv, and every retired environment name is ignored. The v1 absorber
+//! names that did nothing (edge record #74) are held in `config::tests`.
 use super::tests::{load_with, run_helper_test, test_cli};
 use super::{CliArgs, Environment, MapEnvironment, ProcessEnvironment, ServerConfig};
 use clap::Parser;
@@ -75,7 +76,9 @@ fn retired_names_helper() {
 /// The names that were settings and are constants now are not read: a
 /// process that holds every one of them, in a cleared environment, runs the
 /// values of a process that holds none. `L0_MAX_SSTS` stays a setting, and
-/// the per-key cap follows it.
+/// the per-key cap follows it. The two names of the gather pacing that was
+/// removed (edge record #81) were read by clap, so only this child process
+/// can hold them: each carries a value clap refused while it parsed them.
 #[test]
 fn a_retired_name_in_the_environment_changes_nothing() {
     let out = run_helper_test(
@@ -94,6 +97,8 @@ fn a_retired_name_in_the_environment_changes_nothing() {
             ("WAL_GATHER_SKIP_REQS", "0"),
             ("WAL_GATHER_SKIP_BYTES", "7"),
             ("SCALE_RPS_CAPACITY", "150"),
+            ("ABSORB_PACE_MS", "abc"),
+            ("ABSORB_PACE_WINDOW_MS", "abc"),
         ],
     );
     assert!(
