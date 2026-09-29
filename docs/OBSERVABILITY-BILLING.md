@@ -319,6 +319,7 @@ A duplicate does none of these.
 - Absorption, tier movement, tail trimming, and compaction do not change the gauge.
 - Future logical retention decrements the gauge at the logical expiration time.
 - Hard deletion advances the storage clock, sets the gauge to zero, and emits a terminal lifecycle observation.
+- A storage close of a row that is already closed through its instant (gauge zero, instant not after the storage clock) changes nothing: no version, no outbox row, no dirty marker. A later instant still moves the clock, and an open gauge always closes. `usage_version` orders and deduplicates snapshots; it counts mutations, not submitted closes (edge change #72).
 - Month close can extrapolate an idle gauge to the boundary without requiring a stream write.
 
 ### 6.3 Durable usage outbox

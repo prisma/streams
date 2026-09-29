@@ -170,6 +170,7 @@ remains probable." Limits that stay explicit:
 | Wrapper signal forwarding | Bounded forwarding | b7f6dc3a (Compute lifecycle still to verify) |
 | Idle-expiry recreation billing | Release blocker: durable, generation-fenced cleanup obligation | 2ba4bc47 (closure debts) |
 | Configuration (decided 2026-09-29) | The binary's defaults are the 1 GiB profile's values ("I want the 1gig profile to be the default"); the L0 cap of 32 first | 823b3269, 648d7df4 and the commits of edge #67 onward; `config-simplification.md` |
+| A billing close of a row that is already closed (decided 2026-09-29) | A close that would change nothing is a no-op in the committer | Edge #72 |
 | B3, a close after its month was finalized (decided 2026-09-29) | A correction against a frozen invoice is allowed: the month nets to what the shard recorded up to the close, later months bill 0 for the segment | 0b7840c7, edge #66 (ratified 2026-09-29) |
 | Item 50 | Option (a): preserve live bindings, cap 32,768, reject `HANDLE_IDLE_EVICT_SECS=0` | 45f8711c (holder rule added beside the counted pin; the pin's full retirement not done) |
 | Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |

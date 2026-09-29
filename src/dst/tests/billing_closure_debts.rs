@@ -159,9 +159,9 @@ pub(super) async fn closed(engine: &Engine, id: [u8; 16]) -> Option<Meta> {
     None
 }
 
-/// What closing `before` at `close_ms` leaves: the storage integral advanced
+/// What closing an open `before` at `close_ms` leaves: the integral advanced
 /// to exactly that instant (split at any month boundary on the way), the
-/// gauge zero, and one more version.
+/// gauge zero, and one more version, however many closers submitted it.
 pub(super) fn expected_close(before: &Meta, close_ms: i64) -> Meta {
     let mut want = before.clone();
     want.advance_storage_clock(close_ms, |_| {});
@@ -975,9 +975,9 @@ async fn an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at
     for _ in 0..3 {
         crate::billing::sweep_owned_outboxes(&state).await;
         crate::billing::drain_once(&state).await.expect("drain");
-        // A submitted close lands before the next sweep reads the row: a
-        // sweep that finds the gauge still open closes it again, and every
-        // close is one more version.
+        // Stop sweeping once the close has landed. A sweep that finds the
+        // gauge still open submits the close again; the committer skips
+        // it, so the row below is the one closed once.
         got = closed(&forked.engine, id).await;
         if got.is_some() {
             break;

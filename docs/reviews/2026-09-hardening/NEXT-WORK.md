@@ -206,8 +206,9 @@ already 834 lines of its 1,000):
   (`recreatable` excludes it), so no debt; pin that the retained storage
   keeps billing.
 
-**Open, for the owner: a billing close applied to a row that is already
-closed (found 2026-09-29).** The committer applies every `BillingClose`:
+**Decided and done (edge change #72): a billing close applied to a row
+that is already closed (found 2026-09-29; the owner approved option (b) the
+same day).** The committer applies every `BillingClose`:
 clock to the instant, gauge 0, `usage_version + 1`, row dirty
 (`src/shard/transaction/maintenance.rs` `billing_close`); `billing_retained`
 beside it changes nothing when the flag already matches.
@@ -904,6 +905,6 @@ Changed so far (package 2):
 - Feed retention, 64 MiB for the cell and half of it for one project
   (18a6eaf6): edge record #69.
 - The cap on live subscriptions, 1,200 (f85990ab): edge record #70.
-- The record ceiling, 131,072 bytes: edge record #71. With it every line of
+- The record ceiling, 131,072 bytes (fd093a39): edge record #71. With it every line of
   the profile is the binary's default, and `MEMPROFILE_CERT=compute-1g` is
   the only setting the profile adds.

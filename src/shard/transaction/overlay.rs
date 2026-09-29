@@ -63,6 +63,32 @@ impl StreamOverlay {
         }
     }
 }
+impl BillingOverlay {
+    /// Close the row's storage at `at`: the storage integral advances to
+    /// that instant (a month closed on the way is staged as its final), the
+    /// gauge goes to zero, and the row takes one version and is written.
+    ///
+    /// A close that would change nothing is skipped whole: the gauge is
+    /// already zero and `at` is not after the storage clock. A skip leaves
+    /// `dirty` as it found it, because an earlier op of the group may have
+    /// set it. No row: nothing to close.
+    pub(super) fn close_storage(&mut self, at: i64) {
+        let Some(bm) = self.meta.as_mut() else {
+            return;
+        };
+        if bm.owned_frame_bytes_current == 0 && at <= bm.storage_accounted_through_ms {
+            return;
+        }
+        let finals = &mut self.month_finals;
+        bm.advance_storage_clock(at, |closed| {
+            finals.push(closed.to_snapshot(true));
+        });
+        bm.owned_frame_bytes_current = 0;
+        bm.usage_version += 1;
+        self.dirty = true;
+    }
+}
+
 impl FrameEffects {
     /// The frame cipher for `subkey` in this stream's `segment`. Every
     /// request of the group under the same subkey (stream key, epoch, routing
@@ -98,9 +124,19 @@ fn same_key(a: &[u8; crate::crypto::KEY_LEN], b: &[u8; crate::crypto::KEY_LEN]) 
 
 #[cfg(test)]
 mod tests {
-    use super::FrameEffects;
+    use super::{BillingOverlay, FrameEffects};
     use crate::crypto::{FrameCompression, decode_frame, decrypt_frame};
     use std::sync::Arc;
+
+    /// A close with no billing row changes nothing: no row appears, nothing
+    /// is marked for writing and no month is staged.
+    #[test]
+    fn a_close_without_a_row_changes_nothing() {
+        let mut billing = BillingOverlay::default();
+        billing.close_storage(1_790_003_600_000);
+        assert!(billing.meta.is_none());
+        assert_eq!((billing.dirty, billing.month_finals.len()), (false, 0));
+    }
 
     /// A group's requests under one subkey share one cipher, and a request
     /// under another subkey gets its own: its frames decrypt under its own

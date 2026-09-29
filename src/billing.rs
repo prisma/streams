@@ -1882,8 +1882,8 @@ pub(crate) static WALK_DEFERRED: std::sync::atomic::AtomicU64 =
 /// tombstones, expirations and fork-retention, not one tenant's — and
 /// for every terminal descriptor whose segments this instance owns,
 /// resubmit the close against the PERSISTED logical time. Idempotent:
-/// a zero gauge no-ops, and the persisted stamp makes every retry
-/// account to the same instant. Fork-retained sources are flagged too.
+/// every retry carries the persisted stamp, and the committer skips a
+/// close that would change nothing. Fork-retained sources are flagged too.
 ///
 /// A recreation replaces the terminal descriptor this walk needs; it
 /// records a closure debt first, which `replaced::settle_replaced`

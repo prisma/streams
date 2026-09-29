@@ -801,9 +801,9 @@ pub(crate) enum CommitOp {
     /// Hard-delete/expiry closure (§6.2): advance the storage clock to
     /// the PERSISTED logical close instant (round-22 item 7 — the
     /// tombstone's stamp or the configured expiry, never "whenever
-    /// this op finally ran"), zero the owned-bytes gauge, bump the
-    /// version and mark dirty — the terminal storage observation for
-    /// the incarnation. `close_ms <= 0` falls back to billing-now.
+    /// this op finally ran"), zero the gauge and take one version: the
+    /// terminal storage observation. A close that would change nothing
+    /// is skipped whole. `close_ms <= 0` falls back to billing-now.
     BillingClose {
         hash: [u8; 16],
         close_ms: i64,

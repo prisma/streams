@@ -18,13 +18,21 @@ impl CommitTransaction<'_> {
             self.extra_writes = true;
         }
     }
+    /// Close the segment's storage at `close_ms`, or at the billing clock
+    /// when the op carries no instant: the storage integral advances to
+    /// that instant, the gauge goes to zero and the row takes one version
+    /// (`BillingOverlay::close_storage`). A stream with no billing row has
+    /// nothing to close.
+    ///
+    /// A close that would change nothing is skipped whole: the gauge is
+    /// already zero and the instant is not after the storage clock. The
+    /// drain, the tombstone walk and the debt pass enqueue on a plain read
+    /// of an open gauge, and hard delete reads nothing, so a second close
+    /// can be enqueued before the first applied; only the committer sees
+    /// both in order. A later instant on a closed row still moves the clock.
     #[expect(
         clippy::unwrap_used,
         reason = "CommitTransaction::billing_close; the billing meta was inserted just above when absent; a fallible read would add a branch no close reaches"
-    )]
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "CommitTransaction::billing_close; the close nests the storage-clock advance inside the loaded-meta branch; flattening it would separate the advance from the meta it closes"
     )]
     pub(super) fn billing_close(
         &mut self,
@@ -36,24 +44,16 @@ impl CommitTransaction<'_> {
             let loaded = crate::billing::SegmentBillingMetaV1::default();
             local.billing.meta = Some(loaded);
         }
-        {
-            let bm = local.billing.meta.as_mut().unwrap();
-            if bm.stream_id.is_empty() {
-                local.billing.meta = None;
+        let bm = local.billing.meta.as_mut().unwrap();
+        if bm.stream_id.is_empty() {
+            local.billing.meta = None;
+        } else {
+            let at = if close_ms > 0 {
+                close_ms
             } else {
-                let at = if close_ms > 0 {
-                    close_ms
-                } else {
-                    crate::billing::billing_now_ms()
-                };
-                let finals = &mut local.billing.month_finals;
-                bm.advance_storage_clock(at, |closed| {
-                    finals.push(closed.to_snapshot(true));
-                });
-                bm.owned_frame_bytes_current = 0;
-                bm.usage_version += 1;
-                local.billing.dirty = true;
-            }
+                crate::billing::billing_now_ms()
+            };
+            local.billing.close_storage(at);
         }
     }
     #[expect(

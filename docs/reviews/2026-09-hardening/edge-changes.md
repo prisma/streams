@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 4 | 0 | 0 | 0 | 10 |
 | medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
-| low | 7 | 2 | 9 | 11 | 10 | 5 | 44 |
-| **Total** | **17** | **4** | **23** | **11** | **10** | **6** | **71** |
+| low | 7 | 2 | 10 | 11 | 10 | 5 | 45 |
+| **Total** | **17** | **4** | **24** | **11** | **10** | **6** | **72** |
 
-71 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#71 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling.
+72 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#72 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record.
 
 ### Index
 
@@ -95,7 +95,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 68 | 6fb8d8f0 | A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 69 | 18a6eaf6 | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 70 | f85990ab | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
-| 71 | this record's commit | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 71 | fd093a39 | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 72 | this record's commit | A billing close of a row that is already closed through its instant writes nothing | both | low | owner decision (2026-09-29); awaits ratification |
 
 ## High risk (10)
 
@@ -269,7 +270,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high by the rubric's letter: under skew, requests that used to succeed (a Stream-Seq retry, a reused producer sequence, a stale-epoch producer) now fail permanently. Each earlier success was wrong: it wrote a record twice or admitted a producer the stream had fenced, violating the dedupe contract the same requests get without a split. Reads, consumers and scans change only from a wrong order or a false closed signal to the lineage order.
 - **Check against commit:** written with the change.
 
-### #71 (this record's commit) — A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes
+### #71 fd093a39 — A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes
 
 - **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default."
 - **Surface:** both
@@ -619,7 +620,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a subscription that was admitted is refused with a retryable 503, only where the name is unset. 1,200 is the 1 GiB Compute class value, not a measured capacity of every class. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-## Low risk (44)
+## Low risk (45)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1406,6 +1407,26 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/config/validation_tests.rs::an_oversized_feed_budget_is_refused_with_the_certified_maximum (new, red-first on the text)
   - unchanged: src/dst/tests/admission_memory.rs::livefeed_budget_noisy_project_cannot_evict_another, src/dst/tests/persistence_faults.rs::cut_resume_never_skips_a_durable_record, src/dst/tests/livefeed_tail.rs::livefeed_budget_exhaustion_publishes_uncached_and_resumes
 - **Risk reason:** low: no status, code or header changes on a path that worked, and the change removes reconnects. 64 MiB of retention was certified (10,000 parked subscribers idle at 307 MB, peak 399 MB) only with the profile's 128 MiB shared cache and 500 line, which are the defaults since #67 and #68. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #72 (this record's commit) — A billing close of a row that is already closed through its instant writes nothing
+
+- **Program item:** NEXT-WORK §2, "a billing close applied to a row that is already closed". Owner decision of 2026-09-29: the no-op close in the committer is approved.
+- **Surface:** both
+- **Endpoint:** No request changes. What can change: `GET /v1/streams/{name}/usage[?month=]` and `GET /v1/projects/{project}/usage` (`updatedAt`, and the version digits inside a correction's `id`, `sourceEventId` and `reason`) for a stream whose storage was closed (deleted, expired, replaced). Operator: the `_usage` ledger holds one snapshot per close, and a clean row stays clean.
+- **Condition:** A second close of the same billing row is applied after the first: two closes in one commit group, or a close of a row that an earlier group closed, with an instant that is not after the row's storage clock. The drain, the tombstone walk and the debt pass enqueue a close on a plain read of an open gauge, and hard delete reads nothing, so a second closer can enqueue before the first close applied (on one instance: delete with the drain or the walk at normal latency; drain with drain when the committer lags past the 2 s drain period; walk with walk when a close stays unapplied for a sweep period).
+- **Before:** The second close changed no billed figure (gauge 0, the same accounted-through instant, the same byte-milliseconds) and wrote one more `usage_version`, rewrote the row and its dirty marker, and re-dirtied a row that was acknowledged clean. The drain then emitted the row at the higher version, so the closing snapshot, and every correction id built from it, carried one version more; the rollup rewrote the month row with a zero delta, which moved `updatedAt`.
+- **After:** The second close writes nothing: no version, no row, no dirty marker, no `_usage` record; a group that holds only such a close writes no batch. A close with a later instant still moves the clock at gauge 0 and takes a version, and a close of an open gauge always closes, whatever its instant. A skipped close leaves the mark an earlier op of its group set, so an append or a retained flag in the same group is written as before.
+- **Retry semantics:** None at the HTTP level. A closer that retries its close gets the same stored row.
+- **Who is affected:** Nobody's bill: no billed amount changes in either direction. Readers of the usage answer may see `updatedAt` move less often and lower version digits in correction ids of streams closed after this commit. Tests that assert one more version after a close no longer depend on how many closers submitted it.
+- **Pinning tests:**
+  - src/shard/billing_read_tests.rs::two_closes_in_one_group_close_the_row_once (new, red-first: `usage_version` 10 where 9 is expected)
+  - src/shard/billing_read_tests.rs::a_close_of_a_row_closed_in_an_earlier_group_writes_nothing (new, red-first: version 10 and a rewritten row where nothing is written)
+  - src/shard/billing_read_tests.rs::a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_written (new, red-first: left `(11, 0, 1790003600000, "3153600000", 4, Some(11))`)
+  - src/shard/billing_read_tests.rs::a_skipped_close_keeps_the_mark_an_earlier_op_of_its_group_set (new, red-first: version 11 where 10 is expected)
+  - controls, green before and after: ::a_later_instant_on_a_closed_row_still_moves_the_clock, ::a_close_of_an_open_gauge_at_or_before_its_clock_still_closes, ::a_close_without_an_instant_closes_at_the_billing_clock, ::a_close_across_a_month_boundary_stages_the_closed_months_final, ::a_close_of_a_segment_without_a_billing_row_writes_nothing
+  - src/shard/transaction/overlay.rs::a_close_without_a_row_changes_nothing (new)
+- **Risk reason:** low: no billed figure, status, code or header changes; the skip applies only where the close changed nothing but the version. It does not cover two closes with different instants, which neither behaviour reconciles. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Discrepancies
