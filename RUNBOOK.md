@@ -107,7 +107,7 @@ with an empty pool rather than dead sockets.
 | `COMPACTIONS_GC_INTERVAL_SECS` / `COMPACTIONS_GC_MIN_AGE_SECS` | 30 / 120 | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
-| `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 32 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather. The process budget may clamp the packing limit |
+| `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 8 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather (32 MiB until 2026-09-29). A gather stops staging at the limit; one oversized chunk still proceeds alone. The process budget may clamp the packing limit |
 | `ABSORB_PASS_BYTES` / `ABSORB_CONCURRENCY` / `ABSORB_SMALL_BYTES` | unset | deprecated compatibility spellings: accepted, ignored, and announced once at startup when explicitly supplied. Use `ABSORB_GATHER_MAX_BYTES`, `ABSORB_GLOBAL_BUDGET_BYTES`, `ABSORB_GLOBAL_GATHERS`, and `ABSORB_READ_PAR` |
 
 ### 3.2b Service limits, usage telemetry, billing
@@ -128,10 +128,10 @@ with an empty pool rather than dead sockets.
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
-| `ABSORB_GLOBAL_BUDGET_BYTES` | 67108864 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames |
-| `ABSORB_GLOBAL_GATHERS` | 2 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget |
+| `ABSORB_GLOBAL_BUDGET_BYTES` | 100859904 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames. The default is one worst-frame build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x 3; a smaller value is raised to that build for the server's own ceiling |
+| `ABSORB_GLOBAL_GATHERS` | 1 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget. 2 until 2026-09-29; a gather reserves its adaptive estimate (about 12 MiB at the floor), so at 2 slots two gathers did run at once. Do not raise it on a 1 GiB instance (4 slots were OOM-killed, docs/CHAOS-CAMPAIGN.md CHAOS-5) |
 | `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
-| `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
+| `SLATEDB_RT_THREADS` | 4 | worker threads of the dedicated SlateDB runtime (two-runtime split). 4 is what every deployed family runs; 2 was the default until 2026-09-29. Tests that open storage directly run on 2 |
 
 Transient rejections are 429s with error codes `limit_bytes_per_sec` /
 `limit_requests_per_sec` / `limit_records_per_sec`, a human message naming
@@ -153,7 +153,7 @@ registry's by-name objects). The billing stream's own usage is excluded.
 
 | env | default | guidance |
 |---|---|---|
-| `SHARED_CACHE_BYTES` | 192 MiB | ONE block cache shared by all shard DBs. SlateDB's per-DB default is 512 MB — 16 shards × 512 MB on a 1-GB box dies by cache fill in tens of minutes (this *was* our "platform kills instances" mystery) |
+| `SHARED_CACHE_BYTES` | 128 MiB | ONE block cache shared by all shard DBs (192 MiB until 2026-09-29). SlateDB's per-DB default is 512 MB — 16 shards × 512 MB on a 1-GB box dies by cache fill in tens of minutes (this *was* our "platform kills instances" mystery) |
 | `HISTORY_CACHE_BYTES` | 32 MiB | shared cache for history-tier/absorber DBs |
 | `TOKIO_WORKERS` | max(2, cores) | **do not run one worker.** On 1-vCPU instances the old `#[tokio::main]` default was a single worker; inline blocking quanta (SST build/compress) froze every future including commit acks — the O14a saga. The floor of 2 is enforced in code; the pilot runs 3. Measured effect at identical load: ack-excursion windows 30 % → 10 %, median-window WAL-PUT p99 617 → 141 ms |
 | `STORE_MAX_CONCURRENT` | 0 (off) | global cap on concurrent object-store ops. Diagnostic knob — capping did NOT help O14a (proved the bottleneck wasn't outbound concurrency); leave off unless experimenting |

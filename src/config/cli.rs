@@ -284,8 +284,8 @@ pub struct CliArgs {
     /// Aggregate byte budget for one shared-history gather WriteBatch
     /// (keys + frames, keyed index rows counted twice). Bounds absorber
     /// peak memory on small instances; streams that do not fit gather on
-    /// later ticks. Default = the history DB's unflushed cap.
-    #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 32 * 1024 * 1024)]
+    /// later ticks. Default 8 MiB, the batch the 1 GiB posture runs.
+    #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 8 * 1024 * 1024)]
     pub(crate) absorb_gather_max_bytes: usize,
 
     /// Duty-cycle the gather read phase: whenever this much time has
@@ -520,8 +520,9 @@ pub struct CliArgs {
     /// ONE shared block cache across all shard DBs (§1.1). SlateDB's
     /// per-DB default is 512 MB — 16 shards × 512 MB on a 1 GB instance
     /// dies by cache fill in tens of minutes (the run 6/8 zombie
-    /// generator; found 2026-07-15).
-    #[arg(long, env = "SHARED_CACHE_BYTES", default_value_t = 192 * 1024 * 1024)]
+    /// generator; found 2026-07-15). 128 MiB is the 1 GiB posture
+    /// (deploy/profiles/compute-1g.env); a larger instance class sets more.
+    #[arg(long, env = "SHARED_CACHE_BYTES", default_value_t = 128 * 1024 * 1024)]
     pub(crate) shared_cache_bytes: u64,
 
     /// Hysteresis: scale-in only after need has been below the current
@@ -599,7 +600,7 @@ impl CliArgs {
             absorb_small_bytes: None,
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
-            absorb_gather_max_bytes: 32 * 1024 * 1024,
+            absorb_gather_max_bytes: 8 * 1024 * 1024,
             absorb_pace_window_ms: 50,
             absorb_pace_ms: 0,
             absorb_read_par: 8,
@@ -640,7 +641,7 @@ impl CliArgs {
             admit_max_inflight_per_stream: 64,
             admit_max_inflight: 0,
             scale_edge_slots: 140,
-            shared_cache_bytes: 192 * 1024 * 1024,
+            shared_cache_bytes: 128 * 1024 * 1024,
             scale_in_secs: 60,
             scale_latency_ms: 250,
             scale_lat_sustain_secs: 20,

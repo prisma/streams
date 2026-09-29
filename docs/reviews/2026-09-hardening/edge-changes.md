@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
 | medium | 5 | 1 | 8 | 0 | 0 | 1 | 15 |
-| low | 7 | 2 | 8 | 11 | 10 | 4 | 42 |
-| **Total** | **17** | **4** | **19** | **11** | **10** | **5** | **66** |
+| low | 7 | 2 | 8 | 11 | 10 | 5 | 43 |
+| **Total** | **17** | **4** | **19** | **11** | **10** | **6** | **67** |
 
-66 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#66 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29.
+67 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#67 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification.
 
 ### Index
 
@@ -91,6 +91,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 64 | this record's commit | A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable | product | low | owner direction (#54, item 3); ratified 2026-09-29 |
 | 65 | 1b65e15d, 61068487, 8182730e, db126ccd | Replaced and dead storage stops billing in a fleet, at the instant it ended | both | medium | owner direction (NEXT-WORK §2); ratified 2026-09-29 |
 | 66 | 0b7840c7 | A storage close that reaches the rollup after its month was finalized corrects that month to the close instant, and no later month bills the closed segment | both | medium | owner decision (B3, 2026-09-29); ratified 2026-09-29 |
+| 67 | 823b3269, 648d7df4, this record's commit | A server started without settings runs the certified 1 GiB posture | process | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 
 ## High risk (9)
 
@@ -557,7 +558,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: it changes billed amounts on frozen months. Every change moves a month's storage to what the shard's persisted records say it owed: down for a close (the common case), up only when the gauge rose after the carry's knowledge and the close then settled the month. The rule rests on three shard facts, named on `settles` in `src/rollup/page.rs`: a segment's gauge only grows on append, only `billing_close` zeroes it, and a closed incarnation takes no appends or renewals; a change to gauge semantics must revisit it. Left unchanged, each a separate owner call: a late snapshot that still owns bytes does not advance the segment state (later months keep the older gauge); a late non-settled snapshot still marks its month final-seen, so its same-version month-final is dropped; a gauge-0 month-final that lands inside its own month's carry-to-freeze window is still dropped; `finalize_row`'s own extrapolation (`src/rollup/close.rs`) never reaches the aggregates, so a settled correction on a floor that extrapolation (not the carry) wrote leaves the project under the sum of its streams; storage is not reconciled. Awaits the owner's ratification. RATIFIED by the owner on 2026-09-29.
 - **Check against commit:** written with the change.
 
-## Low risk (42)
+## Low risk (43)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1301,6 +1302,28 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/dst/tests/product_descriptor_reads.rs::a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_is_not (red before: `GET /v1/streams/{name}` answered `(500, "internal", true, None)`)
 - **Risk reason:** low: only error answers change, toward the classification the append path already uses. RATIFIED by the owner on 2026-09-29.
 - **Check against commit:** written with the change (3b4f4614 for four routes; seal and the keyed read followed in the commit that ratified this record).
+
+### #67 823b3269, 648d7df4 and this record's commit — A server started without settings runs the certified 1 GiB posture
+
+- **Program item:** NEXT-WORK §13. Owner decision of 2026-09-29: "I want the 1gig profile to be the default." This record holds the defaults no client can observe; the profile's client-visible defaults (the shed line, the SSE budgets and connection cap, the record ceiling) have their own records.
+- **Surface:** process
+- **Endpoint:** None on the wire. The defaults of the startup settings, and where an operator reads the resolved values: the startup log's effective configuration and its `memory budget` line, `GET /v1/debug/load` (`compactor_profile`), `GET /v1/debug/store` (`bulk_gate`), `GET /v1/debug/absorb` (`budget`, `config`), and `--help`.
+- **Condition:** The server starts without the setting (no argument, no environment variable). A deployment that sets it, as every deploy script does through `deploy/profiles/compute-1g.env`, is unchanged.
+- **Before:** `L0_MAX_SSTS` 8. `COMPACTOR_MAX_CONCURRENT` 4, `COMPACT_MAX_SUBCOMPACTIONS` 4, `COMPACT_MAX_FETCH_TASKS` 4, `COMPACT_BYTES_TO_FETCH` 2 MiB, `COMPACT_MAX_SST_SIZE_BYTES` 256 MiB for the compactor's output roll and 8 MiB for the bulk gate's nominal GET weight (SlateDB's own worker values), `STORE_BULK_INFLIGHT_MAX_BYTES` 0 (no gate); `MEMPROFILE_CERT=compute-1g` refused such a server with seven mismatches. `ABSORB_GLOBAL_GATHERS` 2, `ABSORB_GATHER_MAX_BYTES` 32 MiB, `ABSORB_GLOBAL_BUDGET_BYTES` 64 MiB (raised at run time to 100,859,904). `SLATEDB_RT_THREADS` 2. `SHARED_CACHE_BYTES` 192 MiB.
+- **After:** `L0_MAX_SSTS` 32 (823b3269). `COMPACTOR_MAX_CONCURRENT` 1, `COMPACT_MAX_SUBCOMPACTIONS` 1, `COMPACT_MAX_FETCH_TASKS` 1, `COMPACT_BYTES_TO_FETCH` 1 MiB, `COMPACT_MAX_SST_SIZE_BYTES` 32 MiB for both fields, `STORE_BULK_INFLIGHT_MAX_BYTES` 32 MiB: SST transfers pass the bulk gate, and an SST GET of unknown length takes the whole gate; `MEMPROFILE_CERT=compute-1g` alone certifies a server with no other setting (648d7df4). `ABSORB_GLOBAL_GATHERS` 1: a second gather waits for the slot although its bytes fit the budget, where two ran at once. `ABSORB_GATHER_MAX_BYTES` 8 MiB: a gather stages a quarter of what it staged, so the same backlog takes up to four times as many gathers. `ABSORB_GLOBAL_BUDGET_BYTES` 100,859,904, the value the 64 MiB default was raised to at the 32 MiB body ceiling; with a lowered ceiling the default no longer shrinks below it. `SLATEDB_RT_THREADS` 4. `SHARED_CACHE_BYTES` 128 MiB: the fixed budgets the boot summary adds up are 336 MiB, where they were 400.
+- **Retry semantics:** None (no client surface).
+- **Who is affected:** A server started without the profile: development, a rig that boots the real binary (platform e2e, conformance, the LiveFeed fleet), and any deployment that does not source the profile. Measured on the local rig (one binary, settings through the environment, six pairs per point; not a field measurement): the L0 cap of 32 against 8 under the profile gives batch ingest +57% [+30%, +82%] with errors 125 -> 0; the profile's compaction, store and memory lines together against the old defaults give batch ingest -27% [-30%, -24%] and peak resident memory 1,197 -> 814 MB, with request-per-record appends unchanged. No value was measured alone, and the reason production runs 4 runtime threads is not documented. A larger instance class that wants the throughput sets the larger values.
+- **Pinning tests:**
+  - src/config/tests.rs::cli_surface_is_pinned (red-first for the L0 cap, the packing limit and the shared cache)
+  - src/config/tests.rs::default_values_are_pinned (red-first: the bulk gate left 0, right 33554432; the runtime threads left 2, right 4)
+  - src/config/certification_tests.rs::the_default_configuration_is_the_certified_profile (new, red-first: seven mismatches where none is expected)
+  - src/config/certification_tests.rs::uncertified_profile_reports_every_mismatched_measurement_in_order (states SlateDB's own values to get its seven mismatches)
+  - src/config/tests.rs::shipped_absorber_runs_one_gather_at_a_time (new, red-first: left `(false, 2, 25559040, 0)`, right `(true, 1, 12779520, 0)`)
+  - src/config/tests.rs::shipped_absorber_budget_floors_to_one_worst_frame_gather (red-first: one slot, 8 MiB packing)
+  - src/config/tests.rs::shipped_fixed_memory_budgets_sum_to_336_mib (new, red-first: left 201326592, right 134217728)
+  - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
+- **Risk reason:** low: no answer changes and production sets every value already. It changes throughput and memory of a server that sets nothing, toward the only posture that was certified. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
 
 ## Discrepancies
 

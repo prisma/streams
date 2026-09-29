@@ -88,8 +88,8 @@ pub struct EngineConfig {
     /// reader — see `StorageConfig::bulk_nominal_get_bytes` for the
     /// other reader of the same env name).
     pub compact_max_sst_size: usize,
-    /// SLATEDB_RT_THREADS, default 2. Worker threads of the dedicated
-    /// SlateDB runtime.
+    /// SLATEDB_RT_THREADS, default 4 (the 1 GiB profile's value). Worker
+    /// threads of the dedicated SlateDB runtime.
     pub slatedb_rt_threads: usize,
 }
 
@@ -134,11 +134,12 @@ pub struct HistoryConfig {
     /// runtime-mutable pause flag (the debug endpoint toggles the
     /// atomic at runtime).
     pub absorb_pause_initial: bool,
-    /// ABSORB_GLOBAL_BUDGET_BYTES, default 64 MiB. The runtime floors it
-    /// at one worst-frame build (`HistoryResources::with_body_limit`), so
-    /// the default runs at 100,859,904 bytes under the 32 MiB body pin.
+    /// ABSORB_GLOBAL_BUDGET_BYTES, default 100,859,904: one worst-frame
+    /// build at the 32 MiB body pin, (32 MiB + 64 KiB) x3. The runtime
+    /// floors a smaller value at that build for the server's own ceiling
+    /// (`HistoryResources::with_body_limit`).
     pub absorb_global_budget_bytes: usize,
-    /// ABSORB_GLOBAL_GATHERS, max(1), default 2.
+    /// ABSORB_GLOBAL_GATHERS, max(1), default 1 (the 1 GiB profile's value).
     pub absorb_global_gathers: usize,
     /// HISTORY_CACHE_BYTES, default 32 MiB.
     pub cache_bytes: usize,
@@ -381,7 +382,7 @@ impl Default for EngineConfig {
             compact_max_fetch_tasks: 1,
             compact_bytes_to_fetch: 1024 * 1024,
             compact_max_sst_size: 32 * 1024 * 1024,
-            slatedb_rt_threads: 2,
+            slatedb_rt_threads: 4,
         }
     }
 }
@@ -403,8 +404,8 @@ impl Default for HistoryConfig {
             // The field-validated posture in every build. Budgets are per
             // runtime, so a test that needs more headroom states it in its
             // own HistoryConfig; the default never forks on the build.
-            absorb_global_budget_bytes: 64 * 1024 * 1024,
-            absorb_global_gathers: 2,
+            absorb_global_budget_bytes: 100_859_904,
+            absorb_global_gathers: 1,
             cache_bytes: 32 * 1024 * 1024,
             compactor_off: false,
             gc_interval: Some(Duration::from_secs(600)),

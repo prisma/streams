@@ -215,13 +215,13 @@ fn default_values_are_pinned() {
     assert_eq!(c.engine.compact_max_fetch_tasks, 1);
     assert_eq!(c.engine.compact_bytes_to_fetch, 1024 * 1024);
     assert_eq!(c.engine.compact_max_sst_size, 32 * 1024 * 1024);
-    assert_eq!(c.engine.slatedb_rt_threads, 2);
+    assert_eq!(c.engine.slatedb_rt_threads, 4);
     assert_eq!(c.shard.open_deadline, std::time::Duration::from_secs(180));
     assert_eq!(c.shard.open_wait_ms, 10_000);
     assert_eq!(c.shard.unready_exit_after_secs, 300);
     assert!(!c.history.absorb_pause_initial);
-    assert_eq!(c.history.absorb_global_budget_bytes, 64 * 1024 * 1024);
-    assert_eq!(c.history.absorb_global_gathers, 2);
+    assert_eq!(c.history.absorb_global_budget_bytes, 100_859_904);
+    assert_eq!(c.history.absorb_global_gathers, 1);
     assert_eq!(c.history.cache_bytes, 32 * 1024 * 1024);
     assert!(!c.history.compactor_off);
     assert_eq!(
@@ -285,10 +285,10 @@ fn default_values_are_pinned() {
 }
 
 /// The shipped absorber posture, built the way bootstrap builds it
-/// (`RuntimeCaps::production(..).with_config`). The 64 MiB default is
-/// below one worst-frame build, so the budget floors to exactly that
-/// build, (32 MiB + 64 KiB) x3, the value deploy/profiles/compute-1g.env
-/// pins, and admits one worst-case gather at a time.
+/// (`RuntimeCaps::production(..).with_config`). The default budget is one
+/// worst-frame build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x3,
+/// the value deploy/profiles/compute-1g.env pins, and admits one
+/// worst-case gather at a time.
 #[test]
 fn shipped_absorber_budget_floors_to_one_worst_frame_gather() {
     let c = load_with(&[]);
@@ -297,13 +297,72 @@ fn shipped_absorber_budget_floors_to_one_worst_frame_gather() {
     assert_eq!(
         history.budget.capacity(),
         100_859_904,
-        "the 64 MiB default must floor to one worst-frame build"
+        "the default budget is one worst-frame build"
     );
     assert_eq!(history.worst_frame_transient, 100_859_904);
-    assert_eq!(history.budget.gather_slots(), 2);
-    assert_eq!(history.packing_bytes, 32 * 1024 * 1024);
+    assert_eq!(history.budget.gather_slots(), 1);
+    assert_eq!(history.packing_bytes, 8 * 1024 * 1024);
     assert_eq!(history.per_gather_reservation_bytes(), 100_859_904);
     assert_eq!(history.effective_gather_concurrency(), 1);
+}
+
+/// The slot is the bound that holds. A gather reserves its adaptive
+/// estimate (12,779,520 bytes at the floor), not the worst frame, so two
+/// fit the 100,859,904-byte budget; one slot keeps the second waiting,
+/// holding nothing, until the first returns.
+#[tokio::test]
+async fn shipped_absorber_runs_one_gather_at_a_time() {
+    let c = load_with(&[]);
+    let caps = crate::runtime::RuntimeCaps::production("absorber-one-gather").with_config(&c);
+    let budget = &caps.history.budget;
+    let floor = crate::history::worst_frame_transient_for(crate::history::GATHER_PER_STREAM_CAP);
+    assert_eq!(floor, 12_779_520);
+    let first = budget.reserve(floor).await;
+    let mut second = Box::pin(budget.reserve(floor));
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(50), second.as_mut()).await;
+    assert_eq!(
+        (
+            waited.is_err(),
+            budget.inflight(),
+            budget.reserved_bytes(),
+            budget.gather_slots_free()
+        ),
+        (true, 1, 12_779_520, 0),
+        "a second gather must wait for the one slot although its bytes fit"
+    );
+    drop(first);
+    let second = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+        .await
+        .expect("the waiter is granted when the slot returns");
+    assert_eq!(
+        (budget.inflight(), budget.reserved_bytes()),
+        (1, 12_779_520)
+    );
+    drop(second);
+    assert_eq!((budget.inflight(), budget.reserved_bytes()), (0, 0));
+}
+
+/// The fixed memory budgets the boot summary adds up (`bootstrap::run`,
+/// "memory budget"), in bytes, from the shipped defaults: shared cache,
+/// history, postings and telemetry caches, and the absorber budget.
+fn shipped_fixed_memory_budget_bytes(c: &ServerConfig) -> u64 {
+    let caps = crate::runtime::RuntimeCaps::production("memory-defaults").with_config(c);
+    let others = c.history.cache_bytes
+        + c.postings.cache_bytes
+        + c.billing.telemetry_cache_bytes
+        + caps.history.budget.capacity();
+    c.cli.shared_cache_bytes + others as u64
+}
+
+/// 128 + 32 + 64 + 16 MiB of caches and 100,859,904 bytes of absorber
+/// budget: 352,518,144 bytes, which the boot summary floors to 336 MiB.
+#[test]
+fn shipped_fixed_memory_budgets_sum_to_336_mib() {
+    let c = load_with(&[]);
+    assert_eq!(c.cli.shared_cache_bytes, 134_217_728);
+    let fixed = shipped_fixed_memory_budget_bytes(&c);
+    assert_eq!(fixed, 352_518_144);
+    assert_eq!(fixed / (1024 * 1024), 336);
 }
 
 #[test]
@@ -432,7 +491,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     (
         "absorb-gather-max-bytes",
         "ABSORB_GATHER_MAX_BYTES",
-        "33554432",
+        "8388608",
     ),
     ("absorb-pace-window-ms", "ABSORB_PACE_WINDOW_MS", "50"),
     ("absorb-pace-ms", "ABSORB_PACE_MS", "0"),
@@ -494,7 +553,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ),
     ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "0"),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
-    ("shared-cache-bytes", "SHARED_CACHE_BYTES", "201326592"),
+    ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "60"),
     ("scale-latency-ms", "SCALE_LATENCY_MS", "250"),
     ("scale-lat-sustain-secs", "SCALE_LAT_SUSTAIN_SECS", "20"),
@@ -552,7 +611,7 @@ fn legacy_absorber_flags_still_parse_but_have_no_fabricated_defaults() {
     assert_eq!(parsed.absorb_pass_bytes, Some(11));
     assert_eq!(parsed.absorb_concurrency, Some(12));
     assert_eq!(parsed.absorb_small_bytes, Some(13));
-    assert_eq!(parsed.absorb_gather_max_bytes, 32 * 1024 * 1024);
+    assert_eq!(parsed.absorb_gather_max_bytes, 8 * 1024 * 1024);
 
     let defaults = test_cli();
     assert!(defaults.ignored_absorber_options().is_empty());

@@ -890,4 +890,12 @@ depends on them); the commit pipeline as one decision; settings nothing sets
 as constants; switches with one live path. The verified detail of every
 item is in `evidence/config-audit-2026-09-29/detail.md`.
 
-Nothing in the five packages is changed yet.
+**Owner decisions (2026-09-29, second answer).** "I want the 1gig profile to
+be the default"; every other question of the page is left to the
+implementer's judgement.
+
+Changed so far (package 2):
+- The compaction worker and the bulk gate (648d7df4), the absorber's slot,
+  packing limit and budget, the SlateDB runtime's threads and the shared
+  cache: edge record #67. The profile keeps its lines: its sha256 is pinned
+  by release evidence and `bench/soak/oom-acceptance.sh` requires them.
