@@ -1,11 +1,37 @@
 //! Certification checks typed settings; the success notice remains redacted JSON.
 use super::{CliArgs, MapEnvironment, ServerConfig, notice::ConfigNotice};
 
+/// The binary's defaults are the certified profile: a server that sets
+/// nothing but the certification passes it.
+#[test]
+fn the_default_configuration_is_the_certified_profile() {
+    let cfg = ServerConfig::load(
+        CliArgs::deterministic(),
+        &MapEnvironment::from([("MEMPROFILE_CERT", "compute-1g")]),
+    );
+    let mut notices = Vec::new();
+    let errors = super::profile::certified_memprofile_errors(&cfg, &mut notices);
+    assert_eq!(errors, Vec::<String>::new());
+    assert!(matches!(
+        notices.as_slice(),
+        [ConfigNotice::MemoryProfileCertified { .. }]
+    ));
+}
+
 #[test]
 fn uncertified_profile_reports_every_mismatched_measurement_in_order() {
     let cfg = ServerConfig::load(
         CliArgs::deterministic(),
-        &MapEnvironment::from([("MEMPROFILE_CERT", "compute-1g")]),
+        &MapEnvironment::from([
+            ("MEMPROFILE_CERT", "compute-1g"),
+            // SlateDB's own worker values and the bulk gate off.
+            ("COMPACTOR_MAX_CONCURRENT", "4"),
+            ("COMPACT_MAX_SUBCOMPACTIONS", "4"),
+            ("COMPACT_MAX_FETCH_TASKS", "4"),
+            ("COMPACT_BYTES_TO_FETCH", "2097152"),
+            ("COMPACT_MAX_SST_SIZE_BYTES", "268435456"),
+            ("STORE_BULK_INFLIGHT_MAX_BYTES", "0"),
+        ]),
     );
     let mut notices = Vec::new();
     let errors = super::profile::certified_memprofile_errors(&cfg, &mut notices);

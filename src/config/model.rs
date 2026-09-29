@@ -6,7 +6,7 @@
 //! - **Fidelity over elegance.** Each field preserves the exact parse
 //!   expression, default and divergence of the site it replaced —
 //!   including known quirks (see `BillingConfig::path_prefix_env` and the
-//!   two readers of `COMPACT_MAX_SST_SIZE_BYTES` with different defaults).
+//!   two readers of `COMPACT_MAX_SST_SIZE_BYTES`, which share one default).
 //!   Semantic cleanup is separate work (WP-13/WP-14), not the refactor.
 //! - **No secrets in the knob graph.** Key material, tokens and
 //!   credentials live only in `cli` (the parsed command line); the
@@ -54,14 +54,14 @@ pub struct StorageConfig {
     /// STORE_MAX_CONCURRENT, default 0 = off. Instance-wide cap on
     /// concurrent object-store ops (keeps a warm connection set).
     pub store_max_concurrent: usize,
-    /// STORE_BULK_INFLIGHT_MAX_BYTES, default 0 = off. Readers: the
-    /// bulk gate in store_timing (clamped to u32 at use) and the
-    /// compactor profile JSON (raw u64).
+    /// STORE_BULK_INFLIGHT_MAX_BYTES, default 32 MiB (0 = off).
+    /// Readers: the bulk gate in store_timing (clamped to u32 at use)
+    /// and the compactor profile JSON (raw u64).
     pub bulk_inflight_max_bytes: u64,
     /// store_timing's nominal weight for unknown-length GETs. Reads
-    /// COMPACT_MAX_SST_SIZE_BYTES with default **8 MiB** — deliberately
-    /// NOT unified with `EngineConfig::compact_max_sst_size` (default
-    /// 256 MiB): same env name, two different knobs, preserved as-is.
+    /// COMPACT_MAX_SST_SIZE_BYTES, default 32 MiB: the same name and the
+    /// same default as `EngineConfig::compact_max_sst_size`, in its own
+    /// field because the gate takes a u64.
     pub bulk_nominal_get_bytes: u64,
 }
 
@@ -73,15 +73,18 @@ pub struct EngineConfig {
     /// `crate::DEFAULT_COMPACTOR_POLL_MS`. Clap owns it: `with_knob_defaults`
     /// copies the resolved value so an argv override reaches every DB family.
     pub compactor_poll_ms: u64,
-    /// COMPACTOR_MAX_CONCURRENT, default 4.
+    /// COMPACTOR_MAX_CONCURRENT, default 1. This and the four worker
+    /// values below default to the certified 1 GiB posture
+    /// (deploy/profiles/compute-1g.env), not to SlateDB's own 4 / 4 / 4 /
+    /// 2 MiB / 256 MiB, under which a 32-input L0 merge stages about 1 GB.
     pub compactor_max_concurrent: usize,
-    /// COMPACT_MAX_SUBCOMPACTIONS, default 4.
+    /// COMPACT_MAX_SUBCOMPACTIONS, default 1.
     pub compact_max_subcompactions: usize,
-    /// COMPACT_MAX_FETCH_TASKS, default 4.
+    /// COMPACT_MAX_FETCH_TASKS, default 1.
     pub compact_max_fetch_tasks: usize,
-    /// COMPACT_BYTES_TO_FETCH, default 2 MiB.
+    /// COMPACT_BYTES_TO_FETCH, default 1 MiB.
     pub compact_bytes_to_fetch: usize,
-    /// COMPACT_MAX_SST_SIZE_BYTES, default 256 MiB (the compactor's
+    /// COMPACT_MAX_SST_SIZE_BYTES, default 32 MiB (the compactor's
     /// reader — see `StorageConfig::bulk_nominal_get_bytes` for the
     /// other reader of the same env name).
     pub compact_max_sst_size: usize,
@@ -363,8 +366,8 @@ impl Default for StorageConfig {
         Self {
             pool_idle_secs: 4,
             store_max_concurrent: 0,
-            bulk_inflight_max_bytes: 0,
-            bulk_nominal_get_bytes: 8 * 1024 * 1024,
+            bulk_inflight_max_bytes: 32 * 1024 * 1024,
+            bulk_nominal_get_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -373,11 +376,11 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
-            compactor_max_concurrent: 4,
-            compact_max_subcompactions: 4,
-            compact_max_fetch_tasks: 4,
-            compact_bytes_to_fetch: 2 * 1024 * 1024,
-            compact_max_sst_size: 256 * 1024 * 1024,
+            compactor_max_concurrent: 1,
+            compact_max_subcompactions: 1,
+            compact_max_fetch_tasks: 1,
+            compact_bytes_to_fetch: 1024 * 1024,
+            compact_max_sst_size: 32 * 1024 * 1024,
             slatedb_rt_threads: 2,
         }
     }

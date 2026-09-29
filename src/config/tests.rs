@@ -207,14 +207,14 @@ fn default_values_are_pinned() {
     assert_eq!(c.runtime.tokio_workers, None);
     assert_eq!(c.storage.pool_idle_secs, 4);
     assert_eq!(c.storage.store_max_concurrent, 0);
-    assert_eq!(c.storage.bulk_inflight_max_bytes, 0);
-    assert_eq!(c.storage.bulk_nominal_get_bytes, 8 * 1024 * 1024);
+    assert_eq!(c.storage.bulk_inflight_max_bytes, 32 * 1024 * 1024);
+    assert_eq!(c.storage.bulk_nominal_get_bytes, 32 * 1024 * 1024);
     assert_eq!(c.engine.compactor_poll_ms, 2500);
-    assert_eq!(c.engine.compactor_max_concurrent, 4);
-    assert_eq!(c.engine.compact_max_subcompactions, 4);
-    assert_eq!(c.engine.compact_max_fetch_tasks, 4);
-    assert_eq!(c.engine.compact_bytes_to_fetch, 2 * 1024 * 1024);
-    assert_eq!(c.engine.compact_max_sst_size, 256 * 1024 * 1024);
+    assert_eq!(c.engine.compactor_max_concurrent, 1);
+    assert_eq!(c.engine.compact_max_subcompactions, 1);
+    assert_eq!(c.engine.compact_max_fetch_tasks, 1);
+    assert_eq!(c.engine.compact_bytes_to_fetch, 1024 * 1024);
+    assert_eq!(c.engine.compact_max_sst_size, 32 * 1024 * 1024);
     assert_eq!(c.engine.slatedb_rt_threads, 2);
     assert_eq!(c.shard.open_deadline, std::time::Duration::from_secs(180));
     assert_eq!(c.shard.open_wait_ms, 10_000);
@@ -405,7 +405,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("l0-max-ssts", "L0_MAX_SSTS", "32"),
     ("l0-max-ssts-per-key", "L0_MAX_SSTS_PER_KEY", "0"),
     ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
-    ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "4"),
+    ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "1"),
     ("wal-gc-interval-secs", "WAL_GC_INTERVAL_SECS", "30"),
     ("gc-quiet-interval-secs", "GC_QUIET_INTERVAL_SECS", "600"),
     ("wal-gc-min-age-secs", "WAL_GC_MIN_AGE_SECS", "60"),

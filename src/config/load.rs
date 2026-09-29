@@ -48,9 +48,8 @@ impl ServerConfig {
             self.storage.bulk_inflight_max_bytes = v;
         }
         if let Some(v) = env_parse::<u64>(env, "COMPACT_MAX_SST_SIZE_BYTES") {
-            // One env name feeds BOTH knobs, with different defaults
-            // (256 MiB compactor roll vs 8 MiB nominal GET weight) —
-            // preserved divergence, do not "fix" here.
+            // One env name feeds both fields: the compactor's roll and
+            // the nominal GET weight of the bulk gate.
             self.storage.bulk_nominal_get_bytes = v;
         }
         if let Some(v) = env_parse::<usize>(env, "COMPACT_MAX_SST_SIZE_BYTES") {

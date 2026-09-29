@@ -162,9 +162,10 @@ pub struct CliArgs {
     #[arg(long, env = "COMPACTOR_POLL_MS", default_value_t = crate::DEFAULT_COMPACTOR_POLL_MS)]
     pub(crate) compactor_poll_ms: u64,
 
-    /// Concurrent compactions (upstream default 4). Merges are object-I/O
-    /// bound on Tigris, so extra concurrency overlaps GET/PUT latency.
-    #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 4)]
+    /// Concurrent compactions (upstream default 4; 1 is the certified
+    /// 1 GiB posture). Merges are object-I/O bound on Tigris, so extra
+    /// concurrency overlaps GET/PUT latency.
+    #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 1)]
     pub(crate) compactor_max_concurrent: usize,
 
     // R27-4 compaction-worker memory knobs (COMPACT_MAX_SUBCOMPACTIONS,
@@ -582,7 +583,7 @@ impl CliArgs {
             l0_max_ssts: 32,
             l0_max_ssts_per_key: 0,
             compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
-            compactor_max_concurrent: 4,
+            compactor_max_concurrent: 1,
             wal_gc_interval_secs: 30,
             gc_quiet_interval_secs: 600,
             wal_gc_min_age_secs: 60,
