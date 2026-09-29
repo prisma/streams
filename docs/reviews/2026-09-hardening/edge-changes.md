@@ -19,7 +19,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | low | 7 | 2 | 8 | 11 | 10 | 4 | 42 |
 | **Total** | **17** | **4** | **18** | **11** | **10** | **5** | **65** |
 
-65 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#65 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54 and awaits the owner's ratification. #65 (billing in a fleet and across recreation, NEXT-WORK §2) awaits it too.
+65 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#65 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29.
 
 ### Index
 
@@ -88,8 +88,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 61 | 764a964f | The heartbeat has its own task, and the ring drops a live instance whose controller stopped progressing | fleet-internal | low | owner decision (item 40) |
 | 62 | bc2c0c93 | A heartbeat publishes its instance's withdrawal, and a stopping runtime's last beat withdraws it | fleet-internal | low | owner decision (item 40) |
 | 63 | this record's commit | A fleet instance drains its ownership before a termination signal stops it | process | medium | owner decision (item 40); ratified 2026-09-28 |
-| 64 | this record's commit | A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable | product | low | owner direction (#54, item 3); awaits ratification |
-| 65 | 1b65e15d, 61068487, 8182730e, db126ccd | Replaced and dead storage stops billing in a fleet, at the instant it ended | both | medium | owner direction (NEXT-WORK §2); awaits ratification |
+| 64 | this record's commit | A product handler's own descriptor read that the store fails answers a retryable 503; corruption stays a 500 that is not retryable | product | low | owner direction (#54, item 3); ratified 2026-09-29 |
+| 65 | 1b65e15d, 61068487, 8182730e, db126ccd | Replaced and dead storage stops billing in a fleet, at the instant it ended | both | medium | owner direction (NEXT-WORK §2); ratified 2026-09-29 |
 
 ## High risk (9)
 
@@ -525,8 +525,8 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - src/dst/tests/billing_closure_owners.rs::a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream (b)
   - src/dst/tests/billing_closure_debts.rs::a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry (c)
   - src/dst/tests/billing_walk_custody.rs::a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_next_segment (d)
-- **Risk reason:** medium: it changes billed amounts. Every change moves them to what the persisted records say was owed; no amount grows.
-- **Check against commit:** written with the change. Still open, for the owner: B3 (a close that arrives after its month was finalized never corrects the rollup) and B5 (an expired source whose fork still reads it is walked closed); their tests are on branch closure-debt-policy.
+- **Risk reason:** medium: it changes billed amounts. Every change moves them to what the persisted records say was owed; no amount grows. RATIFIED by the owner on 2026-09-29.
+- **Check against commit:** written with the change. The owner decided the two policy questions on 2026-09-29: B3, a close that arrives after its month was finalized corrects that month (a correction against a frozen invoice is allowed); B5, an expired source whose fork still reads it stops billing at its expiry (pinned in the commit that ratified this record).
 
 ## Low risk (42)
 
@@ -1262,16 +1262,16 @@ None of these changes alters a status, code or header on a path that worked befo
 
 - **Program item:** NEXT-WORK item 3's remainder, the owner's direction when ratifying #54 ("typed error classification and its own regression")
 - **Surface:** product
-- **Endpoint:** `GET /v1/streams/{name}` (`product_metadata`), `GET /v1/streams/{name}:scan` (`product_scan`), `POST /v1/streams/{name}/records` (`product_append_inner`'s own read), `GET /v1/streams/{name}/usage[/current]` (`product_usage`). Not yet: `POST /v1/streams/{name}:seal` (`product_seal`) and `GET /v1/streams/{name}/records` (`product_read`), whose exception scopes carry exact growth rows that only the owner can re-approve; they still answer as before.
+- **Endpoint:** `GET /v1/streams/{name}` (`product_metadata`), `GET /v1/streams/{name}:scan` (`product_scan`), `POST /v1/streams/{name}/records` (`product_append_inner`'s own read), `GET /v1/streams/{name}/usage[/current]` (`product_usage`); and, after the owner approved the change to their exception scopes on 2026-09-29, `POST /v1/streams/{name}:seal` (`product_seal`) and `GET /v1/streams/{name}/records` (`product_read`).
 - **Condition:** The handler's own descriptor read fails: on the store, or because the stored descriptor does not decode or validate.
 - **Before:** Both answered 500 `internal` with `retryable: true` and the store's error text. The SDK retries only 429 and 503, so a store blip was not retried, while corruption, which a retry reads again, was marked retryable.
-- **After:** A store failure answers 503 `temporarily_unavailable`, `retryable: true`, `retry-after: 1`, with a generic message; nothing was read or written for the request. Corruption (`registry::cache::is_corrupt_descriptor`, as #58) answers 500 `internal`, `retryable: false`. The collection listing, the fleet-internal receivers, `:seal` and the keyed read are unchanged.
+- **After:** A store failure answers 503 `temporarily_unavailable`, `retryable: true`, `retry-after: 1`, with a generic message; nothing was read or written for the request. Corruption (`registry::cache::is_corrupt_descriptor`, as #58) answers 500 `internal`, `retryable: false`. The collection listing and the fleet-internal receivers are unchanged.
 - **Retry semantics:** Clients and the SDK now retry a transient registry read on these routes after 1 s; they no longer retry corruption.
 - **Who is affected:** Product clients during store blips (fewer surfaced errors) and operators (a corrupt descriptor is now a final 500 on every route, as it already was for appends).
 - **Pinning tests:**
   - src/dst/tests/product_descriptor_reads.rs::a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_is_not (red before: `GET /v1/streams/{name}` answered `(500, "internal", true, None)`)
-- **Risk reason:** low: only error answers change, toward the classification the append path already uses.
-- **Check against commit:** written with the change.
+- **Risk reason:** low: only error answers change, toward the classification the append path already uses. RATIFIED by the owner on 2026-09-29.
+- **Check against commit:** written with the change (3b4f4614 for four routes; seal and the keyed read followed in the commit that ratified this record).
 
 ## Discrepancies
 
