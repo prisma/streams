@@ -74,7 +74,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
             .resources
             .bulk_permit(classify(location.as_ref()), payload.content_length() as u64)
             .await;
-        let _p = self.resources.permit().await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
         g.finish(r.is_ok());
@@ -86,7 +85,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         location: &Path,
         opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
-        let _p = self.resources.permit().await;
         let g = OpGuard::new(1, location);
         let class = classify(location.as_ref());
         match self.inner.put_multipart_opts(location, opts).await {
@@ -119,7 +117,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 .bulk_permit(classify(location.as_ref()), w)
                 .await
         };
-        let _p = self.resources.permit().await;
         let is_head = options.head;
         let g = OpGuard::new(if is_head { 3 } else { 2 }, location);
         let r = self.inner.get_opts(location, options).await;
@@ -177,7 +174,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 ranges.iter().map(|r| r.end.saturating_sub(r.start)).sum(),
             )
             .await;
-        let _p = self.resources.permit().await;
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
         g.finish(r.is_ok());
@@ -222,7 +218,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        let _p = self.resources.permit().await;
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         let r = self.inner.list_with_delimiter(prefix).await;
         g.finish(r.is_ok());
@@ -230,7 +225,6 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
-        let _p = self.resources.permit().await;
         let g = OpGuard::new(6, from);
         let r = self.inner.copy_opts(from, to, options).await;
         g.finish(r.is_ok());

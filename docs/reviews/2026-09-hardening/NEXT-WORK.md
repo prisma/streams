@@ -786,7 +786,9 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   owner's to decide before the binary is deployed. Since edge record #81
   the same holds for `--absorb-pace-ms` and `--absorb-pace-window-ms`
   (refused) and for `ABSORB_PACE_MS` above 0 (ignored: the project stops
-  pacing its gathers).
+  pacing its gathers). Since edge record #82 it holds for
+  `STORE_MAX_CONCURRENT` above 0 as well (ignored: the project's store
+  calls are no longer capped by count; the v18 experiment of July set 48).
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -918,7 +920,7 @@ be the default"; every other question of the page is left to the
 implementer's judgement.
 
 Changed so far (package 2, then package 1, then package 3, then package 4,
-then the first row of package 5):
+then the first two rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1125,7 +1127,28 @@ then the first row of package 5):
   row to the value the gate prints after the four lines of the gauge are
   deleted (the function then has 202 lines, so its architecture budget
   exception of 206 stays needed), and the removal gets an edge record of
-  its own (operator-debug) and a WIRE-MATRIX edit. The other four rows of
-  package 5 are not started. The platform export (§11) must show no
-  project that passes one of the two arguments or holds `ABSORB_PACE_MS`
-  above 0.
+  its own (operator-debug) and a WIRE-MATRIX edit. The platform export
+  (§11) must show no project that passes one of the two arguments or holds
+  `ABSORB_PACE_MS` above 0.
+- Package 5, second row: store operations are not capped by count, and
+  `STORE_MAX_CONCURRENT` is not read (edge record #82, one commit). The
+  name had no argument; the environment name is ignored without a message,
+  and the startup summary loses the key `storage.store_max_concurrent`.
+  The cap was off by default and in every deployment of the repository,
+  so store calls run as they did; its only measurement (EXPERIMENT-PILOT
+  run 12b, `STORE_MAX_CONCURRENT=48`) was a negative result. Removed: the
+  field of `StorageConfig` and its overlay line, the semaphore of
+  `StoreResources` with `permit` and its `#[expect]`, and the six call
+  sites in `src/store_timing.rs`. The byte gate is not changed. The tool's
+  pin of HEAD's leaves is 140; the tool was not run. No receipt is staled,
+  and the files select no mutation leg and no Miri leg. **For the owner:**
+  the R10 mechanism test
+  `runtime_store_concurrency_is_shared_locally_and_independent_of_first_access`
+  exercised the semaphore. It is rewritten on the byte gate under the same
+  name (two runtimes with byte caps of 1 and 2, two stores of one runtime
+  sharing one gate, a held byte of one runtime not delaying the other,
+  exact capacity afterwards, teardown) and its sha256 is re-pinned in
+  `docs/refactor/review-mechanisms.json`; the sibling pinned test is
+  untouched. The audit had listed the rewrite as a question for the owner.
+  The other three rows of package 5 are not started. The platform export
+  (§11) must show no project that holds `STORE_MAX_CONCURRENT` above 0.

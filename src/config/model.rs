@@ -51,9 +51,6 @@ pub struct StorageConfig {
     /// across scale-to-zero snapshot/restore; keep under the platform's
     /// 5 s idle threshold (EXPERIMENT-PILOT.md).
     pub pool_idle_secs: u64,
-    /// STORE_MAX_CONCURRENT, default 0 = off. Instance-wide cap on
-    /// concurrent object-store ops (keeps a warm connection set).
-    pub store_max_concurrent: usize,
     /// STORE_BULK_INFLIGHT_MAX_BYTES, default 32 MiB (0 = off).
     /// Readers: the bulk gate in store_timing (clamped to u32 at use)
     /// and the compactor profile JSON (raw u64).
@@ -397,7 +394,6 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             pool_idle_secs: 4,
-            store_max_concurrent: 0,
             bulk_inflight_max_bytes: 32 * 1024 * 1024,
             bulk_nominal_get_bytes: 32 * 1024 * 1024,
         }

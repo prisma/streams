@@ -57,6 +57,9 @@ The gather pacing is removed since edge record #81: on the next run
 `cli.absorb_pace_ms` and `cli.absorb_pace_window_ms` are removed leaves, so
 HEAD prints 141 leaves, and the two `wc-ladder` families no longer set
 `ABSORB_PACE_MS` and `ABSORB_PACE_WINDOW_MS`.
+The count cap on store operations is removed since edge record #82: on the
+next run `storage.store_max_concurrent` is a removed leaf, so HEAD prints
+140 leaves; no family set `STORE_MAX_CONCURRENT`.
 No run of the tool has been made since these changes.
 
 ## Summary

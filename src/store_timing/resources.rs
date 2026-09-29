@@ -5,7 +5,6 @@ use std::time::Instant;
 
 #[derive(Debug)]
 pub(crate) struct StoreResources {
-    concurrent: Option<tokio::sync::Semaphore>,
     bulk: Option<BulkGate>,
     nominal_get_bytes: u64,
 }
@@ -13,29 +12,11 @@ pub(crate) struct StoreResources {
 impl StoreResources {
     pub(crate) fn new(config: &crate::config::StorageConfig) -> Self {
         Self {
-            concurrent: (config.store_max_concurrent != 0)
-                .then(|| tokio::sync::Semaphore::new(config.store_max_concurrent)),
             bulk: NonZeroU32::new(
                 u32::try_from(config.bulk_inflight_max_bytes).unwrap_or(u32::MAX),
             )
             .map(BulkGate::new),
             nominal_get_bytes: config.bulk_nominal_get_bytes,
-        }
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "Runtime store admission owns a private semaphore that is never closed; a closed gate violates the owner invariant; silently bypassing it would remove the concurrency bound"
-    )]
-    pub(super) async fn permit(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
-        match &self.concurrent {
-            Some(semaphore) => Some(
-                semaphore
-                    .acquire()
-                    .await
-                    .expect("runtime store gate stays open"),
-            ),
-            None => None,
         }
     }
 
@@ -198,29 +179,32 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_store_concurrency_is_shared_locally_and_independent_of_first_access() {
-        let early = StoreResources::new(&crate::config::StorageConfig::default());
-        assert!(early.permit().await.is_none());
+        let early = StoreResources::new(&crate::config::StorageConfig {
+            bulk_inflight_max_bytes: 0,
+            ..Default::default()
+        });
+        assert!(early.bulk_permit(2, 1).await.is_none());
         let mut config = crate::config::ServerConfig::load(
             crate::config::CliArgs::deterministic(),
             &crate::config::MapEnvironment::empty(),
         );
-        config.storage.store_max_concurrent = 1;
+        config.storage.bulk_inflight_max_bytes = 1;
         let a = crate::runtime::RuntimeCaps::production("store-a").with_config(&config);
-        config.storage.store_max_concurrent = 2;
+        config.storage.bulk_inflight_max_bytes = 2;
         let b = crate::runtime::RuntimeCaps::production("store-b").with_config(&config);
         let weak = Arc::downgrade(&a.store_io);
         let first = TimingStore::new(InMemory::new(), a.store_io.clone());
         let second = TimingStore::new(InMemory::new(), a.store_io.clone());
         let other = TimingStore::new(InMemory::new(), b.store_io.clone());
         assert!(Arc::ptr_eq(&first.resources, &second.resources));
-        let held = first.resources.permit().await.unwrap();
-        let held_other = b.store_io.permit().await.unwrap();
-        let path = Path::from("manifest/test");
+        let held = first.resources.bulk_permit(2, 1).await.unwrap();
+        let held_other = b.store_io.bulk_permit(2, 1).await.unwrap();
+        let path = Path::from("compacted/test.sst");
         let mut pending = Box::pin(second.put_opts(&path, vec![1u8].into(), PutOptions::default()));
         std::future::poll_fn(|cx| {
             assert!(
                 pending.as_mut().poll(cx).is_pending(),
-                "same-runtime store must share the full concurrency gate"
+                "same-runtime store must share the full byte gate"
             );
             Poll::Ready(())
         })
@@ -229,17 +213,24 @@ mod tests {
             .put_opts(&path, vec![2u8].into(), PutOptions::default())
             .await
             .unwrap();
+        let bytes_and_waits = |r: &StoreResources| {
+            let stats = r.bulk_stats();
+            (
+                stats["inflight_bytes"].clone(),
+                stats["waits_total"].clone(),
+            )
+        };
+        assert_eq!(bytes_and_waits(&a.store_io), (1.into(), 1.into()));
+        assert_eq!(bytes_and_waits(&b.store_io), (1.into(), 0.into()));
         drop(held_other);
         drop(held);
         pending.await.unwrap();
-        assert_eq!(
-            a.store_io.concurrent.as_ref().unwrap().available_permits(),
-            1
-        );
-        assert_eq!(
-            b.store_io.concurrent.as_ref().unwrap().available_permits(),
-            2
-        );
+        assert_eq!(bytes_and_waits(&a.store_io), (0.into(), 1.into()));
+        assert_eq!(bytes_and_waits(&b.store_io), (0.into(), 0.into()));
+        assert_eq!(a.store_io.bulk_stats()["cap_bytes"], 1);
+        assert_eq!(b.store_io.bulk_stats()["cap_bytes"], 2);
+        assert_eq!(a.store_io.bulk.as_ref().unwrap().sem.available_permits(), 1);
+        assert_eq!(b.store_io.bulk.as_ref().unwrap().sem.available_permits(), 2);
         drop((first, second, other, a, b));
         assert!(
             weak.upgrade().is_none(),

@@ -41,9 +41,6 @@ impl ServerConfig {
         if let Some(v) = env_parse(env, "POOL_IDLE_SECS") {
             self.storage.pool_idle_secs = v;
         }
-        if let Some(v) = env_parse(env, "STORE_MAX_CONCURRENT") {
-            self.storage.store_max_concurrent = v;
-        }
         if let Some(v) = env_parse(env, "STORE_BULK_INFLIGHT_MAX_BYTES") {
             self.storage.bulk_inflight_max_bytes = v;
         }

@@ -252,7 +252,18 @@ parks between read waves. Left for the owner: the counter of the pace time
 and its three reporters (`gather_last_pace_ms` on /v1/debug/load and in the
 ops gauges, `absorber.lastPaceMs` on /v1/debug/absorb) stay and report 0,
 because `collect_snapshot` has an exact exception row that only the owner
-rewrites. The other four rows are not started.
+rewrites.
+
+Status (2026-09-29, second row): done, in one commit, edge record #82, on
+the owner's delegation; it awaits ratification. `STORE_MAX_CONCURRENT` is
+not read and the count semaphore of the store wrapper is gone with its six
+call sites: no store call waits for a count permit, which is what the
+default of 0 meant. The byte gate (`STORE_BULK_INFLIGHT_MAX_BYTES`) is not
+changed. For the owner: the R10 mechanism test
+`runtime_store_concurrency_is_shared_locally_and_independent_of_first_access`
+exercised the semaphore; it is rewritten on the byte gate under the same
+name and re-pinned in `docs/refactor/review-mechanisms.json`. The other
+three rows are not started.
 
 | Setting | Today | Proposed |
 |---|---|---|

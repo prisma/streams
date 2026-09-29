@@ -166,7 +166,6 @@ registry's by-name objects). The billing stream's own usage is excluded.
 | `SHARED_CACHE_BYTES` | 128 MiB | ONE block cache shared by all shard DBs (192 MiB until 2026-09-29). SlateDB's per-DB default is 512 MB — 16 shards × 512 MB on a 1-GB box dies by cache fill in tens of minutes (this *was* our "platform kills instances" mystery) |
 | `HISTORY_CACHE_BYTES` | 32 MiB | shared cache for history-tier/absorber DBs |
 | `TOKIO_WORKERS` | max(2, cores) | **do not run one worker.** On 1-vCPU instances the old `#[tokio::main]` default was a single worker; inline blocking quanta (SST build/compress) froze every future including commit acks — the O14a saga. The floor of 2 is enforced in code; the pilot runs 3. Measured effect at identical load: ack-excursion windows 30 % → 10 %, median-window WAL-PUT p99 617 → 141 ms |
-| `STORE_MAX_CONCURRENT` | 0 (off) | global cap on concurrent object-store ops. Diagnostic knob — capping did NOT help O14a (proved the bottleneck wasn't outbound concurrency); leave off unless experimenting |
 
 Memory budget on 1-GB/~750-MB-kill-line instances (revised 2026-07-21 after
 the saturation gate OOM'd the old envelope): the old numbers — shared cache

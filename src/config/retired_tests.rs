@@ -1,6 +1,6 @@
 //! The settings that became constants: every retired flag is refused on
 //! argv, and every retired environment name is ignored. One file names
-//! them all (edge record #80).
+//! them all (edge records #80 and #82).
 use super::tests::{load_with, run_helper_test};
 use super::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 use clap::Parser;
@@ -158,4 +158,15 @@ fn overlay_names_nothing_set_are_not_read() {
         ),
         (Some(600), 1024 * 1024, 64 * 1024, Ok(()))
     );
+}
+
+/// A name that was a setting without a flag, and whose mechanism is removed,
+/// changes nothing in the loaded configuration: `STORE_MAX_CONCURRENT`, the
+/// count cap on store operations (edge record #82).
+#[test]
+fn retired_environment_names_change_nothing() {
+    const NAMES: [(&str, &str); 1] = [("STORE_MAX_CONCURRENT", "48")];
+    for (name, value) in NAMES {
+        assert_eq!(load_with(&[(name, value)]), load_with(&[]), "{name}");
+    }
 }

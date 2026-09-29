@@ -88,8 +88,8 @@ scripts/test-leg.sh target/provider-contract/real.log \
 ```
 
 Set any storage knob the deployment sets (`POOL_IDLE_SECS`,
-`STORE_MAX_CONCURRENT`, ...) the same way; the runner reads them as the
-server does. Old global buckets live on `fly.storage.tigris.dev`, and a
+`STORE_BULK_INFLIGHT_MAX_BYTES`, ...) the same way; the runner reads them as
+the server does. Old global buckets live on `fly.storage.tigris.dev`, and a
 global bucket is a different configuration from a single-region one:
 qualify each bucket kind, endpoint and client region the fleet uses.
 

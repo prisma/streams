@@ -96,6 +96,12 @@
     "intended": "yes",
     "note": "See cli.compactions_gc_interval_secs."
   },
+  "R1:removed:storage.store_max_concurrent:0-><absent>": {
+    "commit": "the commit of edge record #82",
+    "edge_record": 82,
+    "intended": "yes",
+    "note": "The count cap on store operations is removed with its semaphore: store calls are not counted, which is what 0, the default, already meant. No family set STORE_MAX_CONCURRENT. The name had no argument; the environment name is not read. Transfers of the sst class stay bounded in bytes by STORE_BULK_INFLIGHT_MAX_BYTES."
+  },
   "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
     "commit": null,
     "intended": "n/a",

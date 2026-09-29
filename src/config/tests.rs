@@ -302,7 +302,6 @@ fn default_values_are_pinned() {
     let c = load_with(&[]);
     assert_eq!(c.runtime.tokio_workers, None);
     assert_eq!(c.storage.pool_idle_secs, 4);
-    assert_eq!(c.storage.store_max_concurrent, 0);
     assert_eq!(c.storage.bulk_inflight_max_bytes, 32 * 1024 * 1024);
     assert_eq!(c.storage.bulk_nominal_get_bytes, 32 * 1024 * 1024);
     assert_eq!(c.engine.compactor_poll_ms, 2500);

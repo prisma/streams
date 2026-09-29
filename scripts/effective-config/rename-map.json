@@ -124,6 +124,12 @@
       "commit": "the commit of edge record #81",
       "edge_record": 81,
       "why": "gather pacing is removed with its code: the window had no effect while the park was 0"
+    },
+    {
+      "old": "storage.store_max_concurrent",
+      "commit": "the commit of edge record #82",
+      "edge_record": 82,
+      "why": "the count cap on store operations is removed with its semaphore: 0 (no cap) was the default and no family set the name"
     }
   ]
 }
