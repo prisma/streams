@@ -247,7 +247,10 @@ pub struct CliArgs {
     /// Absorber thresholds (§3.6 / D23).
     #[arg(long, env = "ABSORB_BYTES", default_value_t = 4 * 1024 * 1024)]
     pub(crate) absorb_bytes: u64,
-    #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
+    /// Age threshold, seconds: a stream's unabsorbed tail is absorbed once
+    /// it is this old, whatever its size. The default, 60, is the value the
+    /// deployments run (300 until 2026-09-29).
+    #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 60)]
     pub(crate) absorb_age_secs: u64,
 
     /// Evict resident per-stream handles idle at least this long
@@ -582,7 +585,7 @@ impl CliArgs {
             trim_per_op: 8_192,
             trim_global_budget: 65_536,
             absorb_bytes: 4 * 1024 * 1024,
-            absorb_age_secs: 300,
+            absorb_age_secs: 60,
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
             absorb_gather_max_bytes: 8 * 1024 * 1024,

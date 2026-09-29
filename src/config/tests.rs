@@ -611,7 +611,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("trim-per-op", "TRIM_PER_OP", "8192"),
     ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
     ("absorb-bytes", "ABSORB_BYTES", "4194304"),
-    ("absorb-age-secs", "ABSORB_AGE_SECS", "300"),
+    ("absorb-age-secs", "ABSORB_AGE_SECS", "60"),
     ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
     ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
     (

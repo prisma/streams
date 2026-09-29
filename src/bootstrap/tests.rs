@@ -38,6 +38,15 @@ fn active_absorber_options_reach_the_absorber_configuration() {
     assert_eq!(changed.gather_read_par, 5);
 }
 
+#[test]
+fn a_server_that_sets_nothing_absorbs_by_age_after_sixty_seconds() {
+    let active = absorber_config(&crate::config::CliArgs::deterministic(), 8 * 1024 * 1024);
+    assert_eq!(
+        (active.threshold_age, active.threshold_bytes),
+        (Duration::from_secs(60), 4 * 1024 * 1024)
+    );
+}
+
 #[tokio::test]
 async fn process_bootstrap_cannot_be_an_empty_success() {
     let validated = crate::config::ServerConfig::load(

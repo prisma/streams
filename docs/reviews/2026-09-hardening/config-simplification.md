@@ -162,6 +162,18 @@ the push. The field measurement on Tigris that the paragraph below asks for
 has not been made. The rows of the table below are not changed yet. The
 text that follows is the audit's and is not rewritten.
 
+Status (2026-09-29, `ABSORB_AGE_SECS`, the first row of the table below):
+done, edge record #78, on the same delegation; the record awaits
+ratification. The binary's default is 60. It is the value the deployments
+run, not a measured improvement: the one run that names the setting changed
+two variables, and the cost of more frequent absorption on sparse streams
+has not been measured. By the family files eight of the nine families that
+set the name set 60 (the table's "seven of eight" is the audit's count);
+`fra-ab-server` sets 300 and keeps it, with its script. Not changed:
+`AbsorberConfig::default` in `src/history.rs`, which only tests read and
+which still says 300 (no line headroom; three receipts). Not run: the rigs
+that start the binary. The other three rows are not changed yet.
+
 `WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and `WAL_POST_ACK_GATHER_MS=6`
 are set together by eight of the nine server families; the binary defaults
 to tick mode (0, 0, 0). Changing one alone gives a combination nothing runs,

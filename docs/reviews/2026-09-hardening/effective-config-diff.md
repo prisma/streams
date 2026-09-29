@@ -38,7 +38,10 @@ and a 6 ms gather since edge record #77: on the next run
 (`defaults` all three; `platform-e2e` and `livefeed-canary`, which pass the
 gap on argv, the switch and the gather), and `fra-ab-server` keeps the
 switch at 0, which its script now sets, and gains the gap and the gather,
-which the tick does not read. No run of the tool has been made since these changes.
+which the tick does not read. The default of `ABSORB_AGE_SECS` is 60 since
+edge record #78: on the next run `cli.absorb_age_secs` reads 60 instead of
+300 for `defaults`, `platform-e2e` and `livefeed-canary`, which do not set
+the name. No run of the tool has been made since these changes.
 
 ## Summary
 

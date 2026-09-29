@@ -1001,3 +1001,20 @@ Changed so far (package 2, then package 1, then package 3):
   from a tick to the pump. CONFORMANCE.md says that the ~8.6 ms per append
   it records was a 1 ms tick and that the figure under the pump is not
   recorded yet.
+- Package 3, the absorber's age threshold (edge record #78): the binary's
+  default `ABSORB_AGE_SECS` is 60 (300 before), what eight of the nine
+  families that set the name run. A server that does not set it absorbs a
+  stream's tail once it is 60 s old or holds 4 MiB. It is the value the
+  deployments run, not a measured improvement: the ladder's 5.18% against
+  1.56% shed is one run that changed two variables, and the cost of up to
+  five times as many age-triggered absorptions on sparse streams is not
+  measured. Performance acceptance is the owner's. `scripts/bench-fra-ab.sh`
+  sets 300 itself and keeps it. Not changed: `AbsorberConfig::default` in
+  `src/history.rs` (tests only; it still says 300, the file has no line
+  headroom and an edit stales TLA-016, TLA-018 and TLA-019). For the owner
+  with the ratification: in a fleet the rebalancer's threshold
+  `REBALANCE_LAG_SECS` is also 60 by default and reads the age of the
+  oldest unabsorbed bytes, so the two defaults now meet; the fleet
+  deployments set both to 60, and no run was made for this change. To run
+  before the push, with the rigs listed above: they start the binary
+  without the name.

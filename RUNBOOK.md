@@ -106,7 +106,7 @@ with an empty pool rather than dead sockets.
 | `WAL_GC_INTERVAL_SECS` / `WAL_GC_MIN_AGE_SECS` | 30 / 60 | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. `MIN_AGE` must cover shard-move replay (<1 s; 60 s is generous) |
 | `COMPACTIONS_GC_INTERVAL_SECS` / `COMPACTIONS_GC_MIN_AGE_SECS` | 30 / 120 | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
-| `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
+| `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 60 | absorber thresholds into the history tier: a tail is absorbed at 4 MiB, or once it is 60 s old (the age was 300 until 2026-09-29) |
 | `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 8 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather (32 MiB until 2026-09-29). A gather stops staging at the limit; one oversized chunk still proceeds alone. The process budget may clamp the packing limit |
 
 ### 3.2b Service limits, usage telemetry, billing
