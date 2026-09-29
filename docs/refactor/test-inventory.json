@@ -1859,6 +1859,17 @@
     "scenarios": []
   },
   {
+    "name": "a_walk_scenario_excludes_an_injected_billing_clock",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "cea25b8dbdadf205a54c75cc61872a51fb7b60fb72e3acb403ec147d0f0f571c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_sweep.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -7419,7 +7430,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "e0c7d25a8be48339beb510131c181b28ebf3aeaa682037b53a4df2fdd2da4a68",
+    "function_sha256": "92f054bb1e4f558accb938649ea974dc6308fab9dce55380dafa3d0b9b80360c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_sweep.rs",
@@ -7430,7 +7441,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "8635c61ad23e2db2413ab2c3c7fabe220e145bdfc1dab4aa197091a6d84dfa0c",
+    "function_sha256": "bbf56a6778b9aef706ebea508d5c43dce7e22b3a67e7387f69bed49ac0e0a2a4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_sweep.rs",

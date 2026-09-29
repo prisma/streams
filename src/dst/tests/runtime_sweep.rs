@@ -584,6 +584,26 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     }
 }
 
+/// The sweep lock, and the billing clock's read lock: the walk judges a
+/// stream expired on the billing clock, while `stream-ttl` stamps the expiry
+/// from the wall clock, so a scenario that injects an earlier billing clock
+/// (it holds the write lock) would hide every expired stream from the walk.
+async fn serial_on_the_real_clock() -> (
+    tokio::sync::MutexGuard<'static, ()>,
+    tokio::sync::RwLockReadGuard<'static, ()>,
+) {
+    let serial = sweep_lock().lock().await;
+    let clock = crate::billing::billing_clock_lock().read().await;
+    (serial, clock)
+}
+
+/// While a walk scenario runs, no scenario can inject a billing clock.
+#[tokio::test]
+async fn a_walk_scenario_excludes_an_injected_billing_clock() {
+    let _serial = serial_on_the_real_clock().await;
+    assert!(crate::billing::billing_clock_lock().try_write().is_err());
+}
+
 /// R29: the tombstone walk must consume the SAME scheduler budget
 /// BEFORE opening. Terminal (TTL-expired) descriptors spanning every
 /// physical shard used to open one engine per route for the whole
@@ -591,7 +611,7 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
 /// the next sweep and the peak gauge covers walk opens too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tombstone_walk_peak_residency_stays_under_the_budget() {
-    let _serial = sweep_lock().lock().await;
+    let _serial = serial_on_the_real_clock().await;
     let store = mem();
     let prefixes = vec![
         "00".to_string(),
@@ -693,7 +713,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tombstone_walk_fairness_under_occupied_budget() {
-    let _serial = sweep_lock().lock().await;
+    let _serial = serial_on_the_real_clock().await;
     let store = mem();
     let prefixes = vec![
         "00".to_string(),

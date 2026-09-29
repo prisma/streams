@@ -53,6 +53,12 @@ fn test_cfg() -> crate::config::ServerConfig {
     )
 }
 
+async fn mem_rollup(name: &str) -> UsageRollup {
+    UsageRollup::open(mem_store(), name, &test_cfg())
+        .await
+        .unwrap()
+}
+
 fn id() -> BillingIdentity {
     BillingIdentity {
         account_id: "acct".into(),
@@ -480,9 +486,10 @@ async fn idle_retained_months_accrue_storage() {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rollup_applies_deltas_and_closes_months() {
-    let r = UsageRollup::open(mem_store(), "t1", &test_cfg())
-        .await
-        .unwrap();
+    // July 2026 closes only on the real clock: a scenario that injects the
+    // billing clock holds the write lock while it does.
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let r = mem_rollup("t1").await;
     // Version 1: 100 bytes, byte-ms 5000. Version 2: 250 bytes,
     // byte-ms 9000 (absolute). Replay of version 2.
     r.apply_page(&[snap(1, "2026-07", 100, 5000, 40, false)], "c1")
