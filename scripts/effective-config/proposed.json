@@ -108,6 +108,12 @@
     "intended": "yes",
     "note": "The switch that turned the embedded compactor of the history databases off is removed: they open with the compactor on the resolved worker options and L0 caps of 64, which is what false, the default, already meant. No family set HISTORY_COMPACTOR, and the 1 GiB certificate refused a process that did. The name had no argument; the environment name is not read."
   },
+  "R1:removed:billing.meter_enabled:true-><absent>": {
+    "commit": "the commit of edge record #85",
+    "edge_record": 85,
+    "intended": "yes",
+    "note": "The switch that turned ingest metering off is removed: every append to a stream that is not `_`-reserved carries its billing reference and is counted in the write of its records, which is what true, the default, already meant. No family set BILLING_METER. The name had no argument; the environment name is not read."
+  },
   "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
     "commit": null,
     "intended": "n/a",

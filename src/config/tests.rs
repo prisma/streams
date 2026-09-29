@@ -337,7 +337,6 @@ fn default_values_are_pinned() {
         std::time::Duration::from_secs(120)
     );
     assert!(!c.cli.billing_required());
-    assert!(c.billing.meter_enabled);
     assert!(!c.cli.runs_rollup());
     assert_eq!(c.billing.outbox_sweep_secs, 300);
     assert_eq!(c.billing.telemetry_drain_secs, 2);
@@ -481,7 +480,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         ("SWEEP_MAINT_RESIDENT", "0"),      // stored raw (boot check)
         ("FRAME_COMPRESS", "TrUe"),
         ("SCALE_HOT_PCT", "90.0"),
-        ("BILLING_METER", "off"),
         ("FLEET_ALLOW_HTTP_PEERS", "1"),
     ]);
     assert_eq!(c.storage.bulk_inflight_max_bytes, 4096);
@@ -493,7 +491,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
     assert_eq!(c.billing.sweep_maint_resident, 0); // raw; floored at the use site
     assert!(c.crypto.frame_compress);
     assert_eq!(c.scaler.hot_pct, 0.9);
-    assert!(!c.billing.meter_enabled);
     assert!(c.fleet.allow_http_peers);
 
     // The retired name is not read: the sweep keeps its default.

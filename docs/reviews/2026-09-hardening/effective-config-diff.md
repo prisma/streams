@@ -63,6 +63,9 @@ next run `storage.store_max_concurrent` is a removed leaf, so HEAD prints
 The switch that turned the history compactor off is removed since edge
 record #84: on the next run `history.compactor_off` is a removed leaf, so
 HEAD prints 139 leaves; no family set `HISTORY_COMPACTOR`.
+The switch that turned ingest metering off is removed since edge record
+#85: on the next run `billing.meter_enabled` is a removed leaf, so HEAD
+prints 138 leaves; no family set `BILLING_METER`.
 No run of the tool has been made since these changes.
 
 ## Summary

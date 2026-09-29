@@ -234,8 +234,6 @@ pub struct HttpConfig {
 /// Billing/telemetry/rollup knobs (src/billing.rs, src/ops.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BillingConfig {
-    /// BILLING_METER: metering on unless == "off" (per-append read).
-    pub meter_enabled: bool,
     /// OUTBOX_SWEEP_SECS, default 300.
     pub outbox_sweep_secs: u64,
     /// TELEMETRY_DRAIN_SECS, default 2. Also bounds the terminal drain
@@ -473,7 +471,6 @@ impl Default for HttpConfig {
 impl Default for BillingConfig {
     fn default() -> Self {
         Self {
-            meter_enabled: true,
             outbox_sweep_secs: 300,
             telemetry_drain_secs: 2,
             metrics_interval_secs: 15,

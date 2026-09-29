@@ -280,8 +280,17 @@ databases of both layouts always open with the embedded compactor, on the
 resolved worker options and with L0 caps of 64. The startup summary loses
 the key `history.compactor_off`. Given up: the bench hook for discard-mode
 runs (`s3lite --discard-substr`). The guard of the 1 GiB certificate
-against a disabled compactor stays. The last row (`BILLING_METER`) is not
-started.
+against a disabled compactor stays.
+
+Status (2026-09-29, fifth and last row): done, in one commit, edge record
+#85 (medium), on the owner's delegation; it awaits ratification.
+`BILLING_METER` is not read (it had no argument; the environment name is
+ignored) and every append to a stream that is not `_`-reserved is metered
+at the committer, under `BILLING_MODE=required` as under any other mode.
+The startup summary loses the key `billing.meter_enabled`. For the owner:
+a project that still holds `BILLING_METER=off` is billed for the ingest and
+the storage of what it appends from the deploy onward, so the platform
+export must be searched for the name before the binary is deployed.
 
 | Setting | Today | Proposed |
 |---|---|---|

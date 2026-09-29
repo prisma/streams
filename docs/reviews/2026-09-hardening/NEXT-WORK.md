@@ -790,7 +790,10 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   `STORE_MAX_CONCURRENT` above 0 as well (ignored: the project's store
   calls are no longer capped by count; the v18 experiment of July set 48).
   Since edge record #84 it holds for `HISTORY_COMPACTOR=off` (ignored: the
-  project's history databases compact again).
+  project's history databases compact again). Since edge record #85 it
+  holds for `BILLING_METER=off` (ignored: the project is billed for the
+  ingest and the storage of what it appends from the deploy onward; this is
+  the one retired name that can change a bill).
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -922,7 +925,7 @@ be the default"; every other question of the page is left to the
 implementer's judgement.
 
 Changed so far (package 2, then package 1, then package 3, then package 4,
-then the first four rows of package 5):
+then the five rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1192,6 +1195,30 @@ then the first four rows of package 5):
   HEAD's leaves is 139; the tool was not run. Receipts: TLA-016, TLA-018
   and TLA-019 list `src/history.rs` and were stale before this change, so
   the re-record that is already due does not grow; the files select no
-  mutation leg and no Miri leg. The last row of package 5
-  (`BILLING_METER`) is not started. The platform export (§11) must show no
+  mutation leg and no Miri leg. The platform export (§11) must show no
   project that holds `HISTORY_COMPACTOR=off`.
+- Package 5, fifth and last row: ingest is metered for every customer
+  stream, and `BILLING_METER` is not read (edge record #85, one commit;
+  medium). The name had no argument; the environment name is ignored
+  without a message, and the startup summary loses the key
+  `billing.meter_enabled`. Metering was on by default and in every
+  deployment of the repository, so appends are counted as they were: every
+  append to a stream that is not `_`-reserved carries its billing reference
+  and is counted in the write of its records. With the switch off the
+  committer skipped the billing row, so neither the ingest nor the storage
+  of those appends was billed, and `BILLING_MODE=required` did not refuse
+  it. Removed: the field of `BillingConfig` and its overlay line, the
+  field `meter_enabled` of `AppendService` and the conjunct of
+  `execute_once` that read it (`src/application/append.rs`), and its line
+  in `AppState::append_service` (`src/http.rs`, 3,101 lines, 3,102
+  before). The unmetered branch stays, for the `_`-reserved streams.
+  WIRE-MATRIX's metering line no longer names the switch. The tool's pin
+  of HEAD's leaves is 138; the tool was not run. Receipt: TLA-003 lists
+  `src/application/append.rs` and was stale before this change, so the
+  re-record that is already due does not grow. CI selects the mutation leg
+  of the owner `http` and Miri; neither was run. **For the owner:** this
+  is the one change of package 5 that can alter a bill. A Compute project
+  that still holds `BILLING_METER=off` from the OOM review's experiments
+  is billed for what it appends from the deploy onward; the platform
+  export (§11) must be searched for the name before the binary is
+  deployed.

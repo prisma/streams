@@ -34,7 +34,6 @@ pub(crate) struct AppendService {
     pub(crate) auth: Arc<crate::auth::AuthService>,
     pub(crate) deployment: crate::deployment::DeploymentIdentity,
     pub(crate) admission_config: crate::config::AdmissionConfig,
-    pub(crate) meter_enabled: bool,
 }
 impl AppendService {
     fn maintenance_limits(&self) -> crate::backpressure::Limits {
@@ -411,19 +410,17 @@ async fn execute_once(
         sealed_reject_new: close_plan.sealed_reject_new,
         touch,
         seal_gen: close_plan.generation,
-        billing: (!crate::billing::is_reserved_stream(&desc.name) && state.meter_enabled).then(
-            || {
-                std::sync::Arc::new(crate::billing::BillingRef {
-                    identity: crate::billing::identity_with_capabilities(
-                        &state.auth,
-                        &state.deployment,
-                        &desc,
-                        true,
-                    ),
-                    segment_id: seg.seg_id,
-                })
-            },
-        ),
+        billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
+            std::sync::Arc::new(crate::billing::BillingRef {
+                identity: crate::billing::identity_with_capabilities(
+                    &state.auth,
+                    &state.deployment,
+                    &desc,
+                    true,
+                ),
+                segment_id: seg.seg_id,
+            })
+        }),
         resp: tx,
     };
     let outcome = submit::submit(state, &desc, &seg, req, rx).await?;

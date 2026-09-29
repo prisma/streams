@@ -104,6 +104,11 @@ metadata — and NOT the round-20/21 telemetry subsystem. The full-off
 discriminator is `USAGE_STREAM_KEY` unset + `ROLLUP=0` +
 `BILLING_MODE=off` on a fresh process and namespace (experiment arm B).
 
+The switch was removed on 2026-09-29 (edge record #85): `BILLING_METER` is
+not read, and every append to a stream that is not `_`-reserved is metered
+at the committer. The paragraph above is kept as the record of what the
+billing-off arm proved.
+
 ### Mechanisms landed (this round)
 
 | review item | mechanism |

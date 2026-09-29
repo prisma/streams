@@ -250,7 +250,6 @@ impl AppState {
             auth: self.auth.clone(),
             deployment: self.deployment.clone(),
             admission_config: self.config.admission.clone(),
-            meter_enabled: self.config.billing.meter_enabled,
         }
     }
 

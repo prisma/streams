@@ -136,6 +136,12 @@
       "commit": "the commit of edge record #84",
       "edge_record": 84,
       "why": "the switch that turned the history compactor off is removed: false (compactor on) was the default and the value of every family"
+    },
+    {
+      "old": "billing.meter_enabled",
+      "commit": "the commit of edge record #85",
+      "edge_record": 85,
+      "why": "the switch that turned ingest metering off is removed: true (metered) was the default and the value of every family"
     }
   ]
 }

@@ -1,8 +1,8 @@
 //! The settings that became constants: every retired flag is refused on
 //! argv, and every retired environment name is ignored. One file names
-//! them all (edge records #80, #82, #83 and #84).
-use super::tests::{load_with, run_helper_test};
-use super::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
+//! them all (edge records #80, #82, #83, #84 and #85).
+use super::tests::{load_with, run_helper_test, test_cli};
+use super::{CliArgs, Environment, MapEnvironment, ProcessEnvironment, ServerConfig};
 use clap::Parser;
 
 /// Every value a retired name used to set, read where the server reads it:
@@ -169,14 +169,35 @@ fn overlay_names_nothing_set_are_not_read() {
 
 /// A name that was a setting without a flag, and whose mechanism is removed,
 /// changes nothing in the loaded configuration: `STORE_MAX_CONCURRENT`, the
-/// count cap on store operations (edge record #82), and `HISTORY_COMPACTOR`,
-/// the switch that turned the history compactor off (edge record #84).
+/// count cap on store operations (edge record #82), `HISTORY_COMPACTOR`,
+/// the switch that turned the history compactor off (edge record #84), and
+/// `BILLING_METER`, the switch that turned ingest metering off (edge record
+/// #85).
 #[test]
 fn retired_environment_names_change_nothing() {
-    const NAMES: [(&str, &str); 2] = [("STORE_MAX_CONCURRENT", "48"), ("HISTORY_COMPACTOR", "off")];
+    const NAMES: [(&str, &str); 3] = [
+        ("STORE_MAX_CONCURRENT", "48"),
+        ("HISTORY_COMPACTOR", "off"),
+        ("BILLING_METER", "off"),
+    ];
     for (name, value) in NAMES {
         assert_eq!(load_with(&[(name, value)]), load_with(&[]), "{name}");
     }
+}
+
+/// Required billing cannot be started with ingest unmetered: under
+/// `BILLING_MODE=required` a process that holds `BILLING_METER=off` loads
+/// the configuration of a process that does not hold the name.
+#[test]
+fn required_billing_cannot_be_loaded_with_ingest_unmetered() {
+    let required = |entries: &[(&str, &str)]| {
+        let mut cli = test_cli();
+        cli.billing_mode = "required".into();
+        ServerConfig::load(cli, &MapEnvironment::from(entries.iter().copied()))
+    };
+    let held = required(&[("BILLING_METER", "off")]);
+    assert!(held.cli.billing_required());
+    assert_eq!(held, required(&[]));
 }
 
 /// The history databases of both layouts open with the embedded compactor,
