@@ -108,7 +108,6 @@ with an empty pool rather than dead sockets.
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
 | `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 8 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather (32 MiB until 2026-09-29). A gather stops staging at the limit; one oversized chunk still proceeds alone. The process budget may clamp the packing limit |
-| `ABSORB_PASS_BYTES` / `ABSORB_CONCURRENCY` / `ABSORB_SMALL_BYTES` | unset | deprecated compatibility spellings: accepted, ignored, and announced once at startup when explicitly supplied. Use `ABSORB_GATHER_MAX_BYTES`, `ABSORB_GLOBAL_BUDGET_BYTES`, `ABSORB_GLOBAL_GATHERS`, and `ABSORB_READ_PAR` |
 
 ### 3.2b Service limits, usage telemetry, billing
 
@@ -231,10 +230,9 @@ routing key and are routed server-side to internal child streams
 |---|---|---|
 | `SCALE_EVAL_SECS` | 10 | scaler evaluation cadence |
 | `SCALE_RATE_WINDOW_SECS` | 120 | EWMA window for per-segment rates (Pravega's two-minute rate) |
-| `SCALE_HOT_PCT` / `SCALE_COLD_PCT` | 75 / 15 | split above / merge below, % of per-segment service limits |
-| `SCALE_HOT_EVALS` / `SCALE_COLD_EVALS` | 2 / 180 | consecutive evaluations before acting |
+| `SCALE_HOT_PCT` | 75 | split above this % of the per-segment service limits; a segment is cold below 5% of it (3.75% of the limits at the default) |
+| `SCALE_HOT_EVALS` | 2 | consecutive hot evaluations before a split; a stream merges after every segment stayed cold for four times as many (8) |
 | `SCALE_COOLDOWN_SECS` | 600 | min segment age before it may re-scale |
-| `MAX_SEGMENTS_PER_STREAM` | 64 | split guard |
 | `REBALANCE_LAG_SECS` | 60 | absorb-lag (s) beyond which the laggard moves a shard to a peer |
 | `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | min gap between moves per host |
 

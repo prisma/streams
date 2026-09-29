@@ -82,11 +82,8 @@ impl ServerConfig {
                 "eval_secs": self.scaler.eval_secs,
                 "rate_window_secs": self.scaler.rate_window_secs,
                 "hot_pct": self.scaler.hot_pct,
-                "cold_pct": self.scaler.cold_pct,
                 "hot_evals": self.scaler.hot_evals,
-                "cold_evals": self.scaler.cold_evals,
                 "cooldown_secs": self.scaler.cooldown_secs,
-                "max_segments": self.scaler.max_segments,
             },
             "admission": {
                 "unabsorbed_bytes_instance": self.admission.unabsorbed_bytes_instance,

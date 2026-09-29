@@ -764,7 +764,15 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   its redacted configuration; `scripts/effective-config/` then re-runs the
   comparison and boot validation on the final candidate with the actual
   persisted namespace constraints (the archived comparison's "HEAD" is an
-  earlier revision). Remove obsolete `ABSORB_PASS_BYTES` after the export.
+  earlier revision). The binary no longer reads `ABSORB_PASS_BYTES`,
+  `ABSORB_CONCURRENCY` or `ABSORB_SMALL_BYTES` (edge record #74): unset
+  them in the projects the export shows still hold them. The export must
+  also show no project that passes `--absorb-pass-bytes`,
+  `--absorb-concurrency`, `--absorb-small-bytes` or `--gc-max-interval-secs`
+  (such a process no longer starts), and no project that holds
+  `HISTORY_GC_MAX_INTERVAL_SECS` with a value other than 600; where one
+  does, set `HISTORY_GC_INTERVAL_SECS` to that value before the binary is
+  deployed.
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -917,3 +925,22 @@ Changed so far (package 2, then package 1):
   removal that follows changes the pin with a failing test first. The
   tool's own K9 verdict needs a run of the tool (it builds rc.4 and HEAD):
   once, after the package.
+- Package 1, settings that did nothing (edge record #74, one commit): the
+  binary no longer declares the three v1 absorber options
+  (`--absorb-pass-bytes`, `--absorb-concurrency`, `--absorb-small-bytes`
+  and their environment names; the startup warning went with them), the
+  three scaler names nothing read (`SCALE_COLD_PCT`, `SCALE_COLD_EVALS`,
+  `MAX_SEGMENTS_PER_STREAM`), or the legacy aliases
+  `--gc-max-interval-secs` and `HISTORY_GC_MAX_INTERVAL_SECS`. RUNBOOK
+  §3.5b and docs/SCALING.md now state the merge rule the scaler runs (cold
+  below 5% of the hot threshold, merge after four times `SCALE_HOT_EVALS`
+  cold evaluations, no cap on segments); the documented 15% / 180 / 64
+  policy was never implemented, and implementing it would be a scaler
+  change for the owner to ask for. The tool's pin of HEAD's leaves is 150.
+  Left for the next edit of each file, because a comment there is not
+  worth its receipts: the doc comment of `absorber_config` in
+  `src/bootstrap.rs` still speaks of legacy compatibility options
+  (TLA-011), and the comment above `gc_interval` in `src/history.rs` still
+  names the alias (TLA-016, TLA-018, TLA-019; the file has no line
+  headroom). Not done in package 1: `--compactor-max-concurrent` and the
+  second reader of `PATH_PREFIX`.

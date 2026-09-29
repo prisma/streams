@@ -23,10 +23,9 @@ services:
       FRAME_COMPRESS: "1"
       WAL_GROUP_COMMIT: "1"
       SCALE_RATE_WINDOW_SECS: "60"
-      # Ladder pace: cooldown/cold-evals shrunk so split+merge cycles fit
-      # a test run (production defaults: 600 s / 180 evals).
+      # Ladder pace: cooldown shrunk so split+merge cycles fit a test run
+      # (production default: 600 s).
       SCALE_COOLDOWN_SECS: "60"
-      SCALE_COLD_EVALS: "12"
       REBALANCE_RETURN_SECS: "60"
       SCALE_IN_SECS: "100000"
       RUST_LOG: info

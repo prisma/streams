@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 4 | 0 | 0 | 0 | 10 |
 | medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
-| low | 7 | 2 | 11 | 11 | 10 | 5 | 46 |
-| **Total** | **17** | **4** | **25** | **11** | **10** | **6** | **73** |
+| low | 7 | 2 | 11 | 11 | 10 | 6 | 47 |
+| **Total** | **17** | **4** | **25** | **11** | **10** | **7** | **74** |
 
-73 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#73 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record. #73 settles the refused storage close of a Db that had already failed; the owner left that call to the implementer on 2026-09-29, and the record awaits ratification.
+74 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#74 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record. #73 settles the refused storage close of a Db that had already failed; the owner left that call to the implementer on 2026-09-29, and the record awaits ratification. #74 removes eight setting names that did nothing (package 1 of `config-simplification.md`), on the same delegation; it awaits ratification.
 
 ### Index
 
@@ -97,7 +97,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 70 | f85990ab | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 71 | fd093a39 | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 72 | 35dc7b3c | A billing close of a row that is already closed through its instant writes nothing | both | low | owner decision (2026-09-29); awaits ratification |
-| 73 | this record's commit | A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart | both | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
+| 73 | 464a1624 | A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart | both | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
+| 74 | this record's commit | The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone | process | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
 
 ## High risk (10)
 
@@ -621,7 +622,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a subscription that was admitted is refused with a retryable 503, only where the name is unset. 1,200 is the 1 GiB Compute class value, not a measured capacity of every class. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-## Low risk (46)
+## Low risk (47)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1430,7 +1431,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** low: no billed figure, status, code or header changes; the skip applies only where the close changed nothing but the version. It does not cover two closes with different instants, which neither behaviour reconciles. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-### #73 (this record's commit) — A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart
+### #73 464a1624 — A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart
 
 - **Program item:** NEXT-WORK §10, the engine question of the failed-write retirement test. The owner left the call to the implementer on 2026-09-29.
 - **Surface:** both
@@ -1449,6 +1450,35 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/shard/history_partition.rs::a_clean_close_records_clean (new)
   - unchanged: src/shard/task_lifecycle_tests.rs (a scripted close failure is still a failed storage close), src/shard/retirement_tests.rs::tla005_f5_a_failed_write_answers_nothing_from_its_batch
 - **Risk reason:** low: the change removes a permanent refusal in one interleaving and makes it answer as the two that already reopen. The race itself cannot be forced from outside SlateDB, so the red is the verdict as a function of what a returned close reports, and three tests read those reports from a real Db. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #74 (this record's commit) — The binary declares no setting that does nothing: the v1 absorber options, three scaler names nothing reads and two legacy GC aliases are gone
+
+- **Program item:** NEXT-WORK §13, package 1 of `config-simplification.md` (settings that do nothing). Owner answer of 2026-09-29: "For other questions, please make your own judgement call." The answer contains no explicit approval of this package; the removal was made on that delegation.
+- **Surface:** process (operator-debug for the startup log)
+- **Endpoint:** None on the wire. The command-line arguments `--absorb-pass-bytes`, `--absorb-concurrency`, `--absorb-small-bytes` and `--gc-max-interval-secs`; the environment names `ABSORB_PASS_BYTES`, `ABSORB_CONCURRENCY`, `ABSORB_SMALL_BYTES`, `SCALE_COLD_PCT`, `SCALE_COLD_EVALS`, `MAX_SEGMENTS_PER_STREAM` and `HISTORY_GC_MAX_INTERVAL_SECS`; `--help`; the startup log's `effective configuration (redacted)` line, section `scaler`, and its warnings.
+- **Condition:** A process passes one of the four arguments or holds one of the seven environment names; for the startup log, always.
+- **Before:**
+  - The three absorber options were parsed and stored, and nothing read them. A process that supplied one logged one warning at startup (`<names> are deprecated compatibility options and are ignored by the v2 gather planner; ...`). A value that did not parse refused the start in clap (`invalid value 'not-a-number' for '--absorb-pass-bytes <ABSORB_PASS_BYTES>'`), also when it came from the environment.
+  - `SCALE_COLD_PCT`, `SCALE_COLD_EVALS` and `MAX_SEGMENTS_PER_STREAM` were parsed into the scaler's configuration and printed in the startup log as `cold_pct`, `cold_evals` and `max_segments`. Nothing read the three fields. RUNBOOK §3.5b and docs/SCALING.md documented them as a merge threshold of 15% of the limits, a merge patience of 180 evaluations and a split guard of 64 segments. That policy was never implemented: a segment is cold while every rate is below 5% of the hot threshold (3.75% of the limits at `SCALE_HOT_PCT=75`), a stream merges after every segment stayed cold for four times `SCALE_HOT_EVALS` evaluations (8 at the default), and no count of segments stops a split.
+  - `--gc-max-interval-secs` was a hidden alias of `--gc-quiet-interval-secs`. `HISTORY_GC_MAX_INTERVAL_SECS` set the history GC sweep interval when `HISTORY_GC_INTERVAL_SECS` was unset.
+- **After:**
+  - The four arguments are not declared: a process that passes one does not start (clap `UnknownArgument`, `error: unexpected argument '--absorb-pass-bytes' found`, exit status 2). `--help` loses the three absorber entries.
+  - The seven environment names are not read. A process that holds one starts as a process that holds none, whatever the value, a value that does not parse included; no warning is logged.
+  - The `scaler` section of the startup log has five keys: `eval_secs`, `rate_window_secs`, `hot_pct`, `hot_evals`, `cooldown_secs`. RUNBOOK §3.5b and docs/SCALING.md state the merge rule the code runs. Scaler decisions are unchanged.
+  - `HISTORY_GC_INTERVAL_SECS` and `--gc-quiet-interval-secs` / `GC_QUIET_INTERVAL_SECS` are unchanged. A process that holds only `HISTORY_GC_MAX_INTERVAL_SECS` sweeps its history at the default of 600 s instead of the value it held. This is the one case in which behaviour moves without a message.
+- **Retry semantics:** None (no client surface).
+- **Who is affected:** Operators and readers of the startup log. No script, deployment family, profile or guide in the repository passes one of the four arguments or sets `HISTORY_GC_MAX_INTERVAL_SECS`. Three bench files set `SCALE_COLD_EVALS=12` (`bench/docker/compose.yml`, `bench/docker/harness/cluster-deploy.sh`, and a comment in `d2run.sh`); the line did nothing, their merges ran after 8 evaluations, and the commit removes it. A Compute project keeps every name it was ever given, so an rc.4-era project may still hold `ABSORB_PASS_BYTES`: it starts as before, now without the warning. Whether any project passes a removed argument or holds `HISTORY_GC_MAX_INTERVAL_SECS` with a value other than 600 is visible only in the platform export (NEXT-WORK §11), which has not been run.
+- **Pinning tests:**
+  - src/config/tests.rs::cli_surface_is_pinned (red-first: the three absorber rows in left only)
+  - src/config/tests.rs::retired_absorber_flags_are_refused_on_argv (new, red-first: `called Result::unwrap_err() on an Ok value`)
+  - src/config/tests.rs::retired_absorber_environment_names_are_not_read (new, a subprocess with a cleared environment; red-first: the child's parse failed with `InvalidValue ... "--absorb-pass-bytes <ABSORB_PASS_BYTES>" ... "not-a-number"`)
+  - src/config/numeric_tests.rs::dead_scaler_names_are_not_read (new, red-first: left `cold_pct: 0.01 ... cold_evals: 1 ... max_segments: 1`; also pins the five keys of the summary's scaler section)
+  - src/config/tests.rs::retired_gc_flag_alias_is_refused_on_argv (new, red-first: the alias parsed, `gc_quiet_interval_secs: 42`)
+  - src/config/tests.rs::env_overlay_applies_with_legacy_parse_semantics (red-first: left `Some(42s)`, right `Some(600s)`)
+  - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
+  - unchanged and green: the `scaler3::` suite (scaler behaviour did not move), src/bootstrap/tests.rs::active_absorber_options_reach_the_absorber_configuration (renamed; its block on the removed fields is gone)
+- **Risk reason:** low: no answer on the wire changes, and none of the names had an effect except the history GC alias, which nothing in the repository sets. The risks are a start that is refused for a process that still passes a removed argument, and the silent move to 600 s for a project that holds the alias with another value. The record states that the documented merge policy (15%, 180 evaluations, 64 segments) was never in force, so that the owner can open a scaler item if that policy is what the product should do. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

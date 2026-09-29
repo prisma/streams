@@ -96,11 +96,9 @@ The two CPU hogs are kept off the request path:
   concurrency with `ABSORB_GLOBAL_BUDGET_BYTES` / `ABSORB_GLOBAL_GATHERS`,
   and read overlap within a gather with `ABSORB_READ_PAR`. It trims up to
   `TRIM_PER_OP` (default 8k, throughput shards ≥ 256k) hot records per
-  Absorbed op so trim also tracks ingest. The old `ABSORB_PASS_BYTES`,
-  `ABSORB_CONCURRENCY`, and `ABSORB_SMALL_BYTES` spellings are accepted only
-  for command-line compatibility and are ignored with one startup notice.
-  The ≤ 15 % core budget still binds; on 1-core instances the budget, not
-  the pipeline, is the sustained ceiling.
+  Absorbed op so trim also tracks ingest. The ≤ 15 % core budget still
+  binds; on 1-core instances the budget, not the pipeline, is the sustained
+  ceiling.
 
 ---
 

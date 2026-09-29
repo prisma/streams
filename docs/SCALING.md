@@ -49,10 +49,10 @@ Pravega's two-minute-rate style):
 - **hot**: EWMA(bytes_in) > 75 % of `LIMIT_BYTES_PER_SEC`, OR
   EWMA(requests) > 75 % of `LIMIT_REQS_PER_SEC`, OR EWMA(records) > 75 %
   of `LIMIT_RECS_PER_SEC`, sustained for ≥ 2 consecutive evaluations.
-- Guard: segment count < `MAX_SEGMENTS_PER_STREAM` (default 64) and the
-  stream opted in (`Stream-Scaling: auto` at create, or default-on for
-  per-key streams; total-order streams CANNOT split — a single total
-  order is definitionally one segment, enforced at create).
+- Guard: the stream opted in (`Stream-Scaling: auto` at create, or
+  default-on for per-key streams; total-order streams CANNOT split — a
+  single total order is definitionally one segment, enforced at create).
+  There is no cap on the number of segments.
 
 Mechanics (all steps CAS-guarded, crash-resumable; the scaler is the only
 writer of segmap.json):
@@ -72,12 +72,18 @@ writer of segmap.json):
 5. Readers: per-key readers finish the parent range (bounded — it's
    sealed), then follow `successors[k]`.
 
-Scale-in (merge) is the mirror image: two adjacent **cold** segments
-(EWMA < 15 % of target for ≥ 10 evaluations ≈ 100 s… production default
-much longer, e.g. 30 min) seal both parents and open one child covering
-the union range. Merge only when both live on shards whose host is below
-50 % aggregate utilization, and never within `SCALE_COOLDOWN` (default
-10 min) of the segment's creation — Pravega's anti-flap rules.
+Scale-in (merge) is the mirror image: two adjacent **cold** segments seal
+both parents and open one child covering the union range. As implemented
+(`src/scaler3.rs`), a segment is cold while every rate is below 5 % of the
+hot threshold (3.75 % of the limit at `SCALE_HOT_PCT=75`), and a stream
+merges after every one of its segments stayed cold for four times
+`SCALE_HOT_EVALS` evaluations (8 at the default, about 80 s). There is no
+separate cold threshold or cold patience setting, and no cap on the
+number of segments: the 15 % / 180-evaluation / 64-segment policy this
+document once listed was never implemented (edge record #74). Merge only
+when both live on shards whose host is below 50 % aggregate utilization,
+and never within `SCALE_COOLDOWN` (default 10 min) of the segment's
+creation — Pravega's anti-flap rules.
 
 ## 3. Why this is cheap here
 
@@ -146,10 +152,9 @@ freshly-moved shard isn't double-treated.
 |---|---|---|
 | `SCALE_EVAL_SECS` | 10 | scaler tick |
 | `SCALE_RATE_WINDOW_SECS` | 120 | EWMA window for segment rates |
-| `SCALE_HOT_PCT` / `SCALE_COLD_PCT` | 75 / 15 | of per-segment limits |
-| `SCALE_HOT_EVALS` / `SCALE_COLD_EVALS` | 2 / 180 | consecutive evals |
+| `SCALE_HOT_PCT` | 75 | split above this % of the per-segment limits; cold below 5% of it |
+| `SCALE_HOT_EVALS` | 2 | consecutive hot evals before a split; merge after four times as many cold evals |
 | `SCALE_COOLDOWN_SECS` | 600 | min segment age before re-scale |
-| `MAX_SEGMENTS_PER_STREAM` | 64 | |
 | `REBALANCE_LAG_SECS` | 60 | absorb-lag threshold (sustained 2 fleet ticks) |
 | `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | churn guard: min gap between moves per host |
 | `SCALE_FAULT_POINT` | unset | test-only: `after_seal` aborts a split in the seal→save window (D4) |
@@ -171,8 +176,7 @@ fresh midpoint is correct regardless of what the dead scaler intended.
 - **Merges require co-located pairs.** A merge seals BOTH parents, and
   seals run through the local engine; each instance only evaluates
   segments whose shards it serves. An adjacent cold pair split across
-  two instances is never merged (correct, just not compacted). With
-  production `SCALE_COLD_EVALS=180` merges are rare slow events; the
+  two instances is never merged (correct, just not compacted). The
   fix, if it earns its keep, is seal-by-owner over instance-to-instance
   HTTP (heartbeats would carry a `self_url`) or explicit child placement
   via the segmap's `shard_prefix` field (schema already carries it —
@@ -351,8 +355,7 @@ Today a hot segment splits in TWO, and one split per stream per scaler
 tick. Reaching 1 GB/s from 1 MB/s therefore needs ~8 doublings, each
 gated by `SCALE_COOLDOWN_SECS` (600), plus per-tick serialization of the
 individual CAS transitions — **roughly 1.5–2 hours**, during which the
-stream accepts a doubling staircase and 429-throttles the rest. (It also
-needs `MAX_SEGMENTS_PER_STREAM` raised: 64 segments caps at 320 MB/s.)
+stream accepts a doubling staircase and 429-throttles the rest.
 
 Pravega instead derives a split FACTOR from `rate / target`. We can do
 the same, and the missing input already exists: the usage counters track

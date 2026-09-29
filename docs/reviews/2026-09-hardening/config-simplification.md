@@ -54,11 +54,19 @@ and the binary reads about 113 settings instead of 152.
 ## Package 1: settings that do nothing (no behaviour changes anywhere)
 
 Status (2026-09-29): implemented on the owner's delegation ("For other
-questions, please make your own judgement call"), one commit per row; each
-removal's edge record awaits ratification. Done so far: the preparation
-only. The effective-configuration tool counts the 156 leaves HEAD prints
-(its pin said 155; 0d40dc2a had added `FORK_DEBT_SWEEP_SECS`), and a unit
-test holds that count to the source. No setting has changed yet.
+questions, please make your own judgement call"); each edge record awaits
+ratification. First the preparation (c480e615): the effective-configuration
+tool counts the 156 leaves HEAD prints (its pin said 155; 0d40dc2a had
+added `FORK_DEBT_SWEEP_SECS`), and a unit test holds that count to the
+source.
+
+Status (2026-09-29, rows 1, 2 and 4): done in one commit, edge record #74.
+The three absorber options and their startup notice, the three scaler
+names and the two GC aliases are not declared; the tool's pin of HEAD's
+leaves is 150. The scaler's documents now state the merge rule the code
+runs; the 15% / 180 evaluations / 64 segments they listed was never
+implemented. Rows 3 (`--compactor-max-concurrent`) and 5 (`PATH_PREFIX`)
+are not changed yet.
 
 | Setting | Today | Proposed |
 |---|---|---|

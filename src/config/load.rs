@@ -109,10 +109,9 @@ impl ServerConfig {
             self.history.compactor_off = true;
         }
         {
-            // Current name first, legacy alias as fallback; 0 disables.
+            // 0 disables.
             let secs = env
                 .get("HISTORY_GC_INTERVAL_SECS")
-                .or_else(|| env.get("HISTORY_GC_MAX_INTERVAL_SECS"))
                 .and_then(|v| v.parse::<u64>().ok());
             if let Some(secs) = secs {
                 self.history.gc_interval = (secs > 0).then(|| Duration::from_secs(secs));
@@ -244,20 +243,11 @@ impl ServerConfig {
         if env.get("SCALE_HOT_PCT").is_some() {
             self.scaler.hot_pct = envf("SCALE_HOT_PCT", 75.0) / 100.0;
         }
-        if env.get("SCALE_COLD_PCT").is_some() {
-            self.scaler.cold_pct = envf("SCALE_COLD_PCT", 15.0) / 100.0;
-        }
         if env.get("SCALE_HOT_EVALS").is_some() {
             self.scaler.hot_evals = envf("SCALE_HOT_EVALS", 2.0) as u32;
         }
-        if env.get("SCALE_COLD_EVALS").is_some() {
-            self.scaler.cold_evals = envf("SCALE_COLD_EVALS", 180.0) as u32;
-        }
         if env.get("SCALE_COOLDOWN_SECS").is_some() {
             self.scaler.cooldown_secs = envf("SCALE_COOLDOWN_SECS", 600.0) as i64;
-        }
-        if env.get("MAX_SEGMENTS_PER_STREAM").is_some() {
-            self.scaler.max_segments = envf("MAX_SEGMENTS_PER_STREAM", 64.0) as usize;
         }
     }
 

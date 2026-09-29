@@ -25,7 +25,7 @@ use std::time::Duration;
 /// (or their narrow sub-config) at construction.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
-    /// The parsed CLI surface (85 flags). Contains secret material
+    /// The parsed CLI surface (82 flags). Contains secret material
     /// (access keys, tokens) — never log it; `redacted_summary` excludes
     /// it entirely.
     pub cli: CliArgs,
@@ -145,8 +145,7 @@ pub struct HistoryConfig {
     pub cache_bytes: usize,
     /// HISTORY_COMPACTOR == "off", default false.
     pub compactor_off: bool,
-    /// HISTORY_GC_INTERVAL_SECS (legacy alias
-    /// HISTORY_GC_MAX_INTERVAL_SECS), default 600 s; 0 = None.
+    /// HISTORY_GC_INTERVAL_SECS, default 600 s; 0 = None.
     pub gc_interval: Option<Duration>,
 }
 
@@ -260,18 +259,14 @@ pub struct ScaleConfig {
     pub eval_secs: u64,
     /// SCALE_RATE_WINDOW_SECS, default 120.
     pub rate_window_secs: f64,
-    /// SCALE_HOT_PCT, default 75 → stored /100 as 0.75.
+    /// SCALE_HOT_PCT, default 75 → stored /100 as 0.75. A segment is cold
+    /// below 5% of this fraction of each limit.
     pub hot_pct: f64,
-    /// SCALE_COLD_PCT, default 15 → /100.
-    pub cold_pct: f64,
-    /// SCALE_HOT_EVALS, default 2.
+    /// SCALE_HOT_EVALS, default 2. A stream merges after every segment
+    /// stayed cold for four times this many evaluations.
     pub hot_evals: u32,
-    /// SCALE_COLD_EVALS, default 180.
-    pub cold_evals: u32,
     /// SCALE_COOLDOWN_SECS, default 600.
     pub cooldown_secs: i64,
-    /// MAX_SEGMENTS_PER_STREAM, default 64.
-    pub max_segments: usize,
 }
 
 /// Admission/backpressure and per-shard usage token-bucket knobs
@@ -497,11 +492,8 @@ impl Default for ScaleConfig {
             eval_secs: 10,
             rate_window_secs: 120.0,
             hot_pct: 75.0 / 100.0,
-            cold_pct: 15.0 / 100.0,
             hot_evals: 2,
-            cold_evals: 180,
             cooldown_secs: 600,
-            max_segments: 64,
         }
     }
 }

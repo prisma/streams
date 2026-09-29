@@ -184,13 +184,8 @@ pub struct CliArgs {
     /// CEILING; upstream SlateDB has no backoff (slatedb#1991 was
     /// declined for #1993), so the ceiling IS the cadence now. Raising
     /// it trades reclamation latency (bounded, storage-cheap) for LIST
-    /// steady-state. (--gc-max-interval-secs kept as a flag alias.)
-    #[arg(
-        long,
-        env = "GC_QUIET_INTERVAL_SECS",
-        default_value_t = 600,
-        alias = "gc-max-interval-secs"
-    )]
+    /// steady-state.
+    #[arg(long, env = "GC_QUIET_INTERVAL_SECS", default_value_t = 600)]
     pub(crate) gc_quiet_interval_secs: u64,
 
     /// Minimum WAL SST age before GC may delete it (seconds). Must cover
@@ -245,27 +240,11 @@ pub struct CliArgs {
     #[arg(long, env = "TRIM_GLOBAL_BUDGET", default_value_t = 65_536)]
     pub(crate) trim_global_budget: u64,
 
-    /// Deprecated compatibility option: accepted but ignored. The v2 gather
-    /// planner is bounded by ABSORB_GATHER_MAX_BYTES and the process-wide
-    /// ABSORB_GLOBAL_BUDGET_BYTES instead of a per-pass plaintext limit.
-    #[arg(long, env = "ABSORB_PASS_BYTES")]
-    pub(crate) absorb_pass_bytes: Option<u64>,
-
     /// Absorber thresholds (§3.6 / D23).
     #[arg(long, env = "ABSORB_BYTES", default_value_t = 4 * 1024 * 1024)]
     pub(crate) absorb_bytes: u64,
     #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
     pub(crate) absorb_age_secs: u64,
-
-    /// Deprecated compatibility option: accepted but ignored. Gather
-    /// concurrency is controlled by ABSORB_GLOBAL_GATHERS subject to the
-    /// process-wide byte budget.
-    #[arg(long, env = "ABSORB_CONCURRENCY")]
-    pub(crate) absorb_concurrency: Option<usize>,
-    /// Deprecated compatibility option: accepted but ignored. The v2 planner
-    /// uses ABSORB_GATHER_MAX_BYTES and its per-stream chunk cap.
-    #[arg(long, env = "ABSORB_SMALL_BYTES")]
-    pub(crate) absorb_small_bytes: Option<u64>,
 
     /// Evict resident per-stream handles idle at least this long
     /// (seconds; 0 = never, refused under STREAMS_AUTH_MODE=enforce, item
@@ -598,11 +577,8 @@ impl CliArgs {
             manifest_poll_ms: crate::DEFAULT_MANIFEST_POLL_MS,
             trim_per_op: 8_192,
             trim_global_budget: 65_536,
-            absorb_pass_bytes: None,
             absorb_bytes: 4 * 1024 * 1024,
             absorb_age_secs: 300,
-            absorb_concurrency: None,
-            absorb_small_bytes: None,
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
             absorb_gather_max_bytes: 8 * 1024 * 1024,
@@ -656,20 +632,6 @@ impl CliArgs {
 }
 
 impl CliArgs {
-    /// Names explicitly supplied at the legacy CLI/environment boundary. One
-    /// aggregated startup notice is emitted after validation; defaults stay
-    /// silent because these fields have no fabricated default value.
-    pub(crate) fn ignored_absorber_options(&self) -> Vec<&'static str> {
-        [
-            self.absorb_pass_bytes.map(|_| "ABSORB_PASS_BYTES"),
-            self.absorb_concurrency.map(|_| "ABSORB_CONCURRENCY"),
-            self.absorb_small_bytes.map(|_| "ABSORB_SMALL_BYTES"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-
     /// BILLING_MODE=required: production billing, where volatile fallbacks
     /// are refused and billing infrastructure failures are fatal at startup.
     /// Clap has already resolved `--billing-mode` over the variable and no

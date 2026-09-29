@@ -12,23 +12,41 @@
     "intended": "yes",
     "note": "New flag --fork-debt-sweep-secs / FORK_DEBT_SWEEP_SECS (default 300 s, floored at 1): the pause between circles of the fork-debt reconciler, which releases the source references that deleted forks still owe. No family sets it. rc.4 had no reconciler. No edge record names the setting."
   },
-  "R1:value:cli.absorb_concurrency:6->None": {
-    "commit": "99d5c098",
-    "edge_record": null,
+  "R1:removed:cli.absorb_concurrency:6-><absent>": {
+    "commit": "99d5c098, then the commit of edge record #74",
+    "edge_record": 74,
     "intended": "yes",
-    "note": "The three v1 absorber options lost their clap defaults and became Option (accepted but ignored; a supplied value logs one IgnoredAbsorberOptions warning). Inert on both sides: rc.4 set AbsorberConfig.{pass_bytes, small_pass_bytes, concurrency} and never read them. 2026-09-13, before the hardening program, so no edge record."
+    "note": "The three v1 absorber options are no longer declared. Inert on both sides: rc.4 set AbsorberConfig.{pass_bytes, small_pass_bytes, concurrency} and never read them; 99d5c098 (2026-09-13) made them Option, accepted and ignored with one warning; the commit of edge record #74 removed the fields, the arguments and the warning. The argument is refused on argv (clap UnknownArgument, exit 2); the environment name is not read."
   },
-  "R1:value:cli.absorb_pass_bytes:268435456->None": {
-    "commit": "99d5c098",
-    "edge_record": null,
+  "R1:removed:cli.absorb_pass_bytes:268435456-><absent>": {
+    "commit": "99d5c098, then the commit of edge record #74",
+    "edge_record": 74,
     "intended": "yes",
     "note": "See cli.absorb_concurrency."
   },
-  "R1:value:cli.absorb_small_bytes:1048576->None": {
-    "commit": "99d5c098",
-    "edge_record": null,
+  "R1:removed:cli.absorb_small_bytes:1048576-><absent>": {
+    "commit": "99d5c098, then the commit of edge record #74",
+    "edge_record": 74,
     "intended": "yes",
     "note": "See cli.absorb_concurrency."
+  },
+  "R1:removed:scaler.cold_evals:180-><absent>": {
+    "commit": "the commit of edge record #74",
+    "edge_record": 74,
+    "intended": "yes",
+    "note": "SCALE_COLD_EVALS was parsed and logged and never read, at rc.4 too (the field of ScalePolicy had no reader). A stream merges after every segment stayed cold for hot_evals x 4 evaluations. No family sets the name. Scaler decisions are unchanged."
+  },
+  "R1:removed:scaler.cold_pct:0.15-><absent>": {
+    "commit": "the commit of edge record #74",
+    "edge_record": 74,
+    "intended": "yes",
+    "note": "SCALE_COLD_PCT: see scaler.cold_evals. A segment is cold while every rate is below hot_pct x 0.05 of its limit."
+  },
+  "R1:removed:scaler.max_segments:64-><absent>": {
+    "commit": "the commit of edge record #74",
+    "edge_record": 74,
+    "intended": "yes",
+    "note": "MAX_SEGMENTS_PER_STREAM: see scaler.cold_evals. No count of segments stops a split, on either side."
   },
   "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
     "commit": null,
@@ -39,12 +57,6 @@
     "commit": null,
     "intended": "n/a",
     "note": "Read by both sides (http.debug_timing = value == \"1\"); 0 equals the unset default. Not a difference."
-  },
-  "R4:notice:new:ABSORB_PASS_BYTES are deprecated compatibility options and are ignored by the v2 gather planner; use ABSORB_GATHER_MAX_BYTES for batch packing, ABSORB_GLOBAL_BUDGET_BYTES/ABSORB_GLOBAL_GATHERS for process memory and gather concurrency, and ABSORB_READ_PAR for reads within a gather": {
-    "commit": "99d5c098",
-    "edge_record": null,
-    "intended": "yes",
-    "note": "Seen only in the merge-trap probe (region-server plus the rc.4-era ABSORB_PASS_BYTES=67108864). A Compute project that still holds the name boots and logs this one warning; the value had no effect at rc.4 either."
   },
   "R4:notice:gone:ABSORB_GLOBAL_BUDGET_BYTES raised 67108864 -> 100859904: the budget must cover one worst-case frame build (33554432 B frame x3)": {
     "commit": "b612fbff",

@@ -51,8 +51,7 @@ LOG_LINE = re.compile(r'^\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+(\S+?):\s(.*)$')
 # HEAD ConfigNotice Display prefixes (src/config/notice.rs); the one INFO
 # notice is MemoryProfileCertified. rc.4 logs the same certification line.
 NOTICE_PREFIXES = ('memory profile certified', 'FLEET_AUTH_MODE=static', 'SSE_FEED_TOTAL_BYTES=',
-                   'INITIAL_SHARDS=', 'nofile_hard=', 'SSE_MAX_CONNECTIONS=', 'the platform reported no descriptor',
-                   'ABSORB_PASS_BYTES', 'ABSORB_CONCURRENCY', 'ABSORB_SMALL_BYTES')
+                   'INITIAL_SHARDS=', 'nofile_hard=', 'SSE_MAX_CONNECTIONS=', 'the platform reported no descriptor')
 ADVISORY_PREFIXES = ('CERTIFICATION MODE',)
 # R7: the boot-time budget summary (tokio workers, descriptors + feed
 # retention, the memory-budget line with caches, absorb budget and shed line).
@@ -279,8 +278,10 @@ def cmd_boot(args):
     if region is not None:
         # The merge-trap probe (plan §1.5): ABSORB_PASS_BYTES left 13 scripts
         # after rc.4, but a Compute project keeps every name ever set, so an
-        # rc.4-era project very likely still carries it. Not a family: what a
-        # project really holds needs the platform export (D2).
+        # rc.4-era project very likely still carries it. HEAD does not read
+        # the name (edge record #74): the probe proves that such a project
+        # boots on HEAD, with no notice. Not a family: what a project really
+        # holds needs the platform export (D2).
         extra.append(ec.derive(region, LEFTOVER, env={'ABSORB_PASS_BYTES': '67108864'}))
     jobs = [(fam, side) for fam in [*families, *extra] for side in bins]
     started = time.monotonic()

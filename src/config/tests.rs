@@ -265,11 +265,8 @@ fn default_values_are_pinned() {
     assert_eq!(c.scaler.eval_secs, 10);
     assert_eq!(c.scaler.rate_window_secs, 120.0);
     assert_eq!(c.scaler.hot_pct, 0.75);
-    assert_eq!(c.scaler.cold_pct, 0.15);
     assert_eq!(c.scaler.hot_evals, 2);
-    assert_eq!(c.scaler.cold_evals, 180);
     assert_eq!(c.scaler.cooldown_secs, 600);
-    assert_eq!(c.scaler.max_segments, 64);
     assert_eq!(c.admission.unabsorbed_bytes_instance, 512 * 1024 * 1024);
     assert_eq!(c.admission.unabsorbed_bytes_shard, 256 * 1024 * 1024);
     assert_eq!(c.admission.absorb_lag_secs, 900);
@@ -390,7 +387,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         ("MAINT_BACKPRESSURE_RELEASE_PCT", "140"), // min(100)
         ("SWEEP_MAINT_RESIDENT", "0"),      // stored raw (boot check)
         ("HISTORY_GC_INTERVAL_SECS", "0"),  // 0 -> None
-        ("HISTORY_GC_MAX_INTERVAL_SECS", "42"), // alias used only when the current name is unset
         ("FRAME_COMPRESS", "TrUe"),
         ("SCALE_HOT_PCT", "90.0"),
         ("BILLING_METER", "off"),
@@ -409,11 +405,36 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
     assert!(!c.billing.meter_enabled);
     assert!(c.fleet.allow_http_peers);
 
+    // The retired name is not read: the sweep keeps its default.
     let c = load_with(&[("HISTORY_GC_MAX_INTERVAL_SECS", "42")]);
     assert_eq!(
         c.history.gc_interval,
-        Some(std::time::Duration::from_secs(42))
+        Some(std::time::Duration::from_secs(600))
     );
+}
+
+/// The quiet GC interval has one flag. The retired alias is refused like any
+/// other unknown argument; the current name still sets the field.
+#[test]
+fn retired_gc_flag_alias_is_refused_on_argv() {
+    let refused = CliArgs::try_parse_from([
+        "streams-slate",
+        "--s3-endpoint",
+        "http://127.0.0.1:1",
+        "--gc-max-interval-secs",
+        "42",
+    ])
+    .unwrap_err();
+    assert_eq!(refused.kind(), clap::error::ErrorKind::UnknownArgument);
+    let current = CliArgs::try_parse_from([
+        "streams-slate",
+        "--s3-endpoint",
+        "http://127.0.0.1:1",
+        "--gc-quiet-interval-secs",
+        "42",
+    ])
+    .unwrap();
+    assert_eq!(current.gc_quiet_interval_secs, 42);
 }
 
 #[test]
@@ -494,11 +515,8 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
     ("trim-per-op", "TRIM_PER_OP", "8192"),
     ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
-    ("absorb-pass-bytes", "ABSORB_PASS_BYTES", ""),
     ("absorb-bytes", "ABSORB_BYTES", "4194304"),
     ("absorb-age-secs", "ABSORB_AGE_SECS", "300"),
-    ("absorb-concurrency", "ABSORB_CONCURRENCY", ""),
-    ("absorb-small-bytes", "ABSORB_SMALL_BYTES", ""),
     ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
     ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
     (
@@ -633,136 +651,81 @@ fn the_rss_shed_line_is_described_on_its_own_flag() {
     assert!(!pressure.contains("RSS shed"), "{pressure:?}");
 }
 
+/// The v1 absorber options are not declared: each flag is refused like any
+/// other unknown argument.
 #[test]
-fn legacy_absorber_flags_still_parse_but_have_no_fabricated_defaults() {
-    let parsed = CliArgs::try_parse_from([
-        "streams-slate",
-        "--s3-endpoint",
-        "http://127.0.0.1:1",
+fn retired_absorber_flags_are_refused_on_argv() {
+    for flag in [
         "--absorb-pass-bytes",
-        "11",
         "--absorb-concurrency",
-        "12",
         "--absorb-small-bytes",
-        "13",
-    ])
-    .unwrap();
-    assert_eq!(parsed.absorb_pass_bytes, Some(11));
-    assert_eq!(parsed.absorb_concurrency, Some(12));
-    assert_eq!(parsed.absorb_small_bytes, Some(13));
-    assert_eq!(parsed.absorb_gather_max_bytes, 8 * 1024 * 1024);
-
-    let defaults = test_cli();
-    assert!(defaults.ignored_absorber_options().is_empty());
+    ] {
+        let refused = CliArgs::try_parse_from([
+            "streams-slate",
+            "--s3-endpoint",
+            "http://127.0.0.1:1",
+            flag,
+            "11",
+        ])
+        .unwrap_err();
+        assert_eq!(
+            refused.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "{flag}"
+        );
+    }
 }
 
+/// Subject of `retired_absorber_environment_names_are_not_read`: inert
+/// unless the parent set the marker.
 #[test]
-fn legacy_absorber_environment_helper() {
+fn retired_absorber_environment_helper() {
     if ProcessEnvironment
-        .get("STREAMS_LEGACY_ABSORBER_ENV_CHECK")
+        .get("STREAMS_RETIRED_ABSORBER_ENV_CHECK")
         .is_none()
     {
         return;
     }
     let parsed =
         CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap();
-    assert_eq!(parsed.absorb_pass_bytes, Some(21));
-    assert_eq!(parsed.absorb_concurrency, Some(22));
-    assert_eq!(parsed.absorb_small_bytes, Some(23));
+    assert_eq!(parsed, CliArgs::deterministic());
+    let notices = ServerConfig::load(parsed, &ProcessEnvironment)
+        .validate()
+        .unwrap()
+        .into_bootstrap_parts()
+        .notices;
+    let unset = load_with(&[])
+        .validate()
+        .unwrap()
+        .into_bootstrap_parts()
+        .notices;
+    assert_eq!(notices, unset);
 }
 
+/// A process that still holds the three retired names, one of them with a
+/// value that is not a number, parses to the defaults and gets the notices
+/// of a process that holds none of them.
 #[test]
-fn legacy_absorber_environment_spellings_still_parse() {
+fn retired_absorber_environment_names_are_not_read() {
     let out = run_helper_test(
-        "config::tests::legacy_absorber_environment_helper",
+        "config::tests::retired_absorber_environment_helper",
         &[
-            ("STREAMS_LEGACY_ABSORBER_ENV_CHECK", "1"),
-            ("ABSORB_PASS_BYTES", "21"),
+            ("STREAMS_RETIRED_ABSORBER_ENV_CHECK", "1"),
+            ("ABSORB_PASS_BYTES", "not-a-number"),
             ("ABSORB_CONCURRENCY", "22"),
             ("ABSORB_SMALL_BYTES", "23"),
         ],
     );
     assert!(
         out.status.success(),
-        "legacy absorber environment parse failed:\n{}\n{}",
+        "a retired absorber name was read:\n{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("1 passed"),
-        "legacy absorber environment helper did not run"
+        "retired absorber environment helper did not run"
     );
-}
-
-#[test]
-fn explicit_ignored_absorber_values_produce_one_bounded_notice() {
-    let mut cli = test_cli();
-    cli.absorb_pass_bytes = Some(11);
-    cli.absorb_concurrency = Some(12);
-    cli.absorb_small_bytes = Some(13);
-    cli.absorb_gather_max_bytes = 7 * 1024 * 1024;
-    let validated = ServerConfig::load(cli, &MapEnvironment::empty())
-        .validate()
-        .unwrap();
-    assert_eq!(
-        validated.config().cli.absorb_gather_max_bytes,
-        7 * 1024 * 1024
-    );
-    let ignored: Vec<_> = validated
-        .into_bootstrap_parts()
-        .notices
-        .into_iter()
-        .filter_map(|notice| match notice {
-            super::notice::ConfigNotice::IgnoredAbsorberOptions { options } => Some(options),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        ignored,
-        vec![vec![
-            "ABSORB_PASS_BYTES",
-            "ABSORB_CONCURRENCY",
-            "ABSORB_SMALL_BYTES",
-        ]]
-    );
-}
-
-#[test]
-fn default_absorber_configuration_emits_no_ignored_option_notice() {
-    let validated = load_with(&[]).validate().unwrap();
-    assert!(
-        !validated
-            .into_bootstrap_parts()
-            .notices
-            .iter()
-            .any(|notice| matches!(
-                notice,
-                super::notice::ConfigNotice::IgnoredAbsorberOptions { .. }
-            ))
-    );
-}
-
-#[test]
-fn legacy_absorber_help_is_honest_about_the_active_controls() {
-    let help = CliArgs::command().render_long_help().to_string();
-    for flag in [
-        "--absorb-pass-bytes",
-        "--absorb-concurrency",
-        "--absorb-small-bytes",
-    ] {
-        let start = help.find(flag).unwrap_or_else(|| panic!("missing {flag}"));
-        let rest = &help[start..];
-        let end = rest[1..]
-            .find("\n      --")
-            .map_or(rest.len(), |offset| offset + 1);
-        let section = &rest[..end];
-        assert!(
-            section.contains("accepted but ignored"),
-            "{flag}: {section}"
-        );
-    }
-    assert!(help.contains("ABSORB_GLOBAL_GATHERS"));
-    assert!(help.contains("ABSORB_GATHER_MAX_BYTES"));
 }
 
 #[test]

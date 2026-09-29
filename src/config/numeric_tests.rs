@@ -18,9 +18,7 @@ fn scaler_coercions_preserve_the_existing_float_contract() {
             &MapEnvironment::from([
                 ("SCALE_EVAL_SECS", input),
                 ("SCALE_HOT_EVALS", input),
-                ("SCALE_COLD_EVALS", input),
                 ("SCALE_COOLDOWN_SECS", input),
-                ("MAX_SEGMENTS_PER_STREAM", input),
             ]),
         );
         assert_eq!(cfg.scaler.eval_secs, unsigned.unwrap_or(u64::MAX));
@@ -28,30 +26,54 @@ fn scaler_coercions_preserve_the_existing_float_contract() {
             u64::from(cfg.scaler.hot_evals),
             unsigned.unwrap_or(u64::from(u32::MAX))
         );
-        assert_eq!(cfg.scaler.cold_evals, cfg.scaler.hot_evals);
         assert_eq!(cfg.scaler.cooldown_secs, signed.unwrap_or(i64::MAX));
-        assert_eq!(
-            cfg.scaler.max_segments,
-            unsigned
-                .map(|v| usize::try_from(v).unwrap())
-                .unwrap_or(usize::MAX)
-        );
     }
     let cfg = ServerConfig::load(
         CliArgs::deterministic(),
         &MapEnvironment::from([
             ("SCALE_EVAL_SECS", "bad"),
             ("SCALE_HOT_EVALS", "bad"),
-            ("SCALE_COLD_EVALS", "bad"),
             ("SCALE_COOLDOWN_SECS", "bad"),
-            ("MAX_SEGMENTS_PER_STREAM", "bad"),
         ]),
     );
     assert_eq!(cfg.scaler.eval_secs, 10);
     assert_eq!(cfg.scaler.hot_evals, 2);
-    assert_eq!(cfg.scaler.cold_evals, 180);
     assert_eq!(cfg.scaler.cooldown_secs, 600);
-    assert_eq!(cfg.scaler.max_segments, 64);
+}
+
+/// Three names the scaler never read are not configuration: setting them
+/// changes no field, and the startup summary's scaler section holds exactly
+/// the five settings the scaler reads.
+#[test]
+fn dead_scaler_names_are_not_read() {
+    let set = ServerConfig::load(
+        CliArgs::deterministic(),
+        &MapEnvironment::from([
+            ("SCALE_COLD_PCT", "1"),
+            ("SCALE_COLD_EVALS", "1"),
+            ("MAX_SEGMENTS_PER_STREAM", "1"),
+        ]),
+    );
+    let unset = ServerConfig::load(CliArgs::deterministic(), &MapEnvironment::empty());
+    assert_eq!(set.scaler, unset.scaler);
+    let summary = set.redacted_summary();
+    let mut keys: Vec<&str> = summary["scaler"]
+        .as_object()
+        .expect("the scaler section is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "cooldown_secs",
+            "eval_secs",
+            "hot_evals",
+            "hot_pct",
+            "rate_window_secs"
+        ]
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Ladder D2: drive ~2.8x per-segment limit -> recursive splits to 4
 # segments; then idle -> merges back. Requires fleet started with
-# SCALE_COLD_EVALS=12 SCALE_COOLDOWN_SECS=120 SCALE_RATE_WINDOW_SECS=60.
+# SCALE_COOLDOWN_SECS=120 SCALE_RATE_WINDOW_SECS=60.
 set -e
 S=$(dirname "$0")
 STREAM=${1:-d2s}

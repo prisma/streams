@@ -7,7 +7,7 @@ use std::time::Duration;
 mod provider_contract;
 
 #[test]
-fn ignored_absorber_options_cannot_change_active_runtime_configuration() {
+fn active_absorber_options_reach_the_absorber_configuration() {
     let mut base = crate::config::CliArgs::deterministic();
     base.absorb_bytes = 17;
     base.absorb_age_secs = 19;
@@ -27,12 +27,6 @@ fn ignored_absorber_options_cannot_change_active_runtime_configuration() {
             ..Default::default()
         }
     );
-
-    let mut legacy = base.clone();
-    legacy.absorb_pass_bytes = Some(1);
-    legacy.absorb_concurrency = Some(99);
-    legacy.absorb_small_bytes = Some(2);
-    assert_eq!(absorber_config(&legacy, 7 * 1024 * 1024), active);
 
     let mut tuned = base;
     tuned.absorb_bytes = 31;

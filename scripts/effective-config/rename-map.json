@@ -32,5 +32,42 @@
       "edge_record": null
     }
   ],
-  "removed": []
+  "removed": [
+    {
+      "old": "cli.absorb_pass_bytes",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "v1 absorber option: stored and never read at rc.4, accepted and ignored with a warning since 99d5c098, not declared now"
+    },
+    {
+      "old": "cli.absorb_concurrency",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "v1 absorber option: the same as cli.absorb_pass_bytes"
+    },
+    {
+      "old": "cli.absorb_small_bytes",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "v1 absorber option: the same as cli.absorb_pass_bytes"
+    },
+    {
+      "old": "scaler.cold_pct",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; a segment is cold below hot_pct x 0.05"
+    },
+    {
+      "old": "scaler.cold_evals",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; a stream merges after hot_evals x 4 cold evaluations"
+    },
+    {
+      "old": "scaler.max_segments",
+      "commit": "the commit of edge record #74",
+      "edge_record": 74,
+      "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; no count of segments stops a split"
+    }
+  ]
 }

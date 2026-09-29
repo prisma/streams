@@ -15,6 +15,18 @@ using the real argv and env. This page is the result for the owner to review.
   `evidence/effective-config/2026-09-24/`. Placeholders only; no value
   anywhere is a real secret.
 
+**Later changes (note of 2026-09-29).** This page records the run of
+2026-09-24 and is not rewritten. Since then the binary stopped declaring the
+three v1 absorber options, the scaler names `SCALE_COLD_PCT`,
+`SCALE_COLD_EVALS` and `MAX_SEGMENTS_PER_STREAM`, and the aliases
+`--gc-max-interval-secs` and `HISTORY_GC_MAX_INTERVAL_SECS` (edge record
+#74). On the next run of the tool the three `cli.absorb_*` rows below are
+removed leaves instead of values that became "not set", three `scaler.*`
+leaves are removed, and the merge-trap probe logs no warning: HEAD does not
+read `ABSORB_PASS_BYTES`. The binary's defaults also moved to the 1 GiB
+profile's values (edge records #67 to #71). No run of the tool has been made
+since these changes.
+
 ## Summary
 
 - **No family changes verdict.** HEAD's `validate()` accepts all 12
