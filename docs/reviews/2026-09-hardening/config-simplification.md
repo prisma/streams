@@ -53,6 +53,13 @@ and the binary reads about 113 settings instead of 152.
 
 ## Package 1: settings that do nothing (no behaviour changes anywhere)
 
+Status (2026-09-29): implemented on the owner's delegation ("For other
+questions, please make your own judgement call"), one commit per row; each
+removal's edge record awaits ratification. Done so far: the preparation
+only. The effective-configuration tool counts the 156 leaves HEAD prints
+(its pin said 155; 0d40dc2a had added `FORK_DEBT_SWEEP_SECS`), and a unit
+test holds that count to the source. No setting has changed yet.
+
 | Setting | Today | Proposed |
 |---|---|---|
 | `ABSORB_PASS_BYTES`, `ABSORB_CONCURRENCY`, `ABSORB_SMALL_BYTES` | accepted, ignored, startup notice | not declared |

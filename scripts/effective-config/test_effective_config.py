@@ -1,5 +1,9 @@
 """Pure tests for the effective-configuration comparison: inline fixtures,
-no cargo, no network, no git."""
+no cargo, no network, no git. One class, PinTest, reads the tree's
+configuration sources (src/config/cli.rs and src/config/model.rs) and
+rename-map.json to hold the new side's leaf pin to the source."""
+import json
+import re
 import sys
 import tempfile
 import unittest
@@ -208,6 +212,38 @@ class RenameTest(unittest.TestCase):
         rows = ec.diff_leaves({'cli.x': '6'}, {'cli.x': 'None', 'http.h1_header_timeout': '120s'}, RENAME)
         self.assertEqual([(r['kind'], r['path'], r['old'], r['new']) for r in rows],
                          [('value', 'cli.x', '6', 'None'), ('added', 'http.h1_header_timeout', '<absent>', '120s')])
+
+
+class PinTest(unittest.TestCase):
+    """The dumper prints one Debug leaf per configuration field (every field
+    is a scalar, a string, an Option or a Duration), so the number of fields
+    in the source is the number of leaves the new side prints."""
+    FIELD = re.compile(r'^\s+pub(?:\(crate\))? (\w+): (\w+)', re.M)
+
+    def head_paths(self):
+        cli = (ec.ROOT / 'src/config/cli.rs').read_text()
+        start = cli.index('pub struct CliArgs {')
+        paths = ['cli.' + name for name, _ in self.FIELD.findall(cli[start:cli.index('\n}\n', start)])]
+        model = (ec.ROOT / 'src/config/model.rs').read_text()
+        structs = dict(re.findall(r'pub struct (\w+) \{(.*?)\n\}', model, re.S))
+        sections = [(name, kind) for name, kind in self.FIELD.findall(structs.pop('ServerConfig'))
+                    if name != 'cli']
+        self.assertEqual(sorted(kind for _, kind in sections), sorted(structs))
+        for section, kind in sections:
+            paths += [f'{section}.{name}' for name, _ in self.FIELD.findall(structs[kind])]
+        self.assertEqual(len(paths), len(set(paths)))
+        return set(paths)
+
+    def test_new_leaf_pin_is_the_source_field_count(self):
+        self.assertEqual(len(self.head_paths()), ec.PIN_NEW_LEAVES)
+
+    def test_declared_paths_match_the_source(self):
+        paths = self.head_paths()
+        rename = json.loads(ec.RENAME_MAP.read_text())
+        gone = [p['old'] for p in rename['pairs']] + [r['old'] for r in rename['removed']]
+        here = [p['new'] for p in rename['pairs']] + [a['new'] for a in rename['added']]
+        self.assertEqual([p for p in gone if p in paths], [])
+        self.assertEqual([p for p in here if p not in paths], [])
 
 
 class ProbeTest(unittest.TestCase):

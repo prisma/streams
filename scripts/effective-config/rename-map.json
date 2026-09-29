@@ -24,6 +24,12 @@
       "old_semantics": "no request-head deadline and no idle keep-alive close (hyper's 30 s header_read_timeout was dropped for want of a timer)",
       "commit": "71345c03",
       "edge_record": 12
+    },
+    {
+      "new": "cli.fork_debt_sweep_secs",
+      "old_semantics": "no fork-debt reconciler: fork references a deleted child still owed were released only by the paths that existed at rc.4",
+      "commit": "0d40dc2a",
+      "edge_record": null
     }
   ],
   "removed": []

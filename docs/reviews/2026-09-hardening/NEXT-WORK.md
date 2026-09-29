@@ -895,7 +895,7 @@ item is in `evidence/config-audit-2026-09-29/detail.md`.
 be the default"; every other question of the page is left to the
 implementer's judgement.
 
-Changed so far (package 2):
+Changed so far (package 2, then package 1):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -908,3 +908,12 @@ Changed so far (package 2):
 - The record ceiling, 131,072 bytes (fd093a39): edge record #71. With it every line of
   the profile is the binary's default, and `MEMPROFILE_CERT=compute-1g` is
   the only setting the profile adds.
+- Package 1, preparation (no setting changes, no edge record): the
+  effective-configuration tool's pin of HEAD's leaves was 155 and HEAD
+  prints 156 since 0d40dc2a added `FORK_DEBT_SWEEP_SECS`. The pin is 156,
+  `rename-map.json` declares `cli.fork_debt_sweep_secs`, and a unit test
+  (`PinTest`, run by `scripts/quality.sh`) counts the fields of
+  `src/config/cli.rs` and `src/config/model.rs` against the pin, so every
+  removal that follows changes the pin with a failing test first. The
+  tool's own K9 verdict needs a run of the tool (it builds rc.4 and HEAD):
+  once, after the package.

@@ -6,6 +6,12 @@
     "intended": "yes",
     "note": "New knob SSE_H1_HEADER_TIMEOUT_MS (default 120 s; 0 or unparseable keep the default). No family sets it. Behaviour: idle keep-alive, headless and partial-head HTTP/1.1 connections are closed after 120 s; the platform edge's upstream pool idle is unmeasured (edge record #12's risk)."
   },
+  "R1:added:cli.fork_debt_sweep_secs:<absent>->300": {
+    "commit": "0d40dc2a",
+    "edge_record": null,
+    "intended": "yes",
+    "note": "New flag --fork-debt-sweep-secs / FORK_DEBT_SWEEP_SECS (default 300 s, floored at 1): the pause between circles of the fork-debt reconciler, which releases the source references that deleted forks still owe. No family sets it. rc.4 had no reconciler. No edge record names the setting."
+  },
   "R1:value:cli.absorb_concurrency:6->None": {
     "commit": "99d5c098",
     "edge_record": null,
