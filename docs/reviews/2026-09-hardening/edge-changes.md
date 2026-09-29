@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 4 | 0 | 0 | 0 | 10 |
 | medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
-| low | 7 | 2 | 10 | 11 | 10 | 5 | 45 |
-| **Total** | **17** | **4** | **24** | **11** | **10** | **6** | **72** |
+| low | 7 | 2 | 11 | 11 | 10 | 5 | 46 |
+| **Total** | **17** | **4** | **25** | **11** | **10** | **6** | **73** |
 
-72 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#72 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record.
+73 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#73 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling. #72 is the no-op billing close the owner approved on 2026-09-29; it awaits ratification as a record. #73 settles the refused storage close of a Db that had already failed; the owner left that call to the implementer on 2026-09-29, and the record awaits ratification.
 
 ### Index
 
@@ -96,7 +96,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 69 | 18a6eaf6 | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 70 | f85990ab | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 71 | fd093a39 | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
-| 72 | this record's commit | A billing close of a row that is already closed through its instant writes nothing | both | low | owner decision (2026-09-29); awaits ratification |
+| 72 | 35dc7b3c | A billing close of a row that is already closed through its instant writes nothing | both | low | owner decision (2026-09-29); awaits ratification |
+| 73 | this record's commit | A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart | both | low | the owner left the call to the implementer (2026-09-29); awaits ratification |
 
 ## High risk (10)
 
@@ -620,7 +621,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a subscription that was admitted is refused with a retryable 503, only where the name is unset. 1,200 is the 1 GiB Compute class value, not a measured capacity of every class. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-## Low risk (45)
+## Low risk (46)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1409,7 +1410,7 @@ None of these changes alters a status, code or header on a path that worked befo
 - **Risk reason:** low: no status, code or header changes on a path that worked, and the change removes reconnects. 64 MiB of retention was certified (10,000 parked subscribers idle at 307 MB, peak 399 MB) only with the profile's 128 MiB shared cache and 500 line, which are the defaults since #67 and #68. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-### #72 (this record's commit) — A billing close of a row that is already closed through its instant writes nothing
+### #72 35dc7b3c — A billing close of a row that is already closed through its instant writes nothing
 
 - **Program item:** NEXT-WORK §2, "a billing close applied to a row that is already closed". Owner decision of 2026-09-29: the no-op close in the committer is approved.
 - **Surface:** both
@@ -1427,6 +1428,27 @@ None of these changes alters a status, code or header on a path that worked befo
   - controls, green before and after: ::a_later_instant_on_a_closed_row_still_moves_the_clock, ::a_close_of_an_open_gauge_at_or_before_its_clock_still_closes, ::a_close_without_an_instant_closes_at_the_billing_clock, ::a_close_across_a_month_boundary_stages_the_closed_months_final, ::a_close_of_a_segment_without_a_billing_row_writes_nothing
   - src/shard/transaction/overlay.rs::a_close_without_a_row_changes_nothing (new)
 - **Risk reason:** low: no billed figure, status, code or header changes; the skip applies only where the close changed nothing but the version. It does not cover two closes with different instants, which neither behaviour reconciles. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #73 (this record's commit) — A storage close that a Db which had already failed refused is settled as closed; the shard reopens instead of answering shard_closing until restart
+
+- **Program item:** NEXT-WORK §10, the engine question of the failed-write retirement test. The owner left the call to the implementer on 2026-09-29.
+- **Surface:** both
+- **Endpoint:** Every route that resolves a shard (the shared resolve envelope), `GET /health`, `GET /readyz`; on a fleet, the instance's heartbeat (`withdrawn`) and a planned drain's outcome.
+- **Condition:** An engine retires while its SlateDB instance is failing on its own. Since f574d733 that is any write failure after SlateDB applied the batch: `write_failed` begins the close before SlateDB has recorded the writer's failure. `Db::close` reads the status to decide whether to flush and then records its own result without checking whether it won; if the failing task's result wins in between, the close's final flush fails with that task's error and `Db::close` returns it. The window is narrow; when the close records first, or the task records and publishes first, the close already answered Ok.
+- **Before:** The storage close reported `storage-close: Failed(...)`; the engine's supervisor stayed `ShuttingDown`; every open of that prefix answered 503 `shard_closing`, `Retry-After: 1`, until the process restarted; readiness answered 503 naming the prefix and the failure; on a fleet the heartbeat withdrew the whole instance from every ring, and a planned drain ended `planned drain failed`.
+- **After:** The close is settled as closed when, after `Db::close` returned, the Db's own status carries a close reason that is not Clean: only the winner of the result publishes its reason, so that reason is never the close's, and `Db::close` has joined every Db task before it returns. The prefix answers `shard_closing` only while the close runs, then `shard_moving` for the holdoff of a departure, then a new engine opens (fencing the old writer epoch and replaying the WAL) and serves. Readiness, the ring and the drain are not affected. A healthy Db whose final flush fails is unchanged: its reason is Clean, because the close won the result, and the storage close is Failed, final until restart.
+- **Retry semantics:** Codes and headers are unchanged. A client that retries `shard_closing` succeeds after the holdoff where it never did. The failed append itself answers as before.
+- **Who is affected:** Clients of the affected shard prefix and, on a fleet, of the whole instance, which is no longer withdrawn; operators, who do not have to restart for this case. What the failed batch left durable is decided by the WAL replay of the next open, as in the orderings that already reopened.
+- **Pinning tests:**
+  - src/shard/history_partition.rs::a_close_refused_by_a_db_that_had_already_failed_is_a_close (new, red-first against the verdict with the old rule: left `Err("Unavailable error: io error (oops)")`, right `Ok(())`)
+  - src/shard/history_partition.rs::a_healthy_db_whose_close_fails_stays_failed (new)
+  - src/shard/history_partition.rs::a_completed_clean_or_fenced_close_is_a_close_whatever_the_reason (new)
+  - src/shard/history_partition.rs::the_close_of_a_db_that_failed_on_its_own_answers_ok_and_keeps_its_reason (new, a real Db whose WAL write failed)
+  - src/shard/history_partition.rs::a_failed_final_flush_on_a_healthy_db_leaves_the_reason_clean_and_the_close_failed (new, a real Db: `Unavailable error: wal unavailable (io error)`, reason Clean)
+  - src/shard/history_partition.rs::a_clean_close_records_clean (new)
+  - unchanged: src/shard/task_lifecycle_tests.rs (a scripted close failure is still a failed storage close), src/shard/retirement_tests.rs::tla005_f5_a_failed_write_answers_nothing_from_its_batch
+- **Risk reason:** low: the change removes a permanent refusal in one interleaving and makes it answer as the two that already reopen. The race itself cannot be forced from outside SlateDB, so the red is the verdict as a function of what a returned close reports, and three tests read those reports from a real Db. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

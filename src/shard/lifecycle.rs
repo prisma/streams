@@ -92,10 +92,10 @@ impl EngineTasks {
         self.supervisor.abort_named(role)
     }
     /// Tests only: the engine's storage close FAILS. No store fault produces
-    /// this (SlateDB retries its faults, and `close_db` settles Clean and
-    /// Fenced), so the proof of what a failed close means to the directory
-    /// installs one. The roles are aborted and joined as a real close would;
-    /// the database stays open for the test to close.
+    /// this (SlateDB retries its faults, and `close_db` settles Clean, Fenced
+    /// and the refused close of a Db that had already failed), so the proof
+    /// of what a failed close means installs one. The roles are aborted and
+    /// joined as a real close would; the database stays open for the test.
     #[cfg(test)]
     pub(super) fn begin_failed_close_for_test(&self, error: &'static str) {
         self.supervisor

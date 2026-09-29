@@ -688,7 +688,7 @@ before marking it complete."
   the first append rewrote the maintenance row after the test's fat row. It
   now waits on observable events (the settlement, engine 1 closed, the
   request's shard open in flight) instead of fixed sleeps.
-- **Flaky test (done), and an engine question for the owner.**
+- **Flaky test (done), and the engine question (decided 2026-09-29, done).**
   `shard::retirement_tests::tla005_f5_a_failed_write_answers_nothing_from_its_batch`
   failed about 1 run in 10 at its teardown with
   `storage-close: Failed(... Unavailable error: io error (oops))`. Cause:
@@ -701,18 +701,18 @@ before marking it complete."
   Ok. Close between the writer's two steps: its final flush is refused with
   the writer's error and the storage close reports Failed. The test now
   keeps the writer parked until the close has recorded Clean, which is the
-  ordering f574d733 already names as its cost. **Open, for the owner:**
-  production has the same three orderings after any post-apply write
-  failure, and a failed storage close is final: the engine stays
-  `ShuttingDown`, its prefix answers `shard_closing` on every open and
-  readiness fails until restart (`src/tasks/shutdown.rs`, `src/sharddir.rs`).
-  That is fail-safe and the window is narrow. Options: settle the close of
-  a Db that had already failed; have the finalizer wait, bounded, for the
-  writer's status when it retires through `write_failed`; or fix the read
-  and the write in SlateDB's close upstream. The first two edit
-  `src/shard/lifecycle.rs` or `history_partition.rs` (TLA-006 and TLA-011
-  receipts), and the comment in `lifecycle.rs` that no store fault produces
-  a failed close does not hold for the third ordering.
+  ordering f574d733 already names as its cost. **Decided (the owner left the
+  call to the implementer, 2026-09-29; edge change #73):** `close_db` settles
+  a close error as closed when, after `Db::close` returned, the Db's own
+  status carries a close reason other than Clean (`close_verdict`,
+  `src/shard/history_partition.rs`): the Db had failed on its own, the close
+  never won the result, and every Db task was joined either way. The shard
+  then reopens as it does in the other two orderings. A healthy Db whose
+  final flush fails keeps the reason Clean and stays Failed, final until
+  restart. The race is wider than the writer's two steps: the close's read
+  and write are not atomic either. Not done: the fix of the read and the
+  write in SlateDB's close upstream, which a later pin may bring; reporting
+  it upstream is the owner's to do or to ask for.
 - **SIGTERM on a fully wedged executor** is never observed (the signal task
   runs on that executor), so it arms no stop bound; documented in WIRE-MATRIX
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
