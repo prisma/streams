@@ -2827,6 +2827,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::desired",
+      "path": "src/dst/tests/fleet_controller.rs",
+      "reason": "The desired-count scenarios (the count is the cores in use over the scale-out target when the fleet grows and over the scale-in ceiling when it shrinks) use the controller scenarios' private heartbeat and document helpers, and their module path keeps them inside the fleet mutation owner's filter; the file they would grow has 43 lines of headroom. Compiled and executed with DST.",
+      "syntax": "path = \"fleet_desired.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_drain",
       "path": "src/dst/dst_tests.rs",
       "reason": "Planned-drain scenarios (item 40): two instances sharing data and fleet stores hand a shard over while the draining one keeps beating, a peer that never reads the drain times it out, a fleet of one has no peer, and a requested stop drains first; compiled and executed with DST.",

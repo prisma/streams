@@ -7270,6 +7270,28 @@
     "scenarios": []
   },
   {
+    "name": "the_fleet_grows_to_the_cores_in_use_over_the_scale_out_target",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1c3118bbf93929278cbe1e1e0949d7c8b15c5225aad20739088eccb6da415e0b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_fleet_shrinks_to_the_cores_in_use_over_the_scale_in_ceiling",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2e86326e8425fed067e5098dbaff9d777a92cd79bb2a9eaec916b4035f1aa180",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_gather_window_waits_for_ack_dispatch",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -10,6 +10,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[path = "fleet_desired.rs"]
+mod desired;
+
 #[derive(Debug)]
 struct HeldDocument {
     inner: Arc<dyn ObjectStore>,
