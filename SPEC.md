@@ -506,7 +506,8 @@ min 3 / max 64 instances.
   — the "near-zero compaction progress" was misattributed: the flusher was
   gated by `l0_max_ssts_per_key` (default 8; per-key L0 overlap == L0
   count for an ordered stream) plus a stale manifest view (60 s poll).
-  With `L0_MAX_SSTS_PER_KEY` raised and `MANIFEST_POLL_MS=1–2 s`, one
+  With the per-key cap raised (the server now always sets it to
+  `L0_MAX_SSTS`) and `MANIFEST_POLL_MS=1–2 s`, one
   stream sustains 50+ MB/s locally. Remaining upstream ask: flusher
   should learn compaction results via in-process notification, not
   manifest polling, and write-stall must surface as 429s (§12 backstop),

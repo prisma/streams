@@ -45,7 +45,15 @@ the name. The defaults of the two admission caps are 512 and 256 since edge
 record #79: on the next run `cli.admit_max_inflight` reads 512 instead of 0
 and `cli.admit_max_inflight_per_stream` 256 instead of 64 for the same
 three families, and `fra-ab-server` keeps 256 and 64, the second of which
-its script now sets. No run of the tool has been made since these changes.
+its script now sets. Fourteen settings that nothing set are constants since
+edge record #80: on the next run six `cli.*` leaves are removed leaves
+(`wal_gc_interval_secs`, `wal_gc_min_age_secs`,
+`compactions_gc_interval_secs`, `compactions_gc_min_age_secs`,
+`gc_quiet_interval_secs`, `l0_max_ssts_per_key`), so HEAD prints 143 leaves
+where the table below says 155 for the run of 2026-09-24; `fra-ab-server`
+no longer sets `L0_MAX_SSTS_PER_KEY`; and control K6 reproduces the refusal
+of `INITIAL_SHARDS=3`, because `SSE_H1_MAX_BUF`, which it used, is not read.
+No run of the tool has been made since these changes.
 
 ## Summary
 

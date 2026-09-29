@@ -76,6 +76,42 @@
       "commit": "a675d8ca",
       "edge_record": 74,
       "why": "parsed and logged, never read: at rc.4 the field of ScalePolicy was already unread; no count of segments stops a split"
+    },
+    {
+      "old": "cli.l0_max_ssts_per_key",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "always cli.l0_max_ssts: the one family that set the name set 0, which followed the L0 cap"
+    },
+    {
+      "old": "cli.wal_gc_interval_secs",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "constant 30 s (EngineConfig::WAL_GC_INTERVAL); no family set it"
+    },
+    {
+      "old": "cli.gc_quiet_interval_secs",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "constant 600 s (EngineConfig::GC_QUIET_INTERVAL); no family set it"
+    },
+    {
+      "old": "cli.wal_gc_min_age_secs",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "constant 60 s (EngineConfig::WAL_GC_MIN_AGE); no family set it"
+    },
+    {
+      "old": "cli.compactions_gc_interval_secs",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "constant 30 s (EngineConfig::COMPACTIONS_GC_INTERVAL); no family set it"
+    },
+    {
+      "old": "cli.compactions_gc_min_age_secs",
+      "commit": "the commit of edge record #80",
+      "edge_record": 80,
+      "why": "constant 120 s (EngineConfig::COMPACTIONS_GC_MIN_AGE); no family set it"
     }
   ]
 }

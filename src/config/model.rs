@@ -25,7 +25,7 @@ use std::time::Duration;
 /// (or their narrow sub-config) at construction.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
-    /// The parsed CLI surface (82 flags). Contains secret material
+    /// The parsed CLI surface. Contains secret material
     /// (access keys, tokens) — never log it; `redacted_summary` excludes
     /// it entirely.
     pub cli: CliArgs,
@@ -95,6 +95,41 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
+    // The garbage-collection cadences and age floors of every shard
+    // database. Constants: no deployment set them, and the two age floors
+    // are safety margins, not tuning.
+    /// WAL garbage-collection cadence. O14a finding: at 50 ms flush a
+    /// loaded shard mints ~20 WAL SSTs/s; the upstream default retention
+    /// (min_age 300 s, sweep 60 s) keeps thousands of objects per shard for
+    /// GC to list and delete while sharing the same object store path as
+    /// the ack-critical WAL PUTs. Tighter reaping keeps the WAL prefix
+    /// small.
+    pub(crate) const WAL_GC_INTERVAL: Duration = Duration::from_secs(30);
+    /// Minimum WAL SST age before GC may delete it. Must cover the
+    /// reopen/replay window (shard moves replay < ~1 s; 60 s is a generous
+    /// safety factor at 5x fewer retained objects than the 300 s upstream
+    /// default).
+    pub(crate) const WAL_GC_MIN_AGE: Duration = Duration::from_secs(60);
+    /// Compactions-log GC cadence. The compactions state is a versioned
+    /// transactional object: every compactor state change mints another
+    /// small `.compactions` file, and shard OPEN must page through the
+    /// survivors — at cross-region latency that cost compounds into the
+    /// slow-open class behind the eu-central-1 hang (docs/SOAK-REGIONS.md).
+    /// Upstream defaults (60s interval / 300s min-age) retain minutes of
+    /// churn; we reap harder, like WAL GC.
+    pub(crate) const COMPACTIONS_GC_INTERVAL: Duration = Duration::from_secs(30);
+    /// Min age before a superseded `.compactions` version may be reaped.
+    /// Only versions BELOW the GC boundary die, so this is a safety floor
+    /// against clock skew, not a retention feature.
+    pub(crate) const COMPACTIONS_GC_MIN_AGE: Duration = Duration::from_secs(120);
+    /// Static sweep interval for the quiet GC directories: manifest,
+    /// compacted, and the WAL fence pass. Under the retired fork these
+    /// backed off adaptively toward this same value as a CEILING; upstream
+    /// SlateDB has no backoff (slatedb#1991 was declined for #1993), so the
+    /// ceiling IS the cadence now: reclamation latency (bounded,
+    /// storage-cheap) is traded for LIST steady-state.
+    pub(crate) const GC_QUIET_INTERVAL: Duration = Duration::from_secs(600);
+
     /// Build the resolved compactor options (previously the
     /// `resolved_compactor_options()` OnceLock in bootstrap.rs).
     pub fn compactor_options(&self) -> slatedb::config::CompactorOptions {
@@ -146,7 +181,8 @@ pub struct HistoryConfig {
     pub cache_bytes: usize,
     /// HISTORY_COMPACTOR == "off", default false.
     pub compactor_off: bool,
-    /// HISTORY_GC_INTERVAL_SECS, default 600 s; 0 = None.
+    /// GC sweep interval of every history database: 600 s. No environment
+    /// name sets it; `None` (no sweeps) exists for tests that build the value.
     pub gc_interval: Option<Duration>,
 }
 
@@ -180,7 +216,8 @@ pub struct SseConfig {
 /// HTTP-surface runtime knobs (src/http.rs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HttpConfig {
-    /// TAIL_MAX_BYTES, default 1 MiB; 0/unparseable = default.
+    /// Page budget of a read woken by a long-poll wait: 1 MiB. No
+    /// environment name sets it; tests vary it on the read command.
     pub tail_max_bytes: usize,
     /// STREAMS_DEBUG_TIMING == "1", default false.
     pub debug_timing: bool,
@@ -188,7 +225,7 @@ pub struct HttpConfig {
     pub debug_exit: bool,
     /// APP_BINARY_SHA256, default "unknown" (debug endpoint payload).
     pub binary_sha256: String,
-    /// SSE_H1_MAX_BUF, default 64 KiB, at least `MIN_H1_MAX_BUF` — the h1
+    /// 64 KiB, at least `MIN_H1_MAX_BUF`; no environment name sets it — the h1
     /// read-buffer threshold hyper tests only after a head fails to parse:
     /// it limits memory per connection and does not bound header values.
     pub h1_max_buf: usize,

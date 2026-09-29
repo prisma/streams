@@ -39,11 +39,9 @@ pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfi
         l0_sst_size_bytes: args.l0_sst_size_bytes,
         max_unflushed_bytes: args.max_unflushed_bytes,
         l0_max_ssts: args.l0_max_ssts,
-        l0_max_ssts_per_key: if args.l0_max_ssts_per_key == 0 {
-            args.l0_max_ssts
-        } else {
-            args.l0_max_ssts_per_key
-        },
+        // Always the L0 cap: an ordered stream rewrites its meta row in every
+        // memtable, so a lower per-key cap would be the real dispatch gate.
+        l0_max_ssts_per_key: args.l0_max_ssts,
         // F1: `max_wal_flushes_before_l0_flush` has a 4096 validation floor
         // upstream, so the recovery window is bounded instead by the shard
         // engine's periodic explicit memtable->L0 flush (ShardEngine ticker).
@@ -58,14 +56,13 @@ pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfi
             // declined slatedb#1991 in favor of #1993's 10-minute
             // default), so the fork-era economics come from STATIC
             // intervals instead: sweeps that used to back off toward
-            // the --gc-quiet-interval-secs ceiling now simply run AT
+            // the fork's 600 s ceiling now simply run AT
             // that cadence. Reclamation latency is the trade, LIST
             // steady-state is preserved (COST-CAMPAIGN-2 addendum).
-            let quiet = (args.gc_quiet_interval_secs > 0)
-                .then(|| Duration::from_secs(args.gc_quiet_interval_secs));
+            let quiet = Some(crate::config::EngineConfig::GC_QUIET_INTERVAL);
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
-                interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
-                min_age: Duration::from_secs(args.wal_gc_min_age_secs),
+                interval: Some(crate::config::EngineConfig::WAL_GC_INTERVAL),
+                min_age: crate::config::EngineConfig::WAL_GC_MIN_AGE,
                 ..gc.wal_options.unwrap_or_default()
             });
             // Fence sweeps are dry-run and never delete their fence
@@ -76,8 +73,8 @@ pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfi
                 ..gc.wal_fence_options.unwrap_or_default()
             });
             gc.compactions_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
-                interval: Some(Duration::from_secs(args.compactions_gc_interval_secs)),
-                min_age: Duration::from_secs(args.compactions_gc_min_age_secs),
+                interval: Some(crate::config::EngineConfig::COMPACTIONS_GC_INTERVAL),
+                min_age: crate::config::EngineConfig::COMPACTIONS_GC_MIN_AGE,
                 ..gc.compactions_options.unwrap_or_default()
             });
             gc.manifest_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
@@ -790,7 +787,7 @@ impl crate::config::ServerConfig {
         }
         if self.http.h1_max_buf < super::HttpConfig::MIN_H1_MAX_BUF {
             f.err(format!(
-                "SSE_H1_MAX_BUF={} is below hyper's {}-byte h1 buffer floor",
+                "the h1 read buffer of {} bytes is below hyper's {}-byte floor",
                 self.http.h1_max_buf,
                 super::HttpConfig::MIN_H1_MAX_BUF
             ));

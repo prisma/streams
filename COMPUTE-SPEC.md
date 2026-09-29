@@ -83,7 +83,8 @@ The two CPU hogs are kept off the request path:
   wake probe to desired-but-dark ordinals (pilot LB does this).
 - **Flusher-gate settings (bench round 2 — these two defaults were the
   entire "byte ceiling")**: `l0_max_ssts_per_key` must be raised with
-  `l0_max_ssts` — an ordered stream rewrites its tail row in every
+  `l0_max_ssts` (the server always sets it to `L0_MAX_SSTS`; it is not a
+  setting) — an ordered stream rewrites its tail row in every
   memtable, so per-key L0 overlap equals L0 count and the per-key default
   (8) silently becomes the flush gate. `manifest_poll_interval ≤ 2 s` on
   loaded shards: the flusher learns compaction freed L0 slots only via

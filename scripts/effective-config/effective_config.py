@@ -71,7 +71,7 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
                    'bench/soak/wc-ladder.sh', 'scripts/bench-fra-ab.sh']
 # Pins (K9, E1, E2): a new field, knob or reader changes one of these and the
 # tool fails until the pin is updated deliberately.
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 149
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 143
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 
@@ -816,10 +816,11 @@ def cmd_controls(args):
            f'K5 release-flavour pin(old): history.absorb_global_budget_bytes = {budget}, '
            f'history.absorb_global_gathers = {gathers} (a pin of the shipped non-test defaults; '
            'cfg(test) is unreachable from an example build, C7)')
-    refused = run_dumper(bins['new'], dict(defaults.env, SSE_H1_MAX_BUF='4096'), defaults.argv)
+    refused = run_dumper(bins['new'], dict(defaults.env, INITIAL_SHARDS='3'), defaults.argv)
     expected = ('refused\nconfiguration invalid (1 problem(s)):\n'
-                "  - SSE_H1_MAX_BUF=4096 is below hyper's 8192-byte h1 buffer floor")
-    record(refused.verdict == expected, 'K6 refusal(new): defaults+SSE_H1_MAX_BUF=4096 -> '
+                '  - INITIAL_SHARDS=3 must be a power of two (the rendezvous shard layout derives '
+                'its bit-width from it)')
+    record(refused.verdict == expected, 'K6 refusal(new): defaults+INITIAL_SHARDS=3 -> '
            + refused.verdict.replace('\n', ' / '))
     for text, want, label in [
         ('env AUTH_TOKEN=not-a-placeholder\n', 'family k7: AUTH_TOKEN must be a placeholder', 'AUTH_TOKEN=not-a-placeholder'),

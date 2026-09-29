@@ -17,14 +17,16 @@ pub struct CliArgs {
     #[arg(long, env = "SLATE_S3_ENDPOINT")]
     pub(crate) s3_endpoint: String,
 
-    /// Default bucket; per-role buckets override it.
+    /// The bucket of every role: ops, shard logs and data.
     #[arg(long, env = "SLATE_S3_BUCKET", default_value = "streams")]
     pub(crate) bucket: String,
-    #[arg(long)]
+    /// Not arguments, always `None`: every role uses `bucket`. The fields
+    /// remain because `bootstrap::run` names them.
+    #[arg(skip)]
     pub(crate) ops_bucket: Option<String>,
-    #[arg(long)]
+    #[arg(skip)]
     pub(crate) shard_bucket: Option<String>,
-    #[arg(long)]
+    #[arg(skip)]
     pub(crate) data_bucket: Option<String>,
 
     #[arg(long, env = "SLATE_S3_REGION", default_value = "us-east-1")]
@@ -83,14 +85,13 @@ pub struct CliArgs {
     #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 6)]
     pub(crate) wal_post_ack_gather_ms: u64,
 
-    /// Skip the gather window when the next WAL already holds at least
-    /// this many requests (the window exists for SMALL next generations;
-    /// at saturation it is a tax). 0 = never skip.
-    #[arg(long, env = "WAL_GATHER_SKIP_REQS", default_value_t = 32)]
+    /// Not arguments. The gather window is skipped when the next WAL
+    /// already holds 32 requests or 1 MiB (the window exists for SMALL
+    /// next generations; at saturation it is a tax). The fields remain
+    /// because `bootstrap::run` reads them.
+    #[arg(skip = 32u32)]
     pub(crate) wal_gather_skip_reqs: u32,
-
-    /// Byte-count sibling of --wal-gather-skip-reqs. 0 = never skip.
-    #[arg(long, env = "WAL_GATHER_SKIP_BYTES", default_value_t = 1048576)]
+    #[arg(skip = 1_048_576u64)]
     pub(crate) wal_gather_skip_bytes: u64,
 
     /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
@@ -137,23 +138,11 @@ pub struct CliArgs {
     /// object, not memory. 32 is the production posture
     /// (deploy/profiles/compute-1g.env); at 8 batch ingest stalled on
     /// backpressure while the compactor kept up.
+    /// Also the per-key L0 overlap cap: an ordered stream rewrites its meta
+    /// row in every memtable, so every L0 overlaps on that key.
     #[arg(long, env = "L0_MAX_SSTS", default_value_t = 32)]
     pub(crate) l0_max_ssts: usize,
 
-    /// Per-key L0 overlap cap. A totally-ordered stream rewrites its meta
-    /// row in every memtable, so every L0 overlaps on that key and the
-    /// per-key cap — not l0_max_ssts — becomes the real dispatch gate
-    /// (upstream default 8 stalled the flusher; bench finding 2026-07-14).
-    /// 0 = follow l0_max_ssts.
-    #[arg(long, env = "L0_MAX_SSTS_PER_KEY", default_value_t = 0)]
-    pub(crate) l0_max_ssts_per_key: usize,
-
-    /// WAL garbage-collection cadence (seconds). O14a finding: at 50 ms
-    /// flush a loaded shard mints ~20 WAL SSTs/s; the upstream default
-    /// retention (min_age 300 s, sweep 60 s) keeps thousands of objects
-    /// per shard for GC to list and delete while sharing the same object
-    /// store path as the ack-critical WAL PUTs. Tighter reaping keeps the
-    /// WAL prefix small.
     /// Compactor scheduling poll (ms). Each tick probes the compactions
     /// log — a live Tigris 404 at ~200-240 ms internal (docs/
     /// TIGRIS-404-COST.md), so this is the largest idle-probe class:
@@ -179,42 +168,10 @@ pub struct CliArgs {
     // shares. R29 review: clap mirrors here parsed but were never read,
     // so a CLI override silently did nothing; removed rather than
     // duplicating the plumbing.
-    #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
-    pub(crate) wal_gc_interval_secs: u64,
-
-    /// Static sweep interval (seconds) for the quiet GC directories:
-    /// manifest, compacted, and the WAL fence pass. Under the retired
-    /// fork these backed off adaptively toward this same value as a
-    /// CEILING; upstream SlateDB has no backoff (slatedb#1991 was
-    /// declined for #1993), so the ceiling IS the cadence now. Raising
-    /// it trades reclamation latency (bounded, storage-cheap) for LIST
-    /// steady-state.
-    #[arg(long, env = "GC_QUIET_INTERVAL_SECS", default_value_t = 600)]
-    pub(crate) gc_quiet_interval_secs: u64,
-
-    /// Minimum WAL SST age before GC may delete it (seconds). Must cover
-    /// the reopen/replay window (shard moves replay < ~1 s; 60 s is a
-    /// generous safety factor at 5x fewer retained objects than the
-    /// 300 s upstream default).
-    #[arg(long, env = "WAL_GC_MIN_AGE_SECS", default_value_t = 60)]
-    pub(crate) wal_gc_min_age_secs: u64,
-
-    /// Compactions-log GC cadence. The compactions state is a versioned
-    /// transactional object: every compactor state change mints another
-    /// small `.compactions` file, and shard OPEN must page through the
-    /// survivors — at cross-region latency that cost compounds into the
-    /// slow-open class behind the eu-central-1 hang (docs/SOAK-REGIONS.md).
-    /// Upstream defaults (60s interval / 300s min-age) retain minutes of
-    /// churn; we reap harder, like WAL GC.
-    #[arg(long, env = "COMPACTIONS_GC_INTERVAL_SECS", default_value_t = 30)]
-    pub(crate) compactions_gc_interval_secs: u64,
-
-    /// Min age before a superseded `.compactions` version may be reaped.
-    /// Only versions BELOW the GC boundary die, so this is a safety floor
-    /// against clock skew, not a retention feature.
-    #[arg(long, env = "COMPACTIONS_GC_MIN_AGE_SECS", default_value_t = 120)]
-    pub(crate) compactions_gc_min_age_secs: u64,
-
+    //
+    // The GC cadences and age floors are constants of `EngineConfig`
+    // (30/60 s for the WAL, 30/120 s for the compactions log, 600 s for
+    // the quiet directories): no argument sets them.
     /// Manifest poll cadence (ms). This is ALSO how the memtable flusher
     /// learns that compaction freed L0 slots: with a long poll, dispatch
     /// stays gated on a stale L0 view for the whole interval while imm
@@ -579,14 +536,8 @@ impl CliArgs {
             max_unflushed_bytes: 16 * 1024 * 1024,
             max_request_body_bytes: 32 * 1024 * 1024,
             l0_max_ssts: 32,
-            l0_max_ssts_per_key: 0,
             compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
             compactor_max_concurrent: 1,
-            wal_gc_interval_secs: 30,
-            gc_quiet_interval_secs: 600,
-            wal_gc_min_age_secs: 60,
-            compactions_gc_interval_secs: 30,
-            compactions_gc_min_age_secs: 120,
             manifest_poll_ms: crate::DEFAULT_MANIFEST_POLL_MS,
             trim_per_op: 8_192,
             trim_global_budget: 65_536,

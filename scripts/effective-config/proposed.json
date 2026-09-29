@@ -48,6 +48,42 @@
     "intended": "yes",
     "note": "MAX_SEGMENTS_PER_STREAM: see scaler.cold_evals. No count of segments stops a split, on either side."
   },
+  "R1:removed:cli.compactions_gc_interval_secs:30-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "The five GC cadences and age floors of the shard databases are constants of EngineConfig (30/60 s for the WAL, 30/120 s for the compactions log, 600 s for the quiet directories): the values both sides ran in every family. The argument is refused on argv (clap UnknownArgument, exit 2); the environment name is not read. No family sets one of the names."
+  },
+  "R1:removed:cli.compactions_gc_min_age_secs:120-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.compactions_gc_interval_secs."
+  },
+  "R1:removed:cli.gc_quiet_interval_secs:600-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.compactions_gc_interval_secs."
+  },
+  "R1:removed:cli.l0_max_ssts_per_key:0-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "The per-key L0 cap is always the L0 cap (cli.l0_max_ssts), which is what 0 meant. The one family that set the name (fra-ab-server) set 0; its script and the family no longer set it."
+  },
+  "R1:removed:cli.wal_gc_interval_secs:30-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.compactions_gc_interval_secs."
+  },
+  "R1:removed:cli.wal_gc_min_age_secs:60-><absent>": {
+    "commit": "the commit of edge record #80",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.compactions_gc_interval_secs."
+  },
   "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
     "commit": null,
     "intended": "n/a",

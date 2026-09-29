@@ -75,7 +75,7 @@ environment on every deploy** — see the §8.3 trap.
 | env | default | notes |
 |---|---|---|
 | `SLATE_S3_ENDPOINT` | — (required) | e.g. `https://t3.storage.dev` (Tigris) or `http://127.0.0.1:9500` (s3lite) |
-| `SLATE_S3_BUCKET` | `streams` | default bucket; `--ops-bucket` / `--shard-bucket` / `--data-bucket` flags override per role |
+| `SLATE_S3_BUCKET` | `streams` | the bucket of every role (ops, shard logs, data). The arguments `--ops-bucket`, `--shard-bucket` and `--data-bucket` are not accepted (since 2026-09-29) |
 | `SLATE_S3_REGION` | `us-east-1` | `auto` for Tigris |
 | `SLATE_S3_ACCESS_KEY_ID` / `SLATE_S3_SECRET_ACCESS_KEY` | `test` | |
 | `PATH_PREFIX` | — | key prefix inside the bucket; independent deployments can share a bucket. **Changing it = a fresh, empty keyspace**. One value, given as the variable or as `--path-prefix` (the argument wins), places the stores, the usage rollup and the usage read spool (§11) |
@@ -98,16 +98,27 @@ with an empty pool rather than dead sockets.
 | `FRAME_COMPRESS` | 0 | 1 = zstd-1 each record payload BEFORE encryption (frame v3; readers accept v2+v3, no migration). Ciphertext never compresses, so this is the only tier where compression can live — it shrinks WAL, L0, compaction, absorber and history bytes together. Sinmax campaign: removed a ~5-6x NIC amplification; enable for any workload with compressible payloads |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
-| `L0_MAX_SSTS` | 32 | L0 count that triggers write backpressure. An L0 costs a stored object, not memory; 8 (the default until 2026-09-29) stalled batch ingest |
-| `L0_MAX_SSTS_PER_KEY` | 0 (= follow `L0_MAX_SSTS`) | totally-ordered streams rewrite one meta row per memtable, so every L0 overlaps on that key and THIS cap is the real dispatch gate. The upstream default (8) stalled the flusher |
+| `L0_MAX_SSTS` | 32 | L0 count that triggers write backpressure. An L0 costs a stored object, not memory; 8 (the default until 2026-09-29) stalled batch ingest. It is also SlateDB's per-key L0 cap: a totally-ordered stream rewrites one meta row per memtable, so every L0 overlaps on that key and a lower per-key cap would be the real dispatch gate (the upstream default of 8 stalled the flusher). `L0_MAX_SSTS_PER_KEY` is not read (since 2026-09-29) |
 | `MANIFEST_POLL_MS` | 2000 | also how the flusher learns compaction freed L0 slots; loaded shards want 1000–2000. 60 s polls produced 14 s flush stalls. Each poll is a live Tigris 404 probe (~200-240 ms Tigris-internal) — the default IS the idle-cost posture, deploy scripts must not re-tighten it (docs/TIGRIS-404-COST.md; DST-pinned) |
 | `COMPACTOR_MAX_CONCURRENT`, `COMPACT_MAX_SUBCOMPACTIONS`, `COMPACT_MAX_FETCH_TASKS`, `COMPACT_BYTES_TO_FETCH`, `COMPACT_MAX_SST_SIZE_BYTES`, `STORE_BULK_INFLIGHT_MAX_BYTES` | 1, 1, 1, 1 MiB, 32 MiB, 32 MiB | the certified 1 GiB posture (`deploy/profiles/compute-1g.env`), the default since 2026-09-29. SlateDB's own worker values (4, 4, 4, 2 MiB, 256 MiB) with the bulk gate off stage about 1 GB for a 32-input L0 merge. A larger instance class raises them; batch ingest gains about a third from the larger values. `COMPACTOR_MAX_CONCURRENT` is also the argument `--compactor-max-concurrent`: the argument wins over the variable, and either one reaches the compactor of every database (shard, history, telemetry, rollup, read spool). The other five are read from the environment only. With `MEMPROFILE_CERT=compute-1g` a concurrency other than 1, from either source, refuses the start |
 | `COMPACTOR_POLL_MS` | 2500 | compactions-log probe cadence = the largest idle-404 class (the old 500 ms pin was 8 probes/s/instance forever, pre-limiter era). At 5 MB/s/shard a 2.5 s scheduling gap bounds L0 accumulation to ~3 SSTs vs `L0_MAX_SSTS` 64; drain continuity comes from `COMPACTOR_MAX_CONCURRENT`, not scheduling latency (docs/TIGRIS-404-COST.md; DST-pinned) |
-| `WAL_GC_INTERVAL_SECS` / `WAL_GC_MIN_AGE_SECS` | 30 / 60 | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. `MIN_AGE` must cover shard-move replay (<1 s; 60 s is generous) |
-| `COMPACTIONS_GC_INTERVAL_SECS` / `COMPACTIONS_GC_MIN_AGE_SECS` | 30 / 120 | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 60 | absorber thresholds into the history tier: a tail is absorbed at 4 MiB, or once it is 60 s old (the age was 300 until 2026-09-29) |
 | `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 8 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather (32 MiB until 2026-09-29). A gather stops staging at the limit; one oversized chunk still proceeds alone. The process budget may clamp the packing limit |
+
+**Fixed values (not settings, since 2026-09-29).** Garbage collection of the
+shard databases runs at constants of the binary; no argument and no variable
+sets them, and a process that holds one of the old names
+(`WAL_GC_INTERVAL_SECS`, `WAL_GC_MIN_AGE_SECS`,
+`COMPACTIONS_GC_INTERVAL_SECS`, `COMPACTIONS_GC_MIN_AGE_SECS`,
+`GC_QUIET_INTERVAL_SECS`, `HISTORY_GC_INTERVAL_SECS`) runs the same values:
+
+| what | value | why |
+|---|---|---|
+| WAL sweep interval / minimum age | 30 s / 60 s | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. The minimum age must cover shard-move replay (<1 s; 60 s is generous) |
+| compactions-log sweep interval / minimum age | 30 s / 120 s | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
+| manifest, compacted and WAL-fence sweep interval | 600 s | the quiet directories: reclamation latency is traded for LIST steady-state (docs/TIGRIS-404-COST.md) |
+| history GC sweep interval | 600 s | every history database, for the same reason |
 
 ### 3.2b Service limits, usage telemetry, billing
 
@@ -665,19 +676,17 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | fleet stuck below desired (desired=N, live=1) | ring never routes to dark instances → they never wake | LB wake pings (implemented); never rely on routing to wake |
 | fleet scales IN while clients are drowning | delivered rps falls when clients queue; servers can't see it | router latency reports block scale-in (implemented); keep `SCALE_EDGE_LATENCY_MS` on |
 | LB routes everything to instance 1 (local/docker) | fleet store missing `allow_http` on plain-http endpoints | set it (implemented); verify LB `/stats` shows all upstreams |
-| flusher stalls though L0 count is low | per-key L0 overlap gate (meta row) | `L0_MAX_SSTS_PER_KEY` (0 = follow `L0_MAX_SSTS`, 32 by default) |
-| WAL prefix grows unboundedly; watermark lags | flush cadence outrunning WAL GC | under the pump (the default) the floor on flush spacing is `WAL_FLUSH_GAP_MS` (default 10): raise it; `FLUSH_INTERVAL_MS ≥ 25` applies only with `WAL_GROUP_COMMIT=0`. Keep the 30/60 GC settings |
+| flusher stalls though L0 count is low | per-key L0 overlap gate (meta row) | the per-key cap cannot differ from `L0_MAX_SSTS` (32 by default): raise `L0_MAX_SSTS` |
+| WAL prefix grows unboundedly; watermark lags | flush cadence outrunning WAL GC | under the pump (the default) the floor on flush spacing is `WAL_FLUSH_GAP_MS` (default 10): raise it; `FLUSH_INTERVAL_MS ≥ 25` applies only with `WAL_GROUP_COMMIT=0`. WAL GC runs at 30/60 s, fixed (§3.2) |
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
 ### Latency knobs (2026-07-27, colleague-review implementation)
 
 | env | default | what it does |
 |---|---|---|
-| `WAL_POST_ACK_GATHER_MS` | 6 (0 = off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. |
-| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable frames to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. |
-| `TAIL_MAX_BYTES` | 1 MiB | Budget for reads WOKEN by a long-poll wait (a fresh commit group, not a backlog). Bulk reads keep 8 MiB. |
+| `WAL_POST_ACK_GATHER_MS` | 6 (0 = off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. Adaptive gather: the window is skipped when the NEXT WAL already holds 32 requests or 1 MiB — the window exists for a small next generation; at drift+saturation it is a tax (review #2's CDG throughput question). The two thresholds are fixed: `WAL_GATHER_SKIP_REQS` and `WAL_GATHER_SKIP_BYTES` are not read (since 2026-09-29). `/v1/debug/timings` pump block: gathers_applied vs gathers_skipped_busy, gathered_reqs, flushed_{reqs,records,bytes} (requests-per-WAL), ack_to_enqueue_{sum_us,count}. |
+| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable frames to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. A read WOKEN by a long-poll wait (a fresh commit group, not a backlog) has a page budget of 1 MiB, fixed: `TAIL_MAX_BYTES` is not read (since 2026-09-29). Bulk reads keep 8 MiB. |
 | `HIST_READER_CAP` | 8 | Cached history DbReaders per process. **Size it ≥ the number of streams concurrently reading history**: LRU with a rotating working set of cap+1 reopens on ~every read (the DST thrash test pins this behavior). Each cached reader costs one manifest poll (5 s) + one checkpoint. |
 | `HIST_READER_IDLE_SECS` | 120 | Idle eviction for cached history readers. |
-| `WAL_GATHER_SKIP_REQS` / `WAL_GATHER_SKIP_BYTES` | 32 / 1 MiB | Adaptive gather: skip the post-ACK window when the NEXT WAL already holds this much — the window exists for a small next generation; at drift+saturation it is a tax (review #2's CDG throughput question). 0 = never skip. `/v1/debug/timings` pump block: gathers_applied vs gathers_skipped_busy, gathered_reqs, flushed_{reqs,records,bytes} (requests-per-WAL), ack_to_enqueue_{sum_us,count}. |
 | `STREAMS_DEBUG_TIMING` | off | Benchmark-only: woken long-poll responses carry `Streams-Debug-Wait: waited arm_us read_us`, splitting the roundtrip-minus-append interval into wait-wake vs read-build stages. Do not enable outside benches. |
 
 **Campaign hygiene (destroyed-specimen lesson):** every soak deploy now
@@ -711,7 +720,7 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   usage, wait for `spool.depth` 0 in `/operator/billing.json` and stop it
   gracefully (the stop seals the read window and runs one drain round); rows
   left in the old spool are not billed.
-- **GC**: WAL objects reaped per §3.2 after `MIN_AGE`; history SSTs retired
+- **GC**: WAL objects reaped per §3.2 after the 60 s minimum age; history SSTs retired
   by compaction; deletion protection, soft-delete windows and GDPR erasure:
   [OPERATIONS.md §2.4](./OPERATIONS.md).
 - **Backups / PITR / restore drills**: checkpoint-pin + async copy design in

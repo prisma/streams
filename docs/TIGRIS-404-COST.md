@@ -116,8 +116,9 @@ without redoing the analysis:
   to ~12.5 MB ≈ 3 L0 SSTs against `L0_MAX_SSTS=64`; drain continuity
   comes from concurrent compactions, not scheduling latency.
 - Already long, untouched: history DbReader manifest poll 300 s,
-  GC sweeps static 600 s (`GC_QUIET_INTERVAL_SECS`,
-  `HISTORY_GC_INTERVAL_SECS`; COST-CAMPAIGN-2 addendum), WAL GC 30 s
+  GC sweeps static 600 s (constants of the binary since 2026-09-29,
+  formerly `GC_QUIET_INTERVAL_SECS` and `HISTORY_GC_INTERVAL_SECS`;
+  COST-CAMPAIGN-2 addendum), WAL GC 30 s
   (retention pacing, LIST-based, ~$0.06/day — deliberate).
 
 ## 5. Verification

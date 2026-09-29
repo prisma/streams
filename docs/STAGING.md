@@ -80,16 +80,21 @@ curl -sf -X POST -H "Authorization: Bearer $PRISMA_API_TOKEN" \
   https://api.prisma.io/v1/buckets/$BUCKET_ID/keys
 ```
 
-**Three buckets, not one.** The server already supports splitting roles
-(`--ops-bucket` / `--shard-bucket` / `--data-bucket`):
+**One data bucket.** Every role of the server uses the bucket
+`SLATE_S3_BUCKET` names (`streams-stg1-data`), each under its own prefix. An
+earlier version of this plan split the roles over three buckets with
+`--ops-bucket` / `--shard-bucket` / `--data-bucket`. It could not run as
+written: a Prisma bucket key is valid for one bucket, and the server holds
+one credential pair for every role. The three arguments are not accepted
+since 2026-09-29 (edge record #80).
 
-| bucket | holds | why separate |
+| prefix | holds | note |
 |---|---|---|
-| `streams-stg1-shard` | shard logs (`shards/<id>/wal|manifest|compacted`) | the hot, ack-critical path; keeping GC listings off the same prefix as history matters (RUNBOOK §3.2) |
-| `streams-stg1-data` | history tier + registry | large, cold, read-heavy; different growth curve |
-| `streams-stg1-ops` | `fleet/`, `routers/`, topology | tiny, high-frequency metadata; isolating it keeps heartbeat listings cheap |
+| `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) | the hot, ack-critical path (RUNBOOK §3.2) |
+| `history/`, `registry/` | history tier + registry | large, cold, read-heavy; different growth curve |
+| `fleet/`, `routers/`, topology | fleet metadata | tiny, high-frequency |
 
-Binaries live in a **fourth, separate bucket** (`streams-artifacts`) that
+Binaries live in a **second, separate bucket** (`streams-artifacts`) that
 is *not* per-cell — it outlives cells and is shared across staging and
 bench. Distinct env names per role (`BIN_S3_*` vs `SLATE_S3_*`) — the
 env-merge trap in RUNBOOK §7.3 has already bitten us twice.
@@ -116,7 +121,7 @@ INITIAL_SHARDS=4                    # survival posture (OOM review); fresh names
 FLEET_MIN=2
 FLEET_MAX=6
 
-# --- buckets (three roles + artifacts)
+# --- buckets (one data bucket + artifacts)
 SLATE_S3_ENDPOINT / _BUCKET / _REGION=auto / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY
 BIN_S3_*                            # artifacts bucket, distinct names
 SERVER_BINARY_S3_KEY=bin/streams-stg1-x64
@@ -243,7 +248,8 @@ documented in docs/SCALING.md §9 "Known v1 limitations":
   exercise expiry — which we have never run at length. Expiry and hard
   deletion do not yet reclaim a deleted incarnation's stored rows (an open
   service obligation in docs/READINESS.md), so bucket bytes still grow.
-- **GC.** WAL objects reaped per `WAL_GC_*`; history SSTs retired by
+- **GC.** WAL objects reaped every 30 s once 60 s old (fixed, RUNBOOK
+  §3.2); history SSTs retired by
   compaction. Watch bucket size weekly (§8); unbounded growth is the
   cheapest early signal that something is wrong.
 - **Backup.** None (see B6). The tester agreement says so.

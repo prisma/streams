@@ -1405,8 +1405,8 @@ obligation is split by invariant ownership.
 The only physical deletions the repository performs itself are shard-log row
 trims (`maintenance.rs`), which TLA-016 covers. Every other object deletion is
 SlateDB's internal collector, configured per DB: history partitions in
-`history_settings` (`src/history.rs:456-527`; GC interval
-`HISTORY_GC_INTERVAL_SECS`, 600 s by default; upstream `min_age` 300 s;
+`history_settings` (`src/history.rs:456-527`; GC interval 600 s, fixed: no
+environment name sets it since 2026-09-29; upstream `min_age` 300 s;
 `manifest_poll_interval` 300 s at `:493`), shard DBs in
 `src/config/validation.rs`. Stream deletion is logical: a registry tombstone
 (`src/application/creation/deletion.rs`); rows are never deleted. Production

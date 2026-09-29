@@ -106,15 +106,6 @@ impl ServerConfig {
         {
             self.history.compactor_off = true;
         }
-        {
-            // 0 disables.
-            let secs = env
-                .get("HISTORY_GC_INTERVAL_SECS")
-                .and_then(|v| v.parse::<u64>().ok());
-            if let Some(secs) = secs {
-                self.history.gc_interval = (secs > 0).then(|| Duration::from_secs(secs));
-            }
-        }
     }
 
     fn overlay_postings(&mut self, env: &dyn Environment) {
@@ -150,16 +141,10 @@ impl ServerConfig {
     }
 
     fn overlay_http(&mut self, env: &dyn Environment) {
-        if let Some(v) = env_parse::<usize>(env, "TAIL_MAX_BYTES").filter(|v| *v > 0) {
-            self.http.tail_max_bytes = v;
-        }
         self.http.debug_timing = env.get("STREAMS_DEBUG_TIMING").as_deref() == Some("1");
         self.http.debug_exit = env.get("STREAMS_DEBUG_EXIT").as_deref() == Some("1");
         if let Some(v) = env.get("APP_BINARY_SHA256") {
             self.http.binary_sha256 = v;
-        }
-        if let Some(v) = env_parse(env, "SSE_H1_MAX_BUF") {
-            self.http.h1_max_buf = v;
         }
         if let Some(v) = env_parse::<u64>(env, "SSE_H1_HEADER_TIMEOUT_MS").filter(|v| *v > 0) {
             self.http.h1_header_timeout = std::time::Duration::from_millis(v);

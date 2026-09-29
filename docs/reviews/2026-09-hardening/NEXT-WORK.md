@@ -770,9 +770,20 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   also show no project that passes `--absorb-pass-bytes`,
   `--absorb-concurrency`, `--absorb-small-bytes` or `--gc-max-interval-secs`
   (such a process no longer starts), and no project that holds
-  `HISTORY_GC_MAX_INTERVAL_SECS` with a value other than 600; where one
-  does, set `HISTORY_GC_INTERVAL_SECS` to that value before the binary is
-  deployed.
+  `HISTORY_GC_MAX_INTERVAL_SECS` with a value other than 600 (the sweep is
+  600 s, fixed, since edge record #80: `HISTORY_GC_INTERVAL_SECS` is not
+  read either). Since edge record #80 the export must also show no project
+  that passes one of the eleven arguments that record lists (such a process
+  no longer starts) and no project that holds one of its eleven environment
+  names at a value other than the constant, because a retired name is
+  ignored without a message: `WAL_GC_INTERVAL_SECS` (30),
+  `WAL_GC_MIN_AGE_SECS` (60), `COMPACTIONS_GC_INTERVAL_SECS` (30),
+  `COMPACTIONS_GC_MIN_AGE_SECS` (120), `GC_QUIET_INTERVAL_SECS` (600),
+  `HISTORY_GC_INTERVAL_SECS` (600), `L0_MAX_SSTS_PER_KEY` (0, or the
+  project's `L0_MAX_SSTS`), `WAL_GATHER_SKIP_REQS` (32),
+  `WAL_GATHER_SKIP_BYTES` (1048576), `TAIL_MAX_BYTES` (1048576),
+  `SSE_H1_MAX_BUF` (65536). A project that holds another value is the
+  owner's to decide before the binary is deployed.
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -903,7 +914,7 @@ item is in `evidence/config-audit-2026-09-29/detail.md`.
 be the default"; every other question of the page is left to the
 implementer's judgement.
 
-Changed so far (package 2, then package 1, then package 3):
+Changed so far (package 2, then package 1, then package 3, then package 4):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1046,3 +1057,39 @@ Changed so far (package 2, then package 1, then package 3):
   `scripts/mt-noisy-campaign.mjs`: they start the binary without the names,
   and whether one of them holds more than 512 requests in flight is not
   determined.
+- Package 4, fourteen settings that nothing sets are constants (edge
+  record #80, one commit): the five GC cadences and age floors of the shard
+  databases (30/60 s, 30/120 s, 600 s; constants of `EngineConfig`) and the
+  history sweep (600 s), the per-key L0 cap (always `L0_MAX_SSTS`), the two
+  gather skips (32 requests, 1 MiB), the three per-role bucket arguments
+  (every role uses `SLATE_S3_BUCKET`), the page of a read woken by a wait
+  (1 MiB) and the h1 read buffer (64 KiB). Eleven arguments are refused by
+  clap and eleven environment names are ignored without a message; every
+  value is the former default. `ABSORB_READ_PAR` stays a setting on
+  purpose; the other nine names of the package were not attempted. Two
+  techniques: where `shard_settings` or the overlay was the reader, the
+  field or the overlay line is gone; where `bootstrap::run` reads the field
+  (the gather skips and the buckets), the field stays in `CliArgs` with
+  `#[arg(skip)]`, because `run` is frozen by its exception rows. The tests
+  are in a file of their own, `src/config/retired_tests.rs`, which names
+  every retired name. The tool's pin of HEAD's leaves is 143, and its
+  control K6 now reproduces the refusal of `INITIAL_SHARDS=3`
+  (`SSE_H1_MAX_BUF`, which it used, is not read); the tool was not run.
+  `scripts/bench-fra-ab.sh` and its family no longer set
+  `L0_MAX_SSTS_PER_KEY=0`, and `bench/sse-probes/sse-1per.sh` lost its
+  `H1BUF` lever. `docs/STAGING.md` planned three buckets and now plans one:
+  a Prisma bucket key is valid for one bucket and the server holds one
+  credential pair. Residue, for the change in which the owner next updates
+  the rows of `bootstrap::run`, so that TLA-011 and the bootstrap mutation
+  owner are paid once: the five skipped fields, the `0 = never skip`
+  conversion inside `run`, and the bucket parameter of `raw_store` and
+  `store_for`. Residue for the next edit of each file: the comment above
+  `gc_interval` in `src/history.rs` names `HISTORY_GC_INTERVAL_SECS` and
+  its alias (TLA-016, TLA-018, TLA-019), and the comment above
+  `tail_max_bytes` in `src/http.rs` says "Env TAIL_MAX_BYTES" (a critical
+  mutation prefix). For the owner with the ratification: the levers given
+  up (stopping the quiet or history sweeps, a longer WAL retention, a
+  larger h1 buffer) now need a rebuild; OPERATIONS.md specifies a 24 h WAL
+  floor for a backup feature that is not built, and when it is, the floor
+  is a code change. The platform export (§11) must show no project that
+  holds one of the names at another value.

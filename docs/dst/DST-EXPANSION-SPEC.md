@@ -866,7 +866,7 @@ no writes still has to converge. Acceptance criteria:
    shard database, which uses the same collector. The SST is deleted
    within a bound the owner
    states in terms of `min_age`, the GC interval
-   (`HISTORY_GC_INTERVAL_SECS`, default 600 s) and the manifest poll
+   (600 s, a constant of the binary) and the manifest poll
    interval. A candidate is `min_age + 2 × gc_interval`.
 2. The mechanism adds no periodic LIST beyond the existing GC cadence. It
    must not break COST-002 or the HISTORY-V2 Class A scorecard.

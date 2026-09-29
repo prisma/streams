@@ -782,10 +782,22 @@ mod validate_boundary_tests {
     /// spawned loops; validation must refuse less before anything boots.
     #[test]
     fn validation_rejects_an_h1_buffer_below_hypers_floor() {
-        rejects(|_| {}, &[("SSE_H1_MAX_BUF", "4096")], "SSE_H1_MAX_BUF");
-        rejects(|_| {}, &[("SSE_H1_MAX_BUF", "8191")], "SSE_H1_MAX_BUF");
-        validate_with(|_| {}, &[("SSE_H1_MAX_BUF", "8192")])
-            .expect("hyper's floor itself is a valid buffer");
+        // No name sets the buffer: a rig or a test builds the value.
+        let with = |bytes: usize| {
+            let mut config = ServerConfig::load(base(), &MapEnvironment::empty());
+            config.http.h1_max_buf = bytes;
+            config.validate().map(|_| ()).map_err(|e| e.to_string())
+        };
+        let refused = |bytes: usize| {
+            Err(format!(
+                "configuration invalid (1 problem(s)):\n  \
+                 - the h1 read buffer of {bytes} bytes is below hyper's 8192-byte floor\n"
+            ))
+        };
+        assert_eq!(
+            [with(4096), with(8191), with(8192)],
+            [refused(4096), refused(8191), Ok(())]
+        );
     }
 
     /// Review item 25: a limit posture whose buckets cannot admit one unit,

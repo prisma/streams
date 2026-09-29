@@ -2,7 +2,9 @@
 
 The owner asked, after approving the L0 cap default (823b3269): are there
 other defaults or tunables to change, to simplify as much as possible. This
-page is the answer, for the owner to decide. Nothing on it is changed yet.
+page is the answer, for the owner to decide. Nothing on it was changed when
+it was written; the status lines under each package say what has been
+changed since.
 
 Method: five readers inventoried every setting the binary reads, every value
 anything deploys and the documented history; one classified; six verifiers
@@ -207,6 +209,18 @@ Also in this package, each an owner performance decision:
 | `SLATE_S3_REGION` | us-east-1 | auto | effect on a store that is not Tigris not determined |
 
 ## Package 4: settings nothing sets become constants
+
+Status (2026-09-29): fourteen of the twenty-four names are constants, in one
+commit, edge record #80, on the owner's delegation; it awaits ratification.
+Done: the six GC names, `L0_MAX_SSTS_PER_KEY`, the two gather skips, the
+three bucket arguments, `TAIL_MAX_BYTES` and `SSE_H1_MAX_BUF`. Their
+arguments are refused and their environment names are ignored. The fields of
+the gather skips and the buckets stay in `CliArgs`, not settable, because
+`bootstrap::run` reads them and may not change. Kept settable on purpose:
+`ABSORB_READ_PAR` (the memory lever of a gather, and the lever the documents
+name for the append-latency dip). Not attempted: `TRIM_PER_OP`,
+`HANDLE_IDLE_EVICT_SECS`, the six billing and metrics names and
+`REBALANCE_MOVE_COOLDOWN_SECS`, which the page calls the owner's taste.
 
 | Setting | Value |
 |---|---|

@@ -20,7 +20,7 @@ pub(crate) fn test_cli() -> CliArgs {
 /// child's environment fully scrubbed and then seeded from `envs`.
 /// `--test-threads=1`: the child runs ONE filtered test — it must not
 /// spin up a full worker pool inside an already-parallel parent suite.
-fn run_helper_test(test_filter: &str, envs: &[(&str, &str)]) -> std::process::Output {
+pub(super) fn run_helper_test(test_filter: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let exe = std::env::current_exe().expect("test binary path");
     let mut cmd = std::process::Command::new(exe);
     cmd.arg(test_filter)
@@ -77,7 +77,7 @@ fn cli_fixture_matches_scrubbed_parse() {
     );
 }
 
-fn load_with(entries: &[(&str, &str)]) -> ServerConfig {
+pub(super) fn load_with(entries: &[(&str, &str)]) -> ServerConfig {
     ServerConfig::load(test_cli(), &MapEnvironment::from(entries.iter().copied()))
 }
 
@@ -481,7 +481,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         ("SSE_H1_HEADER_TIMEOUT_MS", "0"),  // filtered -> default, never disabled
         ("MAINT_BACKPRESSURE_RELEASE_PCT", "140"), // min(100)
         ("SWEEP_MAINT_RESIDENT", "0"),      // stored raw (boot check)
-        ("HISTORY_GC_INTERVAL_SECS", "0"),  // 0 -> None
         ("FRAME_COMPRESS", "TrUe"),
         ("SCALE_HOT_PCT", "90.0"),
         ("BILLING_METER", "off"),
@@ -494,7 +493,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
     assert_eq!(c.sse.heartbeat_ms, 15_000);
     assert_eq!(c.admission.maint_release_pct, 100);
     assert_eq!(c.billing.sweep_maint_resident, 0); // raw; floored at the use site
-    assert_eq!(c.history.gc_interval, None); // current name set to 0 wins
     assert!(c.crypto.frame_compress);
     assert_eq!(c.scaler.hot_pct, 0.9);
     assert!(!c.billing.meter_enabled);
@@ -506,30 +504,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         c.history.gc_interval,
         Some(std::time::Duration::from_secs(600))
     );
-}
-
-/// The quiet GC interval has one flag. The retired alias is refused like any
-/// other unknown argument; the current name still sets the field.
-#[test]
-fn retired_gc_flag_alias_is_refused_on_argv() {
-    let refused = CliArgs::try_parse_from([
-        "streams-slate",
-        "--s3-endpoint",
-        "http://127.0.0.1:1",
-        "--gc-max-interval-secs",
-        "42",
-    ])
-    .unwrap_err();
-    assert_eq!(refused.kind(), clap::error::ErrorKind::UnknownArgument);
-    let current = CliArgs::try_parse_from([
-        "streams-slate",
-        "--s3-endpoint",
-        "http://127.0.0.1:1",
-        "--gc-quiet-interval-secs",
-        "42",
-    ])
-    .unwrap();
-    assert_eq!(current.gc_quiet_interval_secs, 42);
 }
 
 #[test]
@@ -569,9 +543,6 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("listen", "", "127.0.0.1:8090"),
     ("s3-endpoint", "SLATE_S3_ENDPOINT", ""),
     ("bucket", "SLATE_S3_BUCKET", "streams"),
-    ("ops-bucket", "", ""),
-    ("shard-bucket", "", ""),
-    ("data-bucket", "", ""),
     ("region", "SLATE_S3_REGION", "us-east-1"),
     ("access-key-id", "SLATE_S3_ACCESS_KEY_ID", "test"),
     ("secret-access-key", "SLATE_S3_SECRET_ACCESS_KEY", "test"),
@@ -580,8 +551,6 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("wal-group-commit", "WAL_GROUP_COMMIT", "1"),
     ("wal-flush-gap-ms", "WAL_FLUSH_GAP_MS", "10"),
     ("wal-post-ack-gather-ms", "WAL_POST_ACK_GATHER_MS", "6"),
-    ("wal-gather-skip-reqs", "WAL_GATHER_SKIP_REQS", "32"),
-    ("wal-gather-skip-bytes", "WAL_GATHER_SKIP_BYTES", "1048576"),
     ("tail-ring-bytes", "TAIL_RING_BYTES", "0"),
     ("l0-sst-size-bytes", "L0_SST_SIZE_BYTES", "8388608"),
     ("max-unflushed-bytes", "MAX_UNFLUSHED_BYTES", "16777216"),
@@ -591,22 +560,8 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "33554432",
     ),
     ("l0-max-ssts", "L0_MAX_SSTS", "32"),
-    ("l0-max-ssts-per-key", "L0_MAX_SSTS_PER_KEY", "0"),
     ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
     ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "1"),
-    ("wal-gc-interval-secs", "WAL_GC_INTERVAL_SECS", "30"),
-    ("gc-quiet-interval-secs", "GC_QUIET_INTERVAL_SECS", "600"),
-    ("wal-gc-min-age-secs", "WAL_GC_MIN_AGE_SECS", "60"),
-    (
-        "compactions-gc-interval-secs",
-        "COMPACTIONS_GC_INTERVAL_SECS",
-        "30",
-    ),
-    (
-        "compactions-gc-min-age-secs",
-        "COMPACTIONS_GC_MIN_AGE_SECS",
-        "120",
-    ),
     ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
     ("trim-per-op", "TRIM_PER_OP", "8192"),
     ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
