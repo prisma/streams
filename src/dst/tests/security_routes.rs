@@ -799,3 +799,60 @@ async fn inflight_admission_answers_only_after_authentication() {
         String::from_utf8_lossy(&b)
     );
 }
+
+/// The pre-auth survival refusal is answered by the admission middleware
+/// itself, before any route. It carries the marks every answer of this
+/// server does: the origin marker (the pilot's proxy tells a server's
+/// answer from the platform edge's by it) and `nosniff`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_survival_refusal_is_marked_as_this_servers_answer() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state.admission.set_max_inflight(1);
+    state.admission.add_inflight_for_test(8);
+    let ct = ("content-type", "text/plain");
+    let (st, h, body) = hreq(addr, "POST", "/v1/stream/any", &[ct], b"x").await;
+    assert_eq!(
+        (st, String::from_utf8_lossy(&body).as_ref()),
+        (503, r#"{"error":{"code":"overloaded","message":"retry"}}"#)
+    );
+    assert_eq!(
+        (
+            h.get("prisma-streams-origin").map(String::as_str),
+            h.get("x-content-type-options").map(String::as_str),
+            h.get("retry-after").map(String::as_str),
+        ),
+        (Some("dst-instance"), Some("nosniff"), Some("1"))
+    );
+    state.admission.add_inflight_for_test(-8);
+    engine_shutdown(&state).await;
+}
+
+/// Every answer of the router carries the origin marker and `nosniff`: a
+/// handler's, an unmatched path's 404 and a wrong method's 405. The platform
+/// edge answers for a dead or unpublished service with an unmarked 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_answer_is_marked_as_this_servers() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = ("content-type", "text/plain");
+    for (method, path, body, want) in [
+        ("GET", "/health", &b""[..], 200),
+        ("PUT", "/v1/stream/marked", b"seed", 201),
+        ("POST", "/v1/stream/marked", b"x", 204),
+        ("GET", "/nope", b"", 404),
+        ("POST", "/health", b"", 405),
+    ] {
+        let (st, h, _) = hreq(addr, method, path, &[ct], body).await;
+        assert_eq!(
+            (
+                st,
+                h.get("prisma-streams-origin").map(String::as_str),
+                h.get("x-content-type-options").map(String::as_str),
+            ),
+            (want, Some("dst-instance"), Some("nosniff")),
+            "{method} {path}"
+        );
+    }
+    engine_shutdown(&state).await;
+}

@@ -3129,6 +3129,19 @@
     "scenarios": []
   },
   {
+    "name": "every_answer_is_marked_as_this_servers",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "899ced850452ff940c07603bf736c00fd49515829a16bcc87a2bb48e8387d986",
+    "mechanisms": [],
+    "configuration": [
+      "(\"PUT\", \"/v1/stream/marked\", b\"seed\", 201),"
+    ],
+    "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
     "name": "every_dispatched_operation_demands_exactly_its_scope",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -7323,6 +7336,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_survival_refusal_is_marked_as_this_servers_answer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b9ac68e0069243b2026fb14a162912c6a654afd74187cadc98bcaac985dc0bec",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_routes.rs",
     "scenarios": []
   },
   {
