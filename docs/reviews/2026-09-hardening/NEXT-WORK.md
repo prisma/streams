@@ -151,7 +151,7 @@ behaviour, now pinned by
 `an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry`.
 B3: a correction against a frozen (finalized) month is allowed, so a close
 that arrives late must correct its month and stop the carry. **B3 is fixed**
-(edge change #66, awaiting the owner's ratification): a settled late figure
+(edge change #66, ratified by the owner on 2026-09-29): a settled late figure
 (a month-final, or gauge 0) sets the month's floor exactly and records the
 signed difference as a correction; a gauge-0 late snapshot advances the
 segment state, so no month not yet closed bills the segment; each later
