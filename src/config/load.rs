@@ -96,13 +96,6 @@ impl ServerConfig {
         if let Some(v) = env_parse(env, "HISTORY_CACHE_BYTES") {
             self.history.cache_bytes = v;
         }
-        if env
-            .get("HISTORY_COMPACTOR")
-            .map(|v| v == "off")
-            .unwrap_or(false)
-        {
-            self.history.compactor_off = true;
-        }
     }
 
     fn overlay_postings(&mut self, env: &dyn Environment) {

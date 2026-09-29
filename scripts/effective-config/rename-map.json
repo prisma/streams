@@ -130,6 +130,12 @@
       "commit": "the commit of edge record #82",
       "edge_record": 82,
       "why": "the count cap on store operations is removed with its semaphore: 0 (no cap) was the default and no family set the name"
+    },
+    {
+      "old": "history.compactor_off",
+      "commit": "the commit of edge record #84",
+      "edge_record": 84,
+      "why": "the switch that turned the history compactor off is removed: false (compactor on) was the default and the value of every family"
     }
   ]
 }

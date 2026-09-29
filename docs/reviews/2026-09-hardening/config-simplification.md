@@ -271,8 +271,17 @@ the fleet's desired count has no assumed-capacity dimension; the reason
 string of `fleet/desired.json` ends `rps=R live=L`. Left for the owner: the
 field `CliArgs::scale_rps_capacity` stays, always 0, and the boot line
 still prints `cap=0 rps`, because `bootstrap::run` names the field and its
-exception rows are exact. The other two rows (`HISTORY_COMPACTOR`,
-`BILLING_METER`) are not started.
+exception rows are exact.
+
+Status (2026-09-29, fourth row): done, in one commit, edge record #84, on
+the owner's delegation; it awaits ratification. `HISTORY_COMPACTOR` is not
+read (it had no argument; the environment name is ignored) and the history
+databases of both layouts always open with the embedded compactor, on the
+resolved worker options and with L0 caps of 64. The startup summary loses
+the key `history.compactor_off`. Given up: the bench hook for discard-mode
+runs (`s3lite --discard-substr`). The guard of the 1 GiB certificate
+against a disabled compactor stays. The last row (`BILLING_METER`) is not
+started.
 
 | Setting | Today | Proposed |
 |---|---|---|

@@ -102,6 +102,12 @@
     "intended": "yes",
     "note": "The count cap on store operations is removed with its semaphore: store calls are not counted, which is what 0, the default, already meant. No family set STORE_MAX_CONCURRENT. The name had no argument; the environment name is not read. Transfers of the sst class stay bounded in bytes by STORE_BULK_INFLIGHT_MAX_BYTES."
   },
+  "R1:removed:history.compactor_off:false-><absent>": {
+    "commit": "the commit of edge record #84",
+    "edge_record": 84,
+    "intended": "yes",
+    "note": "The switch that turned the embedded compactor of the history databases off is removed: they open with the compactor on the resolved worker options and L0 caps of 64, which is what false, the default, already meant. No family set HISTORY_COMPACTOR, and the 1 GiB certificate refused a process that did. The name had no argument; the environment name is not read."
+  },
   "R2:NO_EFFECT_AT_VALUE:STREAMS_DEBUG_EXIT": {
     "commit": null,
     "intended": "n/a",

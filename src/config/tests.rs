@@ -318,7 +318,6 @@ fn default_values_are_pinned() {
     assert_eq!(c.history.absorb_global_budget_bytes, 100_859_904);
     assert_eq!(c.history.absorb_global_gathers, 1);
     assert_eq!(c.history.cache_bytes, 32 * 1024 * 1024);
-    assert!(!c.history.compactor_off);
     assert_eq!(
         c.history.gc_interval,
         Some(std::time::Duration::from_secs(600))

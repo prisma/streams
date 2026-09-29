@@ -60,6 +60,9 @@ HEAD prints 141 leaves, and the two `wc-ladder` families no longer set
 The count cap on store operations is removed since edge record #82: on the
 next run `storage.store_max_concurrent` is a removed leaf, so HEAD prints
 140 leaves; no family set `STORE_MAX_CONCURRENT`.
+The switch that turned the history compactor off is removed since edge
+record #84: on the next run `history.compactor_off` is a removed leaf, so
+HEAD prints 139 leaves; no family set `HISTORY_COMPACTOR`.
 No run of the tool has been made since these changes.
 
 ## Summary

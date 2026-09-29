@@ -789,6 +789,8 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   pacing its gathers). Since edge record #82 it holds for
   `STORE_MAX_CONCURRENT` above 0 as well (ignored: the project's store
   calls are no longer capped by count; the v18 experiment of July set 48).
+  Since edge record #84 it holds for `HISTORY_COMPACTOR=off` (ignored: the
+  project's history databases compact again).
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -920,7 +922,7 @@ be the default"; every other question of the page is left to the
 implementer's judgement.
 
 Changed so far (package 2, then package 1, then package 3, then package 4,
-then the first three rows of package 5):
+then the first four rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1171,7 +1173,25 @@ then the first three rows of package 5):
   next update of the rows of `bootstrap::run`** (with the residue of
   package 4): the field `CliArgs::scale_rps_capacity`, which stays with
   `#[arg(skip)]` and is always 0, and the boot line "fleet coordination on
-  (prefix=P, cap=0 rps)", which still prints it. The other two rows of
-  package 5 (`HISTORY_COMPACTOR`, `BILLING_METER`) are not started. The
-  platform export (§11) must show no project that passes the argument or
-  holds `SCALE_RPS_CAPACITY` above 0.
+  (prefix=P, cap=0 rps)", which still prints it. The platform export (§11)
+  must show no project that passes the argument or holds
+  `SCALE_RPS_CAPACITY` above 0.
+- Package 5, fourth row: the history compactor is always on, and
+  `HISTORY_COMPACTOR` is not read (edge record #84, one commit). The name
+  had no argument; the environment name is ignored without a message, and
+  the startup summary loses the key `history.compactor_off`. The compactor
+  was on by default and in every deployment of the repository, and the
+  1 GiB certificate refused a process that turned it off, so the history
+  databases open as they did: the embedded compactor on the resolved
+  worker options, L0 caps of 64. Removed: the field of `HistoryConfig` and
+  its overlay lines, and the branch of `history_settings` that opened
+  without a compactor and with L0 caps of 1,000,000 (`src/history.rs`,
+  1,621 lines, 1,630 before). The certificate's guard against a disabled
+  compactor stays. Given up: the bench hook for discard-mode runs
+  (`s3lite --discard-substr`), which no script used. The tool's pin of
+  HEAD's leaves is 139; the tool was not run. Receipts: TLA-016, TLA-018
+  and TLA-019 list `src/history.rs` and were stale before this change, so
+  the re-record that is already due does not grow; the files select no
+  mutation leg and no Miri leg. The last row of package 5
+  (`BILLING_METER`) is not started. The platform export (§11) must show no
+  project that holds `HISTORY_COMPACTOR=off`.

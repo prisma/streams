@@ -1,6 +1,6 @@
 //! The settings that became constants: every retired flag is refused on
 //! argv, and every retired environment name is ignored. One file names
-//! them all (edge records #80, #82 and #83).
+//! them all (edge records #80, #82, #83 and #84).
 use super::tests::{load_with, run_helper_test};
 use super::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 use clap::Parser;
@@ -169,11 +169,41 @@ fn overlay_names_nothing_set_are_not_read() {
 
 /// A name that was a setting without a flag, and whose mechanism is removed,
 /// changes nothing in the loaded configuration: `STORE_MAX_CONCURRENT`, the
-/// count cap on store operations (edge record #82).
+/// count cap on store operations (edge record #82), and `HISTORY_COMPACTOR`,
+/// the switch that turned the history compactor off (edge record #84).
 #[test]
 fn retired_environment_names_change_nothing() {
-    const NAMES: [(&str, &str); 1] = [("STORE_MAX_CONCURRENT", "48")];
+    const NAMES: [(&str, &str); 2] = [("STORE_MAX_CONCURRENT", "48"), ("HISTORY_COMPACTOR", "off")];
     for (name, value) in NAMES {
         assert_eq!(load_with(&[(name, value)]), load_with(&[]), "{name}");
     }
+}
+
+/// The history databases of both layouts open with the embedded compactor,
+/// on the worker options the engine resolved (one compaction at a time,
+/// polled every 2.5 s, 32 MiB output SSTs), and with L0 caps of 64, whatever
+/// `HISTORY_COMPACTOR` holds: read on the settings the builders receive, not
+/// on the configuration value.
+#[test]
+fn the_history_compactor_cannot_be_switched_off() {
+    let c = load_with(&[("HISTORY_COMPACTOR", "off")]);
+    let workers = c.engine.compactor_options();
+    let opened_with = |s: slatedb::config::Settings| {
+        let compactor = s.compactor_options.map(|o| {
+            (
+                o.poll_interval.as_millis(),
+                o.max_concurrent_compactions,
+                o.worker.map(|w| w.max_sst_size),
+            )
+        });
+        (s.l0_max_ssts, s.l0_max_ssts_per_key, compactor)
+    };
+    let expected = (64, 64, Some((2500, 1, Some(32 * 1024 * 1024))));
+    assert_eq!(
+        (
+            opened_with(crate::history::history_settings(&c.history, &workers)),
+            opened_with(crate::history::history2_settings(&c.history, &workers)),
+        ),
+        (expected, expected)
+    );
 }

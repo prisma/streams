@@ -457,11 +457,6 @@ pub(crate) fn history_settings(
     cfg: &crate::config::HistoryConfig,
     compactor: &slatedb::config::CompactorOptions,
 ) -> Settings {
-    // Bench-only escape hatch: HISTORY_COMPACTOR=off disables the embedded
-    // compactor (and lifts the L0 caps so flushes never block on it). Used
-    // with the s3lite --discard-substr mode, where history SST bodies are
-    // dropped and must never be re-read. Production keeps the compactor.
-    let compactor_off = cfg.compactor_off;
     // History DBs (per-stream v1 AND the shared v2 partitions) are
     // quiet most of the time, and their fixed-cadence LISTs were 79% of
     // v2's residual request cost (docs/HISTORY-V2.md scorecard). The
@@ -504,24 +499,20 @@ pub(crate) fn history_settings(
         // timer evidence). Smaller SSTs = shorter bursts; the embedded
         // compactor consolidates them.
         l0_sst_size_bytes: 4 * 1024 * 1024,
-        l0_max_ssts: if compactor_off { 1_000_000 } else { 64 },
-        l0_max_ssts_per_key: if compactor_off { 1_000_000 } else { 64 },
-        compactor_options: if compactor_off {
-            None
-        } else {
-            // Embedded compactor kept for phase 1 so L0s consolidate while
-            // the absorber has the DB open; the detached model arrives with
-            // the compactor service.
-            //
-            // R29 release blocker: `Settings::default().compactor_options`
-            // silently ran the UPSTREAM worker profile (concurrency 4,
-            // 4 subcompactions, 4x2 MiB read-ahead, 256 MiB rolls) on
-            // every history and history-v2 partition — the exact
-            // defaults the R27-4 posture removes — while
-            // MEMPROFILE_CERT reported the process certified. Every
-            // production DB uses the ONE resolved profile.
-            Some(compactor.clone())
-        },
+        l0_max_ssts: 64,
+        l0_max_ssts_per_key: 64,
+        // Embedded compactor kept for phase 1 so L0s consolidate while
+        // the absorber has the DB open; the detached model arrives with
+        // the compactor service.
+        //
+        // R29 release blocker: `Settings::default().compactor_options`
+        // silently ran the UPSTREAM worker profile (concurrency 4,
+        // 4 subcompactions, 4x2 MiB read-ahead, 256 MiB rolls) on
+        // every history and history-v2 partition — the exact
+        // defaults the R27-4 posture removes — while
+        // MEMPROFILE_CERT reported the process certified. Every
+        // production DB uses the ONE resolved profile.
+        compactor_options: Some(compactor.clone()),
         ..Default::default()
     }
 }

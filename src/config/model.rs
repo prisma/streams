@@ -176,8 +176,6 @@ pub struct HistoryConfig {
     pub absorb_global_gathers: usize,
     /// HISTORY_CACHE_BYTES, default 32 MiB.
     pub cache_bytes: usize,
-    /// HISTORY_COMPACTOR == "off", default false.
-    pub compactor_off: bool,
     /// GC sweep interval of every history database: 600 s. No environment
     /// name sets it; `None` (no sweeps) exists for tests that build the value.
     pub gc_interval: Option<Duration>,
@@ -434,7 +432,6 @@ impl Default for HistoryConfig {
             absorb_global_budget_bytes: 100_859_904,
             absorb_global_gathers: 1,
             cache_bytes: 32 * 1024 * 1024,
-            compactor_off: false,
             gc_interval: Some(Duration::from_secs(600)),
         }
     }
