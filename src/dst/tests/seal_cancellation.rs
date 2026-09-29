@@ -400,10 +400,10 @@ async fn two_record_close(
 
 /// A plain append is never its stream's owed final. Its body, content type
 /// and coordination headers equal those of a raw close-with-content parked
-/// before its enqueue, and the close flag is not part of the operation
-/// identity they share. It must be refused as every append during Sealing
-/// is, and neither renew the claim nor land a record; the parked close then
-/// seals with its final written once.
+/// before its enqueue, and the close flag is not in the preimage of that
+/// close's operation identity. It must be refused as every append during
+/// Sealing is, and neither renew the claim nor land a record; the parked
+/// close then seals with its final written once.
 #[expect(
     clippy::disallowed_methods,
     reason = "plain-append identity fixture; the parked close is spawned and joined after the plain append answers; running it inline cannot hold it at its failpoint while the append runs"

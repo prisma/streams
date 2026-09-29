@@ -174,6 +174,7 @@ OWNERS = (
           'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::runtime_isolation::'),
     owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload:: security_usage:: debug_store_reports_this_runtimes_shard_opens debug_surface_ dst_tests::billing_readiness:: dst_tests::billing_operation_counts::raw_'),
     owner('http_debug', 'src/http/debug.rs', 'debug_surface_'),
+    owner('http_close_identity', 'src/http/close_identity.rs', 'http::close_identity:: dst_tests::seal_fencing:: dst_tests::seal_coordination:: dst_tests::security_seal::'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

@@ -80,13 +80,14 @@ Max(a, b) == IF a > b THEN a ELSE b
 \* The claim operation id: product seal_op_id_full(record, key, producer) and
 \* raw seal_op_id_semantic(request hash, key, coordination) are
 \* domain-separated hashes of these components (claims.rs 132-176).  The raw
-\* request hash's close argument is a constant (close.rs 32-57), so a raw
-\* append WITHOUT Stream-Closed carrying a final's bytes and coordination has
-\* that final's semantic id too.
+\* request hash's close argument is a constant (close.rs 32-63), so a raw
+\* append WITHOUT Stream-Closed carrying a final's bytes and coordination
+\* hashes to that final's semantic id too.  The code computes an id only for
+\* a close; the model keeps the wider shape (OP).
 SemanticOpId(o) == <<Surface[o], Content[o], Producer[o], SeqOf[o]>>
 OpId(o) == IF o \in FinalOps THEN SemanticOpId(o) ELSE PLAIN
 \* The producer lane: the client's, or the synthetic `rawseal.{semantic id}`
-\* lane (close.rs 101-112) whose id depends only on the bytes when the
+\* lane (close.rs 93-104) whose id depends only on the bytes when the
 \* request carries no coordination -- for a product final too
 \* (close_identity None, product.rs submit_product_append).
 LaneOf(o) == IF Producer[o] # NONE THEN Producer[o] ELSE <<"rawseal", Content[o]>>
@@ -177,7 +178,7 @@ AckCompletesFinal(rep) == rep.closed
 \* complete_raw_close: owns_final = resumes_owed_final || (carries && !duplicate)
 OwnsFinal(resumed, rep) == resumed \/ ~rep.dup
 
-\* install_intent (close.rs 192-214): once begin_sealing_for_close returns
+\* install_intent (close.rs 198-220): once begin_sealing_for_close returns
 \* this operation's generation for a Final intent (installed, taken over or
 \* renewed), the plan owes that final and the admission snapshot's Sealing
 \* refusal is cleared (TLA-003-F2).  The pre-fix control
@@ -197,7 +198,7 @@ ProductPreIntentRefuses(v) == v \in {"pre", "capacity", "ceiling"}
 \* the owed claim.  prepare_close only finds the owed claim and keeps the
 \* generation it observed; parse_content answers ingest capacity (413) and
 \* defers a record-ceiling refusal; install_intent renews only when nothing
-\* was refused or deferred (close.rs 71-85, 174-176; TLA-003-F4 fix).  The
+\* was refused or deferred (close.rs 77-91, 180-182; TLA-003-F4 fix).  The
 \* pre-fix control (MC_FinalSeal_NcRenewBeforeValidation) renews in
 \* prepare_close, before parse_content.
 OwedRetryValidatedFirst(v) == v \in {"capacity", "ceiling"}
@@ -211,7 +212,7 @@ OwedRetryValidatedFirst(v) == v \in {"capacity", "ceiling"}
 \* every attempt.
 RefusalReleases(hr) == hr.inst
 
-\* prepare_close's owed-claim filter (close.rs 71-80): only a close resumes
+\* prepare_close's owed-claim filter (close.rs 77-86): only a close resumes
 \* an owed final ("Only a close can resume an owed final").  The pre-fix
 \* control (MC_FinalSeal_NcPlainResumesOwed) lets any raw request with the
 \* final's semantic id resume it: it skips the Sealing refusal and renews.
@@ -1059,7 +1060,7 @@ RsPublish(hid) ==
 \* descriptor is Sealing or Sealed.  Raw: prepare_close computes
 \* sealed_reject_new (duplicates still resolve at the committer); without a
 \* producer there is nothing to deduplicate, so it answers the closed tail
-\* at once (close.rs 100-112).  A plain append never resumes an owed final
+\* at once (close.rs 106-118).  A plain append never resumes an owed final
 \* (ResumesOwedFinal).  In the pre-fix control one with the final's semantic
 \* id passed as its exact retry: no Sealing refusal, and install_intent
 \* renewed the claim (that read and CAS are merged here; the branch is

@@ -2478,7 +2478,6 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     clippy::excessive_nesting,
     reason = "append_typed; the typed append takes the request parts as the handler parsed them and validates, drains, admits and executes them in one sequence whose drain cap nests inside the body walk; a request struct, a split or a flattened drain would separate the parts from the sequence that orders them"
 )]
@@ -2561,29 +2560,13 @@ pub(crate) async fn append_typed(
         );
     }
     let routing_key = product_key.unwrap_or_default();
-    let close_identity = {
-        let hv = |name: &str| hdr(&headers, name).unwrap_or_default();
-        crate::application::lifecycle::seal_op_id_semantic(
-            &create_request_hash(
-                &prepared.descriptor().content_type,
-                None,
-                None,
-                true,
-                &body,
-                None,
-            ),
-            &routing_key,
-            &[
-                hv("producer-id"),
-                hv("producer-epoch"),
-                hv("producer-seq"),
-                hv("stream-seq"),
-                hv("stream-timestamp"),
-                hv("content-type"),
-                hv("stream-key-version"),
-            ],
-        )
-    };
+    let close_identity = close_identity::raw(
+        close,
+        &headers,
+        &prepared.descriptor().content_type,
+        &routing_key,
+        &body,
+    );
     let command = AppendCommand {
         sref,
         expected_epoch: Some(prepared.descriptor().epoch()),
@@ -2598,7 +2581,7 @@ pub(crate) async fn append_typed(
         sequence: hdr(&headers, "stream-seq"),
         ts_hint_ms: parse_ts_hint(&headers),
         key_version: key_version(&headers),
-        close_identity: Some(close_identity),
+        close_identity,
         body_charge,
     };
     service.execute_prepared(prepared, command).await
@@ -3099,6 +3082,7 @@ async fn internal_segment_read(
     .await
 }
 
+mod close_identity;
 mod debug;
 #[path = "http/read.rs"]
 mod read_adapter;

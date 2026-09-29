@@ -821,7 +821,7 @@ actions to these contracts.
   that installed a claim releases it on a definitive refusal. The model's
   shapes V4, V5 and V5A place an exact retry on an instance with lower limits.
 - **Origin:** `src/application/append/content.rs` 14-127 (`parse_content`,
-  `stored_records`); `src/application/append/close.rs` 71-121 and 159-226
+  `stored_records`); `src/application/append/close.rs` 77-127 and 165-232
   (the owed claim, the synthetic lane, `install_intent`);
   `src/application/lifecycle/raw_close.rs` 45-55; `src/usage.rs` 329-344;
   `src/product.rs` 1527-1630 and `src/product/seal_request.rs` 45-69;
@@ -900,13 +900,15 @@ actions to these contracts.
   content, coordination): the model treats the hashes as injective on their
   inputs, and an exact retry gets the same id. The raw semantic id does not
   cover `Stream-Closed` (the request hash's close argument is a constant), so
-  a raw append without it that carries a final's bytes and coordination has
-  that final's id. Since "Only a close can resume an owed final", only a
-  close is treated as the final's exact retry; the model's shape OP has such
-  an append.
+  a raw append without it that carries a final's bytes and coordination
+  hashes to that final's id. The code computes an id only for a close (a
+  plain append has none), and since "Only a close can resume an owed final",
+  only a close is treated as the final's exact retry; the model's shape OP
+  is such an append holding the final's id, which is wider than the code.
 - **Origin:** `src/application/lifecycle/claims.rs` `seal_op_id_full` and
-  `seal_op_id_semantic`; `src/application/append/close.rs` 32-57 (the raw
-  id), 71-80 (only a close resumes an owed final) and 87-98 (the synthetic
+  `seal_op_id_semantic`; `src/http/close_identity.rs` and
+  `src/application/append/close.rs` 32-63 (the raw id, for a close only),
+  77-86 (only a close resumes an owed final) and 93-104 (the synthetic
   lane). Since `prisma-seal-v3` the product id's record preimage is the
   final's stored client text (golden: `claims::tests`), not a serde
   re-serialisation, so no parser or formatter change can move it.

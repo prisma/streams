@@ -29,32 +29,38 @@ pub(super) async fn prepare_close(
     let close = command.close;
     let close_only = close && body.is_empty();
     let seal_auth = &command.seal_auth;
-    let this_close_op = command.close_identity.clone().unwrap_or_else(|| {
-        let producer_fields = producer
-            .as_ref()
-            .map(|p| [p.id.clone(), p.epoch.to_string(), p.seq.to_string()])
-            .unwrap_or_default();
-        crate::application::lifecycle::seal_op_id_semantic(
-            &crate::application::creation::create_request_hash(
-                &desc.content_type,
-                None,
-                None,
-                true,
-                body,
-                None,
-            ),
-            &command.routing_key,
-            &[
-                producer_fields[0].clone(),
-                producer_fields[1].clone(),
-                producer_fields[2].clone(),
-                command.sequence.clone().unwrap_or_default(),
-                String::new(),
-                command.content_type.clone().unwrap_or_default(),
-                String::new(),
-            ],
-        )
-    });
+    // Only a close has an operation identity; nothing below reads one for a
+    // plain append, so none is computed for it.
+    let this_close_op = if !close {
+        String::new()
+    } else {
+        command.close_identity.clone().unwrap_or_else(|| {
+            let producer_fields = producer
+                .as_ref()
+                .map(|p| [p.id.clone(), p.epoch.to_string(), p.seq.to_string()])
+                .unwrap_or_default();
+            crate::application::lifecycle::seal_op_id_semantic(
+                &crate::application::creation::create_request_hash(
+                    &desc.content_type,
+                    None,
+                    None,
+                    true,
+                    body,
+                    None,
+                ),
+                &command.routing_key,
+                &[
+                    producer_fields[0].clone(),
+                    producer_fields[1].clone(),
+                    producer_fields[2].clone(),
+                    command.sequence.clone().unwrap_or_default(),
+                    String::new(),
+                    command.content_type.clone().unwrap_or_default(),
+                    String::new(),
+                ],
+            )
+        })
+    };
     if let Some(auth) = seal_auth {
         let holds = desc.stream_epoch == auth.epoch
             && desc.sealing.as_ref().is_some_and(|sl| {
@@ -68,10 +74,10 @@ pub(super) async fn prepare_close(
             );
         }
     }
-    // Only a close resumes an owed final. The close flag is not part of the
-    // operation identity, so a plain append with the final's body and
-    // coordination would otherwise pass as its exact retry: it would skip
-    // the Sealing refusal, renew the claim and land the record twice.
+    // Only a close resumes an owed final. The close flag is not in an
+    // operation identity's preimage, so a plain append with the final's body
+    // and coordination must never pass as its exact retry (skip the Sealing
+    // refusal, renew the claim, land the record twice): it has no identity.
     let owed_claim = desc.sealing.as_ref().filter(|sl| {
         close
             && sl.owes_final()
