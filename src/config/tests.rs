@@ -531,7 +531,11 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("fleet-auth-mode", "FLEET_AUTH_MODE", "static"),
     ("workload-token-file", "WORKLOAD_TOKEN_FILE", ""),
     ("release-posture", "STREAMS_RELEASE_POSTURE", "false"),
-    ("max-record-payload-bytes", "MAX_RECORD_PAYLOAD_BYTES", ""),
+    (
+        "max-record-payload-bytes",
+        "MAX_RECORD_PAYLOAD_BYTES",
+        "131072",
+    ),
     ("account-id", "ACCOUNT_ID", "acct_local"),
     ("project-id", "PROJECT_ID", "proj_local"),
     ("cell-id", "CELL_ID", "local"),

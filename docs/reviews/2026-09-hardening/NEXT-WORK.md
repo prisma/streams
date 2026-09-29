@@ -903,4 +903,7 @@ Changed so far (package 2):
 - The shed line, 500 (6fb8d8f0): edge record #68.
 - Feed retention, 64 MiB for the cell and half of it for one project
   (18a6eaf6): edge record #69.
-- The cap on live subscriptions, 1,200: edge record #70.
+- The cap on live subscriptions, 1,200 (f85990ab): edge record #70.
+- The record ceiling, 131,072 bytes: edge record #71. With it every line of
+  the profile is the binary's default, and `MEMPROFILE_CERT=compute-1g` is
+  the only setting the profile adds.

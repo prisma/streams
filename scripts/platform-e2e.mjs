@@ -97,11 +97,6 @@ const cellEnv = (cellId, dir, refreshSecs) => {
     FLEET_AUTH_MODE: "workload",
     WORKLOAD_TOKEN_FILE: join(dir, "workload.jwt"),
     STREAMS_RELEASE_POSTURE: "1",
-    // Round-10 review: the release posture REQUIRES a per-record
-    // ceiling whose worst-case prepared SSE frame fits the feed ring
-    // (an oversized record would herd-disconnect every shared-feed
-    // subscriber). 128 KiB sits comfortably inside the default ring.
-    MAX_RECORD_PAYLOAD_BYTES: "131072",
     CELL_ID: cellId,
     PROJECT_ID: "proj-deploy-e2e",
     USAGE_STREAM_KEY: KEY_B64,
@@ -109,6 +104,7 @@ const cellEnv = (cellId, dir, refreshSecs) => {
     ROLLUP: "1",             // single-instance cells host their own rollup consumer
   };
   delete env.FLEET_INTERNAL_TOKEN;
+  delete env.MAX_RECORD_PAYLOAD_BYTES; // the cells run the binary's default ceiling, 131,072
   return env;
 };
 const cellArgs = (port, bucket) => [
@@ -139,16 +135,17 @@ check("cell A boots under the release posture (workload, no static token)", cell
 check("cell B boots under the release posture", cellB.exitCode === null);
 check("cell C boots under the release posture", cellC.exitCode === null);
 
-// Round-10 review: a release-posture cell WITHOUT the per-record
+// Round-10 review: a release-posture cell with an UNLIMITED record
 // ceiling must refuse to boot (the certified feed ring cannot admit
-// an unbounded record; see MAX_RECORD_PAYLOAD_BYTES).
+// an unbounded record; see MAX_RECORD_PAYLOAD_BYTES). Unset, the
+// ceiling is the binary's default.
 {
   const envBad = cellEnv("cell-a", dirA, 1);
-  delete envBad.MAX_RECORD_PAYLOAD_BYTES;
+  envBad.MAX_RECORD_PAYLOAD_BYTES = "0";
   const bad = spawn("./target/release/streams-slate", cellArgs(9718, `pe2e-bad-${ts}`), { env: envBad, stdio: "ignore" });
   const t0 = Date.now();
   while (bad.exitCode === null && Date.now() - t0 < 5000) await sleep(200);
-  check("release posture refuses to boot without MAX_RECORD_PAYLOAD_BYTES", bad.exitCode !== null && bad.exitCode !== 0, `exitCode ${bad.exitCode}`);
+  check("release posture refuses to boot with MAX_RECORD_PAYLOAD_BYTES=0", bad.exitCode !== null && bad.exitCode !== 0, `exitCode ${bad.exitCode}`);
   try { bad.kill(); } catch {}
 }
 

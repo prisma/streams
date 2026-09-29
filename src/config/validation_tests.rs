@@ -681,22 +681,42 @@ mod validate_boundary_tests {
         );
     }
 
+    fn release(c: &mut CliArgs) {
+        c.release_posture = true;
+        c.streams_auth_mode = "enforce".into();
+        c.project_id = "proj_real".into();
+        c.streams_auth_keys_file = Some("/k".into());
+        c.streams_auth_policy_file = Some("/p".into());
+        c.streams_auth_grants_file = Some("/g".into());
+        c.fleet_auth_mode = "workload".into();
+        c.workload_token_file = Some("/w".into());
+    }
+
+    /// The release posture boots on the shipped record ceiling: its worst
+    /// frame, 786,816 bytes, fits the 1 MiB ring.
+    #[test]
+    fn release_posture_boots_on_the_shipped_record_ceiling() {
+        let v = validate_with(release, &[])
+            .expect("the release posture must validate on the shipped ceiling");
+        assert_eq!(v.config().cli.max_record_payload_bytes, Some(131_072));
+    }
+
+    /// No ceiling, absent or 0, is refused under the release posture.
     #[test]
     fn validation_rejects_release_posture_without_record_ceiling() {
-        rejects(
-            |c| {
-                c.release_posture = true;
-                c.streams_auth_mode = "enforce".into();
-                c.project_id = "proj_real".into();
-                c.streams_auth_keys_file = Some("/k".into());
-                c.streams_auth_policy_file = Some("/p".into());
-                c.streams_auth_grants_file = Some("/g".into());
-                c.fleet_auth_mode = "workload".into();
-                c.workload_token_file = Some("/w".into());
-            },
-            &[],
-            "MAX_RECORD_PAYLOAD_BYTES",
-        );
+        for (unlimited, marker) in [
+            (None, "requires MAX_RECORD_PAYLOAD_BYTES"),
+            (Some(0), "MAX_RECORD_PAYLOAD_BYTES=0 is unlimited"),
+        ] {
+            rejects(
+                |c| {
+                    release(c);
+                    c.max_record_payload_bytes = unlimited;
+                },
+                &[],
+                marker,
+            );
+        }
     }
 
     #[test]

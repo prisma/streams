@@ -363,6 +363,7 @@ share.
   | limit | value | enforcement |
   |---|---|---|
   | append body | 32 MB | router + engine reject |
+  | record | 131,072 bytes as stored, by default (`MAX_RECORD_PAYLOAD_BYTES`; on a non-JSON stream the request body is one record, so the ceiling bounds the body there) | 413 `record_too_large` (raw) / `body_too_large` (product); with a producer, 400 `invalid_body` |
   | response chunk | 8 MB | engine |
   | per-stream sustained appends | measured (engine, 2026-07-14 round 2): **12.4k req/s, 55k ev/s, 56 MB/s** peak; **~750 req/s / 48k ev/s / ~49 MB/s pinned-sustained** with absorber+trim active — the earlier ~0.4–1.7 MB/s figure was two config defaults (`l0_max_ssts_per_key`, manifest-poll staleness), not a compaction defect. Stated product limit: 5k req/s / 50k ev/s / 50 MB/s per ordered stream, latency floor 2× flush + PUT (EXPERIMENT-PILOT bench round 2) | admission token bucket + committer fair-share |
   | live tail connections per instance | 1,200 direct by default (`SSE_MAX_CONNECTIONS`, the 1 GiB Compute class value; all streams of the instance share it; unbounded via CDN/mux tier — OPERATIONS.md §4) | connection counter: 503 `subscription_capacity`, `retry-after: 5` |

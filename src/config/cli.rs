@@ -389,9 +389,10 @@ pub struct CliArgs {
     /// ceiling (round-10 review): a request may carry MANY records,
     /// but ONE record whose prepared SSE frame exceeds the certified
     /// feed ring turns a valid append into an O(subscribers)
-    /// reconnect herd on a shared feed. Unset = unlimited (dev
-    /// posture); the release posture REQUIRES a ring-consistent value.
-    #[arg(long, env = "MAX_RECORD_PAYLOAD_BYTES")]
+    /// reconnect herd on a shared feed. Default 131,072, an eighth of
+    /// the default ring. 0 = unlimited, which the release posture
+    /// refuses, as it refuses a ceiling whose worst frame exceeds the ring.
+    #[arg(long, env = "MAX_RECORD_PAYLOAD_BYTES", default_value = "131072")]
     pub(crate) max_record_payload_bytes: Option<usize>,
 
     /// Billing tenant boundary: the account every stream created on
@@ -622,7 +623,7 @@ impl CliArgs {
             fleet_auth_mode: "static".into(),
             workload_token_file: None,
             release_posture: false,
-            max_record_payload_bytes: None,
+            max_record_payload_bytes: Some(131_072),
             account_id: "acct_local".into(),
             project_id: "proj_local".into(),
             cell_id: "local".into(),

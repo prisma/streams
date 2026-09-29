@@ -14,12 +14,12 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 
 | Risk | product | raw | both | fleet-internal | operator-debug | process | Total |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
+| high | 5 | 1 | 4 | 0 | 0 | 0 | 10 |
 | medium | 5 | 1 | 10 | 0 | 0 | 1 | 17 |
 | low | 7 | 2 | 9 | 11 | 10 | 5 | 44 |
-| **Total** | **17** | **4** | **22** | **11** | **10** | **6** | **70** |
+| **Total** | **17** | **4** | **23** | **11** | **10** | **6** | **71** |
 
-70 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#70 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, and #70, its cap on live subscriptions.
+71 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#71 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as do #69, the profile's feed retention as the default, #70, its cap on live subscriptions, and #71, its record ceiling.
 
 ### Index
 
@@ -94,9 +94,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 67 | 823b3269, 648d7df4, 0b34b86f | A server started without settings runs the certified 1 GiB posture | process | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 68 | 6fb8d8f0 | A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 | 69 | 18a6eaf6 | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
-| 70 | this record's commit | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 70 | f85990ab | A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 71 | this record's commit | A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes | both | high | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 
-## High risk (9)
+## High risk (10)
 
 In each of these changes, a request that used to succeed can now fail permanently. Each risk reason states how narrow the affected inputs are and, where it applies, why the earlier success was incorrect.
 
@@ -266,6 +267,26 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - src/segmap.rs::tests::lineage_and_route_follow_allocation_whatever_the_clocks_say (red: route answered the sealed ancestor 1, not the leaf 3; it also pins that `lineage` sorts a map whose vector is not in id order)
   - NOT pinned: the reused-sequence and stale-epoch producer answers under skew, which follow from the same nearest-first list.
 - **Risk reason:** high by the rubric's letter: under skew, requests that used to succeed (a Stream-Seq retry, a reused producer sequence, a stale-epoch producer) now fail permanently. Each earlier success was wrong: it wrote a record twice or admitted a producer the stream had fenced, violating the dedupe contract the same requests get without a split. Reads, consumers and scans change only from a wrong order or a false closed signal to the lineage order.
+- **Check against commit:** written with the change.
+
+### #71 (this record's commit) — A server that does not set MAX_RECORD_PAYLOAD_BYTES refuses a record over 131,072 bytes
+
+- **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default."
+- **Surface:** both
+- **Endpoint:** raw `POST /v1/stream/{name}` (append, and close with content); raw `PUT /v1/stream/{name}` with an initial body, and a fork created with `Stream-Fork-Sub-Offset` (the materialized partial record); product `POST /v1/streams/{name}/records` and `records:batch`; product `POST /v1/streams/{name}:seal` with a final record. Process: boot under `STREAMS_RELEASE_POSTURE=1`.
+- **Condition:** An instance that does not set `MAX_RECORD_PAYLOAD_BYTES` receives a record whose stored bytes exceed 131,072. On a JSON stream a record is one top-level element as stored; on any other stream the whole request body is one record. A release-posture deployment had to set the name already, and the profile sets 131072.
+- **Before:** No ceiling. Any record up to the request-body limit and the per-stream ingest capacity was accepted. Under the release posture the server refused to boot without the name.
+- **After:** Raw answers 413 `record_too_large` (`record of N bytes exceeds the per-record ceiling (MAX_RECORD_PAYLOAD_BYTES)`); with a producer the refusal is the deferred verdict the committer answers after deciding duplicates, 400 `invalid_body` (as `admission_maintenance.rs` pins: "a producer's deferred verdict outranks the 413"). A fork whose materialized partial exceeds the ceiling answers 413 `record_too_large` and creates nothing. Product append, appendMany and the seal's final answer 413 `body_too_large`, not retryable, refused before the seal intent is published. One oversized record refuses its whole request; nothing is written. A record of exactly 131,072 bytes is accepted. Reads, scans and SSE of records stored earlier are unchanged. An explicit `MAX_RECORD_PAYLOAD_BYTES=0` keeps the old behaviour outside the release posture. Under the release posture the server now boots without the name, on the default, and still refuses 0.
+- **Retry semantics:** The refusal is permanent for that record; retrying the same bytes fails the same way. During a rolling upgrade of a deployment that never set the name, instances differ: a final accepted by an old instance survives (`docs/seal-transitions.md`, "Limit reductions and accepted finals"). A producer's retry of an already committed oversized record is still acknowledged as its duplicate, because the committer decides duplicates first.
+- **Who is affected:** Clients of deployments that ran without a ceiling and write records over 128 KiB, notably large bodies on non-JSON raw streams, and forks at a sub-offset over 131,072 bytes into an older large record. Production cells that source the profile, and every release-posture deployment, already run a ceiling and see no change. Such a deployment that wants to keep no ceiling sets `MAX_RECORD_PAYLOAD_BYTES=0` before it upgrades.
+- **Pinning tests:**
+  - src/config/tests.rs::cli_surface_is_pinned (red-first: left `("max-record-payload-bytes", "MAX_RECORD_PAYLOAD_BYTES", "")`)
+  - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
+  - src/config/validation_tests.rs::release_posture_boots_on_the_shipped_record_ceiling (new, red-first: the release posture refused to boot without the name)
+  - src/config/validation_tests.rs::validation_rejects_release_posture_without_record_ceiling (states the absent ceiling itself)
+  - scripts/platform-e2e.mjs: `release posture refuses to boot with MAX_RECORD_PAYLOAD_BYTES=0`
+  - unchanged refusal pins: src/dst/tests/livefeed_ownership.rs::record_ceiling_refuses_one_oversized_record_not_the_batch, src/dst/tests/livefeed_history.rs::fork_materialized_partial_respects_the_record_ceiling, src/application/append/content.rs::the_record_ceiling_measures_the_stored_client_text
+- **Risk reason:** high: a request that used to succeed can fail permanently. It is narrow: only servers that set no ceiling, which excludes production and every release-posture deployment; and accepting such a record was unsafe for shared feeds, because a record whose prepared frame (up to 6 x its size) exceeds the 1 MiB ring disconnects every subscriber of the feed at once. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Medium risk (17)
@@ -580,7 +601,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a request that was admitted is refused, on a server that sets nothing. The refusal is the one clients already handle, production is unchanged, and the lower line is the certified one. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-### #70 (this record's commit) — A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions
+### #70 f85990ab — A server that does not set SSE_MAX_CONNECTIONS admits 1,200 live subscriptions
 
 - **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default."
 - **Surface:** both
