@@ -679,9 +679,9 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     (
         "admit-max-inflight-per-stream",
         "ADMIT_MAX_INFLIGHT_PER_STREAM",
-        "64",
+        "256",
     ),
-    ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "0"),
+    ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "512"),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "60"),

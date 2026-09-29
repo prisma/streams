@@ -246,7 +246,8 @@ itself (`resume_split`). `SCALE_FAULT_POINT=after_seal` and
 
 | env | default | pilot value | behavior |
 |---|---|---|---|
-| `ADMIT_MAX_INFLIGHT` | 0 (off) | 256 | above this many in-flight requests, `/v1/stream` gets `429 + Retry-After: 1` and a 25 ms tarpit. Direct-path instance capacity measured at ~510 concurrent; 256 is the guarded setting for router-fronted 1-CPU boxes |
+| `ADMIT_MAX_INFLIGHT` | 512 (0 = off, the default until 2026-09-29) | 256 | above this many in-flight requests, an authenticated append gets `429 + Retry-After: 1` after a 25 ms tarpit. The count covers every request on every route, parked long-polls included; above four times the cap (2,048 at the default) every `/v1/stream` and `/v1/streams` request, reads included, gets `503 + Retry-After: 1` before authentication, with no tarpit. Direct-path instance capacity measured at ~510 concurrent; 256 is the guarded setting for router-fronted 1-CPU boxes |
+| `ADMIT_MAX_INFLIGHT_PER_STREAM` | 256 (0 = off; 64 until 2026-09-29) | — | above this many concurrent appends on one stream segment, a further append to it gets `429 stream_overloaded` + `Retry-After: 1` (product: `429 rate_limited`), with no tarpit, so that one hot stream cannot take every slot of the instance cap. Where `ADMIT_MAX_INFLIGHT` is lowered to 256 or less, set this below it: at the default it would equal the instance cap |
 | `ADMIT_RSS_SHED_MB` | 500 | 500 | appends (clients' and the server's own to its usage, audit and ops streams; not creates or deletes) get `429 + Retry-After: 2` after a 25 ms tarpit while sampled RSS plus the absorber's reserved bytes exceeds this (counted in MiB). Without it a 1-GB box OOM-dies at full throughput instead of shedding. The first pilot's 800 sat above the ~750 MB kill line and protected nothing; 0 turns it off |
 
 The A/B is stark (run 11): identical overload, guards off = all four
@@ -291,7 +292,7 @@ for i in 1 2 3 4; do
     -e SLATE_S3_REGION=auto -e SLATE_S3_ACCESS_KEY_ID=t -e SLATE_S3_SECRET_ACCESS_KEY=t \
     -e PATH_PREFIX=dockerfleet -e FLEET_PREFIX=dockerfleet -e INSTANCE_NAME=streams-$i \
     -e INITIAL_SHARDS=16 -e AUTH_TOKEN=devtoken -e TOKIO_WORKERS=3 \
-    -e ADMIT_MAX_INFLIGHT=256 \
+    -e ADMIT_MAX_INFLIGHT=256 -e ADMIT_MAX_INFLIGHT_PER_STREAM=64 \
     streams-slate:local --listen 0.0.0.0:8080
 done
 ```
@@ -316,6 +317,8 @@ OOM-killed container under load otherwise stays down.
 
 **429 semantics**: body `{"error":{"code":"overloaded"…}}` with
 `Retry-After: 1` (in-flight shed) or `2` (RSS shed), after a 25 ms tarpit.
+The per-stream cap answers `stream_overloaded` with `Retry-After: 1` and no
+tarpit.
 Sustained 429s are the *designed* behavior under overload — the alternative
 was death (§3.6).
 

@@ -174,6 +174,21 @@ set the name set 60 (the table's "seven of eight" is the audit's count);
 which still says 300 (no line headroom; three receipts). Not run: the rigs
 that start the binary. The other three rows are not changed yet.
 
+Status (2026-09-29, `ADMIT_MAX_INFLIGHT` and
+`ADMIT_MAX_INFLIGHT_PER_STREAM`, rows 2 and 3 of the table below): done as
+one change, edge record #79 (medium), on the same delegation; the record
+awaits ratification. The binary's defaults are 512 and 256. The instance
+cap was off: a server that sets nothing now refuses appends above 512
+requests in flight and, above 2,048, every request to a stream path before
+authentication; the count covers every request on every route. The two are
+one change so that no commit has a per-stream cap of 256 without an
+instance cap above it. They are the values the deployments run; neither is
+derived or measured as an optimum. `fra-ab-server` and its script, which
+set the instance cap to 256, now set the per-stream cap to 64, the value
+they ran. No other script, family or profile is edited. Not run: the rigs
+that start the binary. After this status the row of `SLATE_S3_REGION` is
+the one that is not changed.
+
 `WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and `WAL_POST_ACK_GATHER_MS=6`
 are set together by eight of the nine server families; the binary defaults
 to tick mode (0, 0, 0). Changing one alone gives a combination nothing runs,

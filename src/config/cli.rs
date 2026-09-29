@@ -488,14 +488,20 @@ pub struct CliArgs {
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
-    #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
+    /// Default 256, what the deployments set, half the default instance
+    /// cap. Set it below ADMIT_MAX_INFLIGHT where that is lowered.
+    #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 256)]
     pub(crate) admit_max_inflight_per_stream: i64,
 
     /// §12-lite admission backstop: shed /v1/stream requests with 429 +
     /// Retry-After beyond this many in flight (0 = off). Protects the
     /// durable path from queue collapse when offered load exceeds
     /// capacity; pairs with closed-loop clients honoring Retry-After.
-    #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 0)]
+    /// Default 512, what the deployments set. The count covers every
+    /// request on every route, so parked long-polls use it up; above four
+    /// times the cap every /v1/stream and /v1/streams request is refused
+    /// with 503 before authentication.
+    #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 512)]
     pub(crate) admit_max_inflight: i64,
 
     /// Measured per-instance ingress-concurrency capacity through the
@@ -626,8 +632,8 @@ impl CliArgs {
             project_memory_release_pct: 75,
             admit_rss_shed_mb: 500,
             sse_max_connections: 1_200,
-            admit_max_inflight_per_stream: 64,
-            admit_max_inflight: 0,
+            admit_max_inflight_per_stream: 256,
+            admit_max_inflight: 512,
             scale_edge_slots: 140,
             shared_cache_bytes: 128 * 1024 * 1024,
             scale_in_secs: 60,

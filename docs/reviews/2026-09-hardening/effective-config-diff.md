@@ -41,7 +41,11 @@ switch at 0, which its script now sets, and gains the gap and the gather,
 which the tick does not read. The default of `ABSORB_AGE_SECS` is 60 since
 edge record #78: on the next run `cli.absorb_age_secs` reads 60 instead of
 300 for `defaults`, `platform-e2e` and `livefeed-canary`, which do not set
-the name. No run of the tool has been made since these changes.
+the name. The defaults of the two admission caps are 512 and 256 since edge
+record #79: on the next run `cli.admit_max_inflight` reads 512 instead of 0
+and `cli.admit_max_inflight_per_stream` 256 instead of 64 for the same
+three families, and `fra-ab-server` keeps 256 and 64, the second of which
+its script now sets. No run of the tool has been made since these changes.
 
 ## Summary
 

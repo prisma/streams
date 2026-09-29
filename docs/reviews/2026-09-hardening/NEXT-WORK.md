@@ -1018,3 +1018,31 @@ Changed so far (package 2, then package 1, then package 3):
   deployments set both to 60, and no run was made for this change. To run
   before the push, with the rigs listed above: they start the binary
   without the name.
+- Package 3, the two admission caps (edge record #79, medium): the
+  binary's defaults are `ADMIT_MAX_INFLIGHT=512` (0, off, before) and
+  `ADMIT_MAX_INFLIGHT_PER_STREAM=256` (64 before), what eight of the nine
+  server families that set the instance cap set. A server that sets neither
+  refuses an authenticated append with 429 `overloaded` and
+  `Retry-After: 1` while more than 512 requests are in flight, refuses
+  every request to a stream path with a pre-authentication 503 above 2,048,
+  and admits 256 concurrent appends to one stream segment. The count covers
+  every request on every route, parked long-polls included. They are the
+  values the deployments run, not measured optima: no document derives
+  either, and performance acceptance is the owner's.
+  `scripts/bench-fra-ab.sh` and its family, which set the instance cap to
+  256, now set `ADMIT_MAX_INFLIGHT_PER_STREAM=64`, the value they ran, and
+  RUNBOOK's Docker example does the same: under an instance cap of 256 the
+  new default would let one stream take every slot. RUNBOOK §3.6 gains the
+  row of the per-stream cap, which it lacked, and WIRE-MATRIX the code
+  `stream_overloaded`. Not pinned by a test: that the values reach the
+  controller of a running server (`bootstrap::run` cannot be called by a
+  test; the new tests restate its two field copies), and the wire answer of
+  `stream_overloaded`. For the owner with the ratification: the A/B rig
+  outside the repository (`~/.streams-ab`) runs P1 with 1,024 clients and
+  must set `ADMIT_MAX_INFLIGHT=0`, or its figures change;
+  `AWS-readyness.md` §3.2 item 7 still states the shed line's default as
+  600 (it is 500 since edge record #68) and was not corrected here. To run
+  before the push, with the rigs listed above and
+  `scripts/mt-noisy-campaign.mjs`: they start the binary without the names,
+  and whether one of them holds more than 512 requests in flight is not
+  determined.

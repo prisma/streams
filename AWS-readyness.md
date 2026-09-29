@@ -96,11 +96,11 @@ origin on the codex branch.
 
 ### 3.2 Resource governance (implemented in this change set)
 
-6. **Per-stream inflight cap** (`ADMIT_MAX_INFLIGHT_PER_STREAM`, default 64,
-   bounded counter map). One hot stream can no longer occupy every admission
-   slot of its shard owner. Scoped 429 + `Retry-After`. Per-*customer*
-   admission is deferred with the identity layer (§4) — without verified
-   tenant identity a customer cap is fiction.
+6. **Per-stream inflight cap** (`ADMIT_MAX_INFLIGHT_PER_STREAM`, default 256,
+   64 until 2026-09-29; bounded counter map). One hot stream can no longer
+   occupy every admission slot of its shard owner. Scoped 429 +
+   `Retry-After`. Per-*customer* admission is deferred with the identity
+   layer (§4) — without verified tenant identity a customer cap is fiction.
 7. **RSS shed recalibration** (`ADMIT_RSS_SHED_MB` default **600**, and the
    operating envelope documented in `RUNBOOK.md`): shed must be reachable
    below the platform kill line or it protects nothing.
