@@ -269,7 +269,7 @@ struct FeedState {
 /// model B, per the follow-up review's capacity finding): ONE exact
 /// reservation per retained batch, released on eviction and at feed
 /// drop. Idle shared feeds cost nothing; busy feeds consume real
-/// bytes. Cap from SSE_FEED_TOTAL_BYTES (16 MiB certified on 1-GiB).
+/// bytes. Cap from SSE_FEED_TOTAL_BYTES (64 MiB certified on 1-GiB).
 pub(crate) struct FeedMemoryBudget {
     reserved: AtomicU64,
     max: AtomicU64,
@@ -300,14 +300,14 @@ pub(crate) struct ProjectRetention {
 }
 
 /// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
-/// QUARTER of the cell ceiling. Strict form for release validation
+/// HALF of the cell ceiling. Strict form for release validation
 /// (an unparseable value must fail boot, round-10e).
 pub(crate) fn configured_project_cap(
     cfg: &crate::config::SseConfig,
     global: u64,
 ) -> Result<u64, String> {
     match cfg.feed_project_bytes_raw.as_deref() {
-        None => Ok(global / 4),
+        None => Ok(global / 2),
         Some(raw) => raw
             .trim()
             .parse()
@@ -344,8 +344,8 @@ impl FeedMemoryBudget {
         let project_cap = match configured_project_cap(cfg, max) {
             Ok(v) => v,
             Err(m) => {
-                tracing::warn!("{m}; falling back to the quarter-of-cell default");
-                max / 4
+                tracing::warn!("{m}; falling back to the half-of-cell default");
+                max / 2
             }
         };
         Self {

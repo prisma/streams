@@ -141,9 +141,9 @@ impl ServerConfig {
             self.sse.feed_total_bytes = raw.trim().parse().unwrap_or_else(|_| {
                 tracing::warn!(
                     "SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count; \
-                     using the 16 MiB default"
+                     using the 64 MiB default"
                 );
-                16 * 1024 * 1024
+                64 * 1024 * 1024
             });
         }
         self.sse.feed_project_bytes_raw = env.get("SSE_FEED_PROJECT_BYTES");

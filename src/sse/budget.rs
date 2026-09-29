@@ -13,7 +13,7 @@ pub(crate) fn feed_ring_bytes(cfg: &crate::config::SseConfig) -> usize {
 }
 
 /// Process-global shared-mode retention budget. Env
-/// SSE_FEED_TOTAL_BYTES (default 16 MiB — the ladder-certified 1-GiB
+/// SSE_FEED_TOTAL_BYTES (default 64 MiB — the round-12 certified 1-GiB
 /// posture; same WP-01 loader parse + warn contract as the ring).
 /// Zero = singleton-only: a second subscriber to the same
 /// feed is refused with a typed capacity error. A bounded

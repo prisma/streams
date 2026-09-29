@@ -263,11 +263,11 @@ fn validate_fleet_auth(
     Ok(())
 }
 
-/// Largest hub retention posture any field campaign exercised (the
-/// 1-GiB ladder's 64-MiB rung). NOT the release-safe maximum for any
-/// specific profile — that is per-profile below; a rung that produced
-/// memory-pressure write shedding at ~505 hubs must not be the
-/// release-safe ceiling for the tier it shed on.
+/// Largest feed retention any field campaign exercised (64 MiB, the
+/// 1-GiB class, certified in round 12 and the binary's default). NOT
+/// the release-safe maximum for any specific profile — that is
+/// per-profile below; a larger tier gets its own entry once a campaign
+/// certified it there.
 pub(crate) const MAX_EXERCISED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Release-safe hub-retention MAXIMUM per memory profile. Follow-up
@@ -361,8 +361,8 @@ pub(crate) fn validate_configured_capacity(
                 if release_posture {
                     return Err(format!(
                         "SSE_FEED_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
-                         maximum for memory profile {:?} (the 1-GiB class certifies at \
-                         16 MiB; 64 MiB tripped RSS shed at ~505 feeds)",
+                         maximum for memory profile {:?} (the largest retention a \
+                         campaign certified for it; docs/PERF-LIVEFEED.md)",
                         profile.unwrap_or("default")
                     ));
                 }

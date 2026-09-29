@@ -230,7 +230,7 @@ fn default_values_are_pinned() {
     );
     assert_eq!(c.postings.cache_bytes, 64 * 1024 * 1024);
     assert_eq!(c.sse.feed_ring_bytes, 1024 * 1024);
-    assert_eq!(c.sse.feed_total_bytes, 16 * 1024 * 1024);
+    assert_eq!(c.sse.feed_total_bytes, 64 * 1024 * 1024);
     assert_eq!(c.sse.feed_project_bytes_raw, None);
     assert_eq!(c.sse.heartbeat_ms, 15_000);
     assert_eq!(c.http.tail_max_bytes, 1024 * 1024);

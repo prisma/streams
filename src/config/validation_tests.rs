@@ -158,6 +158,24 @@ mod config_validation_tests {
     /// payload ceiling whose worst-case prepared SSE frame fits the
     /// feed ring.
     #[test]
+    fn an_unset_project_allowance_follows_the_cell_at_half() {
+        let cell = |bytes: u64| crate::config::SseConfig {
+            feed_total_bytes: bytes,
+            ..Default::default()
+        };
+        let refusal = |bytes: u64| {
+            validate_record_ceiling(&cell(bytes), true, Some(131_072))
+                .unwrap_err()
+                .to_string()
+        };
+        validate_record_ceiling(&cell(64 * 1024 * 1024), true, Some(131_072)).unwrap();
+        // Worst frame of a 131,072-byte record: 6 x 131,072 + 384 = 786,816.
+        validate_record_ceiling(&cell(2 * 786_816), true, Some(131_072)).unwrap();
+        assert!(refusal(2 * 786_816 - 2).contains("exceeds SSE_FEED_PROJECT_BYTES=786815"));
+        assert!(refusal(0).contains("SSE_FEED_PROJECT_BYTES=0 admits shared subscribers"));
+    }
+
+    #[test]
     fn release_posture_requires_a_ring_consistent_record_ceiling() {
         let sse = crate::config::SseConfig::default();
         // Off-release: no ceiling required.
@@ -298,11 +316,22 @@ mod config_validation_tests {
         assert_eq!((e.sse_max_connections, e.configured), (3_072, 10_000));
     }
 
-    /// Follow-up review finding 4 (red): the release-safe hub-budget
-    /// maximum is PROFILE-specific. The 64-MiB rung was exercised but
-    /// produced RSS shed on the 1-GiB class, so it must not be that
-    /// class's release-safe ceiling. PR 4.1: pure configured-capacity
-    /// validation, no OS input in sight.
+    /// The refusal of an oversized feed budget names the maximum and where
+    /// it was certified, not the deleted hub's 16 MiB.
+    #[test]
+    fn an_oversized_feed_budget_is_refused_with_the_certified_maximum() {
+        assert_eq!(
+            configured(true, Some("compute-1g"), Some("134217728"), 10_000).unwrap_err(),
+            "SSE_FEED_TOTAL_BYTES=134217728 exceeds the 67108864-byte release-safe maximum \
+             for memory profile \"compute-1g\" (the largest retention a campaign certified \
+             for it; docs/PERF-LIVEFEED.md)"
+        );
+    }
+
+    /// Follow-up review finding 4 (red): the release-safe feed-budget
+    /// maximum is PROFILE-specific: a class's ceiling is what a campaign
+    /// certified on it (64 MiB on the 1-GiB class, round 12). PR 4.1:
+    /// pure configured-capacity validation, no OS input in sight.
     #[test]
     fn hub_budget_maximum_is_profile_specific() {
         const THIRTY_TWO_MIB: &str = "33554432";

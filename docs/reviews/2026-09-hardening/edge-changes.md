@@ -16,10 +16,10 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 |---|---:|---:|---:|---:|---:|---:|---:|
 | high | 5 | 1 | 3 | 0 | 0 | 0 | 9 |
 | medium | 5 | 1 | 9 | 0 | 0 | 1 | 16 |
-| low | 7 | 2 | 8 | 11 | 10 | 5 | 43 |
-| **Total** | **17** | **4** | **20** | **11** | **10** | **6** | **68** |
+| low | 7 | 2 | 9 | 11 | 10 | 5 | 44 |
+| **Total** | **17** | **4** | **21** | **11** | **10** | **6** | **69** |
 
-68 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#68 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too.
+69 records in total; 51 matched their commit and 1 is flagged. #53 (a security fix), #54 and #55 (release-hold fixes) were recorded by their implementers and RATIFIED by the owner on 2026-09-25 (second external review of 9813d1cb). #56 and #57 are authorization changes the owner decided in that review. #53-#69 have not been checked against their commits by an independent pass. #61-#63 are item 40's steps, which the owner decided in the second review; #63 was RATIFIED by the owner on 2026-09-28, with the clearer `runtime draining` readiness text, and amended afterwards (its bounds and no-peer rule; see the record). #64 completes item 3 under the owner's direction for #54, and #65 is billing in a fleet and across recreation (NEXT-WORK §2); the owner RATIFIED both on 2026-09-29. #66 implements the owner's B3 decision of 2026-09-29 (a late close corrects its frozen month and stops the carry); the owner RATIFIED it on 2026-09-29. #67 makes the binary's defaults the 1 GiB profile's values where no client can observe them (owner decision of 2026-09-29) and awaits the owner's ratification; #68 is the profile's shed line as the default, which a client can observe, and awaits it too, as does #69, the profile's feed retention as the default.
 
 ### Index
 
@@ -92,7 +92,8 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 65 | 1b65e15d, 61068487, 8182730e, db126ccd | Replaced and dead storage stops billing in a fleet, at the instant it ended | both | medium | owner direction (NEXT-WORK §2); ratified 2026-09-29 |
 | 66 | 0b7840c7 | A storage close that reaches the rollup after its month was finalized corrects that month to the close instant, and no later month bills the closed segment | both | medium | owner decision (B3, 2026-09-29); ratified 2026-09-29 |
 | 67 | 823b3269, 648d7df4, 0b34b86f | A server started without settings runs the certified 1 GiB posture | process | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
-| 68 | this record's commit | A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 68 | 6fb8d8f0 | A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs | both | medium | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
+| 69 | this record's commit | A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell | both | low | owner decision (2026-09-29, the 1 GiB profile is the default); awaits ratification |
 
 ## High risk (9)
 
@@ -559,7 +560,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: it changes billed amounts on frozen months. Every change moves a month's storage to what the shard's persisted records say it owed: down for a close (the common case), up only when the gauge rose after the carry's knowledge and the close then settled the month. The rule rests on three shard facts, named on `settles` in `src/rollup/page.rs`: a segment's gauge only grows on append, only `billing_close` zeroes it, and a closed incarnation takes no appends or renewals; a change to gauge semantics must revisit it. Left unchanged, each a separate owner call: a late snapshot that still owns bytes does not advance the segment state (later months keep the older gauge); a late non-settled snapshot still marks its month final-seen, so its same-version month-final is dropped; a gauge-0 month-final that lands inside its own month's carry-to-freeze window is still dropped; `finalize_row`'s own extrapolation (`src/rollup/close.rs`) never reaches the aggregates, so a settled correction on a floor that extrapolation (not the carry) wrote leaves the project under the sum of its streams; storage is not reconciled. Awaits the owner's ratification. RATIFIED by the owner on 2026-09-29.
 - **Check against commit:** written with the change.
 
-### #68 (this record's commit) — A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs
+### #68 6fb8d8f0 — A server that sets no shed line refuses appends above 500 MiB of memory, the line production runs
 
 - **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default."
 - **Surface:** both
@@ -578,7 +579,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Risk reason:** medium: a request that was admitted is refused, on a server that sets nothing. The refusal is the one clients already handle, production is unchanged, and the lower line is the certified one. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
-## Low risk (43)
+## Low risk (44)
 
 None of these changes alters a status, code or header on a path that worked before. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
@@ -1343,6 +1344,28 @@ None of these changes alters a status, code or header on a path that worked befo
   - src/config/tests.rs::shipped_fixed_memory_budgets_sum_to_336_mib (new, red-first: left 201326592, right 134217728)
   - src/config/tests.rs::cli_fixture_matches_scrubbed_parse
 - **Risk reason:** low: no answer changes and production sets every value already. It changes throughput and memory of a server that sets nothing, toward the only posture that was certified. Awaits the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #69 (this record's commit) — A server that sets neither feed budget retains up to 64 MiB of shared-feed data, and one project may hold half of the cell
+
+- **Program item:** NEXT-WORK §13, package 2 of `config-simplification.md`. Owner decision of 2026-09-29: "I want the 1gig profile to be the default." That an unset project allowance is half of the cell, and not a fixed 32 MiB, is the implementer's choice under the owner's delegation: it gives the profile's 32 MiB at the default and stays valid for every cell a deployment sets.
+- **Surface:** both
+- **Endpoint:** raw `GET /v1/stream/{name}?live=sse` and product `GET /v1/streams/{name}/records:sse`, in shared mode (two or more subscribers of one feed). Operator: `GET /v1/debug/load` (`sse_livefeed.reserved_bytes`, `project_retention`, `uncached_publish`, `project_cap_uncached`, `lag_disconnects`), the boot line `feed retention budget=...B`, the logged configuration summary (`sse.feed_total_bytes`), and the boot refusal of a cell above the release-safe maximum.
+- **Condition:** An instance that sets neither `SSE_FEED_TOTAL_BYTES` nor `SSE_FEED_PROJECT_BYTES`, or that sets only the cell. One project's retained prepared feed data exceeds 4 MiB, or the instance's exceeds 16 MiB.
+- **Before:** Cell 16 MiB; project allowance a quarter of the cell (4 MiB). A publication that could not reserve cleared the feed's ring and advanced its floor; subscribers behind the floor received a nonterminal end of body and resumed from their cursor. `docs/PERF-LIVEFEED.md` §2 measured 64,028 cut and resume cycles and a 354 ms delivery p99 at 500 x 2 under 16/4. Under the release posture a server that set only a cell below 4 x 786,816 bytes refused to boot. The refusal of an oversized cell said the class certifies at 16 MiB.
+- **After:** Cell 64 MiB; project allowance half of the cell (32 MiB by default, and half of whatever cell is set). The same publications are retained; the cut happens only past 32 MiB for one project or 64 MiB for the cell. A cell of at least 2 x 786,816 bytes validates without a project line. No status, code, header or frame changes. The refusal names the certified maximum and `docs/PERF-LIVEFEED.md`. Test rigs that take `SseConfig::default()` run 64/32 where they ran 16/4.
+- **Retry semantics:** Unchanged. A cut is still a body that ends without a terminal control; the client reconnects with its last cursor; delivery is lossless in both cases. There are fewer reconnects under retention pressure.
+- **Who is affected:** Deployments that run without the profile (development, the conformance and SDK smoke rigs, a cell that never sourced the profile). Production cells that source the profile already run 64/32. Isolation is weaker where the allowance is derived: two projects, not four, can fill the cell. Such an instance can hold 48 MiB more retained data; the boot check's fixed budgets do not count feed retention, so the 64 MiB below the shed line of #68 is what covers it.
+- **Pinning tests:**
+  - src/sse/feed/tests/project_cap.rs::an_unset_project_allowance_is_half_of_the_cell (new, red-first: left `Ok(16777216)`, right `Ok(33554432)`)
+  - src/sse/feed/tests/project_cap.rs::an_unparseable_project_allowance_falls_back_to_half_of_the_cell (new, red-first: left `(1000, 250)`, right `(1000, 500)`)
+  - src/sse/feed/tests/project_cap.rs::a_configured_project_allowance_is_taken_as_written (new, red-first on the cell: left `(16777216, 12345)`)
+  - src/sse/feed/tests/project_cap.rs::the_shipped_ring_and_cell_are_the_certified_ones (new)
+  - src/config/tests.rs::default_values_are_pinned (red-first: left 16777216, right 67108864)
+  - src/config/validation_tests.rs::an_unset_project_allowance_follows_the_cell_at_half (new, red-first: `worst-case prepared record (786816 bytes) exceeds SSE_FEED_PROJECT_BYTES=393408`)
+  - src/config/validation_tests.rs::an_oversized_feed_budget_is_refused_with_the_certified_maximum (new, red-first on the text)
+  - unchanged: src/dst/tests/admission_memory.rs::livefeed_budget_noisy_project_cannot_evict_another, src/dst/tests/persistence_faults.rs::cut_resume_never_skips_a_durable_record, src/dst/tests/livefeed_tail.rs::livefeed_budget_exhaustion_publishes_uncached_and_resumes
+- **Risk reason:** low: no status, code or header changes on a path that worked, and the change removes reconnects. 64 MiB of retention was certified (10,000 parked subscribers idle at 307 MB, peak 399 MB) only with the profile's 128 MiB shared cache and 500 line, which are the defaults since #67 and #68. Awaits the owner's ratification.
 - **Check against commit:** written with the change.
 
 ## Discrepancies

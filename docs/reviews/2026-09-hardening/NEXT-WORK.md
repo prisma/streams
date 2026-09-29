@@ -900,4 +900,6 @@ Changed so far (package 2):
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
   sha256 is pinned by release evidence and `bench/soak/oom-acceptance.sh`
   requires them.
-- The shed line, 500: edge record #68.
+- The shed line, 500 (6fb8d8f0): edge record #68.
+- Feed retention, 64 MiB for the cell and half of it for one project:
+  edge record #69.

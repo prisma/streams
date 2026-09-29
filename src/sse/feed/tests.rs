@@ -2,6 +2,7 @@
 #![cfg(test)]
 
 mod fixture;
+mod project_cap;
 mod read_error;
 mod retry;
 use super::*;

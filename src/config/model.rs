@@ -163,7 +163,7 @@ pub struct SseConfig {
     /// SSE_FEED_RING_BYTES, default 1 MiB; unparseable warns + default
     /// (same behavior, now at load time).
     pub feed_ring_bytes: usize,
-    /// SSE_FEED_TOTAL_BYTES, default 16 MiB; unparseable warns + default.
+    /// SSE_FEED_TOTAL_BYTES, default 64 MiB; unparseable warns + default.
     pub feed_total_bytes: u64,
     /// RAW SSE_FEED_TOTAL_BYTES string, for release-posture validation
     /// (`bootstrap::validate_release_capacity` refuses garbage outright;
@@ -171,7 +171,7 @@ pub struct SseConfig {
     pub feed_total_bytes_raw: Option<String>,
     /// SSE_FEED_PROJECT_BYTES, RAW string. The strict parse stays at the
     /// use site (`sse::feed::configured_project_cap`) because release
-    /// posture turns it into a hard boot error; default there = global/4.
+    /// posture turns it into a hard boot error; default there = global/2.
     pub feed_project_bytes_raw: Option<String>,
     /// SSE_HEARTBEAT_MS, default 15_000; 0/unparseable = default.
     pub heartbeat_ms: u64,
@@ -425,7 +425,7 @@ impl Default for SseConfig {
     fn default() -> Self {
         Self {
             feed_ring_bytes: 1024 * 1024,
-            feed_total_bytes: 16 * 1024 * 1024,
+            feed_total_bytes: 64 * 1024 * 1024,
             feed_total_bytes_raw: None,
             feed_project_bytes_raw: None,
             heartbeat_ms: 15_000,

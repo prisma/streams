@@ -184,6 +184,7 @@ OWNERS = (
     owner('sse_feed_test_fixture', 'src/sse/feed/tests/fixture.rs', 'sse::'),
     owner('sse_feed_retention', 'src/sse/feed/retention.rs', 'sse::'),
     owner('sse_feed_test_support', 'src/sse/feed/test_support.rs', 'sse::'),
+    owner('sse_budget', 'src/sse/budget.rs', 'sse::'),
     owner('postings_validated_tests', 'src/postings/validated/tests.rs', 'postings::'),
     MutationOwner(
         'pilot-benchmark',

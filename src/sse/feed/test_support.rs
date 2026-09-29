@@ -17,7 +17,7 @@ impl FeedMemoryBudget {
 
     /// Test-only: shrink the cell ceiling so exhaustion scenarios stay
     /// cheap (per-rig — every AppState builds its own budget). The
-    /// project backstop follows at the default quarter.
+    /// project backstop follows at a quarter of it (the rigs' geometry).
     pub(crate) fn set_max_for_test(&self, max: u64) {
         self.max.store(max, Ordering::SeqCst);
         self.project_cap.store(max / 4, Ordering::SeqCst);
