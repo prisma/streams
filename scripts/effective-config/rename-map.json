@@ -112,6 +112,18 @@
       "commit": "the commit of edge record #80",
       "edge_record": 80,
       "why": "constant 120 s (EngineConfig::COMPACTIONS_GC_MIN_AGE); no family set it"
+    },
+    {
+      "old": "cli.absorb_pace_ms",
+      "commit": "the commit of edge record #81",
+      "edge_record": 81,
+      "why": "gather pacing is removed with its code: 0 (no park) was the default and the value of the two families that set the name"
+    },
+    {
+      "old": "cli.absorb_pace_window_ms",
+      "commit": "the commit of edge record #81",
+      "edge_record": 81,
+      "why": "gather pacing is removed with its code: the window had no effect while the park was 0"
     }
   ]
 }

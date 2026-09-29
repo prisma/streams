@@ -48,6 +48,18 @@
     "intended": "yes",
     "note": "MAX_SEGMENTS_PER_STREAM: see scaler.cold_evals. No count of segments stops a split, on either side."
   },
+  "R1:removed:cli.absorb_pace_ms:0-><absent>": {
+    "commit": "the commit of edge record #81",
+    "edge_record": 81,
+    "intended": "yes",
+    "note": "Gather pacing is removed with its code: a gather issues its read waves back to back, which is what 0, the default and the value of both wc-ladder families, already meant. The argument is refused on argv (clap UnknownArgument, exit 2); the environment name is not read. bench/soak/wc-ladder.sh and the two families no longer set the name."
+  },
+  "R1:removed:cli.absorb_pace_window_ms:50-><absent>": {
+    "commit": "the commit of edge record #81",
+    "edge_record": 81,
+    "intended": "yes",
+    "note": "See cli.absorb_pace_ms. The window had no effect while the park was 0."
+  },
   "R1:removed:cli.compactions_gc_interval_secs:30-><absent>": {
     "commit": "the commit of edge record #80",
     "edge_record": 80,

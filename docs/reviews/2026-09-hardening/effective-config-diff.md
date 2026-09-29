@@ -53,6 +53,10 @@ edge record #80: on the next run six `cli.*` leaves are removed leaves
 where the table below says 155 for the run of 2026-09-24; `fra-ab-server`
 no longer sets `L0_MAX_SSTS_PER_KEY`; and control K6 reproduces the refusal
 of `INITIAL_SHARDS=3`, because `SSE_H1_MAX_BUF`, which it used, is not read.
+The gather pacing is removed since edge record #81: on the next run
+`cli.absorb_pace_ms` and `cli.absorb_pace_window_ms` are removed leaves, so
+HEAD prints 141 leaves, and the two `wc-ladder` families no longer set
+`ABSORB_PACE_MS` and `ABSORB_PACE_WINDOW_MS`.
 No run of the tool has been made since these changes.
 
 ## Summary

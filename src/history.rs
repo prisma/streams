@@ -427,9 +427,9 @@ pub(crate) static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
-/// Time the last gather spent PARKED between frame reads (#266 pacing).
-/// Included in GATHER_LAST_READ_MS's window; subtract to attribute the
-/// read phase between real store reads and deliberate append windows.
+/// Always 0: a gather never parks between read waves (the #266 pacing was
+/// removed; L1d8 falsified it). Nothing writes it. It stays, with its three
+/// reporters, until the owner updates `collect_snapshot`'s exception row.
 pub(crate) static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
@@ -470,8 +470,8 @@ pub(crate) fn history_settings(
     // same economics come from a LONG STATIC sweep interval — the old
     // backoff CEILING becomes the cadence. The cost of the trade is
     // reclamation latency on a busy history DB (bounded, storage-cheap),
-    // not steady-state requests. HISTORY_GC_INTERVAL_SECS (default 600;
-    // HISTORY_GC_MAX_INTERVAL_SECS accepted as a legacy alias).
+    // not steady-state requests. 600 s, `HistoryConfig`'s default: no
+    // environment name sets it (edge record #80).
     let gc_interval = cfg.gc_interval;
     let mut gc = Settings::default()
         .garbage_collector_options
@@ -620,25 +620,6 @@ pub(crate) struct AbsorberConfig {
     /// Default matches the history DB's max_unflushed_bytes: one
     /// gather ≈ one memtable.
     pub gather_max_bytes: usize,
-    /// Duty-cycle the gather READ phase (#266): after any frame read,
-    /// if at least `gather_pace_window` has elapsed since the last
-    /// park, park `gather_pace`. The reads land on the SHARD db — the
-    /// same SlateDB instance serving append WAL writes — and a gather
-    /// issues them back to back, seconds of continuous read pressure
-    /// per call. The L1 certification ladder showed append shed
-    /// tracking absorb gathers monotonically while the streams-side
-    /// commit lane was exonerated (DST wave gate) and neither more
-    /// slatedb runtime threads nor deferral removed it: the
-    /// serialization is inside SlateDB. TIME-based, not count-based
-    /// (L1d7): a drain gather fills its 32 MiB batch from ~8 big
-    /// chunks — few reads, 20+ s of read time, a count trigger never
-    /// fires — and at run-time chunk sizes a count of 32 paced ~0.8%
-    /// of the read phase, homeopathic. Defaults 50 ms window / 10 ms
-    /// park = ~17% worst-case read-phase overhead and an append window
-    /// at least every ~60 ms plus one read. `gather_pace == 0`
-    /// disables; `gather_pace_window == 0` parks after every read.
-    pub gather_pace_window: Duration,
-    pub gather_pace: Duration,
     /// Concurrent per-stream frame reads within one gather (#266).
     /// The read phase is latency-bound (a store round trip per sparse
     /// stream) and append shed scales with its WALL TIME, so waves of
@@ -657,11 +638,6 @@ impl Default for AbsorberConfig {
             tick: Duration::from_secs(5),
             sweep_every: 12,
             gather_max_bytes: 32 * 1024 * 1024,
-            gather_pace_window: Duration::from_millis(50),
-            // L1d8 falsified pacing (stretching the read phase amplifies
-            // the append-service deficit); disabled by default, knob kept
-            // for field experiments.
-            gather_pace: Duration::ZERO,
             gather_read_par: 8,
         }
     }

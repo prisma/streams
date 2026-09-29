@@ -98,8 +98,6 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
         threshold_bytes: args.absorb_bytes,
         threshold_age: Duration::from_secs(args.absorb_age_secs),
         gather_max_bytes,
-        gather_pace_window: Duration::from_millis(args.absorb_pace_window_ms),
-        gather_pace: Duration::from_millis(args.absorb_pace_ms),
         gather_read_par: args.absorb_read_par,
         ..Default::default()
     }

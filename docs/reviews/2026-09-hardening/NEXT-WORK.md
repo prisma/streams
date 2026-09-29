@@ -783,7 +783,10 @@ These block deployment sign-off, not merging (README, "Deployment gates"):
   project's `L0_MAX_SSTS`), `WAL_GATHER_SKIP_REQS` (32),
   `WAL_GATHER_SKIP_BYTES` (1048576), `TAIL_MAX_BYTES` (1048576),
   `SSE_H1_MAX_BUF` (65536). A project that holds another value is the
-  owner's to decide before the binary is deployed.
+  owner's to decide before the binary is deployed. Since edge record #81
+  the same holds for `--absorb-pace-ms` and `--absorb-pace-window-ms`
+  (refused) and for `ABSORB_PACE_MS` above 0 (ignored: the project stops
+  pacing its gathers).
 - A release-posture Compute family (production fleet authentication, usage
   and audit configuration); the static fleet-auth bridge stays a benchmark
   exception.
@@ -914,7 +917,8 @@ item is in `evidence/config-audit-2026-09-29/detail.md`.
 be the default"; every other question of the page is left to the
 implementer's judgement.
 
-Changed so far (package 2, then package 1, then package 3, then package 4):
+Changed so far (package 2, then package 1, then package 3, then package 4,
+then the first row of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,
   packing limit and budget, the SlateDB runtime's threads and the shared
   cache (0b34b86f): edge record #67. The profile keeps its lines: its
@@ -1093,3 +1097,35 @@ Changed so far (package 2, then package 1, then package 3, then package 4):
   floor for a backup feature that is not built, and when it is, the floor
   is a code change. The platform export (§11) must show no project that
   holds one of the names at another value.
+- Package 5, first row: a gather never parks between read waves, and
+  `ABSORB_PACE_MS` and `ABSORB_PACE_WINDOW_MS` are gone with the pacing
+  code (edge record #81, one commit). The two arguments are refused by
+  clap and the two environment names are ignored without a message. The
+  park was off by default and in every deployment of the repository, so a
+  gather runs as it did; the source had recorded the pacing as measured
+  harmful (L1d8) and kept for experiments. Removed: the two `CliArgs`
+  fields, the two fields of `AbsorberConfig`, `Pacing` and
+  `pace_between_waves` in `src/history/gather.rs`, the DST
+  `gather_pacing_preserves_outcomes_and_opens_windows` with its helper
+  (the inventory holds 616 tests), the line of `bench/soak/wc-ladder.sh`
+  with its levers `WC_PACE_MS` and `WC_PACE_WINDOW`, and the lines of the
+  two `wc-ladder` families. The tool's pin of HEAD's leaves is 141; the
+  tool was not run. The comment above `gc_interval` in `src/history.rs`,
+  a residue of package 4, is corrected in the same commit, because the
+  file's three receipts are staled by it anyway. Receipts staled: TLA-011
+  (`src/bootstrap.rs`), TLA-016, TLA-018, TLA-019 (`src/history.rs`,
+  `src/history/gather.rs`), 115.9 min serial; CI also selects the
+  mutation leg of the owner `bootstrap` and Miri. **Not done, for the
+  owner:** the counter `GATHER_LAST_PACE_MS` and its three reporters
+  (`gather_last_pace_ms` on /v1/debug/load and in the ops gauges,
+  `absorber.lastPaceMs` on /v1/debug/absorb) stay and report 0, because
+  `collect_snapshot` in `src/ops.rs` has an exact exception row
+  (`syntax_facts: 466`) that fails on any change, a deletion included.
+  Removing them is commit 2 of the package's plan: the owner rewrites the
+  row to the value the gate prints after the four lines of the gauge are
+  deleted (the function then has 202 lines, so its architecture budget
+  exception of 206 stays needed), and the removal gets an edge record of
+  its own (operator-debug) and a WIRE-MATRIX edit. The other four rows of
+  package 5 are not started. The platform export (§11) must show no
+  project that passes one of the two arguments or holds `ABSORB_PACE_MS`
+  above 0.

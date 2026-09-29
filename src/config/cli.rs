@@ -231,17 +231,6 @@ pub struct CliArgs {
     #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 8 * 1024 * 1024)]
     pub(crate) absorb_gather_max_bytes: usize,
 
-    /// Duty-cycle the gather read phase: whenever this much time has
-    /// elapsed since the last park, the gather parks ABSORB_PACE_MS
-    /// after the current read so append WAL writes queued behind the
-    /// reads inside SlateDB drain. Bounds the absorber's append-latency
-    /// impact at sparse-many-stream shapes (#266). ABSORB_PACE_MS=0
-    /// disables; window 0 parks after every read.
-    #[arg(long, env = "ABSORB_PACE_WINDOW_MS", default_value_t = 50)]
-    pub(crate) absorb_pace_window_ms: u64,
-    #[arg(long, env = "ABSORB_PACE_MS", default_value_t = 0)]
-    pub(crate) absorb_pace_ms: u64,
-
     /// Concurrent per-stream frame reads within one absorber gather.
     /// Shrinks the read phase's wall time — the window during which
     /// append service dips (#266). 1 = serial.
@@ -546,8 +535,6 @@ impl CliArgs {
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
             absorb_gather_max_bytes: 8 * 1024 * 1024,
-            absorb_pace_window_ms: 50,
-            absorb_pace_ms: 0,
             absorb_read_par: 8,
             conformance_default_key: None,
             auth_token: None,

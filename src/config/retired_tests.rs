@@ -103,11 +103,12 @@ fn a_retired_name_in_the_environment_changes_nothing() {
 }
 
 /// The flags of the retired settings are refused like any other unknown
-/// argument, `--gc-max-interval-secs` (the alias retired before them)
+/// argument, `--gc-max-interval-secs` (the alias retired before them) and
+/// the two flags of the gather pacing that was removed (edge record #81)
 /// included.
 #[test]
 fn a_retired_flag_on_argv_is_refused() {
-    const FLAGS: [&str; 12] = [
+    const FLAGS: [&str; 14] = [
         "--wal-gc-interval-secs",
         "--wal-gc-min-age-secs",
         "--compactions-gc-interval-secs",
@@ -120,6 +121,8 @@ fn a_retired_flag_on_argv_is_refused() {
         "--ops-bucket",
         "--shard-bucket",
         "--data-bucket",
+        "--absorb-pace-ms",
+        "--absorb-pace-window-ms",
     ];
     let parsed = FLAGS.map(|flag| {
         let argv = ["streams-slate", "--s3-endpoint", "http://e", flag, "1"];

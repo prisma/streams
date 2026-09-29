@@ -244,6 +244,16 @@ owner's taste.
 
 ## Package 5: switches with one live path
 
+Status (2026-09-29): the first row is done, in one commit, edge record #81,
+on the owner's delegation; it awaits ratification. `ABSORB_PACE_MS` and
+`ABSORB_PACE_WINDOW_MS` are not options (the arguments are refused, the
+environment names are ignored) and the pacing code is gone: a gather never
+parks between read waves. Left for the owner: the counter of the pace time
+and its three reporters (`gather_last_pace_ms` on /v1/debug/load and in the
+ops gauges, `absorber.lastPaceMs` on /v1/debug/absorb) stay and report 0,
+because `collect_snapshot` has an exact exception row that only the owner
+rewrites. The other four rows are not started.
+
 | Setting | Today | Proposed |
 |---|---|---|
 | `ABSORB_PACE_MS`, `ABSORB_PACE_WINDOW_MS` | off | no option, no pacing code |

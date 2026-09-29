@@ -3354,22 +3354,11 @@
     "scenarios": []
   },
   {
-    "name": "gather_pacing_preserves_outcomes_and_opens_windows",
-    "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
-    ],
-    "function_sha256": "30a47fa91794a019d57e02295ed8b21ea46b66f63b3b80a2d0f0ee373c9d1b28",
-    "mechanisms": [],
-    "configuration": [],
-    "file": "src/dst/tests/history_gather.rs",
-    "scenarios": []
-  },
-  {
     "name": "gather_parallel_reads_preserve_outcomes_across_reopen",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "3713462bcccc6cf794126b906e21eb9542d72a95f3299d0c8f15188edaa2be65",
+    "function_sha256": "42b60c7a48b49b48757fd36e1ec1e2e5c76135ad70e0b8ddcd927daef3df8e75",
     "mechanisms": [],
     "configuration": [
       "let seed = 7501;",

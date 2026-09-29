@@ -82,43 +82,6 @@ async fn gather_after_reopen(
     (advanced, engine2)
 }
 
-async fn gather_with_pacing(
-    path: &str,
-    cfg: crate::history::AbsorberConfig,
-    key: &crate::crypto::StreamKey,
-) -> (
-    Vec<([u8; 16], u64)>,
-    std::time::Duration,
-    Arc<crate::shard::ShardEngine>,
-) {
-    let hashes = gather_hashes(0xA8, 96);
-    let store = mem();
-    let engine = open_engine_with_settings(
-        store.clone(),
-        path,
-        crate::shard::ShardConfig::default(),
-        slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        },
-    )
-    .await;
-    for h in &hashes {
-        append_sized(&engine, *h, key, "", 2048).await;
-    }
-    let absorber = crate::history::Absorber::new(engine.clone(), cfg);
-    let t0 = std::time::Instant::now();
-    let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
-    let mut advanced: Vec<([u8; 16], u64)> = outcome
-        .advanced
-        .iter()
-        .map(|(h, upto, _)| (*h, *upto))
-        .collect();
-    advanced.sort_unstable();
-    (advanced, t0.elapsed(), engine)
-}
-
 /// Preserve the existing lower order statistic: floor((30 - 1) * p).
 /// The fixed 30-probe episode uses indices 14 (p50) and 28 (p99).
 async fn paced_append_p99_ms(
@@ -204,12 +167,10 @@ async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
 
     let serial_cfg = crate::history::AbsorberConfig {
         gather_read_par: 1,
-        gather_pace: std::time::Duration::ZERO,
         ..Default::default()
     };
     let par_cfg = crate::history::AbsorberConfig {
         gather_read_par: 8,
-        gather_pace: std::time::Duration::ZERO,
         ..Default::default()
     };
     let (adv_serial, _e1) = gather_after_reopen("dst-rpar-1", seed, serial_cfg, &key).await;
@@ -218,52 +179,6 @@ async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
     assert_eq!(
         adv_par, adv_serial,
         "read parallelism must not change WHAT is absorbed"
-    );
-}
-
-/// #266 pacing pin: with gather micro-pacing configured, a wide sparse
-/// gather (a) still settles exactly the same streams to exactly the
-/// same boundaries as an unpaced one, and (b) actually parks between
-/// frame reads — the duty cycle is real, not a dead knob. A ZERO
-/// window parks after EVERY read (the documented maximum-pacing
-/// semantics), so the park count equals the read count exactly and
-/// the elapsed lower bound is deterministic even on a loaded runner;
-/// no upper bound is asserted (that would flake). The FIELD effect
-/// (append shed under real SlateDB contention) is validated by the L1
-/// certification ladder, not reproducible against an in-memory
-/// store.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gather_pacing_preserves_outcomes_and_opens_windows() {
-    const N: usize = 96;
-    let key = skey();
-
-    // read_par 1: parks happen between WAVES, so serial reads keep
-    // the zero-window park count exactly equal to the read count.
-    let paced_cfg = crate::history::AbsorberConfig {
-        gather_pace_window: std::time::Duration::ZERO,
-        gather_pace: std::time::Duration::from_millis(1),
-        gather_read_par: 1,
-        ..Default::default()
-    };
-    let unpaced_cfg = crate::history::AbsorberConfig {
-        gather_pace: std::time::Duration::ZERO,
-        gather_read_par: 1,
-        ..Default::default()
-    };
-    let (adv_paced, t_paced, _e1) = gather_with_pacing("dst-pace-on", paced_cfg, &key).await;
-    let (adv_unpaced, _t_unpaced, _e2) =
-        gather_with_pacing("dst-pace-off", unpaced_cfg, &key).await;
-
-    assert_eq!(adv_paced.len(), N, "paced gather must settle every stream");
-    assert_eq!(
-        adv_paced, adv_unpaced,
-        "pacing must not change WHAT is absorbed, only when reads issue"
-    );
-    // Zero window parks after every one of the 96 reads: 96 x 1 ms of
-    // guaranteed sleep. Assert with margin below it.
-    assert!(
-        t_paced >= std::time::Duration::from_millis(90),
-        "paced gather finished in {t_paced:?} — the pace knob is dead"
     );
 }
 

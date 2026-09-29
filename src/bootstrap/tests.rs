@@ -11,8 +11,6 @@ fn active_absorber_options_reach_the_absorber_configuration() {
     let mut base = crate::config::CliArgs::deterministic();
     base.absorb_bytes = 17;
     base.absorb_age_secs = 19;
-    base.absorb_pace_window_ms = 23;
-    base.absorb_pace_ms = 29;
     base.absorb_read_par = 3;
     let active = absorber_config(&base, 7 * 1024 * 1024);
     assert_eq!(
@@ -21,8 +19,6 @@ fn active_absorber_options_reach_the_absorber_configuration() {
             threshold_bytes: 17,
             threshold_age: Duration::from_secs(19),
             gather_max_bytes: 7 * 1024 * 1024,
-            gather_pace_window: Duration::from_millis(23),
-            gather_pace: Duration::from_millis(29),
             gather_read_par: 3,
             ..Default::default()
         }

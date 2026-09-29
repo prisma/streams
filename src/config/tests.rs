@@ -574,8 +574,6 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "ABSORB_GATHER_MAX_BYTES",
         "8388608",
     ),
-    ("absorb-pace-window-ms", "ABSORB_PACE_WINDOW_MS", "50"),
-    ("absorb-pace-ms", "ABSORB_PACE_MS", "0"),
     ("absorb-read-par", "ABSORB_READ_PAR", "8"),
     ("conformance-default-key", "", ""),
     ("auth-token", "AUTH_TOKEN", ""),

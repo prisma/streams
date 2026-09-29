@@ -8,9 +8,9 @@
 use super::{
     ABSORB_BUILD_MULTIPLIER, ABSORB_BYTES_TOTAL, AbsorbReservation, Absorber,
     CANONICAL_BYTES_WRITTEN, DISCOVERY_PAGE_STREAMS, GATHER_LAST_ACTUAL, GATHER_LAST_FLUSH_MS,
-    GATHER_LAST_PACE_MS, GATHER_LAST_READ_MS, GATHER_LAST_WRITE_MS, GATHER_PER_STREAM_CAP,
-    HISTORY_FLUSH_STALL_MS, HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS, POSTINGS_BYTES_WRITTEN,
-    POSTINGS_PAGES_WRITTEN, POSTINGS_RUNS_WRITTEN, PendingAbsorb, hist2_record_key,
+    GATHER_LAST_READ_MS, GATHER_LAST_WRITE_MS, GATHER_PER_STREAM_CAP, HISTORY_FLUSH_STALL_MS,
+    HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS, POSTINGS_BYTES_WRITTEN, POSTINGS_PAGES_WRITTEN,
+    POSTINGS_RUNS_WRITTEN, PendingAbsorb, hist2_record_key,
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
@@ -118,14 +118,6 @@ struct Staged {
     /// The committer's view of `out.advanced`: each advance with the
     /// offset its copy starts at, which is where it may retire from.
     copies: Vec<([u8; 16], u64, CopiedBytes)>,
-}
-
-/// #266: optional duty cycle between read waves — see the
-/// gather_pace_window field doc. L1d8 falsified pacing as a shed fix
-/// (default now 0); the knob remains for field experiments.
-struct Pacing {
-    paced: Duration,
-    last_park: Instant,
 }
 
 /// Whole milliseconds of `elapsed`, saturating at `u64::MAX`.
@@ -411,10 +403,6 @@ impl Absorber {
             out: GatherOutcome::default(),
             copies: Vec::new(),
         };
-        let mut pacing = Pacing {
-            paced: Duration::ZERO,
-            last_park: Instant::now(),
-        };
         let plans = self.plan_reads(streams, &mut staged.out).await?;
         let read_par = self.cfg.gather_read_par.max(1);
         let per_stream = GATHER_PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
@@ -437,7 +425,6 @@ impl Absorber {
             let wave = &plans[pi..wave_end];
             pi = wave_end;
             let got = self.read_wave(wave, per_stream).await;
-            self.pace_between_waves(&mut pacing).await;
             for (plan, read) in wave.iter().zip(got) {
                 match read {
                     Ok(chunk) => self.stage_chunk(&mut staged, reservation, plan, &chunk),
@@ -451,7 +438,6 @@ impl Absorber {
                 }
             }
         }
-        GATHER_LAST_PACE_MS.store(millis(pacing.paced), Ordering::Relaxed);
         self.observe_gather_transient(staged.bytes.max(staged.refused));
         if staged.out.advanced.is_empty() {
             return Ok(staged.out);
@@ -536,18 +522,6 @@ impl Absorber {
             .iter()
             .map(|p| read_frames_range(&self.shard, &p.handle, p.from, p.upto, per_stream));
         futures_util::future::join_all(reads).await
-    }
-
-    /// The commit is untouched by pacing — never stretch the
-    /// durability-critical section.
-    async fn pace_between_waves(&self, pacing: &mut Pacing) {
-        if !self.cfg.gather_pace.is_zero()
-            && pacing.last_park.elapsed() >= self.cfg.gather_pace_window
-        {
-            tokio::time::sleep(self.cfg.gather_pace).await;
-            pacing.paced += self.cfg.gather_pace;
-            pacing.last_park = Instant::now();
-        }
     }
 
     /// Admit one stream's chunk into the batch. A chunk that would blow
