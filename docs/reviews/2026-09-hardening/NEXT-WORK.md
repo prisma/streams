@@ -131,6 +131,37 @@ listing itself rather than listing everything each sweep. Red: 65 waiting
 debts sort ahead of one actionable debt; the actionable debt must still
 settle.
 
+**Tests landed (60d80607, 2026-09-29), and the bugs they found.** The seven
+tests below are in `src/dst/tests/billing_closure_debts.rs` and
+`billing_closure_owners.rs` (a two-instance rig). They found five settlement
+bugs. Three are fixed, each red first:
+
+- B1 (1b65e15d): debts owned by different instances deadlocked.
+- B2 (61068487): the tombstone walk stopped at a foreign route, an R29
+  regression.
+- B4 (8182730e): the drain closed a replaced dirty row at its own clock.
+
+A fourth fix (db126ccd) makes the walk hand back every shard it opened.
+Edge change #65 records all four.
+
+Still open, for the owner (policy; their red tests are on the local branch
+`closure-debt-policy`):
+
+- **B3.** A close snapshot that arrives after its month was finalized never
+  corrects the rollup (`src/rollup/page.rs` `apply_snapshot`'s finalized
+  branch returns before the `SegmentState` update, and `apply_late_snapshot`
+  saturates). The month stays billed to its boundary and every later month
+  carries the stale gauge. Decide whether a negative correction against a
+  frozen invoice is allowed.
+- **B5.** An expired source with live forks counts as retained for
+  recreation (`creation::retained_for_forks`, FRK-019 "behaves as
+  soft-deleted"), but not for billing: the walk, the drain and
+  `judge_unreplaced` use `soft_deleted && !deleted`, so the storage its
+  forks still read stops billing at the source's expiry.
+
+The raw and product PUTs share `Registry::recreate`, not `claim::resolve`,
+as the text below says. The original list:
+
 **Missing tests** (in a new DST file: `src/dst/tests/billing_controller.rs` is
 already 834 lines of its 1,000):
 - **Raw path:** recreate through `PUT /v1/stream/{name}` (raw). Both surfaces
