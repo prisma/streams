@@ -443,52 +443,6 @@
     },
     {
       "path": "src/product.rs",
-      "owner": "crate::product_read",
-      "scope": "function",
-      "lint": "clippy::too_many_arguments",
-      "metrics": {
-        "syntax_facts": 317
-      },
-      "rationale": "The product read mints and accepts the provisional session cursor and answers its explicit resync (TLA-018-F3, 55881d7a).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
-    },
-    {
-      "path": "src/product.rs",
-      "owner": "crate::product_read",
-      "scope": "function",
-      "lint": "clippy::too_many_lines",
-      "metrics": {
-        "syntax_facts": 317
-      },
-      "rationale": "The product read mints and accepts the provisional session cursor and answers its explicit resync (TLA-018-F3, 55881d7a).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
-    },
-    {
-      "path": "src/product.rs",
-      "owner": "crate::product_seal",
-      "scope": "function",
-      "lint": "clippy::excessive_nesting",
-      "metrics": {
-        "scope_lines": 200,
-        "syntax_facts": 285
-      },
-      "rationale": "The seal checks capacity and the per-record ceiling on the exact record its final stores (the client's JSON text, 1eaf5a5b) before publishing its intent, and answers another operation's seal 409 sealed (fcbd8bd5).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
-    },
-    {
-      "path": "src/product.rs",
-      "owner": "crate::product_seal",
-      "scope": "function",
-      "lint": "clippy::too_many_lines",
-      "metrics": {
-        "scope_lines": 200,
-        "syntax_facts": 285
-      },
-      "rationale": "The seal checks capacity and the per-record ceiling on the exact record its final stores (the client's JSON text, 1eaf5a5b) before publishing its intent, and answers another operation's seal 409 sealed (fcbd8bd5).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
-    },
-    {
-      "path": "src/product.rs",
       "owner": "crate::render_product_read",
       "scope": "function",
       "lint": "clippy::unwrap_used",

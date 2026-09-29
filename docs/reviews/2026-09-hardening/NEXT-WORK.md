@@ -201,12 +201,11 @@ roll-forward.
 registry read answers a retryable 503 (raw `internal`, product
 `temporarily_unavailable`), and a corrupt descriptor stays 500. The product
 handlers' own descriptor reads for metadata, scan, append and usage
-followed in edge change #64 (`product::DescriptorReadAnswer`). Still open,
-for the owner: `product_seal` and `product_read` answer as before, because
-their exception scopes carry exact growth rows that any change (a shrink
-included) makes stale; converting their error arms is one line each once
-the owner re-approves those rows. The collection listing and the
-fleet-internal receivers are unchanged. The
+followed in edge change #64 (`product::DescriptorReadAnswer`), `product_seal`
+and `product_read` included after the owner approved the change to their
+exception scopes (2026-09-29; their growth rows went away, the scopes now
+below them). The collection listing and the fleet-internal receivers are
+unchanged. The
 original handoff follows.
 
 **Owner decision.** Ratifying #54: "The first registry read still returning

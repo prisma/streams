@@ -4,18 +4,18 @@ use super::fixture_http::{engine_shutdown, http_rig, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 
-/// The product routes whose handler reads the descriptor itself and
-/// classifies the failure: metadata, scan, append and usage. `:seal` and the
-/// keyed read are not yet among them: their handlers' scopes carry exact
-/// exception-growth rows, which only the owner can re-approve.
-const ROUTES: [(&str, &str, &[u8]); 4] = [
+/// Every product route whose handler reads the descriptor itself: metadata,
+/// seal, scan, append, the keyed read and usage.
+const ROUTES: [(&str, &str, &[u8]); 6] = [
     ("GET", "/v1/streams/typed-product-read", b""),
+    ("POST", "/v1/streams/typed-product-read:seal", b"{}"),
     ("GET", "/v1/streams/typed-product-read:scan", b""),
     (
         "POST",
         "/v1/streams/typed-product-read/records",
         br#"{"n":1}"#,
     ),
+    ("GET", "/v1/streams/typed-product-read/records", b""),
     ("GET", "/v1/streams/typed-product-read/usage/current", b""),
 ];
 

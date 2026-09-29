@@ -1507,15 +1507,7 @@ async fn product_seal(
                 false,
             );
         }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return e.descriptor_read_answer(),
     };
     let validated_epoch = validated.stream_epoch.clone();
     if !body.is_empty() {
@@ -2410,15 +2402,7 @@ async fn product_read(
                 false,
             );
         }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return e.descriptor_read_answer(),
     };
     if deliver == crate::shard::Deliver::Applied && desc.forked_from.is_some() {
         // The fork read path has its own serving machine; bounded scope
