@@ -129,8 +129,11 @@ pub struct CliArgs {
     pub(crate) max_request_body_bytes: usize,
 
     /// L0 SST count that triggers write backpressure. More L0s = more burst
-    /// headroom before compaction must catch up (throughput tuning).
-    #[arg(long, env = "L0_MAX_SSTS", default_value_t = 8)]
+    /// headroom before compaction must catch up; an L0 costs a stored
+    /// object, not memory. 32 is the production posture
+    /// (deploy/profiles/compute-1g.env); at 8 batch ingest stalled on
+    /// backpressure while the compactor kept up.
+    #[arg(long, env = "L0_MAX_SSTS", default_value_t = 32)]
     pub(crate) l0_max_ssts: usize,
 
     /// Per-key L0 overlap cap. A totally-ordered stream rewrites its meta
@@ -576,7 +579,7 @@ impl CliArgs {
             l0_sst_size_bytes: 8 * 1024 * 1024,
             max_unflushed_bytes: 16 * 1024 * 1024,
             max_request_body_bytes: 32 * 1024 * 1024,
-            l0_max_ssts: 8,
+            l0_max_ssts: 32,
             l0_max_ssts_per_key: 0,
             compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
             compactor_max_concurrent: 4,

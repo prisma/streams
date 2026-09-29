@@ -98,7 +98,7 @@ with an empty pool rather than dead sockets.
 | `FRAME_COMPRESS` | 0 | 1 = zstd-1 each record payload BEFORE encryption (frame v3; readers accept v2+v3, no migration). Ciphertext never compresses, so this is the only tier where compression can live — it shrinks WAL, L0, compaction, absorber and history bytes together. Sinmax campaign: removed a ~5-6x NIC amplification; enable for any workload with compressible payloads |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
-| `L0_MAX_SSTS` | 8 | L0 count that triggers write backpressure; pilot used 24 for burst headroom |
+| `L0_MAX_SSTS` | 32 | L0 count that triggers write backpressure. An L0 costs a stored object, not memory; 8 (the default until 2026-09-29) stalled batch ingest |
 | `L0_MAX_SSTS_PER_KEY` | 0 (= follow `L0_MAX_SSTS`) | totally-ordered streams rewrite one meta row per memtable, so every L0 overlaps on that key and THIS cap is the real dispatch gate. The upstream default (8) stalled the flusher |
 | `MANIFEST_POLL_MS` | 2000 | also how the flusher learns compaction freed L0 slots; loaded shards want 1000–2000. 60 s polls produced 14 s flush stalls. Each poll is a live Tigris 404 probe (~200-240 ms Tigris-internal) — the default IS the idle-cost posture, deploy scripts must not re-tighten it (docs/TIGRIS-404-COST.md; DST-pinned) |
 | `COMPACTOR_POLL_MS` | 2500 | compactions-log probe cadence = the largest idle-404 class (the old 500 ms pin was 8 probes/s/instance forever, pre-limiter era). At 5 MB/s/shard a 2.5 s scheduling gap bounds L0 accumulation to ~3 SSTs vs `L0_MAX_SSTS` 64; drain continuity comes from `COMPACTOR_MAX_CONCURRENT`, not scheduling latency (docs/TIGRIS-404-COST.md; DST-pinned) |
@@ -662,7 +662,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | fleet stuck below desired (desired=N, live=1) | ring never routes to dark instances → they never wake | LB wake pings (implemented); never rely on routing to wake |
 | fleet scales IN while clients are drowning | delivered rps falls when clients queue; servers can't see it | router latency reports block scale-in (implemented); keep `SCALE_EDGE_LATENCY_MS` on |
 | LB routes everything to instance 1 (local/docker) | fleet store missing `allow_http` on plain-http endpoints | set it (implemented); verify LB `/stats` shows all upstreams |
-| flusher stalls though L0 count is low | per-key L0 overlap gate (meta row) | `L0_MAX_SSTS_PER_KEY` (0 = follow `L0_MAX_SSTS`, which we raise to 24) |
+| flusher stalls though L0 count is low | per-key L0 overlap gate (meta row) | `L0_MAX_SSTS_PER_KEY` (0 = follow `L0_MAX_SSTS`, 32 by default) |
 | WAL prefix grows unboundedly; watermark lags | flush cadence outrunning WAL GC | keep `FLUSH_INTERVAL_MS ≥ 25` and the 30/60 GC settings |
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
 ### Latency knobs (2026-07-27, colleague-review implementation)

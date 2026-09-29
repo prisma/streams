@@ -402,7 +402,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "MAX_REQUEST_BODY_BYTES",
         "33554432",
     ),
-    ("l0-max-ssts", "L0_MAX_SSTS", "8"),
+    ("l0-max-ssts", "L0_MAX_SSTS", "32"),
     ("l0-max-ssts-per-key", "L0_MAX_SSTS_PER_KEY", "0"),
     ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
     ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "4"),
