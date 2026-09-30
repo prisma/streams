@@ -922,12 +922,9 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "absorb_reserved_bytes_now": state.runtime.history.budget.reserved_bytes(),
         "shed_line_mb": adm.rss_shed_mb,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),
-        // #266 field attribution: the wc sampler reads THIS endpoint —
-        // the /v1/debug/absorb block alone left L1d7 blind on whether
-        // pacing fired at all.
+        // #266 field attribution: the wc sampler reads THIS endpoint
+        // for the read phase of the last gather (edge record #86).
         "gather_last_read_ms": crate::history::GATHER_LAST_READ_MS
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "gather_last_pace_ms": crate::history::GATHER_LAST_PACE_MS
             .load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_shards": maintenance_shards_json(&state),
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
@@ -1419,7 +1416,6 @@ fn debug_routes() -> Router<Arc<AppState>> {
                             "lastReservedBytes": crate::history::GATHER_LAST_RESERVED.load(ord),
                             "lastActualBytes": crate::history::GATHER_LAST_ACTUAL.load(ord),
                             "lastReadMs": crate::history::GATHER_LAST_READ_MS.load(ord),
-                            "lastPaceMs": crate::history::GATHER_LAST_PACE_MS.load(ord),
                             // R25-F: per-gather amplification removed —
                             // the global-delta attribution was
                             // contaminated by concurrent traffic.

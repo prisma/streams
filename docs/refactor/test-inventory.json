@@ -3392,6 +3392,17 @@
     "scenarios": []
   },
   {
+    "name": "gather_reporters_carry_the_read_phase_and_no_pace_time",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "7dfe75b8d25ebb35d37b8562286cfb1c7961cccdf6ecf7e417f4f5eda00e2612",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_gather.rs",
+    "scenarios": []
+  },
+  {
     "name": "graceful_stop_seals_and_drains_the_active_read_window",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

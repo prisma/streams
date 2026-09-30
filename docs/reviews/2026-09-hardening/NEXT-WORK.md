@@ -1198,7 +1198,12 @@ then the five rows of package 5):
   row to the value the gate prints after the four lines of the gauge are
   deleted (the function then has 202 lines, so its architecture budget
   exception of 206 stays needed), and the removal gets an edge record of
-  its own (operator-debug) and a WIRE-MATRIX edit. The platform export
+  its own (operator-debug) and a WIRE-MATRIX edit. Done on 2026-09-30 on
+  the owner's instruction ("Please do the cleanup"): the counter, the
+  gauge and the two fields are gone, the row of `collect_snapshot` reads
+  `syntax_facts` 457 (was 466), and the removal is edge record #86
+  (operator-debug, low; awaits ratification) with the WIRE-MATRIX lines
+  of both routes. The platform export
   (§11) must show no project that passes one of the two arguments or holds
   `ABSORB_PACE_MS` above 0.
 - Package 5, second row: store operations are not capped by count, and

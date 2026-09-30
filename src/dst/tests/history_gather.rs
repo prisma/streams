@@ -1,5 +1,7 @@
 //! History gather.
 
+use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_requests::hreq;
 use super::fixture_storage::{
     append_sized, mem, open_engine, open_engine_with_settings, skey, wait_all_absorbed,
 };
@@ -834,4 +836,37 @@ async fn one_corrupt_row_fails_only_its_stream() {
     let absorbed = handle.state.lock().unwrap().durable.absorbed;
     assert_eq!(absorbed, 0, "the corrupt stream's boundary holds");
     engine.begin_close();
+}
+
+/// Edge record #86: the reporters of the gather pacing that #81 removed
+/// are gone, not zero. The read phase of the last gather is still reported
+/// where the field campaigns read it (`gather_last_read_ms` on
+/// /v1/debug/load and in the `_ops_metrics` gauges, `absorber.lastReadMs`
+/// on /v1/debug/absorb), and no pace time is: `gather_last_pace_ms` and
+/// `absorber.lastPaceMs` are absent from the same three answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gather_reporters_carry_the_read_phase_and_no_pace_time() {
+    let (state, addr) = http_rig(mem()).await;
+    let json = |body: &[u8]| serde_json::from_slice::<serde_json::Value>(body).unwrap();
+    let (st, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
+    assert_eq!(st, 200);
+    let load = json(&body);
+    let (st, _, body) = hreq(addr, "GET", "/v1/debug/absorb", &[], b"").await;
+    assert_eq!(st, 200);
+    let absorb = json(&body);
+    let gauges = crate::ops::collect_snapshot(&state).gauges;
+    assert_eq!(
+        (
+            load["gather_last_read_ms"].is_u64(),
+            load["gather_last_pace_ms"].is_null(),
+            absorb["absorber"]["lastReadMs"].is_u64(),
+            absorb["absorber"]["lastPaceMs"].is_null(),
+            gauges.contains_key("gather_last_read_ms"),
+            gauges.contains_key("gather_last_pace_ms"),
+        ),
+        (true, true, true, true, true, false),
+        "the read phase is reported and the pace time is absent: load={load} absorb={absorb} \
+         gauges={gauges:?}"
+    );
+    engine_shutdown(&state).await;
 }

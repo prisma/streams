@@ -447,10 +447,6 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
         crate::history::GATHER_LAST_READ_MS.load(ord),
     );
     gauges.insert(
-        "gather_last_pace_ms".into(),
-        crate::history::GATHER_LAST_PACE_MS.load(ord),
-    );
-    gauges.insert(
         "gather_last_write_ms".into(),
         crate::history::GATHER_LAST_WRITE_MS.load(ord),
     );

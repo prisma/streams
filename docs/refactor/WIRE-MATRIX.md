@@ -209,7 +209,7 @@ Same entry, `live=sse`, surface=Product. Response: `200 OK`, `Content-Type: text
 ### Debug (all deployment-bearer gated → 401 `unauthorized`; err_resp envelope)
 One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested `/v1/debug` table): without the token EVERY `/v1/debug` path answers 401 `unauthorized` before method routing, including a path nothing routes, the bare prefix and a routed path under the wrong method (those were 404 empty / 405 + `Allow` before item 44, which let an anonymous caller map the routes). With the token (or Off mode with no bearer configured) an unrouted path is the bare 404 and a wrong method 405 + `Allow`, as before.
 - `GET /v1/debug/timings` (`1890`) → 200 JSON per-shard commit/pump/ring stats.
-- `GET /v1/debug/load` (`1040`) → 200 JSON inflight/shed/SSE/fd/runtime gauges (resets inflight peak); `tasks.connection_panics` is this runtime's count of connection tasks the accept loop reaped as panicked (item 37: each one a request answered with a closed socket).
+- `GET /v1/debug/load` (`1040`) → 200 JSON inflight/shed/SSE/fd/runtime gauges (resets inflight peak); `tasks.connection_panics` is this runtime's count of connection tasks the accept loop reaped as panicked (item 37: each one a request answered with a closed socket). (The member `gather_last_pace_ms` is gone, #86: always 0 since #81; `gather_last_read_ms` stays.)
 - `GET /v1/debug/store[?window=][&swap=]` (`1272`) → 200 JSON store latency snapshot.
 - `GET /v1/debug/usage` (`1322`) → 200 JSON per-stream usage counters + limits.
 - `GET /v1/debug/auth` (`1302`) → 200 JSON shadow/feeds/admission.
@@ -219,7 +219,7 @@ One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested
 - `POST /v1/debug/abort` (`1642-1669`) → 200 `{"aborting": true}` then SIGABRT; 403 `disabled` unless `STREAMS_DEBUG_EXIT=1`.
 - `GET /v1/debug/sleep?ms=` (`950`) → 200 `ok` after ≤5 s sleep.
 - `POST /v1/debug/history-stall?ms=` (`1675-1694`) → 200 JSON (mutates).
-- `GET /v1/debug/absorb` (`1700-1810`) → 200 JSON L0/absorber/telemetry posture.
+- `GET /v1/debug/absorb` (`1700-1810`) → 200 JSON L0/absorber/telemetry posture. (The member `absorber.lastPaceMs` is gone, #86: always 0 since #81; `absorber.lastReadMs` stays.)
 
 ### Fleet-internal (fleet credential or workload JWT with exact op claim; failure → 401 `unauthorized` "fleet-internal credential required", `src/http.rs:544-550`). All require `streams-internal-project` (+ `…-epoch`, `…-seg`, `…-identity`) headers; receiver re-derives and answers 400 `invalid_target` / 409 `stale_target` / 409 `target_mismatch` (`src/product.rs:5076-5174`). Never metered (`params.internal`, §4.2). The three product.rs receivers share one registry prelude (`internal_desc`, `src/product/internal.rs`): 404 only for a positive "no descriptor", 503 for a registry the receiver could not read. The sealed-span sender (`scan_page_once`, `src/application/read_remote.rs`) reads 404/410 as incarnation gone (typed cutoff) and a 429/503 as retryable (the SSE feed parks and retries on its own cadence; the product scan and raw read relays render their own 503).
 - `GET /v1/segments/{*name}` (`get_segments`, `src/http.rs:983-1038`) — op `segment-read`; ALSO the public-ish observability route (Off/Shadow: deployment bearer). 200 JSON segment map `{version, pending, segments:[{seg_id, lo, hi, live, sealed_next_offset, predecessors, created_ms}]}`; 404 `not_found`; 500 `internal`.

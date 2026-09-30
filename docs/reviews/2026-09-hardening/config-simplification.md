@@ -271,7 +271,10 @@ parks between read waves. Left for the owner: the counter of the pace time
 and its three reporters (`gather_last_pace_ms` on /v1/debug/load and in the
 ops gauges, `absorber.lastPaceMs` on /v1/debug/absorb) stay and report 0,
 because `collect_snapshot` has an exact exception row that only the owner
-rewrites.
+rewrites. Removed on 2026-09-30 on the owner's instruction ("Please do the
+cleanup"): the counter, the gauge and the two fields are gone, the row was
+updated (`syntax_facts` 466 -> 457), and the removal is edge record #86
+(operator-debug, low; awaits ratification).
 
 Status (2026-09-29, second row): done, in one commit, edge record #82, on
 the owner's delegation; the owner ratified it on 2026-09-30. `STORE_MAX_CONCURRENT` is

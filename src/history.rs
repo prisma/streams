@@ -427,10 +427,6 @@ pub(crate) static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
-/// Always 0: a gather never parks between read waves (the #266 pacing was
-/// removed; L1d8 falsified it). Nothing writes it. It stays, with its three
-/// reporters, until the owner updates `collect_snapshot`'s exception row.
-pub(crate) static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);

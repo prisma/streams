@@ -361,10 +361,10 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "syntax_facts": 466
+        "syntax_facts": 457
       },
       "rationale": "The snapshot exports the fork-debt gauges the stale-debt alert reads (8a03e0d5).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/ops.rs",

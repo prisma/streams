@@ -1851,13 +1851,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::GATHER_LAST_PACE_MS",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::GATHER_LAST_READ_MS",
       "path": "src/history.rs",
       "syntax": "AtomicU64"
