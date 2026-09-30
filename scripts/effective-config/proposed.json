@@ -96,6 +96,42 @@
     "intended": "yes",
     "note": "See cli.compactions_gc_interval_secs."
   },
+  "R1:removed:cli.wal_gather_skip_reqs:32-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "The post-acknowledgement gather is skipped when the next WAL already holds 32 requests or 1 MiB, as a constant (EngineConfig::WAL_GATHER_SKIP_REQS / WAL_GATHER_SKIP_BYTES). The argument was refused since the commit of edge record #80; the field stayed, not settable, for bootstrap::run and is removed now that the owner updated its exception rows. No family set the name."
+  },
+  "R1:removed:cli.wal_gather_skip_bytes:1048576-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.wal_gather_skip_reqs."
+  },
+  "R1:removed:cli.ops_bucket:None-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "One bucket (--bucket / SLATE_S3_BUCKET) for every role. The argument was refused since the commit of edge record #80; the field stayed, always None, for bootstrap::run and is removed with the bucket parameter of the store builders now that the owner updated its exception rows. No family set the name."
+  },
+  "R1:removed:cli.shard_bucket:None-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.ops_bucket."
+  },
+  "R1:removed:cli.data_bucket:None-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 80,
+    "intended": "yes",
+    "note": "See cli.ops_bucket."
+  },
+  "R1:removed:cli.scale_rps_capacity:0-><absent>": {
+    "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+    "edge_record": 83,
+    "intended": "yes",
+    "note": "The fleet's desired count has no assumed-capacity dimension (edge record #83). The argument was refused since that record's commit; the field stayed, always 0, for the boot line of bootstrap::run and is removed with the cap the line printed now that the owner updated its exception rows. No family set the name above 0."
+  },
   "R1:removed:storage.store_max_concurrent:0-><absent>": {
     "commit": "the commit of edge record #82",
     "edge_record": 82,

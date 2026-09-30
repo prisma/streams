@@ -254,11 +254,11 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 583,
-        "syntax_facts": 977
+        "scope_lines": 573,
+        "syntax_facts": 968
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/bootstrap.rs",
@@ -266,11 +266,11 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 583,
-        "syntax_facts": 977
+        "scope_lines": 573,
+        "syntax_facts": 968
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/bootstrap.rs",
@@ -280,16 +280,21 @@
       "metrics": {
         "expect_site:ordinary-call::60495e231cd908aa": 1,
         "expect_site:ordinary-call::83e435826e2785b7": 1,
+        "expect_site:ordinary-call::9c332f64a5657584": 1,
+        "expect_site:ordinary-call::c964a171666b6042": 1,
+        "expect_site:ordinary-call::dd676648335cab78": 1,
         "expect_site:path::125ff86eabf35b16": 14,
-        "expect_site:path::2a13749f1b017f52": 83,
+        "expect_site:path::2a13749f1b017f52": 76,
+        "expect_site:path::2b6260ce93ecd12a": 1,
+        "expect_site:path::34fd3055383a4067": 1,
         "expect_site:path::86b17f87900c8a32": 5,
         "expect_site:path::ae13c50420034e4c": 1,
         "expect_site:path::ed8ca5365d0895fe": 14,
-        "scope_lines": 583,
-        "syntax_facts": 977
+        "scope_lines": 573,
+        "syntax_facts": 968
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/bootstrap.rs",
@@ -297,11 +302,11 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 583,
-        "syntax_facts": 977
+        "scope_lines": 573,
+        "syntax_facts": 968
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/bootstrap.rs",
@@ -309,11 +314,11 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 583,
-        "syntax_facts": 977
+        "scope_lines": 573,
+        "syntax_facts": 968
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/bootstrap.rs",
@@ -321,18 +326,23 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 583,
-        "syntax_facts": 977,
+        "scope_lines": 573,
+        "syntax_facts": 968,
         "unwrap_site:ordinary-call::60495e231cd908aa": 1,
         "unwrap_site:ordinary-call::83e435826e2785b7": 1,
+        "unwrap_site:ordinary-call::9c332f64a5657584": 1,
+        "unwrap_site:ordinary-call::c964a171666b6042": 1,
+        "unwrap_site:ordinary-call::dd676648335cab78": 1,
         "unwrap_site:path::125ff86eabf35b16": 14,
-        "unwrap_site:path::2a13749f1b017f52": 83,
+        "unwrap_site:path::2a13749f1b017f52": 76,
+        "unwrap_site:path::2b6260ce93ecd12a": 1,
+        "unwrap_site:path::34fd3055383a4067": 1,
         "unwrap_site:path::86b17f87900c8a32": 5,
         "unwrap_site:path::ae13c50420034e4c": 1,
         "unwrap_site:path::ed8ca5365d0895fe": 14
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/dst/fault_store.rs",

@@ -23,11 +23,10 @@ use crate::shard::{ShardConfig, ShardEngine};
 use s3_store::S3Store;
 
 impl crate::config::ServerConfig {
-    fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<S3Store> {
-        let bucket = bucket.as_deref().unwrap_or(&self.cli.bucket);
+    fn raw_store(&self) -> anyhow::Result<S3Store> {
         let builder = AmazonS3Builder::new()
             .with_endpoint(&self.cli.s3_endpoint)
-            .with_bucket_name(bucket)
+            .with_bucket_name(&self.cli.bucket)
             .with_region(&self.cli.region)
             .with_access_key_id(&self.cli.access_key_id)
             .with_secret_access_key(&self.cli.secret_access_key)
@@ -50,12 +49,12 @@ impl crate::config::ServerConfig {
 
     // All stores share this runtime's admission handle. Physical-process
     // diagnostic counters remain aggregated separately from that policy.
+    // One bucket serves every role (ops, shard logs and data).
     fn store_for(
         &self,
-        bucket: &Option<String>,
         resources: &Arc<crate::store_timing::StoreResources>,
     ) -> anyhow::Result<Arc<dyn ObjectStore>> {
-        let s3 = crate::store_timing::TimingStore::new(self.raw_store(bucket)?, resources.clone());
+        let s3 = crate::store_timing::TimingStore::new(self.raw_store()?, resources.clone());
         Ok(match &self.cli.path_prefix {
             Some(p) => Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str())),
             None => Arc::new(s3),
@@ -71,7 +70,7 @@ impl crate::config::ServerConfig {
         let Some(p) = &self.cli.fleet_prefix else {
             return Ok(None);
         };
-        let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?, resources.clone());
+        let s3 = crate::store_timing::TimingStore::new(self.raw_store()?, resources.clone());
         Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(
             s3,
             p.as_str(),
@@ -209,9 +208,9 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         "project memory-pressure model (round-13; weights are code-versioned)"
     );
     init_slatedb_runtime_threads(config.engine.slatedb_rt_threads)?;
-    let ops_store = config.store_for(&config.cli.ops_bucket, &runtime_caps.store_io)?;
-    let shard_store = config.store_for(&config.cli.shard_bucket, &runtime_caps.store_io)?;
-    let data_store = config.store_for(&config.cli.data_bucket, &runtime_caps.store_io)?;
+    let ops_store = config.store_for(&runtime_caps.store_io)?;
+    let shard_store = config.store_for(&runtime_caps.store_io)?;
+    let data_store = config.store_for(&runtime_caps.store_io)?;
 
     // R23-5: a synchronous storage canary, BEFORE we bind.
     //
@@ -421,16 +420,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
             config.cli.wal_flush_gap_ms
         });
         let wal_post_ack_gather = Duration::from_millis(config.cli.wal_post_ack_gather_ms);
-        let wal_gather_skip_reqs = if config.cli.wal_gather_skip_reqs == 0 {
-            u32::MAX
-        } else {
-            config.cli.wal_gather_skip_reqs
-        };
-        let wal_gather_skip_bytes = if config.cli.wal_gather_skip_bytes == 0 {
-            u64::MAX
-        } else {
-            config.cli.wal_gather_skip_bytes
-        };
         let tail_ring_bytes = config.cli.tail_ring_bytes;
         // Per-open inputs cloned out of the owned config: the Fn opener
         // runs once per shard open and cannot move fields out of its
@@ -515,8 +504,9 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                             wal_group_commit,
                             wal_flush_gap,
                             wal_post_ack_gather,
-                            wal_gather_skip_reqs,
-                            wal_gather_skip_bytes,
+                            wal_gather_skip_reqs: crate::config::EngineConfig::WAL_GATHER_SKIP_REQS,
+                            wal_gather_skip_bytes:
+                                crate::config::EngineConfig::WAL_GATHER_SKIP_BYTES,
                             tail_ring_bytes,
                             handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
                             handle_max_resident,
@@ -804,9 +794,8 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // also exercises.
     if crate::fleet::start_configured(state.clone(), &tasks) {
         tracing::info!(
-            "fleet coordination on (prefix={}, cap={} rps)",
-            config.cli.fleet_prefix.as_deref().unwrap_or(""),
-            config.cli.scale_rps_capacity
+            "fleet coordination on (prefix={})",
+            config.cli.fleet_prefix.as_deref().unwrap_or("")
         );
     }
     // Telemetry pipeline (docs/OBSERVABILITY-BILLING.md): the drainer on

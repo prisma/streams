@@ -220,7 +220,12 @@ Done: the six GC names, `L0_MAX_SSTS_PER_KEY`, the two gather skips, the
 three bucket arguments, `TAIL_MAX_BYTES` and `SSE_H1_MAX_BUF`. Their
 arguments are refused and their environment names are ignored. The fields of
 the gather skips and the buckets stay in `CliArgs`, not settable, because
-`bootstrap::run` reads them and may not change. Kept settable on purpose:
+`bootstrap::run` reads them and may not change. Removed on 2026-09-30 on the
+owner's instruction ("Please do the cleanup"): the five fields, the `0 =
+never skip` conversion and the bucket parameter of the store builders are
+gone, the gather skips are the constants `EngineConfig::WAL_GATHER_SKIP_REQS`
+and `WAL_GATHER_SKIP_BYTES`, and the six exception rows of `bootstrap::run`
+were updated to the values the gate measures. Kept settable on purpose:
 `ABSORB_READ_PAR` (the memory lever of a gather, and the lever the documents
 name for the append-latency dip). Not attempted: `TRIM_PER_OP`,
 `HANDLE_IDLE_EVICT_SECS`, the six billing and metrics names and
@@ -285,7 +290,10 @@ the fleet's desired count has no assumed-capacity dimension; the reason
 string of `fleet/desired.json` ends `rps=R live=L`. Left for the owner: the
 field `CliArgs::scale_rps_capacity` stays, always 0, and the boot line
 still prints `cap=0 rps`, because `bootstrap::run` names the field and its
-exception rows are exact.
+exception rows are exact. Removed on 2026-09-30 on the owner's instruction
+("Please do the cleanup"), with the residue of package 4: the field is gone,
+the boot line reads "fleet coordination on (prefix=P)", and the rows were
+updated.
 
 Status (2026-09-29, fourth row): done, in one commit, edge record #84, on
 the owner's delegation; the owner ratified it on 2026-09-30. `HISTORY_COMPACTOR` is not

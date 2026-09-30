@@ -186,10 +186,10 @@ fn assert_pipeline(b: &Backend, group_commit: u8, timer: Duration) {
 fn production_stores(config: &ServerConfig) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>) {
     let resources = Arc::new(crate::store_timing::StoreResources::new(&config.storage));
     let ops = config
-        .store_for(&config.cli.ops_bucket, &resources)
+        .store_for(&resources)
         .expect("build the ops store as the server does");
     let shard = config
-        .store_for(&config.cli.shard_bucket, &resources)
+        .store_for(&resources)
         .expect("build the shard store as the server does");
     (ops, shard)
 }

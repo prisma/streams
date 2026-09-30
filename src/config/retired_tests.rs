@@ -8,14 +8,15 @@ use clap::Parser;
 
 /// Every value a retired name used to set, read where the server reads it:
 /// the GC options and the L0 caps the shard databases open with, the
-/// history sweep, the gather thresholds `bootstrap::run` takes, and the
-/// assumed capacity its boot line prints.
+/// history sweep, and the gather thresholds `bootstrap::run` takes (the
+/// constants of `EngineConfig`; no field carries them). The assumed
+/// capacity of the scaler has no value to read: its field is gone with
+/// the cap the boot line printed.
 type RetiredValues = (
     ((Option<u64>, u64), (Option<u64>, u64), [Option<u64>; 3]),
     Option<u64>,
     (usize, usize),
     (u32, u64),
-    u64,
 );
 
 fn retired_values(config: &ServerConfig) -> RetiredValues {
@@ -39,10 +40,9 @@ fn retired_values(config: &ServerConfig) -> RetiredValues {
         config.history.gc_interval.map(|d| d.as_secs()),
         (settings.l0_max_ssts, settings.l0_max_ssts_per_key),
         (
-            config.cli.wal_gather_skip_reqs,
-            config.cli.wal_gather_skip_bytes,
+            super::EngineConfig::WAL_GATHER_SKIP_REQS,
+            super::EngineConfig::WAL_GATHER_SKIP_BYTES,
         ),
-        config.cli.scale_rps_capacity,
     )
 }
 
@@ -66,10 +66,8 @@ fn retired_names_helper() {
             Some(600),
             (48, 48),
             (32, 1_048_576),
-            0,
         ),
-        "GC cadences and age floors, the per-key L0 cap, the gather skips and the absent \
-         assumed capacity are constants"
+        "GC cadences and age floors, the per-key L0 cap and the gather skips are constants"
     );
 }
 

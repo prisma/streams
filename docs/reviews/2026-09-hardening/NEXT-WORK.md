@@ -1143,7 +1143,14 @@ then the five rows of package 5):
   the rows of `bootstrap::run`, so that TLA-011 and the bootstrap mutation
   owner are paid once: the five skipped fields, the `0 = never skip`
   conversion inside `run`, and the bucket parameter of `raw_store` and
-  `store_for`. Residue for the next edit of each file: the comment above
+  `store_for`. Removed on 2026-09-30 on the owner's instruction ("Please
+  do the cleanup"), with the residue of package 5's third row: the fields,
+  the conversion and the bucket parameter are gone, the gather skips are
+  the constants `EngineConfig::WAL_GATHER_SKIP_REQS` and
+  `WAL_GATHER_SKIP_BYTES`, the six rows of `bootstrap::run` were updated to
+  the values the gate measures (`scope_lines` 583 -> 573, `syntax_facts`
+  977 -> 968), and the tool's pin of HEAD's leaves is 132. Residue for the
+  next edit of each file: the comment above
   `gc_interval` in `src/history.rs` names `HISTORY_GC_INTERVAL_SECS` and
   its alias (TLA-016, TLA-018, TLA-019), and the comment above
   `tail_max_bytes` in `src/http.rs` says "Env TAIL_MAX_BYTES" (a critical
@@ -1240,7 +1247,10 @@ then the five rows of package 5):
   next update of the rows of `bootstrap::run`** (with the residue of
   package 4): the field `CliArgs::scale_rps_capacity`, which stays with
   `#[arg(skip)]` and is always 0, and the boot line "fleet coordination on
-  (prefix=P, cap=0 rps)", which still prints it. The platform export (§11)
+  (prefix=P, cap=0 rps)", which still prints it. Removed on 2026-09-30 on
+  the owner's instruction ("Please do the cleanup"), with the residue of
+  package 4: the field is gone, the boot line reads "fleet coordination on
+  (prefix=P)", and the rows were updated. The platform export (§11)
   must show no project that passes the argument or holds
   `SCALE_RPS_CAPACITY` above 0.
 - Package 5, fourth row: the history compactor is always on, and

@@ -102,6 +102,42 @@
       "why": "constant 60 s (EngineConfig::WAL_GC_MIN_AGE); no family set it"
     },
     {
+      "old": "cli.wal_gather_skip_reqs",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 80,
+      "why": "constant 32 requests (EngineConfig::WAL_GATHER_SKIP_REQS): the argument was refused since the commit of edge record #80 and the field, which stayed for bootstrap::run, is removed; no family set it"
+    },
+    {
+      "old": "cli.wal_gather_skip_bytes",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 80,
+      "why": "constant 1 MiB (EngineConfig::WAL_GATHER_SKIP_BYTES); the same as cli.wal_gather_skip_reqs"
+    },
+    {
+      "old": "cli.ops_bucket",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 80,
+      "why": "one bucket for every role (--bucket / SLATE_S3_BUCKET): the argument was refused since the commit of edge record #80 and the field, always None, is removed with the bucket parameter of the store builders in bootstrap; no family set it"
+    },
+    {
+      "old": "cli.shard_bucket",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 80,
+      "why": "the same as cli.ops_bucket"
+    },
+    {
+      "old": "cli.data_bucket",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 80,
+      "why": "the same as cli.ops_bucket"
+    },
+    {
+      "old": "cli.scale_rps_capacity",
+      "commit": "the cleanup commit of 2026-09-30 (residues of edge records #80 and #83)",
+      "edge_record": 83,
+      "why": "the fleet's desired count has no assumed-capacity dimension: the argument was refused since the commit of edge record #83 and the field, always 0, is removed with the cap the boot line printed; no family set it above 0"
+    },
+    {
       "old": "cli.compactions_gc_interval_secs",
       "commit": "the commit of edge record #80",
       "edge_record": 80,

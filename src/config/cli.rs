@@ -20,14 +20,6 @@ pub struct CliArgs {
     /// The bucket of every role: ops, shard logs and data.
     #[arg(long, env = "SLATE_S3_BUCKET", default_value = "streams")]
     pub(crate) bucket: String,
-    /// Not arguments, always `None`: every role uses `bucket`. The fields
-    /// remain because `bootstrap::run` names them.
-    #[arg(skip)]
-    pub(crate) ops_bucket: Option<String>,
-    #[arg(skip)]
-    pub(crate) shard_bucket: Option<String>,
-    #[arg(skip)]
-    pub(crate) data_bucket: Option<String>,
 
     #[arg(long, env = "SLATE_S3_REGION", default_value = "us-east-1")]
     pub(crate) region: String,
@@ -84,15 +76,6 @@ pub struct CliArgs {
     /// only the 1 ms herd-settle before its flush, not the window.
     #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 6)]
     pub(crate) wal_post_ack_gather_ms: u64,
-
-    /// Not arguments. The gather window is skipped when the next WAL
-    /// already holds 32 requests or 1 MiB (the window exists for SMALL
-    /// next generations; at saturation it is a tax). The fields remain
-    /// because `bootstrap::run` reads them.
-    #[arg(skip = 32u32)]
-    pub(crate) wal_gather_skip_reqs: u32,
-    #[arg(skip = 1_048_576u64)]
-    pub(crate) wal_gather_skip_bytes: u64,
 
     /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
     /// tail reads (long-poll/SSE wakes, catch-up near the head) serve
@@ -373,12 +356,6 @@ pub struct CliArgs {
     #[arg(long, env = "FLEET_PREFIX")]
     pub(crate) fleet_prefix: Option<String>,
 
-    /// Not an argument, always 0: the scaler has no assumed-capacity
-    /// dimension (edge record #83). The field remains because
-    /// `bootstrap::run` names it in its boot line.
-    #[arg(skip)]
-    pub(crate) scale_rps_capacity: u64,
-
     /// Scale-out utilization target (percent of fleet maximum). Both the
     /// capacity dimension (ceil(cores_used/target)) and the hot-instance
     /// dimension use it: scaling triggers as the fleet nears this level.
@@ -506,9 +483,6 @@ impl CliArgs {
             listen: "127.0.0.1:8090".into(),
             s3_endpoint: "http://127.0.0.1:1".into(),
             bucket: "streams".into(),
-            ops_bucket: None,
-            shard_bucket: None,
-            data_bucket: None,
             region: "us-east-1".into(),
             access_key_id: "test".into(),
             secret_access_key: "test".into(),
@@ -517,8 +491,6 @@ impl CliArgs {
             wal_group_commit: 1,
             wal_flush_gap_ms: 10,
             wal_post_ack_gather_ms: 6,
-            wal_gather_skip_reqs: 32,
-            wal_gather_skip_bytes: 1_048_576,
             tail_ring_bytes: 0,
             l0_sst_size_bytes: 8 * 1024 * 1024,
             max_unflushed_bytes: 16 * 1024 * 1024,
@@ -560,7 +532,6 @@ impl CliArgs {
             instance_name: "streams".into(),
             path_prefix: None,
             fleet_prefix: None,
-            scale_rps_capacity: 0,
             scale_out_cpu_pct: 75,
             scale_in_cpu_pct: 50,
             scale_cpu_sustain_secs: 20,

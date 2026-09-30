@@ -127,6 +127,18 @@ impl EngineConfig {
     /// storage-cheap) is traded for LIST steady-state.
     pub(crate) const GC_QUIET_INTERVAL: Duration = Duration::from_secs(600);
 
+    // The thresholds of the post-acknowledgement gather window
+    // (`--wal-post-ack-gather-ms`). Constants since edge record #80: the
+    // window exists for SMALL next generations, so the pump skips it when
+    // the next WAL already holds this many requests or bytes (at
+    // saturation the window is a latency and throughput tax).
+    /// Requests already committed-but-unflushed above which the gather
+    /// window is skipped.
+    pub(crate) const WAL_GATHER_SKIP_REQS: u32 = 32;
+    /// Bytes already committed-but-unflushed above which the gather window
+    /// is skipped (1 MiB).
+    pub(crate) const WAL_GATHER_SKIP_BYTES: u64 = 1_048_576;
+
     /// Build the resolved compactor options (previously the
     /// `resolved_compactor_options()` OnceLock in bootstrap.rs).
     pub fn compactor_options(&self) -> slatedb::config::CompactorOptions {
