@@ -27,8 +27,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt};
-use object_store::ObjectStore;
 use object_store::path::Path as ObjPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 
 use crate::config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 
@@ -295,4 +295,55 @@ async fn real_provider_meets_the_provider_contract() {
     let (ops, shard) = production_stores(&config);
     let b = Backend::new("real-provider", ops, shard, &config, false);
     run_contract(&b).await;
+}
+
+/// The fleet-coordination store exists exactly when a fleet prefix is
+/// configured, and it writes under that prefix and not under
+/// `--path-prefix`: an object put through it is at `<fleet prefix>/<key>`
+/// in the bucket, where the instance's own store, prefixed by
+/// `--path-prefix`, does not see it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fleet_store_exists_only_with_a_fleet_prefix_and_writes_under_it() {
+    let s3lite = s3lite_harness::S3lite::bind().await;
+    let mut config = local_config(&s3lite.endpoint(), None);
+    config.cli.path_prefix = Some("instance".into());
+    let resources = Arc::new(crate::store_timing::StoreResources::new(&config.storage));
+    assert!(
+        config
+            .fleet_store(&resources)
+            .expect("build without a fleet prefix")
+            .is_none(),
+        "no fleet prefix, no fleet store"
+    );
+    config.cli.fleet_prefix = Some("fleet-contract".into());
+    let fleet = config
+        .fleet_store(&resources)
+        .expect("build with a fleet prefix")
+        .expect("a fleet prefix makes a fleet store");
+    let (instance, _) = production_stores(&config);
+    let bucket = config.raw_store().expect("the bucket without a prefix");
+    let key = ObjPath::from(format!("probe-{:016x}/heartbeat", rand::random::<u64>()));
+    s3lite
+        .serve_while(async {
+            fleet
+                .put(&key, object_store::PutPayload::from_static(b"1"))
+                .await
+                .expect("put through the fleet store");
+            let landed = bucket
+                .get(&ObjPath::from(format!("fleet-contract/{key}")))
+                .await
+                .expect("the object is under the fleet prefix in the bucket")
+                .bytes()
+                .await
+                .expect("read the object back");
+            assert_eq!(landed.as_ref(), b"1");
+            assert!(
+                matches!(
+                    instance.get(&key).await,
+                    Err(object_store::Error::NotFound { .. })
+                ),
+                "the instance's store, under --path-prefix, does not see the fleet object"
+            );
+        })
+        .await;
 }

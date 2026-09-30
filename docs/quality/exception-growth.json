@@ -254,8 +254,8 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 573,
-        "syntax_facts": 968
+        "scope_lines": 537,
+        "syntax_facts": 923
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
@@ -266,8 +266,8 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 573,
-        "syntax_facts": 968
+        "scope_lines": 537,
+        "syntax_facts": 923
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
@@ -278,20 +278,24 @@
       "scope": "function",
       "lint": "clippy::expect_used",
       "metrics": {
+        "expect_site:ordinary-call::2deb993e9b21dc6f": 1,
+        "expect_site:ordinary-call::49bb86608378bc96": 1,
         "expect_site:ordinary-call::60495e231cd908aa": 1,
         "expect_site:ordinary-call::83e435826e2785b7": 1,
-        "expect_site:ordinary-call::9c332f64a5657584": 1,
-        "expect_site:ordinary-call::c964a171666b6042": 1,
-        "expect_site:ordinary-call::dd676648335cab78": 1,
+        "expect_site:ordinary-call::8ed7e69339e4cead": 1,
+        "expect_site:ordinary-call::a1906119ac7861cf": 1,
+        "expect_site:ordinary-call::b6bacbb6edfee464": 1,
+        "expect_site:ordinary-call::cc64d7431e967514": 1,
+        "expect_site:ordinary-call::df1c7776146ec70e": 1,
+        "expect_site:ordinary-call::e89b9f384b70eea7": 1,
         "expect_site:path::125ff86eabf35b16": 14,
-        "expect_site:path::2a13749f1b017f52": 76,
-        "expect_site:path::2b6260ce93ecd12a": 1,
-        "expect_site:path::34fd3055383a4067": 1,
-        "expect_site:path::86b17f87900c8a32": 5,
+        "expect_site:path::2a13749f1b017f52": 67,
+        "expect_site:path::86b17f87900c8a32": 4,
         "expect_site:path::ae13c50420034e4c": 1,
+        "expect_site:path::c584b7c1e88292a2": 7,
         "expect_site:path::ed8ca5365d0895fe": 14,
-        "scope_lines": 573,
-        "syntax_facts": 968
+        "scope_lines": 537,
+        "syntax_facts": 923
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
@@ -302,8 +306,8 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 573,
-        "syntax_facts": 968
+        "scope_lines": 537,
+        "syntax_facts": 923
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
@@ -314,8 +318,8 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 573,
-        "syntax_facts": 968
+        "scope_lines": 537,
+        "syntax_facts": 923
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
@@ -326,19 +330,23 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 573,
-        "syntax_facts": 968,
+        "scope_lines": 537,
+        "syntax_facts": 923,
+        "unwrap_site:ordinary-call::2deb993e9b21dc6f": 1,
+        "unwrap_site:ordinary-call::49bb86608378bc96": 1,
         "unwrap_site:ordinary-call::60495e231cd908aa": 1,
         "unwrap_site:ordinary-call::83e435826e2785b7": 1,
-        "unwrap_site:ordinary-call::9c332f64a5657584": 1,
-        "unwrap_site:ordinary-call::c964a171666b6042": 1,
-        "unwrap_site:ordinary-call::dd676648335cab78": 1,
+        "unwrap_site:ordinary-call::8ed7e69339e4cead": 1,
+        "unwrap_site:ordinary-call::a1906119ac7861cf": 1,
+        "unwrap_site:ordinary-call::b6bacbb6edfee464": 1,
+        "unwrap_site:ordinary-call::cc64d7431e967514": 1,
+        "unwrap_site:ordinary-call::df1c7776146ec70e": 1,
+        "unwrap_site:ordinary-call::e89b9f384b70eea7": 1,
         "unwrap_site:path::125ff86eabf35b16": 14,
-        "unwrap_site:path::2a13749f1b017f52": 76,
-        "unwrap_site:path::2b6260ce93ecd12a": 1,
-        "unwrap_site:path::34fd3055383a4067": 1,
-        "unwrap_site:path::86b17f87900c8a32": 5,
+        "unwrap_site:path::2a13749f1b017f52": 67,
+        "unwrap_site:path::86b17f87900c8a32": 4,
         "unwrap_site:path::ae13c50420034e4c": 1,
+        "unwrap_site:path::c584b7c1e88292a2": 7,
         "unwrap_site:path::ed8ca5365d0895fe": 14
       },
       "rationale": "Boot starts the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and serves on the bounded service runtime so a stuck cache fetch cannot hold process exit (af0e2f04).",

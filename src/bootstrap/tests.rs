@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{RUN_WAS_INVOKED, absorber_config, run};
+use super::{RUN_WAS_INVOKED, absorber_config, run, shard_config};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -32,6 +32,109 @@ fn active_absorber_options_reach_the_absorber_configuration() {
     assert_eq!(changed.threshold_bytes, 31);
     assert_eq!(changed.gather_max_bytes, 5 * 1024 * 1024);
     assert_eq!(changed.gather_read_par, 5);
+}
+
+/// The settings-derived part of a shard engine's configuration as one
+/// value: (pump, flush gap, post-ack gather), (gather-skip requests,
+/// bytes), (trim per op, global trim budget), (handle idle eviction,
+/// resident handles), the tail ring bytes, and frame compression.
+type ShardSettings = (
+    (bool, Duration, Duration),
+    (u32, u64),
+    (u64, u64),
+    (Duration, usize),
+    usize,
+    crate::crypto::FrameCompression,
+);
+
+fn shard_settings(config: &crate::shard::ShardConfig) -> ShardSettings {
+    (
+        (
+            config.wal_group_commit,
+            config.wal_flush_gap,
+            config.wal_post_ack_gather,
+        ),
+        (config.wal_gather_skip_reqs, config.wal_gather_skip_bytes),
+        (config.max_trim_per_op, config.trim_global_budget),
+        (config.handle_idle_evict, config.handle_max_resident),
+        config.tail_ring_bytes,
+        config.frame_compression,
+    )
+}
+
+/// Every shard engine opens on the WAL pipeline, the gather-skip constants,
+/// the trims, the handle settings, the tail ring, frame compression, the
+/// history settings and the compactor options that the parsed settings
+/// decide, and on no shared handle of its own (`run` adds those). This pins
+/// what the review of edge record #77 found unpinned: that the three WAL
+/// values reach the engine.
+#[test]
+fn the_parsed_shard_settings_reach_every_shard_engine() {
+    let cli = crate::config::CliArgs::deterministic();
+    let history = crate::config::HistoryConfig::default();
+    let compactor = crate::config::EngineConfig::default().compactor_options();
+    let active = shard_config(&cli, history.clone(), compactor.clone(), false);
+    assert_eq!(
+        shard_settings(&active),
+        (
+            (true, Duration::from_millis(10), Duration::from_millis(6)),
+            (32, 1_048_576),
+            (8_192, 65_536),
+            (Duration::from_secs(600), 65_536),
+            0,
+            crate::crypto::FrameCompression::Disabled,
+        ),
+        "a server that sets nothing runs the pump with a 10 ms gap and a 6 ms gather, \
+         skipped once the next WAL holds 32 requests or 1 MiB"
+    );
+    assert!(
+        active.shared_postings_cache.is_none()
+            && active.shared_history.is_none()
+            && active.shared_usage.is_none()
+            && active.shared_ops.is_none(),
+        "the shared handles are the runtime's, added by run"
+    );
+    assert_eq!(
+        (active.history, active.compactor_options.poll_interval),
+        (history, compactor.poll_interval)
+    );
+
+    let mut tuned = cli;
+    tuned.wal_group_commit = 0;
+    tuned.wal_flush_gap_ms = 0;
+    tuned.flush_interval_ms = 25;
+    tuned.wal_post_ack_gather_ms = 0;
+    tuned.trim_per_op = 9;
+    tuned.trim_global_budget = 11;
+    tuned.handle_idle_evict_secs = 13;
+    tuned.handle_max_resident = 15;
+    tuned.tail_ring_bytes = 32 * 1024 * 1024;
+    let history = crate::config::HistoryConfig {
+        cache_bytes: 17,
+        ..Default::default()
+    };
+    let compactor = slatedb::config::CompactorOptions {
+        poll_interval: Duration::from_millis(19),
+        ..crate::config::EngineConfig::default().compactor_options()
+    };
+    let changed = shard_config(&tuned, history.clone(), compactor, true);
+    assert_eq!(
+        shard_settings(&changed),
+        (
+            (false, Duration::from_millis(25), Duration::ZERO),
+            (32, 1_048_576),
+            (9, 11),
+            (Duration::from_secs(13), 15),
+            32 * 1024 * 1024,
+            crate::crypto::FrameCompression::ZstdLevel1,
+        ),
+        "the tick pipeline flushes on the flush interval, gathers nothing, and the skip \
+         thresholds are the same constants"
+    );
+    assert_eq!(
+        (changed.history, changed.compactor_options.poll_interval),
+        (history, Duration::from_millis(19))
+    );
 }
 
 #[test]

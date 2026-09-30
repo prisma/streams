@@ -102,6 +102,45 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
     }
 }
 
+/// The part of every shard engine's configuration that the parsed settings
+/// decide: the WAL pipeline, the gather-skip constants, the trims, the
+/// handle settings, the tail ring, frame compression, the history settings
+/// and the compactor options. `run` adds the runtime's shared handles once
+/// and hands each engine a clone, so this is where a setting is shown to
+/// reach the engine.
+fn shard_config(
+    args: &crate::config::CliArgs,
+    history: crate::config::HistoryConfig,
+    compactor_options: slatedb::config::CompactorOptions,
+    frame_compress: bool,
+) -> ShardConfig {
+    let mut config = ShardConfig {
+        max_trim_per_op: args.trim_per_op,
+        trim_global_budget: args.trim_global_budget,
+        wal_group_commit: args.wal_group_commit != 0,
+        wal_flush_gap: Duration::from_millis(if args.wal_flush_gap_ms == 0 {
+            args.flush_interval_ms
+        } else {
+            args.wal_flush_gap_ms
+        }),
+        wal_post_ack_gather: Duration::from_millis(args.wal_post_ack_gather_ms),
+        tail_ring_bytes: args.tail_ring_bytes,
+        handle_idle_evict: Duration::from_secs(args.handle_idle_evict_secs),
+        handle_max_resident: args.handle_max_resident,
+        frame_compression: crate::crypto::FrameCompression::from_enabled(frame_compress),
+        history,
+        compactor_options,
+        ..Default::default()
+    };
+    // The gather-skip thresholds are constants (edge record #80) that
+    // `ShardConfig::default()` also holds, so they are assigned rather than
+    // listed: a listed field whose deletion changes nothing would be an
+    // equivalent mutant.
+    config.wal_gather_skip_reqs = crate::config::EngineConfig::WAL_GATHER_SKIP_REQS;
+    config.wal_gather_skip_bytes = crate::config::EngineConfig::WAL_GATHER_SKIP_BYTES;
+    config
+}
+
 /// The server bootstrap: the composition root hands in ONE owned,
 /// PROVEN [`ValidatedServerConfig`] (PR 3.2: validation is complete
 /// before this function runs — the type is the evidence); this function
@@ -409,35 +448,24 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
             }
         };
         let absorber_config = absorber_config(&config.cli, absorb_gather_max_bytes);
-        let handle_idle_evict_secs = config.cli.handle_idle_evict_secs;
-        let handle_max_resident = config.cli.handle_max_resident;
-        let trim_per_op = config.cli.trim_per_op;
-        let trim_global_budget = config.cli.trim_global_budget;
-        let wal_group_commit = config.cli.wal_group_commit != 0;
-        let wal_flush_gap = Duration::from_millis(if config.cli.wal_flush_gap_ms == 0 {
-            config.cli.flush_interval_ms
-        } else {
-            config.cli.wal_flush_gap_ms
-        });
-        let wal_post_ack_gather = Duration::from_millis(config.cli.wal_post_ack_gather_ms);
-        let tail_ring_bytes = config.cli.tail_ring_bytes;
-        // Per-open inputs cloned out of the owned config: the Fn opener
-        // runs once per shard open and cannot move fields out of its
-        // captured variables, so it clones from these locals per call.
-        let opener_history = config.history.clone();
-        let opener_compactor = config.engine.compactor_options();
-        let opener_frame_compress = config.crypto.frame_compress;
-        let shared_usage = runtime_caps.usage.clone();
-        let shared_ops = runtime_caps.ops.clone();
-        let shared_history = runtime_caps.history.clone();
-        let shared_postings = runtime_caps.postings.clone();
+        // Every engine's configuration, built once: the settings-derived
+        // part, then the runtime's shared handles. The Fn opener runs once
+        // per shard open and cannot move a captured value into an engine,
+        // so it hands each engine a clone.
+        let mut shard_config = shard_config(
+            &config.cli,
+            config.history.clone(),
+            config.engine.compactor_options(),
+            config.crypto.frame_compress,
+        );
+        shard_config.shared_postings_cache = Some(runtime_caps.postings.clone());
+        shard_config.shared_history = Some(runtime_caps.history.clone());
+        shard_config.shared_usage = Some(runtime_caps.usage.clone());
+        shard_config.shared_ops = Some(runtime_caps.ops.clone());
         Box::new(
             move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
-                let shared_usage = shared_usage.clone();
-                let shared_ops = shared_ops.clone();
-                let shared_history = shared_history.clone();
-                let shared_postings = shared_postings.clone();
+                let shard_config = shard_config.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
                 let touch = touch.clone();
@@ -456,8 +484,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                     let spread = (base.as_millis() as u64 / 2).max(1);
                     settings.flush_interval = Some(base + Duration::from_millis(h as u64 % spread));
                 }
-                let opener_history = opener_history.clone();
-                let opener_compactor = opener_compactor.clone();
                 let notifier = notifier.clone();
                 Box::pin(async move {
                     let path = crate::sharddir::shard_db_path(&prefix);
@@ -498,29 +524,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                         prefix.clone(),
                         db,
                         data_store.clone(),
-                        ShardConfig {
-                            max_trim_per_op: trim_per_op,
-                            trim_global_budget,
-                            wal_group_commit,
-                            wal_flush_gap,
-                            wal_post_ack_gather,
-                            wal_gather_skip_reqs: crate::config::EngineConfig::WAL_GATHER_SKIP_REQS,
-                            wal_gather_skip_bytes:
-                                crate::config::EngineConfig::WAL_GATHER_SKIP_BYTES,
-                            tail_ring_bytes,
-                            handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
-                            handle_max_resident,
-                            shared_postings_cache: Some(shared_postings),
-                            shared_history: Some(shared_history),
-                            shared_usage: Some(shared_usage),
-                            shared_ops: Some(shared_ops),
-                            frame_compression: crate::crypto::FrameCompression::from_enabled(
-                                opener_frame_compress,
-                            ),
-                            history: opener_history,
-                            compactor_options: opener_compactor,
-                            ..Default::default()
-                        },
+                        shard_config,
                         absorb_tx,
                         Some(on_close),
                         maintenance,
