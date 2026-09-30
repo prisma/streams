@@ -186,6 +186,94 @@ OWNERS = (
     owner('sse_feed_test_support', 'src/sse/feed/test_support.rs', 'sse::'),
     owner('sse_budget', 'src/sse/budget.rs', 'sse::'),
     owner('postings_validated_tests', 'src/postings/validated/tests.rs', 'postings::'),
+    # The release campaign's owners (NEXT-WORK §9 step 2): the product surface,
+    # the billing core, the usage rollup, the replaced-incarnation closure
+    # debts and the append application had no row, so the per-push plan never
+    # selected them. Each filter names the module's own tests and the DST
+    # modules that pin the file; a module without tests of its own runs the
+    # DSTs alone. `product::` also selects the consumer_product and
+    # reads_product DSTs; `billing` is the whole billing surface, as for the
+    # read accumulator and spool rows.
+    owner('product', 'src/product.rs',
+          'product:: dst_tests::product_lifecycle:: dst_tests::product_descriptor_reads:: '
+          'dst_tests::security_operations:: dst_tests::security_routes::'),
+    owner('product_usage', 'src/product/usage.rs',
+          'dst_tests::security_usage:: dst_tests::billing_usage:: dst_tests::billing_attribution:: '
+          'dst_tests::product_descriptor_reads::'),
+    owner('product_seal_request', 'src/product/seal_request.rs',
+          'dst_tests::seal_coordination:: dst_tests::security_seal:: dst_tests::seal_fencing:: '
+          'dst_tests::seal_convergence::'),
+    owner('product_operation', 'src/product/operation.rs',
+          'dst_tests::security_operations:: dst_tests::security_routes::'),
+    owner('product_append_body', 'src/product/append_body.rs',
+          'product::tests:: dst_tests::append_application:: dst_tests::producer_protocol:: '
+          'dst_tests::quota_enforcement::'),
+    owner('product_consumer_pull', 'src/product/consumer_pull.rs',
+          'dst_tests::consumer_product:: dst_tests::consumer_delete:: dst_tests::consumer_dlq:: '
+          'dst_tests::quota_read_volume::'),
+    owner('product_internal', 'src/product/internal.rs',
+          'product::tests:: dst_tests::runtime_sweep:: dst_tests::read_peer_compatibility:: '
+          'dst_tests::product_descriptor_reads::'),
+    owner('product_read_cursor', 'src/product/read_cursor.rs',
+          'dst_tests::reads_product:: dst_tests::reads_applied:: dst_tests::read_application:: '
+          'dst_tests::security_lineage::'),
+    owner('product_scan', 'src/product/scan.rs',
+          'dst_tests::reads_product:: dst_tests::quota_read_volume:: '
+          'dst_tests::product_descriptor_reads:: dst_tests::security_modes::'),
+    owner('billing', 'src/billing.rs', 'billing'),
+    owner('billing_replaced', 'src/billing/replaced.rs',
+          'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
+          'dst_tests::billing_walk_custody:: dst_tests::billing_controller::'),
+    owner('billing_walk', 'src/billing/walk.rs',
+          'dst_tests::billing_walk_custody:: dst_tests::billing_closure_owners:: dst_tests::runtime_sweep::'),
+    owner('billing_telemetry_loop', 'src/billing/telemetry_loop.rs',
+          'billing::sweep_custody:: dst_tests::billing_controller:: dst_tests::billing_readiness:: '
+          'dst_tests::runtime_sweep::'),
+    owner('rollup', 'src/rollup.rs',
+          'rollup:: dst_tests::billing_usage:: dst_tests::billing_late_close:: dst_tests::security_usage::'),
+    owner('rollup_page', 'src/rollup/page.rs',
+          'rollup:: dst_tests::billing_late_close:: dst_tests::billing_usage::'),
+    owner('rollup_close', 'src/rollup/close.rs',
+          'rollup:: dst_tests::billing_controller:: dst_tests::billing_closure_debts:: '
+          'dst_tests::billing_late_close::'),
+    owner('rollup_reconciliation', 'src/rollup/reconciliation.rs',
+          'rollup:: dst_tests::billing_attribution:: dst_tests::security_audit::'),
+    owner('rollup_totals', 'src/rollup/totals.rs',
+          'rollup:: dst_tests::billing_usage:: dst_tests::billing_attribution::'),
+    owner('registry_replaced', 'src/registry/replaced.rs',
+          'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
+          'dst_tests::billing_late_close:: dst_tests::fork_debt::'),
+    owner('append', 'src/application/append.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::producer_protocol:: '
+          'dst_tests::producer_handoff::'),
+    owner('append_admission', 'src/application/append/admission.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::quota_enforcement::'),
+    owner('append_close', 'src/application/append/close.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::seal_coordination:: '
+          'dst_tests::seal_fencing:: dst_tests::seal_convergence::'),
+    owner('append_content', 'src/application/append/content.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::producer_protocol::'),
+    owner('append_contract', 'src/application/append/contract.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::producer_protocol:: '
+          'dst_tests::producer_handoff::'),
+    owner('append_route', 'src/application/append/route.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::topology_lifecycle::'),
+    owner('append_submit', 'src/application/append/submit.rs',
+          'application::append:: dst_tests::append_application:: dst_tests::durability_failures:: '
+          'dst_tests::persistence_faults::'),
+    # Production files under a critical prefix that the planner listed as
+    # unregistered (NEXT-WORK §10): a push that changes one was refused.
+    owner('read_range', 'src/application/read_range.rs',
+          'application::read dst_tests::read_application:: dst_tests::read_page_limits:: '
+          'dst_tests::read_subset_retention::'),
+    owner('read_retention_probe', 'src/application/read_retention_probe.rs',
+          'application::read_batch:: application::read_decode:: dst_tests::read_subset_retention:: '
+          'dst_tests::read_peer_compatibility::'),
+    owner('record_checked', 'src/shard/record/checked.rs',
+          'shard::record::checked:: application::read_decode:: dst_tests::reads_raw:: '
+          'dst_tests::reads_ring:: dst_tests::reads_history::'),
+    owner('sse_mod', 'src/sse/mod.rs', 'sse::'),
+    owner('tasks_signal', 'src/tasks/signal.rs', 'tasks::'),
     MutationOwner(
         'pilot-benchmark',
         ('src/bin/pilot/benchmark.rs', 'src/bin/pilot/benchmark/config.rs',
