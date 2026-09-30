@@ -524,6 +524,8 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 **Status:** pass-with-recorded-scope (first spike; see [§0](#0-implementation-record)).
 
+**Scope change (2026-09-30, NEXT-WORK §5 F1-a).** A takeover coordinated on a process that does not own the segment now relays its fence to the owner over the fleet-internal seal-fence operation (`src/application/lifecycle/fence_relay.rs`, receiver `internal_seal_fence` in `src/http/internal_routes.rs`); before, it answered Resumable. `SealProtocol.tla`'s `TFence` gains a relay arm that queues the fence on the owner's engine as the home arm does, the `notOwner` arm stays as a relay lost before it lands, `Timeout` also fires at `fwait` in two-process layouts (the relay's 40 s deadline after the fence was queued, over-approximated to every fence waiter there), and `MC_SealTakeover_xproc.cfg` gets `MaxTimeout = 1`. ASM-SEAL-OWNER is reworded and `fence_relay.rs` joins the TLA-002 and TLA-003 source paths. The receipts of TLA-002 and TLA-003 are stale until re-recorded.
+
 **Validate.** Model claim reservation, physical fencing, fence durability, inspection of an old final append, and replacement installation separately. Only the newest eligible reservation may install; exact renewal must obtain usable authority; stale generations cannot perform new protected effects. Time passing alone does not prove the old append failed.
 
 **Why valuable.** This is the best initial protocol model. It directly targets races between independently durable registry and shard state, including the already-guarded competing-reservation failure described in the source.

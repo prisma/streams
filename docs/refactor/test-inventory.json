@@ -349,6 +349,17 @@
     ]
   },
   {
+    "name": "a_durable_relayed_fence_whose_reply_is_lost_survives_the_owners_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "60225d09ff413d7709c7ec72eb56d39f518850714ca9fd40949ebe8befc55f70",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_failed_catch_up_read_is_read_again_after_a_bounded_wait",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -828,6 +839,28 @@
     ]
   },
   {
+    "name": "a_non_owner_raw_close_takeover_installs_then_redirects",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1f25f37b885cde2178f990d127c4a2ed1264f4842e70790087e154a21e7c9624",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_non_owner_seal_takes_over_through_the_owners_fence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ee3cc95e69f6df38621198edaa30a67ba8b0b02eaa2b2db006ed78441bd209a6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1266,6 +1299,17 @@
     "scenarios": []
   },
   {
+    "name": "a_relay_without_a_peer_url_or_credential_leaves_the_claim_untouched",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7f4d6f77c734a5d55f9f232b0ad33091bc6ba5f0347500bb39d2928a68efdff4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1276,6 +1320,57 @@
       "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
     ],
     "file": "src/dst/tests/reads_applied_history.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_relayed_fence_in_a_failed_owner_group_never_installs",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "24cc5843232adfe899040c2903dd2a049f5537b52dddeefa8dcc7730b66cbd25",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_close_before_enqueue(\"rly8\");",
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_relayed_fence_is_decided_after_the_old_final_queued_ahead_of_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e425f94ad4a87087d542d0ce15fd2b9ce4f81dd9922da002fc9987666c3f7820",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_close_before_enqueue(\"rly4\");"
+    ],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_relayed_fence_refuses_the_old_final_that_arrives_after_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c2210eea8478d957378a1779a2a101b0f18c3fb2111d33121bc5735db4f3e5a5",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_close_before_enqueue(\"rly5\");"
+    ],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_relayed_fence_reports_an_old_close_that_already_won",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "078ccf8f328fc921bd20c6efc9d3ae38a81b38d0c0ad5ad3847e9202f1ce98d5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
     "scenarios": []
   },
   {
@@ -1516,6 +1611,17 @@
     "scenarios": [
       "HIS-012"
     ]
+  },
+  {
+    "name": "a_second_ownership_move_leaves_the_takeover_resumable_and_unchased",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4fc4c88eb96150d030c0a8cb6fb0c8182040e20fa8adb18d5b194a835a7a19ce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
   },
   {
     "name": "a_settle_counts_when_its_descriptor_cannot_be_read_again",

@@ -259,6 +259,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::seal_fence_relay",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The seal-fence sender's two-instance scenarios (NEXT-WORK §5 F1-a, edge change #89): a takeover coordinated on a non-owner relays its fence to the owner across wrong ingress, owner movement, competing old finals and crashes around fence durability, and only the owner's parsed closed-report is a verdict; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/seal_fence_relay.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",
@@ -1198,6 +1206,38 @@
       "owner": "crate::seal_fence_receiver_never_answers_closed_for_a_failed_group",
       "path": "src/dst/tests/seal_fence_receiver.rs",
       "reason": "Seal-fence failed-group fixture owns the append and fence request handles; both are joined after the held commit is released. Concurrent staging is required for the fence to share the failed write group with a client write of its segment.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::stage_parked",
+      "path": "src/dst/tests/seal_fence_relay.rs",
+      "reason": "Relay fixture owns the old close parked before its enqueue and returns its handle; every caller joins it after releasing the failpoint. Concurrent execution is required for the close to wait on its own failpoint while the takeover runs.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_relayed_fence_is_decided_after_the_old_final_queued_ahead_of_it",
+      "path": "src/dst/tests/seal_fence_relay.rs",
+      "reason": "Queued-ahead relay fixture owns the relayed takeover handle; it is joined after the held commit is released. Concurrent execution is required for the relayed fence to queue behind the old close in the owner's held committer.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_relayed_fence_in_a_failed_owner_group_never_installs",
+      "path": "src/dst/tests/seal_fence_relay.rs",
+      "reason": "Failed-group relay fixture owns the relayed takeover handle; it is joined after the held commit is released. Concurrent execution is required for the relayed fence to share the failed write group with the old close.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_durable_relayed_fence_whose_reply_is_lost_survives_the_owners_restart",
+      "path": "src/dst/tests/seal_fence_relay.rs",
+      "reason": "Lost-reply relay fixture owns the relayed takeover handle; it is joined after the owner's shutdown and the release of its held dispatch. Concurrent execution is required to observe the takeover pending on a fence that is durable but unanswered.",
       "syntax": "tokio::spawn"
     },
     {

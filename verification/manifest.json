@@ -3574,6 +3574,7 @@
       "source_paths": [
         "src/application/lifecycle.rs",
         "src/application/lifecycle/claims.rs",
+        "src/application/lifecycle/fence_relay.rs",
         "src/application/append/close.rs",
         "src/application/append/submit.rs",
         "src/shard/commit_plan.rs",
@@ -3628,7 +3629,7 @@
         "ASM-SEAL-NODELETE",
         "ASM-SEAL-OPID"
       ],
-      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held, retire-held and liveness-held, which separate them for one fence group: it may become durable, be lost with its engine, or be rejected without an engine retirement. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
+      "input_scope": "One incarnation, one segment. P0: the original product seal-with-final (two handler slots: original and exact retry); T1: a competing product seal-with-final; T2: a plain :seal. Layouts: one instance, or two instances with P0's exact retry on B while A owns the shard at start. A takeover's fence is queued at the owner: locally when the handler's process owns the shard, otherwise relayed over the fleet-internal seal-fence operation (F1-a), which can be lost before it lands (retryable) and, in a two-instance layout, can time out after it was queued (Timeout at fwait, over-approximated to every fence waiter of those layouts). Safety: generations <= 5 (<= 6 expanded) by CONSTRAINT; MaxClaimLoop = 0 (unbounded restarts, any of which may give up: a superset of the production six-iteration loop). small: 1 crash; faults: 1 registry fault, 1 cancellation, 1 enqueue failure; expanded: 1 crash, 1 registry fault; xproc: two instances, 1 crash (crash failover), 1 timeout (an append's, or a relayed fence's after it was queued); retire: 1 crash, 1 engine replacement, 1 failed fence-row read; engine: two instances, 1 crash, 1 engine replacement (a stranded head group may become durable while answered Moved), plus HandlersProgress. Baselines stage and make durable each committer element in one step (MaxHeldFence = 0), except xproc-held, retire-held and liveness-held, which separate them for one fence group: it may become durable, be lost with its engine, or be rejected without an engine retirement. Liveness (LiveSpec, one instance, no constraint, no symmetry, MaxClaimLoop = 6, weak fairness on the committer, handler steps, lease time and T2's issue): T2 retries forever; small = P0 one request, 1 crash, 1 engine replacement; contenders = P0 and T1 one request each, 1 engine replacement; faults = P0 one request, 1 registry fault, 1 enqueue failure, 1 cancellation, 1 timeout.",
       "checks": [
         {
           "id": "TLA-002/baseline-small",
@@ -4039,6 +4040,7 @@
       "source_paths": [
         "src/application/lifecycle.rs",
         "src/application/lifecycle/claims.rs",
+        "src/application/lifecycle/fence_relay.rs",
         "src/application/lifecycle/raw_close.rs",
         "src/application/append.rs",
         "src/application/append/close.rs",

@@ -872,12 +872,22 @@ pub(crate) async fn fence_segment_for_key(
     let route = desc
         .segment_route_by_id(seg.seg_id)
         .ok_or(SealError::InvalidClaim)?;
-    let engine = state
+    // Another instance owns the segment: its committer places the fence
+    // (F1-a). Only the owner's parsed closed-report is a verdict.
+    let engine = match state
         .topology
         .shards
         .resolve(&route, crate::shard_directory::Adoption::Internal)
         .await
-        .map_err(|_| SealError::Resumable("segment engine unavailable".into()))?;
+    {
+        Ok(engine) => engine,
+        Err(crate::shard_directory::ResolveError::NotOwner { owner, .. }) => {
+            let topology = &state.topology;
+            return fence_relay::relay_seal_fence(topology, &desc, seg.seg_id, fence_to, &owner)
+                .await;
+        }
+        Err(_) => return Err(SealError::Resumable("segment engine unavailable".into())),
+    };
     let (tx, rx) = tokio::sync::oneshot::channel();
     engine
         .try_seal_fence(crate::shard::SealFenceReq {
@@ -894,6 +904,7 @@ pub(crate) async fn fence_segment_for_key(
 }
 
 mod claims;
+mod fence_relay;
 use claims::decide_claim;
 pub(crate) use claims::{
     EnterSeal, FinalDisposition, SealAuthz, SealClaim, SealTicket, final_err_disposition,

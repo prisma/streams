@@ -792,12 +792,18 @@ actions to these contracts.
   all registry work (claim, renewal, the product `seal_auth` check) in whatever
   process handles the request. The first ownership check is
   `ShardDirectory::resolve` in `submit`: `NotOwner` for a non-owner, a fresh
-  engine for the owner. The takeover's fence needs local ownership. A relayed
-  segment close carries its generation and is modelled as a close queued at the
-  owner.
+  engine for the owner. The takeover's fence is queued at the owner's engine:
+  locally when the coordinating process owns the shard, otherwise through the
+  fleet-internal seal-fence operation (F1-a), whose every answer but the
+  owner's closed-report is retryable and never a verdict. A relayed segment
+  close carries its generation and is modelled as a close queued at the owner.
 - **Origin:** `src/application/append/submit.rs` 18-25;
-  `src/shard_directory.rs` 234-304; `src/application/lifecycle.rs` 874-879;
-  `src/application/topology.rs` 62-70.
+  `src/shard_directory.rs` 234-304; `src/application/lifecycle.rs`
+  `fence_segment_for_key` (the three-arm resolve) and
+  `src/application/lifecycle/fence_relay.rs` (the sender);
+  `src/http/internal_routes.rs` `internal_seal_fence` (the receiver: the
+  owner's `engine_for_quiet`, then `try_seal_fence` and a 200 only from the
+  committer's durable reply); `src/application/topology.rs` 62-70.
 - **Enforcement / evidence:** source inspection.
 - **Invalidation:** an ownership check before the claim; server-side forwarding
   of appends.

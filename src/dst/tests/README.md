@@ -13,7 +13,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Registry read classification (a store failure is retryable, corruption is final) | `product_descriptor_reads` |
 | JSON record fidelity (stored text, admission, identities, every read surface) | `json_fidelity` |
 | Lifecycle and topology | `lifecycle_*`, `fork_*`, `seal_*`, `topology_*`, `product_lifecycle` |
-| Cross-instance seal fence (NEXT-WORK §5 F1-a: the owner-side receiver of `POST /v1/internal/seal-fence` answers only after the fence is durable, and refuses wrong credentials, targets, generations and owners without touching the engine) | `seal_fence_receiver` |
+| Cross-instance seal fence (NEXT-WORK §5 F1-a: the owner-side receiver of `POST /v1/internal/seal-fence` answers only after the fence is durable, and refuses wrong credentials, targets, generations and owners without touching the engine; a takeover coordinated on a non-owner relays its fence there, and only the owner's parsed closed-report is a verdict, across wrong ingress, owner movement, competing old finals and crashes around fence durability) | `seal_fence_receiver`, `seal_fence_relay` |
 | Consumer delivery and deletion | `consumer_atomicity`, `consumer_delete`, `consumer_generations`, `consumer_product`, `consumer_saga` |
 | Watches and live delivery | `watch_observation`, `sse_delivery`, `livefeed_*` (incl. `livefeed_engine_retired`) |
 | Multitenancy and authorization (incl. the in-flight admission over the wire: the cap answers only after authentication, and the survival refusal above four times the cap covers reads and appends on both stream surfaces, at the default caps: `security_routes`) | `security_*`, `quota_enforcement`, `quota_read_volume` |

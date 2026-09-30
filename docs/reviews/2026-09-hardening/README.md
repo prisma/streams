@@ -182,7 +182,7 @@ remains probable." Limits that stay explicit:
 | Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |
 | Bug #7 | Option (b), explicit migration; activation gated on a real-DB rehearsal | Not started |
 | Item 40 | Separate Critical heartbeat, progress and eligibility | Steps 1, 2 and 4 landed (the commits NEXT-WORK section 4 names; edge #63 ratified 2026-09-28 and amended); step 3 (scoped withdrawal) deferred as its own edge decision; H2 name arbitration, the drain-bound amendment and the spec paragraph await the owner (NEXT-WORK section 4) |
-| F1 | Authenticated fleet-internal seal-fence operation | Not started |
+| F1 | Authenticated fleet-internal seal-fence operation | F1-a implemented on the owner's instruction of 2026-09-30: the route table moved to `src/http/internal_routes.rs`, the owner-side receiver (edge #88) and the non-owner's relay (edge #89), both awaiting ratification; TLA-002 and TLA-003 await re-recording. Owner-gated and not done: the plan's negative model control (commit 4) and the platform contract (commit 5). F1-b (split producer lanes) not started |
 | F2 | Keep the unknown-outcome model; public append/seal plus successor composition test | The composition test landed (445955e9, `dst_tests::retiring_written_group`): the retryable unknown answer, one copy on the successor, the producer-keyed retry as a duplicate, the owed final kept and completed; no behaviour contradicts the model. Option A and the fenced-write mapping (plan §9 D6) await the owner |
 
 ### Deployment gates (block deployment sign-off, not merging)

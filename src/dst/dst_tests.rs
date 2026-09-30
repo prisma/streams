@@ -198,6 +198,9 @@ mod seal_coordination;
 #[path = "tests/seal_fence_receiver.rs"]
 mod seal_fence_receiver;
 
+#[path = "tests/seal_fence_relay.rs"]
+mod seal_fence_relay;
+
 #[path = "tests/seal_fencing.rs"]
 mod seal_fencing;
 

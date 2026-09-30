@@ -26,6 +26,7 @@
 (*                                                                         *)
 (* Production owners (see README.md for the full mapping):                 *)
 (*   src/application/lifecycle.rs, lifecycle/claims.rs, lifecycle/raw_close.rs *)
+(*   lifecycle/fence_relay.rs (the fence relayed to the owner, F1-a)       *)
 (*   src/application/append.rs, append/close.rs, append/submit.rs,          *)
 (*   append/content.rs, src/product.rs (seal-with-final handler)           *)
 (*   src/shard/commit_plan.rs (decide_producer, seal_authorized)           *)
@@ -611,11 +612,22 @@ MarkAhead(q, hid) ==
                         THEN [q[i] EXCEPT !.ahead = @ \cup {hid}] ELSE q[i]]
 
 \* 2. FENCE: fence_segment_for_key resolves the shard HERE (Adoption::
-\* Internal); a non-owner answers NotOwner -> Resumable.  try_seal_fence
-\* travels the append queue.
+\* Internal).  The owner queues try_seal_fence on the append queue.  A
+\* non-owner relays the fence to the owner over the fleet-internal
+\* seal-fence operation (lifecycle/fence_relay.rs, F1-a), whose receiver
+\* queues the same request on the owner's engine and answers from its
+\* reply.  The relay can be lost before it lands (no peer URL, a refused
+\* credential, ownership moved again, a transport error): Resumable with
+\* nothing queued.  A relay that landed and whose answer was lost is a
+\* Timeout at "fwait".
 TFence(hid) ==
     /\ h[hid].pc = "fence"
     /\ \/ /\ HomeOf[hid] = owner
+          /\ eng' = [eng EXCEPT !.q = Append(MarkAhead(@, hid),
+                                             Req("fence", hid, NONE, h[hid].res, FALSE, FALSE))]
+          /\ h' = [h EXCEPT ![hid].pc = "fwait"]
+          /\ UNCHANGED <<faults, hist, wit>>
+       \/ /\ HomeOf[hid] # owner
           /\ eng' = [eng EXCEPT !.q = Append(MarkAhead(@, hid),
                                              Req("fence", hid, NONE, h[hid].res, FALSE, FALSE))]
           /\ h' = [h EXCEPT ![hid].pc = "fwait"]
@@ -1303,9 +1315,15 @@ Cancel(hid) ==
     /\ eng' = OrphanEng(eng, hid)
     /\ UNCHANGED <<desc, seg, lanes, owner, bud, hist, wit, wset>>
 
-\* APPEND_TIMEOUT: "append timed out; outcome unknown" (ambiguous).
+\* APPEND_TIMEOUT: "append timed out; outcome unknown" (ambiguous).  A
+\* relayed seal fence has a deadline of the same kind (the relay's 40 s,
+\* F1-a): it may have landed, and even become durable, at the owner.  The
+\* local fence has no deadline; every fence waiter of a multi-process
+\* layout may time out (an over-approximation: sound, and no single-process
+\* layout gains a behaviour).
 Timeout(hid) ==
-    /\ h[hid].pc = "await"
+    /\ \/ h[hid].pc = "await"
+       \/ h[hid].pc = "fwait" /\ Procs # {HomeOf[hid]}
     /\ h[hid].rep = NONE
     /\ faults.timeout > 0
     /\ faults' = [faults EXCEPT !.timeout = @ - 1]

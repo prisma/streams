@@ -542,6 +542,25 @@ checks; `src/http.rs` is at its ceiling (plans19 split-producer-lineage §9 D3
 suggests extracting the internal route table into
 `src/http/internal_routes.rs`).
 
+Status (2026-09-30, on the owner's instruction "Do them all in that order!
+use your own judgement", which took the plan's defaults): three commits.
+(1) The operation vocabulary, the raw method-to-operation map and the
+`/v1/internal` table moved to `src/http/internal_routes.rs` (no wire change;
+`src/http.rs` 3,097 -> 3,031 lines). (2) The receiver, `POST
+/v1/internal/seal-fence/{*name}?fence_to=` under the new operation
+`seal-fence` (edge #88; `dst_tests::seal_fence_receiver`). (3) The sender:
+`fence_segment_for_key` relays to the owner when another instance owns the
+segment (`src/application/lifecycle/fence_relay.rs`), and every answer but
+the owner's parsed closed-report is Resumable (edge #89;
+`dst_tests::seal_fence_relay`, the owner's four classes). The seal model
+gained the relay arm and a relayed timeout, so TLA-002 and TLA-003 must be
+re-recorded. Left for the owner: ratifying #88 and #89; the plan's commit 4
+(a negative control for the relay arm, TLA-002) and commit 5 (the platform
+contract must name `seal-fence`, and the `segment-close` it already omits,
+before a JWT-only fleet can relay); a mutation owner for `fence_relay.rs`
+(`src/application/lifecycle` is no critical prefix, so adding one changes
+what the gate selects).
+
 **F1-b, the plan: producer and Stream-Seq lanes across a split.**
 `plans/plans19/split-producer-lineage.md`. After a split, a key's producer
 lane and Stream-Seq lane are read only from the serving engine's DB, so a
