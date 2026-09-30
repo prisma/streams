@@ -173,6 +173,7 @@ remains probable." Limits that stay explicit:
 | A billing close of a row that is already closed (decided 2026-09-29) | A close that would change nothing is a no-op in the committer | Edge #72 |
 | A failed storage close after a write failure (left to the implementer, 2026-09-29) | The refused close of a Db that had already failed is settled as closed; a healthy Db whose close fails stays failed | Edge #73 |
 | B3, a close after its month was finalized (decided 2026-09-29) | A correction against a frozen invoice is allowed: the month nets to what the shard recorded up to the close, later months bill 0 for the segment | 0b7840c7, edge #66 (ratified 2026-09-29) |
+| Edge records #67-#85 (ratified 2026-09-30) | Accepted, each record as written: the 1 GiB posture as the binary's defaults (#67-#71), the two close decisions (#72, #73) and the five configuration packages (#74-#85) | `edge-changes.md` |
 | Item 50 | Option (a): preserve live bindings, cap 32,768, reject `HANDLE_IDLE_EVICT_SECS=0` | 45f8711c (holder rule added beside the counted pin; the pin's full retirement not done) |
 | Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |
 | Bug #7 | Option (b), explicit migration; activation gated on a real-DB rehearsal | Not started |

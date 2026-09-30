@@ -926,6 +926,11 @@ item is in `evidence/config-audit-2026-09-29/detail.md`.
 be the default"; every other question of the page is left to the
 implementer's judgement.
 
+**Owner ratification (2026-09-30).** "I accept them all": edge records #67 to
+#85 are ratified as written, at the grades and surfaces they carry. The
+questions this section attaches to a ratification stay listed as open
+items for the owner; the ratification answers none of them by itself.
+
 Changed so far (package 2, then package 1, then package 3, then package 4,
 then the five rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,

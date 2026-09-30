@@ -56,8 +56,8 @@ and the binary reads about 113 settings instead of 152.
 ## Package 1: settings that do nothing (no behaviour changes anywhere)
 
 Status (2026-09-29): implemented on the owner's delegation ("For other
-questions, please make your own judgement call"); each edge record awaits
-ratification. First the preparation (c480e615): the effective-configuration
+questions, please make your own judgement call"); each edge record was
+ratified by the owner on 2026-09-30. First the preparation (c480e615): the effective-configuration
 tool counts the 156 leaves HEAD prints (its pin said 155; 0d40dc2a had
 added `FORK_DEBT_SWEEP_SECS`), and a unit test holds that count to the
 source.
@@ -146,7 +146,7 @@ client-visible rows with the question above.
 
 Status (2026-09-29, the three WAL settings): done, edge record #77, on the
 owner's delegation ("For other questions, please make your own judgement
-call"); the record awaits ratification. The binary's defaults are
+call"); the owner ratified the record on 2026-09-30. The binary's defaults are
 `WAL_GROUP_COMMIT=1`, `WAL_FLUSH_GAP_MS=10` and `WAL_POST_ACK_GATHER_MS=6`.
 The switch stays: `WAL_GROUP_COMMIT=0` selects the tick, and
 `scripts/bench-fra-ab.sh` now sets it, because its recorded baseline is the
@@ -165,8 +165,8 @@ has not been made. The rows of the table below are not changed yet. The
 text that follows is the audit's and is not rewritten.
 
 Status (2026-09-29, `ABSORB_AGE_SECS`, the first row of the table below):
-done, edge record #78, on the same delegation; the record awaits
-ratification. The binary's default is 60. It is the value the deployments
+done, edge record #78, on the same delegation; the owner
+ratified the record on 2026-09-30. The binary's default is 60. It is the value the deployments
 run, not a measured improvement: the one run that names the setting changed
 two variables, and the cost of more frequent absorption on sparse streams
 has not been measured. By the family files eight of the nine families that
@@ -182,8 +182,8 @@ nor `REBALANCE_LAG_SECS`. The other three rows are not changed yet.
 
 Status (2026-09-29, `ADMIT_MAX_INFLIGHT` and
 `ADMIT_MAX_INFLIGHT_PER_STREAM`, rows 2 and 3 of the table below): done as
-one change, edge record #79 (medium), on the same delegation; the record
-awaits ratification. The binary's defaults are 512 and 256. The instance
+one change, edge record #79 (medium), on the same delegation; the owner
+ratified the record on 2026-09-30. The binary's defaults are 512 and 256. The instance
 cap was off: a server that sets nothing now refuses appends above 512
 requests in flight and, above 2,048, every request to a stream path before
 authentication; the count covers every request on every route. The two are
@@ -215,7 +215,7 @@ Also in this package, each an owner performance decision:
 ## Package 4: settings nothing sets become constants
 
 Status (2026-09-29): fourteen of the twenty-four names are constants, in one
-commit, edge record #80, on the owner's delegation; it awaits ratification.
+commit, edge record #80, on the owner's delegation; the owner ratified it on 2026-09-30.
 Done: the six GC names, `L0_MAX_SSTS_PER_KEY`, the two gather skips, the
 three bucket arguments, `TAIL_MAX_BYTES` and `SSE_H1_MAX_BUF`. Their
 arguments are refused and their environment names are ignored. The fields of
@@ -259,7 +259,7 @@ owner's taste.
 ## Package 5: switches with one live path
 
 Status (2026-09-29): the first row is done, in one commit, edge record #81,
-on the owner's delegation; it awaits ratification. `ABSORB_PACE_MS` and
+on the owner's delegation; the owner ratified it on 2026-09-30. `ABSORB_PACE_MS` and
 `ABSORB_PACE_WINDOW_MS` are not options (the arguments are refused, the
 environment names are ignored) and the pacing code is gone: a gather never
 parks between read waves. Left for the owner: the counter of the pace time
@@ -269,7 +269,7 @@ because `collect_snapshot` has an exact exception row that only the owner
 rewrites.
 
 Status (2026-09-29, second row): done, in one commit, edge record #82, on
-the owner's delegation; it awaits ratification. `STORE_MAX_CONCURRENT` is
+the owner's delegation; the owner ratified it on 2026-09-30. `STORE_MAX_CONCURRENT` is
 not read and the count semaphore of the store wrapper is gone with its six
 call sites: no store call waits for a count permit, which is what the
 default of 0 meant. The byte gate (`STORE_BULK_INFLIGHT_MAX_BYTES`) is not
@@ -279,7 +279,7 @@ exercised the semaphore; it is rewritten on the byte gate under the same
 name and re-pinned in `docs/refactor/review-mechanisms.json`.
 
 Status (2026-09-29, third row): done, in one commit, edge record #83, on
-the owner's delegation; it awaits ratification. `SCALE_RPS_CAPACITY` is not
+the owner's delegation; the owner ratified it on 2026-09-30. `SCALE_RPS_CAPACITY` is not
 an option (the argument is refused, the environment name is ignored) and
 the fleet's desired count has no assumed-capacity dimension; the reason
 string of `fleet/desired.json` ends `rps=R live=L`. Left for the owner: the
@@ -288,7 +288,7 @@ still prints `cap=0 rps`, because `bootstrap::run` names the field and its
 exception rows are exact.
 
 Status (2026-09-29, fourth row): done, in one commit, edge record #84, on
-the owner's delegation; it awaits ratification. `HISTORY_COMPACTOR` is not
+the owner's delegation; the owner ratified it on 2026-09-30. `HISTORY_COMPACTOR` is not
 read (it had no argument; the environment name is ignored) and the history
 databases of both layouts always open with the embedded compactor, on the
 resolved worker options and with L0 caps of 64. The startup summary loses
@@ -297,7 +297,7 @@ runs (`s3lite --discard-substr`). The guard of the 1 GiB certificate
 against a disabled compactor stays.
 
 Status (2026-09-29, fifth and last row): done, in one commit, edge record
-#85 (medium), on the owner's delegation; it awaits ratification.
+#85 (medium), on the owner's delegation; the owner ratified it on 2026-09-30.
 `BILLING_METER` is not read (it had no argument; the environment name is
 ignored) and every append to a stream that is not `_`-reserved is metered
 at the committer, under `BILLING_MODE=required` as under any other mode.
