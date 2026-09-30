@@ -255,10 +255,47 @@ committer is the only place that sees both closes in order, so it is the
 only place where the guard is exact; it makes the walk's documented
 idempotence true and removes every cost above, and the bill cannot change
 because the skip applies only where today's close changes nothing but the
-version. Unconfirmed and separate: a close enqueued on an engine the walk
-cold-opened may be dropped when `walk_settle` retires that engine before
-the committer applies it (a lost close retried by the next sweep, not a
-double).
+version.
+
+**Confirmed and fixed (edge change #87, the commit that records it): a close
+the walk or the debt pass enqueued on a shard it cold-opened was lost when
+the pass handed the shard back.** An independent investigation (three
+analysts, three skeptics, one judge) confirmed it at 88015cc5.
+`submit_billing_close` and `submit_billing_retained` only enqueue; the walk
+(`src/billing/walk.rs` `walk_segment`) and the debt pass
+(`src/billing/replaced.rs` `settle_segment`) then called `walk_settle`, whose
+debt probe reads only the durable dirty index, so it retired an engine whose
+committer still held the op, and a retiring committer drops a queued
+`BillingClose` or `BillingRetained` without a reply (the drain arm of
+`committer_loop`, `reject_op`, and `CommitTransaction::run` on a closed
+engine). The row stayed open and every month the rollup closed carried the
+dead incarnation's gauge, until a later visit landed the close: the debt
+pass when its cursor came back, the walk only after a whole catalog pass,
+and never while the shard's SST layout let the probe finish without
+yielding. Not a double: every retry carries the persisted instant. It is
+the CI flake of
+`billing_walk_custody::a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_next_segment`
+(gauge 81 still open, accounted-through 55 ms before the expiry). A step that
+enqueued an op now keeps the shard scheduler-held, and the next sweep's
+phase 1 rotates it as an indebted resident once the op has applied. Three
+DSTs in `billing_walk_custody.rs` (the walk's close, the debt pass's close,
+the walk's retention flag) make the losing order certain with a committer
+that gathers for 2 s (`pace_min_reqs: 1`) and were red 5 of 5 runs each.
+
+**What remains of the lost close (owner decision).** Phase 1 still decides
+from the durable index, so an op still unapplied a whole sweep interval
+(300 s) after its step would meet the same drop: the fix shrinks the window
+from microseconds to one sweep interval, it is not a proof. The same shape
+remains for the ops the concurrent drain enqueues (`src/billing.rs`, its
+closes and retention flags) on a resident that phase 1 retires before they
+apply. The exact fix is a reply channel on `CommitOp::BillingClose` and
+`CommitOp::BillingRetained`: `Ok` at publish, `Err(Moved)` with a warning and
+a counter at the three drop sites, awaited by `submit_*`, so the walk maps a
+lost op to `Pass::Stop` and replays its page instead of settling. It grows
+the `#[expect(clippy::large_enum_variant)]` contract on `CommitOp` (an
+owner-approved exception row), needs a module extracted from `src/shard.rs`
+first (at its 3,009-line ceiling), and stales six receipts (about 150 min
+serial).
 
 Rollback note for the record: an older binary ignores the debt objects (they
 live outside the descriptor), so a rollback leaves debts unsettled until

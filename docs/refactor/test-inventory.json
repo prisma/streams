@@ -113,6 +113,28 @@
     "scenarios": []
   },
   {
+    "name": "a_close_the_debt_pass_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "21dc20ddaab12a04c8f89309309422d797c00873aa82e31df3a94b8ddd66ae3b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_close_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "918a2b4ac64b483937270ed03d663fd2201f78ff7498a405670dd588cf008fdb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1322,6 +1344,17 @@
     "scenarios": [
       "SEL-016"
     ]
+  },
+  {
+    "name": "a_retention_flag_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6d40a027ab66b4bdb35dcd4452c31a6d82bf8df80d35e6e7d6719685ad2f8e28",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
   },
   {
     "name": "a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree",

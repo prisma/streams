@@ -27,7 +27,12 @@ pub(super) enum Pass {
 /// out of the rotation). A cold route opens only while scheduler-held
 /// engines are under budget, takes custody like any discovery open, and is
 /// closed (or retained as an indebted resident) by the caller right after
-/// its step on that segment, whatever the step found. Over budget, or an
+/// its step on that segment, whatever the step found — unless the step
+/// enqueued a committer op there. The settle's debt probe reads only the
+/// durable dirty index, which a queued op has not written yet, and a
+/// retired committer drops what it has not applied; so that shard stays
+/// scheduler-held, and the next sweep's phase 1 rotates it like any
+/// indebted resident once the op has made its row dirty. Over budget, or an
 /// open that does not complete here, is `Err(Pass::Stop)`: the pass is
 /// DEFERRED and resumes at the same place next sweep, which is the
 /// continuation.
@@ -66,7 +71,8 @@ pub(super) async fn walk_engine_budgeted(
 /// or contended open, or a segment the descriptor does not route, is
 /// `Pass::Stop`: the walk resumes at this page next sweep. A shard this
 /// step cold-opened is settled after the step whatever it found, before
-/// the walk moves on.
+/// the walk moves on, unless the step enqueued a committer op there: that
+/// shard stays scheduler-held until its committer has applied the op.
 pub(super) async fn walk_segment(
     state: &Arc<AppState>,
     d: &StreamDesc,
@@ -85,12 +91,15 @@ pub(super) async fn walk_segment(
         Ok(acquired) => acquired,
         Err(pass) => return pass,
     };
-    let pass = close_or_retain(d, sid, terminal, &engine).await;
-    if ours {
+    let (pass, enqueued) = close_or_retain(d, sid, terminal, &engine).await;
+    if ours && !enqueued {
         // Scheduler-opened for this segment: close it or keep it as an
-        // indebted budgeted resident NOW, on every outcome of the step (no
-        // row, another incarnation's row, a failed read) — never
-        // accumulate walk opens across the page.
+        // indebted budgeted resident NOW, on every outcome of a step that
+        // left nothing in its committer queue (no row, another
+        // incarnation's row, a failed read or submit) — never accumulate
+        // walk opens across the page. A close or flag the step enqueued is
+        // not durable debt yet: settling now would retire the committer
+        // before it applies the op, and a retired committer drops it.
         walk_settle(state, &state.shards.prefix_for(&route)).await;
     }
     pass
@@ -99,20 +108,28 @@ pub(super) async fn walk_segment(
 /// The row of `d`'s incarnation in segment `sid` on `engine`: closed at
 /// the PERSISTED logical time while its gauge is open (`terminal`), or
 /// flagged `retained_by_forks`. No row, or another incarnation's, is
-/// `Pass::Next`; a failed metadata read is `Pass::Stop`.
-async fn close_or_retain(d: &StreamDesc, sid: u32, terminal: bool, engine: &ShardEngine) -> Pass {
+/// `Pass::Next`; a failed metadata read is `Pass::Stop`. The flag says
+/// whether the step enqueued a committer op (the close or the retention
+/// flag), which the caller must not retire the engine under.
+async fn close_or_retain(
+    d: &StreamDesc,
+    sid: u32,
+    terminal: bool,
+    engine: &ShardEngine,
+) -> (Pass, bool) {
     let hash = d.dynamic_segment_identity(sid);
     let meta = match engine.load_billing_meta(hash).await {
         Ok(Some(meta)) => meta,
-        Ok(None) => return Pass::Next,
+        Ok(None) => return (Pass::Next, false),
         Err(error) => {
             tracing::error!("billing sweep metadata read failed: {error}");
-            return Pass::Stop;
+            return (Pass::Stop, false);
         }
     };
     if meta.stream_id != d.stream_epoch {
-        return Pass::Next;
+        return (Pass::Next, false);
     }
+    let mut enqueued = false;
     if terminal && meta.owned_frame_bytes_current > 0 {
         let close_ms = if d.deleted {
             d.logical_close_ms.unwrap_or_else(billing_now_ms)
@@ -129,13 +146,17 @@ async fn close_or_retain(d: &StreamDesc, sid: u32, terminal: bool, engine: &Shar
             tracing::warn!("tombstone-walk close failed for {}: {e}", d.sref());
         } else {
             WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            enqueued = true;
         }
     } else if d.soft_deleted
         && !d.deleted
         && !meta.retained_by_forks
-        && let Err(e) = engine.submit_billing_retained(hash, true).await
+        && let Err(e) = engine
+            .submit_billing_retained(hash, true)
+            .await
+            .inspect(|()| enqueued = true)
     {
         tracing::warn!("tombstone-walk retain failed for {}: {e}", d.sref());
     }
-    Pass::Next
+    (Pass::Next, enqueued)
 }
