@@ -1,9 +1,9 @@
 //! Where one evaluation's rate lines fall: a segment is hot strictly above
 //! `hot_pct` of any limit and cold strictly under 5% of that line on every
 //! limit, and neither between them; a split is chosen on exactly the
-//! `hot_evals`-th consecutive hot evaluation; and a dominant key is an
-//! unsplittable hot key only while the segment holds no other meaningful
-//! load.
+//! `hot_evals`-th consecutive hot evaluation; and a dominant key, one
+//! holding strictly more than half the load, is an unsplittable hot key only
+//! while the segment holds no other meaningful load.
 #![cfg(test)]
 
 use super::{chosen, sketch, splittable, test_desc};
@@ -169,4 +169,34 @@ fn a_dominant_key_is_a_hot_key_only_while_the_segment_holds_no_other_meaningful_
         assert!(merges.is_empty(), "{what}: {merges:?}");
         assert_eq!((splits, s.hot_keys.get(&name).copied()), want, "{what}");
     }
+}
+
+/// A key holding exactly half the load does not dominate, even in a segment
+/// with nothing else meaningful (four other keys at 12.5% each, five
+/// distinct): the segment splits at its load-weighted median and surfaces
+/// no hot key.
+#[test]
+fn a_key_holding_exactly_half_the_load_does_not_dominate() {
+    let name = test_desc("halved").sref();
+    let far = u64::MAX / 4 * 3;
+    // With the fixture's first byte, key 1 holds 500 of 1,000 GB; key 2
+    // sits beside it, keys 3-5 at the far end.
+    let mut samples = vec![(1, 1, 499_999_999_999), (1, 2, 125_000_000_000)];
+    samples.extend((3..6).map(|key| (far, key, 125_000_000_000)));
+    let mut s = State::default();
+    s.sketches.insert((name.clone(), 0), segment(&samples));
+    let top = s.sketches[&(name.clone(), 0)].dist.top_keys_windowed();
+    assert_eq!(top.top_share(), Some(([1; 16], 0.5)));
+    assert_eq!(top.keys_above(0.15), 1);
+    let (splits, merges) = evaluate_state(
+        &mut s,
+        1_000,
+        &ScalePolicy::default(),
+        crate::usage::limits(),
+    );
+    assert!(merges.is_empty(), "{merges:?}");
+    assert_eq!(
+        (splits, s.hot_keys.get(&name).copied()),
+        (vec![(name, "epoch".to_string(), 0, u64::MAX / 64)], None)
+    );
 }
