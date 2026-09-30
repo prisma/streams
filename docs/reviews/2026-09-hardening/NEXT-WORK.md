@@ -931,6 +931,8 @@ implementer's judgement.
 questions this section attaches to a ratification stay listed as open
 items for the owner; the ratification answers none of them by itself.
 
+**Owner ratification of #86 (2026-09-30).** "Ratifying 86": the pace-gauge removal of the residue cleanup (eb39fab6) is ratified as written.
+
 **Field evidence for the pump default (2026-09-30).** The owner asked for
 the pump default of #77 to be measured on production hardware and Tigris;
 `docs/PUMP-AB-REPORT.md` is the A/B (two cells of eu-central-1, tick
