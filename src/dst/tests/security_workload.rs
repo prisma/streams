@@ -167,6 +167,46 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
     assert_eq!(st, 401, "unknown-operation token appended via raw: {st}");
 }
 
+/// §14.1: the raw surface derives its operation from the request METHOD.
+/// PUT and DELETE need `raw-lifecycle`, POST needs `raw-append`, and every
+/// other method `raw-read`; a token for one of them opens none of the
+/// others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_surface_operations_follow_the_request_method() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (_state, addr, _tok) = sr_rig("proj-rmo", "ws_rmo", "c_rmo", "rmo-1", scopes).await;
+    let now = crate::shard::now_ms() / 1000;
+    let ops = ["raw-lifecycle", "raw-append", "raw-read"];
+    let tokens = ops.map(|op| format!("Bearer {}", sr2_workload_jwt("rmo-1", &[op], now)));
+    let row: &[u8] = br#"[{"i":0}]"#;
+    // (method, body, the one operation it needs). Every other operation's
+    // token is refused before the needed one performs the request.
+    let steps = [
+        ("PUT", row, 0),
+        ("POST", row, 1),
+        ("GET", &b""[..], 2),
+        ("DELETE", &b""[..], 0),
+    ];
+    let requests = steps.iter().flat_map(|&(method, body, needed)| {
+        let others = (0..3).filter(move |&i| i != needed);
+        others
+            .chain([needed])
+            .map(move |i| (method, body, i, i == needed))
+    });
+    for (method, body, i, own) in requests {
+        let auth = ("authorization", tokens[i].as_str());
+        let headers = [("content-type", "application/json"), auth];
+        let (st, _, _) = hreq(addr, method, "/v1/stream/rmo", &headers, body).await;
+        let expected_ok = (200..300).contains(&st) && own;
+        let expected_refusal = st == 401 && !own;
+        assert!(
+            expected_ok || expected_refusal,
+            "{method} with a {} token answered {st}",
+            ops[i]
+        );
+    }
+}
+
 /// RED (review finding 1, outbound half): a two-instance fleet where
 /// the SENDER holds NO static fleet token relays a system append to
 /// the owner using a workload JWT from its token source — §14.1

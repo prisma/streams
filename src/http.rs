@@ -124,6 +124,10 @@ use serde_json::json;
 
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::history::KeyCache;
+use crate::product::{
+    internal_queue_cursor, internal_segment_scan, internal_sref, internal_sweep_segment,
+    verify_internal_target,
+};
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
 
@@ -371,47 +375,6 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// token can never perform a product operation.
 pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     state.bearer.authorizes(bearer(headers), state.auth.mode)
-}
-
-/// SR-5 (Søren decision): the raw Durable Streams surface is
-/// INTERNAL-ONLY for shared-cell GA. Off = deployment bearer (local
-/// development, conformance). Shadow = deployment bearer REQUIRED.
-/// Enforce = workload/fleet credentials only — no deployment-global
-/// customer bearer exists on a shared cell.
-/// §14.1 (SR2 finding 1): the least-privilege operations an internal
-/// principal can hold. A workload JWT authorizes EXACTLY the
-/// operations its `operations` claim names — an EMPTY or UNKNOWN list
-/// grants nothing, and every internal route demands one exact
-/// operation. The static bridge token retains full authority until
-/// the platform mints workload identity (its retirement is a GA
-/// blocker); a workload token is never a cell-wide credential.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum InternalOperation {
-    RawRead,
-    RawAppend,
-    RawLifecycle,
-    SegmentRead,
-    SegmentClose,
-    SegmentScan,
-    QueueCursor,
-    ConsumerSweep,
-    TelemetryAppend,
-}
-
-impl InternalOperation {
-    pub(crate) fn claim(self) -> &'static str {
-        match self {
-            Self::RawRead => "raw-read",
-            Self::RawAppend => "raw-append",
-            Self::RawLifecycle => "raw-lifecycle",
-            Self::SegmentRead => "segment-read",
-            Self::SegmentClose => "segment-close",
-            Self::SegmentScan => "segment-scan",
-            Self::QueueCursor => "queue-cursor",
-            Self::ConsumerSweep => "consumer-sweep",
-            Self::TelemetryAppend => "telemetry-append",
-        }
-    }
 }
 
 /// Round-4 finding 2: the least facts a RAW-surface LIVE subscription
@@ -1199,34 +1162,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/readyz", get(health_axum))
         .route("/operator/billing.json", get(billing_readiness_axum))
         .route("/v1/segments/{*name}", get(get_segments))
-        // Fleet-internal segment fan-out target (bearer-gated): a keyed,
-        // segment-positioned read served strictly from local ownership.
-        // Peers relay here when a lineage crosses instances; the public
-        // raw route keeps rejecting ?key= (audit P0 standards isolation).
-        .route(
-            "/v1/internal/segment-read/{*name}",
-            get(internal_segment_read),
-        )
-        .route(
-            "/v1/internal/segment-close/{*name}",
-            post(internal_segment_close),
-        )
-        .route(
-            "/v1/internal/sweep-segment/{*name}",
-            post(crate::product::internal_sweep_segment),
-        )
-        .route(
-            "/v1/internal/queue-cursor/{*name}",
-            get(crate::product::internal_queue_cursor),
-        )
-        .route(
-            "/v1/internal/segment-scan/{*name}",
-            get(crate::product::internal_segment_scan),
-        )
-        .route(
-            "/v1/internal/telemetry-append/{*name}",
-            post(internal_telemetry_append),
-        )
+        .merge(internal_routes::table())
         .nest("/v1/debug", debug::gated(&state, debug_routes()))
         // Operator dashboard: UNSECURED by explicit product decision (on-call
         // must see the cell without credentials). The payload is therefore
@@ -2006,11 +1942,7 @@ async fn stream_entry_inner(
 ) -> Response {
     // §14.1: the raw operation is derived from the METHOD — a
     // lifecycle token cannot append, an append token cannot delete.
-    let raw_op = match method {
-        Method::PUT | Method::DELETE => InternalOperation::RawLifecycle,
-        Method::POST => InternalOperation::RawAppend,
-        _ => InternalOperation::RawRead,
-    };
+    let raw_op = method.raw_operation();
     // Round-4 finding 2: TYPED authorization — a verified workload JWT
     // keeps its expiry (an InternalLease) instead of being reduced to
     // a boolean the request path discards.
@@ -3046,13 +2978,13 @@ async fn internal_segment_read(
     // arrival serves the REPLACEMENT stream's records against the
     // original request's cursor. §16: the registry identity comes from
     // the sender's PROJECT header, never the deployment tenant.
-    let sref = match crate::product::internal_sref(&headers, &name) {
+    let sref = match internal_sref(&headers, &name) {
         Ok(s) => s,
         Err(r) => return r,
     };
     match state.registry.get(&sref).await {
         Ok(Some(desc)) => {
-            if let Err(r) = crate::product::verify_internal_target(&desc, &headers) {
+            if let Err(r) = verify_internal_target(&desc, &headers) {
                 return r;
             }
         }
@@ -3079,13 +3011,15 @@ async fn internal_segment_read(
 
 mod close_identity;
 mod debug;
+mod internal_routes;
 #[path = "http/read.rs"]
 mod read_adapter;
 mod serve;
 mod telemetry_append;
+pub(crate) use internal_routes::InternalOperation;
+use internal_routes::RawOperation;
 pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
 pub(crate) use serve::serve_h1;
-use telemetry_append::internal_telemetry_append;
 
 #[cfg(test)]
 #[path = "http/test_support.rs"]
