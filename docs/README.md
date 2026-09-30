@@ -124,7 +124,7 @@ Each entry says what supersedes it, where something does.
 - `codereview1.md` *(hidden)*: the WP-00 restructuring work package, written against 685ea035 (192 KB). It was executed through `docs/refactor/`.
 
 **Field campaigns and reports in `docs/`**
-- Soaks: SOAK-REGIONS (the 2026-07-26 baseline), SOAK5/6/7/9-REPORT, and SOAK-R25H-REPORT (the corrected six-region soak, 2026-08-11).
+- Soaks: SOAK-REGIONS (the 2026-07-26 baseline), SOAK5/6/7/9-REPORT, SOAK-R25H-REPORT (the corrected six-region soak, 2026-08-11), and PUMP-AB-REPORT (the pump-versus-tick A/B on Tigris in eu-central-1, 2026-09-30: the field evidence for edge record #77).
 - Capacity and chaos: CAPACITY-R26 and CAPACITY-R27 (the OOM fix and its gate). CHAOS-CAMPAIGN is superseded in part by CHAOS-R23, CHAOS-R23's R23-1 by CHAOS-R24, and CHAOS-R24 by [MAINTENANCE-BACKPRESSURE.md](MAINTENANCE-BACKPRESSURE.md).
 - Cost: COST-AB1, COST-WIDE1, COST-WIDE2, COST-CAMPAIGN-1 and COST-CAMPAIGN-2. Their `ABSORB_CONCURRENCY` is a retired knob; the current controls are in [RUNBOOK §3.2](../RUNBOOK.md#32-engine-shard-log).
 - Fleet, performance and platform: FLEET-CAMPAIGN, PERF-LIVEFEED (round 12), PLATFORM-SIN-404-REPORT and its -VERIFICATION (fixed 2026-07-30), TIGRIS-404-COST, TIGRIS-REGION-CENSUS, and BUCKETS-SINGLE-REGION (its finding still holds: a bucket inherits its project's region).

@@ -931,6 +931,16 @@ implementer's judgement.
 questions this section attaches to a ratification stay listed as open
 items for the owner; the ratification answers none of them by itself.
 
+**Field evidence for the pump default (2026-09-30).** The owner asked for
+the pump default of #77 to be measured on production hardware and Tigris;
+`docs/PUMP-AB-REPORT.md` is the A/B (two cells of eu-central-1, tick
+against the default, the same binary): lower acknowledgement latency at
+every tier up to 48 producers, 4% more throughput, 6% fewer WAL objects,
+garbage collection keeping pace, every acknowledged record durable. The
+performance question that #77 left open is answered for that region; a SIN
+or NRT run of the same harness (`SOAK_REGIONS` with two cells of one
+region) would bound the WAL count where Tigris writes in about 20 ms.
+
 Changed so far (package 2, then package 1, then package 3, then package 4,
 then the five rows of package 5):
 - The compaction worker and the bulk gate (648d7df4), the absorber's slot,

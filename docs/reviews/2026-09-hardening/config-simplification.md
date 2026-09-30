@@ -380,6 +380,20 @@ On Tigris a WAL write costs about 40 ms and a request, so the rate gain will
 be smaller and the write count is a cost: that is the field evidence the
 decision needs.
 
+**On Tigris, eu-central-1, 2026-09-30** (`docs/PUMP-AB-REPORT.md`): two
+cells of one region, the same binary (eeff9b8a), tick against the pump
+default, the `bench/soak` ramp of ten tiers (1 to 64 closed-loop
+producers, 180 s each), released together. The pump's append p50 is 22%
+lower at one producer, 13 to 15% lower at two to eight, 4 to 10% lower at
+12 to 48 and equal at 64; p99 is lower in seven tiers of ten; the pump
+acknowledged 4% more requests (438,025 against 421,222), both arms with 0
+errors and every acknowledged record durable. The WAL cost does not carry
+to Tigris: at a 40 ms WAL write the 10 ms floor never binds, and the pump
+wrote 6% fewer WAL objects (0.271 per acknowledged request against 0.300)
+while WAL garbage collection kept pace on both arms (deletes within 2% of
+puts, window by window). The write count of 2.2x is the figure for a store
+that answers in 2 ms; no Prisma region does.
+
 ## Not determined
 
 - What any real Compute project holds: only a platform export shows it.

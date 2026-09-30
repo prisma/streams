@@ -58,6 +58,22 @@ python3 harvest.py && python3 mkreport.py > report-tables.md
 Deploy **servers first**: `deploy-region.sh <r> gen` reads
 `url-server-<r>.txt` to point the generator at its target.
 
+## Two arms in one region (an A/B)
+
+A cell is a region name, or a region name with an arm suffix
+(`eu-central-1-tick`, `eu-central-1-pump`). `provision.py`,
+`deploy-region.sh` and `harvest.py` map a cell to its region and key every
+file, project, bucket and service name by the cell, so two arms run side by
+side in one region, each in its own project and bucket (invariant 6), under
+the same Tigris conditions at the same time. An arm's server posture comes
+from `$SOAK_HOME/cell-<cell>.env`, `KEY=VALUE` lines of the `SOAK_WAL_*`
+names `deploy-region.sh` reads (`SOAK_WAL_GROUP_COMMIT`,
+`SOAK_WAL_FLUSH_GAP_MS`, `SOAK_FLUSH_INTERVAL_MS`,
+`SOAK_WAL_POST_ACK_GATHER_MS`), sourced before the deploy. Pass the cells
+as `SOAK_REGIONS`; every later step (`poll.py`, `harvest.py`,
+`reconcile.py`, `teardown.sh`) takes them unchanged. The first such run is
+`docs/PUMP-AB-REPORT.md`.
+
 ## Invariants
 
 Learned the hard way; a run that violates one of these produces numbers

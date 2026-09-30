@@ -7,6 +7,11 @@ publish = false
 # Standalone crate (not part of the server build): the AWS SDK dependency
 # tree stays out of the service's cargo-deny surface. Gate runs build it
 # explicitly for the comparison campaign only.
+# Its own workspace root: the server's manifest became a workspace on
+# 2026-09-08 (a1d9dabf) and cargo then refused to build this crate from
+# inside the tree ("current package believes it's in a workspace").
+[workspace]
+
 [dependencies]
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
 aws-sdk-kinesis = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }

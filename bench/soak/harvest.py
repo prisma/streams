@@ -52,7 +52,8 @@ for r in REGIONS:
     if not _os.path.exists(f"{S}/url-gen-{r}.txt"):
         print(f"skipping {r}: no generator url (not deployed this run)", file=sys.stderr)
         continue
-    entry = {"pop": POP[r]}
+    # A cell may carry an arm suffix (eu-central-1-tick): its PoP is its region's.
+    entry = {"pop": next(POP[k] for k in POP if r == k or r.startswith(k + "-"))}
 
     # ---- client-side (generator) ----
     body = get(url("gen", r))

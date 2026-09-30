@@ -51,6 +51,18 @@ else
 fi
 
 S=${SOAK_HOME:?set SOAK_HOME to a scratch dir outside the repo}
+# A cell is a Compute region, or a region with an arm suffix
+# (eu-central-1-tick): two arms of one A/B run side by side in one
+# region, each in its own project and bucket. The suffix keys every file
+# and service name; only the platform sees the bare region.
+REGION=$R
+for known in us-east-1 us-west-1 eu-central-1 eu-west-3 ap-southeast-1 ap-northeast-1; do
+  case "$R" in "$known"|"$known"-*) REGION=$known ;; esac
+done
+# The cell's own server posture (an A/B arm): KEY=VALUE lines of the
+# SOAK_* names read below, sourced so an arm's values win over the
+# campaign's defaults without a script edit per arm.
+if [ -f "$S/cell-$R.env" ]; then . "$S/cell-$R.env"; fi
 # ${VAR-default} (no colon): an EXPLICITLY EMPTY BENCH_TIERS means
 # "no ramp" (the capacity gate's sustained shape) and must survive;
 # ${VAR:-default} would resurrect the ramp for empty values.
@@ -159,7 +171,7 @@ if [ "$ROLE" = server ]; then
   DEPLOYED=0
   for ATT in 1 2 3 4 5 6; do
   if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
-    --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
+    --region "$REGION" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
     --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
     --env BIN_S3_ACCESS_KEY_ID="$BINID" --env BIN_S3_SECRET_ACCESS_KEY="$BINSEC" \
@@ -170,8 +182,10 @@ if [ "$ROLE" = server ]; then
     --env AUTH_TOKEN="$AUTH" \
     --env PATH_PREFIX="$SOAK_PREFIX" --env INSTANCE_NAME=streams-1 \
     --env INITIAL_SHARDS=4 \
-    --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=10 --env FLUSH_INTERVAL_MS=25 \
-    --env WAL_POST_ACK_GATHER_MS="${WAL_POST_ACK_GATHER_MS:-6}" \
+    --env WAL_GROUP_COMMIT="${SOAK_WAL_GROUP_COMMIT:-1}" \
+    --env WAL_FLUSH_GAP_MS="${SOAK_WAL_FLUSH_GAP_MS:-10}" \
+    --env FLUSH_INTERVAL_MS="${SOAK_FLUSH_INTERVAL_MS:-25}" \
+    --env WAL_POST_ACK_GATHER_MS="${SOAK_WAL_POST_ACK_GATHER_MS:-${WAL_POST_ACK_GATHER_MS:-6}}" \
     --env TAIL_RING_BYTES="${TAIL_RING_BYTES:-0}" \
     --env STREAMS_DEBUG_TIMING="${STREAMS_DEBUG_TIMING:-0}" \
     --env FRAME_COMPRESS=1 \
@@ -200,7 +214,7 @@ else
   DEPLOYED=0
   for ATT in 1 2 3 4 5 6; do
   if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
-    --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
+    --region "$REGION" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
     --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
     --env S3_ACCESS_KEY_ID="$BINID" --env S3_SECRET_ACCESS_KEY="$BINSEC" \
