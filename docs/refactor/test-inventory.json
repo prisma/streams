@@ -6649,6 +6649,63 @@
     "scenarios": []
   },
   {
+    "name": "seal_fence_receiver_answers_after_durability_and_is_idempotent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1fa51556893c7592263e054ed444103f6eef858015eb606c0580c4e34defc64d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_receiver.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_fence_receiver_binds_target_and_generation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2b981c803804fef20b210c7526c6988290f0d5f627dea74213c84808a9f6e8b9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_receiver.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_fence_receiver_demands_its_exact_operation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "00a8dd2b8793e80403e75a5f243e677ebf0da3a9f1178cb6399ab86e4da91f7d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_receiver.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_fence_receiver_never_answers_closed_for_a_failed_group",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1d25468ecf0c30a07e39dfc31c1fb3226ae5bda1a48dd95da8c13f595026957e",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/tests/seal_fence_receiver.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_fence_receiver_on_a_non_owner_redirects_without_opening_a_writer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1295bc46dac00e9a37a087b19fd34d6cb89cb398023cc427c195899f2e378e49",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_fence_receiver.rs",
+    "scenarios": []
+  },
+  {
     "name": "seal_fence_resolves_the_owning_project",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

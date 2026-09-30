@@ -251,6 +251,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::seal_fence_receiver",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The seal-fence receiver's scenarios (NEXT-WORK §5 F1-a, edge change #88): exact-operation authorization, target and generation binding, the non-owner redirect that opens no writer, the reply held until the fence is durable, and a failed group that never reports; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/seal_fence_receiver.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",
@@ -1174,6 +1182,22 @@
       "owner": "crate::state_dependent_conflicts_wait_for_durability",
       "path": "src/dst/tests/durability_fences.rs",
       "reason": "Definitive-conflict fixture owns the original and reuse request handles; both are joined after dispatch is released. Concurrent execution is required to observe the verdict pending on undurable state.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::seal_fence_receiver_answers_after_durability_and_is_idempotent",
+      "path": "src/dst/tests/seal_fence_receiver.rs",
+      "reason": "Seal-fence durability fixture owns the relayed fence request handle; it is joined after dispatch is released. Concurrent execution is required to observe the receiver's answer pending behind the held durability barrier.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::seal_fence_receiver_never_answers_closed_for_a_failed_group",
+      "path": "src/dst/tests/seal_fence_receiver.rs",
+      "reason": "Seal-fence failed-group fixture owns the append and fence request handles; both are joined after the held commit is released. Concurrent staging is required for the fence to share the failed write group with a client write of its segment.",
       "syntax": "tokio::spawn"
     },
     {
