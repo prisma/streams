@@ -183,6 +183,9 @@ mod runtime_open_gate;
 #[path = "tests/runtime_retirement.rs"]
 mod runtime_retirement;
 
+#[path = "tests/retiring_written_group.rs"]
+mod retiring_written_group;
+
 #[path = "tests/runtime_sweep.rs"]
 mod runtime_sweep;
 

@@ -1726,6 +1726,39 @@
     "scenarios": []
   },
   {
+    "name": "a_stranded_final_record_keeps_its_owed_seal_and_the_exact_retry_completes_it_on_the_successor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "85b506816b4608338204350af7caaf6bd104b67b28cf5ce46d988171d64ee92a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stranded_producer_append_is_moved_then_held_once_by_the_successor_and_its_retry_is_a_duplicate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0d5147587eae393aabdcb57c2221d3935944f6a4815d29f807f38feb12edd6ac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_the_successor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "91da517fb601c137c4a7f22ebb00932fcb030ef91440f4aa7daf16619d2c78b2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

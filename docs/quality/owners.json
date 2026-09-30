@@ -2841,6 +2841,14 @@
       "syntax": "path = \"tests/fleet_drain.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::retiring_written_group",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "F2 composition scenarios (NEXT-WORK item 6): a group the engine wrote but had not made durable when the fleet retired it is answered 503 shard_moving on the raw wire (temporarily_unavailable on a product :seal), a successor runtime over the same store recovers it exactly once, the producer-keyed retry is a duplicate, and an owed final (raw append-and-close, product :seal) stays owed until its exact retry completes it on the successor; compiled and executed with DST.",
+      "syntax": "path = \"tests/retiring_written_group.rs\""
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
