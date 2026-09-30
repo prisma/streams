@@ -395,7 +395,7 @@ aggressive timeout."
   Mind the Compute detail in D5: a replacement process reuses the ordinal
   name, so readers must be boot-id aware.
 
-**Constraints.** `src/fleet.rs` is at its ceiling (1,142 lines)
+**Constraints.** `src/fleet.rs` is 999 lines (it was 1,142 at the review; c5791119 and its predecessors shrank it below the 1,000-line rule, so it may grow to 1,000 again)
 and `start` carries six fingerprinted contracts; plans18 §4 lays out a
 non-growing edit order. Items 38/39 landed (bounded process exit and the
 wrapper), which D3 relied on.
@@ -571,6 +571,17 @@ describe an ambiguous write as definitively rejected. Retries must preserve
 producer/idempotency identity. The next useful test is the public append/seal
 plus successor-ownership composition."
 
+**Done: 445955e9** (`dst::dst_tests::retiring_written_group`, three DSTs over
+the raw append, the raw close and the product `:seal`): the client gets the
+retryable unknown answer, the successor runtime holds the record exactly
+once, a producer-keyed retry is a duplicate, and an owed final stays owed
+until its exact retry completes it. Observations left for the owner: the
+product `:seal` renders the unknown outcome as `temporarily_unavailable`
+(the same answer as "never written"); the successor's reads report the
+stream closed before the retry marks the seal; the seal-with-final 200
+lacks the `Cache-Control: no-store` WIRE-MATRIX §2.5 lists; a retry without
+producer headers stores a second copy (plan D2/D7). The original task:
+
 **What to do.** Write that composition test: over HTTP (or the application
 layer), an append and a `:seal` with a final record whose group the old
 engine wrote but had not made durable when it retired; the successor engine
@@ -675,7 +686,8 @@ before marking it complete."
 1. Fix the range: from the program's start (the commit before the first
    hardening item on 2026-09-21; the README and `report/ledger.json` name it)
    to the release candidate.
-2. Register mutation owners for the changed but unregistered sources in
+2. **Done: 88015cc5** (31 owners, each filter proven to select 11-111 tests;
+   coverage gaps listed in its message). The original step: register mutation owners for the changed but unregistered sources in
    `scripts/quality/mutation_owners.py`: at least `src/product.rs` and its
    modules (`usage.rs`, `seal_request.rs`, `operation.rs`, `append_body.rs`),
    `src/billing.rs` and `src/billing/replaced.rs`, `src/rollup*`,
@@ -757,6 +769,12 @@ before marking it complete."
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
   close it; optional.
 - **Closure debts across a rollback:** see item 2's rollback note.
+- **Nightly rotation, first finding (2026-09-30).** Slot 6 (`scaler`) found 44
+  survivors across its four shards; 970c9fd8 and d2fb3558 kill 42. The two
+  left are inside `Scaler::start` (542:5 `start -> ()`, 575:53 the pass
+  deadline) and need a DST that runs the scaler loop against an app state;
+  placing one under the `scaler` owner's filter changes what the gate
+  selects, so it is the owner's call.
 - **Nightly mutation rotation (found 2026-09-28, when `slate` became the
   default branch and the schedules started running).** The seven-night
   rotation (`verification_plan.scheduled_owners`, RUST-QUALITY.md) runs
@@ -777,7 +795,7 @@ before marking it complete."
   check (compile once per obligation at the next deliberate `formal.py`
   change, which stales every receipt anyway); `build.rs` embedding the git
   HEAD, which rebuilds the crate after every commit (release provenance
-  depends on it); and the seven production files under critical prefixes
+  depends on it); and (registered by 88015cc5 on 2026-09-30) the seven production files under critical prefixes
   without a mutation owner (`src/application/read_range.rs`,
   `read_retention_probe.rs`, `src/fleet/planning.rs`,
   `src/shard/record/checked.rs`, `src/sse/budget.rs`, `src/sse/mod.rs`,
@@ -939,7 +957,7 @@ the roadmap's unimplemented list
   `test_6_a_group_that_answers_eperm_while_it_drains_is_awaited`. The driver
   is an input of every receipt, so all 24 were re-recorded in the same
   commit, in parallel with `scripts/dev/formal_batch.py`.
-- **Stale receipts:** none; all 24 were re-recorded on 2026-09-27 with the
+- **Stale receipts:** none at 245c6ca8 (2026-09-30); receipts are re-recorded whenever their inputs change (last: TLA-011, TLA-016, TLA-018 and TLA-019 after the residue cleanup, five more after the configuration series and eight after the billing closes). Before that, all 24 were re-recorded on 2026-09-27 with the
   driver fix above. `python3 scripts/dev/formal_batch.py status` lists them.
 
 ---

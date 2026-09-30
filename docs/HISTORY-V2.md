@@ -154,8 +154,11 @@ retires an advance only when its copy starts exactly at the stream's
 absorbed boundary and drops any other advance whole, so a regather that
 starts below an in-flight advance is wasted. Postings pages tile only
 when each gather starts where the previous one ended; a dropped
-advance's pages stay in the partition and overlap the next gather's,
-which readers treat as corruption (envelope fallback). The absorber
+advance's pages stay in the partition and overlap the next gather's.
+Since d16559b3 (2026-09-24) a reader admits an overlapping page when it
+lists exactly the offsets already admitted over the common span and keeps
+the part past them; only a disagreeing overlap is corruption (envelope
+fallback), and NEXT-WORK section 8's repair is superseded by that rule. The absorber
 therefore gathers from its submitted high-water mark and rolls a mark
 back only when no advance of that stream can still land: every
 submitted advance carries a receipt, counted per stream bucket, that

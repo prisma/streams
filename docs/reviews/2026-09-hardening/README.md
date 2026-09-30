@@ -88,11 +88,14 @@ The reviewer grouped the remaining work into four packages. Commits are on
      verdict changes; four changed fields; `effective-config-diff.md` lists the
      owner decisions that still block a deploy (a real per-project env export
      above all).
-   - Not done: item 40 (heartbeat draining, health-aware ring eligibility),
-     item 50 (tracker sizing), bug #7 migration tooling and its rehearsal on a
-     consistent copy of a real rollup database, and the Compute validation of
-     items 38/39 (startup, readiness, restart, memory pressure, rollback).
-     Plans exist; the rehearsal and the Compute runs need the owner.
+   - Not done: item 40's step 3 (scoped withdrawal for a prefix that
+     repeatedly fails to open; steps 1, 2 and 4 landed in the commits
+     NEXT-WORK section 4 names, and the four required tests exist),
+     item 50's pin retirement (tracker sizing itself landed, 45f8711c), bug #7
+     migration tooling and its rehearsal on a consistent copy of a real rollup
+     database, and the Compute validation of items 38/39 (startup, readiness,
+     restart, memory pressure, rollback). Plans exist; the rehearsal and the
+     Compute runs need the owner.
 4. **Release-wide verification.** Not started: one mutation run over the whole
    hardening range, including billing, rollup, product and usage (owners not
    selected by the per-push plan today), on one pinned artifact.
@@ -168,7 +171,8 @@ remains probable." Limits that stay explicit:
 | Staging hidden files, stray entries | Refuse before install; fresh allowlisted directory | b7f6dc3a |
 | Held wrapper diagnostic | Generic and unhealthy; details only in the log | b7f6dc3a |
 | Wrapper signal forwarding | Bounded forwarding | b7f6dc3a (Compute lifecycle still to verify) |
-| Idle-expiry recreation billing | Release blocker: durable, generation-fenced cleanup obligation | 2ba4bc47 (closure debts) |
+| Idle-expiry recreation billing | Release blocker: durable, generation-fenced cleanup obligation | 2ba4bc47 (closure debts); 40dbf0d3 (the debt cursor pages past waiting debts); 60d80607 (the seven missing tests) |
+| B5, an expired source whose forks still read it (decided 2026-09-29) | An expired source its forks still read stops billing at its expiry | f7a0a26f (pinned), 7cef509c and 0cafc25b (its tests wait for the close and hold the billing clock) |
 | Configuration (decided 2026-09-29) | The binary's defaults are the 1 GiB profile's values ("I want the 1gig profile to be the default"); the L0 cap of 32 first | 823b3269, 648d7df4 and the commits of edge #67 onward; `config-simplification.md` |
 | A billing close of a row that is already closed (decided 2026-09-29) | A close that would change nothing is a no-op in the committer | Edge #72 |
 | A failed storage close after a write failure (left to the implementer, 2026-09-29) | The refused close of a Db that had already failed is settled as closed; a healthy Db whose close fails stays failed | Edge #73 |
@@ -177,9 +181,9 @@ remains probable." Limits that stay explicit:
 | Item 50 | Option (a): preserve live bindings, cap 32,768, reject `HANDLE_IDLE_EVICT_SECS=0` | 45f8711c (holder rule added beside the counted pin; the pin's full retirement not done) |
 | Effective configuration | Method and E3 transcription accepted; 120 s default accepted | Deployment gates below |
 | Bug #7 | Option (b), explicit migration; activation gated on a real-DB rehearsal | Not started |
-| Item 40 | Separate Critical heartbeat, progress and eligibility | Not started |
+| Item 40 | Separate Critical heartbeat, progress and eligibility | Steps 1, 2 and 4 landed (the commits NEXT-WORK section 4 names; edge #63 ratified 2026-09-28 and amended); step 3 (scoped withdrawal) deferred as its own edge decision; H2 name arbitration, the drain-bound amendment and the spec paragraph await the owner (NEXT-WORK section 4) |
 | F1 | Authenticated fleet-internal seal-fence operation | Not started |
-| F2 | Keep the unknown-outcome model; public append/seal plus successor composition test | Not started |
+| F2 | Keep the unknown-outcome model; public append/seal plus successor composition test | The composition test landed (445955e9, `dst_tests::retiring_written_group`): the retryable unknown answer, one copy on the successor, the producer-keyed retry as a duplicate, the owed final kept and completed; no behaviour contradicts the model. Option A and the fenced-write mapping (plan §9 D6) await the owner |
 
 ### Deployment gates (block deployment sign-off, not merging)
 
