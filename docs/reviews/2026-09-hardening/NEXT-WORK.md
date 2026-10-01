@@ -574,6 +574,12 @@ before a JWT-only fleet can relay); a mutation owner for `fence_relay.rs`
 (`src/application/lifecycle` is no critical prefix, so adding one changes
 what the gate selects).
 
+Follow-ups (2026-10-01, on the owner's decision above): (4) the negative
+control `TLA-002/nc-relay-loss-answers-false`
+(`MC_SealTakeover_NcRelayLossAnswersFalse.tla`, the two-process layout)
+answers a relay lost before it lands "not closed" with nothing queued at
+the owner, and violates `ClosureAuthorized`.
+
 **F1-b, the plan: producer and Stream-Seq lanes across a split.**
 `plans/plans19/split-producer-lineage.md`. After a split, a key's producer
 lane and Stream-Seq lane are read only from the serving engine's DB, so a

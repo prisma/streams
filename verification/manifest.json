@@ -3592,7 +3592,8 @@
         "verification/tla/seal/MC_SealTakeover_NcEarlyInstall.tla",
         "verification/tla/seal/MC_SealTakeover_NcEngineFence.tla",
         "verification/tla/seal/MC_SealTakeover_NcRefusalAtStaging.tla",
-        "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla"
+        "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla",
+        "verification/tla/seal/MC_SealTakeover_NcRelayLossAnswersFalse.tla"
       ],
       "requirements": [
         "L3",
@@ -3850,6 +3851,16 @@
           "role": "negative-control",
           "spec": "verification/tla/seal/MC_SealTakeover_NcCacheSurvivesReject.tla",
           "config": "verification/tla/seal/MC_SealTakeover_nc_cache_survives_reject.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ClosureAuthorized"
+          }
+        },
+        {
+          "id": "TLA-002/nc-relay-loss-answers-false",
+          "role": "negative-control",
+          "spec": "verification/tla/seal/MC_SealTakeover_NcRelayLossAnswersFalse.tla",
+          "config": "verification/tla/seal/MC_SealTakeover_nc_relay_loss_false.cfg",
           "expect": {
             "result": "violation",
             "property": "ClosureAuthorized"
