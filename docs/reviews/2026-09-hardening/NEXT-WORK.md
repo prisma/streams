@@ -101,6 +101,14 @@ mutations is the history module; check `scripts/quality/mutation_owners.py`.
 
 ## 2. Closure debts: a paging bug and missing tests
 
+**Owner decisions (2026-10-01).** "I approve all of these": edge record #87 (the lost close's
+walk-side fix, 9f25cf96) is ratified, and its exact fix is approved: a reply
+channel on `CommitOp::BillingClose` and `CommitOp::BillingRetained`, answered
+with a retryable refusal at the three sites that dropped the operation, with
+a warning and a counter, and the walk and the debt pass stopping their page
+on a refusal; approved with it are the growth of `CommitOp`'s exception
+contract, the module extraction from `src/shard.rs` and the six receipts.
+
 **Owner decision.** Idle-expiry recreation billing is a release blocker:
 "a durable, generation-fenced handoff or cleanup obligation with resumable
 processing ... Test idle expiry, raw and product recreation, month crossing,
@@ -517,6 +525,11 @@ Step 2 landed: serving eligibility and instance-wide withdrawal.
 
 ## 5. F1: two different things carry this name
 
+**Owner decisions (2026-10-01).** "I approve all of these": edge records #88 and #89 are
+ratified; the negative model control for a relayed fence whose loss answers
+false (the F1-a plan's commit 4) is required; the platform contract names
+`seal-fence` and the `segment-close` it omitted (the plan's commit 5).
+
 The reviewer had not seen the F1 plan, and the owner's decision describes a
 different defect from the plan. Treat them as two items and confirm with the
 owner.
@@ -579,6 +592,14 @@ ca80f9d4; 706430f7 as amended); the F1 reds are ignored tests in its
 ---
 
 ## 6. F2: composition test for a retiring engine's written group
+
+**Owner decisions (2026-10-01).** "I approve all of these": of the four observations the
+composition test recorded, three are the contract (the product `:seal`'s
+retryable `temporarily_unavailable` for the unknown outcome; reads reporting
+the stream sealed once the durable final closed it; a retry without producer
+headers storing a second copy, since the producer headers are the
+idempotency contract), and the seal-with-final 200 gains the
+`Cache-Control: no-store` WIRE-MATRIX §2.5 lists.
 
 **Owner decision.** "A retiring engine must stop publishing live state, but
 retirement does not prove its accepted storage write disappeared ... Ratify
@@ -788,6 +809,8 @@ before marking it complete."
   §3 and RUNBOOK. An OS-thread signal path (sigwait or signal-hook) would
   close it; optional.
 - **Closure debts across a rollback:** see item 2's rollback note.
+- **Scaler loop survivors (owner decision, 2026-10-01).** "I approve all of these": a DST that
+  runs the scaler loop may be selected by the `scaler` owner's filter.
 - **Nightly rotation, first finding (2026-09-30).** Slot 6 (`scaler`) found 44
   survivors across its four shards; 970c9fd8 and d2fb3558 kill 42. The two
   left are inside `Scaler::start` (542:5 `start -> ()`, 575:53 the pass
