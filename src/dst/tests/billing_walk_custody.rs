@@ -5,6 +5,8 @@
 //! it on the page; a shard the walk or the closure-debt pass enqueued a
 //! close or a retention flag on is kept until its committer applies it; and
 //! a close the shard refuses unapplied stops the pass, which replays it.
+//! The walk closes only an open gauge: a row it already closed stays as it
+//! is when a later tombstone stamps a later close instant.
 
 use super::billing_closure_debts::{
     JSON, ROW, assert_billed, closed, debts as closure_debts, engine_of, expected_close, expire,
@@ -124,18 +126,24 @@ fn gathering() -> ShardConfig {
 }
 
 /// `id`'s row on `desc`'s segment-0 engine once no shard carries any debt:
-/// open (a gauge to close) and clean (acked, so the drain never revisits it
-/// and only the walk or the debt pass can close it).
-async fn clean_open_row(state: &State, desc: &Desc, id: [u8; 16]) -> Meta {
+/// clean (acked, so the drain never revisits it and only the walk or the
+/// debt pass can close it).
+async fn clean_row(state: &State, desc: &Desc, id: [u8; 16]) -> Meta {
     quiesce(state).await;
     let engine = engine_of(state, desc, 0).await;
     let row = engine.billing_meta(id).await.expect("a billed row");
-    assert!(row.owned_frame_bytes_current > 0, "no gauge to close");
     let dirty = engine.usage_dirty_scan().await.unwrap();
     assert!(
         dirty.iter().all(|(hash, _)| *hash != id),
         "the row is clean: only the walk or the debt pass can close it"
     );
+    row
+}
+
+/// `clean_row`, open: a gauge to close.
+async fn clean_open_row(state: &State, desc: &Desc, id: [u8; 16]) -> Meta {
+    let row = clean_row(state, desc, id).await;
+    assert!(row.owned_frame_bytes_current > 0, "no gauge to close");
     row
 }
 
@@ -356,6 +364,76 @@ async fn a_retention_flag_the_walk_submits_on_a_shard_it_opened_is_applied_befor
     assert_billed(&row, &flagged, "the flag moves no billed figure");
     drop(engine);
     rig.shutdown().await;
+}
+
+/// The walk closes a dead incarnation's row only while its gauge is open.
+/// An idle source the walk already closed at its expiry is tombstoned later
+/// by its last fork's delete: the cascade stamps the tombstone at that later
+/// instant and submits no close. The next walk finds the row closed at the
+/// expiry, its persisted close instant now the later stamp, and must leave
+/// it exactly as it is: no second close, so no clock moved past the expiry,
+/// no version bump, no dirty row for the drain to emit and no submission
+/// counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_the_walk_closed_at_its_expiry_is_not_closed_again_at_its_later_tombstone() {
+    let _serial = sweep_lock().lock().await;
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (state, addr) = http_rig_opts(mem(), prefixes(), ShardConfig::default()).await;
+    let (src, kid) = ("closed-source-s", "closed-source-s-kid");
+    let ss = state.deployment.raw_adapter_sref(src);
+    raw_put(addr, src, &[JSON, TTL], ROW).await;
+    raw_put(addr, kid, &[JSON, ("stream-forked-from", src)], b"").await;
+    let os = stored(&state, &ss).await;
+    let is = os.dynamic_segment_identity(0);
+    let open = clean_open_row(&state, &os, is).await;
+    let expired_at = billing_now_ms();
+    expire(&[&state], &ss, expired_at).await;
+    crate::billing::tombstone_walk(&state).await;
+    let at_expiry = clean_row(&state, &os, is).await;
+    let closed_at_expiry = expected_close(&open, expired_at);
+    assert_billed(&at_expiry, &closed_at_expiry, "the walk closed the expiry");
+    // The tombstone must stamp an instant past the closed row's clock.
+    while billing_now_ms() <= expired_at {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (st, _, _) = hreq(addr, "DELETE", &format!("/v1/stream/{kid}"), &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let dead = stored(&state, &ss).await;
+    assert_eq!(
+        (
+            dead.deleted,
+            dead.soft_deleted,
+            dead.logical_close_ms
+                .is_some_and(|stamp| stamp > at_expiry.storage_accounted_through_ms),
+        ),
+        (true, false, true),
+        "the fork's delete tombstoned the source after its row's clock: {:?}",
+        dead.logical_close_ms
+    );
+    let encoded = |row: &Meta| serde_json::to_string(row).unwrap();
+    let before = clean_row(&state, &os, is).await;
+    assert_eq!(
+        encoded(&before),
+        encoded(&at_expiry),
+        "the cascade closes nothing"
+    );
+
+    let submits = WALK_CLOSE_SUBMITS.load(Relaxed);
+    crate::billing::tombstone_walk(&state).await;
+    let engine = engine_of(&state, &os, 0).await;
+    let row = engine.billing_meta(is).await.expect("the row");
+    let dirty = engine.usage_dirty_scan().await.unwrap();
+    assert_eq!(
+        (
+            encoded(&row),
+            dirty.iter().any(|(hash, _)| *hash == is),
+            WALK_CLOSE_SUBMITS.load(Relaxed) - submits,
+        ),
+        (encoded(&before), false, 0),
+        "the walk closed a closed row again at its tombstone's later stamp"
+    );
+    drop(engine);
+    engine_shutdown(&state).await;
 }
 
 /// The same lost close in the closure-debt pass (`replaced.rs`): it enqueued
