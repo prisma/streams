@@ -591,7 +591,15 @@ Follow-ups (2026-10-01, on the owner's decision above): (4) the negative
 control `TLA-002/nc-relay-loss-answers-false`
 (`MC_SealTakeover_NcRelayLossAnswersFalse.tla`, the two-process layout)
 answers a relay lost before it lands "not closed" with nothing queued at
-the owner, and violates `ClosureAuthorized`.
+the owner, and violates `ClosureAuthorized`. (5) The platform contract
+(`contracts/streams-platform/v1/workload-token-claims.schema.json`,
+CONTROL-PLANE-INTEGRATION §8.1) names `segment-close` and `seal-fence`,
+the emulator's default workload token carries both, and the platform e2e
+checks each on its route (edge #90, awaiting ratification). Still the
+owner's: a mutation owner for `fence_relay.rs`. Not changed:
+MULTITENANCY.md §14.1's r4 status block lists the eight operations of
+r4; that document is a frozen contract, changed only by a
+contract-revision commit.
 
 **F1-b, the plan: producer and Stream-Seq lanes across a split.**
 `plans/plans19/split-producer-lineage.md`. After a split, a key's producer

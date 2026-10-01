@@ -52,7 +52,11 @@ const argOne = (name, dflt) => {
 const argAll = (name) => process.argv.flatMap((a, i) => (a === `--${name}` ? [process.argv[i + 1]] : []));
 const PORT = +argOne("port", "9700");
 const ISS = argOne("issuer", "https://auth.prisma.io");
-const WORKLOAD_OPS = argOne("workload-ops", "telemetry-append,segment-read").split(",");
+// The cell's own workload token. A peer refuses 401 any relay whose
+// operation the token does not name (CONTROL-PLANE-INTEGRATION §8.1);
+// the default names the telemetry relay, the segment read, and the
+// seal's segment close and takeover fence.
+const WORKLOAD_OPS = argOne("workload-ops", "telemetry-append,segment-read,segment-close,seal-fence").split(",");
 const FAULT_API = process.argv.includes("--enable-fault-api");
 
 // ---- cells --------------------------------------------------------------

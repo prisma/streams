@@ -467,6 +467,37 @@ const seg = (tok) => sfetch(`${aBase}/v1/segments/e2e/orders`, { headers: { auth
 check("workload JWT with empty operations grants nothing", (await seg(wlNone.body.jwt)).status === 401);
 check("workload JWT with the exact operation passes auth", (await seg(wlRead.body.jwt)).status !== 401);
 check("customer token cannot enter the internal surface", (await seg(tokB2.body.accessToken)).status === 401);
+// The platform contract names the seal's two relays (edge change #90):
+// the cell's own token, as the emulator mints it by default, is a valid
+// claim set naming both, and each operation opens exactly its route.
+// Without target headers a request that passes authentication stops at
+// the target check (400 invalid_target), before any registry or engine.
+{
+  const { validateDocument } = await import("../platform-demo/src/validate.mjs");
+  const claimsSchema = JSON.parse(readFileSync("contracts/streams-platform/v1/workload-token-claims.schema.json", "utf8"));
+  const ownJwt = readFileSync(join(dirA, "workload.jwt"), "utf8").trim();
+  const own = JSON.parse(Buffer.from(ownJwt.split(".")[1] ?? "", "base64url").toString("utf8") || "{}");
+  const claimErrs = validateDocument(own, claimsSchema);
+  check("the cell's workload token validates against the claims schema", claimErrs.length === 0, JSON.stringify(claimErrs));
+  check("the cell's workload token names segment-close and seal-fence",
+    ["segment-close", "seal-fence"].every((op) => (own.operations ?? []).includes(op)), JSON.stringify(own.operations));
+  const mint = async (operations) => (await j(await sfetch(`${emuBase}/admin/mint-workload`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cell: "cell-a", operations }),
+  }))).body.jwt;
+  const internalPost = async (path, tok) =>
+    j(await sfetch(`${aBase}${path}`, { method: "POST", headers: { authorization: `Bearer ${tok}` } }));
+  for (const [op, path] of [
+    ["segment-close", "/v1/internal/segment-close/e2e/orders?seg_id=0&seal_gen=1"],
+    ["seal-fence", "/v1/internal/seal-fence/e2e/orders?fence_to=1"],
+  ]) {
+    const exact = await internalPost(path, await mint([op]));
+    check(`workload JWT with ${op} passes auth on its route`,
+      exact.status === 400 && exact.body.error?.code === "invalid_target",
+      `status ${exact.status} ${JSON.stringify(exact.body)}`);
+    const other = await internalPost(path, wlRead.body.jwt);
+    check(`workload JWT without ${op} is refused on its route`, other.status === 401, `status ${other.status}`);
+  }
+}
 
 // ---- Workload rotation per cell -------------------------------------------
 const wA1 = readFileSync(join(dirA, "workload.jwt"), "utf8");

@@ -64,7 +64,10 @@ fleet token) and proves the §14.5 scenario families — 62 checks:
   injection fails the battery instead of passing the leg.
 - **Fleet identity**: operation-scoped workload JWTs (empty operations
   grant nothing), customer tokens refused on the internal surface,
-  per-cell atomic workload rotation.
+  per-cell atomic workload rotation. The cells' own token (default
+  `--workload-ops telemetry-append,segment-read,segment-close,seal-fence`)
+  validates against the claims schema, and a `segment-close` or
+  `seal-fence` token passes authentication only on its own route.
 - **Billing reconciliation** (§15 item 7): each cell runs its own
   usage rollup (`ROLLUP=1`, 2s outbox sweep); the usage API reports
   the project's ingest under its workspace-at-event, and a verified

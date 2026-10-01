@@ -509,6 +509,8 @@ The cell should expose feed generation, digest, age, last success, last error, a
   "operations": [
     "segment-read",
     "segment-scan",
+    "segment-close",
+    "seal-fence",
     "queue-cursor",
     "consumer-sweep",
     "telemetry-append"
@@ -519,6 +521,8 @@ The cell should expose feed generation, digest, age, last success, last error, a
 ```
 
 Use a short lifetime, normally five minutes or less. Operations are exact; empty and unknown operations grant nothing.
+
+The operation vocabulary is the `operations` enum of `contracts/streams-platform/v1/workload-token-claims.schema.json`, the cell's own list (`InternalOperation`, `src/http/internal_routes.rs`): `raw-read`, `raw-append` and `raw-lifecycle` for raw-internal traffic, and `segment-read`, `segment-scan`, `segment-close`, `seal-fence`, `queue-cursor`, `consumer-sweep` and `telemetry-append` for fleet traffic. Each internal route demands exactly one of them. A cell's own token must name every fleet operation its relays send. Without `segment-close`, a seal, split or merge that must close a segment another instance owns is refused 401 by the owner. Without `seal-fence`, a seal takeover cannot fence the old final at the segment's owner. In both cases the operation stays resumable (a seal answers 503 `seal_incomplete`) until a request reaches the owner itself.
 
 ### 8.2 Delivery to the cell
 

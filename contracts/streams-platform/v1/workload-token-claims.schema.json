@@ -14,7 +14,8 @@
       "items": {
         "enum": [
           "raw-read", "raw-append", "raw-lifecycle", "segment-read",
-          "segment-scan", "queue-cursor", "consumer-sweep", "telemetry-append"
+          "segment-close", "seal-fence", "segment-scan", "queue-cursor",
+          "consumer-sweep", "telemetry-append"
         ]
       }
     },
