@@ -7569,6 +7569,17 @@
     "scenarios": []
   },
   {
+    "name": "the_loop_splits_a_hot_segment_at_its_load_weighted_median",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "35a29ec8135142527779051071e5a33257132822627383a44e81f848008d9abc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/scaler_loop.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelope",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

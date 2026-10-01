@@ -290,6 +290,8 @@ mod fleet_drain;
 mod runtime_usage;
 #[path = "tests/scaler_controller.rs"]
 mod scaler_controller;
+#[path = "tests/scaler_loop.rs"]
+mod scaler_loop;
 
 #[path = "tests/read_page_limits.rs"]
 mod read_page_limits;

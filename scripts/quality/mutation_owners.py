@@ -78,7 +78,7 @@ OWNERS = (
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
-    owner('scaler', 'src/scaler3.rs', 'scaler3::'),
+    owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
     owner('postings_cache', 'src/postings_cache.rs', 'postings_cache::'),
     owner('postings_cache_owned_load', 'src/postings_cache/owned_load.rs', 'postings_cache::'),
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),

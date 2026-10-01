@@ -267,6 +267,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::scaler_loop",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The scaler loop's scenario (NEXT-WORK section 10): Scaler::start over a running HTTP rig evaluates a hot segment on its own cadence and splits it at its load-weighted median in the pass that follows, inside the pass deadline; the scaler mutation owner's filter selects it (approved 2026-10-01); compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/scaler_loop.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",
