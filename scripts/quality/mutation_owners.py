@@ -88,6 +88,7 @@ OWNERS = (
     owner('tail_ring', 'src/shard/tail_ring.rs', 'shard:: dst_tests::reads_ring::'),
     owner('tail_ring_tests', 'src/shard/tail_ring_tests.rs', 'shard:: dst_tests::reads_ring::'),
     owner('shard', 'src/shard.rs', 'shard::'),
+    owner('shard_billing_ops', 'src/shard/billing_ops.rs', 'shard:: dst_tests::billing_walk_custody::'),
     owner('bootstrap', 'src/bootstrap.rs', 'bootstrap::'),
     owner('bootstrap_rss', 'src/bootstrap/rss.rs', 'bootstrap::'),
     owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
