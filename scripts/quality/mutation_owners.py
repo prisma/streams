@@ -243,6 +243,8 @@ OWNERS = (
           'rollup:: dst_tests::billing_attribution:: dst_tests::security_audit::'),
     owner('rollup_totals', 'src/rollup/totals.rs',
           'rollup:: dst_tests::billing_usage:: dst_tests::billing_attribution::'),
+    owner('rollup_readiness', 'src/rollup/readiness.rs',
+          'rollup:: dst_tests::billing_readiness::'),
     owner('registry_replaced', 'src/registry/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
           'dst_tests::billing_late_close:: dst_tests::fork_debt::'),

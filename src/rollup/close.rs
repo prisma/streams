@@ -30,7 +30,7 @@ impl UsageRollup {
         &self,
         grace_ms: i64,
     ) -> anyhow::Result<Vec<(String, usize)>> {
-        const MARKER: &[u8] = b"meta/oldest-unclosed-month";
+        const MARKER: &[u8] = super::K_OLDEST_UNCLOSED;
         fn prev_month(y: i32, m: u32) -> (i32, u32) {
             if m == 1 { (y - 1, 12) } else { (y, m - 1) }
         }

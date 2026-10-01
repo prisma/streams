@@ -419,3 +419,53 @@ async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
     );
     db.close().await.unwrap();
 }
+
+/// Bug #7, C1: the readiness report's outbox count classifies every pending
+/// row as the publisher does and stops at the row where the publisher's
+/// capped scan stops, so `pendingArtifacts` keeps its value and its cap
+/// while the blocked rows before that row are counted beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_outbox_count_stops_where_the_publisher_scan_stops() {
+    let db = Arc::new(
+        Db::builder(
+            "outbox-split",
+            Arc::new(object_store::memory::InMemory::new()),
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let r = UsageRollup {
+        db: db.clone(),
+        close_rows_visited: Default::default(),
+    };
+    for (key, body) in [
+        ("artifact-pending/2026-07/a/p/s1", "{}"),
+        ("artifact-pending/2026-07/a/p/s2", "not json"),
+        ("artifact-pending/2026-07/a/p/s3", "{}"),
+        ("artifact-pending/2026-07/a/p/s4", "{}"),
+        ("artifact-pending/2026-07/short", "{}"),
+    ] {
+        db.put(key, body).await.unwrap();
+    }
+    let outbox = |publishable, blocked_corrupt, total| super::readiness::ArtifactOutbox {
+        publishable,
+        blocked_corrupt,
+        total,
+    };
+    assert_eq!(
+        r.artifact_outbox(2).await.unwrap(),
+        outbox(2, 1, 3),
+        "the count stops at s3, the second publishable row"
+    );
+    let published: Vec<String> = r
+        .pending_artifacts(2)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(.., stream, _)| stream)
+        .collect();
+    assert_eq!(published, ["s1", "s3"], "the publisher's scan stops at s3");
+    assert_eq!(r.artifact_outbox(64).await.unwrap(), outbox(3, 2, 5));
+    db.close().await.unwrap();
+}

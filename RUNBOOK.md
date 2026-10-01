@@ -810,10 +810,11 @@ owner) is open.
 | `drain.lastOkAgeSecs` large | no successful drain round — ledger unreachable or scans failing CLOSED | financial scans defer on error by design; fix the store fault, drains self-heal |
 | `rollup.lastApplyAgeSecs` large with traffic | rollup consumer stalled (cursor not progressing) | check the ROLLUP=1 instance; the ledger retains everything, catch-up is automatic |
 | `rollup.oldestUnclosedMonth` far behind | month closes are overdue | closes catch up IN ORDER automatically each tick; investigate close errors in logs if the marker stays put |
-| `pendingArtifacts`/`pendingCorrectionArtifacts` stuck > 0 | create-only PUTs failing, or a content mismatch | see next row; transient store faults retry every tick |
+| `rollup.pendingArtifacts`/`pendingCorrectionArtifacts` stuck > 0 | create-only PUTs failing, or a content mismatch | see next row; transient store faults retry every tick. `pendingArtifacts` counts the monthly rows the publisher can publish, `pendingArtifactsBlockedCorrupt` the rows it cannot (two rows down) and `pendingArtifactsTotal` both; the three stop at the same row, the 1,000th publishable one |
 | `artifactContentMismatches > 0` | an immutable artifact path holds bytes we did not stage — POTENTIAL TAMPERING | the row stays pending on purpose; diff the object against the rollup row, resolve manually, never overwrite without recording why |
+| `rollup.pendingArtifactsBlockedCorrupt > 0` | pending monthly artifact rows whose key or body does not decode: the publisher skips them on every pass, so they never publish on their own; every scan logs `pending monthly artifact stays unpublished` with the key and the error | operator repair: restore each logged row from the frozen `month/` row it was staged from, or record why it is written off; never delete one silently. The month's invoice inputs are incomplete until the count is 0 |
 | `tombstoneWalkCloseSubmits` climbing steadily | closures being recovered by the walk rather than the delete path | acceptable under crash churn; investigate if it grows without deletes |
-| invoice readiness check | before export: `ready=true`, no open alerts, `oldestUnclosedMonth` = previous month, pending artifact queues empty, mismatches 0 | then the frozen rows + correction artifacts under `telemetry/usage-monthly/` are the invoice inputs |
+| invoice readiness check | before export: `ready=true`, no open alerts, `oldestUnclosedMonth` = previous month, pending artifact queues empty (`pendingArtifactsTotal` and `pendingCorrectionArtifacts` 0), mismatches 0 | then the frozen rows + correction artifacts under `telemetry/usage-monthly/` are the invoice inputs |
 
 
 ## Memory survival posture (OOM review, 2026-08-07)

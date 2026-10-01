@@ -12,11 +12,16 @@ async fn health(addr: std::net::SocketAddr) -> (u16, String) {
     (status, String::from_utf8_lossy(&body).into_owned())
 }
 
-/// `/operator/billing.json`'s `mode` and `ready`.
-async fn billing_report(addr: std::net::SocketAddr) -> (Value, Value) {
+/// The whole `/operator/billing.json` report.
+async fn report(addr: std::net::SocketAddr) -> Value {
     let (status, _, body) = hreq(addr, "GET", "/operator/billing.json", &[], b"").await;
     assert_eq!(status, 200);
-    let report: Value = serde_json::from_slice(&body).unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// `/operator/billing.json`'s `mode` and `ready`.
+async fn billing_report(addr: std::net::SocketAddr) -> (Value, Value) {
+    let report = report(addr).await;
     (report["mode"].clone(), report["ready"].clone())
 }
 
@@ -124,5 +129,65 @@ async fn default_billing_mode_reports_off_and_ready_without_a_spool() {
     assert_eq!(health(rig.addr).await, (200, "ok".to_string()));
     let off = (Value::from("off"), Value::from(true));
     assert_eq!(billing_report(rig.addr).await, off);
+    rig.shutdown().await;
+}
+
+/// Bug #7, C1 (edge record #93): the rollup report splits the monthly
+/// artifact outbox. A pending row whose key or body does not decode is
+/// never published, so `pendingArtifacts` never counted it and an operator
+/// could not see it; the report now counts it as blocked, and the total.
+/// `pendingArtifacts` keeps its value, and the other members theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_rollup_report_splits_pending_artifacts_by_publishability() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let store = rig.state.data_store.clone();
+    let rollup = crate::rollup::UsageRollup::open(store, "", &rig.state.config)
+        .await
+        .unwrap();
+    for (key, body) in [
+        ("artifact-pending/2026-07/a/p/s1", "{}"),
+        ("artifact-pending/2026-07/a/p/s2", "{}"),
+        ("artifact-pending/2026-07/a/p/not-json", "not json"),
+        ("artifact-pending/2026-07/short", "{}"),
+    ] {
+        rollup.db.put(key, body).await.unwrap();
+    }
+    install_rollup(&rig.state, rollup);
+    let rollup = report(rig.addr).await["rollup"].clone();
+    let value = |member: &str| rollup[member].clone();
+    let publishable = "rows the publisher publishes, as pendingArtifacts always counted";
+    assert_eq!(value("pendingArtifacts"), Value::from(2), "{publishable}");
+    let blocked = "rows the publisher skips because they do not decode";
+    assert_eq!(
+        value("pendingArtifactsBlockedCorrupt"),
+        Value::from(2),
+        "{blocked}"
+    );
+    let total = "pendingArtifactsTotal counts every pending row";
+    assert_eq!(value("pendingArtifactsTotal"), Value::from(4), "{total}");
+    assert_eq!(value("running"), Value::from(true));
+    assert_eq!(value("lastApplyMs"), Value::from(0));
+    assert_eq!(value("lastApplyAgeSecs"), Value::from(-1));
+    assert_eq!(value("oldestUnclosedMonth"), Value::Null);
+    assert_eq!(value("pendingCorrectionArtifacts"), Value::from(0));
+    let members: Vec<&str> = rollup
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        members,
+        [
+            "lastApplyAgeSecs",
+            "lastApplyMs",
+            "oldestUnclosedMonth",
+            "pendingArtifacts",
+            "pendingArtifactsBlockedCorrupt",
+            "pendingArtifactsTotal",
+            "pendingCorrectionArtifacts",
+            "running",
+        ]
+    );
     rig.shutdown().await;
 }

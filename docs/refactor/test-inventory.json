@@ -7656,6 +7656,17 @@
     "scenarios": []
   },
   {
+    "name": "the_rollup_report_splits_pending_artifacts_by_publishability",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "84dfe3af0a132d7f85c162dd22ff34b9706b57ae02aca970ad33c1f9baccdcff",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

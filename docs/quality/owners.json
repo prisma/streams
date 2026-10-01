@@ -2939,6 +2939,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::tests::a_callsite_first_hit_on_another_thread_still_reaches_the_capture",
+      "path": "src/sse/test_log.rs",
+      "reason": "Log-capture regression owns one scoped thread; it joins before the test returns, even on panic, and first hits a tracing callsite on a thread without a subscriber while the capture is the only one, the order that cached `never` and lost the capture's events.",
+      "syntax": "std::thread::scope"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::a_looked_up_entry_survives_a_sweep_before_its_charge",
       "path": "src/quota/tests.rs",
       "reason": "Tracker-race regression yields while it waits, bounded by a 10 s deadline, for the parked admit to have looked its entry up.",

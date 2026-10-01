@@ -1666,30 +1666,7 @@ async fn billing_readiness_axum(
     let last_apply = progress.last_rollup_apply_ms;
     let mut rollup_info = serde_json::json!({ "running": false });
     if let Some(r) = state.rollup.get() {
-        let pending = r
-            .pending_artifacts(1000)
-            .await
-            .map(|v| v.len())
-            .unwrap_or(0);
-        let pending_corr = r
-            .pending_correction_artifacts(1000)
-            .await
-            .map(|v| v.len())
-            .unwrap_or(0);
-        let oldest =
-            r.db.get(&b"meta/oldest-unclosed-month"[..])
-                .await
-                .ok()
-                .flatten()
-                .map(|v| String::from_utf8_lossy(&v).to_string());
-        rollup_info = serde_json::json!({
-            "running": true,
-            "lastApplyMs": last_apply,
-            "lastApplyAgeSecs": if last_apply > 0 { (now - last_apply) / 1000 } else { -1 },
-            "oldestUnclosedMonth": oldest,
-            "pendingArtifacts": pending,
-            "pendingCorrectionArtifacts": pending_corr,
-        });
+        rollup_info = serde_json::json!(r.readiness(now, last_apply).await);
     }
     let ready = !state.config.cli.billing_required()
         || (state.billing.usage_key().is_some()

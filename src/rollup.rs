@@ -17,6 +17,7 @@ use crate::billing::{UsageCorrection, UsageEnvelope, month_start_ms, next_month,
 mod allocation;
 mod close;
 mod page;
+mod readiness;
 mod reconciliation;
 mod storage;
 mod totals;
@@ -61,6 +62,7 @@ fn k_project(month: &str, account: &str, project: &str) -> Vec<u8> {
     format!("project/{month}/{account}/{project}").into_bytes()
 }
 const K_CURSOR: &[u8] = b"meta/usage-cursor";
+const K_OLDEST_UNCLOSED: &[u8] = b"meta/oldest-unclosed-month";
 
 // ---------------------------------------------------------------------
 // Row types
@@ -462,6 +464,35 @@ fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
     Ok(serde_json::from_slice(raw)?)
 }
 
+/// One `artifact-pending/` row as the publisher reads it: (month,
+/// "account/project", stream-id, row). A row whose key or body does not
+/// decode is logged and gives `None`: it is never published and stays in
+/// the outbox for an operator, and the readiness report counts it blocked.
+fn pending_artifact_row(key: &[u8], value: &[u8]) -> Option<(String, String, String, MonthRow)> {
+    let k = std::str::from_utf8(key).unwrap_or("");
+    let parts: Vec<&str> = k.splitn(5, '/').collect();
+    let [_, month, account, project, stream_id] = parts.as_slice() else {
+        tracing::error!(
+            key = %String::from_utf8_lossy(key),
+            error = "the key does not name a month, account, project and stream",
+            "pending monthly artifact stays unpublished"
+        );
+        return None;
+    };
+    match serde_json::from_slice::<MonthRow>(value) {
+        Ok(row) => Some((
+            (*month).to_owned(),
+            format!("{account}/{project}"),
+            (*stream_id).to_owned(),
+            row,
+        )),
+        Err(error) => {
+            tracing::error!(key = %k, %error, "pending monthly artifact stays unpublished");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 type ReadFaults = std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>>;
 
@@ -588,7 +619,9 @@ impl UsageRollup {
     /// Pending monthly artifacts (blocker 7): (pending key, month,
     /// project, stream-id, row). A row whose key or body does not decode is
     /// never published and never counted as pending, so every scan logs it;
-    /// it stays in the outbox for an operator.
+    /// it stays in the outbox for an operator. The scan stops after the
+    /// first row at which `max` rows are publishable, the rule the
+    /// readiness report's outbox count shares (`artifact_outbox`).
     pub(crate) async fn pending_artifacts(
         &self,
         max: usize,
@@ -596,27 +629,9 @@ impl UsageRollup {
         let mut out = Vec::new();
         let mut iter = self.db.scan_prefix(&b"artifact-pending/"[..], ..).await?;
         while let Some(kv) = iter.next().await? {
-            let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
-            let parts: Vec<&str> = k.splitn(5, '/').collect();
-            let [_, month, account, project, stream_id] = parts.as_slice() else {
-                tracing::error!(
-                    key = %String::from_utf8_lossy(&kv.key),
-                    error = "the key does not name a month, account, project and stream",
-                    "pending monthly artifact stays unpublished"
-                );
-                continue;
-            };
-            match serde_json::from_slice::<MonthRow>(&kv.value) {
-                Ok(row) => out.push((
-                    kv.key.to_vec(),
-                    (*month).to_owned(),
-                    format!("{account}/{project}"),
-                    (*stream_id).to_owned(),
-                    row,
-                )),
-                Err(error) => {
-                    tracing::error!(key = %k, %error, "pending monthly artifact stays unpublished");
-                }
+            if let Some((month, project, stream_id, row)) = pending_artifact_row(&kv.key, &kv.value)
+            {
+                out.push((kv.key.to_vec(), month, project, stream_id, row));
             }
             if out.len() >= max {
                 break;
