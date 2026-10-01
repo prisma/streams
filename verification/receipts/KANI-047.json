@@ -6,9 +6,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f72a03a195df907b35ed9ff5faa3a9cb22e3f0e514227e8525f8a1229471a8d0",
+      "log_sha256": "cc9557069babbcf121b3c0fd177ad03003be3542c761023dfbf496832f6399b6",
       "role": "baseline",
-      "seconds": 93.1,
+      "seconds": 90.9,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "833a9568dc6117bdccba04045e3d89c564c8bbe791dd02783086742c83f32c5a",
+      "log_sha256": "45860b3aa567165d5a2def5478a8b6bac932e9d720371d56d34377443e37f8c6",
       "role": "baseline",
-      "seconds": 31.8,
+      "seconds": 32.9,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "55f88e1a621ad22ef333623454e3432a2c02b4cdeb02ddf0bb3161ef38b26495",
+      "log_sha256": "3d5a374a26c757ae4b31b9fb69067632cf41336975fcbed4a26ab84892dacd48",
       "role": "baseline",
-      "seconds": 29.0,
+      "seconds": 30.5,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "057692aa3d65f20f9a5f28e32f6c551b63ae8e079ad60a8e81be56ff619a9362",
+      "log_sha256": "ea66a6322fe5bfc73d5f64d6d392038c6cf9e4b9cf584d35d0001273ba328b13",
       "role": "baseline",
-      "seconds": 28.4,
+      "seconds": 30.1,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"an unsupported row is refused\""
       ],
-      "log_sha256": "c3ce40a67f94fbf602931e566ca4e696584568ec0f482bfaa268217bd71d3497",
+      "log_sha256": "8d7ad2dab16c7525fa665973bb513075cc8291b6c8f50659f1b837529ef880f6",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "2854eb5f0f32d32125ffd30c7fa2668a25b394bbff787afb7af04824375ef79d",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 88.1,
+      "seconds": 89.4,
       "verdict": "fail"
     },
     {
@@ -71,15 +71,15 @@
       "failed_checks": [
         "\"a dirty row decodes its complete fields or is refused\""
       ],
-      "log_sha256": "3f62941b17e85cb07865b46e39f96b31561cd8f4f29397a44a98bfebc13d39b7",
+      "log_sha256": "1b88fa679aa712e2ad763fcb61138a85ea1e141ca6c0533cfebcd97d55f23f27",
       "mutated": {
         "src/shard.rs": {
-          "baseline": "b424d1fe2eab5e6640cebae1a174d0b4137293917daba2810078767f040a769e",
-          "control": "c1e8162b3159531b2a1f5ba27fb89c8dc74a677e75996a152ea31cca96aaa50a"
+          "baseline": "70e8ea4bf2ede3f8ccbb174ab15bb468a617d47ebb47ab1e9ce2dfb32d2f264a",
+          "control": "c38f977b2732a5c44ff22300f7b9d6174ebcd3db807fa6b532f258966b69bd8f"
         }
       },
       "role": "negative-control",
-      "seconds": 31.5,
+      "seconds": 33.0,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"a delta moves the backlog by exactly its bytes\""
       ],
-      "log_sha256": "7433b70892946c998288ada921c857cee48c45bb99ae349d936079d34052b4d7",
+      "log_sha256": "490e60b4057a1bf261f17eac829d3dca007ad5ec6897adb0638a757f96682260",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "2854eb5f0f32d32125ffd30c7fa2668a25b394bbff787afb7af04824375ef79d",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 28.9,
+      "seconds": 30.2,
       "verdict": "fail"
     },
     {
@@ -109,7 +109,7 @@
       "failed_checks": [
         "attempt to subtract with overflow"
       ],
-      "log_sha256": "01171bc7d2454b2af3a3d73db9a34b35794a86a35ddec13719aa47a7f9d72fdc",
+      "log_sha256": "d65a387cf8b268570662e6621e702cc99c72c87e489bdcd43fa166f4a5789c53",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "2854eb5f0f32d32125ffd30c7fa2668a25b394bbff787afb7af04824375ef79d",
@@ -117,7 +117,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 28.5,
+      "seconds": 30.2,
       "verdict": "fail"
     }
   ],
@@ -134,7 +134,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard.rs": "b424d1fe2eab5e6640cebae1a174d0b4137293917daba2810078767f040a769e",
+      "src/shard.rs": "70e8ea4bf2ede3f8ccbb174ab15bb468a617d47ebb47ab1e9ce2dfb32d2f264a",
       "src/shard/maintenance_row.rs": "2854eb5f0f32d32125ffd30c7fa2668a25b394bbff787afb7af04824375ef79d",
       "src/shard/maintenance_row/proofs.rs": "6842cd35f4d8faf3ddabe3154477d2459f8b910e532f12c29a8695f3d0bb9cdf",
       "verification/kani/controls/KANI-047-accept-an-unknown-dirty-extension.patch": "3f2f03a984c199cde9d02c419fd77c5baa5ff0b18e6d4db782c280dec41e6f89",
@@ -164,10 +164,10 @@
       }
     }
   },
-  "inputs_sha256": "3433300264469698cbfaa03a0fc6dda0d752cc9b666807e925a1ab7d399084d6",
+  "inputs_sha256": "d8c85d4d73376f063376d093e53d0733c4ebfc568f64231e960e96df4f8fbb4d",
   "run_on": {
     "dirty_tree": false,
-    "revision": "464a16245ef3a7c6fa0e7698a53e4d046268a8bc"
+    "revision": "68d0b0db21920231b639d58fd42934c9a7189f4d"
   },
   "schema": 2,
   "tools": {
