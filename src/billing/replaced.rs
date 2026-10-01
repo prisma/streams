@@ -125,7 +125,6 @@ async fn settle_segment(
         Err(pass) => return pass,
     };
     let hash = dead.dynamic_segment_identity(sid);
-    let mut applied = false;
     let pass = match engine.load_billing_meta(hash).await {
         Ok(Some(meta))
             if meta.stream_id == dead.stream_epoch && meta.owned_frame_bytes_current > 0 =>
@@ -139,7 +138,6 @@ async fn settle_segment(
             match engine.submit_billing_close(hash, entry.debt.close_ms).await {
                 Ok(()) => {
                     WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    applied = true;
                     Pass::Next
                 }
                 Err(error) => {
@@ -161,10 +159,11 @@ async fn settle_segment(
             Pass::Stop
         }
     };
-    // A shard this step cold-opened is settled now, unless its committer
-    // applied the close there: that shard keeps the close's dirty row as an
-    // indebted resident (`walk_engine_budgeted`).
-    if ours && !applied {
+    // A shard this step cold-opened is settled now. A submitted close is
+    // already durable here (its answer waits for its group), so the settle
+    // keeps the shard as an indebted resident while it holds the close's
+    // dirty row (`walk_engine_budgeted`).
+    if ours {
         walk_settle(state, &state.shards.prefix_for(&route)).await;
     }
     pass
