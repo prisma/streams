@@ -1891,7 +1891,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "91da517fb601c137c4a7f22ebb00932fcb030ef91440f4aa7daf16619d2c78b2",
+    "function_sha256": "8c4c2cd689480f2485a14dc75d37ee60ad351f3a19d3d7cca90ceaed617cf520",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/retiring_written_group.rs",

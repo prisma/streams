@@ -1671,7 +1671,7 @@ async fn product_seal(
             )
             .await;
             return match result {
-                Ok(()) => json_ok(&json!({"sealed":true})),
+                Ok(()) => SEALED.into_response(),
                 Err(crate::application::lifecycle::SealFinalError::Append(error)) => {
                     render_product_append_error(error)
                 }
@@ -3767,7 +3767,7 @@ mod read_cursor;
 mod scan;
 use scan::product_scan;
 mod seal_request;
-use seal_request::seal_request;
+use seal_request::{SEALED, seal_request};
 mod usage;
 use usage::product_usage;
 pub(crate) use usage::project_usage;

@@ -502,7 +502,8 @@ fn assert_sealed(desc: &crate::registry::StreamDesc) {
 /// answered 503 `temporarily_unavailable`, retryable; the claim still owes
 /// that request's final on the retiring runtime and on the successor; the
 /// successor holds the final exactly once; the exact retry of the seal
-/// completes it and seals the collection.
+/// completes it and seals the collection, answered 200 `{"sealed":true}`
+/// with `Cache-Control: no-store` (WIRE-MATRIX §2.5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_the_successor() {
     let store = FaultStore::new(mem(), 2028, FaultProfile::clean());
@@ -534,11 +535,13 @@ async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_t
         (
             status,
             header(&headers, "content-type"),
+            header(&headers, "cache-control"),
             serde_json::from_slice::<serde_json::Value>(&answer).unwrap()
         ),
         (
             200,
             Some("application/json"),
+            Some("no-store"),
             serde_json::json!({"sealed": true})
         ),
         "the exact retry completes the owed final: {headers:?}"

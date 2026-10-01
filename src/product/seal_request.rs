@@ -1,5 +1,6 @@
 //! The collection seal's request body (Stage 8 §7.2): parsed once, before
-//! any claim, and a final record authorized as the append it is.
+//! any claim, and a final record authorized as the append it is; and the
+//! answer a seal with a final record succeeds with.
 use super::{AppState, auth_failure_response, enforce_customer, perr};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
@@ -67,6 +68,18 @@ pub(super) fn seal_request(
     }
     Ok(doc)
 }
+
+/// A seal's success answer (WIRE-MATRIX §2.5): 200, `{"sealed":true}` as
+/// JSON, which no cache may store. The seal with a final record answers it;
+/// `product_seal_only` builds the same answer for a plain seal.
+pub(super) const SEALED: (StatusCode, [(&str, &str); 2], &str) = (
+    StatusCode::OK,
+    [
+        ("content-type", "application/json"),
+        ("cache-control", "no-store"),
+    ],
+    r#"{"sealed":true}"#,
+);
 
 /// An ABSENT final is `None`; a present one, `null` included, is the record
 /// the seal stores: the client's own text, validated and without whitespace
