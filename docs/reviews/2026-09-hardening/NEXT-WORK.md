@@ -290,20 +290,33 @@ DSTs in `billing_walk_custody.rs` (the walk's close, the debt pass's close,
 the walk's retention flag) make the losing order certain with a committer
 that gathers for 2 s (`pace_min_reqs: 1`) and were red 5 of 5 runs each.
 
-**What remains of the lost close (owner decision).** Phase 1 still decides
-from the durable index, so an op still unapplied a whole sweep interval
-(300 s) after its step would meet the same drop: the fix shrinks the window
-from microseconds to one sweep interval, it is not a proof. The same shape
-remains for the ops the concurrent drain enqueues (`src/billing.rs`, its
-closes and retention flags) on a resident that phase 1 retires before they
-apply. The exact fix is a reply channel on `CommitOp::BillingClose` and
-`CommitOp::BillingRetained`: `Ok` at publish, `Err(Moved)` with a warning and
-a counter at the three drop sites, awaited by `submit_*`, so the walk maps a
-lost op to `Pass::Stop` and replays its page instead of settling. It grows
-the `#[expect(clippy::large_enum_variant)]` contract on `CommitOp` (an
-owner-approved exception row), needs a module extracted from `src/shard.rs`
-first (at its 3,009-line ceiling), and stales six receipts (about 150 min
-serial).
+**The lost close's exact fix landed (owner decision of 2026-10-01; edge
+change #91, the commit that records it, awaits ratification).** #87 left a
+window: phase 1 decides from the durable index, so an op still unapplied a
+sweep interval later met the same drop, as did the drain's closes and
+retention flags on a resident phase 1 retired. Now each
+`CommitOp::BillingClose` and `CommitOp::BillingRetained` carries a reply
+(`BillingReply`, `src/shard/billing_ops.rs`). Staged, it joins its group's
+replies (`src/shard/transaction/billing.rs`): `Ok` once the group is
+durable, the group's refusal otherwise. Dropped before it was staged (the
+drain arm of `committer_loop`, `reject_op`, `CommitTransaction::run` on a
+closed engine, a failed accounting read or stream load, a closed queue), it
+answers a retryable refusal (`Moved`) as it drops, with a warning and one
+count of `BILLING_OPS_REFUSED`. `submit_billing_close` and
+`submit_billing_retained` await the answer: the walk and the debt pass stop
+their page on a refusal and replay it next sweep, the drain leaves the row
+dirty, and the hard delete logs and leaves it to the tombstone's debt (and
+answers once its closes are durable). Pinned by
+`shard::billing_read_tests::a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_answered_once_applied`
+and two `billing_walk_custody` DSTs (the walk's and the debt pass's
+refusal), each red 5 of 5 on the unfixed tree. `CommitOp`'s exception
+contract grew under its approved row; `src/shard.rs` gave the room by
+extracting `src/shard/billing_ops.rs` first. What remains: the six receipts
+the `src/shard.rs` and `src/shard/transaction/mod.rs` edits stale
+(KANI-047, TLA-002, TLA-005, TLA-006, TLA-011, TLA-016) are to be
+re-recorded; the counter has no debug surface, because `src/http.rs` is at
+its line ceiling and `ops::collect_snapshot` is a frozen exception scope
+(tests read it); and #91 awaits ratification.
 
 Rollback note for the record: an older binary ignores the debt objects (they
 live outside the descriptor), so a rollback leaves debts unsettled until

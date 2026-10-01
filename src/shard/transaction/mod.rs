@@ -9,6 +9,7 @@
 //! a rejected group drops its streams' cached seal fences for a row re-read.
 use super::*;
 mod append;
+mod billing;
 mod finalize;
 mod maintenance;
 mod overlay;
@@ -125,6 +126,8 @@ impl<'a> CommitTransaction<'a> {
                 };
                 let _ = resp.send(Err(message));
             }
+            // A billing op answers its own refusal as it drops here
+            // (`BillingReply`); the other ops carry no reply.
             _ => {}
         }
     }
@@ -168,11 +171,11 @@ impl<'a> CommitTransaction<'a> {
                 month_final_keys,
                 ..
             } => self.usage_ack(&mut local, hash, scope, month_final_keys),
-            CommitOp::BillingClose { close_ms, .. } => {
-                self.billing_close(&mut local, hash, close_ms)
+            CommitOp::BillingClose { close_ms, resp, .. } => {
+                self.billing_close_answered(&mut local, close_ms, resp)
             }
-            CommitOp::BillingRetained { retained, .. } => {
-                self.billing_retained(&mut local, hash, retained)
+            CommitOp::BillingRetained { retained, resp, .. } => {
+                self.billing_retained_answered(&mut local, retained, resp)
             }
             CommitOp::Absorbed {
                 upto, bytes, v2, ..

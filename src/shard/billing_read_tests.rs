@@ -61,21 +61,7 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
                     .unwrap()
                     .insert("r13".into(), ());
             }
-            let accounting = match action {
-                0 => CommitOp::UsageAck {
-                    hash,
-                    scope: UsageAckScope::ThroughVersion(7),
-                    month_final_keys: vec![final_key.clone()],
-                },
-                1 => CommitOp::BillingClose {
-                    hash,
-                    close_ms: 1000,
-                },
-                _ => CommitOp::BillingRetained {
-                    hash,
-                    retained: true,
-                },
-            };
+            let accounting = accounting_op(action, hash, &final_key);
             let (tx, rx) = oneshot::channel();
             engine
                 .commit_group(
@@ -134,6 +120,29 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
     let _ = db.close().await;
 }
 
+/// R13's accounting op `action` on `hash`: a usage ack, a billing close or a
+/// retention flag, each of which needs the row the fixture makes unreadable.
+/// The billing ops' replies are detached: R13 reads only what a group wrote.
+fn accounting_op(action: u8, hash: [u8; 16], final_key: &[u8]) -> CommitOp {
+    match action {
+        0 => CommitOp::UsageAck {
+            hash,
+            scope: UsageAckScope::ThroughVersion(7),
+            month_final_keys: vec![final_key.to_vec()],
+        },
+        1 => CommitOp::BillingClose {
+            hash,
+            close_ms: 1000,
+            resp: BillingReply::detached(hash),
+        },
+        _ => CommitOp::BillingRetained {
+            hash,
+            retained: true,
+            resp: BillingReply::detached(hash),
+        },
+    }
+}
+
 type Meta = crate::billing::SegmentBillingMetaV1;
 const SEGMENT: [u8; 16] = [14; 16];
 const HOUR: i64 = 3_600_000;
@@ -186,10 +195,12 @@ fn closed_row() -> Meta {
     }
 }
 
+/// A close of `SEGMENT` at `close_ms` whose reply nobody awaits.
 fn close(close_ms: i64) -> CommitOp {
     CommitOp::BillingClose {
         hash: SEGMENT,
         close_ms,
+        resp: BillingReply::detached(SEGMENT),
     }
 }
 
@@ -197,9 +208,26 @@ fn json(row: &Meta) -> String {
     serde_json::to_string(row).unwrap()
 }
 
+/// `SEGMENT`'s billing row in `db` as JSON text, and the version its dirty
+/// marker holds.
+async fn stored_in(db: &Db) -> (Option<String>, Option<u64>) {
+    let row = db
+        .get(crate::billing::billing_meta_key(&SEGMENT))
+        .await
+        .unwrap()
+        .map(|row| String::from_utf8(row.to_vec()).unwrap());
+    let dirty = db
+        .get(crate::billing::usage_dirty_key(&SEGMENT))
+        .await
+        .unwrap()
+        .map(|mark| u64::from_le_bytes(mark.as_ref().try_into().unwrap()));
+    (row, dirty)
+}
+
 struct CloseRig {
     engine: Arc<ShardEngine>,
     db: Arc<Db>,
+    store: Arc<dyn object_store::ObjectStore>,
     _signals: mpsc::Receiver<AbsorbSignal>,
 }
 
@@ -220,7 +248,7 @@ impl CloseRig {
         let engine = ShardEngine::start(
             prefix.into(),
             db.clone(),
-            store,
+            store.clone(),
             ShardConfig::default(),
             tx,
             None,
@@ -229,6 +257,7 @@ impl CloseRig {
         Self {
             engine,
             db,
+            store,
             _signals: signals,
         }
     }
@@ -239,19 +268,34 @@ impl CloseRig {
 
     /// The stored row as JSON text, and the version its dirty marker holds.
     async fn stored(&self) -> (Option<String>, Option<u64>) {
-        let row = self
-            .db
-            .get(crate::billing::billing_meta_key(&SEGMENT))
+        stored_in(&self.db).await
+    }
+
+    /// Waits until exactly `n` ops wait in the committer's queue.
+    async fn queued(&self, n: usize) {
+        for _ in 0..500 {
+            if self.engine.queued_ops() == n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the committer queue never held exactly {n} ops");
+    }
+
+    /// `stored` as a fresh process reads it once this engine has terminated:
+    /// what is durable, whatever the retired engine held.
+    async fn durable(self) -> (Option<String>, Option<u64>) {
+        self.engine
+            .await_terminated(std::time::Duration::from_secs(5))
             .await
-            .unwrap()
-            .map(|row| String::from_utf8(row.to_vec()).unwrap());
-        let dirty = self
-            .db
-            .get(crate::billing::usage_dirty_key(&SEGMENT))
+            .unwrap();
+        let db = Db::builder(self.engine.prefix.as_str(), self.store.clone())
+            .build()
             .await
-            .unwrap()
-            .map(|mark| u64::from_le_bytes(mark.as_ref().try_into().unwrap()));
-        (row, dirty)
+            .unwrap();
+        let stored = stored_in(&db).await;
+        db.close().await.unwrap();
+        stored
     }
 
     async fn rows(&self) -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
@@ -446,6 +490,7 @@ async fn a_skipped_close_keeps_the_mark_an_earlier_op_of_its_group_set() {
         CommitOp::BillingRetained {
             hash: SEGMENT,
             retained: true,
+            resp: BillingReply::detached(SEGMENT),
         },
         close(CLOSED),
     ])
@@ -527,4 +572,94 @@ async fn a_close_of_a_segment_without_a_billing_row_writes_nothing() {
     assert_eq!(rig.stored().await, (None, None));
     assert_eq!(rig.rows().await, before);
     rig.stop().await;
+}
+
+/// The lost close's exact fix (NEXT-WORK section 2): a billing op is
+/// answered. One that a retiring committer drops unapplied answers its
+/// submitter a retryable refusal, is counted once and leaves the row as it
+/// was (`refused_once`); one the committer applies answers Ok once its group
+/// is durable, which the row then shows, and counts nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_answered_once_applied()
+{
+    for retained in [false, true] {
+        refused_once(retained).await;
+    }
+    let rig = CloseRig::start("billing-op-applied", Some(&open_row())).await;
+    let refused = billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst);
+    rig.engine
+        .submit_billing_close(SEGMENT, CLOSED)
+        .await
+        .expect("the close applied");
+    assert_eq!(
+        rig.stored().await,
+        (Some(json(&closed_row())), Some(9)),
+        "Ok follows the close's durable group"
+    );
+    rig.engine
+        .submit_billing_retained(SEGMENT, true)
+        .await
+        .expect("the flag applied");
+    let flagged = Meta {
+        usage_version: 10,
+        retained_by_forks: true,
+        ..closed_row()
+    };
+    assert_eq!(
+        rig.stored().await,
+        (Some(json(&flagged)), Some(10)),
+        "Ok follows the flag's durable group"
+    );
+    assert_eq!(
+        billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst),
+        refused,
+        "an applied op is not refused"
+    );
+    rig.stop().await;
+}
+
+/// One billing op (the close, or the retention flag) that a retiring
+/// committer drops: the committer parks at the commit gate holding an
+/// earlier op, the billing op waits in its queue, and the engine retires
+/// before the gate opens, so the group that takes the op is refused whole
+/// (`CommitTransaction::run` on a closed engine).
+async fn refused_once(retained: bool) {
+    let rig = CloseRig::start(&format!("billing-op-dropped-{retained}"), Some(&open_row())).await;
+    let parked = rig.engine.test_hold_commit().await;
+    rig.engine.submit_usage_ack(SEGMENT, 0, vec![]);
+    rig.queued(0).await;
+    let submitted = async {
+        if retained {
+            rig.engine.submit_billing_retained(SEGMENT, true).await
+        } else {
+            rig.engine.submit_billing_close(SEGMENT, CLOSED).await
+        }
+    };
+    let retired = async {
+        rig.queued(1).await;
+        let refused = billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst);
+        rig.engine.begin_close();
+        drop(parked);
+        refused
+    };
+    let (answer, refused) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures_util::future::join(submitted, retired),
+    )
+    .await
+    .expect("answered");
+    assert!(
+        answer.is_err(),
+        "the committer answered a billing op it dropped (retained: {retained}): {answer:?}"
+    );
+    assert_eq!(
+        billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst) - refused,
+        1,
+        "the drop is counted once (retained: {retained})"
+    );
+    assert_eq!(
+        rig.durable().await,
+        (Some(json(&open_row())), None),
+        "the dropped op changed nothing (retained: {retained})"
+    );
 }

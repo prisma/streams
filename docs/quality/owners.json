@@ -2179,6 +2179,14 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::BILLING_OPS_REFUSED",
+      "path": "src/shard/billing_ops.rs",
+      "reason": "Process instrumentation counter: billing ops (closes and retention flags) a shard dropped unapplied and answered as a retryable refusal (the lost close's exact fix, NEXT-WORK section 2); one AtomicU64 for the process because the drop happens on the retiring engine itself, which takes any per-engine count with it. Tests read it; no debug surface reports it yet.",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::BILLING_CLOCK_OVERRIDE",
       "path": "src/billing/test_clock.rs",
       "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",

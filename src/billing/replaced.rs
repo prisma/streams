@@ -125,7 +125,7 @@ async fn settle_segment(
         Err(pass) => return pass,
     };
     let hash = dead.dynamic_segment_identity(sid);
-    let mut enqueued = false;
+    let mut applied = false;
     let pass = match engine.load_billing_meta(hash).await {
         Ok(Some(meta))
             if meta.stream_id == dead.stream_epoch && meta.owned_frame_bytes_current > 0 =>
@@ -139,11 +139,16 @@ async fn settle_segment(
             match engine.submit_billing_close(hash, entry.debt.close_ms).await {
                 Ok(()) => {
                     WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    enqueued = true;
+                    applied = true;
+                    Pass::Next
                 }
-                Err(error) => tracing::warn!("closure-debt close failed: {error}"),
+                Err(error) => {
+                    // Refused unapplied: the pass stops here and the next
+                    // sweep resumes at this debt.
+                    tracing::warn!("closure-debt close refused, the pass replays it: {error}");
+                    Pass::Stop
+                }
             }
-            Pass::Next
         }
         Ok(_) => {
             if let Err(error) = state.registry.settle_replaced(&entry.key, sid).await {
@@ -156,11 +161,10 @@ async fn settle_segment(
             Pass::Stop
         }
     };
-    // A shard this step cold-opened is settled now, unless the step
-    // enqueued the close there: the settle's probe sees only durable debt,
-    // and retiring the engine before its committer applies the close drops
-    // it (`walk_engine_budgeted`).
-    if ours && !enqueued {
+    // A shard this step cold-opened is settled now, unless its committer
+    // applied the close there: that shard keeps the close's dirty row as an
+    // indebted resident (`walk_engine_budgeted`).
+    if ours && !applied {
         walk_settle(state, &state.shards.prefix_for(&route)).await;
     }
     pass

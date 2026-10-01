@@ -124,6 +124,28 @@
     "scenarios": []
   },
   {
+    "name": "a_close_the_shard_refuses_stops_the_debt_pass_and_the_next_pass_applies_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "274066cb7649dea05ee1744031eb061841165c03d2c715103d1eda184489ca65",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_close_the_shard_refuses_stops_the_walk_and_the_next_walk_applies_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5cb69fa34e4fe544248f9859f92cea10071a0138f13bf09c703683d3b7591a0f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_close_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

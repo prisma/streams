@@ -1,10 +1,21 @@
 //! The engine's billing rows: the usage outbox it reads (the dirty index, its
 //! month finals and the residency probe over both), the billing row it loads
 //! for the committer and the sweep, and the awaited billing commands its
-//! committer applies to that row.
+//! committer applies to that row, each answered applied or refused
+//! (`BillingReply`).
 #[cfg(test)]
 use super::billing_read_faults;
-use super::{CommitOp, ShardEngine, decode_cursor};
+use super::{
+    AppendAck, AppendErr, CommitOp, DurableEffects, ShardEngine, TailFields, decode_cursor,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::oneshot;
+
+/// Billing ops (a close or a retention flag) the shard dropped without
+/// applying them, each answered to its submitter as a retryable refusal: a
+/// committer that retired before it applied the op, or a queue already
+/// closed. Process-wide; tests read it, no debug surface reports it.
+pub(crate) static BILLING_OPS_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 impl ShardEngine {
     /// Usage-dirty index scan (§6.3): every segment whose durable
@@ -171,31 +182,133 @@ impl ShardEngine {
 
     /// Terminal storage closure for a hard-deleted or expired segment
     /// (§6.2), accounted to the persisted logical close instant.
-    /// AWAITED submission (round-22 item 7): the caller knows whether
-    /// the closure entered the committer queue — a full queue is
-    /// backpressure, never a silent drop; the registry-persisted debt
-    /// plus the sweep reconciler retry anything that still fails.
+    /// AWAITED (round-22 item 7): `Ok` once the committer applied the close
+    /// and its group is durable. `Err` is a refusal that changed nothing:
+    /// the queue was closed, or the engine retired before its committer
+    /// applied the close (`BillingReply`). A full queue is backpressure,
+    /// never a drop; the caller retries a refusal at the same persisted
+    /// instant (the registry-persisted debt plus the sweep reconciler).
     pub(crate) async fn submit_billing_close(
         &self,
         hash: [u8; 16],
         close_ms: i64,
     ) -> Result<(), String> {
+        let (resp, answer) = BillingReply::new(hash, "close");
         self.tx
-            .send(CommitOp::BillingClose { hash, close_ms })
+            .send(CommitOp::BillingClose {
+                hash,
+                close_ms,
+                resp,
+            })
             .await
-            .map_err(|_| "committer queue closed".to_string())
+            .map_err(|_| "committer queue closed".to_string())?;
+        answered(answer).await
     }
 
     /// Durably persist the fork-retention flag on the billing row
-    /// (round-22 item 7); awaited like the closure.
+    /// (round-22 item 7); awaited and answered like the closure.
     pub(crate) async fn submit_billing_retained(
         &self,
         hash: [u8; 16],
         retained: bool,
     ) -> Result<(), String> {
+        let (resp, answer) = BillingReply::new(hash, "retention flag");
         self.tx
-            .send(CommitOp::BillingRetained { hash, retained })
+            .send(CommitOp::BillingRetained {
+                hash,
+                retained,
+                resp,
+            })
             .await
-            .map_err(|_| "committer queue closed".to_string())
+            .map_err(|_| "committer queue closed".to_string())?;
+        answered(answer).await
+    }
+
+    /// Ops waiting in the committer's queue; one it has taken is not.
+    #[cfg(test)]
+    pub(crate) fn queued_ops(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
+}
+
+/// The answer a billing op (a close or a retention flag) owes its
+/// submitter. The op's own group answers it once staged (`applied`): `Ok`
+/// at the group's durable dispatch, or the group's refusal. An op dropped
+/// before a group staged it (the drain of a retiring committer, `reject_op`,
+/// a group refused on a closed engine, a queue already closed) answers as it
+/// drops: a retryable refusal (`Moved`), a warning, and one count of
+/// `BILLING_OPS_REFUSED`. Never silently.
+pub(crate) struct BillingReply {
+    hash: [u8; 16],
+    op: &'static str,
+    resp: Option<oneshot::Sender<Result<AppendAck, AppendErr>>>,
+}
+
+impl BillingReply {
+    /// The reply `op` on segment `hash` owes, and the answer its submitter
+    /// awaits.
+    fn new(
+        hash: [u8; 16],
+        op: &'static str,
+    ) -> (Self, oneshot::Receiver<Result<AppendAck, AppendErr>>) {
+        let (resp, answer) = oneshot::channel();
+        let reply = Self {
+            hash,
+            op,
+            resp: Some(resp),
+        };
+        (reply, answer)
+    }
+
+    /// A reply nobody awaits and nothing counts, for a fixture that reads
+    /// only what its group wrote.
+    #[cfg(test)]
+    pub(super) fn detached(hash: [u8; 16]) -> Self {
+        Self {
+            hash,
+            op: "fixture",
+            resp: None,
+        }
+    }
+
+    /// The op is staged in its group: the group's replies answer it, `Ok`
+    /// with the stream's tail once durable (as a seal fence is answered), or
+    /// the group's refusal.
+    pub(super) fn applied(mut self, effects: &mut DurableEffects, tail: &TailFields) {
+        if let Some(resp) = self.resp.take() {
+            let ack = AppendAck {
+                last_offset: tail.next.wrapping_sub(1),
+                next_offset: tail.next,
+                closed: tail.closed,
+                producer: None,
+                duplicate: false,
+            };
+            effects.acks.push((resp, Ok(ack)));
+        }
+    }
+}
+
+impl Drop for BillingReply {
+    fn drop(&mut self) {
+        if let Some(resp) = self.resp.take() {
+            BILLING_OPS_REFUSED.fetch_add(1, Ordering::Relaxed);
+            let waiting = resp.send(Err(AppendErr::Moved)).is_ok();
+            tracing::warn!(
+                segment = %crate::crypto::hex(&self.hash[..4]),
+                op = self.op,
+                waiting,
+                "the shard dropped a billing op without applying it: refused, for its submitter to retry"
+            );
+        }
+    }
+}
+
+/// A billing op's answer as its submitter sees it: `Ok` once applied and
+/// durable, otherwise a refusal to retry.
+async fn answered(answer: oneshot::Receiver<Result<AppendAck, AppendErr>>) -> Result<(), String> {
+    match answer.await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(refusal)) => Err(format!("refused unapplied ({refusal:?}); retry")),
+        Err(_) => Err("dropped unanswered; retry".to_string()),
     }
 }

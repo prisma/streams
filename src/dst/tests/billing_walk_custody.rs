@@ -2,8 +2,9 @@
 //! cold-opens for one segment is handed back before the walk moves on,
 //! whatever it found there, so an open that had nothing to close never
 //! holds a slot of the sweep's resident budget against the segments after
-//! it on the page; and a shard the walk or the closure-debt pass enqueued
-//! a close or a retention flag on is kept until its committer applies it.
+//! it on the page; a shard the walk or the closure-debt pass enqueued a
+//! close or a retention flag on is kept until its committer applies it; and
+//! a close the shard refuses unapplied stops the pass, which replays it.
 
 use super::billing_closure_debts::{
     JSON, ROW, assert_billed, closed, debts as closure_debts, engine_of, expected_close, expire,
@@ -423,5 +424,185 @@ async fn a_close_the_debt_pass_submits_on_a_shard_it_opened_is_applied_before_th
     let after = engine.billing_meta(id).await.unwrap();
     assert_billed(&after, &row, "settlement closed the row a second time");
     drop(engine);
+    rig.shutdown().await;
+}
+
+/// `name` put with a TTL on `rig`, its row open and clean, then expired now
+/// with nothing observing it: (descriptor, segment-0 identity, row, expiry).
+async fn expired_open_row(rig: &HttpRig, name: &str) -> (Desc, [u8; 16], Meta, i64) {
+    let sref = rig.state.deployment.raw_adapter_sref(name);
+    raw_put(rig.addr, name, &[JSON, TTL], ROW).await;
+    let desc = stored(&rig.state, &sref).await;
+    let id = desc.dynamic_segment_identity(0);
+    let row = clean_open_row(&rig.state, &desc, id).await;
+    let at = billing_now_ms();
+    expire(&[&rig.state], &sref, at).await;
+    (desc, id, row, at)
+}
+
+/// `expired_open_row`, then recreated: the expired incarnation is replaced
+/// and its closure debt recorded at its expiry.
+async fn replaced_open_row(rig: &HttpRig, name: &str) -> (Desc, [u8; 16], Meta, i64) {
+    let (dead, id, row, at) = expired_open_row(rig, name).await;
+    // The recreation must judge the incarnation expired, not at its expiry.
+    while billing_now_ms() < at + 100 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    raw_put(rig.addr, name, &[JSON], b"").await;
+    let fresh = stored(&rig.state, &rig.state.deployment.raw_adapter_sref(name)).await;
+    assert_ne!(fresh.stream_epoch, dead.stream_epoch, "a new incarnation");
+    (dead, id, row, at)
+}
+
+/// Waits until exactly `n` ops wait in `engine`'s committer queue.
+async fn queued(engine: &Engine, n: usize) {
+    for _ in 0..500 {
+        if engine.queued_ops() == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the committer queue never held exactly {n} ops");
+}
+
+/// Runs `pass` while `engine`'s committer is parked at its commit gate
+/// behind an earlier op. Once the pass's billing op waits in the queue, the
+/// ring moves `prefix` to another instance (the engine retires) and the
+/// committer resumes, so the group that takes the op is refused whole: the
+/// shard drops the op unapplied.
+async fn refused_under(
+    state: &State,
+    engine: &Engine,
+    prefix: &str,
+    pass: impl std::future::Future<Output = ()>,
+) {
+    let parked = engine.test_hold_commit().await;
+    engine.submit_usage_ack([0; 16], 0, vec![]);
+    queued(engine, 0).await;
+    let retire = async {
+        queued(engine, 1).await;
+        state.shards.retire(
+            prefix,
+            crate::shard_directory::RetirementReason::OwnershipMoved,
+            |_, _| true,
+        );
+        drop(parked);
+    };
+    let both = futures_util::future::join(pass, retire);
+    tokio::time::timeout(Duration::from_secs(10), both)
+        .await
+        .expect("the pass ended");
+}
+
+/// The lost close's exact fix (NEXT-WORK section 2): a close the shard
+/// drops unapplied (its engine retired before the committer applied it) is
+/// answered as a refusal, and the walk stops its page there. Before, the
+/// close was dropped silently and the walk went on as if it had landed: the
+/// dead gauge billed until a whole catalog pass came back to it. The ring
+/// moves `y`'s shard away while `y`'s close waits in the queue: the walk
+/// applies nothing after it, both rows stay as they were, and the next walk
+/// replays the page and closes both, once each, at their expiries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_the_shard_refuses_stops_the_walk_and_the_next_walk_applies_it() {
+    let _serial = sweep_lock().lock().await;
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let store = mem();
+    let setup = rig_over(&store, 0, ShardConfig::default()).await;
+    let stems = ["refused-walk-a", "refused-walk-b", "refused-walk-c"];
+    let [(y, py), (z, _), _] = names_past_discovery(&setup.state, stems);
+    let (oy, iy, before_y, expired_y) = expired_open_row(&setup, &y).await;
+    let (oz, iz, before_z, expired_z) = expired_open_row(&setup, &z).await;
+    setup.shutdown().await;
+    let rig = rig_over(&store, 1, ShardConfig::default()).await;
+    let state = &rig.state;
+
+    let engine_y = engine_of(state, &oy, 0).await;
+    let submits = WALK_CLOSE_SUBMITS.load(Relaxed);
+    refused_under(state, &engine_y, &py, crate::billing::tombstone_walk(state)).await;
+    drop(engine_y);
+    assert_eq!(
+        WALK_CLOSE_SUBMITS.load(Relaxed) - submits,
+        0,
+        "the walk moved past a close the shard refused"
+    );
+    state.shards.clear_holdoff(&py);
+    let (ey, ez) = (
+        engine_of(state, &oy, 0).await,
+        engine_of(state, &oz, 0).await,
+    );
+    let row_y = ey.billing_meta(iy).await.expect("y's row");
+    assert_billed(&row_y, &before_y, "the refused close changed nothing");
+    let row_z = ez.billing_meta(iz).await.expect("z's row");
+    assert_billed(&row_z, &before_z, "the walk stopped before z");
+
+    crate::billing::tombstone_walk(state).await;
+    assert_eq!(
+        WALK_CLOSE_SUBMITS.load(Relaxed) - submits,
+        2,
+        "the next walk replayed the page"
+    );
+    let row_y = ey.billing_meta(iy).await.expect("y's row");
+    assert_billed(&row_y, &expected_close(&before_y, expired_y), "y, once");
+    let row_z = ez.billing_meta(iz).await.expect("z's row");
+    assert_billed(&row_z, &expected_close(&before_z, expired_z), "z, once");
+    drop((ey, ez));
+    rig.shutdown().await;
+}
+
+/// The same refusal in the closure-debt pass: the ring moves the first
+/// replaced incarnation's shard away while its close waits in the queue.
+/// The pass stops at that debt instead of going on to the next one, both
+/// rows and both debts stay as they were; the next pass resumes at the
+/// refused debt and closes both rows at their debts' instants, and the pass
+/// after forgets both debts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_the_shard_refuses_stops_the_debt_pass_and_the_next_pass_applies_it() {
+    let _serial = sweep_lock().lock().await;
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let store = mem();
+    let setup = rig_over(&store, 0, ShardConfig::default()).await;
+    let stems = ["refused-debt-a", "refused-debt-b", "refused-debt-c"];
+    let [(a, pa), (b, _), _] = names_past_discovery(&setup.state, stems);
+    let (oa, ia, before_a, expired_a) = replaced_open_row(&setup, &a).await;
+    let (ob, ib, before_b, expired_b) = replaced_open_row(&setup, &b).await;
+    assert_eq!(closure_debts(&setup.state).await.len(), 2, "two debts");
+    setup.shutdown().await;
+    let rig = rig_over(&store, 1, ShardConfig::default()).await;
+    let state = &rig.state;
+
+    let engine_a = engine_of(state, &oa, 0).await;
+    let submits = WALK_CLOSE_SUBMITS.load(Relaxed);
+    refused_under(state, &engine_a, &pa, settle_replaced(state)).await;
+    drop(engine_a);
+    assert_eq!(
+        WALK_CLOSE_SUBMITS.load(Relaxed) - submits,
+        0,
+        "the debt pass moved past a close the shard refused"
+    );
+    state.shards.clear_holdoff(&pa);
+    let (ea, eb) = (
+        engine_of(state, &oa, 0).await,
+        engine_of(state, &ob, 0).await,
+    );
+    let row_a = ea.billing_meta(ia).await.expect("a's row");
+    assert_billed(&row_a, &before_a, "the refused close changed nothing");
+    let row_b = eb.billing_meta(ib).await.expect("b's row");
+    assert_billed(&row_b, &before_b, "the pass stopped before b's debt");
+    let waiting: Vec<Vec<u32>> = closure_debts(state).await.iter().map(settled).collect();
+    assert_eq!(waiting, vec![Vec::<u32>::new(); 2], "both debts wait");
+
+    settle_replaced(state).await;
+    assert_eq!(
+        WALK_CLOSE_SUBMITS.load(Relaxed) - submits,
+        2,
+        "the next pass resumed at the refused debt"
+    );
+    let row_a = ea.billing_meta(ia).await.expect("a's row");
+    assert_billed(&row_a, &expected_close(&before_a, expired_a), "a, once");
+    let row_b = eb.billing_meta(ib).await.expect("b's row");
+    assert_billed(&row_b, &expected_close(&before_b, expired_b), "b, once");
+    settle_replaced(state).await;
+    assert!(closure_debts(state).await.is_empty(), "both debts settled");
+    drop((ea, eb));
     rig.shutdown().await;
 }

@@ -22,6 +22,7 @@ pub(crate) mod record;
 pub(crate) use record::read_frames;
 pub(crate) use record::{FrameReadResult, read_frames_range};
 mod billing_ops;
+use billing_ops::BillingReply;
 mod commit_handoff;
 use commit_handoff::{Attachment, CommitHandoff};
 pub(crate) use tail_ring::RingScan;
@@ -808,6 +809,9 @@ pub(crate) enum CommitOp {
     BillingClose {
         hash: [u8; 16],
         close_ms: i64,
+        /// Applied once its group is durable, or refused; never dropped
+        /// silently.
+        resp: BillingReply,
     },
     /// Durable fork-retention flag (round-22 item 7): a soft-deleted
     /// source retained by live forks keeps accruing storage under the
@@ -817,6 +821,8 @@ pub(crate) enum CommitOp {
     BillingRetained {
         hash: [u8; 16],
         retained: bool,
+        /// Answered like the close's.
+        resp: BillingReply,
     },
     /// Queue-profile state transition (PROFILES.md §7): serialized with
     /// appends, durable at the watermark like everything else.
@@ -2331,6 +2337,8 @@ impl ShardEngine {
                             CommitOp::Queue { resp, .. } => {
                                 let _ = resp.send(Err("shard fenced/moved; retry".into()));
                             }
+                            // A billing op dropped here answers its own
+                            // refusal (`BillingReply`), as in `reject_op`.
                             CommitOp::Absorbed { .. }
                             | CommitOp::AbsorbedBatch { .. }
                             | CommitOp::TrimTick

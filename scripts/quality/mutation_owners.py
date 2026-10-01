@@ -119,6 +119,7 @@ OWNERS = (
     owner('transaction_finalize', 'src/shard/transaction/finalize.rs', 'shard::'),
     owner('transaction_maintenance', 'src/shard/transaction/maintenance.rs', 'shard::'),
     owner('transaction_group', 'src/shard/transaction/mod.rs', 'shard::'),
+    owner('transaction_billing', 'src/shard/transaction/billing.rs', 'shard::'),
     owner('transaction_overlay', 'src/shard/transaction/overlay.rs', 'shard::'),
     owner('transaction_prepare', 'src/shard/transaction/prepare.rs', 'shard::'),
     owner('transaction_publish', 'src/shard/transaction/publish.rs', 'shard::'),

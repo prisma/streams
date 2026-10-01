@@ -109,7 +109,7 @@
         {
           "file": "src/shard/billing_read_tests.rs",
           "name": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version",
-          "sha256": "df3f9bbc59ebd3ec652cd1e083739cfdc144a674ba3264b5b089d8903a3a2f60"
+          "sha256": "71412f1033b5690af591be179fc8b80699cb6598a51d075f317f07bf4cbf6d9b"
         }
       ]
     },

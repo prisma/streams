@@ -486,6 +486,19 @@
     },
     {
       "path": "src/shard.rs",
+      "owner": "crate::CommitOp",
+      "scope": "enum",
+      "lint": "clippy::large_enum_variant",
+      "metrics": {
+        "nested_items": 34,
+        "scope_lines": 39,
+        "syntax_facts": 52
+      },
+      "rationale": "The committer's billing close and retention flag each carry the reply their submitter awaits (BillingReply): answered once the op's group is durable, or refused when the shard drops the op unapplied, never silently (the lost close's exact fix, NEXT-WORK section 2).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-01 for the lost close's exact fix (\"I approve all of these\")"
+    },
+    {
+      "path": "src/shard.rs",
       "owner": "crate::ShardEngine::start",
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
