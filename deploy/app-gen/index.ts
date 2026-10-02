@@ -7,7 +7,60 @@
 // to the region (docs/SOAK-REGIONS.md).
 import { chmod } from "node:fs/promises";
 import { KeepAwakeGuard } from "@prisma/compute";
-if (process.env.KEEP_AWAKE === "1") new KeepAwakeGuard();
+// KEEP_AWAKE_UNTIL_MS (epoch ms, set by bench/k2cost/field) bounds the guard
+// with AbortSignal.timeout, so an instance nobody tears down stops billing on
+// its own once idle; without it the guard holds for the process's life.
+const keepAwake = (() => {
+  if (process.env.KEEP_AWAKE !== "1") return null;
+  const until = Number(process.env.KEEP_AWAKE_UNTIL_MS ?? 0);
+  if (!until) return new KeepAwakeGuard();
+  const left = until - Date.now();
+  console.log(`keep-awake: until ${new Date(until).toISOString()} (${Math.round(left / 1000)} s left)`);
+  if (left <= 0) return null;
+  const signal = AbortSignal.timeout(left);
+  signal.addEventListener("abort", () => console.log("keep-awake: released at KEEP_AWAKE_UNTIL_MS"));
+  return new KeepAwakeGuard({ signal });
+})();
+
+// Instance shape, logged once at boot: the K2 cost field runs price memory by
+// instance size, which no platform API reports (bench/k2cost/field/README.md).
+const instanceShape = await (async () => {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { cpus, totalmem } = await import("node:os");
+  const read = (p: string) => { try { return readFileSync(p, "utf8").trim(); } catch { return null; } };
+  return {
+    mem_total_bytes: totalmem(), cgroup_memory_max: read("/sys/fs/cgroup/memory.max"),
+    cpus: cpus().length, cgroup_cpu_max: read("/sys/fs/cgroup/cpu.max"),
+    libc: existsSync("/lib/ld-musl-x86_64.so.1") ? "musl" : existsSync("/lib64/ld-linux-x86-64.so.2") ? "glibc" : "unknown",
+  };
+})();
+console.log(`instance shape: ${JSON.stringify(instanceShape)}`);
+
+// CPU_LOG_SECS (set by bench/k2cost/field): every N awake seconds, log the
+// cumulative CPU seconds since boot of every process in this instance's pid
+// namespace (user+sys, reaped children included) and the kernel's busy time,
+// so active CPU is priced for every role, routers included.
+if (Number(process.env.CPU_LOG_SECS ?? 0) > 0) {
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const bootMs = Date.now();
+  const sum = (v: string[]) => v.reduce((a, x) => a + Number(x || 0), 0);
+  setInterval(() => {
+    let proc = 0;
+    for (const pid of readdirSync("/proc")) {
+      if (!/^\d+$/.test(pid)) continue;
+      try {
+        const st = readFileSync(`/proc/${pid}/stat`, "utf8");
+        proc += sum(st.slice(st.lastIndexOf(")") + 2).split(" ").slice(11, 15)); // utime stime cutime cstime
+      } catch { /* exited */ }
+    }
+    let busy: number | null = null;
+    try {
+      const c = readFileSync("/proc/stat", "utf8").split("\n")[0]!.trim().split(/\s+/).slice(1);
+      busy = sum([c[0]!, c[1]!, c[2]!, c[5]!, c[6]!]); // user nice system irq softirq
+    } catch { /* none */ }
+    console.log(`cpu sample: ${JSON.stringify({ boot_ms: bootMs, t_ms: Date.now(), proc_cpu_s: proc / 100, vm_busy_s: busy === null ? null : busy / 100 })}`);
+  }, Number(process.env.CPU_LOG_SECS) * 1000);
+}
 
 // DNS override (soak3 finding, docs/SOAK-REGIONS.md): the platform's
 // per-node DNS forwarder episodically hands wrong-geo answers for
