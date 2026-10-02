@@ -130,6 +130,14 @@ console.log(`binary sha256 ${process.env.APP_BINARY_SHA256}`);
 console.log(
   `starting awsbench system=${process.env.BENCH_SYSTEM} shape=${process.env.BENCH_SHAPE}`,
 );
+// K2 cost field runs: k2gen takes its configuration as arguments, which the
+// supervised binary is not given, so GEN_PLAN_JSON runs a phase plan instead
+// and holds when it ends, like any generator here (plan.ts,
+// bench/k2cost/field/gen.sh).
+if (process.env.GEN_PLAN_JSON) {
+  const { runPlan } = await import("./plan");
+  await runPlan(bin, process.env.GEN_PLAN_JSON, process.env, instanceShape, keepAwake);
+}
 // See app-server/index.ts: a dead binary serves its own diagnostic rather
 // than leaving the domain to 404 like a cold start. A load generator holds
 // every death, a ready one's included (item 39; policyFor, pinned by
