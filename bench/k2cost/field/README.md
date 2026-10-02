@@ -60,7 +60,7 @@ field-only instruments.
 | File | Role |
 |---|---|
 | `fieldlib.py` | shared: paths, secrets, platform API, compute CLI, `resources.json` (locked, atomic), S3 clients, verified PUT, log reader |
-| `bins.py` | uploads `streams-slate` and `pilot` from `~/.streams-k2/bin/ba59f01a/` (sha256 checked against `SHA256SUMS`, ELF byte 18 = `0x3e`) and compiles + uploads k2gen; ranged-GET verified; manifest `bins.json` |
+| `bins.py` | uploads `streams-slate` and `pilot` from `~/.streams-k2/bin/<TAG>/` (`--tag` or `K2_BIN_TAG`) (sha256 checked against `SHA256SUMS`, ELF byte 18 = `0x3e`) and compiles + uploads k2gen; ranged-GET verified; manifest `bins.json` |
 | `provision.py <run> <cell>...` | per cell: project `k2c-<run>-<cell>` in eu-central-1 (`createDatabase: false`: the API otherwise adds a Prisma Postgres to every project), bucket of the same name, read_write key |
 | `deploy-cell.sh <run> <cell>` (`deploy.py`) | servers, ring gate, routers; env check; instance shapes |
 | `gen.sh <run> <cell> <plan>` (`gen.py`) | the in-region k2gen generator with a phase plan |
@@ -175,7 +175,7 @@ One-time per machine and per k2gen revision:
 ```bash
 F=bench/k2cost/field
 cp $F/cells/*.env ~/.streams-k2/field/cells/
-python3 $F/bins.py                     # glibc k2gen: Compute's image is glibc, the musl build cannot exec there
+python3 $F/bins.py --tag <short commit>  # binaries from ~/.streams-k2/bin/<tag>/; glibc k2gen: Compute's image is glibc, the musl build cannot exec there
 python3 $F/selftest.py                 # offline: 26 checks, no network
 ```
 

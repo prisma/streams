@@ -64,8 +64,7 @@ GATES = ("admit_shed", "admit_shed_inflight", "admit_shed_rss", "admit_shed_surv
 def stitcher(k2cost: str | None):
     """The local harness's stitched_delta (bench/k2cost/price.py)."""
     here = os.path.abspath(os.path.join(F.HERE, ".."))
-    sibling = os.path.abspath(os.path.join(F.ROOT, "..", "wt-k2", "bench", "k2cost"))
-    for d in [k2cost] if k2cost else [here, sibling]:
+    for d in [k2cost] if k2cost else [here]:
         if d and os.path.exists(os.path.join(d, "price.py")):
             sys.path.insert(0, d)
             from price import stitched_delta  # noqa: PLC0415 - the harness lives beside this tool

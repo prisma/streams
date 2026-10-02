@@ -2,18 +2,19 @@
 """Upload the field binaries to the artifact bucket (pattern:
 bench/soak/build-upload.sh), and compile the in-region generator.
 
-    bench/k2cost/field/bins.py [--k2gen DIR] [--variant glibc|musl]
+    bench/k2cost/field/bins.py --tag TAG [--k2gen DIR] [--variant glibc|musl]
 
-- streams-slate and pilot come only from ~/.streams-k2/bin/ba59f01a/
-  (x86_64-musl, built from ba59f01a): their sha256 must match that
+- streams-slate and pilot come only from ~/.streams-k2/bin/<TAG>/
+  (x86_64-musl, built from the commit its git-commit.txt names; TAG, or
+  K2_BIN_TAG, is that commit's short hash): their sha256 must match that
   directory's SHA256SUMS, their ELF e_machine (byte 18) must be 0x3e.
-- k2gen is compiled from DIR/k2gen.ts (default: the local-harness
-  worktree) with `bun build --compile --target=bun-linux-x64` into
+- k2gen is compiled from DIR/k2gen.ts (default: this tree's
+  bench/k2cost) with `bun build --compile --target=bun-linux-x64` into
   ~/.streams-k2/bin/k2gen/<variant>-<sha12>/. Compute's image is glibc
   (the wrappers' `instance shape:` line, 2026-10-02): the
   bun-linux-x64-musl build (`--variant musl`) needs /lib/ld-musl-x86_64.so.1
   plus libstdc++ and libgcc_s, and cannot exec there.
-- Keys: bin/k2c-streams-ba59f01a-x64, bin/k2c-pilot-ba59f01a-x64,
+- Keys: bin/k2c-streams-<TAG>-x64, bin/k2c-pilot-<TAG>-x64,
   bin/k2c-k2gen-<variant>-<sha12>-x64. Each PUT is verified with ranged
   GETs of its first and last 16 bytes; an object that already exists with
   the same size and the same first/last bytes is not uploaded again.
@@ -32,8 +33,7 @@ import botocore.exceptions
 import fieldlib as F
 
 BIN_HOME = os.path.expanduser("~/.streams-k2/bin")
-TAG = "ba59f01a"
-K2GEN_DEFAULT = os.path.abspath(os.path.join(F.ROOT, "..", "wt-k2", "bench", "k2cost"))
+K2GEN_DEFAULT = os.path.abspath(os.path.join(F.HERE, ".."))
 K2GEN_SOURCES = ("k2gen.ts", "common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts")
 
 
@@ -61,8 +61,8 @@ def upload(client, bucket: str, key: str, data: bytes) -> str:
     return "uploaded and verified by ranged GETs"
 
 
-def release_binaries() -> list:
-    d = os.path.join(BIN_HOME, TAG)
+def release_binaries(tag: str) -> list:
+    d = os.path.join(BIN_HOME, tag)
     sums = {}
     with open(os.path.join(d, "SHA256SUMS"), encoding="utf-8") as f:
         for line in f:
@@ -77,7 +77,7 @@ def release_binaries() -> list:
         if sha256(data) != sums[name]:
             F.die(f"{path}: sha256 differs from SHA256SUMS")
         check_x86_64(path, data)
-        out.append((f"bin/k2c-{short}-{TAG}-x64", data, {"gitCommit": commit, "buildUnix": built, "source": path}))
+        out.append((f"bin/k2c-{short}-{tag}-x64", data, {"gitCommit": commit, "buildUnix": built, "source": path}))
     return out
 
 
@@ -105,12 +105,16 @@ def k2gen_binary(src_dir: str, variant: str):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--tag", default=os.environ.get("K2_BIN_TAG"),
+                    help="the binaries' directory under ~/.streams-k2/bin (or K2_BIN_TAG)")
     ap.add_argument("--k2gen", default=K2GEN_DEFAULT, help="directory holding k2gen.ts and its modules")
     ap.add_argument("--variant", choices=("musl", "glibc"), default="glibc")
     a = ap.parse_args()
+    if not a.tag:
+        F.die("name the binaries: --tag TAG or K2_BIN_TAG (a directory under ~/.streams-k2/bin)")
     client, bucket = F.artifact_s3()
     manifest = F.read_json(os.path.join(F.FIELD, "bins.json"), {}) or {}
-    items = release_binaries() + [k2gen_binary(a.k2gen, a.variant)]
+    items = release_binaries(a.tag) + [k2gen_binary(a.k2gen, a.variant)]
     for key, data, meta in items:
         what = upload(client, bucket, key, data)
         manifest[key] = {"sha256": sha256(data), "bytes": len(data), "role": key.split("-")[1], **meta,
