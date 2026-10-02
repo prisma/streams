@@ -1,14 +1,18 @@
 use super::{
-    CellSamples, Ev, HttpEv, HttpStats, RING_CAP, SLOW_CAP, StoreStats, parse_server_timing_us,
-    pct, percentile_index,
+    CellSamples, Ev, HttpEv, HttpStats, Outcome, RING_CAP, SLOW_CAP, StoreStats, Totals,
+    parse_server_timing_us, pct, percentile_index,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, atomic::AtomicI64};
+
+/// The counters' start in every private store below.
+const SINCE_MS: u64 = 1_790_000_000_000;
 
 fn store() -> StoreStats {
     StoreStats {
         ring: Mutex::new(VecDeque::new()),
         slow: Mutex::new(VecDeque::new()),
+        totals: Totals::new(SINCE_MS),
         inflight: AtomicI64::new(0),
         inflight_peak: AtomicI64::new(0),
     }
@@ -199,4 +203,135 @@ fn partial_http_observation_poison_refuses_both_snapshot_and_publication() {
         }))
         .is_err()
     );
+}
+
+/// The outcome classes follow the provider's bill: a 2xx is billed; a 304,
+/// 404 or 412 (object_store's NotModified, NotFound, Precondition, and the
+/// AlreadyExists a conditional create answers) is not; anything else is a
+/// failure. The latency ring's `ok` keeps its meaning: success or a 304.
+#[test]
+fn outcomes_follow_the_provider_bill_and_keep_the_ring_ok() {
+    use object_store::Error;
+    let path = || "wal/00000001.sst".to_owned();
+    let source = || "provider answer".into();
+    let classes = [
+        (Ok(()), Outcome::Ok, true),
+        (
+            Err(Error::NotModified {
+                path: path(),
+                source: source(),
+            }),
+            Outcome::NotModified,
+            true,
+        ),
+        (
+            Err(Error::NotFound {
+                path: path(),
+                source: source(),
+            }),
+            Outcome::Refused,
+            false,
+        ),
+        (
+            Err(Error::Precondition {
+                path: path(),
+                source: source(),
+            }),
+            Outcome::Refused,
+            false,
+        ),
+        (
+            Err(Error::AlreadyExists {
+                path: path(),
+                source: source(),
+            }),
+            Outcome::Refused,
+            false,
+        ),
+        (
+            Err(Error::PermissionDenied {
+                path: path(),
+                source: source(),
+            }),
+            Outcome::Failed,
+            false,
+        ),
+        (
+            Err(Error::Generic {
+                store: "fixture",
+                source: source(),
+            }),
+            Outcome::Failed,
+            false,
+        ),
+    ];
+    for (result, outcome, ring_ok) in classes {
+        assert_eq!(Outcome::of(&result), outcome, "{result:?}");
+        assert_eq!(outcome.ring_ok(), ring_ok, "{outcome:?}");
+    }
+}
+
+/// Every observed operation counts once in its (op, class) cell under its
+/// billed outcome, the bytes of a landed PUT count as put, and the latency
+/// ring holds the same events with the `ok` it always had.
+#[test]
+fn totals_count_every_operation_once_by_billed_outcome() {
+    let stats = store();
+    for (cell, path, outcome) in [
+        ((0, 0), "wal/1", Outcome::Ok),
+        ((0, 0), "wal/2", Outcome::Ok),
+        ((0, 1), "manifest/3", Outcome::Refused),
+        ((2, 2), "compacted/4.sst", Outcome::Ok),
+        ((2, 4), "registry/doc", Outcome::NotModified),
+        ((2, 4), "registry/doc", Outcome::Refused),
+        ((3, 4), "registry/doc", Outcome::Failed),
+        ((4, 0), "wal/1", Outcome::Ok),
+        ((5, 4), "", Outcome::Failed),
+        ((6, 3), "fleet/owners", Outcome::Ok),
+    ] {
+        stats.observe(cell, std::time::Instant::now(), path, outcome);
+    }
+    stats.totals.put_bytes(Outcome::Ok, 4_096);
+    stats.totals.put_bytes(Outcome::Ok, 7);
+    stats.totals.put_bytes(Outcome::Refused, 1 << 20);
+    stats.totals.put_bytes(Outcome::Failed, 1 << 30);
+    assert_eq!(
+        stats.totals.to_json(123),
+        serde_json::json!({
+            "since_ms": SINCE_MS,
+            "bytes_put": 4_103,
+            "bytes_got": 123,
+            "ops": {
+                "put:wal": {"ok": 2, "unbilled": 0, "err": 0},
+                "put:manifest": {"ok": 0, "unbilled": 1, "err": 0},
+                "get:sst": {"ok": 1, "unbilled": 0, "err": 0},
+                "get:other": {"ok": 0, "unbilled": 2, "err": 0},
+                "head:other": {"ok": 0, "unbilled": 0, "err": 1},
+                "delete:wal": {"ok": 1, "unbilled": 0, "err": 0},
+                "list:other": {"ok": 0, "unbilled": 0, "err": 1},
+                "copy:fleet": {"ok": 1, "unbilled": 0, "err": 0},
+            },
+        })
+    );
+    // The window over the same events: (cell, n, err), unchanged by totals.
+    let mut ring: Vec<_> = stats
+        .cells(0)
+        .into_iter()
+        .map(|(cell, samples)| (cell, samples.client.len(), samples.errors))
+        .collect();
+    ring.sort_unstable();
+    assert_eq!(
+        ring,
+        [
+            ((0, 0), 2, 0),
+            ((0, 1), 1, 1),
+            ((2, 2), 1, 0),
+            ((2, 4), 2, 1),
+            ((3, 4), 1, 1),
+            ((4, 0), 1, 0),
+            ((5, 4), 1, 1),
+            ((6, 3), 1, 0),
+        ]
+    );
+    assert_eq!(store().totals.to_json(0)["ops"], serde_json::json!({}));
 }

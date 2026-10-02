@@ -24,7 +24,7 @@ use std::time::Instant;
 
 mod observations;
 mod sentinels;
-use observations::{OpGuard, record};
+use observations::{OpGuard, Outcome};
 pub(crate) use observations::{SniffConnector, classify, heartbeat_summary, snapshot, stats};
 pub(crate) use sentinels::spawn_sentinels;
 
@@ -70,13 +70,14 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
+        let bytes = payload.content_length() as u64;
         let _b = self
             .resources
-            .bulk_permit(classify(location.as_ref()), payload.content_length() as u64)
+            .bulk_permit(classify(location.as_ref()), bytes)
             .await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
-        g.finish(r.is_ok());
+        g.finish_put(Outcome::of(&r), bytes);
         r
     }
 
@@ -92,10 +93,11 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 inner: up,
                 guard: Some(g),
                 class,
+                bytes: 0,
                 resources: self.resources.clone(),
             })),
             Err(e) => {
-                g.finish(false);
+                g.finish(Outcome::of_error(&e));
                 Err(e)
             }
         }
@@ -123,9 +125,8 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // GetResult still streams the body afterwards; timing to first byte
         // is what the egress path gates on, and it keeps the guard simple.
         // A 304 on a conditional GET is a successful revalidation (the
-        // registry's TTL refresh), not an error.
-        let ok = r.is_ok() || matches!(&r, Err(object_store::Error::NotModified { .. }));
-        g.finish(ok);
+        // registry's TTL refresh), not an error: `Outcome::NotModified`.
+        g.finish(Outcome::of(&r));
         // R25-F: count ACTUAL transferred bytes by wrapping the payload
         // stream — the R23-6 version counted object METADATA size, so a
         // ranged read billed the whole object. GET_BYTES is now the
@@ -176,7 +177,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
             .await;
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
-        g.finish(r.is_ok());
+        g.finish(Outcome::of(&r));
         // R23-6: range reads are how the absorber pulls frames out of the
         // object-store-backed LSM, so this is where amplification shows.
         if let Ok(parts) = &r {
@@ -220,14 +221,14 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         let r = self.inner.list_with_delimiter(prefix).await;
-        g.finish(r.is_ok());
+        g.finish(Outcome::of(&r));
         r
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
         let g = OpGuard::new(6, from);
         let r = self.inner.copy_opts(from, to, options).await;
-        g.finish(r.is_ok());
+        g.finish(Outcome::of(&r));
         r
     }
 }
@@ -249,7 +250,7 @@ impl<S: Stream<Item = Result<ObjectMeta>> + Unpin> Stream for TimedStream<S> {
         if let std::task::Poll::Ready(None) = poll
             && let Some(g) = self.guard.take()
         {
-            g.finish(true);
+            g.finish(Outcome::Ok);
         }
         poll
     }
@@ -274,11 +275,11 @@ impl Stream for TimedDeleteStream {
             std::task::Poll::Ready(Some(item)) => {
                 let start = self.last;
                 self.last = Instant::now();
-                let (p, ok) = match item {
-                    Ok(p) => (p.as_ref().to_string(), true),
-                    Err(_) => (String::new(), false),
+                let (p, outcome) = match item {
+                    Ok(p) => (p.as_ref().to_string(), Outcome::Ok),
+                    Err(e) => (String::new(), Outcome::of_error(e)),
                 };
-                record(4, classify(&p), start, &p, ok);
+                stats().observe((4, classify(&p)), start, &p, outcome);
             }
             std::task::Poll::Ready(None) if self.open => {
                 self.open = false;
@@ -304,6 +305,8 @@ struct TimedMpu {
     inner: Box<dyn MultipartUpload>,
     guard: Option<OpGuard>,
     class: u8,
+    /// The parts' payload so far; it counts as put when the upload completes.
+    bytes: u64,
 }
 
 impl std::fmt::Debug for TimedMpu {
@@ -320,6 +323,7 @@ impl MultipartUpload for TimedMpu {
         // the gate exists to flatten. Weight is acquired inside the
         // returned future so pipelined parts queue, not the caller.
         let bytes = data.content_length() as u64;
+        self.bytes = self.bytes.saturating_add(bytes);
         let class = self.class;
         let inner = self.inner.put_part(data);
         if class != 2 {
@@ -334,14 +338,14 @@ impl MultipartUpload for TimedMpu {
     async fn complete(&mut self) -> Result<PutResult> {
         let r = self.inner.complete().await;
         if let Some(g) = self.guard.take() {
-            g.finish(r.is_ok());
+            g.finish_put(Outcome::of(&r), self.bytes);
         }
         r
     }
     async fn abort(&mut self) -> Result<()> {
         let r = self.inner.abort().await;
         if let Some(g) = self.guard.take() {
-            g.finish(false);
+            g.finish(Outcome::Failed);
         }
         r
     }

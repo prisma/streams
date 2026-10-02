@@ -3,7 +3,7 @@ use super::StoreResources;
 use async_trait::async_trait;
 use object_store::{Result, path::Path};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +35,7 @@ struct SlowOp {
 pub(crate) struct StoreStats {
     ring: Mutex<VecDeque<Ev>>,
     slow: Mutex<VecDeque<SlowOp>>,
+    totals: Totals,
     /// Outbound object-store ops in flight right now, instance-wide.
     pub inflight: AtomicI64,
     /// High-water mark; swapped down only by the /v1/debug/store sampler so
@@ -47,9 +48,140 @@ pub(crate) fn stats() -> &'static StoreStats {
     S.get_or_init(|| StoreStats {
         ring: Mutex::new(VecDeque::with_capacity(RING_CAP)),
         slow: Mutex::new(VecDeque::with_capacity(SLOW_CAP)),
+        totals: Totals::new(now_ms()),
         inflight: AtomicI64::new(0),
         inflight_peak: AtomicI64::new(0),
     })
+}
+
+/// How one outbound operation ended, in the outcomes the provider bills
+/// differently: Tigris bills a request only when it succeeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Outcome {
+    /// A 2xx answer.
+    Ok,
+    /// A 304 to a conditional GET or HEAD: not billed, and a successful
+    /// revalidation (the registry's TTL refresh) in the latency ring.
+    NotModified,
+    /// A 404 (`NotFound`) or 412 (`Precondition`, and the `AlreadyExists` a
+    /// conditional create or copy answers, which a 409 also maps to): the
+    /// provider refused the request, and does not bill it.
+    Refused,
+    /// Every other failure: a status left after the client's retries, a
+    /// transport error, or a call cancelled before it answered.
+    Failed,
+}
+
+impl Outcome {
+    pub(super) fn of<T>(result: &Result<T>) -> Self {
+        match result {
+            Ok(_) => Self::Ok,
+            Err(error) => Self::of_error(error),
+        }
+    }
+
+    pub(super) fn of_error(error: &object_store::Error) -> Self {
+        match error {
+            object_store::Error::NotModified { .. } => Self::NotModified,
+            object_store::Error::NotFound { .. }
+            | object_store::Error::Precondition { .. }
+            | object_store::Error::AlreadyExists { .. } => Self::Refused,
+            _ => Self::Failed,
+        }
+    }
+
+    /// The latency ring's `ok`, as it has always been: a success or a 304.
+    fn ring_ok(self) -> bool {
+        matches!(self, Self::Ok | Self::NotModified)
+    }
+}
+
+/// One (op, class) cell's cumulative count per billed outcome.
+#[derive(Default)]
+struct OutcomeCounts {
+    ok: AtomicU64,
+    unbilled: AtomicU64,
+    err: AtomicU64,
+}
+
+impl OutcomeCounts {
+    /// `None` for a cell no operation has reached.
+    fn to_json(&self) -> Option<serde_json::Value> {
+        let [ok, unbilled, err] =
+            [&self.ok, &self.unbilled, &self.err].map(|n| n.load(Ordering::Relaxed));
+        ([ok, unbilled, err] != [0; 3]).then(|| {
+            serde_json::Value::Object(serde_json::Map::from_iter([
+                ("ok".into(), ok.into()),
+                ("unbilled".into(), unbilled.into()),
+                ("err".into(), err.into()),
+            ]))
+        })
+    }
+}
+
+/// Every outbound operation since the counters started, counted once when
+/// it finishes, beside the bytes put. The latency ring keeps a trailing
+/// window of at most `RING_CAP` events; these never drop one, so two
+/// samples subtract exactly.
+struct Totals {
+    /// When the counters started: the process's first store operation or
+    /// diagnostic read, whichever came first, so no operation precedes it.
+    since_ms: u64,
+    cells: [[OutcomeCounts; CLASSES.len()]; OPS.len()],
+    bytes_put: AtomicU64,
+}
+
+impl Totals {
+    fn new(since_ms: u64) -> Self {
+        Self {
+            since_ms,
+            cells: Default::default(),
+            bytes_put: AtomicU64::new(0),
+        }
+    }
+
+    fn count(&self, op: u8, class: u8, outcome: Outcome) {
+        let Some(cell) = self
+            .cells
+            .get(usize::from(op))
+            .and_then(|classes| classes.get(usize::from(class)))
+        else {
+            return;
+        };
+        let counter = match outcome {
+            Outcome::Ok => &cell.ok,
+            Outcome::NotModified | Outcome::Refused => &cell.unbilled,
+            Outcome::Failed => &cell.err,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A finished PUT or multipart upload's payload, counted when it landed.
+    fn put_bytes(&self, outcome: Outcome, bytes: u64) {
+        if outcome == Outcome::Ok {
+            self.bytes_put.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// `bytes_got` is the caller's: the GET bodies' bytes are counted as
+    /// they stream, after the operation finished.
+    fn to_json(&self, bytes_got: u64) -> serde_json::Value {
+        let ops = OPS.iter().zip(&self.cells).flat_map(|(op, classes)| {
+            CLASSES
+                .iter()
+                .zip(classes)
+                .filter_map(move |(class, cell)| Some((format!("{op}:{class}"), cell.to_json()?)))
+        });
+        serde_json::Value::Object(serde_json::Map::from_iter([
+            ("since_ms".into(), self.since_ms.into()),
+            (
+                "bytes_put".into(),
+                self.bytes_put.load(Ordering::Relaxed).into(),
+            ),
+            ("bytes_got".into(), bytes_got.into()),
+            ("ops".into(), serde_json::Value::Object(ops.collect())),
+        ]))
+    }
 }
 
 pub(super) fn now_ms() -> u64 {
@@ -75,19 +207,40 @@ pub(crate) fn classify(path: &str) -> u8 {
     }
 }
 
-pub(super) fn record(op: u8, class: u8, start: Instant, path: &str, ok: bool) {
-    let dur_us = u32::try_from(start.elapsed().as_micros()).unwrap_or(u32::MAX);
-    let ts_ms = now_ms();
-    stats().record(
-        Ev {
-            ts_ms,
+impl StoreStats {
+    /// One finished outbound operation of an (op, class) cell: its
+    /// cumulative count, then its latency-ring event. Counting first keeps
+    /// a snapshot's totals at or above the window it read before them.
+    pub(super) fn observe(&self, cell: (u8, u8), start: Instant, path: &str, outcome: Outcome) {
+        let (op, class) = cell;
+        self.totals.count(op, class, outcome);
+        let dur_us = u32::try_from(start.elapsed().as_micros()).unwrap_or(u32::MAX);
+        let event = Ev {
+            ts_ms: now_ms(),
             op,
             class,
             dur_us,
-            ok,
-        },
-        path,
-    );
+            ok: outcome.ring_ok(),
+        };
+        self.record(event, path);
+    }
+
+    /// The outbound gauge now and its peak. The sampler that asks swaps the
+    /// peak down to the gauge, so its next window starts there.
+    fn gauge(&self, swap_peak: bool) -> (i64, i64) {
+        let now = self.inflight.load(Ordering::Relaxed);
+        let peak = if swap_peak {
+            self.inflight_peak.swap(now, Ordering::Relaxed)
+        } else {
+            self.inflight_peak.load(Ordering::Relaxed)
+        };
+        (now, peak)
+    }
+
+    fn totals_json(&self) -> serde_json::Value {
+        self.totals
+            .to_json(super::GET_BYTES.load(Ordering::Relaxed))
+    }
 }
 
 impl StoreStats {
@@ -183,10 +336,17 @@ impl OpGuard {
             done: false,
         }
     }
-    pub(super) fn finish(mut self, ok: bool) {
+    pub(super) fn finish(mut self, outcome: Outcome) {
         self.done = true;
-        stats().inflight.fetch_sub(1, Ordering::Relaxed);
-        record(self.op, self.class, self.start, &self.path, ok);
+        let s = stats();
+        s.inflight.fetch_sub(1, Ordering::Relaxed);
+        s.observe((self.op, self.class), self.start, &self.path, outcome);
+    }
+
+    /// A PUT or multipart upload of `bytes`: they count as put on success.
+    pub(super) fn finish_put(self, outcome: Outcome, bytes: u64) {
+        stats().totals.put_bytes(outcome, bytes);
+        self.finish(outcome);
     }
 }
 
@@ -195,8 +355,14 @@ impl Drop for OpGuard {
         if !self.done {
             // Dropped mid-flight (cancelled future / abandoned stream):
             // still a completed outbound episode for our purposes.
-            stats().inflight.fetch_sub(1, Ordering::Relaxed);
-            record(self.op, self.class, self.start, &self.path, false);
+            let s = stats();
+            s.inflight.fetch_sub(1, Ordering::Relaxed);
+            s.observe(
+                (self.op, self.class),
+                self.start,
+                &self.path,
+                Outcome::Failed,
+            );
         }
     }
 }
@@ -246,9 +412,10 @@ impl CellSamples {
 }
 
 /// Snapshot for /v1/debug/store: per (op,class) percentiles over
-/// `window_secs`, the slow-op ring, the outbound gauge, and the caller's
-/// `shard_opens`. Those counters belong to the runtime's directory, which
-/// this process-wide module cannot own.
+/// `window_secs`, the slow-op ring, the outbound gauge, the cumulative
+/// operation totals, and the caller's `shard_opens`. The shard-open counters
+/// belong to the runtime's directory, which this process-wide module cannot
+/// own.
 #[expect(
     clippy::unwrap_used,
     reason = "process slow-operation ring read beside the caller's shard-open counters; poison may follow an interrupted sample update; recovery would present partial diagnostic state as valid"
@@ -292,12 +459,7 @@ pub(crate) fn snapshot(
             })
             .collect()
     };
-    let inflight_now = s.inflight.load(Ordering::Relaxed);
-    let peak = if swap_peak {
-        s.inflight_peak.swap(inflight_now, Ordering::Relaxed)
-    } else {
-        s.inflight_peak.load(Ordering::Relaxed)
-    };
+    let (inflight_now, peak) = s.gauge(swap_peak);
     let timers = super::sentinels::snapshot(cutoff);
     let st = wal_read_storm(window_secs);
     let storm = serde_json::json!({
@@ -323,6 +485,8 @@ pub(crate) fn snapshot(
         "shard_opens": shard_opens,
         "ops": ops,
         "slow": slow,
+        // Every operation since the counters started, by billed outcome.
+        "totals": s.totals_json(),
     })
 }
 

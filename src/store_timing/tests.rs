@@ -189,3 +189,118 @@ async fn bulk_gate_waiter_proceeds_when_holder_releases() {
         .expect("waiter must run once capacity frees")
         .unwrap();
 }
+
+// ---- Cumulative totals -------------------------------------------------
+
+/// How much one cumulative `totals` count (`/`-separated beneath it) grew
+/// between two /v1/debug/store snapshots.
+fn total_growth(before: &serde_json::Value, after: &serde_json::Value, key: &str) -> u64 {
+    let read = |snapshot: &serde_json::Value| {
+        key.split('/')
+            .fold(&snapshot["totals"], |node, part| &node[part])
+            .as_u64()
+            .unwrap_or(0)
+    };
+    read(after)
+        .checked_sub(read(before))
+        .expect("cumulative totals never decrease")
+}
+
+/// One MiB: the fixture's payloads are large enough that what other tests
+/// of this process put or get through a wrapped store cannot make up for
+/// a payload the totals failed to count.
+const MIB: usize = 1 << 20;
+
+/// Drive one wrapped store through every outcome of every op: a 1 MiB
+/// object put, refused twice (412), read, revalidated (304), missed (404),
+/// read beyond its end (an error), headed, copied, listed (once abandoned)
+/// and deleted, beside a completed 2 MiB multipart upload.
+async fn drive_every_outcome(store: &impl object_store::ObjectStore) {
+    use futures_util::StreamExt;
+    use object_store::{Error, GetOptions, ObjectStoreExt, PutMode, PutPayload, path::Path};
+    let path = Path::from("totals-fixture/object");
+    let put = store.put(&path, vec![7u8; MIB].into()).await.unwrap();
+    let small = || PutPayload::from_static(b"x");
+    let exists = store.put_opts(&path, small(), PutMode::Create.into()).await;
+    assert!(matches!(exists, Err(Error::AlreadyExists { .. })));
+    let stale = object_store::UpdateVersion {
+        e_tag: Some("\"stale\"".into()),
+        version: None,
+    };
+    let refused = store
+        .put_opts(&path, small(), PutMode::Update(stale).into())
+        .await;
+    assert!(matches!(refused, Err(Error::Precondition { .. })));
+    let mut upload = store
+        .put_multipart(&Path::from("totals-fixture/parts"))
+        .await
+        .unwrap();
+    upload.put_part(vec![9u8; 2 * MIB].into()).await.unwrap();
+    upload.complete().await.unwrap();
+    let body = store.get(&path).await.unwrap().bytes().await.unwrap();
+    assert_eq!(body.len(), MIB);
+    let revalidate = GetOptions {
+        if_none_match: put.e_tag,
+        ..GetOptions::default()
+    };
+    let unchanged = store.get_opts(&path, revalidate).await;
+    assert!(matches!(unchanged, Err(Error::NotModified { .. })));
+    let missing = store.get(&Path::from("totals-fixture/missing")).await;
+    assert!(matches!(missing, Err(Error::NotFound { .. })));
+    let end = u64::try_from(4 * MIB).unwrap();
+    let beyond = store.get_range(&path, end..end + 1).await;
+    assert!(matches!(beyond, Err(Error::Generic { .. })));
+    store.head(&path).await.unwrap();
+    store
+        .copy(&path, &Path::from("totals-fixture/copy"))
+        .await
+        .unwrap();
+    let prefix = Path::from("totals-fixture");
+    let mut abandoned = store.list(Some(&prefix));
+    assert!(abandoned.next().await.is_some());
+    drop(abandoned);
+    assert_eq!(store.list(Some(&prefix)).collect::<Vec<_>>().await.len(), 3);
+    store.delete(&path).await.unwrap();
+}
+
+/// GET /v1/debug/store's `totals` count every operation the store wrappers
+/// finish, by the outcome the provider bills: 2xx; the unbilled 304, 404
+/// and 412 answers; and every other failure, cancellations included. They
+/// also carry the bytes put and got. Other tests in this process may run
+/// wrapped operations of their own, so these growths are lower bounds; the
+/// observation tests pin the exact counts on a private `StoreStats`.
+#[tokio::test]
+async fn debug_store_totals_count_every_wrapped_operation_by_billed_outcome() {
+    let config = crate::config::StorageConfig::default();
+    let resources = std::sync::Arc::new(StoreResources::new(&config));
+    let store = super::TimingStore::new(object_store::memory::InMemory::new(), resources.clone());
+    let sample = || super::snapshot(60, false, &resources, &serde_json::Value::Null);
+    let before = sample();
+    drive_every_outcome(&store).await;
+    let after = sample();
+    let since = after["totals"]["since_ms"].as_u64();
+    assert!(
+        since.is_some_and(|ms| ms > 0 && Some(ms) <= after["ts_ms"].as_u64()),
+        "GET /v1/debug/store carries no cumulative totals: {after}"
+    );
+    assert_eq!(after["totals"]["since_ms"], before["totals"]["since_ms"]);
+    let mib = u64::try_from(MIB).unwrap();
+    for (key, least) in [
+        ("ops/put:other/ok", 1),
+        ("ops/put:other/unbilled", 2),
+        ("ops/mpu:other/ok", 1),
+        ("ops/get:other/ok", 1),
+        ("ops/get:other/unbilled", 2),
+        ("ops/get:other/err", 1),
+        ("ops/head:other/ok", 1),
+        ("ops/copy:other/ok", 1),
+        ("ops/list:other/ok", 1),
+        ("ops/list:other/err", 1),
+        ("ops/delete:other/ok", 1),
+        ("bytes_put", 3 * mib),
+        ("bytes_got", mib),
+    ] {
+        let grew = total_growth(&before, &after, key);
+        assert!(grew >= least, "{key} grew {grew}, under {least}: {after}");
+    }
+}
