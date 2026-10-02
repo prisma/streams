@@ -179,9 +179,10 @@ async fn product_consumer_per_key_fifo() {
     );
     let a0_token = msgs[0]["leaseToken"].as_str().unwrap().to_string();
 
-    // Ack a/0: a/1 becomes deliverable.
+    // Ack a/0: a/1 becomes deliverable. The settle's answer is never
+    // stored (WIRE-MATRIX §2.16).
     let body = format!("{{\"acks\":[{{\"leaseToken\":\"{a0_token}\"}}]}}");
-    let (st, _, b) = preq(
+    let (st, h, b) = preq(
         addr,
         "POST",
         "/v1/streams/cf/consumers/w:settle",
@@ -189,7 +190,10 @@ async fn product_consumer_per_key_fifo() {
         body.as_bytes(),
     )
     .await;
-    assert_eq!(st, 200);
+    assert_eq!(
+        (st, h.get("cache-control").map(String::as_str)),
+        (200, Some("no-store"))
+    );
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["acked"], 1);
     let (st, _, b) = preq(

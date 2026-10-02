@@ -5458,7 +5458,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b1792f127547f9003ae5c9fa423d781cfe54617ac02958ea28f4cde8a86fbe75",
+    "function_sha256": "9c7b3752b292fa43efbaadcfc3c86f017e164283c162c60cb5078f0ef850dfd9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_product.rs",
@@ -5471,7 +5471,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "f65ac38983262c51114617aa9dbfa8bc05e44af695e692a56179ac72fdae4243",
+    "function_sha256": "43b0b272629f2a817d71785a8c60ff4893c53f29694608cfe236488cf6ee0377",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/product_lifecycle.rs",

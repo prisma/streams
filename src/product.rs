@@ -3473,7 +3473,7 @@ async fn settle_authorized(
     match crate::application::consumer::settle(context, doc).await {
         Ok(out) => {
             crate::billing::meter_queue_op(state, &desc);
-            json_ok(&out.to_json())
+            json_ok_no_store(&out.to_json())
         }
         Err(e) => consumer_failure_response(e),
     }
@@ -3498,7 +3498,7 @@ async fn product_watches_list(
         .definitions(&tenant.stream_ref(&name))
         .await
     {
-        Ok(definitions) => json_ok(
+        Ok(definitions) => json_ok_no_store(
             &json!({ "watches": definitions.iter().map(watch_def_json).collect::<Vec<_>>() }),
         ),
         Err(error) => watch_failure_response(error),
@@ -3520,7 +3520,7 @@ async fn product_watch_get(
             .iter()
             .find(|definition| definition.name == watch)
         {
-            Some(definition) => json_ok(&watch_def_json(definition)),
+            Some(definition) => json_ok_no_store(&watch_def_json(definition)),
             None => watch_failure_response(crate::application::watch::WatchFailure::UnknownWatch),
         },
         Err(error) => watch_failure_response(error),
@@ -3602,11 +3602,7 @@ async fn product_watch_wait(
         }) => json!({"invalidated": false, "cursor": cursor, "streamCursor": stream_cursor}),
         Err(error) => return watch_failure_response(error),
     };
-    let mut response = json_ok(&body);
-    response
-        .headers_mut()
-        .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    response
+    watch_observation_response(&body)
 }
 
 /// GET /v1/streams — the paginated product catalog (spec Stage 8 §10).
@@ -3756,6 +3752,8 @@ pub(crate) async fn product_list(
         .unwrap()
 }
 
+mod answers;
+use answers::{json_ok_no_store, watch_observation_response};
 mod append_body;
 use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_body};
 mod consumer_pull;

@@ -223,6 +223,8 @@ OWNERS = (
     owner('product_scan', 'src/product/scan.rs',
           'dst_tests::reads_product:: dst_tests::quota_read_volume:: '
           'dst_tests::product_descriptor_reads:: dst_tests::security_modes::'),
+    owner('product_answers', 'src/product/answers.rs',
+          'dst_tests::product_lifecycle:: dst_tests::consumer_product::'),
     owner('billing', 'src/billing.rs', 'billing'),
     owner('billing_replaced', 'src/billing/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '

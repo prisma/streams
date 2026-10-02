@@ -4,7 +4,8 @@ use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 
-/// Typed creation, idempotence, config conflict, metadata shape.
+/// Typed creation, idempotence, config conflict, metadata shape, and the
+/// collection's watch answers, which no cache may store.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_create_metadata_roundtrip() {
     let store = mem();
@@ -69,6 +70,17 @@ async fn product_create_metadata_roundtrip() {
     for leak in ["fingerprint", "segment", "route_hash", "layout_version"] {
         assert!(!text.contains(leak), "metadata leaks {leak}: {text}");
     }
+    // The watch definitions (WIRE-MATRIX §2.17) and an observation that
+    // times out (§2.18).
+    let watches = "/v1/streams/customers/acme/orders/watches";
+    let definition = r#"{"name":"by-customer","fields":["/customerId"]}"#;
+    let list = format!(r#"{{"watches":[{definition}]}}"#);
+    assert_watch_answer(addr, watches, &list, None).await;
+    let one = format!("{watches}/by-customer");
+    assert_watch_answer(addr, &one, definition, None).await;
+    let wait = format!("{watches}/by-customer/keys/0000000000000000?timeoutMs=1");
+    let timed_out = r#"{"invalidated":false}"#;
+    assert_watch_answer(addr, &wait, timed_out, Some("no-referrer")).await;
     // Unknown config fields rejected (v1 typo guard).
     let (st, _, _) = preq(
         addr,
@@ -80,6 +92,38 @@ async fn product_create_metadata_roundtrip() {
     .await;
     assert_eq!(st, 400);
     engine_shutdown(&state).await;
+}
+
+/// A watch answer is 200 JSON that no cache may store, with `referrer` as
+/// its `Referrer-Policy` (an observation's URL may carry a capability), and
+/// `want` as its body exactly, but for an observation's two opaque cursors.
+async fn assert_watch_answer(
+    addr: std::net::SocketAddr,
+    path: &str,
+    want: &str,
+    referrer: Option<&str>,
+) {
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, h, b) = preq(addr, "GET", path, &key, b"").await;
+    let header = |name: &str| h.get(name).map(String::as_str);
+    assert_eq!(
+        (
+            st,
+            header("content-type"),
+            header("cache-control"),
+            header("referrer-policy")
+        ),
+        (200, Some("application/json"), Some("no-store"), referrer),
+        "{path}: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let mut v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    if let Some(observation) = v.as_object_mut() {
+        observation.remove("cursor");
+        observation.remove("streamCursor");
+    }
+    let want: serde_json::Value = serde_json::from_str(want).unwrap();
+    assert_eq!(v, want, "{path}");
 }
 
 /// The clean switch rejects experimental product inputs; __ds is
