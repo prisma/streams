@@ -264,8 +264,9 @@ async fn drive_every_outcome(store: &impl object_store::ObjectStore) {
 }
 
 /// GET /v1/debug/store's `totals` count every operation the store wrappers
-/// finish, by the outcome the provider bills: 2xx; the unbilled 304, 404
-/// and 412 answers; and every other failure, cancellations included. They
+/// finish, by the outcome the provider bills: 2xx; the 404 answers, which
+/// Tigris bills at the operation's class; the unbilled 304 and 412 answers;
+/// and every other failure, cancellations included. They
 /// also carry the bytes put and got. Other tests in this process may run
 /// wrapped operations of their own, so these growths are lower bounds; the
 /// observation tests pin the exact counts on a private `StoreStats`.
@@ -290,7 +291,8 @@ async fn debug_store_totals_count_every_wrapped_operation_by_billed_outcome() {
         ("ops/put:other/unbilled", 2),
         ("ops/mpu:other/ok", 1),
         ("ops/get:other/ok", 1),
-        ("ops/get:other/unbilled", 2),
+        ("ops/get:other/not_found", 1),
+        ("ops/get:other/unbilled", 1),
         ("ops/get:other/err", 1),
         ("ops/head:other/ok", 1),
         ("ops/copy:other/ok", 1),

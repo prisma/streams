@@ -229,7 +229,7 @@ fn outcomes_follow_the_provider_bill_and_keep_the_ring_ok() {
                 path: path(),
                 source: source(),
             }),
-            Outcome::Refused,
+            Outcome::NotFound,
             false,
         ),
         (
@@ -283,7 +283,7 @@ fn totals_count_every_operation_once_by_billed_outcome() {
         ((0, 1), "manifest/3", Outcome::Refused),
         ((2, 2), "compacted/4.sst", Outcome::Ok),
         ((2, 4), "registry/doc", Outcome::NotModified),
-        ((2, 4), "registry/doc", Outcome::Refused),
+        ((2, 4), "registry/doc", Outcome::NotFound),
         ((3, 4), "registry/doc", Outcome::Failed),
         ((4, 0), "wal/1", Outcome::Ok),
         ((5, 4), "", Outcome::Failed),
@@ -294,6 +294,7 @@ fn totals_count_every_operation_once_by_billed_outcome() {
     stats.totals.put_bytes(Outcome::Ok, 4_096);
     stats.totals.put_bytes(Outcome::Ok, 7);
     stats.totals.put_bytes(Outcome::Refused, 1 << 20);
+    stats.totals.put_bytes(Outcome::NotFound, 1 << 20);
     stats.totals.put_bytes(Outcome::Failed, 1 << 30);
     assert_eq!(
         stats.totals.to_json(123),
@@ -302,14 +303,14 @@ fn totals_count_every_operation_once_by_billed_outcome() {
             "bytes_put": 4_103,
             "bytes_got": 123,
             "ops": {
-                "put:wal": {"ok": 2, "unbilled": 0, "err": 0},
-                "put:manifest": {"ok": 0, "unbilled": 1, "err": 0},
-                "get:sst": {"ok": 1, "unbilled": 0, "err": 0},
-                "get:other": {"ok": 0, "unbilled": 2, "err": 0},
-                "head:other": {"ok": 0, "unbilled": 0, "err": 1},
-                "delete:wal": {"ok": 1, "unbilled": 0, "err": 0},
-                "list:other": {"ok": 0, "unbilled": 0, "err": 1},
-                "copy:fleet": {"ok": 1, "unbilled": 0, "err": 0},
+                "put:wal": {"ok": 2, "not_found": 0, "unbilled": 0, "err": 0},
+                "put:manifest": {"ok": 0, "not_found": 0, "unbilled": 1, "err": 0},
+                "get:sst": {"ok": 1, "not_found": 0, "unbilled": 0, "err": 0},
+                "get:other": {"ok": 0, "not_found": 1, "unbilled": 1, "err": 0},
+                "head:other": {"ok": 0, "not_found": 0, "unbilled": 0, "err": 1},
+                "delete:wal": {"ok": 1, "not_found": 0, "unbilled": 0, "err": 0},
+                "list:other": {"ok": 0, "not_found": 0, "unbilled": 0, "err": 1},
+                "copy:fleet": {"ok": 1, "not_found": 0, "unbilled": 0, "err": 0},
             },
         })
     );

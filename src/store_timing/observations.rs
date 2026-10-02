@@ -63,9 +63,13 @@ pub(super) enum Outcome {
     /// A 304 to a conditional GET or HEAD: not billed, and a successful
     /// revalidation (the registry's TTL refresh) in the latency ring.
     NotModified,
-    /// A 404 (`NotFound`) or 412 (`Precondition`, and the `AlreadyExists` a
-    /// conditional create or copy answers, which a 409 also maps to): the
-    /// provider refused the request, and does not bill it.
+    /// A 404 (`NotFound`): the object is missing, and Tigris bills the
+    /// request at its class all the same (its pricing page lists 404 among
+    /// none of the free answers), like the probes that find no next version.
+    NotFound,
+    /// A 412 (`Precondition`, and the `AlreadyExists` a conditional create
+    /// or copy answers, which a 409 also maps to): the provider refused the
+    /// request, and does not bill it.
     Refused,
     /// Every other failure: a status left after the client's retries, a
     /// transport error, or a call cancelled before it answered.
@@ -83,8 +87,8 @@ impl Outcome {
     pub(super) fn of_error(error: &object_store::Error) -> Self {
         match error {
             object_store::Error::NotModified { .. } => Self::NotModified,
-            object_store::Error::NotFound { .. }
-            | object_store::Error::Precondition { .. }
+            object_store::Error::NotFound { .. } => Self::NotFound,
+            object_store::Error::Precondition { .. }
             | object_store::Error::AlreadyExists { .. } => Self::Refused,
             _ => Self::Failed,
         }
@@ -100,6 +104,7 @@ impl Outcome {
 #[derive(Default)]
 struct OutcomeCounts {
     ok: AtomicU64,
+    not_found: AtomicU64,
     unbilled: AtomicU64,
     err: AtomicU64,
 }
@@ -107,11 +112,12 @@ struct OutcomeCounts {
 impl OutcomeCounts {
     /// `None` for a cell no operation has reached.
     fn to_json(&self) -> Option<serde_json::Value> {
-        let [ok, unbilled, err] =
-            [&self.ok, &self.unbilled, &self.err].map(|n| n.load(Ordering::Relaxed));
-        ([ok, unbilled, err] != [0; 3]).then(|| {
+        let [ok, not_found, unbilled, err] = [&self.ok, &self.not_found, &self.unbilled, &self.err]
+            .map(|n| n.load(Ordering::Relaxed));
+        ([ok, not_found, unbilled, err] != [0; 4]).then(|| {
             serde_json::Value::Object(serde_json::Map::from_iter([
                 ("ok".into(), ok.into()),
+                ("not_found".into(), not_found.into()),
                 ("unbilled".into(), unbilled.into()),
                 ("err".into(), err.into()),
             ]))
@@ -150,6 +156,7 @@ impl Totals {
         };
         let counter = match outcome {
             Outcome::Ok => &cell.ok,
+            Outcome::NotFound => &cell.not_found,
             Outcome::NotModified | Outcome::Refused => &cell.unbilled,
             Outcome::Failed => &cell.err,
         };
