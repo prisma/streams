@@ -154,6 +154,175 @@ async fn storage_operations_feed_both_snapshots_and_current_object_census() {
 }
 
 #[tokio::test]
+async fn live_bytes_census_sums_current_object_lengths_per_tier_and_kind() {
+    let state = state(Duration::ZERO);
+    let monthly = "/b/p/telemetry/usage-monthly/acct/proj/0a/2026-10.json";
+    let part = "/b/p/shards/00/history2/compacted/2.sst";
+    let steps = [
+        (Method::PUT, "/b/p/shards/00/wal/1", "first", StatusCode::OK),
+        (
+            Method::PUT,
+            "/b/p/shards/00/wal/2",
+            "doomed-bytes",
+            StatusCode::OK,
+        ),
+        (
+            Method::PUT,
+            "/b/p/shards/00/history2/compacted/1.sst",
+            "second",
+            StatusCode::OK,
+        ),
+        (
+            Method::PUT,
+            "/b/p/telemetry/usage-rollup/v2/p0/wal/1.sst",
+            "abc",
+            StatusCode::OK,
+        ),
+        (Method::PUT, monthly, "{}", StatusCode::OK),
+        // An overwrite replaces the object's bytes; it adds none.
+        (Method::PUT, monthly, "{\"n\":12}", StatusCode::OK),
+        (
+            Method::DELETE,
+            "/b/p/shards/00/wal/2",
+            "",
+            StatusCode::NO_CONTENT,
+        ),
+        (Method::POST, &format!("{part}?uploads"), "", StatusCode::OK),
+        (
+            Method::PUT,
+            &format!("{part}?partNumber=1&uploadId=u1"),
+            "part-one-",
+            StatusCode::OK,
+        ),
+        (
+            Method::PUT,
+            &format!("{part}?partNumber=2&uploadId=u1"),
+            "two",
+            StatusCode::OK,
+        ),
+        (
+            Method::POST,
+            &format!("{part}?uploadId=u1"),
+            "",
+            StatusCode::OK,
+        ),
+        (
+            Method::GET,
+            "/b?list-type=2&prefix=p%2Ftelemetry%2Fusage-rollup%2Fv2%2Fp0%2Fwal%2F",
+            "",
+            StatusCode::OK,
+        ),
+    ];
+    for (method, uri, body, status) in steps {
+        assert_eq!(
+            request(&state, method, uri, body).await.status(),
+            status,
+            "{uri}"
+        );
+    }
+    let stats2 = json_body(request(&state, Method::GET, "/_s3lite/stats2", "").await).await;
+    assert_eq!(
+        stats2["live_objects"],
+        json!({"hist/sst": 2, "shard/wal": 1, "telemetry/meta": 1, "telemetry/wal": 1})
+    );
+    assert_eq!(stats2["cells"]["telemetry/meta/list"], json!({"2xx": 1}));
+    assert_eq!(
+        stats2["live_bytes"],
+        json!({
+            "cells": {
+                "hist/sst": {"objects": 2, "bytes": 18},
+                "shard/wal": {"objects": 1, "bytes": 5},
+                "telemetry/meta": {"objects": 1, "bytes": 8},
+                "telemetry/wal": {"objects": 1, "bytes": 3}
+            },
+            "total": {"objects": 5, "bytes": 34}
+        })
+    );
+}
+
+#[tokio::test]
+async fn live_bytes_counts_a_discarded_body_at_its_original_length() {
+    let state = AppState::new(Duration::ZERO, Some("compacted".into()));
+    let key = "/b/p/shards/00/history2/compacted/9.sst";
+    let put = request(&state, Method::PUT, key, "discarded-body").await;
+    assert_eq!(put.status(), StatusCode::OK);
+    assert_eq!(
+        state.live_bytes(),
+        json!({
+            "cells": {"hist/sst": {"objects": 1, "bytes": 14}},
+            "total": {"objects": 1, "bytes": 14}
+        })
+    );
+}
+
+#[tokio::test]
+async fn open_multipart_parts_are_stored_and_sent_bytes_until_completed_or_aborted() {
+    let state = state(Duration::ZERO);
+    let done = "/b/p/shards/00/history2/compacted/3.sst";
+    let dropped = "/b/p/shards/00/compacted/4.sst";
+    let steps = [
+        (Method::POST, format!("{done}?uploads")),
+        (Method::PUT, format!("{done}?partNumber=1&uploadId=u1")),
+        (Method::PUT, format!("{done}?partNumber=2&uploadId=u1")),
+        (Method::POST, format!("{dropped}?uploads")),
+        (Method::PUT, format!("{dropped}?partNumber=1&uploadId=u2")),
+    ];
+    for ((method, uri), body) in steps.into_iter().zip(["", "part-one-", "two", "", "abcd"]) {
+        assert_eq!(
+            request(&state, method, &uri, body).await.status(),
+            StatusCode::OK
+        );
+    }
+    let put_bytes = |state: &Arc<AppState>| state.stats.snapshot(0)["put_bytes"].clone();
+    assert_eq!(
+        state.live_bytes(),
+        json!({
+            "cells": {
+                "hist/in_progress_multipart": {"objects": 1, "bytes": 12},
+                "shard/in_progress_multipart": {"objects": 1, "bytes": 4}
+            },
+            "total": {"objects": 2, "bytes": 16}
+        })
+    );
+    assert_eq!(put_bytes(&state), json!(16));
+    let complete = format!("{done}?uploadId=u1");
+    let abort = format!("{dropped}?uploadId=u2");
+    let complete = request(&state, Method::POST, &complete, "").await;
+    assert_eq!(complete.status(), StatusCode::OK);
+    let abort = request(&state, Method::DELETE, &abort, "").await;
+    assert_eq!(abort.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        state.live_bytes(),
+        json!({
+            "cells": {"hist/sst": {"objects": 1, "bytes": 12}},
+            "total": {"objects": 1, "bytes": 12}
+        })
+    );
+    // Completion assembles parts already sent; the aborted part was sent too.
+    assert_eq!(put_bytes(&state), json!(16));
+}
+
+#[test]
+fn poisoned_upload_map_reports_no_partial_live_bytes() {
+    let state = state(Duration::ZERO);
+    let _poison = std::panic::catch_unwind(|| {
+        let _held = state.uploads.lock().unwrap();
+        panic!("interrupt upload update");
+    });
+    assert_eq!(state.live_bytes(), json!({"poisoned": true}));
+}
+
+#[test]
+fn poisoned_object_map_reports_no_partial_live_bytes() {
+    let state = state(Duration::ZERO);
+    let _poison = std::panic::catch_unwind(|| {
+        let _held = state.objects.lock().unwrap();
+        panic!("interrupt object update");
+    });
+    assert_eq!(state.live_bytes(), json!({"poisoned": true}));
+}
+
+#[tokio::test]
 async fn observation_endpoints_neither_wait_for_latency_nor_charge_requests() {
     let state = state(Duration::from_secs(3600));
     for path in ["/_s3lite/stats", "/_s3lite/stats2"] {

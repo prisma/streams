@@ -173,7 +173,8 @@ fn status_index(status: StatusCode) -> usize {
 /// Which tier of the system a key belongs to, from the fully-prefixed
 /// object key (bucket/PATH_PREFIX/...). Substrings mirror
 /// `store_timing::classify`, split further by tier: the shard log lives
-/// under `shards/`, per-stream history under `streams/`.
+/// under `shards/`, per-stream history under `streams/`, and the usage
+/// rollup, read spool and monthly usage artifacts under `telemetry/`.
 fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'static str {
     if key.is_empty() && *method == Method::GET {
         // bucket-level list: classify by the prefix= it scans
@@ -183,6 +184,7 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
             Some(p) if p.contains("streams/") => "hist",
             Some(p) if p.contains("fleet") || p.contains("routers") => "fleet",
             Some(p) if p.contains("registry") => "registry",
+            Some(p) if p.contains("telemetry/") => "telemetry",
             _ => "other",
         };
     }
@@ -199,6 +201,8 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
         "fleet"
     } else if key.contains("registry/") || key.ends_with("topology.json") {
         "registry"
+    } else if key.contains("telemetry/") {
+        "telemetry"
     } else {
         "other"
     }) as _
@@ -377,8 +381,7 @@ async fn handle(State(state): State<Arc<AppState>>, request: Request) -> Respons
         return axum::Json(state.stats.snapshot(objects)).into_response();
     }
     if path == "/_s3lite/stats2" {
-        let mut body = state.stats.detailed_snapshot();
-        body["live_objects"] = state.live_objects();
+        let body = state.stats2();
         return axum::Json(body).into_response();
     }
 
@@ -414,7 +417,7 @@ async fn dispatch(state: &Arc<AppState>, request: Request) -> Response {
             complete_multipart(state, bucket, &key, &full_key, &query).await
         }
         (Method::PUT, false) if query.contains_key("uploadId") => {
-            upload_part(state, &full_key, &query, body).await
+            upload_part(state, &full_key, &query, state.counted_part(body).await).await
         }
         (Method::DELETE, false) if query.contains_key("uploadId") => {
             abort_multipart(state, &full_key, &query)
@@ -906,10 +909,6 @@ async fn complete_multipart(
     for (_, part) in parts {
         data.extend_from_slice(&part);
     }
-    state
-        .stats
-        .put_bytes
-        .fetch_add(data.len() as u64, Ordering::Relaxed);
     let etag = state.next_etag();
     let orig_len = data.len();
     let discard = state
@@ -941,6 +940,9 @@ async fn complete_multipart(
     );
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
+
+#[path = "census.rs"]
+mod census;
 
 #[cfg(test)]
 #[path = "tests.rs"]

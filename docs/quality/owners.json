@@ -2633,6 +2633,22 @@
       "syntax": "serde_json::json"
     },
     {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::AppState::live_bytes",
+      "path": "src/bin/s3lite/census.rs",
+      "reason": "The emulator's live-bytes census renders its fixed JSON schema (per tier/kind and total object counts and original byte lengths, open multipart uploads' parts under <tier>/in_progress_multipart, or a poisoned marker instead of a partial census); exact totals across tiers, an overwrite, a delete, a completed and an aborted multipart, a discarded body and poisoned object and upload maps are pinned by the emulator's directly cfg(test) child.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::census",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "The emulator's storage census for cost runs (live bytes per tier/kind including open multipart parts, the stats2 answer, and part bodies counted as sent when uploaded) lives beside the dispatcher it observes; declared by path because the emulator file is itself included by path from the binary and the provider contract suite.",
+      "syntax": "path = \"census.rs\""
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::tests",

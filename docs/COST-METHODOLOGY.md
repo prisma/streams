@@ -17,7 +17,11 @@ awsbench (generator) ──HTTP──▶ streams-slate ──S3 API──▶ s3l
 - **s3lite** (`src/bin/s3lite.rs`) injects 25 ms per op — the region-
   local Tigris figure — and keeps a cumulative ledger per
   (tier, kind, op) split by status: `/_s3lite/stats2`. Tier is
-  shard | hist | fleet | registry | other from the key layout; the
+  shard | hist | fleet | registry | telemetry | other from the key
+  layout, and `live_objects`/`live_bytes` census what the bucket holds
+  now (count and original bytes per tier/kind; `live_bytes` also counts
+  open multipart uploads' parts, and `put_bytes` counts a part when it
+  is uploaded); the
   rollup prices requests the way public Tigris does (PUT/LIST/multipart
   Class A on 2xx; GET/HEAD Class B on 2xx; 304/404/412, deletes and
   errors free). One Class A = 10× Class B.
