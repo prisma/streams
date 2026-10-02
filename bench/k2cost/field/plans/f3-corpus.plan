@@ -1,0 +1,14 @@
+# F3 request-bound envelope (design §9.2): corpus 1 KiB singles over 32
+# streams, closed-loop tiers 1..256 x 180 s, then the idle tail and a cold walk.
+# A 5 min pre-load baseline (observe.py starts before gen.sh) puts every
+# tier boundary between scrapes.
+idle 300
+setup --streams 32 --format json
+produce --streams 32 --concurrency 1 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+produce --streams 32 --concurrency 4 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+produce --streams 32 --concurrency 16 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+produce --streams 32 --concurrency 64 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+produce --streams 32 --concurrency 128 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+produce --streams 32 --concurrency 256 --duration 180 --records 1 --record-bytes 1024 --payload corpus
+idle 1800
+walk --streams 32 --from earliest --readers 1 --duration 900

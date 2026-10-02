@@ -1,0 +1,17 @@
+# F3 envelope (design §9.2) for the P-exp, P-500 and P-1000 cells: b64rand
+# 1 KiB x 10 over 32 streams, closed-loop tiers 1..256 x 180 s. A tier that
+# trips a §8 gate (observe.py's scrape of /v1/debug/load) voids the rest:
+# stop the generator (teardown.py <run> --service <gen> --yes). Then a 30 min idle tail (the
+# census runs at +0/+15/+30 from observe.py) and a 15 min cold walk.
+# A 5 min pre-load baseline (observe.py starts before gen.sh) puts every
+# tier boundary between scrapes.
+idle 300
+setup --streams 32 --format json
+produce --streams 32 --concurrency 1 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+produce --streams 32 --concurrency 4 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+produce --streams 32 --concurrency 16 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+produce --streams 32 --concurrency 64 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+produce --streams 32 --concurrency 128 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+produce --streams 32 --concurrency 256 --duration 180 --records 10 --record-bytes 1024 --payload b64rand
+idle 1800
+walk --streams 32 --from earliest --readers 1 --duration 900

@@ -1,0 +1,24 @@
+# F5 consumption and subscribers (design §9.2), through both routers
+# (gen.py alternates invocations and splits each subs phase). A template:
+# check each phase's size against the time left on the cell's KEEP_AWAKE
+# expiry before deploying. Seed ~2 GiB of corpus 1 KiB x 100 over 32 streams
+# (3 MB/s for 12 min), then consumer groups (pull 10/100/1000, settle per
+# batch, alongside 100 req/s of producers), lagged readers (30 s, 5 min,
+# 1 h), three staggered walkers, long-poll tails on and off, and idle
+# subscribers through the routers (100, 1,000, 2,400 SSE; 1,000 long-poll).
+# A 5 min pre-load baseline (observe.py starts before gen.sh) puts every
+# tier boundary between scrapes.
+idle 300
+setup --streams 32 --format json
+produce --streams 32 --mbps 3 --duration 720 --records 100 --record-bytes 1024 --payload corpus --routing-keys 64
+group --streams 32 --pull 10 --consumers 1 --settle every --duration 600 --rate 100 --records 1 --record-bytes 1024 --routing-keys 64
+group --streams 32 --pull 100 --consumers 1 --settle every --duration 600 --rate 100 --records 1 --record-bytes 1024 --routing-keys 64
+group --streams 32 --pull 1000 --consumers 1 --settle every --duration 600 --rate 100 --records 1 --record-bytes 1024 --routing-keys 64
+walk --streams 32 --from lag:30 --readers 1 --duration 600 --rate 100 --records 1 --record-bytes 1024 ;; walk --streams 32 --from lag:300 --readers 1 --duration 600 --seed 2 ;; walk --streams 32 --from lag:3600 --readers 1 --duration 600 --seed 3
+walk --streams 32 --from earliest --readers 3 --stagger 600 --duration 1800
+tail --streams 32 --via long-poll --readers 1 --duration 600 --rate 200 --records 1 --record-bytes 1024
+produce --streams 32 --rate 200 --duration 600 --records 1 --record-bytes 1024 --payload corpus
+subs --streams 32 --count 100 --via sse --connect-rate 20 --duration 600
+subs --streams 32 --count 1000 --via sse --connect-rate 20 --duration 600
+subs --streams 32 --count 2400 --via sse --connect-rate 20 --duration 600
+subs --streams 32 --count 1000 --via long-poll --connect-rate 20 --duration 600

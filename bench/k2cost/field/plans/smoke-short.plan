@@ -1,0 +1,6 @@
+# Smoke (iii): a 20 s baseline, 4 JSON streams, then open-loop Poisson at
+# 10 req/s of 1 KiB corpus singles for 30 s. gen.sh appends --base and
+# --headers-file.
+idle 20
+setup --streams 4 --format json
+produce --streams 4 --rate 10 --duration 30 --records 1 --record-bytes 1024 --payload corpus

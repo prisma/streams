@@ -1,0 +1,13 @@
+# F2 loaded day (design §9.2, §10 reference day), one 12 h half, opening
+# with a 5 min pre-load baseline for the observer. Customer tokens live at
+# most 24 h, so the day is two generator deployments: `gen.sh <run> f1b
+# f2-half-day` at +0 and the same with --replace at +12 h (it destroys the
+# first generator through teardown.py --service). gen.py alternates the
+# invocations over both routers. Concurrent workloads in one stage:
+#  - CDC-like 10 GiB/day: corpus 1 KiB x 100 over 32 Zipf streams (~0.124 MB/s);
+#  - S1: 1 GiB/day of 300 B singles over 5 streams (~41 req/s);
+#  - S2 churn: 1,000 streams/day of 40 KiB with TTL 1 h (500 per half);
+#  - 300 idle SSE subscribers and long-poll tails on the CDC streams.
+idle 300
+setup --prefix cdc/s --streams 32 --format json ;; setup --prefix s1/s --streams 5 --format json
+produce --prefix cdc/s --streams 32 --zipf 1.1 --mbps 0.124 --records 100 --record-bytes 1024 --payload corpus --duration 43200 ;; produce --prefix s1/s --streams 5 --rate 41 --records 1 --record-bytes 300 --payload corpus --duration 43200 ;; churn --prefix s2/s --count 500 --size-kib 40 --end ttl:3600 --rate 0.0116 --duration 43200 ;; subs --prefix cdc/s --streams 32 --count 300 --via sse --connect-rate 5 --duration 43200 ;; tail --prefix cdc/s --streams 32 --via long-poll --readers 1 --duration 43200
