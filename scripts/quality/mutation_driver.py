@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute mutation checks from the canonical owner table."""
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import sys
 import tomllib
 
 from common import ROOT, write_json
-from mutation_owners import validate_plan, validate_sources
+from mutation_owners import OWNERS, SIZES_COMMAND, SIZES_PATH, validate_plan, validate_sources
 
 HARNESS_PREFIX = 'tools/quality-invariants/src/../../../'
 
@@ -39,21 +40,30 @@ def cargo_test_args(filters):
     return args
 
 
-def shard_args():
-    """This job's share of every owner's mutants. CI runs the mutation leg as
+def shard_args(share=None):
+    """This job's share of an owner's mutants. CI runs the mutation leg as
     several jobs of one selection (QUALITY_MUTANT_SHARD=k/n): each lists and
     tests every n-th mutant, dealt round-robin, so together they test each
-    selected mutant exactly once. Unset: all of them."""
+    selected mutant exactly once. Unset: all of them.
+
+    A scheduled owner too large for one night is dealt over several (share =
+    (part, parts)): night `part`'s job k takes round-robin shard
+    part * n + k of parts * n, so the nights' jobs together take each of the
+    owner's mutants exactly once."""
     shard = os.environ.get('QUALITY_MUTANT_SHARD', '').strip()
-    if not shard:
+    k, n = 0, 1
+    if shard:
+        k, _, n = shard.partition('/')
+        if not (k.isdigit() and n.isdigit() and int(k) < int(n)):
+            raise ValueError(f'invalid QUALITY_MUTANT_SHARD {shard!r}: expected k/n with k < n')
+        k, n = int(k), int(n)
+    part, parts = share or (0, 1)
+    if n * parts == 1:
         return []
-    k, _, n = shard.partition('/')
-    if not (k.isdigit() and n.isdigit() and int(k) < int(n)):
-        raise ValueError(f'invalid QUALITY_MUTANT_SHARD {shard!r}: expected k/n with k < n')
-    return ['--shard', f'{int(k)}/{int(n)}', '--sharding', 'round-robin']
+    return ['--shard', f'{part * n + k}/{parts * n}', '--sharding', 'round-robin']
 
 
-def mutation_command(entry, out, output, diff):
+def mutation_command(entry, out, output, diff, share=None):
     files = [f'{HARNESS_PREFIX}{path}' if entry.target == 'harness-lib' else path
              for path in entry.sources]
     command = ['cargo', 'mutants', *cargo_target_args(entry, out), '--baseline', 'run']
@@ -65,18 +75,18 @@ def mutation_command(entry, out, output, diff):
     command.extend(cargo_test_args(entry.test_filters))
     command.extend(('--profile', 'quality', '--jobs', '1', '--timeout', '90',
                     '--build-timeout', '600', '--gitignore', 'true', '--output', str(output)))
-    command.extend(shard_args())
+    command.extend(shard_args(share))
     return command
 
 
-def list_command(entry, diff, harness=False):
+def list_command(entry, diff, harness=False, share=None):
     command = ['cargo', 'mutants', '--list', '--json']
     if diff is not None:
         command.extend(('--in-diff', str(diff)))
     for path in entry.sources:
         command.extend(('--file', f'{HARNESS_PREFIX}{path}' if harness else path))
     command.extend(('--package', 'streams-quality-invariants' if harness else 'streams-slate'))
-    command.extend(shard_args())
+    command.extend(shard_args(share))
     return command
 
 
@@ -109,6 +119,7 @@ def check_tool_version():
     actual = subprocess.check_output(['cargo', 'mutants', '--version'], cwd=ROOT, text=True).strip()
     if actual != f'cargo-mutants {expected}':
         raise ValueError(f'cargo-mutants version mismatch: expected {expected}, got {actual!r}')
+    return actual
 
 
 # The pinned cargo-mutants (27.1.0, src/exit_code.rs and LabOutcome::exit_code
@@ -168,10 +179,14 @@ def execute(out):
     # cargo-mutants discovery or execution occurs before this succeeds.
     validate_sources(ROOT)
     selected = validate_plan(plan)
+    scheduled = plan.get('selection_kind') == 'scheduled-owner-rotation'
+    # validate_plan proved a scheduled receipt's shares are the packing's.
+    shares = plan.get('scheduled_owner_shares', {}) if scheduled else {}
     write_json(out / 'selected-owners.json', {
-        'schema': 2,
+        'schema': 3,
         'event': plan.get('event', 'local'),
         'owners': [entry.name for entry in selected],
+        'owner_shares': shares,
         'changed_sources': plan.get('mutation_source_files', []),
         'discovery_sources': plan.get('mutation_discovery_source_files', []),
         'deleted_critical_files': plan.get('deleted_critical_files', []),
@@ -181,7 +196,6 @@ def execute(out):
     })
     check_tool_version()
 
-    scheduled = plan.get('selection_kind') == 'scheduled-owner-rotation'
     canonical_diff = None if scheduled else out / 'pr.diff'
     harness_diff = None
     if not scheduled:
@@ -195,12 +209,13 @@ def execute(out):
         output = out / entry.name
         output.mkdir(parents=True, exist_ok=True)
         canonical = output / 'selected.json'
-        run_to_file(list_command(entry, canonical_diff), canonical)
+        share = tuple(shares[entry.name]) if entry.name in shares else None
+        run_to_file(list_command(entry, canonical_diff, share=share), canonical)
         chosen = selection(canonical)
         mutation_diff = canonical_diff
         if entry.target == 'harness-lib':
             harness = output / 'harness-selected.json'
-            run_to_file(list_command(entry, harness_diff, harness=True), harness)
+            run_to_file(list_command(entry, harness_diff, harness=True, share=share), harness)
             mirrored = selection(harness)
             if chosen != mirrored:
                 raise ValueError(f'{entry.name}: harness mutation scope differs from canonical source')
@@ -210,7 +225,7 @@ def execute(out):
             print(f'{entry.name}: no executable mutants in the selected scope')
             continue
         total += count
-        if run_owner(mutation_command(entry, out, output, mutation_diff), scheduled):
+        if run_owner(mutation_command(entry, out, output, mutation_diff, share), scheduled):
             survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:
@@ -224,11 +239,39 @@ def execute(out):
         raise SystemExit(1)
 
 
+def measure_sizes(path=SIZES_PATH):
+    """Record every registered owner's whole-scope mutant count, listed as the
+    scheduled rotation lists it (no diff, no shard); only lists, never tests."""
+    if os.environ.get('QUALITY_MUTANT_SHARD', '').strip():
+        raise ValueError('sizes are whole-scope counts: unset QUALITY_MUTANT_SHARD')
+    validate_sources(ROOT)
+    tool = check_tool_version()
+    sizes = {}
+    for entry in OWNERS:
+        listed = subprocess.run(list_command(entry, None), cwd=ROOT, stdout=subprocess.PIPE,
+                                text=True, check=True).stdout
+        sizes[entry.name] = len(json.loads(listed) if listed.strip() else [])
+    write_json(path, {
+        'schema': 1,
+        'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        'measured_on': datetime.now(timezone.utc).date().isoformat(),
+        'tool': tool,
+        'command': SIZES_COMMAND,
+        'owners': sizes,
+    })
+    print(f'{path.name}: {sum(sizes.values())} mutant(s) across {len(sizes)} owner(s)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', default='target/quality-mutations')
+    parser.add_argument('--measure-sizes', action='store_true',
+                        help=f'list every owner and rewrite {SIZES_PATH.name}')
     args = parser.parse_args()
-    execute(Path(args.out).resolve())
+    if args.measure_sizes:
+        measure_sizes()
+    else:
+        execute(Path(args.out).resolve())
 
 
 if __name__ == '__main__':

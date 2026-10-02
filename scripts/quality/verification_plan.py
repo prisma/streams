@@ -12,7 +12,8 @@ from mutation_owners import (
     OWNERS,
     declared_source_map,
     resolve_sources,
-    scheduled_owners,
+    scheduled_group,
+    shares_receipt,
     source_map,
     validate_sources,
 )
@@ -106,9 +107,10 @@ def plan(paths, visibility_only=(), production_unchanged=(), formatted_visibilit
 
 
 def plan_schedule(slot, owners=OWNERS):
-    """Resolve one full-owner bucket; no diff-oriented filter participates."""
-    selected = scheduled_owners(slot, owners=owners)
-    paths = sorted(path for entry in selected for path in entry.sources)
+    """Resolve the UTC day's group of full owners (a split owner's part of its
+    mutants); no diff-oriented filter participates."""
+    index, count, shares = scheduled_group(slot, owners=owners)
+    paths = sorted(path for share in shares for path in share.owner.sources)
     result = plan(paths, owners=owners)
     result.update({
         'properties_fuzz': True,
@@ -116,7 +118,9 @@ def plan_schedule(slot, owners=OWNERS):
         'mutants': True,
         'changed_rust_files': [],
         'scheduled_source_files': paths,
-        'schedule_slot': slot % 7,
+        'schedule_slot': index,
+        'schedule_groups': count,
+        'scheduled_owner_shares': shares_receipt(shares),
         'selection_kind': 'scheduled-owner-rotation',
     })
     return result

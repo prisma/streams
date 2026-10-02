@@ -111,9 +111,10 @@ owners. Pull requests use the actual target-branch merge base. Pushes use the
 exact `before` revision from the event—even for a non-ancestor force update;
 CI fetches that object if necessary and fails closed if it remains unavailable.
 A branch-creation push compares against Git's empty tree. Scheduled runs do not
-pretend to have a PR diff: a stable seven-night hash rotation selects complete
-registered owners and runs their whole mutation scope. The rotation slot and
-source files are recorded in the same receipt.
+pretend to have a PR diff: a rotation over groups of complete registered
+owners, one group per UTC day, runs their whole mutation scope; an owner too
+large for one night is dealt over several. The rotation slot, group count,
+split owners' shares and source files are recorded in the same receipt.
 
 `scripts/quality/mutation_owners.py` is the single exact owner table for source
 paths, packages/targets and test filters. Registered paths participate directly
@@ -188,17 +189,34 @@ compiler, Clippy, the `--lib quality_` leg (the lib property and Loom models)
 and ci.yml's full `cargo test --release`, which also carries the two pilot Loom
 models (`src/bin/pilot/benchmark/tests.rs` and `tests/pilot_membership.rs`).
 
-A scheduled bucket bypasses diff-oriented prefix selection entirely. Its full
-owners, complete discovery source set and rotation slot must agree in the plan,
-driver receipt and actual cargo-mutants file arguments. The union of seven
-buckets covers every active registered owner exactly once; zero discovery is
-reported only after that owner's discovery command actually ran. A scheduled
-bucket runs every one of its owners even when an earlier one has survivors
-(cargo-mutants answers 2 for a missed mutant, 3 for a timeout) and fails once,
-at the end, listing each such owner with its `missed.txt` and `timeout.txt`;
-any other nonzero answer (a failing unmutated baseline, an error, a signal)
-measured nothing and stops the run at once. A diff-scoped selection stops at
-its first owner with a survivor.
+A scheduled group bypasses diff-oriented prefix selection entirely. Its full
+owners, each split owner's share, complete discovery source set, rotation slot
+and group count must agree in the plan, driver receipt and actual
+cargo-mutants file and shard arguments. The union of the N groups covers every
+active registered owner's mutants exactly once; zero discovery is reported
+only after that owner's discovery command actually ran. A scheduled group runs
+every one of its owners even when an earlier one has survivors (cargo-mutants
+answers 2 for a missed mutant, 3 for a timeout) and fails once, at the end,
+listing each such owner with its `missed.txt` and `timeout.txt`; any other
+nonzero answer (a failing unmutated baseline, an error, a signal) measured
+nothing and stops the run at once. A diff-scoped selection stops at its first
+owner with a survivor.
+
+The groups are sized so a night finishes inside the `mutants` job's 240
+minutes. `scripts/quality/mutation-owner-sizes.json` records every registered
+owner's whole-scope mutant count; `python3 scripts/quality/mutation_driver.py
+--measure-sizes` rewrites it and only lists. A new owner row needs its count:
+a missing or retired one fails the planner and its tests. `mutation_owners.py`
+models an owner's minutes on the job's slowest runner from the scheduled runs'
+measured times: every runner builds and tests the owner's unmutated baseline,
+then its round-robin quarter of the mutants. An owner whose minutes exceed a
+night's cap of 180, three quarters of the job's limit, is dealt over the
+fewest nights that each fit, as round-robin shares of its mutants (night
+`part` of `parts`, runner k of 4: cargo-mutants shard `part × 4 + k` of
+`parts × 4`). The shares are packed largest first, each into the least-filled
+group, with the group count N raised from its lower bound until every group
+fits the cap, and UTC day d runs group `d mod N`. The packing follows the table and the sizes file, so the
+cycle that spans a change to either can test an owner twice or skip it once.
 
 | Trigger | Required verification and acceptance |
 | --- | --- |

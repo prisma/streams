@@ -108,7 +108,8 @@ def pin_hash(spec):
             raise ImpactError(f'{name} is defined {len(found)} times in {file}')
     raise ImpactError(f'no function {name} in {file}')
 RERECORD = 'python3 scripts/dev/formal_batch.py rerecord --stale'
-REGISTER = ('add an owner row to scripts/quality/mutation_owners.py; '
+REGISTER = ('add an owner row to scripts/quality/mutation_owners.py and record its size with '
+            'python3 scripts/quality/mutation_driver.py --measure-sizes; '
             'CI refuses unregistered critical files')
 EDGE_PREFIXES = ('src/http', 'src/product', 'src/application/', 'src/sse/', 'src/auth', 'sdk/')
 EDGE_HINT = ('edge change? record in docs/reviews/2026-09-hardening/edge-changes.md + '

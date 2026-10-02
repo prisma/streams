@@ -6,7 +6,8 @@ then hands one resolved selection to the driver.  No later layer narrows it.
 """
 import ast
 from dataclasses import dataclass
-import hashlib
+import json
+import math
 from pathlib import Path
 
 
@@ -391,7 +392,19 @@ def validate_plan(plan, owners=OWNERS):
         if type(slot) is not int:
             mismatches.append(f'schedule_slot: invalid {slot!r}')
         else:
-            scheduled = selection_for_owners(scheduled_owners(slot, owners=owners), owners)
+            index, count, shares = scheduled_group(slot, owners=owners)
+            recorded = (slot, plan.get('schedule_groups'))
+            if recorded != (index, count):
+                mismatches.append(
+                    f'schedule_slot, schedule_groups: recorded={recorded!r}, '
+                    f'expected={(index, count)!r}'
+                )
+            if plan.get('scheduled_owner_shares') != shares_receipt(shares):
+                mismatches.append(
+                    'scheduled_owner_shares: recorded='
+                    f'{plan.get("scheduled_owner_shares")!r}, expected={shares_receipt(shares)!r}'
+                )
+            scheduled = selection_for_owners([share.owner for share in shares], owners)
             for field, value in scheduled.receipt().items():
                 if plan.get(field) != value:
                     mismatches.append(
@@ -414,18 +427,112 @@ def validate_plan(plan, owners=OWNERS):
     return resolved.owners
 
 
-def scheduled_owners(slot, buckets=7, owners=OWNERS):
-    """Stable seven-night rotation; adding a row does not reshuffle old rows."""
-    if buckets < 1:
-        raise ValueError('schedule bucket count must be positive')
-    selected = []
-    for entry in owners:
-        bucket = int.from_bytes(hashlib.sha256(entry.name.encode()).digest()[:4], 'big') % buckets
-        if bucket == slot % buckets:
-            selected.append(entry)
-    if not selected:
-        raise ValueError(f'scheduled mutation bucket {slot % buckets} has no owners')
-    return tuple(selected)
+# Every owner's whole-scope mutant count, as the scheduled rotation lists it.
+SIZES_PATH = Path(__file__).with_name('mutation-owner-sizes.json')
+SIZES_COMMAND = 'python3 scripts/quality/mutation_driver.py --measure-sizes'
+
+# The nightly rotation's cost model, in minutes on the slowest runner of
+# rust-quality's `mutants` job. The job deals each owner's n mutants over
+# SCHEDULE_JOBS runners round-robin, so runner 0 tests ceil(n / jobs) of them,
+# and every runner with a share first builds and tests the owner's unmutated
+# baseline. Measured on the scheduled runs of 2026-09-29 to 2026-10-02: a
+# service-crate baseline took 293-348 s (430-543 s for the night's first)
+# and a mutant 1.4-3.4 min, 2.3 on average, nearly all of it the rebuild;
+# the harness crate's baseline under 40 s and its mutants seconds. A group
+# may hold 180 minutes, three quarters of the job's 240: the rest is the
+# runner's setup, the night's first cold build and slower mutants.
+SCHEDULE_JOBS = 4
+SCHEDULE_CAP_MINUTES = 180.0
+NIGHT_MINUTES = {'harness-lib': (1.0, 0.25)}  # target: (baseline, each mutant)
+DEFAULT_NIGHT_MINUTES = (6.0, 2.5)
+
+
+@dataclass(frozen=True)
+class ScheduledShare:
+    """One owner's work in a night: all its mutants, or for an owner too large
+    for one night, part `part` of `parts` round-robin shares of them."""
+
+    owner: MutationOwner
+    part: int
+    parts: int
+    minutes: float
+
+
+def owner_sizes(owners=OWNERS, path=SIZES_PATH):
+    """The measured size of every owner; an unmeasured or retired one fails."""
+    recorded = json.loads(Path(path).read_text())['owners']
+    names = {entry.name for entry in owners}
+    missing = sorted(names - set(recorded))
+    stale = sorted(set(recorded) - names)
+    invalid = sorted(name for name, count in recorded.items()
+                     if type(count) is not int or count < 0)
+    if missing or stale or invalid:
+        raise ValueError(
+            f'{Path(path).name} disagrees with the mutation owner table (missing {missing}, '
+            f'stale {stale}, invalid {invalid}); re-measure with: {SIZES_COMMAND}'
+        )
+    return {entry.name: recorded[entry.name] for entry in owners}
+
+
+def night_minutes(entry, mutants, parts=1, jobs=SCHEDULE_JOBS):
+    """Modeled minutes of one share of an owner on the night's slowest runner."""
+    if mutants == 0:
+        return 0.0  # Only the listing runs; no baseline is built.
+    baseline, each = NIGHT_MINUTES.get(entry.target, DEFAULT_NIGHT_MINUTES)
+    return baseline + math.ceil(mutants / (parts * jobs)) * each
+
+
+def owner_shares(entry, mutants, cap):
+    """The fewest equal parts whose night fits the cap."""
+    for parts in range(1, max(mutants, 1) + 1):
+        minutes = night_minutes(entry, mutants, parts)
+        if minutes <= cap:
+            return tuple(ScheduledShare(entry, part, parts, minutes) for part in range(parts))
+    raise ValueError(f'{entry.name}: one mutant alone exceeds the {cap}-minute night')
+
+
+def schedule_groups(owners=OWNERS, sizes=None, cap=SCHEDULE_CAP_MINUTES):
+    """Pack every owner's shares into groups that each fit the cap.
+
+    Largest share first, each into the least-filled group (the lowest index on
+    a tie) that holds no other part of the same owner; the group count starts
+    at its lower bound and grows until every group fits. Inside a group the
+    owners keep the table's order. The packing depends only on the table and
+    the measured sizes, so every runner and the driver derive the same one."""
+    sizes = owner_sizes(owners) if sizes is None else sizes
+    rank = {entry.name: index for index, entry in enumerate(owners)}
+    shares = [share for entry in owners for share in owner_shares(entry, sizes[entry.name], cap)]
+    ordered = sorted(shares, key=lambda share: (-share.minutes, rank[share.owner.name], share.part))
+    count = max(1, math.ceil(sum(share.minutes for share in shares) / cap),
+                *(share.parts for share in shares))
+    while True:
+        groups = [[] for _ in range(count)]
+        loads = [0.0] * count
+        for share in ordered:
+            index = min((index for index, group in enumerate(groups)
+                         if all(other.owner != share.owner for other in group)),
+                        key=lambda index: (loads[index], index))
+            groups[index].append(share)
+            loads[index] += share.minutes
+        if max(loads) <= cap:
+            break
+        count += 1
+    if not all(groups):
+        raise ValueError('a scheduled mutation group has no owners')
+    return tuple(tuple(sorted(group, key=lambda share: rank[share.owner.name]))
+                 for group in groups)
+
+
+def scheduled_group(slot, owners=OWNERS, sizes=None):
+    """The UTC day's group: (its index, the number of groups, its shares)."""
+    groups = schedule_groups(owners, sizes)
+    index = slot % len(groups)
+    return index, len(groups), groups[index]
+
+
+def shares_receipt(shares):
+    """The split owners of a group, as the plan records them: {name: [part, parts]}."""
+    return {share.owner.name: [share.part, share.parts] for share in shares if share.parts > 1}
 
 
 def validate_sources(root, owners=OWNERS):

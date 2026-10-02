@@ -106,10 +106,13 @@ class Triggers(unittest.TestCase):
         ),))
 
     def test_every_scheduled_receipt_reaches_the_driver_unchanged(self):
+        groups = plan_schedule(0)['schedule_groups']
         declared = []
         discovered = []
-        for slot in range(7):
+        for slot in range(groups):
             checks = plan_schedule(slot)
+            self.assertEqual((checks['schedule_slot'], checks['schedule_groups']), (slot, groups))
+            self.assertEqual(plan_schedule(slot + groups), checks)
             selected = validate_plan(checks)
             self.assertEqual(
                 checks['selected_mutation_owners'],
@@ -119,11 +122,35 @@ class Triggers(unittest.TestCase):
                 checks['scheduled_source_files'],
                 sorted(path for owner in selected for path in owner.sources),
             )
-            declared.extend(checks['selected_mutation_owners'])
+            shares = checks['scheduled_owner_shares']
+            self.assertLessEqual(set(shares), set(checks['selected_mutation_owners']))
+            declared.extend((name, *shares.get(name, (0, 1)))
+                            for name in checks['selected_mutation_owners'])
             discovered.extend(owner.name for owner in selected)
-        self.assertCountEqual(declared, [owner.name for owner in OWNERS])
-        self.assertCountEqual(discovered, [owner.name for owner in OWNERS])
-        self.assertEqual(declared.count('scaler'), 1)
+        # The union of the groups covers every registered owner exactly once,
+        # an owner dealt over several nights once per part.
+        parts = {name: count for name, _, count in declared}
+        self.assertCountEqual(declared, [(owner.name, part, parts[owner.name])
+                                         for owner in OWNERS for part in range(parts[owner.name])])
+        self.assertCountEqual(discovered, [owner.name for owner in OWNERS
+                                           for _ in range(parts[owner.name])])
+        self.assertEqual(declared.count(('scaler', 0, 1)), 1)
+
+    def test_a_scheduled_receipt_cannot_change_a_split_owners_share_or_the_group_count(self):
+        groups = plan_schedule(0)['schedule_groups']
+        checks = next(plan_schedule(slot) for slot in range(groups)
+                      if plan_schedule(slot)['scheduled_owner_shares'])
+        name, (part, parts) = next(iter(checks['scheduled_owner_shares'].items()))
+        self.assertEqual([owner.name for owner in validate_plan(checks)],
+                         checks['selected_mutation_owners'])
+        for field, value in (('scheduled_owner_shares', {}),
+                             ('scheduled_owner_shares', {name: [part, parts + 1]}),
+                             ('scheduled_owner_shares', {name: [(part + 1) % parts, parts]}),
+                             ('schedule_groups', groups + 1),
+                             ('schedule_slot', checks['schedule_slot'] + groups)):
+            with self.subTest(field=field, value=value):
+                with self.assertRaisesRegex(ValueError, 'selection receipt disagrees'):
+                    validate_plan({**checks, field: value})
 
     def test_deleted_critical_source_is_disposed_not_mutated(self):
         path = 'src/shard/old_owner.rs'

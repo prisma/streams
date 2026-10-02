@@ -1,10 +1,14 @@
+import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
 
+from common import ROOT
 from mutation_driver import list_command, mutation_command
+import mutation_owners
 from mutation_owners import (
     MutationOwner,
     OWNERS,
@@ -117,6 +121,85 @@ class MutationOwnership(unittest.TestCase):
             with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': invalid}):
                 with self.assertRaises(ValueError):
                     mutation_command(entry, Path('/tmp'), Path('/tmp/r'), None)
+
+    def test_a_split_owners_parts_and_runners_deal_each_mutant_once(self):
+        entry = source_map()['src/sse/session.rs']
+        dealt = []
+        for part in range(3):
+            for job in range(4):
+                with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': f'{job}/4'}):
+                    run = mutation_command(entry, Path('/tmp'), Path('/tmp/r'), None, (part, 3))
+                    listed = list_command(entry, None, share=(part, 3))
+                self.assertEqual(run[-4:], listed[-4:])
+                self.assertEqual(run[-2:], ['--sharding', 'round-robin'])
+                dealt.append(run[-3])
+        # Round-robin gives mutant i to shard i mod 12: every mutant once.
+        self.assertCountEqual(dealt, [f'{index}/12' for index in range(12)])
+        with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': ''}):
+            self.assertEqual(list_command(entry, None, share=(1, 3))[-4:],
+                             ['--shard', '1/3', '--sharding', 'round-robin'])
+            self.assertNotIn('--shard', list_command(entry, None, share=(0, 1)))
+
+    def test_every_registered_owner_has_a_measured_size(self):
+        recorded = json.loads(mutation_owners.SIZES_PATH.read_text())
+        self.assertEqual(sorted(recorded['owners']), sorted(entry.name for entry in OWNERS))
+        self.assertTrue(all(type(count) is int and count >= 0
+                            for count in recorded['owners'].values()))
+        self.assertRegex(recorded['commit'], r'^[0-9a-f]{40}$')
+        missing = {name: count for name, count in recorded['owners'].items() if name != 'scaler'}
+        with self.assertRaisesRegex(ValueError, r"missing \['scaler'\].*--measure-sizes"):
+            with mock.patch.object(Path, 'read_text',
+                                   return_value=json.dumps({**recorded, 'owners': missing})):
+                mutation_owners.owner_sizes()
+
+    def test_each_night_fits_the_mutants_job_on_its_slowest_runner(self):
+        workflow = (ROOT / '.github/workflows/rust-quality.yml').read_text()
+        job = workflow[workflow.index('\n  mutants:'):workflow.index('\n  formal:')]
+        jobs = mutation_owners.SCHEDULE_JOBS
+        self.assertEqual(re.search(r'shard: \[([^\]]*)\]', job).group(1),
+                         ', '.join(str(index) for index in range(jobs)))
+        self.assertIn(f'QUALITY_MUTANT_SHARD: ${{{{ matrix.shard }}}}/{jobs}', job)
+        timeout = int(re.search(r'timeout-minutes: (\d+)', job).group(1))
+        self.assertLessEqual(mutation_owners.SCHEDULE_CAP_MINUTES, 0.75 * timeout)
+        groups = mutation_owners.schedule_groups()
+        self.assertGreater(len(groups), 7)
+        for group in groups:
+            self.assertTrue(group)
+            self.assertLessEqual(sum(share.minutes for share in group),
+                                 mutation_owners.SCHEDULE_CAP_MINUTES)
+
+    def test_the_night_model_charges_each_runner_its_baseline_and_largest_share(self):
+        service = MutationOwner('service', ('src/service.rs',), ('service::',))
+        harness = MutationOwner('harness', ('src/harness.rs',), ('harness::',), 'harness-lib')
+        minutes = mutation_owners.night_minutes
+        self.assertEqual(minutes(service, 0), 0)
+        self.assertEqual(minutes(service, 1), 6 + 2.5)
+        self.assertEqual(minutes(service, 9), 6 + 3 * 2.5)
+        self.assertEqual(minutes(service, 9, parts=2), 6 + 2 * 2.5)
+        self.assertEqual(minutes(harness, 9), 1 + 3 * 0.25)
+
+    def test_an_owner_too_large_for_one_night_is_dealt_over_several_nights(self):
+        big = MutationOwner('big', ('src/big.rs',), ('big::',))
+        small = tuple(MutationOwner(f's{index}', (f'src/s{index}.rs',), ('s::',))
+                      for index in range(6))
+        idle = MutationOwner('idle', ('src/idle.rs',), ('idle::',))
+        owners = (big, *small, idle)
+        sizes = {'big': 400, 'idle': 0, **{entry.name: 100 for entry in small}}
+        groups = mutation_owners.schedule_groups(owners, sizes)
+        self.assertEqual(groups, mutation_owners.schedule_groups(owners, dict(reversed(sizes.items()))))
+        placed = [(index, share.owner.name, share.part, share.parts)
+                  for index, group in enumerate(groups) for share in group]
+        big_parts = [row for row in placed if row[1] == 'big']
+        # 400 mutants are 100 per runner, 6 + 100 x 2.5 = 256 minutes: two parts of 131.
+        self.assertEqual(sorted(row[2:] for row in big_parts), [(0, 2), (1, 2)])
+        self.assertEqual(len({row[0] for row in big_parts}), 2)
+        self.assertCountEqual([row[1] for row in placed if row[1] != 'big'],
+                              [entry.name for entry in (*small, idle)])
+        for group in groups:
+            self.assertLessEqual(sum(share.minutes for share in group), 180)
+            self.assertEqual([share.owner for share in group],
+                             [entry for entry in owners if entry in {s.owner for s in group}])
+        self.assertEqual(len(groups), 5)  # 2 x 131 + 6 x 68.5 = 673 minutes: at least 4.
 
     def test_table_names_and_sources_are_unique(self):
         self.assertEqual(len({entry.name for entry in OWNERS}), len(OWNERS))

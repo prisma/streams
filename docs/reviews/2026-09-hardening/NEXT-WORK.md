@@ -845,19 +845,40 @@ before marking it complete."
   placing one under the `scaler` owner's filter changes what the gate
   selects, so it is the owner's call.
 - **Nightly mutation rotation (found 2026-09-28, when `slate` became the
-  default branch and the schedules started running).** The seven-night
-  rotation (`verification_plan.scheduled_owners`, RUST-QUALITY.md) runs
-  whole registered owners. Counted with `cargo mutants --list` over the next
-  seven buckets: 573, 631, 630, 154, 1,015, 846 and 1,152 mutants (about
-  5,000 in all; the largest owners are `shard` 378, `sse_feed` 346, `http`
-  270, `fleet` 262). At about 1 min per mutant locally and more on a 4-core
-  runner, no bucket but the smallest fits the job's 240 minutes, and whole
-  files have only ever been mutation-tested diff by diff, so MISSED mutants
-  are expected. The first scheduled run gives the real per-mutant cost with
-  incremental rebuilds (CARGO_INCREMENTAL=1 since ca260d30); size the design
-  from it: more buckets, `cargo mutants --shard k/n` inside large owners, a
-  runner matrix, and a MISSED backlog with dispositions. It is a policy
-  change (RUST-QUALITY.md's rotation), so the owner decides the shape.
+  default branch; reshaped 2026-10-02 by the owner's decision).** The
+  seven-night hash rotation ran buckets of 154-1,152 mutants and stopped at
+  the first owner with a survivor, so every night failed early (2026-09-30 at
+  `scaler`, its first owner; 2026-10-01 at `bootstrap_rss`, 5th of 24;
+  2026-10-02 at `touch`, 3rd of 22) and most owners were never tested as
+  whole files. **Done:** 15151a35 runs every owner of the night's group and
+  fails once at the end with each owner's missed and timed-out mutants (an
+  answer that measured nothing, such as a failing baseline, still stops the
+  night); the commit that adds `scripts/quality/mutation-owner-sizes.json`
+  packs the owners into groups sized to the job (RUST-QUALITY.md, "A
+  scheduled group"). Measured with `cargo mutants --list` at 4472ee95: 6,945
+  mutants over 164 owners (25 list none); the largest are `billing` 375,
+  `shard` 352, `sse_feed` 346, `product` 340, `rollup` 336 and `http` 266.
+  Cost from the four scheduled runs of 2026-09-29 to 10-02: every runner
+  pays the owner's unmutated baseline (293-348 s on the service crate,
+  430-543 s for the night's first) and then 1.4-3.4 min per mutant (2.3 on
+  average; the rebuild is about 200 s), so the slowest runner of an owner
+  with n mutants is modeled at 6 + 2.5 x ceil(n/4) minutes (harness owners
+  1 + 0.25 x ceil(n/4)). The model matches or overstates the runs (09-29
+  runner 0: 68 modeled, 63 ran; 09-30: 81-83.5 modeled, 47-80 ran; 10-02: 46
+  modeled, 47 ran). The baseline term is 819 of the ~5,076 modeled minutes,
+  so a budget in mutants alone would overrun a group of many small owners.
+  A group holds at most 180 modeled minutes, three quarters of the job's 240.
+  Result: 29 groups of 171.5-180 modeled minutes (209-386 mutants each);
+  `billing`, `shard`, `sse_feed`, `product` and `rollup` exceed one night
+  and are dealt over two nights each (111-123.5 minutes per part). A full
+  cycle is therefore 29 days. Levers that would shorten it, each the
+  owner's call: a wider `mutants` matrix (the baseline term does not shrink:
+  8 runners model 17 nights, 16 runners 11), building an owner's baseline
+  incrementally instead of in a fresh copy of the tree, or a cheaper
+  per-mutant rebuild. Still open: a MISSED backlog with dispositions as the
+  groups report, and re-measuring the sizes as owners grow
+  (`python3 scripts/quality/mutation_driver.py --measure-sizes`; a new owner
+  row needs its count before the unit tests pass).
 - **Deferred with reasons (2026-09-28):** the 83 `gap_lock` holders that
   serialize about 126 s of CI's 154 s suite (drop the lock test by test,
   loop each in the parallel suite); Kani recompiling the crate for every
