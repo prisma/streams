@@ -580,4 +580,6 @@ mod tests {
 }
 
 #[cfg(test)]
+mod journal_tests;
+#[cfg(test)]
 mod loom_tests;
