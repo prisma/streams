@@ -23,8 +23,9 @@ awsbench (generator) ──HTTP──▶ streams-slate ──S3 API──▶ s3l
   open multipart uploads' parts, and `put_bytes` counts a part when it
   is uploaded); the
   rollup prices requests the way public Tigris does (PUT/LIST/multipart
-  Class A on 2xx; GET/HEAD Class B on 2xx; 304/404/412, deletes and
-  errors free). One Class A = 10× Class B.
+  Class A on 2xx and 404; GET/HEAD Class B on 2xx and 404; 304/412,
+  other errors and deletes free: Tigris's pricing page leaves 404 out of
+  its free answers). One Class A = 10× Class B.
 - **Server env** is the field soak posture (soak7): gather 6 ms, ring
   32 MiB, 4 shards, `FLUSH_INTERVAL_MS=25`, absorber 4 MiB / 60 s,
   compactor 500 ms, shed line 600 MB. Fleet coordination is off

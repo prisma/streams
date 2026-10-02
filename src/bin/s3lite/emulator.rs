@@ -43,8 +43,8 @@ struct Stats {
     /// per-status-bucket counts, cumulative since process start. `GET
     /// /_s3lite/stats2` renders it with a Class A/B/free rollup at
     /// public-Tigris-shaped billing rules (PUT/LIST/multipart billable
-    /// Class A on 2xx; GET/HEAD billable Class B on 2xx; 304/404/412,
-    /// deletes, and errors free).
+    /// Class A on 2xx and 404; GET/HEAD billable Class B on 2xx and 404;
+    /// 304/412, other errors and deletes free).
     detailed: Mutex<HashMap<RequestClass, [u64; 6]>>,
 }
 
@@ -54,6 +54,35 @@ struct RequestClass {
     tier: &'static str,
     kind: &'static str,
     op: &'static str,
+}
+
+/// One ledger cell's counts per status bucket (`STATUS_BUCKETS`), as the
+/// rollup bills them.
+trait StatusCounts {
+    /// [Class A, Class B, free] for `op`: its class bills the 2xx answers
+    /// and the 404s, which Tigris bills too (its pricing page lists 404
+    /// among none of the free answers); a 304, a 412, any other 4xx or 5xx,
+    /// and every delete are free.
+    fn billed(&self, op: &'static str) -> [u64; 3];
+}
+
+impl StatusCounts for [u64; 6] {
+    fn billed(&self, op: &'static str) -> [u64; 3] {
+        let [
+            success,
+            not_modified,
+            missing,
+            conditional,
+            client_error,
+            server_error,
+        ] = *self;
+        let free = not_modified + conditional + client_error + server_error;
+        match billing(op) {
+            'A' => [success + missing, 0, free],
+            'B' => [0, success + missing, free],
+            _ => [0, 0, free + success + missing],
+        }
+    }
 }
 
 impl Stats {
@@ -94,20 +123,7 @@ impl Stats {
                 .filter(|(_, count)| **count > 0)
                 .map(|(bucket, count)| ((*bucket).into(), (*count).into()))
                 .collect();
-            let [
-                success,
-                not_modified,
-                missing,
-                conditional,
-                client_error,
-                server_error,
-            ] = *counts;
-            let failures = not_modified + missing + conditional + client_error + server_error;
-            let classified = match billing(op, 0) {
-                'A' => [success, 0, failures],
-                'B' => [0, success, failures],
-                _ => [0, 0, failures + success],
-            };
+            let classified = counts.billed(op);
             let [a, b, f] = classified;
             class_a += a;
             class_b += b;
@@ -239,14 +255,11 @@ fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) ->
     }
 }
 
-/// Billing rollup per (op, status bucket): 'A' = Class A, 'B' = Class B,
+/// The class an op's billed answers fall in: 'A' = Class A, 'B' = Class B,
 /// 'f' = free. Mirrors public Tigris pricing shape: writes and lists are
-/// Class A when successful; reads Class B when they return data;
-/// conditional/absent/failed responses and every delete are free.
-fn billing(op: &'static str, status_idx: usize) -> char {
-    if status_idx != 0 {
-        return 'f';
-    }
+/// Class A; reads Class B; every delete is free. Which answers are billed
+/// is `StatusCounts::billed`'s.
+fn billing(op: &'static str) -> char {
     match op {
         "put" | "multipart" | "list" => 'A',
         "get" | "head" => 'B',

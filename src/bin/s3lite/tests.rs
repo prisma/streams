@@ -92,12 +92,12 @@ fn detailed_cost_ledger_preserves_classes_statuses_and_tiers() {
                 "other/meta/delete": {"2xx": 1}
             },
             "by_tier": {
-                "shard": {"class_a": 2, "class_b": 1, "free": 6},
+                "shard": {"class_a": 2, "class_b": 2, "free": 5},
                 "hist": {"class_a": 2, "class_b": 0, "free": 0},
                 "registry": {"class_a": 0, "class_b": 1, "free": 0},
                 "other": {"class_a": 0, "class_b": 0, "free": 1}
             },
-            "total": {"class_a": 4, "class_b": 2, "free": 7}
+            "total": {"class_a": 4, "class_b": 3, "free": 6}
         })
     );
 }
