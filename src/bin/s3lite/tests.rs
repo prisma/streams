@@ -102,6 +102,32 @@ fn detailed_cost_ledger_preserves_classes_statuses_and_tiers() {
     );
 }
 
+/// A stream descriptor lives under the registry
+/// (`registry/v4/projects/<hex>/streams/<hex>.json`, src/registry.rs), so
+/// its reads, writes and catalog LISTs are the registry tier, not history,
+/// although the key contains `streams/`.
+#[test]
+fn registry_descriptors_are_the_registry_tier() {
+    let stats = Stats::default();
+    let empty = HashMap::new();
+    let descriptor = "registry/v4/projects/70726f6a/streams/6f72.json";
+    stats.record(&Method::PUT, descriptor, &empty, StatusCode::OK);
+    stats.record(&Method::GET, descriptor, &empty, StatusCode::NOT_MODIFIED);
+    stats.record(
+        &Method::GET,
+        "",
+        &HashMap::from([(
+            "prefix".into(),
+            "registry/v4/projects/70726f6a/streams/".into(),
+        )]),
+        StatusCode::OK,
+    );
+    assert_eq!(
+        stats.detailed_snapshot()["by_tier"],
+        json!({"registry": {"class_a": 2, "class_b": 0, "free": 1}})
+    );
+}
+
 #[tokio::test]
 async fn storage_operations_feed_both_snapshots_and_current_object_census() {
     let state = state(Duration::ZERO);

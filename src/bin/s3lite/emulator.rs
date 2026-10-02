@@ -197,26 +197,28 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
         return match query.get("prefix") {
             Some(p) if p.contains("history2") => "hist",
             Some(p) if p.contains("shards/") => "shard",
+            Some(p) if p.contains("registry") => "registry",
             Some(p) if p.contains("streams/") => "hist",
             Some(p) if p.contains("fleet") || p.contains("routers") => "fleet",
-            Some(p) if p.contains("registry") => "registry",
             Some(p) if p.contains("telemetry/") => "telemetry",
             _ => "other",
         };
     }
     // history2 lives UNDER the shard prefix (ownership travels with the
     // shard) — classify it as history, checked before the shards/ match.
+    // A stream descriptor (registry/v4/projects/<hex>/streams/<hex>.json)
+    // is the registry's, checked before the streams/ match.
 
     (if key.contains("history2/") {
         "hist"
     } else if key.contains("shards/") {
         "shard"
+    } else if key.contains("registry/") || key.ends_with("topology.json") {
+        "registry"
     } else if key.contains("streams/") {
         "hist"
     } else if key.contains("fleet/") || key.contains("routers/") {
         "fleet"
-    } else if key.contains("registry/") || key.ends_with("topology.json") {
-        "registry"
     } else if key.contains("telemetry/") {
         "telemetry"
     } else {
