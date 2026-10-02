@@ -111,6 +111,50 @@ def check_tool_version():
         raise ValueError(f'cargo-mutants version mismatch: expected {expected}, got {actual!r}')
 
 
+# The pinned cargo-mutants (27.1.0, src/exit_code.rs and LabOutcome::exit_code
+# in src/outcome.rs) answers 0 when every viable mutant was caught, 2 when one
+# was missed and 3 when one timed out (3 wins when both happened). Every other
+# answer measured nothing: 1 a usage error or any error, 4 a failing unmutated
+# baseline, 5 and 6 an unusable --in-diff, 70 an internal error, and a
+# negative status a signal. A mutant that fails to build is unviable and does
+# not change the answer.
+SURVIVOR_STATUSES = {2: 'missed', 3: 'timeout'}
+
+
+def run_owner(command, keep_going):
+    """Run one owner's mutants; True when the answer is a survivor status.
+
+    The per-push leg stops at the first nonzero answer. The scheduled rotation
+    keeps going past survivors, so one night reports every owner of its group,
+    and still stops at once on an answer that measured nothing."""
+    if not keep_going:
+        subprocess.run(command, cwd=ROOT, check=True)
+        return False
+    status = subprocess.run(command, cwd=ROOT).returncode
+    if status in SURVIVOR_STATUSES:
+        return True
+    if status:
+        raise subprocess.CalledProcessError(status, command)
+    return False
+
+
+def report_survivors(survivors, owners):
+    print(f'Mutation survivors in {len(survivors)} of {owners} owner(s) of this scheduled group:')
+    for name, listing in survivors:
+        listed = False
+        for kind in SURVIVOR_STATUSES.values():
+            path = listing / f'{kind}.txt'
+            lines = [line for line in path.read_text().splitlines() if line.strip()] \
+                if path.is_file() else []
+            if lines:
+                listed = True
+                print(f'  {name}: {kind} {len(lines)} ({path})')
+                for line in lines:
+                    print(f'    {line}')
+        if not listed:
+            print(f'  {name}: no mutant listed in missed.txt or timeout.txt under {listing}')
+
+
 def execute(out):
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -146,6 +190,7 @@ def execute(out):
         make_harness_diff(base, harness_diff)
 
     total = 0
+    survivors = []
     for entry in selected:
         output = out / entry.name
         output.mkdir(parents=True, exist_ok=True)
@@ -165,7 +210,8 @@ def execute(out):
             print(f'{entry.name}: no executable mutants in the selected scope')
             continue
         total += count
-        subprocess.run(mutation_command(entry, out, output, mutation_diff), cwd=ROOT, check=True)
+        if run_owner(mutation_command(entry, out, output, mutation_diff), scheduled):
+            survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:
         print('No executable mutations in the registered owners of this selection; '
@@ -173,6 +219,9 @@ def execute(out):
     else:
         print(f'Mutation verification executed {total} selected mutant(s) across '
               f'{len(selected)} registered owner(s).')
+    if survivors:
+        report_survivors(survivors, len(selected))
+        raise SystemExit(1)
 
 
 def main():

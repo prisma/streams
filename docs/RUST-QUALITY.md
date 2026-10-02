@@ -192,7 +192,13 @@ A scheduled bucket bypasses diff-oriented prefix selection entirely. Its full
 owners, complete discovery source set and rotation slot must agree in the plan,
 driver receipt and actual cargo-mutants file arguments. The union of seven
 buckets covers every active registered owner exactly once; zero discovery is
-reported only after that owner's discovery command actually ran.
+reported only after that owner's discovery command actually ran. A scheduled
+bucket runs every one of its owners even when an earlier one has survivors
+(cargo-mutants answers 2 for a missed mutant, 3 for a timeout) and fails once,
+at the end, listing each such owner with its `missed.txt` and `timeout.txt`;
+any other nonzero answer (a failing unmutated baseline, an error, a signal)
+measured nothing and stops the run at once. A diff-scoped selection stops at
+its first owner with a survivor.
 
 | Trigger | Required verification and acceptance |
 | --- | --- |
