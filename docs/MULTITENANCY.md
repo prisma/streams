@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 5, 2026-08-19 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 6, 2026-10-02 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -51,6 +51,13 @@
   target-bound mutation capability is FORMALLY DEFERRED past
   shared-cell GA with the recorded threat-model rationale — an
   explicit decision, revisitable, not an omission.
+- r6 (2026-10-02, the owner's decision of that day): §14.1's operation
+  vocabulary names the ten operations the cell enforces, adding
+  `segment-close` (the segment-close relay, live since 2026-08-22, which
+  r4's list of eight omitted) and `seal-fence` (the fleet-internal seal
+  fence relay of 433b60e5 and 82a14a8f, edge records #88 and #89). The
+  platform contract (`contracts/streams-platform/v1/workload-token-claims.schema.json`)
+  and the reference emulator name both since 89011daa (edge record #90).
 
 ---
 
@@ -1036,20 +1043,21 @@ operation ID
 expiry
 ```
 
-*Status (r4).* The workload-JWT verifier is LIVE and its
+*Status (r4, vocabulary r6).* The workload-JWT verifier is LIVE and its
 `operations` claim is ENFORCED per route. The operation vocabulary:
 
 ```text
-raw-read  raw-append  raw-lifecycle  segment-read
-segment-scan  queue-cursor  consumer-sweep  telemetry-append
+raw-read  raw-append  raw-lifecycle  segment-read  segment-close
+seal-fence  segment-scan  queue-cursor  consumer-sweep  telemetry-append
 ```
 
 Rules (implemented, `fleet_operation_authorized`): an EMPTY or
 UNKNOWN operations list grants nothing; every internal route demands
 one exact operation; the raw surface derives its operation from the
 method (PUT/DELETE -> raw-lifecycle, POST -> raw-append, GET/HEAD ->
-raw-read; `/v1/segments` -> segment-read). A workload token is never
-a cell-wide credential.
+raw-read; `/v1/segments` -> segment-read; `/v1/internal/segment-close`
+-> segment-close; `/v1/internal/seal-fence` -> seal-fence). A workload
+token is never a cell-wide credential.
 
 OUTBOUND, the cell presents workload identity itself: relays draw
 their bearer from a refreshing token source (`WORKLOAD_TOKEN_FILE`,
