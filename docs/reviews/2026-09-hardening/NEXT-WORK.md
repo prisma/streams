@@ -1031,6 +1031,19 @@ the roadmap's unimplemented list
 
 ---
 
+**Owner decisions (2026-10-02).** "So I am accepting/ratifying all of these. Please implement it": edge records #90-#93 are ratified;
+with #91 the owner accepted the hard `DELETE`'s added latency, the re-pinned
+R13 test and the counter's new meaning; the scaler loop test's 10 s per
+mutant is accepted; the nightly rotation runs every owner of its group and
+fails once at the end, over enough groups that each night fits its 240
+minutes; the settle and watch answers gain the `no-store` WIRE-MATRIX lists;
+MULTITENANCY.md gets a revision naming the ten workload operations; the fence
+relay gets a mutation owner. Still open, because they need the owner's
+content and not a yes: the platform export (section 11), B3's four residues
+(section 2), bug #7's migration command and rehearsal (section 7), item 40's
+leftovers (section 4) and the release candidate of the mutation campaign
+(section 9).
+
 ## 13. Configuration: fewer settings, and defaults that are what production runs
 
 **Owner decision (2026-09-29).** The binary's default L0 cap is 32, the
