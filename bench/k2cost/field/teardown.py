@@ -40,9 +40,39 @@ written in every case (a crash included); exit 1 on any failure.
 (observe.py runs it every minute); --service destroys one ledger-listed
 service (gen.py --replace). Both use the same guards, mark the service
 deleted in the ledger and append a line to results/<run>/teardown-partial.jsonl.
+
+Campaign mode (campaign.json): the run's ledger-listed services and buckets
+ONLY; the campaign project is never deleted (campaign.py destroy does
+that). Guards, in addition to the ledger-name, artifact-bucket and
+other-run ones above:
+- it refuses to run at all unless the campaign project is live under its
+  recorded name (GET /v1/projects/{campaign}) and the run's ledger is
+  stamped with that project;
+- a service or bucket is acted on only when its LIVE object (GET
+  /v1/services/{id}, GET /v1/buckets/{id}) is in the campaign project with
+  the ledger's name, starting k2c-<run>- (fieldlib.campaign_owns; the
+  mutation gate refuses any id that did not pass it);
+- services are listed only in the campaign project (`compute services
+  list --project <campaign>`): a ledger id that differs from the live one
+  of its name, or a 404 for a service the project still lists, is a
+  refusal; an unlisted service named like one of the cell's
+  (k2c-<run>-<cell>-s|r|gN) is a refusal that keeps the cell's bucket.
+Verification lists only the campaign project's services and buckets and
+checks that none named k2c-<run>-* (with named cells: none of those
+cells' names) remains, every deleted bucket and
+destroyed service answers 404, and every deleted artifact object is absent.
+It does NOT cover the campaign project's environment variables: after a
+VERIFIED teardown the project still holds the last deploy's whole variable
+set, secret values included (AUTH_TOKEN, FLEET_INTERNAL_TOKEN, the data
+bucket key, the artifact key, KEEP_AWAKE=1, ...), until the next deploy
+restates or unsets them or campaign.py destroy deletes the project. The
+scope gates refuse every env-variable mutation, so no tool removes them;
+`campaign.py verify` lists their names. (In per-cell mode they went with
+the cell's project.)
 """
 from __future__ import annotations
 
+import re
 import sys
 import traceback
 
@@ -50,6 +80,7 @@ import fieldlib as F
 
 USAGE = ("usage: teardown.sh <run-id> [--yes] [cell...] | <run-id> --expired [--yes] | "
          "<run-id> --service <name> [--yes]")
+SERVICE_SUFFIX = re.compile(r"-[srg][0-9]+")
 
 
 class Guard:
@@ -57,8 +88,20 @@ class Guard:
 
     def __init__(self, run: str):
         self.run, self.prefix = run, f"k2c-{run}-"
+        self.camp, self.pid = F.campaign(), None
+        stamp = F.load_resources(run).get("campaign")
+        if self.camp:
+            F.campaign_check(self.camp)  # refuses to run at all if the project lost its name
+            self.pid = self.camp["project"]["id"]
+            if F.load_resources(run)["cells"] and (stamp or {}).get("project_id") != self.pid:
+                F.die(f"run {run} is not a run of campaign {self.camp['name']} ({self.pid}): refusing")
+        elif stamp:
+            F.die(f"run {run} is a campaign run ({stamp}) but {F.FIELD} has no campaign.json: refusing")
         rc = F.artifact_receipt()
-        self.art = {rc["projectId"]: "the artifact project", rc["bucketId"]: "the artifact bucket"}
+        self.art = {rc["projectId"]: "the campaign project" if self.camp else "the artifact project",
+                    rc["bucketId"]: "the artifact bucket"}
+        if self.camp:
+            self.art.update({self.pid: "the campaign project", self.camp["artifact_bucket"]["id"]: "the artifact bucket"})
         self.foreign = F.foreign_ids(run)
 
     def static(self, kind: str, rid: str | None, name: str | None) -> str | None:
@@ -90,13 +133,15 @@ class Guard:
         return "live", None
 
 
-def resolve_pending(run: str, cell: str, what: str, entry: dict, project_id: str | None) -> dict | None:
-    """Adopt the one live resource named like a pending entry (or None)."""
+def resolve_pending(run: str, cell: str, what: str, entry: dict, project_id: str | None,
+                    scoped: bool = False) -> dict | None:
+    """Adopt the one live resource named like a pending entry (or None).
+    `scoped`: buckets are listed in `project_id` only (campaign mode)."""
     if what == "project":
         live = [p for p in F.api_list("/projects") if p.get("name") == entry.get("name")]
     else:
-        live = [b for b in F.api_list("/buckets") if b.get("name") == entry.get("name")
-                and (b.get("project") or {}).get("id") == project_id]
+        live = [b for b in F.api_list(f"/buckets?projectId={project_id}" if scoped else "/buckets")
+                if b.get("name") == entry.get("name") and (b.get("project") or {}).get("id") == project_id]
     if len(live) > 1:
         raise RuntimeError(f"{len(live)} live {what}s are named {entry.get('name')}")
     if not live:
@@ -172,16 +217,105 @@ def plan_cell(run: str, cell: str, c: dict, g: Guard) -> dict:
     return item
 
 
+def plan_service_campaign(run: str, cell: str, s: dict, g: Guard, found: list, item: dict) -> str | None:
+    """Plan one ledger service of a campaign run: a refusal, or None."""
+    name, sid = s.get("name") or "", s.get("id")
+    why = g.static("service", sid, name)
+    if why:
+        return why
+    if len(found) > 1:
+        return f"service {name}: {len(found)} live services of that name in {g.pid}"
+    if not sid:
+        if not found:
+            item["notes"].append(f"service {name}: pending entry, no live service of its name")
+            item["gone_services"].append(name)
+            return None
+        sid = found[0].get("id")
+        with F.resources(run) as d:
+            F.cell_res(d, cell)["services"][name].update({"id": sid, "resolved_by_name": F.utc()})
+        why = g.static("service", sid, name)
+        if why:
+            return why
+    if found and found[0].get("id") != sid:
+        return f"service {name}: live id {found[0].get('id')} is not the ledger's {sid}"
+    state, why = F.campaign_owns("service", sid, name=name, prefix=g.prefix)
+    if state == "refuse":
+        return why
+    if state == "gone":
+        if found:
+            return f"service {sid} ({name}): GET answered 404 but the campaign project lists it"
+        item["notes"].append(f"service {sid} ({name}): already gone (404)")
+        item["gone_services"].append(name)
+        return None
+    item["services"].append({"id": sid, "name": name})
+    return None
+
+
+def plan_cell_campaign(run: str, cell: str, c: dict, g: Guard, live: dict, listing_error: str | None) -> dict:
+    """A campaign run's cell: its bucket and services, each proven live in
+    the campaign project; never a project."""
+    item = {"cell": cell, "refusals": [], "services": [], "notes": [], "project": None, "bucket": None,
+            "gone_services": []}
+    if c.get("project"):
+        item["refusals"].append(f"cell has its own project {c['project'].get('id')} in a campaign run")
+    b = c.get("bucket")
+    if b and b.get("status") != "deleted":
+        if not b.get("id"):
+            b = resolve_pending(run, cell, "bucket", b, g.pid, scoped=True)
+            if not b:
+                item["notes"].append("bucket: pending entry, no live bucket of its name in the campaign project")
+        if b:
+            why = g.static("bucket", b["id"], b.get("name"))
+            state, why = ("refuse", why) if why else F.campaign_owns("bucket", b["id"], name=b.get("name"),
+                                                                     prefix=g.prefix)
+            if state == "refuse":
+                item["refusals"].append(why)
+            elif state == "gone":
+                item["notes"].append(f"bucket {b['id']}: already gone (404)")
+                item["bucket_gone"] = b["id"]
+            else:
+                item["bucket"] = b
+    if listing_error:
+        item["refusals"].append(f"services of campaign project {g.pid} could not be listed: {listing_error}")
+    listed = set()
+    for s in (c.get("services") or {}).values():
+        if s.get("status") != "deleted":
+            listed.add(s.get("name") or "")
+            why = plan_service_campaign(run, cell, s, g, live.get(s.get("name")) or [], item)
+            if why:
+                item["refusals"].append(why)
+    base = F.base_name(run, cell)
+    for name, xs in sorted(live.items()):
+        if name not in listed and name.startswith(base) and SERVICE_SUFFIX.fullmatch(name[len(base):]):
+            item["refusals"].append(f"unlisted service {[x.get('id') for x in xs]} ({name}) in {g.pid}")
+    item["listed"] = sorted(listed)
+    item["objects"] = [k for k in c.get("artifact_objects", []) if k.startswith(f"k2c/{run}/")]
+    item["database"] = None
+    return item
+
+
+def campaign_services(g: Guard) -> tuple:
+    """({name: [services]} of the campaign project, listing error or None)."""
+    try:
+        out: dict = {}
+        for s in F.services_in(g.pid):
+            out.setdefault(s.get("name") or "", []).append(s)
+        return out, None
+    except Exception as e:  # noqa: BLE001 - an unknown service set refuses every cell
+        return {}, str(e)[:200]
+
+
 def plan(run: str, cells: list, g: Guard) -> list:
     doc = F.load_resources(run)
     out = []
+    live, err = campaign_services(g) if g.camp else ({}, None)
     for cell in cells or sorted(doc["cells"]):
         c = doc["cells"].get(cell)
         if not c:
             F.say(f"== {cell}: not in resources.json; nothing to do")
             continue
         try:
-            out.append(plan_cell(run, cell, c, g))
+            out.append(plan_cell_campaign(run, cell, c, g, live, err) if g.camp else plan_cell(run, cell, c, g))
         except Exception as e:  # noqa: BLE001 - one cell's planning failure refuses that cell only
             out.append({"cell": cell, "refusals": [f"planning failed: {str(e)[:300]}"], "services": [],
                         "notes": [], "project": None, "bucket": None, "objects": [], "database": None})
@@ -268,8 +402,10 @@ def destroy(run: str, items: list, report: dict) -> None:
             res = step(report, f"{it['cell']}: destroy service {s['name']}", lambda s=s: destroy_service(run, it["cell"], s))
             r["services"][s["name"]] = res or "FAILED"
             F.say(f"  service {s['name']}: {r['services'][s['name']]}")
-    for it in items:  # 2. bucket, then project, of a clean cell
+    for it in items:  # 2. bucket, then project (never in campaign mode: items carry none), of a clean cell
         r = report["cells"][it["cell"]]
+        for name in it.get("gone_services", []):  # campaign mode: 404 and not listed in the project
+            mark(run, it["cell"], "service", None, "deleted", name=name)
         held = it["refusals"] or [n for n, v in r["services"].items() if v != "destroyed"]
         if held:
             r["platform"] = f"left standing: {held}"
@@ -298,10 +434,27 @@ def destroy(run: str, items: list, report: dict) -> None:
             r["objects"][k] = "deleted" if ok else "FAILED"
 
 
-def verify(run: str, items: list, report: dict) -> bool:
+def leftovers_campaign(g: Guard, report: dict, cells: list | None) -> None:
+    """Only the campaign project's services and buckets are listed; what
+    counts as left over is any k2c-<run>-* name, or, for a teardown of
+    named cells (F1's f1a f1c while f1b goes on), those cells' names."""
+    bases = [F.base_name(g.run, c) for c in cells or []]
+
+    def ours(name: str) -> bool:
+        return name.startswith(g.prefix) and (not bases or any(
+            name == b or (name.startswith(b) and SERVICE_SUFFIX.fullmatch(name[len(b):])) for b in bases))
+    left = [s for s in F.services_in(g.pid) if ours(s.get("name") or "")]
+    report["services_left"] = [{"id": s.get("id"), "name": s.get("name")} for s in left]
+    bkts = [b for b in F.api_list(f"/buckets?projectId={g.pid}")
+            if (b.get("project") or {}).get("id") == g.pid and ours(b.get("name") or "")]
+    report["buckets_left"] = [{"id": b["id"], "name": b["name"]} for b in bkts]
+
+
+def verify(run: str, items: list, report: dict, g: Guard | None = None, cells: list | None = None) -> bool:
     ok = not report["failures"]
     client, bucket = F.artifact_s3()
     prefix = f"k2c-{run}-"
+    camp = bool(g and g.camp)
     for it in items:
         v = {}
         ok &= not it["refusals"]
@@ -309,10 +462,14 @@ def verify(run: str, items: list, report: dict) -> bool:
             if it.get(what):
                 st = step(report, f"verify {what}", lambda w=what, it=it: F.api("GET", f"/{w}s/{it[w]['id']}", allow=(404, 403))[0])
                 v[f"{what}_get"] = st
-                ok &= st in (404, 403)
+                ok &= st in ((404,) if camp else (404, 403))
         for name, res in report["cells"].get(it["cell"], {}).get("services", {}).items():
             v[f"service {name}"] = res
             ok &= res == "destroyed"
+        for s in it["services"] if camp else []:
+            st = step(report, "verify service", lambda s=s: F.api("GET", f"/services/{s['id']}", allow=(404, 403))[0])
+            v[f"service {s['name']} get"] = st
+            ok &= st == 404
         for k in it.get("objects", []):
             try:
                 client.head_object(Bucket=bucket, Key=k)
@@ -333,11 +490,43 @@ def verify(run: str, items: list, report: dict) -> bool:
         dbs = [d for d in F.api_list("/databases")
                if (d.get("project") or {}).get("id") in pids or d.get("name", "").startswith(prefix)]
         report["databases_left"] = [{"id": d["id"], "name": d.get("name")} for d in dbs]
-    if step(report, "verify workspace listings", lambda: leftovers() or True) is None:
+    if camp:
+        if step(report, "verify campaign project listings", lambda: leftovers_campaign(g, report, cells) or True) is None:
+            ok = False
+    elif step(report, "verify workspace listings", lambda: leftovers() or True) is None:
         ok = False
-    ok &= not (report.get("projects_left") or report.get("buckets_left") or report.get("databases_left"))
+    ok &= not (report.get("projects_left") or report.get("buckets_left") or report.get("databases_left")
+               or report.get("services_left"))
     report["verified"] = bool(ok)
     return bool(ok)
+
+
+def partial_campaign(run: str, cell: str, s: dict, g: Guard, yes: bool, rec: dict) -> str:
+    """One --expired / --service target of a campaign run: proven live in
+    the campaign project, then destroyed (or why not)."""
+    name, sid = s.get("name") or "", s.get("id")
+    why = g.static("service", sid, name)
+    if why:
+        return f"REFUSED: {why}"
+    found = [x for x in F.services_in(g.pid) if x.get("name") == name]
+    if len(found) > 1 or (found and sid and found[0].get("id") != sid):
+        return f"REFUSED: live {[x.get('id') for x in found]} named {name} is not the ledger's {sid}"
+    sid = sid or (found[0].get("id") if found else None)
+    state, why = "gone", None
+    if sid:
+        why = g.static("service", sid, name)
+        state, why = ("refuse", why) if why else F.campaign_owns("service", sid, name=name, prefix=g.prefix)
+    if state == "refuse":
+        return f"REFUSED: {why}"
+    if state == "gone":
+        if found:
+            return f"REFUSED: service {sid} answers 404 but the campaign project lists it"
+        if yes:
+            mark(run, cell, "service", sid, "deleted", name=name)
+        return "absent (not in the campaign project)"
+    if not yes:
+        return f"would destroy {sid}"
+    return step(rec, f"{cell}: destroy {name}", lambda: destroy_service(run, cell, {"id": sid, "name": name})) or "FAILED"
 
 
 def partial(run: str, g: Guard, yes: bool, expired: bool, service: str | None) -> bool:
@@ -352,6 +541,10 @@ def partial(run: str, g: Guard, yes: bool, expired: bool, service: str | None) -
         for s in targets:
             act = {"cell": cell, "service": s.get("name"), "expires": s.get("keep_awake_expires")}
             rec["actions"].append(act)
+            if g.camp:
+                act["result"] = partial_campaign(run, cell, s, g, yes, rec)
+                F.say(f"  {cell}/{act['service']} (expires {act['expires']}): {act['result']}")
+                continue
             why = g.static("service", s.get("id"), s.get("name"))
             p = c.get("project") or {}
             why = why or g.static("project", p.get("id"), p.get("name"))
@@ -393,6 +586,7 @@ def partial(run: str, g: Guard, yes: bool, expired: bool, service: str | None) -
 
 
 def main() -> None:
+    F.banner("teardown")
     argv = sys.argv[1:]
     yes, expired = "--yes" in argv, "--expired" in argv
     service = None
@@ -422,7 +616,7 @@ def main() -> None:
     ok = False
     try:
         destroy(run, items, report)
-        ok = verify(run, items, report)
+        ok = verify(run, items, report, g, cells)
     except Exception as e:  # noqa: BLE001 - recorded, then the report is still written
         report["failures"].append({"step": "teardown", "error": f"{type(e).__name__}: {e}",
                                    "trace": traceback.format_exc()[-1500:]})
@@ -432,8 +626,12 @@ def main() -> None:
         F.write_json(f"{F.results_dir(run)}/teardown.json", report)
     F.say(f"\nteardown {'VERIFIED' if ok else 'INCOMPLETE'}: failures {len(report['failures'])}, "
           f"refusals {[r for it in items for r in it['refusals']]}, projects left {report.get('projects_left')}, "
-          f"buckets left {report.get('buckets_left')}, databases left {report.get('databases_left')}; "
+          f"buckets left {report.get('buckets_left')}, databases left {report.get('databases_left')}, "
+          f"services left {report.get('services_left')}{' (campaign project ' + g.pid + ', kept)' if g.camp else ''}; "
           f"per cell {[(c, v.get('verify')) for c, v in report['cells'].items()]}")
+    if g.camp:
+        F.say("note: the campaign project's env variables (the last deploy's set, secrets included) are not part "
+              "of a run teardown; campaign.py verify lists them")
     sys.exit(0 if ok else 1)
 
 

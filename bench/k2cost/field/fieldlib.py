@@ -2,8 +2,11 @@
 
 Every field tool imports this module. It owns:
 
-- the field home, `$K2_FIELD_HOME` (default ~/.streams-k2/field): secrets,
-  cell files, run state and results all live there, never in the repo;
+- the field home, `$K2_FIELD_HOME` (required, no default: each home belongs
+  to one workspace, ~/.streams-k2/field-pro to the K2 cost campaign and
+  ~/.streams-k2/field to the per-cell runs, and nothing else ties a command
+  to its home): secrets, cell files, run state and results all live there,
+  never in the repo; `banner` names it on every tool's first line;
 - the platform API (https://api.prisma.io/v1, `User-Agent: curl/8.7.1`,
   or Cloudflare answers 1010) and the compute CLI, both authenticated from
   `platform-token.txt` without ever putting the token on a command line;
@@ -14,7 +17,11 @@ Every field tool imports this module. It owns:
   every `bun install` of a staged app) holds `$K2_FIELD_HOME/.cli.lock`, so
   a second tool blocks instead of racing bunx's package cache;
 - the S3 clients for a cell's data bucket and for the artifact bucket, and
-  a put that is verified by ranged GETs (bench/soak/build-upload.sh).
+  a put that is verified by ranged GETs (bench/soak/build-upload.sh);
+- campaign-project mode (`campaign.json`, written by campaign.py): every
+  cell of every run lives in ONE project, and `gate_api` / `gate_cli`
+  refuse, before anything is sent, any platform call that could address
+  another project or anything in it (see "campaign mode" below).
 
 Secrets are read from files and handed to subprocesses through the
 environment or 0600 files only. `redact` is the one place that decides
@@ -40,7 +47,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-FIELD = os.environ.get("K2_FIELD_HOME") or os.path.expanduser("~/.streams-k2/field")
+
+def _field_home() -> str:
+    """$K2_FIELD_HOME, never a default: a command typed without the export
+    must not fall into another workspace's home (its token, artifact bucket
+    and ledgers, and per-cell mode, which no gate scopes)."""
+    home = (os.environ.get("K2_FIELD_HOME") or "").strip()
+    if not home:
+        sys.stderr.write("FATAL: K2_FIELD_HOME is not set: export the field home this command is for "
+                         "(the K2 cost campaign: ~/.streams-k2/field-pro; the per-cell runs: ~/.streams-k2/field)\n")
+        sys.exit(2)
+    return os.path.abspath(os.path.expanduser(home))
+
+
+FIELD = _field_home()
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 REGION = "eu-central-1"
@@ -79,6 +99,11 @@ def check_names(run: str, cell: str | None = None) -> None:
         die(f"run id {run!r} must match {RUN_RE.pattern}")
     if cell is not None and not CELL_RE.match(cell):
         die(f"cell {cell!r} must match {CELL_RE.pattern}")
+    camp = campaign_doc()
+    if camp:  # a run's k2c-<run>- prefix must never cover the campaign's own names
+        own = [camp.get("name") or "", ((camp.get("artifact_bucket") or {}).get("name") or "")]
+        if any((n + "-").startswith(f"k2c-{run}-") for n in own if n):
+            die(f"run id {run!r}: k2c-{run}- would name the campaign's own project or artifact bucket {own}")
 
 
 def base_name(run: str, cell: str) -> str:
@@ -100,7 +125,9 @@ def field_file(name: str) -> str:
 
 def artifact_receipt() -> dict:
     """The artifact project and bucket, which no field tool may modify or
-    delete: {"projectId", "bucketId", ...}."""
+    delete: {"projectId", "bucketId", ...}. In campaign mode projectId is
+    the campaign project (runs deploy into it; none deletes it) and the
+    bucket is only ever deleted by campaign.py destroy."""
     rc = json.loads(field_file("artifact-platform-receipt.json"))
     if not rc.get("projectId") or not rc.get("bucketId"):
         die("artifact-platform-receipt.json lacks projectId or bucketId")
@@ -215,7 +242,7 @@ def redact(env: dict) -> dict:
 # ---------------------------------------------------------------- cell files
 
 def read_cell_file(cell: str) -> dict:
-    """~/.streams-k2/field/cells/<cell>.env: KEY=VALUE lines, # comments,
+    """$K2_FIELD_HOME/cells/<cell>.env: KEY=VALUE lines, # comments,
     no shell expansion. Holds no secrets."""
     path = os.path.join(FIELD, "cells", f"{cell}.env")
     if not os.path.exists(path):
@@ -268,6 +295,176 @@ def cell_res(doc: dict, cell: str) -> dict:
     return doc["cells"].setdefault(cell, {"services": {}, "artifact_objects": [], "keep_awake": []})
 
 
+# ---------------------------------------------------------------- campaign mode
+#
+# $K2_FIELD_HOME/campaign.json (campaign.py init) names ONE project that holds
+# every cell's services and buckets plus the artifact bucket. Without it a
+# field home runs per-cell projects (the original mode), unless it holds
+# `campaign-required`, which makes it refuse per-cell mode outright.
+
+CAMPAIGN_RE = re.compile(r"^k2c-[a-z0-9][a-z0-9-]{0,40}$")
+_VERIFIED: dict = {"bucket": set(), "service": set(), "deployment": set()}
+_PERMIT: set = set()
+_CHECKED: dict = {}
+
+
+class ScopeError(RuntimeError):
+    """A platform call outside the campaign project's scope, refused before
+    it was sent."""
+
+
+def campaign_path() -> str:
+    return os.path.join(FIELD, "campaign.json")
+
+
+def campaign_doc() -> dict | None:
+    """campaign.json as stored (any status), or None."""
+    return read_json(campaign_path())
+
+
+def campaign(require_ready: bool = True) -> dict | None:
+    """The campaign record in campaign mode, None in per-cell mode."""
+    doc = campaign_doc()
+    if doc is None:
+        if os.path.exists(os.path.join(FIELD, "campaign-required")):
+            die(f"{FIELD} runs only in campaign mode and has no campaign.json: campaign.py init <name> first")
+        return None
+    if not CAMPAIGN_RE.match(str(doc.get("name") or "")) or (doc.get("project") or {}).get("name") != doc["name"]:
+        die(f"campaign.json: name {doc.get('name')!r} must match {CAMPAIGN_RE.pattern} and be the project's")
+    if require_ready and (doc.get("status") != "ready" or not doc["project"].get("id")
+                          or not (doc.get("artifact_bucket") or {}).get("id")):
+        die(f"campaign {doc['name']} is {doc.get('status')!r}, not ready (campaign.py show / init)")
+    return doc
+
+
+def campaign_check(doc: dict) -> dict:
+    """Refuse to go on unless the campaign project is live under its
+    recorded name (and workspace): one GET /v1/projects/{id}."""
+    p = doc["project"]
+    st, body = api("GET", f"/projects/{p['id']}", allow=(404, 403))
+    live = (body or {}).get("data") or {}
+    ws = (p.get("workspace") or {}).get("id")
+    if st != 200 or live.get("id") != p["id"] or live.get("name") != p["name"] or (
+            ws and (live.get("workspace") or {}).get("id") != ws):
+        die(f"campaign project {p['id']}: GET answered {st}, live name {live.get('name')!r} "
+            f"(workspace {(live.get('workspace') or {}).get('id')}) is not the recorded {p['name']!r} "
+            f"({ws}): refusing to run")
+    _CHECKED[p["id"]] = live
+    return live
+
+
+def campaign_owns(kind: str, rid: str, name: str | None = None, prefix: str = "k2c-",
+                  service_id: str | None = None) -> tuple:
+    """("live" | "gone" | "refuse", reason) for a bucket, service or
+    deployment id, from a GET of the LIVE object. "live" only when its live
+    project is the campaign project (a deployment: its live service is
+    `service_id`, itself verified) and its live name is `name` (if given)
+    and starts with `prefix`; only then is the id registered, and only a
+    registered id passes the mutation gate."""
+    pid = ((campaign_doc() or {}).get("project") or {}).get("id")
+    if not pid:
+        return "refuse", "no campaign project id"
+    st, body = api("GET", f"/{kind}s/{rid}", allow=(404, 403))
+    if st == 404:
+        return "gone", None
+    if st != 200:
+        return "refuse", f"{kind} {rid}: GET answered {st}; cannot verify its project"
+    live = (body or {}).get("data") or {}
+    if live.get("id") != rid:
+        return "refuse", f"{kind} {rid}: GET returned id {live.get('id')}"
+    if kind == "deployment":
+        if not service_id or live.get("serviceId") != service_id or service_id not in _VERIFIED["service"]:
+            return "refuse", f"deployment {rid}: live service {live.get('serviceId')} is not the verified {service_id}"
+    else:
+        lp = live.get("projectId") if kind == "service" else (live.get("project") or {}).get("id")
+        if lp != pid:
+            return "refuse", f"{kind} {rid}: live project {lp} is not the campaign project {pid}"
+        lname = live.get("name") or ""
+        if (name is not None and lname != name) or not lname.startswith(prefix):
+            return "refuse", f"{kind} {rid}: live name {lname!r} is not {name!r} or lacks {prefix}"
+    _VERIFIED[kind].add(rid)
+    return "live", None
+
+
+def register_created_bucket(data: dict) -> None:
+    """A bucket this process just created: registered only if the POST's
+    answer puts it in the campaign project."""
+    pid = ((campaign_doc() or {}).get("project") or {}).get("id")
+    if pid and (data.get("project") or {}).get("id") == pid:
+        _VERIFIED["bucket"].add(data["id"])
+    elif pid:
+        die(f"bucket {data.get('id')} was created in {(data.get('project') or {}).get('id')}, not {pid}")
+
+
+@contextlib.contextmanager
+def permit(what: str):
+    """campaign.py destroy only: "artifact-bucket-delete", "campaign-project-delete"."""
+    _PERMIT.add(what)
+    try:
+        yield
+    finally:
+        _PERMIT.discard(what)
+
+
+def stamp_campaign(doc: dict, camp: dict) -> None:
+    """Bind a run ledger to the campaign project (inside resources())."""
+    pid = camp["project"]["id"]
+    have = (doc.get("campaign") or {}).get("project_id")
+    if have and have != pid:
+        die(f"run {doc.get('run_id')} belongs to campaign project {have}, not {pid}")
+    if any(c.get("project") for c in doc["cells"].values()):
+        die(f"run {doc.get('run_id')} has per-cell projects: campaign mode refuses it")
+    doc["campaign"] = {"name": camp["name"], "project_id": pid}
+
+
+def run_project(run: str, cell: str) -> str | None:
+    """The project a cell's services are deployed into: the campaign project
+    (live-checked once per process) or, in per-cell mode, the cell's own."""
+    doc = load_resources(run)
+    c = doc["cells"].get(cell) or {}
+    camp = campaign()
+    if not camp:
+        if doc.get("campaign"):
+            die(f"run {run} is a campaign run but {FIELD} has no campaign.json")
+        return (c.get("project") or {}).get("id")
+    pid = camp["project"]["id"]
+    if (doc.get("campaign") or {}).get("project_id") != pid or c.get("project"):
+        die(f"run {run} was not provisioned in campaign {camp['name']} ({pid}): refusing")
+    if pid not in _CHECKED:
+        campaign_check(camp)
+    return pid
+
+
+def banner(tool: str) -> None:
+    """The first line of every tool's output (stderr, so a JSON stdout stays
+    clean): the field home and its campaign, i.e. what the command acts on."""
+    doc = campaign_doc()
+    if doc:
+        mode = f"campaign {doc.get('name')} (project {(doc.get('project') or {}).get('id')}, {doc.get('status')})"
+    elif os.path.exists(os.path.join(FIELD, "campaign-required")):
+        mode = "campaign-required, no campaign.json yet"
+    else:
+        mode = "per-cell mode (no campaign.json)"
+    sys.stderr.write(f"[{tool}] field home {FIELD}: {mode}\n")
+    sys.stderr.flush()
+
+
+def project_env_rows(project: str) -> list:
+    """The production variables of `project`, names and flags only (the API
+    returns no values). A row that names another project, or none, raises
+    ScopeError: the listing ignored its projectId filter, and the compute
+    CLI's own lookups behind every deploy's --env and --unset-env
+    (compute-sdk 0.39.0 #applyEnvVars: list {projectId, class, key}, then
+    PATCH or DELETE existing[0] by id without checking its project) depend
+    on the same filter, outside gate_api's sight."""
+    rows = api_list(f"/environment-variables?projectId={project}&class=production&limit=100")
+    bad = sorted({(str(r.get("key")), str(r.get("projectId"))) for r in rows if r.get("projectId") != project})
+    if bad:
+        raise ScopeError(f"GET /environment-variables?projectId={project} returned rows of another project (or "
+                         f"none): {bad[:8]}: the filter is not honoured, so no deploy may run")
+    return rows
+
+
 # ---------------------------------------------------------------- platform API
 
 IDEMPOTENT = {"GET", "HEAD", "DELETE", "PUT"}
@@ -278,12 +475,130 @@ class OutcomeUnknown(RuntimeError):
     or may not have created the resource."""
 
 
+def _scope() -> tuple:
+    """("percell" | "required" | "campaign", campaign.json or None)."""
+    doc = campaign_doc()
+    if doc is not None:
+        return "campaign", doc
+    return ("required" if os.path.exists(os.path.join(FIELD, "campaign-required")) else "percell"), None
+
+
+def gate_api(method: str, path: str, body=None) -> None:
+    """Campaign mode: raise ScopeError for any API call that could address
+    a project other than the campaign's, or anything in one. Allowed: GET of
+    the campaign project; GET of one bucket, service or deployment by id
+    (the ownership check itself); the workspace-wide GET /projects (only to
+    find our own k2c- project by exact name); /services, /buckets,
+    /databases and /environment-variables listings scoped to the campaign
+    project; POST /projects for the pending campaign project only; POST
+    /buckets into the campaign project; keys and DELETE only for buckets
+    verified in it (campaign_owns); DELETE of the campaign project and the
+    artifact bucket only under permit() (campaign.py destroy)."""
+    mode, doc = _scope()
+    if mode == "percell":
+        return
+    camp = doc or {}
+    pid = (camp.get("project") or {}).get("id")
+    base, _, query = path.partition("?")
+    q = urllib.parse.parse_qs(query)
+    parts = base.strip("/").split("/")
+
+    def no(why: str) -> None:
+        raise ScopeError(f"{method} {base}: {why} (campaign {camp.get('name')}, project {pid})")
+    if method == "GET":
+        if len(parts) == 2 and parts[0] == "projects":
+            return None if pid and parts[1] == pid else no("the only project read by id is the campaign's")
+        if len(parts) == 2 and parts[0] in ("buckets", "services", "deployments"):
+            return None  # read-only, by id: the ownership check before any mutation
+        if parts == ["projects"]:
+            return None  # read-only; callers keep only the exact k2c- campaign name
+        if len(parts) == 1 and parts[0] in ("services", "buckets", "databases", "environment-variables"):
+            return None if pid and q.get("projectId") == [pid] else no("a listing must be scoped to the campaign project")
+        return no("not a read these tools make")
+    if mode == "required":
+        return no("this field home requires campaign mode and has no campaign.json")
+    if method == "POST" and parts == ["projects"]:
+        p = camp.get("project") or {}
+        b = body or {}
+        if p.get("id") or p.get("status") != "pending":
+            return no("the campaign project exists; no tool creates another project")
+        if b.get("name") != p.get("name") or b.get("region") != REGION or b.get("createDatabase") is not False:
+            return no("only the pending campaign project, in eu-central-1, without a database")
+        return None
+    if method == "POST" and parts == ["buckets"]:
+        b = body or {}
+        if not pid or b.get("projectId") != pid or not str(b.get("name") or "").startswith("k2c-"):
+            return no("a bucket is created only in the campaign project, named k2c-*")
+        return None
+    if len(parts) >= 2 and parts[0] == "buckets" and (
+            (method == "POST" and parts[2:] == ["keys"]) or (method == "DELETE" and len(parts) == 2)):
+        if parts[1] not in _VERIFIED["bucket"]:
+            return no(f"bucket {parts[1]} is not verified in the campaign project")
+        art = (camp.get("artifact_bucket") or {}).get("id")
+        if method == "DELETE" and parts[1] == art and "artifact-bucket-delete" not in _PERMIT:
+            return no("the artifact bucket goes only with campaign.py destroy")
+        return None
+    if method == "DELETE" and len(parts) == 2 and parts[0] == "projects":
+        if parts[1] != pid or "campaign-project-delete" not in _PERMIT:
+            return no("only campaign.py destroy deletes a project, and only the campaign's")
+        return None
+    return no("not a call these tools make")
+
+
+def gate_cli(args: list) -> None:
+    """Campaign mode: raise ScopeError for any compute-cli call outside the
+    campaign project. Allowed: `logs <version>` and `versions show
+    <version>` (read-only); `services list --project <campaign>`; `deploy
+    --project <campaign>` (a new k2c- service by name, or `--service` a
+    verified one; its --unset-env keys are this project's variables);
+    `services destroy` and `versions stop` of verified ids only. Nothing
+    at all while the shell exports a variable the CLI would act on
+    (CLI_STRAY_ENV; cli_env drops them too)."""
+    mode, doc = _scope()
+    if mode == "percell":
+        return
+    camp = doc or {}
+    pid = (camp.get("project") or {}).get("id")
+    head = list(args[:2])
+
+    def opt(name: str) -> list:
+        return [args[i + 1] for i, a in enumerate(args[:-1]) if a == name]
+
+    def no(why: str) -> None:
+        raise ScopeError(f"compute {' '.join(head)}: {why} (campaign {camp.get('name')}, project {pid})")
+    stray = sorted(k for k in CLI_STRAY_ENV if os.environ.get(k))
+    if stray:
+        return no(f"this shell exports {stray}: unset them (the CLI would deploy into that service or call that API)")
+    if args[:1] == ["logs"] or head == ["versions", "show"]:
+        return None
+    if mode == "required" or not pid:
+        return no("no campaign project")
+    if head == ["services", "list"]:
+        return None if opt("--project") == [pid] else no("services are listed only in the campaign project")
+    if head == ["services", "destroy"]:
+        return None if len(args) > 2 and args[2] in _VERIFIED["service"] else no("service not verified in the campaign")
+    if head == ["versions", "stop"]:
+        return None if len(args) > 2 and args[2] in _VERIFIED["deployment"] else no("version not verified in the campaign")
+    if args[:1] == ["deploy"]:
+        sid, names = opt("--service"), opt("--service-name")
+        if opt("--project") != [pid]:
+            return no("deploys go only into the campaign project")
+        if sid and (len(sid) != 1 or sid[0] not in _VERIFIED["service"] or names):
+            return no(f"redeploy of service {sid} that is not verified in the campaign project")
+        if not sid and (len(names) != 1 or not names[0].startswith("k2c-")):
+            return no("a new service must be named k2c-*")
+        return None
+    return no("not a compute call these tools make")
+
+
 def api(method: str, path: str, body=None, allow=(), timeout: float = 60.0):
     """(status, parsed JSON or None). Raises on a status outside 2xx unless
     listed in `allow`. Idempotent methods retry transport errors and
     429/5xx three times; a POST is never retried (a lost answer may have
     created a resource), and a POST whose answer is lost raises
-    OutcomeUnknown: its caller recorded a pending ledger entry first."""
+    OutcomeUnknown: its caller recorded a pending ledger entry first. In
+    campaign mode gate_api runs first and may raise ScopeError."""
+    gate_api(method, path, body)
     data = json.dumps(body).encode() if body is not None else None
     retries = 3 if method in IDEMPOTENT else 0
     for attempt in range(retries + 1):
@@ -335,8 +650,18 @@ def api_list(path: str) -> list:
     return out
 
 
+# compute-cli 0.39.0 acts on these: PRISMA_COMPUTE_SERVICE_ID is the
+# --service of any deploy that names none (helpers.ts resolveServiceId), so a
+# `--service-name k2c-*` deploy would redeploy that unverified service, and
+# PRISMA_MANAGEMENT_API_URL points the CLI at another API than API.
+CLI_STRAY_ENV = ("PRISMA_COMPUTE_SERVICE_ID", "PRISMA_MANAGEMENT_API_URL")
+
+
 def cli_env() -> dict:
-    env = dict(os.environ)
+    """The operator's environment without any PRISMA_* variable (the
+    service id, API URL and auth file the CLI would otherwise honour, or
+    another workspace's token), plus this field home's token."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PRISMA_")}
     env["PRISMA_API_TOKEN"] = field_file("platform-token.txt")
     env.pop("RUSTUP_TOOLCHAIN", None)
     return env
@@ -374,7 +699,8 @@ def cli_lock():
 
 
 def cli(args: list, timeout: float = 600, cwd: str | None = None) -> subprocess.CompletedProcess:
-    """One compute-cli call, under cli_lock()."""
+    """One compute-cli call, under cli_lock() (gate_cli first)."""
+    gate_cli(args)
     with cli_lock():
         p = subprocess.run(CLI + args, env=cli_env(), cwd=cwd, capture_output=True, text=True, timeout=timeout)
     p.stdout = "\n".join(l for l in p.stdout.splitlines() if not NOISE.search(l))
@@ -395,7 +721,10 @@ def cli_json(args: list, timeout: float = 600) -> dict:
 
 
 def services_in(project: str) -> list:
-    return cli_json(["services", "list", "--project", project]).get("data") or []
+    """`compute services list --project`; an item that names another
+    project is dropped, never acted on."""
+    rows = cli_json(["services", "list", "--project", project]).get("data") or []
+    return [s for s in rows if s.get("projectId") in (None, project)]
 
 
 def compute_logs(version: str, seconds: float = 45, stop_when=None, tail: int = 2000,
@@ -407,6 +736,7 @@ def compute_logs(version: str, seconds: float = 45, stop_when=None, tail: int = 
     buffer's start by default; from_start=False gives the last `tail`
     lines. The raw log is never stored."""
     args = ["logs", version, "--tail", str(tail)] + (["--from-start"] if from_start else [])
+    gate_cli(args)
     with cli_lock():
         p = subprocess.Popen(CLI + args, env=cli_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         lines: list = []

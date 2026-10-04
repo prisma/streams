@@ -8,10 +8,29 @@ be priced. The local harness (`k2gen.ts`, `scrape.py`, `price.py`) lives in
 `bench/k2cost/`; this directory deploys k2gen in-region and adds the
 field-only instruments.
 
+Two modes, chosen by the field home (`$K2_FIELD_HOME`, which every tool
+requires: there is no default, so a command typed without the export stops
+instead of falling into another workspace's home; every tool's first line,
+on stderr, names the home and its campaign):
+
+- **Campaign-project mode** (`campaign.json` present; the K2 cost campaign
+  in the owner's Pro workspace, `~/.streams-k2/field-pro`, campaign
+  `k2c-cost`): ONE project `k2c-cost` in eu-central-1 holds the artifact
+  bucket `k2c-cost-artifacts` and every run's buckets and services. The
+  workspace holds unrelated projects and buckets; no tool can address them
+  (see "Platform calls and their scope"). A field home holding
+  `campaign-required` refuses to run in the other mode at all.
+- **Per-cell mode** (no `campaign.json`, the original
+  `~/.streams-k2/field`, now named explicitly with
+  `K2_FIELD_HOME=~/.streams-k2/field`): every cell gets its own project in a
+  workspace that holds nothing else. Otherwise unchanged; the rules below
+  that name a "run project" apply to it.
+
 ## Rules every tool here enforces
 
-- **Secrets** come only from files under `~/.streams-k2/field`
-  (`$K2_FIELD_HOME`): `platform-token.txt`, `binid.txt`, `binsec.txt`,
+- **Secrets** come only from files under `$K2_FIELD_HOME`
+  (`~/.streams-k2/field-pro` for the campaign; never mix homes: each
+  token belongs to another workspace): `platform-token.txt`, `binid.txt`, `binsec.txt`,
   `artifact-endpoint.txt`, `artifact-bucket.txt`, and per cell
   `runs/<run>/<cell>/secrets/` (0700; bucket key, deployment bearer, fleet
   token, usage and cursor keys, feed signing key, data key, generator
@@ -19,7 +38,12 @@ field-only instruments.
   the repo: platform API calls run in-process (`User-Agent: curl/8.7.1`,
   or Cloudflare answers 1010), the compute CLI gets the token through its
   environment, and deploy env values travel in a 0600 env file deleted
-  after the call. Stored environments are redacted (`fieldlib.redact`).
+  after the call. The CLI's environment carries no `PRISMA_*` variable of
+  the operator's shell (`fieldlib.cli_env`): compute-cli 0.39.0 takes
+  `PRISMA_COMPUTE_SERVICE_ID` as the `--service` of any deploy that names
+  none (a `--service-name k2c-*` deploy would redeploy that service) and
+  `PRISMA_MANAGEMENT_API_URL` as its API; in campaign mode `gate_cli`
+  refuses every compute call while the shell exports either. Stored environments are redacted (`fieldlib.redact`).
 - **One compute-cli call at a time** (parallel `bunx` races its package
   cache): every `bunx` subprocess of every field tool, and every `bun
   install` of a staged app, holds `$K2_FIELD_HOME/.cli.lock`, so a second
@@ -46,30 +70,165 @@ field-only instruments.
   guard 2 min after its plan ends. And observe.py destroys every service
   past its expiry (`teardown.sh <run> --expired --yes`, every minute).
   Smoke cells come down within 30 minutes.
-- **Region and workspace.** fra (`eu-central-1`) only, in the K2 workspace
-  (the token's workspace holds only the artifact project and bucket, which
-  are never modified or deleted; the run's feeds and generator header files
-  under `k2c/<run>/` in the artifact bucket are deleted at teardown, the
-  binaries under `bin/` stay). Never go near the Tigris observatory (another
-  workspace; RUNBOOK §14).
-- **Results** go to `~/.streams-k2/field/results/<run>/`, never into the
+- **Region and workspace.** fra (`eu-central-1`) only. Per-cell mode: the
+  K2 workspace (the token's workspace holds only the artifact project and
+  bucket, which are never modified or deleted). Campaign mode: only the
+  campaign project; nothing else in the workspace is read by id, listed
+  by project, written or deleted. Either way the run's feeds and generator
+  header files under `k2c/<run>/` in the artifact bucket are deleted at
+  teardown, the binaries under `bin/` stay. Never go near the Tigris
+  observatory (another workspace; RUNBOOK §14).
+- **Results** go to `$K2_FIELD_HOME/results/<run>/`, never into the
   repo, and are never uploaded anywhere.
+
+### Campaign mode: what changes
+
+- `campaign.py init <name>` (name `k2c-*`; `cost` as a run id is then
+  refused, since `k2c-cost-` would cover `k2c-cost-artifacts`) creates the
+  project with `createDatabase: false`, written to `campaign.json` as
+  `pending` BEFORE its POST (never retried; a re-run resolves it by exact
+  name; a project of that name that no pending entry accounts for is
+  refused, not adopted), trusts it only after `GET /v1/projects/{id}`
+  shows the recorded name, then creates `<name>-artifacts` in it with a
+  read_write key and writes `artifact-platform-receipt.json` (projectId =
+  the campaign project, `campaign`), `artifact-endpoint.txt`,
+  `artifact-bucket.txt`, `binid.txt`, `binsec.txt`. Artifact files that are
+  not this campaign's are never overwritten.
+- `provision.py` creates no project: it stamps the run ledger with the
+  campaign project (`resources.json` `campaign`; a run is in one mode for
+  life, and a run with per-cell projects is refused) and creates each
+  cell's bucket `k2c-<run>-<cell>` (pending first, as before) and key in
+  the campaign project. The ledger's cells carry no `project`.
+- `deploy-cell.sh` and `gen.sh` deploy every service into the campaign
+  project, names unchanged (`k2c-<run>-<cell>-s<i>|-r<j>|-g<k>`). Every
+  deploy still restates the service's complete env and unsets every other
+  variable of the project (RUNBOOK §7.3: each deploy snapshots the union of
+  everything ever set in the project), which keeps each version's snapshot
+  exact with several cells in one project. `--project` is always the
+  campaign project, every `--unset-env` key comes from `GET
+  /v1/environment-variables?projectId=<campaign>`, and the listing and the
+  deploy share one CLI lock, so no other tool's deploy sets a variable in
+  between. **Any row naming another project (or none) refuses the deploy**:
+  the compute CLI sets and unsets each variable through its own lookup on
+  the same filter (compute-sdk 0.39.0 `#applyEnvVars`: list `{projectId,
+  class, key}`, then PATCH/DELETE `existing[0]` by id, or POST) and never
+  checks the row's project, so dropping the row would protect only the
+  tool's list, not the CLI's write. Under the same lock every key the
+  deploy sets or unsets is probed with that exact lookup (`&key=K`), which
+  must return at most one row, of key K and the campaign project
+  (`deploy.probe_env_keys`; ~85 GETs, 4 at a time). Right after each
+  deploy, before its health gate, `compute versions show` must list no
+  name the deploy did not state (the project's system-managed names
+  aside), or the deploy stops (an inherited KEEP_AWAKE would bill while
+  the ledger says keep_awake false); deploy.json still records each
+  version's env names (`platform_env_extra`). A redeploy's `--service`,
+  a new service's name (resolved in the project first) and `--kill`'s
+  service and version are proven live in the campaign project first.
+- `teardown.sh <run>` destroys the run's ledger-listed services and
+  buckets ONLY and never the campaign project. It refuses to run at all
+  unless the campaign project is live under its recorded name and the run
+  is stamped with it; it refuses any service or bucket whose LIVE project
+  (`GET /v1/services/{id}` `projectId`, `GET /v1/buckets/{id}`
+  `project.id`) is not the campaign project, any name not starting
+  `k2c-<run>-` (ledger and live), the artifact bucket by id, ids another
+  run lists, a ledger id that is not the live one of its name, a listed
+  service whose GET answers 404, and an unlisted service named like one of
+  the cell's (that cell's bucket stays). Verification lists only the
+  campaign project's services and buckets and checks none named
+  `k2c-<run>-*` remains (with named cells, none of those cells' names, so
+  F1's `teardown.sh $RUN f1a f1c` verifies while f1b goes on), plus a 404
+  for every deleted bucket and destroyed service and the artifact
+  objects' absence. `--expired` and `--service` apply the same guards.
+  **The project's environment variables are not part of a run teardown**:
+  after VERIFIED the campaign project still holds the last deploy's whole
+  set, secret values included (AUTH_TOKEN, FLEET_INTERNAL_TOKEN,
+  USAGE_STREAM_KEY, STREAMS_CURSOR_KEY, the data bucket key, the artifact
+  key, which stays live for the whole campaign, and KEEP_AWAKE=1), until a
+  deploy restates or unsets them or `campaign.py destroy` deletes the
+  project. The gates refuse every env-variable mutation, so no tool
+  removes them (deleting them would need an owner-approved gate exception:
+  DELETE `/environment-variables/{id}` only for ids the campaign-scoped
+  listing returns with the campaign's projectId, in a full-run teardown
+  while no other run's service is live). Every field deploy unsets them,
+  so none reaches a later cell; a manual deploy into the project would
+  inherit them. `campaign.py verify` lists their names.
+- `campaign.py destroy [--yes]` (a dry run by default) ends the campaign:
+  it refuses while the project holds any service or bucket not named
+  `k2c-*` (or any database), destroys every k2c- service, then (only if all
+  went) every k2c- bucket including the artifact bucket, each first proven
+  live in the project; deletes the project only once a fresh listing shows
+  it empty; and verifies by GET that the project, every bucket and every
+  service answer 404. It marks the run ledgers, writes
+  `results/campaign-destroy-<utc>.json` and sets `campaign.json` to
+  `destroyed`, after which no tool runs against it.
+- observe.py and price_field.py are unchanged: they read versions, URLs
+  and buckets from the ledger.
+- `campaign.py verify` also lists the campaign project's env variable
+  names (never values; the listing returns none) and fails on a row of
+  another project.
+
+### Platform calls and their scope
+
+Every platform call goes through `fieldlib.api` (and `api_list`) or the
+compute CLI (`fieldlib.cli`, `cli_json`, `services_in`, `compute_logs`).
+In campaign mode `fieldlib.gate_api` and `fieldlib.gate_cli` check each
+one BEFORE it is sent and raise `ScopeError` for anything outside this
+table; a mutation of a bucket, service or version needs its id to have
+passed `fieldlib.campaign_owns` in the same process (a GET of the live
+object showing the campaign project, the expected name and a `k2c-`
+prefix) or, for a bucket, to have been created in the campaign project by
+that process. Per-cell mode is ungated (and unchanged).
+
+| Call | Callers | Scope in campaign mode |
+|---|---|---|
+| `GET /v1/projects` (workspace) | campaign.py init | read-only; keeps only the exact campaign name (taken-name refusal, pending resolution) |
+| `POST /v1/projects` | campaign.py init | only the pending campaign project: its name, eu-central-1, `createDatabase: false`, while campaign.json has no id |
+| `GET /v1/projects/{id}` | `campaign_check` (provision, deploy and gen via `run_project`, teardown, campaign init/verify/destroy); destroy's 404 check | the campaign project's id only |
+| `DELETE /v1/projects/{id}` | campaign.py destroy | the campaign project only, under `permit("campaign-project-delete")`, once its scoped listings are empty |
+| `GET /v1/buckets?projectId=` | provision, teardown (pending, verification), campaign init/verify/destroy | `projectId` must be the campaign's; items also filtered by `project.id` |
+| `POST /v1/buckets` | provision (`k2c-<run>-<cell>`), campaign init (`<name>-artifacts`) | `projectId` = the campaign project, name `k2c-*` |
+| `POST /v1/buckets/{id}/keys` | provision, campaign init | bucket verified in the campaign project |
+| `DELETE /v1/buckets/{id}` | teardown (the run's ledger buckets), campaign destroy | bucket verified; the artifact bucket only under `permit("artifact-bucket-delete")` (destroy) |
+| `GET /v1/buckets/{id}`, `/v1/services/{id}`, `/v1/deployments/{id}` | `campaign_owns` (provision, deploy redeploy/--kill, teardown, campaign init/destroy); teardown and destroy 404 checks | read-only by id: the ownership check itself; ids come from the ledger or the campaign project's own listing |
+| `GET /v1/environment-variables?projectId=` | `fieldlib.project_env_rows`: deploy (unset list), campaign verify | `projectId` must be the campaign's; a row of another project, or none, refuses (ScopeError) |
+| `GET /v1/environment-variables?projectId=&class=production&key=K` | deploy.probe_env_keys, every K the deploy sets or unsets, under the deploy's CLI lock | `projectId` must be the campaign's; more than one row, or a row of another key or project, refuses the deploy |
+| `GET /v1/databases?projectId=` | campaign.py destroy | `projectId` must be the campaign's (any database refuses the destroy) |
+| `compute services list --project` | `services_in`: deploy (name resolution, retry, --kill), teardown (plan, --expired/--service, verification), campaign verify/destroy | `--project` must be the campaign project; items naming another `projectId` dropped |
+| `compute deploy` | deploy.deploy_service (servers, routers, generators) | `--project` = the campaign project; `--service` a verified id, or `--service-name k2c-*`; `--unset-env` keys from the campaign project's own variable listing; refused while the shell exports `PRISMA_COMPUTE_SERVICE_ID` or `PRISMA_MANAGEMENT_API_URL` (and `cli_env` drops every `PRISMA_*`) |
+| `compute services destroy <id>` | teardown, campaign destroy | id verified |
+| `compute versions stop <id>` | deploy --kill | version verified: its live service is the ledger's, itself verified |
+| `compute versions show <id>`, `compute logs <id>` | deploy (the snapshot check right after each deploy, shape, env names), observe.py (wrapper CPU) | read-only; versions this tool set deployed (from the deploy answer or the ledger) |
+| workspace `GET /v1/buckets`, `/v1/databases`, `/v1/services`; any other path or method | per-cell mode only (teardown leftovers, provision) | refused |
+
+**Outside the gates:** inside `compute deploy` the CLI itself lists each
+variable by key and then POSTs, PATCHes or DELETEs
+`/v1/environment-variables[/{id}]`. `gate_api` never sees those calls;
+they are protected only by the deploy's preflight above (the
+project-scoped listing refusing any foreign row, and the per-key probe of
+the CLI's exact lookup, both under the CLI lock that the deploy holds).
+
+Not platform API calls: S3 requests go to the artifact bucket with its own
+key (bins.py, feeds and generator headers, teardown's `k2c/<run>/` object
+deletes) and to a cell's data bucket with that cell's key (urls.json, ring
+gate, observe census and heartbeats); a key minted for one bucket reaches
+no other. HTTP probes go only to URLs the deploys returned.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `fieldlib.py` | shared: paths, secrets, platform API, compute CLI, `resources.json` (locked, atomic), S3 clients, verified PUT, log reader |
+| `fieldlib.py` | shared: paths, secrets, platform API, compute CLI, `resources.json` (locked, atomic), S3 clients, verified PUT, log reader; campaign mode: `campaign.json`, `campaign_check`, `campaign_owns`, `run_project` and the scope gates |
+| `campaign.py init <name> \| show \| verify \| destroy [--yes]` | campaign mode: the one project and its artifact bucket, key and files; a listing of only that project's services, buckets and env variable names; the guarded end-of-campaign teardown |
 | `bins.py` | uploads `streams-slate` and `pilot` from `~/.streams-k2/bin/<TAG>/` (`--tag` or `K2_BIN_TAG`) (sha256 checked against `SHA256SUMS`, ELF byte 18 = `0x3e`) and compiles + uploads k2gen; ranged-GET verified; manifest `bins.json` |
-| `provision.py <run> <cell>...` | per cell: project `k2c-<run>-<cell>` in eu-central-1 (`createDatabase: false`: the API otherwise adds a Prisma Postgres to every project), bucket of the same name, read_write key |
+| `provision.py <run> <cell>...` | per cell: project `k2c-<run>-<cell>` in eu-central-1 (`createDatabase: false`: the API otherwise adds a Prisma Postgres to every project), bucket of the same name, read_write key; campaign mode: the bucket and key only, in the campaign project |
 | `deploy-cell.sh <run> <cell>` (`deploy.py`) | servers, ring gate, routers; env check; instance shapes |
 | `gen.sh <run> <cell> <plan>` (`gen.py`) | the in-region k2gen generator with a phase plan |
 | `observe.py <run> [cells]` | bucket census, per-beat heartbeat integration (awake s, CPU s), debug scrapes with the window ring (SCRAPE=1 or `--scrape-cell`; live servers only), generator windows, wrapper CPU logs, KEEP_AWAKE expiry teardown |
 | `price_field.py <run> <cell>` | prices a cell from observe.jsonl: stitched request totals (the local harness's `stitched_delta`), 404 split, loss bound, egress range, compute, per-invocation tiers and §8 gates |
-| `teardown.sh <run> [--yes] [cell...]` (`teardown.py`) | guarded, step-isolated teardown and verification; `--expired`, `--service <name>` |
-| `selftest.py` | offline checks (stubs, no network): teardown guards and isolation, POST no-retry, CLI lock, CPU inversion, router spreading |
+| `teardown.sh <run> [--yes] [cell...]` (`teardown.py`) | guarded, step-isolated teardown and verification; `--expired`, `--service <name>`; campaign mode: the run's services and buckets only |
+| `selftest.py` | offline checks (stubs, no network): teardown guards and isolation, POST no-retry, CLI lock, CPU inversion, router spreading; campaign mode against a stub workspace full of unrelated projects: the scope gates, every teardown guard, init, verify, destroy, provision, deploy's unset list, its refusal of a foreign env row or keyed lookup, its snapshot check, and --kill; the required field home, the banner and the CLI's environment (62 checks) |
 | `feeds.mjs` | the cell's auth feeds bundle and customer JWTs (as `bench/soak/mtgen.mjs`) |
-| `cells/*.env` | example cell files for the design's cells (copy to `~/.streams-k2/field/cells/`) |
+| `cells/*.env` | example cell files for the design's cells (copy to `$K2_FIELD_HOME/cells/`) |
 | `plans/*.plan` | generator phase plans |
 
 ### Changes outside this directory
@@ -100,7 +259,7 @@ field-only instruments.
 
 ## Cells
 
-A cell file (`~/.streams-k2/field/cells/<cell>.env`, no secrets):
+A cell file (`$K2_FIELD_HOME/cells/<cell>.env`, no secrets):
 
 | Key | Meaning |
 |---|---|
@@ -153,7 +312,9 @@ minted once per cell), `REGION=eu-central-1`, `ROLLUP=1` on `streams-1`,
 binary's names come from `src/config/*.rs`, the pilot's from
 `src/bin/pilot{.rs,/}`, the wrappers' from `deploy/app-*/*.ts`. Compute
 env is project-scoped and merged (RUNBOOK §7.3), so every deploy restates
-the service's whole env and unsets every other project variable.
+the service's whole env and unsets every other project variable, and a
+version whose snapshot holds a name the deploy did not state (other than a
+system-managed one) stops the deploy.
 
 Deviations from the letter of §6, all deliberate:
 
@@ -170,13 +331,63 @@ Deviations from the letter of §6, all deliberate:
 
 ## Run book
 
+### Campaign mode (the K2 cost campaign, Pro workspace)
+
+Every command runs with the campaign's field home; the tools refuse
+per-cell mode there (`campaign-required`), and its token belongs to the
+Pro workspace only.
+
+```bash
+export K2_FIELD_HOME=~/.streams-k2/field-pro   # never ~/.streams-k2/field (another workspace)
+F=bench/k2cost/field
+# once per campaign
+python3 $F/selftest.py                          # offline: 62 checks, no network
+python3 $F/campaign.py init k2c-cost            # project k2c-cost + k2c-cost-artifacts + key + artifact files
+python3 $F/campaign.py show                     # campaign.json (no secret)
+python3 $F/campaign.py verify                   # only k2c-cost's services, buckets and env names, with their runs
+mkdir -p $K2_FIELD_HOME/cells && cp $F/cells/*.env $K2_FIELD_HOME/cells/
+python3 $F/bins.py --tag <short commit>         # into k2c-cost-artifacts
+
+# F1 (24 h floor; three cells, one project). RUN = [a-z0-9]{1,12}, not `cost`.
+python3 $F/provision.py $RUN f1a f1b f1c        # buckets k2c-$RUN-f1a/b/c in k2c-cost; no project
+$F/deploy-cell.sh $RUN f1a; $F/deploy-cell.sh $RUN f1b; $F/deploy-cell.sh $RUN f1c   # one at a time (CLI lock)
+python3 $F/observe.py $RUN f1a f1b f1c          # background; 24 h; restartable
+$F/teardown.sh $RUN f1a f1c                     # dry run: services and buckets only, never the project
+$F/teardown.sh $RUN f1a f1c --yes               # f1b continues as F2
+python3 $F/campaign.py verify                   # what is left: f1b's objects and the artifact bucket
+
+# F2 (24 h loaded day on f1b): exactly as in per-cell mode below (observe with
+# --scrape-cell f1b, gen.sh f2-half-day, the +6 h roll with --only 1..4, the
+# +12 h --kill 2 / --only 2, gen.sh --replace, price_field.py), then:
+$F/teardown.sh $RUN --yes
+python3 $F/campaign.py verify                   # none of $RUN's services or buckets remain
+
+# F5 (T-launch consumption cell, ~3.5 h)
+python3 $F/provision.py $RUN f5 && $F/deploy-cell.sh $RUN f5
+python3 $F/observe.py $RUN f5 --census-secs 120 # background, BEFORE the generator
+$F/gen.sh $RUN f5 f5
+python3 $F/price_field.py $RUN f5
+$F/teardown.sh $RUN --yes && python3 $F/campaign.py verify
+
+# end of the campaign (every run torn down first)
+python3 $F/campaign.py destroy                  # dry run: lists what goes; refuses any non-k2c- object
+python3 $F/campaign.py destroy --yes            # services, buckets (artifact too), project; 404-verified
+```
+
+Several runs may share the project at once (F2 on f1b while F5 runs):
+names never collide, every guard is per run, and deploys are serialised
+by the CLI lock from the variable listing to the deploy.
+
+### Per-cell mode (original field home)
+
 One-time per machine and per k2gen revision:
 
 ```bash
+export K2_FIELD_HOME=~/.streams-k2/field     # required: no tool has a default home
 F=bench/k2cost/field
 cp $F/cells/*.env ~/.streams-k2/field/cells/
 python3 $F/bins.py --tag <short commit>  # binaries from ~/.streams-k2/bin/<tag>/; glibc k2gen: Compute's image is glibc, the musl build cannot exec there
-python3 $F/selftest.py                 # offline: 26 checks, no network
+python3 $F/selftest.py                 # offline: 62 checks, no network
 ```
 
 Per run (`RUN` = `[a-z0-9]{1,12}`; one cell's commands strictly in order;
@@ -236,7 +447,7 @@ generator's KEEP_AWAKE expiry is the plan's length plus 15 min unless
 `GEN_TTL_MIN` says otherwise; the plan never starts later than that expiry
 less its length.
 
-## Outputs (`~/.streams-k2/field/results/<run>/`)
+## Outputs (`$K2_FIELD_HOME/results/<run>/`)
 
 | File | Content |
 |---|---|
@@ -253,7 +464,11 @@ less its length.
 | `teardown-partial.jsonl` | one line per `--expired` / `--service` action |
 
 `runs/<run>/resources.json` (not a result) is the ledger of platform
-resources, KEEP_AWAKE expiries and their teardown status.
+resources, KEEP_AWAKE expiries and their teardown status; in campaign mode
+it is stamped `campaign: {name, project_id}` and its cells hold no
+project. `$K2_FIELD_HOME/campaign.json` (not a result, no secret) is the
+campaign record (`pending` / `ready` / `destroying` / `destroyed`), and
+`results/campaign-destroy-<utc>.json` is campaign.py destroy's report.
 
 ## Deploy sequence and gates
 

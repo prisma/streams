@@ -19,7 +19,7 @@ bench/soak/build-upload.sh), and compile the in-region generator.
   GETs of its first and last 16 bytes; an object that already exists with
   the same size and the same first/last bytes is not uploaded again.
 - The manifest (key -> sha256, bytes, git commit, build time, source) is
-  written to ~/.streams-k2/field/bins.json, which deploy.py and gen.py read.
+  written to $K2_FIELD_HOME/bins.json, which deploy.py and gen.py read.
 """
 from __future__ import annotations
 
@@ -104,6 +104,7 @@ def k2gen_binary(src_dir: str, variant: str):
 
 
 def main() -> None:
+    F.banner("bins")
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default=os.environ.get("K2_BIN_TAG"),
                     help="the binaries' directory under ~/.streams-k2/bin (or K2_BIN_TAG)")

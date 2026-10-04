@@ -623,6 +623,7 @@ def expiry_teardown(run: str, obs: list, state: dict) -> None:
 
 
 def main() -> None:
+    F.banner("observe")
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
     ap.add_argument("cells", nargs="*")

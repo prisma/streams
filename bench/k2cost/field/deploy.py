@@ -5,7 +5,7 @@
     bench/k2cost/field/deploy-cell.sh <run-id> <cell> --kill N   # stop streams-N's version
     bench/k2cost/field/deploy-cell.sh <run-id> <cell> --only N   # (re)deploy streams-N alone
 
-The cell file ~/.streams-k2/field/cells/<cell>.env says SERVERS, FLEET_MIN,
+The cell file $K2_FIELD_HOME/cells/<cell>.env says SERVERS, FLEET_MIN,
 ROUTERS, KEEP_AWAKE (+ KEEP_AWAKE_TTL_MIN), SCRAPE, WAL_POSTURE,
 INITIAL_SHARDS and SERVER_ENV_EXTRA. Topology follows
 bench/fleet/deploy-fleet.sh and RUNBOOK §7: SERVERS ordinal servers
@@ -47,8 +47,30 @@ deploy each router and gate it on /stats (never /health: a router proxies
 it to a server); read each instance's `instance shape:` boot line from
 `compute logs` for its memory size. Each deploy restates the service's
 whole environment and unsets every other project variable (RUNBOOK §7.3:
-Compute env is project-scoped and merged). Values travel in a 0600 env
-file that is deleted after the call, never on a command line.
+Compute env is project-scoped and merged, and every deploy snapshots the
+union); the variable listing and the deploy run under one CLI lock, so no
+other field tool's deploy sets a variable in between. Values travel in a
+0600 env file that is deleted after the call, never on a command line.
+Right after each deploy, before its health gate, `compute versions show`
+must list no variable the deploy did not state (system-managed names
+aside), or the deploy stops (teardown.sh removes what it made); deploy.json
+also records each version's env names.
+
+The env listing refuses the deploy if any row names another project (or
+none): the compute CLI sets and unsets each variable by its own lookup on
+the same filter and then PATCHes or DELETEs the first row by id
+(compute-sdk #applyEnvVars), which no gate sees.
+
+Campaign mode (campaign.json): every service goes into the campaign
+project (names unchanged). `--project` is always that project and every
+`--unset-env` key comes from GET /v1/environment-variables?projectId=
+<campaign>, so the snapshot of each version is exact although several
+cells share the project; under the same CLI lock every key the deploy sets
+or unsets is probed with the CLI's exact lookup (`&key=K`), which must
+return at most one row, the campaign project's (probe_env_keys). A redeploy's
+`--service` id, and --kill's service and version, are first proven live in
+the campaign project (fieldlib.campaign_owns); fieldlib.gate_cli refuses
+any other.
 
 Outputs: resources.json (services, versions, URLs, KEEP_AWAKE expiries),
 runs/<run>/<cell>/cell.json (ids, preview and service URLs, no secret) and
@@ -59,6 +81,7 @@ binary identity), deploy-only-s<N>-<utc>.json and kill-s<N>-<utc>.json.
 from __future__ import annotations
 
 import calendar
+import concurrent.futures as cf
 import glob
 import json
 import os
@@ -66,6 +89,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 
 import fieldlib as F
 
@@ -263,9 +287,78 @@ def router_env(run, cell, cfg, st, bins, j, upstreams) -> dict:
 
 # ---------------------------------------------------------------- deploy
 
-def project_env_keys(project: str) -> set:
-    rows = F.api_list(f"/environment-variables?projectId={project}&class=production&limit=100")
-    return {r["key"] for r in rows if not r.get("isManagedBySystem")}
+def project_env(project: str) -> tuple:
+    """(the project's own production variables, its system-managed names).
+    A row of another project, or of none, refuses the deploy before
+    anything is sent (fieldlib.project_env_rows): dropping it would protect
+    only this list, not the CLI's own per-key writes."""
+    rows = F.project_env_rows(project)
+    return ({r["key"] for r in rows if not r.get("isManagedBySystem")},
+            {r["key"] for r in rows if r.get("isManagedBySystem")})
+
+
+def probe_env_keys(project: str, keys) -> None:
+    """Campaign mode, under the deploy's CLI lock: the exact lookup the
+    compute CLI makes for every variable it sets or unsets (GET
+    /environment-variables?projectId=<campaign>&class=production&key=K, then
+    PATCH/DELETE existing[0] by id, or POST) must return at most one row,
+    of key K and the campaign project. Those writes are outside gate_api;
+    this probe is their only guard."""
+    def rows(k: str) -> tuple:
+        return k, F.api_list(f"/environment-variables?projectId={project}&class=production"
+                             f"&key={urllib.parse.quote(k)}")
+    with cf.ThreadPoolExecutor(4) as ex:
+        got = list(ex.map(rows, sorted(keys)))
+    bad = {k: [(r.get("key"), r.get("projectId")) for r in rs] for k, rs in got
+           if len(rs) > 1 or any(r.get("key") != k or r.get("projectId") != project for r in rs)}
+    if bad:
+        raise F.ScopeError(f"the CLI's per-key env lookups in {project} would address other rows: "
+                           f"{dict(list(bad.items())[:5])}: refusing the deploy")
+
+
+def snapshot_extra(version: str, env: dict, system: set) -> list:
+    """Names in a version's env snapshot (`compute versions show`) that its
+    deploy did not state, system-managed names aside. An inherited variable
+    (RUNBOOK §7.3; KEEP_AWAKE on a spare or an f1b server bills until
+    teardown while the ledger says keep_awake false) stops the deploy here,
+    before its health gate. Values are never read out of the answer."""
+    err = ""
+    for _ in range(3):
+        try:
+            shown = (F.cli_json(["versions", "show", version]).get("data") or {}).get("envVars")
+            if not isinstance(shown, dict) or not shown:
+                raise RuntimeError("the answer holds no envVars")
+            return sorted(set(shown) - set(env) - set(system))
+        except F.ScopeError:
+            raise
+        except Exception as e:  # noqa: BLE001 - retried, then fatal: an unread snapshot is not exact
+            err = str(e)[:300]
+            time.sleep(5)
+    F.die(f"version {version}: env snapshot unreadable ({err})")
+    return []
+
+
+def deploy_target(project: str, svc: str, sid: str | None) -> str | None:
+    """Campaign mode: the service id to redeploy, verified in the campaign
+    project (live project, live name), or None for a new service. The name
+    is first looked up in the campaign project, so a lost deploy answer
+    never makes a second service of that name; a ledger id that is gone
+    (404 and not listed) is replaced by a new service of the same name.
+    Per-cell mode: `sid` unchanged."""
+    if not F.campaign():
+        return sid
+    found = [s for s in F.services_in(project) if s.get("name") == svc]
+    if len(found) > 1 or (sid and found and found[0].get("id") != sid):
+        F.die(f"{svc}: live {[s.get('id') for s in found]} in {project} is not the ledger's {sid}: resolve by hand")
+    sid = sid or (found[0].get("id") if found else None)
+    if not sid:
+        return None
+    state, why = F.campaign_owns("service", sid, name=svc)
+    if state == "gone" and not found:
+        return None
+    if state != "live":
+        F.die(f"refusing to deploy {svc} over service {sid}: {why or 'GET answered 404 but the project lists it'}")
+    return sid
 
 
 def write_env_file(path: str, env: dict) -> None:
@@ -297,34 +390,45 @@ def deploy_service(run, cell, project, svc, role, app, env, keep_awake_ttl_min=N
         else:
             rec["keep_awake"] = False
             rec.pop("keep_awake_expires", None)
-    unset = sorted(project_env_keys(project) - set(env))
     tmp = os.path.join(F.cell_dir(run, cell), "tmp")
     os.makedirs(tmp, mode=0o700, exist_ok=True)
     envfile = os.path.join(tmp, f"{svc}.env")
     write_env_file(envfile, env)
     t0 = time.time()
-    data, err = None, ""
+    data, err, unset, system = None, "", [], set()
     try:
-        for attempt in range(1, 5):
-            args = ["deploy", "--project", project, "--path", os.path.join(APPS, app), "--http-port", "8080",
-                    "--env", envfile, "--timeout", "300"]
-            # A redeploy stops and deletes the version it replaces: a version
-            # left running keeps billing (and, with KEEP_AWAKE, never sleeps).
-            args += ["--service", sid, "--destroy-old-version"] if sid else ["--service-name", svc, "--region", F.REGION]
-            for u in unset:
-                args += ["--unset-env", u]
-            try:
-                data = F.cli_json(args, timeout=900)["data"]
-                break
-            except Exception as e:  # noqa: BLE001 - retried, then fatal
-                err = str(e)
-                F.say(f"    deploy attempt {attempt} for {svc} failed: {err[:300]}")
-                found = [s for s in F.services_in(project) if s.get("name") == svc]
-                if found:
-                    sid = found[0]["id"]
-                    with F.resources(run) as doc:
-                        F.cell_res(doc, cell)["services"][svc]["id"] = sid
-                time.sleep(20)
+        # Under the CLI lock from the variable listing to the deploy: no
+        # other field tool's deploy (another cell in the same campaign
+        # project) can set a variable in between, so `unset` is exactly the
+        # project's variables this service's env does not restate.
+        with F.cli_lock():
+            for attempt in range(1, 5):
+                sid = deploy_target(project, svc, sid)
+                own, system = project_env(project)
+                unset = sorted(own - set(env))
+                if F.campaign():
+                    probe_env_keys(project, set(env) | set(unset))
+                args = ["deploy", "--project", project, "--path", os.path.join(APPS, app), "--http-port", "8080",
+                        "--env", envfile, "--timeout", "300"]
+                # A redeploy stops and deletes the version it replaces: a version
+                # left running keeps billing (and, with KEEP_AWAKE, never sleeps).
+                args += ["--service", sid, "--destroy-old-version"] if sid else ["--service-name", svc, "--region", F.REGION]
+                for u in unset:
+                    args += ["--unset-env", u]
+                try:
+                    data = F.cli_json(args, timeout=900)["data"]
+                    break
+                except F.ScopeError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - retried, then fatal
+                    err = str(e)
+                    F.say(f"    deploy attempt {attempt} for {svc} failed: {err[:300]}")
+                    found = [s for s in F.services_in(project) if s.get("name") == svc]
+                    if found:
+                        sid = found[0]["id"]
+                        with F.resources(run) as doc:
+                            F.cell_res(doc, cell)["services"][svc]["id"] = sid
+                    time.sleep(20)
     finally:
         os.remove(envfile)
     if not data:
@@ -340,6 +444,12 @@ def deploy_service(run, cell, project, svc, role, app, env, keep_awake_ttl_min=N
                                                         else f"https://{svc_url}"),
                     "deployed": F.utc(), "deploy_secs": round(time.time() - t0, 1)})
         rec.setdefault("versions", []).append(data["deploymentId"])
+    extra = snapshot_extra(data["deploymentId"], env, system)
+    if extra:
+        with F.resources(run) as doc:
+            F.cell_res(doc, cell)["services"][svc]["platform_env_extra"] = extra
+        F.die(f"{svc}: version {data['deploymentId']} holds variables this deploy did not state: {extra} "
+              f"(inherited from the project; remove what this cell deployed: teardown.sh {run} {cell})")
     F.say(f"    {svc}: version {data['deploymentId']} at {url} ({time.time() - t0:.0f}s, unset {len(unset)})")
     return {"id": data["appId"], "version": data["deploymentId"], "url": url, "unset": unset,
             "service_url": rec["service_url"], "deploy_secs": round(time.time() - t0, 1),
@@ -476,6 +586,13 @@ def shapes(report: dict) -> None:
         try:
             shown = F.cli_json(["versions", "show", d["version"]]).get("data") or {}
             d["platform_env_names"] = sorted((shown.get("envVars") or {}).keys())
+            # A name in the version's snapshot that this deploy did not state:
+            # deploy_service already stopped on any but a system-managed one;
+            # recorded here for the report.
+            stated = d.get("env") or report.get("env") or {}
+            d["platform_env_extra"] = sorted(set(d["platform_env_names"]) - set(stated))
+            if d["platform_env_extra"]:
+                F.say(f"    WARNING {name}: version env has names this deploy did not state: {d['platform_env_extra']}")
         except Exception as e:  # noqa: BLE001 - informational
             d["platform_env_names_error"] = str(e)[:200]
         F.say(f"    {name}: memory class {d.get('memory_gib_class')} GiB (kernel {d.get('memory_gib')} GiB, "
@@ -514,11 +631,11 @@ def context(run: str, cell: str) -> tuple:
         F.die(f"WAL_POSTURE must be one of {sorted(WAL_POSTURES)}")
     topology(cfg)
     res = F.load_resources(run)["cells"].get(cell) or {}
-    if not (res.get("project") or {}).get("id") or not (res.get("bucket") or {}).get("id"):
+    project = F.run_project(run, cell)  # campaign mode: the campaign project, live-checked
+    if not project or not (res.get("bucket") or {}).get("id"):
         F.die(f"cell {cell} is not provisioned in run {run}: run provision.py first")
-    project = res["project"]["id"]
     art = F.artifact_receipt()
-    if project == art["projectId"] or res["bucket"]["id"] == art["bucketId"]:
+    if (project == art["projectId"] and not F.campaign()) or res["bucket"]["id"] == art["bucketId"]:
         F.die("refusing to deploy into the artifact project or bucket")
     bins = (F.read_json(os.path.join(F.FIELD, "bins.json")) or {}).get("_latest")
     if not bins:
@@ -598,6 +715,12 @@ def kill(run: str, cell: str, i: int) -> None:
     live = [s for s in F.services_in(project) if s.get("name") == rec["name"]]
     if not live or live[0].get("id") != rec["id"] or rec["id"] in F.foreign_ids(run):
         F.die(f"{rec['name']}: the live service does not match the ledger ({live[:1]})")
+    if F.campaign():  # the service, then its version, live in the campaign project
+        for kind, rid, kw in (("service", rec["id"], {"name": rec["name"]}),
+                              ("deployment", rec["version"], {"service_id": rec["id"]})):
+            state, why = F.campaign_owns(kind, rid, **kw)
+            if state != "live":
+                F.die(f"--kill {i}: {why or kind + ' ' + rid + ' is gone (404)'}")
     t0 = F.utc()
     p = F.cli(["versions", "stop", rec["version"]], timeout=600)
     out = {"service": rec["name"], "version": rec["version"], "requested": t0, "stopped": F.utc(),
@@ -657,6 +780,7 @@ def only(run: str, cell: str, i: int) -> None:
 
 
 def main() -> None:
+    F.banner("deploy-cell")
     a = sys.argv[1:]
     if len(a) == 2:
         deploy_all(a[0], a[1])

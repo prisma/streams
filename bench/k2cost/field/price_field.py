@@ -289,6 +289,7 @@ def invocations(res_dir: str, obs: list, ser: dict, stitched_delta, mpu: int) ->
 
 
 def main() -> None:
+    F.banner("price_field")
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
     ap.add_argument("cell")

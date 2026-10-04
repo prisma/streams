@@ -34,6 +34,11 @@ hour, at most ~24 h: a longer plan needs a redeploy) and the cell's data
 key, written as header lines to secrets/ (0600) and to the artifact
 bucket under k2c/<run>/<cell>/ (TOKENS_S3_KEY; recorded for teardown).
 
+Campaign mode (campaign.json): the generator is deployed into the campaign
+project like every cell service (deploy.deploy_service, same guards); its
+S3_* are the campaign's artifact bucket (<campaign>-artifacts, e.g.
+k2c-cost-artifacts), read from the field home's artifact files.
+
 Env (whole, restated; every other project variable is unset):
 AWSBENCH_S3_KEY, S3_* (artifact bucket), TOKENS_S3_KEY, GEN_PLAN_JSON,
 RESOLV_OVERRIDE, CPU_LOG_SECS, KEEP_AWAKE=1 with an expiry in
@@ -203,6 +208,7 @@ def replace_earlier(run: str, cell: str, replace: bool) -> None:
 
 
 def main() -> None:
+    F.banner("gen")
     args = [a for a in sys.argv[1:] if a != "--replace"]
     if len(args) != 3:
         F.die("usage: gen.sh <run-id> <cell> <plan file or name> [--replace]", 2)
@@ -211,11 +217,10 @@ def main() -> None:
     if not os.path.exists(plan):
         plan = os.path.join(F.HERE, "plans", f"{plan}.plan")
     stages, est = parse_plan(plan)
-    res = F.load_resources(run)["cells"].get(cell) or {}
-    if not (res.get("project") or {}).get("id"):
+    project = F.run_project(run, cell)  # campaign mode: the campaign project, live-checked
+    if not project or not (F.load_resources(run)["cells"].get(cell) or {}).get("bucket"):
         F.die(f"cell {cell} is not provisioned in run {run}")
-    project = res["project"]["id"]
-    if project == F.artifact_project_id():
+    if project == F.artifact_project_id() and not F.campaign():
         F.die("refusing to deploy into the artifact project")
     st = F.read_json(os.path.join(F.cell_dir(run, cell), "cell.json"))
     if not st or not st.get("server_urls"):
