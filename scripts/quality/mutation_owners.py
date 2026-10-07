@@ -161,6 +161,14 @@ OWNERS = (
     owner('read_batch_tests', 'src/application/read_batch/tests.rs', 'application::read_batch::'),
     owner('crypto_decrypt', 'src/crypto/decrypt.rs', 'crypto::'),
     owner('crypto_decrypt_tests', 'src/crypto/decrypt/tests.rs', 'crypto::'),
+    # The layout 5 page codec: one owner per production file, every
+    # filter the module's own tests (round trips, admission, tampering,
+    # golden vectors and properties).
+    owner('crypto_page', 'src/crypto_page.rs', 'crypto_page::'),
+    owner('crypto_page_body', 'src/crypto_page/body.rs', 'crypto_page::'),
+    owner('crypto_page_header', 'src/crypto_page/header.rs', 'crypto_page::'),
+    owner('crypto_page_open', 'src/crypto_page/open.rs', 'crypto_page::'),
+    owner('crypto_page_seal', 'src/crypto_page/seal.rs', 'crypto_page::'),
     owner('fleet_outbox', 'src/fleet/outbox.rs', 'fleet::'),
     # The repository hands each runtime its standing; only the rigs read a
     # standing back through a published heartbeat.

@@ -2650,6 +2650,30 @@
     },
     {
       "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::exact",
+      "path": "src/crypto_page/proofs.rs",
+      "reason": "Kani proof harness for the proposed layout 5 page-body obligation (not yet in verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::round_trip",
+      "path": "src/crypto_page/proofs.rs",
+      "reason": "Kani proof harness for the proposed layout 5 page-body obligation (not yet in verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/crypto_page/properties.rs",
+      "reason": "Layout 5 page codec properties; the pinned macro generates random requests, single-byte changes of sealed pages, arbitrary rows and arbitrary bodies against the production sealer, admission, opener and body parser; it produces test cases, not service state.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::seal_is_refused_before_its_intent",
       "path": "src/dst/tests/seal_cancellation.rs",
