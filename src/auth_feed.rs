@@ -88,7 +88,8 @@ struct PolicyDoc {
     project_policy_version: u64,
     ownership_version: u64,
     status: ProjectStatus,
-    #[serde(default)]
+    /// Required, as in the contract (shared-cells R3): a policy without
+    /// quotas would be an unlimited project. Each field may be absent.
     quotas: ProjectQuotas,
 }
 
@@ -500,7 +501,7 @@ mod tests {
                 "projects": [{
                     "project_id": "proj_456", "workspace_id": "ws_789",
                     "cell_id": "fra-cell-07", "project_policy_version": 1,
-                    "ownership_version": 1, "status": "active"
+                    "ownership_version": 1, "status": "active", "quotas": {}
                 }]
             })
             .to_string(),
@@ -717,18 +718,37 @@ mod tests {
                 "cell_id": "fra-cell-07",
                 "project_policy_version": 40,
                 "ownership_version": 12,
-                "status": "active"
+                "status": "active",
+                "quotas": { "requests_per_sec": 100 }
             }]
         });
         let s = parse_policies(&ok.to_string()).unwrap();
         let pid = ProjectId::new("proj_456").unwrap();
         assert_eq!(s.projects[&pid].ownership_version, 12);
         assert_eq!(s.projects[&pid].status, ProjectStatus::Active);
+        assert_eq!(s.projects[&pid].quotas.requests_per_sec, 100);
         assert_eq!(s.feed_version, 40);
         // Unknown fields refuse: an operator typo (say "stauts") must
         // not silently leave the real field defaulted.
         let typo = ok.to_string().replace("\"status\"", "\"stauts\"");
         assert!(parse_policies(&typo).is_err());
+        // Quotas fail closed (shared-cells R3): a misspelled quota key, or
+        // no quotas object at all, would leave every field 0, unlimited.
+        let mut bare = ok.clone();
+        bare["projects"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("quotas");
+        for (case, doc) in [
+            (
+                "a misspelled quota key",
+                ok.to_string().replace("requests_", "request_"),
+            ),
+            ("a policy without quotas", bare.to_string()),
+        ] {
+            let parsed = parse_policies(&doc).map(|s| format!("{:?}", s.projects[&pid].quotas));
+            assert!(parsed.is_err(), "{case} parsed as {parsed:?}");
+        }
     }
 
     #[test]
