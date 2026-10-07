@@ -23,6 +23,7 @@ use super::{
     AppState, ProductRoute, READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES, classify_route, parse_query,
     perr, project_memory_gate, quota_refusal_response, strip_verb,
 };
+use crate::admission::body::BodyRefusal;
 use crate::admission::read_memory::{ReadHold, ReadRefusal};
 use crate::application::consumer::PULL_COVERAGE_BYTES;
 use crate::auth::RequestPrincipal;
@@ -50,14 +51,49 @@ pub(crate) async fn refusal(
             crate::admission::park::bind_read(hold);
             None
         }
-        Err(ReadRefusal::Project) => {
-            let refusal = quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure);
-            Some(match principal {
-                Some(p) => crate::audit::tag_project(refusal, &p.project_id),
-                None => refusal,
-            })
-        }
+        Err(ReadRefusal::Project) => Some(memory_pressure(principal)),
         Err(ReadRefusal::Instance) => Some(read_memory_busy()),
+    }
+}
+
+/// 429 `project_memory_pressure`, retryable, tagged with the project.
+fn memory_pressure(principal: Option<&RequestPrincipal>) -> Response {
+    let refusal = quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure);
+    match principal {
+        Some(p) => crate::audit::tag_project(refusal, &p.project_id),
+        None => refusal,
+    }
+}
+
+/// A write's body, buffered under its project's memory line
+/// (`admission::body`); `body_refusal` answers a refusal.
+pub(crate) async fn buffered_body(
+    state: &AppState,
+    principal: Option<&RequestPrincipal>,
+    body: axum::body::Body,
+) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), BodyRefusal> {
+    crate::admission::body::buffer_within(
+        body,
+        state.config.cli.max_request_body_bytes,
+        principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
+        state.admission.project_memory_pressure_bytes(),
+    )
+    .await
+}
+
+/// A body that was not buffered: 413 `body_too_large` past the body
+/// limit, as before, and 429 `project_memory_pressure` (retryable after
+/// 1 s, as a read's) when it would have taken its project past the line.
+pub(crate) fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> Response {
+    match refusal {
+        BodyRefusal::TooLarge => perr(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "request body exceeds the limit",
+            None,
+            false,
+        ),
+        BodyRefusal::MemoryPressure => memory_pressure(principal),
     }
 }
 

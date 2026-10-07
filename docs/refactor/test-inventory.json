@@ -1217,7 +1217,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b991ccf13a8ca4ffdb644bfbcd6884010a1212516dfbba7c81f27a5193d4ddec",
+    "function_sha256": "3d89fc5887a3f1ded46ef81ad6d432a0749a827bbb12cc0aef376026aaff5937",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::park_pull_before_receive(Q);",
@@ -2265,7 +2265,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "563ddd2a170b076c9ef868141188921bef3e47f51dc2223cff4c40c27793a178",
+    "function_sha256": "3875e301e196cb30402f9efed71bea4a1585e11d261ea09032b9d336632c65af",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
@@ -3155,6 +3155,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_convergence.rs",
+    "scenarios": []
+  },
+  {
+    "name": "concurrent_uploads_share_their_projects_memory_line",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "dba3cffb768527087ffc0bbf6660a7d05218375c8c68a8ef23ebb82602413ef1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
     "scenarios": []
   },
   {

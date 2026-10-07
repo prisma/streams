@@ -335,3 +335,6 @@ mod read_subset_retention;
 
 #[path = "tests/read_peer_compatibility.rs"]
 mod read_peer_compatibility;
+
+#[path = "tests/shared_cell_capacity.rs"]
+mod shared_cell_capacity;

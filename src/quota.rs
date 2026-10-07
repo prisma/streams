@@ -310,6 +310,19 @@ impl BufferedBodyGuard {
             .buffered_body_bytes
             .fetch_add(more, Ordering::Relaxed);
     }
+
+    /// Grow by `more` unless that takes the project's estimated pressure
+    /// past `line` while it holds bytes besides this body: a body alone
+    /// always fits, as a read alone does. A 0 line is none.
+    pub(crate) fn try_grow(&mut self, more: u64, line: u64) -> bool {
+        let pressure = self.admission.estimated_pressure_bytes();
+        let others = pressure.saturating_sub(self.bytes);
+        if line > 0 && others > 0 && pressure.saturating_add(more) > line {
+            return false;
+        }
+        self.grow(more);
+        true
+    }
 }
 
 impl Drop for BufferedBodyGuard {

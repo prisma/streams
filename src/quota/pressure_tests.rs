@@ -73,6 +73,34 @@ fn body_guard_releases_on_drop() {
     assert_eq!(a.estimated_pressure_bytes(), 0);
 }
 
+/// A body grows under its project's memory line: alone it fits past the
+/// line; beside the project's other bytes a chunk that takes the
+/// estimated pressure past the line is refused and charges nothing, while
+/// one that reaches the line exactly fits; a 0 line is none.
+#[test]
+fn a_body_grows_under_its_projects_line_unless_it_is_alone() {
+    let r = QuotaRegistry::default();
+    let a = adm(&r, "p4b");
+    let mut alone = BufferedBodyGuard::reserve(a.clone(), 0);
+    assert!(alone.try_grow(1_500, 1_000), "alone, past the line");
+    assert!(alone.try_grow(500, 1_000), "still alone");
+    assert_eq!(a.estimated_pressure_bytes(), 2_000);
+    drop(alone);
+    let other = BufferedBodyGuard::reserve(a.clone(), 600);
+    let mut body = BufferedBodyGuard::reserve(a.clone(), 0);
+    assert!(body.try_grow(400, 1_000), "reaches the line exactly");
+    assert!(!body.try_grow(1, 1_000), "one byte past it");
+    assert_eq!(
+        a.estimated_pressure_bytes(),
+        1_000,
+        "the refusal charged nothing"
+    );
+    assert!(body.try_grow(5_000, 0), "no line");
+    assert_eq!(a.estimated_pressure_bytes(), 6_000);
+    drop((other, body));
+    assert_eq!(a.estimated_pressure_bytes(), 0);
+}
+
 /// Battery 5: body -> queued transfer has no transient double
 /// charge (the body guard ends before the queued charge begins).
 #[test]

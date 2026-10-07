@@ -23,6 +23,9 @@ const MIB: u64 = 1 << 20;
 /// The default page budget a read without `maxBytes` reserves.
 const PAGE_BUDGET: u64 = 8 * MIB;
 const RECORDS: &str = "/v1/streams/big/records";
+/// Room under a line for the small bodies of pulls, which are buffered
+/// under it as a write's are (`admission::body`).
+const BODY_ROOM: u64 = 64 << 10;
 
 /// Record `n`: a JSON object of 64 KiB and a few bytes.
 fn padded(n: usize) -> String {
@@ -597,11 +600,12 @@ async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_c
 }
 
 /// A consumer pull reserves what its walk reads before it leases (capacity
-/// review C1): with project 0's line at two coverages, two never-read
-/// pulls pass admission and are held after their coverage read
-/// (`PullBeforeReceive`), a third waits 2 s and is refused 429
-/// `project_memory_pressure`, and once the two render their batches
-/// project 0 holds them inside its line and project 1 reads at once.
+/// review C1): with project 0's line at two coverages and room for the
+/// pulls' bodies, two never-read pulls pass admission and are held after
+/// their coverage read (`PullBeforeReceive`), a third waits 2 s and is
+/// refused 429 `project_memory_pressure`, and once the two render their
+/// batches project 0 holds them inside its line and project 1 reads at
+/// once.
 /// Before: every pull passed admission at pressure 0 (eight together held
 /// 25,271,096 B against the line of 8,388,608 B, past the instance's read
 /// memory of 25,165,824 B, and project 1 was refused 503
@@ -613,7 +617,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
     keyed_queue(&cell, 0, Q, 3).await;
     big_stream(&cell, 1).await;
     let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
-    let line = 2 * coverage;
+    let line = 2 * coverage + BODY_ROOM;
     cell.state.admission.set_project_memory_pressure_bytes(line);
     cell.state
         .admission
@@ -670,10 +674,10 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
 
 /// A pull waiting for messages holds nothing, and takes its coverage
 /// reservation again before it walks: woken while an unread page of its
-/// project fills its line of one coverage, it finds no room before its
-/// wait ends, answers empty and leases nothing, and the message is pulled
-/// once the line has room. Before: a woken pull walked unreserved and
-/// leased the message past the line.
+/// project fills its line of one coverage and room for the pull's body,
+/// it finds no room before its wait ends, answers empty and leases
+/// nothing, and the message is pulled once the line has room. Before: a
+/// woken pull walked unreserved and leased the message past the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
     let cell = open_cell(CellSpec::open(1)).await;
@@ -689,7 +693,7 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
     let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
     cell.state
         .admission
-        .set_project_memory_pressure_bytes(coverage);
+        .set_project_memory_pressure_bytes(coverage + BODY_ROOM);
     let path = "/v1/streams/wq/consumers/g:pull";
     let started = Instant::now();
     let waiting = cell.call(0, "POST", path, br#"{"max":1,"waitMs":1500}"#);

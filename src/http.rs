@@ -622,32 +622,17 @@ fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
     })
 }
 
-/// Round-13: buffer a request body while charging each arriving chunk
-/// to the project's buffered-body pressure (the queued-byte counter
-/// starts too late — the buffering window itself must be accounted).
-/// Returns the bytes plus the live guard; the caller drops the guard
-/// at the queued-append transfer point so the two charges never
-/// overlap. Err(()) = the limit was exceeded (the caller answers 413).
+/// The raw surface's body buffering (`admission::body::buffer_within`)
+/// with no memory line: Err(()) = the limit was exceeded (the caller
+/// answers 413).
 pub(crate) async fn buffer_body_charged(
     body: Body,
     limit: usize,
     adm: Option<std::sync::Arc<crate::quota::ProjectAdmission>>,
 ) -> Result<(Bytes, Option<crate::quota::BufferedBodyGuard>), ()> {
-    use futures_util::StreamExt;
-    let mut guard = adm.map(|a| crate::quota::BufferedBodyGuard::reserve(a, 0));
-    let mut buf: Vec<u8> = Vec::new();
-    let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
-        let Ok(c) = chunk else { return Err(()) };
-        if buf.len() + c.len() > limit {
-            return Err(());
-        }
-        if let Some(g) = guard.as_mut() {
-            g.grow(c.len() as u64);
-        }
-        buf.extend_from_slice(&c);
-    }
-    Ok((Bytes::from(buf), guard))
+    crate::admission::body::buffer_within(body, limit, adm, 0)
+        .await
+        .map_err(|_| ())
 }
 
 async fn track_inflight(
@@ -1835,22 +1820,11 @@ pub(crate) async fn product_entry_axum_inner(
     // Only mutations consume a body. GET/HEAD/watch and OPTIONS discard it
     // without polling; an unverified watch claim never acquires body memory.
     let (body, _body_charge) = if method == Method::POST || method == Method::PUT {
-        match buffer_body_charged(
-            req.into_body(),
-            state.config.cli.max_request_body_bytes,
-            principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
-        )
-        .await
-        {
+        match crate::product::read_memory::buffered_body(&state, principal, req.into_body()).await {
             Ok(b) => b,
-            Err(_) => {
-                return crate::product::with_product_cors(crate::product::perr(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "body_too_large",
-                    "request body exceeds the limit",
-                    None,
-                    false,
-                ));
+            Err(refusal) => {
+                let refusal = crate::product::read_memory::body_refusal(refusal, principal);
+                return crate::product::with_product_cors(refusal);
             }
         }
     } else {
