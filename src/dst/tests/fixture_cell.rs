@@ -13,6 +13,7 @@ use super::fixture_http::{HttpRigOptions, http_rig_build, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::auth::ceiling::{CellCeiling, SharedBounds};
 use crate::config::Environment;
 use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy, ProjectQuotas,
@@ -153,9 +154,16 @@ pub(super) fn jwks_key(kid: &str) -> (String, crate::auth::JwksKey) {
     (kid.to_string(), key)
 }
 
+/// The divisor every fixture cell shares its bounds by (`PROJECT_SHARE_K`,
+/// the owner's default of 2026-10-07): a project's ceiling on each shared
+/// bound is the bound / 8.
+pub(super) const SHARE_K: usize = 8;
+
 /// How a cell is built: its size, each project's quotas, the scenario's
 /// command line over the hermetic fixture, its shard configuration and
-/// prefixes, and its maintenance admission bounds.
+/// prefixes, its maintenance admission bounds, and the shared bounds its
+/// projects' ceilings divide (none by default: the rig's admission sets
+/// no inflight or SSE bound unless `bounds` gives one).
 pub(super) struct CellSpec {
     pub(super) projects: usize,
     pub(super) quotas: fn(usize) -> ProjectQuotas,
@@ -163,6 +171,7 @@ pub(super) struct CellSpec {
     pub(super) shard: crate::shard::ShardConfig,
     pub(super) prefixes: Vec<String>,
     pub(super) admission: Option<crate::config::AdmissionConfig>,
+    pub(super) bounds: SharedBounds,
 }
 
 impl CellSpec {
@@ -175,8 +184,23 @@ impl CellSpec {
             shard: crate::shard::ShardConfig::default(),
             prefixes: vec!["00".to_string()],
             admission: None,
+            bounds: SharedBounds::default(),
         }
     }
+}
+
+/// Give the rig the spec's shared bounds and the cell its ceiling over
+/// them, before the first policy snapshot: the instance inflight bound and
+/// the ceiling derive from the one value, as boot derives both from
+/// `ADMIT_MAX_INFLIGHT`.
+fn share_cell(svc: &crate::auth::AuthService, state: &crate::http::AppState, bounds: SharedBounds) {
+    if bounds.inflight > 0 {
+        state
+            .admission
+            .set_max_inflight(i64::try_from(bounds.inflight).unwrap());
+    }
+    svc.install_cell_ceiling(CellCeiling::shared(u64::try_from(SHARE_K).unwrap(), bounds))
+        .unwrap();
 }
 
 /// A running shared cell and the feeds it was given.
@@ -234,6 +258,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
     )
     .await;
     let (state, addr) = rig.parts();
+    share_cell(&svc, &state, spec.bounds);
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();

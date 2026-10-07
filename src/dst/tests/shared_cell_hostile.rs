@@ -10,12 +10,13 @@
 
 use super::fixture_auth::sr2_workload_jwt;
 use super::fixture_cell::{
-    CREATE, Cell, CellSpec, Token, burst, credential, error_code, grant, journal, jwks_key,
-    open_cell, padded, policy, project,
+    CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, grant, journal,
+    jwks_key, open_cell, padded, policy, project,
 };
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
+use crate::auth::ceiling::SharedBounds;
 use crate::project_policy::{CredentialStatus, ProjectQuotas};
 use crate::tenant::ProjectId;
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 
 /// The owner's default quota divisor (PROJECT_SHARE_K, decision of
 /// 2026-10-07): a per-project ceiling is the shared bound divided by k.
-const K: usize = 8;
+const K: usize = SHARE_K;
 /// The instance inflight bound these rigs set (`ADMIT_MAX_INFLIGHT`).
 const BOUND: i64 = 64;
 /// A long-poll that parks: no records arrive while it waits.
@@ -43,19 +44,25 @@ async fn victim_turn(cell: &Cell, victim: usize) -> ((u16, Option<String>), u16)
 }
 
 /// A2b (H1): k - 1 compliant tenants whose feed carries no inflight
-/// quota (0, missing: it takes the ceiling after step 2) each try to park
-/// twice their ceiling, 16 long-polls, against an instance bound of 64
-/// (112 in all, below the survival line at four times the bound). Each
-/// must hold exactly its ceiling, bound / k = 8, with every other
-/// attempt refused as its own typed `project_concurrency_limit`, and the
-/// victim, the k-th tenant, is admitted to append and read. The plan's
-/// "k + 1 tenants at their ceilings" cannot leave room at ceiling =
-/// bound / k, so the crowd is k - 1 (step 1 notes).
+/// quota (0, missing: it takes the ceiling) each try to park twice their
+/// ceiling, 16 long-polls, against an instance bound of 64 (112 in all,
+/// below the survival line at four times the bound). Each must hold
+/// exactly its ceiling, bound / k = 8, with every other attempt refused
+/// as its own typed `project_concurrency_limit`, and the victim, the k-th
+/// tenant, is admitted to append and read. The plan's "k + 1 tenants at
+/// their ceilings" cannot leave room at ceiling = bound / k, so the crowd
+/// is k - 1 (step 1 notes).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase A step 2: effective quota = min(feed, shared bound / k)"]
 async fn a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted() {
-    let cell = open_cell(CellSpec::open(K)).await;
-    cell.state.admission.set_max_inflight(BOUND);
+    let bounds = SharedBounds {
+        inflight: u64::try_from(BOUND).unwrap(),
+        ..SharedBounds::default()
+    };
+    let cell = open_cell(CellSpec {
+        bounds,
+        ..CellSpec::open(K)
+    })
+    .await;
     for i in 0..K {
         assert_eq!(
             cell.call(i, "PUT", "/v1/streams/orders", CREATE).await.0,
@@ -86,6 +93,49 @@ async fn a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted() {
             );
         }
     }
+    engine_shutdown(&cell.state).await;
+}
+
+/// Project `i` creates `count` streams under distinct names, in order.
+async fn create_streams(cell: &Cell, i: usize, count: usize) -> Vec<(u16, Option<String>)> {
+    let mut answers = Vec::new();
+    for s in 0..count {
+        let path = format!("/v1/streams/s{s:02}");
+        let (st, _, b) = cell.call(i, "PUT", &path, CREATE).await;
+        answers.push((st, error_code(&b)));
+    }
+    answers
+}
+
+/// A2b, stream axis (H1): with the per-stream maps' bound at 64, k - 1
+/// tenants whose feed sets no `max_streams` (a 0 took no reservation at
+/// all before the ceiling) each create twice their ceiling under distinct
+/// names. Each holds exactly bound / k = 8 streams, every further create
+/// is its own `429 stream_limit`, and the victim still creates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_maps() {
+    let bounds = SharedBounds {
+        streams: 64,
+        ..SharedBounds::default()
+    };
+    let cell = open_cell(CellSpec {
+        bounds,
+        ..CellSpec::open(K)
+    })
+    .await;
+    let cell = &cell;
+    let crowd =
+        futures_util::future::join_all((0..K - 1).map(|i| create_streams(cell, i, 16))).await;
+    for (i, answers) in crowd.iter().enumerate() {
+        let made = answers.iter().filter(|(st, _)| *st == 201).count();
+        assert_eq!(made, 64 / K, "{} created", project(i));
+        for (st, code) in answers.iter().filter(|(st, _)| *st != 201) {
+            let typed = (*st, code.as_deref());
+            assert_eq!(typed, (429, Some("stream_limit")), "{}", project(i));
+        }
+    }
+    let victim = cell.call(K - 1, "PUT", "/v1/streams/victim", CREATE).await;
+    assert_eq!(victim.0, 201, "the victim's create");
     engine_shutdown(&cell.state).await;
 }
 

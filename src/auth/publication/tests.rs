@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier};
 
 use super::{AuthService, HighWater, JwksKey, JwksSnapshot, feed_fp};
 use crate::auth::AuthMode;
+use crate::auth::ceiling::{CellCeiling, SharedBounds};
 use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy, ProjectQuotas,
     ProjectStatus,
@@ -171,6 +172,39 @@ fn refused_policy_changes_neither_snapshot_history_nor_generation() {
     assert_eq!(history(&service), history_before);
     assert_eq!(service.auth_generation(), generation);
     assert_eq!(*service.generation_watch().borrow(), generation);
+}
+
+/// Shared-cells H1: a policy publishes at its effective quotas, and the
+/// cell's ceiling is fixed at the first publication: an install after it
+/// is refused, and that cell keeps publishing the feed's quotas.
+#[test]
+fn policies_publish_through_the_ceiling_fixed_at_the_first_publication() {
+    let bounds = SharedBounds {
+        inflight: 64,
+        ..SharedBounds::default()
+    };
+    let (shared, late) = (service(), service());
+    shared
+        .install_cell_ceiling(CellCeiling::shared(8, bounds))
+        .unwrap();
+    let pid = policy(1).project_id;
+    for service in [&shared, &late] {
+        service
+            .publish_policies(PolicySnapshot {
+                projects: HashMap::from([(pid.clone(), policy(1))]),
+                fetched_at_unix: 100,
+                feed_version: 1,
+            })
+            .unwrap();
+    }
+    let refused = late.install_cell_ceiling(CellCeiling::shared(8, bounds));
+    assert!(refused.is_err(), "an install after the first publication");
+    let inflight = |s: &AuthService| {
+        s.projects.load().projects[&pid]
+            .quotas
+            .max_inflight_requests
+    };
+    assert_eq!((inflight(&shared), inflight(&late)), (64 / 8, 0));
 }
 
 #[test]

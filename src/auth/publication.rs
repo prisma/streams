@@ -3,10 +3,22 @@
 //! Retained version history, full snapshots and subscriber generations commit
 //! under one lock. Every check runs before the first mutation; rejected feeds
 //! cannot change authorization, refresh its age, or announce a generation.
+//!
+//! Monotonic publication (review item 2, authorization P0): a stale or
+//! out-of-order feed must never restore an earlier authorization state — an
+//! earlier workspace owner, a revoked credential, a removed scope, a retired
+//! signing key. Each publish REFUSES a snapshot that would move any version
+//! backward; the refused snapshot is dropped, the current one keeps aging
+//! toward the §7.1 staleness refusal, and the refresher logs the refusal.
+//! Entries ABSENT from the new snapshot are removals (fail-closed); versions
+//! are only comparable while an entry is present on both sides, so the FEED
+//! must not resurrect removed entries at lower versions — recorded as the
+//! feed contract.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::ceiling::CellCeiling;
 use super::{AuthService, JwksKey, JwksSnapshot};
 use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy,
@@ -375,11 +387,30 @@ impl AuthService {
         Ok(())
     }
 
+    /// TEST HOOK until boot installs the cell's own ceiling (shared-cells
+    /// step 2: the `bootstrap::run` wiring is the owner's). Refused once a
+    /// policy snapshot was published, so no snapshot escapes the ceiling.
+    #[cfg(test)]
+    pub(crate) fn install_cell_ceiling(&self, ceiling: CellCeiling) -> Result<(), CellCeiling> {
+        self.cell_ceiling.set(ceiling)
+    }
+
+    /// The ceiling every policy snapshot is published through.
+    fn cell_ceiling(&self) -> &CellCeiling {
+        self.cell_ceiling.get_or_init(CellCeiling::dedicated)
+    }
+
+    /// Publish a full policy snapshot as this cell serves it: every project
+    /// at its effective quotas (shared-cells H1), then the monotonic checks.
+    pub(crate) fn publish_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
+        self.commit_policies(self.cell_ceiling().apply(snapshot))
+    }
+
     #[expect(
         clippy::unwrap_used,
         reason = "AuthService publication; poisoned history may be partially changed; recovering could restore revoked authority"
     )]
-    pub(crate) fn publish_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
+    fn commit_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
         let mut hw = self.high_water.lock().unwrap();
         let cur = self.projects.load();
         if snapshot.feed_version < cur.feed_version {

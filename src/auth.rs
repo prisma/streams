@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) mod ceiling;
 mod lease;
 mod publication;
 mod refusal;
@@ -367,6 +368,9 @@ pub(crate) struct AuthService {
     /// depend on the publisher staying perfect. FIFO-bounded; evicting
     /// an ancient id only returns it to publisher-contract protection.
     high_water: std::sync::Mutex<HighWater>,
+    /// Shared-cells H1: every policy snapshot publishes through this cell's
+    /// ceiling, fixed at the first publication (dedicated unless installed).
+    cell_ceiling: std::sync::OnceLock<ceiling::CellCeiling>,
     pub shadow: ShadowCounters,
 }
 
@@ -400,6 +404,7 @@ impl AuthService {
             kid_wakeup: tokio::sync::Notify::new(),
             last_kid_wake_ms: std::sync::atomic::AtomicI64::new(0),
             high_water: std::sync::Mutex::new(HighWater::default()),
+            cell_ceiling: std::sync::OnceLock::new(),
             shadow: ShadowCounters::default(),
             generation: AtomicU64::new(0),
             gen_tx: tokio::sync::watch::channel(0u64).0,
@@ -407,18 +412,6 @@ impl AuthService {
         })
     }
 
-    /// Monotonic publication (review item 2, authorization P0): a
-    /// stale or out-of-order feed must never restore an earlier
-    /// authorization state — an earlier workspace owner, a revoked
-    /// credential, a removed scope, a retired signing key. Each
-    /// publish REFUSES a snapshot that would move any version
-    /// backward; the refused snapshot is dropped, the current one
-    /// keeps aging toward the §7.1 staleness refusal, and the
-    /// refresher logs the refusal. Entries ABSENT from the new
-    /// snapshot are removals (fail-closed); versions are only
-    /// comparable while an entry is present on both sides, so the
-    /// FEED must not resurrect removed entries at lower versions —
-    /// recorded as the feed contract.
     /// Effective policy/grant staleness window (seconds).
     pub(crate) fn staleness_max_secs(&self) -> i64 {
         self.staleness_max_secs.load(Ordering::Relaxed)

@@ -194,10 +194,9 @@
   {
     "name": "a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase A step 2: effective quota = min(feed, shared bound / k)\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5a3a42263a4cb629dcd1646bd7cd9f2351b5a9b041393c79949130a27526b2da",
+    "function_sha256": "cc4992c69a80c1223eb480e1c0808357a5801fd3178fb34f887c19eb5e865997",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
@@ -312,6 +311,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_maps",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d90287207ba7c48f76b667643c3aed3e9e43cbe38273253ec683107989f9be5b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
     "scenarios": []
   },
   {

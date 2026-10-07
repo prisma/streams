@@ -39,9 +39,10 @@ pub(crate) enum ProjectStatus {
 
 /// §17 quota fields. Stage 2b carries them through the policy feed;
 /// Stage 6 enforces them. `0` means "no limit configured" at this
-/// level (cell safety limits still apply). An unknown key refuses the
-/// whole feed (shared-cells R3): a misspelled field must not leave the
-/// real one at 0.
+/// level (cell safety limits still apply); a cell shared k ways publishes
+/// each bounded field at most at its ceiling, a 0 included
+/// (`auth::ceiling`). An unknown key refuses the whole feed (shared-cells
+/// R3): a misspelled field must not leave the real one at 0.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectQuotas {
