@@ -29,13 +29,13 @@ mod validation_tests;
 pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfig) -> Settings {
     Settings {
         // With the group-commit pump on, SlateDB's internal timer is only
-        // a failsafe for anything the pump misses (it should never fire
-        // on a healthy shard) — stretch it well past the pump cadence.
-        flush_interval: Some(Duration::from_millis(if args.wal_group_commit != 0 {
-            args.flush_interval_ms.max(1000)
+        // a failsafe for anything the pump misses, fixed far past the
+        // pump's cadence; FLUSH_INTERVAL_MS is the cadence of the tick.
+        flush_interval: Some(if args.wal_group_commit != 0 {
+            crate::config::EngineConfig::WAL_FAILSAFE_INTERVAL
         } else {
-            args.flush_interval_ms
-        })),
+            Duration::from_millis(args.flush_interval_ms)
+        }),
         l0_sst_size_bytes: args.l0_sst_size_bytes,
         max_unflushed_bytes: args.max_unflushed_bytes,
         l0_max_ssts: args.l0_max_ssts,

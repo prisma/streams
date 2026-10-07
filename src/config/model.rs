@@ -139,6 +139,14 @@ impl EngineConfig {
     /// is skipped (1 MiB).
     pub(crate) const WAL_GATHER_SKIP_BYTES: u64 = 1_048_576;
 
+    /// SlateDB's own WAL flush timer on a shard log while the group-commit
+    /// pump runs (owner decision of 2026-10-07, the write tier): a failsafe
+    /// only. Every commit wakes the pump, so no acknowledgement waits for
+    /// the timer; a tick that finds the WAL buffer non-empty (commits
+    /// waiting out the pump's gap) writes them early as one more WAL
+    /// object. At 1 s that was about 0.8 a second on every busy shard.
+    pub(crate) const WAL_FAILSAFE_INTERVAL: Duration = Duration::from_secs(60);
+
     /// Build the resolved compactor options (previously the
     /// `resolved_compactor_options()` OnceLock in bootstrap.rs).
     pub fn compactor_options(&self) -> slatedb::config::CompactorOptions {

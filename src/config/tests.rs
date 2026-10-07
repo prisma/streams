@@ -673,7 +673,7 @@ fn cli_surface_is_pinned() {
 
 /// A server that sets nothing runs the group-commit pump with a 100 ms gap
 /// (the one write tier) and a 6 ms gather, and SlateDB's own timer is then
-/// the 1 s failsafe;
+/// the 60 s failsafe, whatever `FLUSH_INTERVAL_MS` says;
 /// `WAL_GROUP_COMMIT=0` still selects the tick at `FLUSH_INTERVAL_MS`.
 #[test]
 fn the_default_commit_pipeline_is_the_pump_and_the_switch_still_selects_the_tick() {
@@ -689,7 +689,14 @@ fn the_default_commit_pipeline_is_the_pump_and_the_switch_still_selects_the_tick
     );
     assert_eq!(
         validation::shard_settings(&pump.cli, &pump.engine).flush_interval,
-        Some(std::time::Duration::from_secs(1))
+        Some(std::time::Duration::from_secs(60))
+    );
+    let mut slow = test_cli();
+    slow.flush_interval_ms = 120_000;
+    let slow = ServerConfig::load(slow, &MapEnvironment::empty());
+    assert_eq!(
+        validation::shard_settings(&slow.cli, &slow.engine).flush_interval,
+        Some(std::time::Duration::from_secs(60))
     );
     let mut tick = test_cli();
     tick.wal_group_commit = 0;

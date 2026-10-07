@@ -331,9 +331,9 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
     let store = FaultStore::uniform(inner, 11, FaultPlan::new(0, 0, 100));
     let db = slatedb::Db::builder("dst-idlepoll", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
-            // Production shape: pump on ⇒ SlateDB's own flush timer is a
-            // 1 s failsafe (same stretch open_engine_cfg mirrors).
-            flush_interval: Some(std::time::Duration::from_secs(1)),
+            // Production shape: pump on ⇒ SlateDB's own flush timer is the
+            // 60 s failsafe (the constant open_engine_cfg mirrors too).
+            flush_interval: Some(crate::config::EngineConfig::WAL_FAILSAFE_INTERVAL),
             manifest_poll_interval: std::time::Duration::from_millis(
                 crate::DEFAULT_MANIFEST_POLL_MS,
             ),

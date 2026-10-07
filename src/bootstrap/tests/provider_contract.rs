@@ -46,7 +46,7 @@ pub(super) struct Backend {
     settings: slatedb::config::Settings,
     /// Whether this configuration's server flushes the WAL from its
     /// group-commit pump (`WAL_GROUP_COMMIT`): `shard_settings` then makes
-    /// SlateDB's own timer a 1 s failsafe, and the contract's writer
+    /// SlateDB's own timer a 60 s failsafe, and the contract's writer
     /// flushes as the pump does.
     pump: bool,
     /// Run-unique key root for raw objects and SlateDB paths.
@@ -176,7 +176,7 @@ fn local_config(endpoint: &str, group_commit: Option<u8>) -> ServerConfig {
 /// own flush timer under it: the cadence under the tick, a failsafe under
 /// the pump.
 const PIPELINES: [(u8, Duration); 2] =
-    [(0, Duration::from_millis(25)), (1, Duration::from_secs(1))];
+    [(0, Duration::from_millis(25)), (1, Duration::from_secs(60))];
 
 fn assert_pipeline(b: &Backend, group_commit: u8, timer: Duration) {
     assert_eq!(b.settings.flush_interval, Some(timer), "{}", b.name);

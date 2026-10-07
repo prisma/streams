@@ -41,10 +41,10 @@ pub struct CliArgs {
     /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
     /// degraded the per-DB durable watermark to ~0.3–1 s (EXPERIMENT-PILOT
     /// run 3). 25 ms keeps the ack floor ≈ flush + Tigris PUT ≈ 40 ms while
-    /// cutting WAL-object churn 5×. With the group-commit pump (the
-    /// default) this is only the base of SlateDB's failsafe timer,
-    /// stretched to at least 1 s; it is the flush cadence only with
-    /// WAL_GROUP_COMMIT=0.
+    /// cutting WAL-object churn 5×. It is the flush cadence only with
+    /// WAL_GROUP_COMMIT=0. With the group-commit pump (the default) it is
+    /// read only as the gap when WAL_FLUSH_GAP_MS is 0; SlateDB's own
+    /// timer is then a fixed 60 s failsafe.
     #[arg(long, env = "FLUSH_INTERVAL_MS", default_value_t = 25)]
     pub(crate) flush_interval_ms: u64,
 
@@ -54,7 +54,7 @@ pub struct CliArgs {
     /// the flush cadence self-clocks to the WAL PUT RTT instead of adding
     /// tick alignment (avg tick/2) on top of the serial-PUT queue. The
     /// idle mint-rate floor is --wal-flush-gap-ms (flush_interval_ms when
-    /// that is 0) and SlateDB's own timer is stretched to a 1 s failsafe.
+    /// that is 0) and SlateDB's own timer is a fixed 60 s failsafe.
     #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 1)]
     pub(crate) wal_group_commit: u8,
 

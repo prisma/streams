@@ -30,7 +30,7 @@ key with its own `DELETE`; see [Deletes](#deletes)). The registry cases use the 
 store and the SlateDB cases the shard-bucket store, as in production. SlateDB
 opens with `shard_settings`, the settings the server gives shard logs. With
 group commit on (`WAL_GROUP_COMMIT=1`, the default), those settings make
-SlateDB's own flush timer a 1 s failsafe, and the suite's writer flushes the
+SlateDB's own flush timer a 60 s failsafe, and the suite's writer flushes the
 WAL explicitly after each write, as the shard's pump does; with it off the
 timer flushes. The pump's gap and gather are scheduling inside the shard
 engine and are not part of what the suite drives.

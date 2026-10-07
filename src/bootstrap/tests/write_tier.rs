@@ -2,7 +2,7 @@
 //! measured on one shard engine built from the default command line as
 //! `run` builds every engine (`shard_config` for the engine,
 //! `shard_settings` for its shard log), over an in-memory store whose every
-//! WAL write takes [`WAL_PUT`], with one append in flight at a time.
+//! WAL write takes [`WAL_PUT`].
 //!
 //! The group-commit pump flushes when a commit waits. It starts a flush no
 //! sooner than the gap after the previous flush STARTED, and 1 ms after it
@@ -14,10 +14,10 @@
 //! overlaps it: a producer with one append in flight is acknowledged once
 //! per gap + 1 ms, not once per gap + 1 ms + WAL write.
 //!
-//! SlateDB's own flush timer, the pump's failsafe, is the one setting moved
-//! off its default here (`FLUSH_INTERVAL_MS=60000`, so 60 s where the
-//! default is 1 s): it flushes whatever the WAL buffer holds when it fires,
-//! and at 1 s it would fire inside this one-second measurement.
+//! SlateDB's own flush timer, the pump's failsafe, writes whatever the WAL
+//! buffer holds when it fires, including commits that wait out the gap. At
+//! the default it fires once a minute (and once at open), so never inside
+//! these measurements: every WAL object after the warm-up is a pump flush.
 #![cfg(test)]
 
 use std::sync::Arc;
@@ -36,6 +36,13 @@ const SETTLE: Duration = Duration::from_millis(1);
 const WAL_PUT: Duration = Duration::from_millis(50);
 /// Appends sent back to back, each the moment the previous one is acked.
 const BACK_TO_BACK: u32 = 5;
+/// A busy shard's offered load: one append every this often, none waiting
+/// for another's acknowledgement.
+const OFFER_EVERY: Duration = Duration::from_millis(5);
+/// How long that load is offered: longer than any period SlateDB's timer
+/// had before the 60 s failsafe (1 s plus a per-shard offset below 0.5 s),
+/// so at least one of its ticks would fall inside.
+const BUSY: Duration = Duration::from_secs(2);
 
 /// One default shard engine and the store that times its WAL writes.
 struct Rig {
@@ -58,10 +65,10 @@ impl Rig {
             1,
             FaultProfile::clean().with_op_class(StoreOp::Put, ObjClass::Wal, every_wal_put),
         );
-        let mut cli = crate::config::CliArgs::deterministic();
-        cli.flush_interval_ms = 60_000;
-        let config =
-            crate::config::ServerConfig::load(cli, &crate::config::MapEnvironment::empty());
+        let config = crate::config::ServerConfig::load(
+            crate::config::CliArgs::deterministic(),
+            &crate::config::MapEnvironment::empty(),
+        );
         let settings = crate::config::validation::shard_settings(&config.cli, &config.engine);
         let shard = super::shard_config(
             &config.cli,
@@ -130,6 +137,16 @@ impl Rig {
             self.engine.pump_flushes.load(Ordering::Relaxed),
         )
     }
+
+    /// The ledger once the pump has counted its last flush. The acker
+    /// releases an acknowledgement on the same watermark change that ends
+    /// the pump's flush, so the producer can hold its last acknowledgement
+    /// before the pump has counted the flush that made it durable; with no
+    /// commit pending, a gap later the pump is idle.
+    async fn settled_ledger(&self) -> (u64, u64) {
+        tokio::time::sleep(GAP).await;
+        self.ledger()
+    }
 }
 
 /// An append on a shard whose last flush started more than a gap ago
@@ -181,9 +198,62 @@ async fn an_isolated_append_waits_for_one_wal_write_and_the_rest_of_the_gap() {
     );
     let appends = u64::from(train_flushes) + 1;
     assert_eq!(
-        rig.ledger(),
+        rig.settled_ledger().await,
         (wal_before + appends, flushes_before + appends),
         "every append is one WAL object and one pump flush"
+    );
+    rig.engine
+        .await_terminated(Duration::from_secs(30))
+        .await
+        .expect("terminate");
+}
+
+/// A busy shard writes one WAL object per pump flush and no other. With an
+/// append offered every 5 ms for 2 s, none waiting for another, commits
+/// wait out the gap in the WAL buffer for most of every cycle, and the pump
+/// flushes them about once per gap + 1 ms. SlateDB's own timer, the
+/// failsafe, fires once a minute and so not in these 2 s; when it fired
+/// every second, each tick found such commits in the buffer and wrote them
+/// as a WAL object of its own, one object more per tick than the pump
+/// flushed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_shard_writes_one_wal_object_per_pump_flush() {
+    let rig = Rig::open().await;
+    // The open leaves the maintenance row in the WAL buffer: one append
+    // makes it durable before the ledger is read.
+    rig.append("warm-up").await;
+    tokio::time::sleep(GAP).await;
+    let (wal_before, flushes_before) = rig.ledger();
+
+    let offers =
+        u32::try_from(BUSY.as_millis() / OFFER_EVERY.as_millis()).expect("the offers fit a u32");
+    let shard = &rig;
+    let waits = futures_util::future::join_all((0..offers).map(|n| async move {
+        tokio::time::sleep(OFFER_EVERY * n).await;
+        shard.append(&format!("busy-{n}")).await
+    }))
+    .await;
+    let (wal, flushes) = rig.settled_ledger().await;
+    let (written, flushed) = (wal - wal_before, flushes - flushes_before);
+
+    eprintln!(
+        "busy shard, one append every {OFFER_EVERY:?} for {BUSY:?}: {} acked, {written} \
+         WAL objects, {flushed} pump flushes, slowest ack {:?}",
+        waits.len(),
+        waits.iter().max(),
+    );
+    assert_eq!(
+        written,
+        flushed,
+        "every WAL object a busy shard writes is a pump flush; SlateDB's failsafe timer \
+         wrote {} of them",
+        written.saturating_sub(flushed)
+    );
+    let busiest_cycle = GAP + SETTLE + WAL_PUT;
+    assert!(
+        u128::from(flushed) >= BUSY.as_millis() / busiest_cycle.as_millis(),
+        "the pump flushed throughout the load, at least once per gap, settle and WAL \
+         write: {flushed} flushes in {BUSY:?}"
     );
     rig.engine
         .await_terminated(Duration::from_secs(30))

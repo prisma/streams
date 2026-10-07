@@ -92,7 +92,7 @@ with an empty pool rather than dead sockets.
 | env | default | guidance |
 |---|---|---|
 | `INITIAL_SHARDS` | 1 | power of two; pilot fleet used 16. Set at keyspace creation; topology is stored |
-| `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25. With the pump (the default) this is SlateDB's failsafe only (stretched to ≥1 s); it is the cadence only with `WAL_GROUP_COMMIT=0` |
+| `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25. It is the cadence only with `WAL_GROUP_COMMIT=0`. With the pump (the default) it is read only as the gap when `WAL_FLUSH_GAP_MS=0`; SlateDB's own timer is then the fixed 60 s failsafe (below), whatever this says (until 2026-10-07 it was this value stretched to ≥1 s) |
 | `WAL_GROUP_COMMIT` | 1 | per-shard pump flushes the WAL the moment the previous flush completes when commits are waiting, instead of on the fixed tick; 0 = SlateDB's fixed tick at `FLUSH_INTERVAL_MS` (the default until 2026-09-29). Sparse/moderate appends stop paying tick alignment (local A/B vs 25 ms s3lite: sequential append p50 55→28 ms, durable_wait 47→27 ms); at saturation both modes self-clock to the PUT RTT (equal). Skips entirely when nothing awaits durability, so idle churn is zero |
 | `WAL_FLUSH_GAP_MS` | 100 (0 = `FLUSH_INTERVAL_MS`) | pump-mode floor on start-to-start flush spacing: the one write tier (owner decision of 2026-10-07; 10 until then). With the 1 ms herd-settle, a shard's flushes start at least 101 ms apart, so a busy shard writes at most ~9.9 WAL objects/s. An append waits for the rest of the gap since its shard's last flush started, then the settle and one WAL PUT: on a shard whose last flush started at least 100 ms ago, settle + PUT only; a producer with one append in flight gets one ack per ~101 ms (the PUT overlaps the gap while it is shorter). Only binds when the PUT RTT is faster than the gap. Lowering it buys acknowledgement latency with more WAL PUTs on busy shards |
 | `FRAME_COMPRESS` | 0 | 1 = zstd-1 each record payload BEFORE encryption (frame v3; readers accept v2+v3, no migration). Ciphertext never compresses, so this is the only tier where compression can live — it shrinks WAL, L0, compaction, absorber and history bytes together. Sinmax campaign: removed a ~5-6x NIC amplification; enable for any workload with compressible payloads |
@@ -111,7 +111,9 @@ shard databases runs at constants of the binary; no argument and no variable
 sets them, and a process that holds one of the old names
 (`WAL_GC_INTERVAL_SECS`, `WAL_GC_MIN_AGE_SECS`,
 `COMPACTIONS_GC_INTERVAL_SECS`, `COMPACTIONS_GC_MIN_AGE_SECS`,
-`GC_QUIET_INTERVAL_SECS`, `HISTORY_GC_INTERVAL_SECS`) runs the same values:
+`GC_QUIET_INTERVAL_SECS`, `HISTORY_GC_INTERVAL_SECS`) runs the same values.
+Since 2026-10-07 so does SlateDB's WAL failsafe under the pump (last row),
+which `FLUSH_INTERVAL_MS` set before:
 
 | what | value | why |
 |---|---|---|
@@ -119,6 +121,7 @@ sets them, and a process that holds one of the old names
 | compactions-log sweep interval / minimum age | 30 s / 120 s | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | manifest, compacted and WAL-fence sweep interval | 600 s | the quiet directories: reclamation latency is traded for LIST steady-state (docs/TIGRIS-404-COST.md) |
 | history GC sweep interval | 600 s | every history database, for the same reason |
+| SlateDB's WAL flush timer on a shard log under the pump (the failsafe) | 60 s, plus a fixed per-shard offset below 30 s | since 2026-10-07 (owner decision, the write tier; 1-1.5 s before). Every commit wakes the pump, so no acknowledgement waits for this timer; a tick that finds commits waiting out the pump's gap in the WAL buffer writes them early as one more WAL object (about 0.8/s on a busy shard at 1 s). The offset (`bootstrap::run`, O14a) staggers shards: the single shard (prefix `""`) ticks every 76.3 s, shards `00`/`01`/`10`/`11` every 79.4/71.8/66.6/74.2 s. Under `WAL_GROUP_COMMIT=0` the timer is the tick, `FLUSH_INTERVAL_MS` |
 
 ### 3.2b Service limits, usage telemetry, billing
 

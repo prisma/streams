@@ -75,7 +75,7 @@ Implementing them re-opens this gate; until then the posture is
    2026-09-29: `--wal-flush-gap-ms 2` lowers the pump's gap from the
    default (10 ms until 2026-10-07, 100 ms since) to 2 ms, and
    `--flush-interval-ms 1` sets no cadence (under the pump SlateDB's own
-   timer is a 1 s failsafe). At the 100 ms default a shard acknowledges a
+   timer is a fixed 60 s failsafe; 1 s until 2026-10-07). At the 100 ms default a shard acknowledges a
    producer with one append in flight once per ~101 ms, so ~240 sequential
    appends on one shard would need about 24 s: the suite needs this pin.
    Until 2026-09-29 the default was the 25 ms tick, at which an append

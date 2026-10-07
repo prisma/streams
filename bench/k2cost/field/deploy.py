@@ -121,6 +121,8 @@ SCALE = {
 }
 # P-100 is the binary's default gap, the one write tier since 2026-10-07. P-exp
 # pins the 10 ms gap the cells recorded as P-exp ran (the default until then).
+# Every posture runs SlateDB's WAL failsafe at the binary's fixed 60 s (E6,
+# 2026-10-07), which no setting restores; the recorded cells ran it at 1-1.5 s.
 WAL_POSTURES = {"P-100": {}, "P-exp": {"WAL_FLUSH_GAP_MS": "10"}, "P-500": {"WAL_FLUSH_GAP_MS": "500"},
                 "P-1000": {"WAL_FLUSH_GAP_MS": "1000"}}
 # Wrapper CPU samples every 15 awake seconds: a boot loses at most that much

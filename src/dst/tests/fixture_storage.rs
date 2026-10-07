@@ -32,7 +32,7 @@ pub(super) async fn open_engine_cfg(
     // long failsafe (else it flushes mid-PUT commits itself and the pump's
     // gather/skip machinery never sees a busy generation).
     let flush_interval = if cfg.wal_group_commit {
-        std::time::Duration::from_secs(1)
+        crate::config::EngineConfig::WAL_FAILSAFE_INTERVAL
     } else {
         std::time::Duration::from_millis(5)
     };
