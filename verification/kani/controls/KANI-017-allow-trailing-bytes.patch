@@ -1,12 +1,13 @@
-diff --git a/src/shard/record.rs b/src/shard/record.rs
---- a/src/shard/record.rs
-+++ b/src/shard/record.rs
-@@ -80,7 +80,7 @@
-             .header_len
-             .saturating_add(4)
-             .saturating_add(frame.ciphertext.len())
--            != raw.len()
-+            > raw.len()
-     {
-         return Err(RecordCorruption::Frame);
-     }
+diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
+--- a/src/crypto_page/header.rs
++++ b/src/crypto_page/header.rs
+@@ -89,9 +89,6 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
+     let (sealed, trailing) = input
+         .split_at_checked(ct_len)
+         .ok_or(PageCorruption::Truncated)?;
+-    if !trailing.is_empty() {
+-        return Err(PageCorruption::Trailing);
+-    }
+     let body = ct_len.checked_sub(TAG_LEN).ok_or(PageCorruption::Tag)?;
+     if body > body_cap(count) {
+         return Err(PageCorruption::Oversized);

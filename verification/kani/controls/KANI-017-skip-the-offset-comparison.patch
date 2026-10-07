@@ -1,16 +1,16 @@
-diff --git a/src/shard/record.rs b/src/shard/record.rs
---- a/src/shard/record.rs
-+++ b/src/shard/record.rs
-@@ -83,12 +83,6 @@
-             != raw.len()
-     {
-         return Err(RecordCorruption::Frame);
--    }
--    if frame.header.offset != offset {
--        return Err(RecordCorruption::Offset {
--            stored: offset,
--            header: frame.header.offset,
--        });
-     }
-     Ok(frame)
- }
+diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
+--- a/src/crypto_page/header.rs
++++ b/src/crypto_page/header.rs
+@@ -152,12 +152,6 @@ impl CheckedPage {
+     pub(crate) fn admit(raw: Bytes, last: u64) -> Result<Self, PageCorruption> {
+         let page = parse(&raw)?;
+         let derived = last_offset(page.first, page.count).ok_or(PageCorruption::OffsetOverflow)?;
+-        if derived != last {
+-            return Err(PageCorruption::Offset {
+-                key: last,
+-                page: derived,
+-            });
+-        }
+         let header = raw.slice_ref(page.header);
+         let sealed = raw.slice_ref(page.sealed);
+         let routing_key = Box::from(page.routing_key);

@@ -843,30 +843,36 @@ async fn absorption_race(
 #[cfg(test)]
 mod o2_tests {
     use super::*;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "o2_batch_publishes_one_owner_only_after_authentication_and_admission; the fixture's offsets are counters below 256 that seed and check each payload byte; checked conversions would only restate the fixture's size"
-    )]
+    use crate::crypto_page::{CheckedPage, PageCipher, PageLane};
+    use crate::shard::record::{PageSlice, PageSlices};
+
+    /// 64 records of 1 KiB, record `n` holding the byte `n`, sealed in four
+    /// pages of 16 under the unkeyed lane and sliced as a scan of [0, 64)
+    /// returns them.
+    fn sixty_four_records(key: &StreamKey, epoch: &[u8; 16], segment: &[u8; 16]) -> PageSlices {
+        let subkey = crate::crypto::derive_subkey(key, epoch, "", 0);
+        let cipher = PageCipher::new(&subkey, segment);
+        let lane = PageLane {
+            ts_ms: 123,
+            key_version: 0,
+            routing_key: "",
+        };
+        let records: Vec<Vec<u8>> = (0..64u8).map(|n| vec![n; 1024]).collect();
+        let mut slices = PageSlices::default();
+        for (chunk, first) in records.chunks(16).zip((0..).step_by(16)) {
+            let sealed = cipher.seal(&lane, first, chunk).unwrap();
+            let page = CheckedPage::admit(Bytes::from(sealed.bytes), sealed.last).unwrap();
+            slices.push(PageSlice::clip(page, 0, 64).unwrap());
+        }
+        slices
+    }
+
     #[test]
     fn o2_batch_publishes_one_owner_only_after_authentication_and_admission() {
         let key = crate::crypto::StreamKey([7; 32]);
         let epoch = [8; 16];
         let hash = [9; 16];
-        let subkey = crate::crypto::derive_subkey(&key, &epoch, "", 0);
-        let cipher = crate::crypto::FrameCipher::new(
-            &subkey,
-            &hash,
-            crate::crypto::FrameCompression::Disabled,
-        );
-        let frames: Vec<_> = (0..64)
-            .map(|off| {
-                let raw =
-                    Bytes::from(cipher.encrypt(&hash, off, 123, 0, "", &vec![off as u8; 1024]));
-                crate::shard::record::CheckedFrame::from_ring(&raw, off, None)
-                    .unwrap()
-                    .unwrap()
-            })
-            .collect();
+        let frames = sixty_four_records(&key, &epoch, &hash);
         let page = || ReadPage {
             watermarks: Watermarks {
                 durable: 64,
@@ -891,12 +897,12 @@ mod o2_tests {
         assert_eq!(owner.len(), 65536);
         assert_eq!(out.last, Some(63));
         assert_eq!(out.recs.len(), 64);
-        for (i, record) in out.recs.iter().enumerate() {
+        for ((i, record), n) in out.recs.iter().enumerate().zip(0u8..) {
             assert_eq!(
                 record.payload.as_ptr(),
                 owner.as_ptr().wrapping_add(i * 1024)
             );
-            assert!(record.payload.iter().all(|b| *b == i as u8));
+            assert!(record.payload.iter().all(|b| *b == n));
         }
         let mut partial = page();
         assert!(

@@ -814,3 +814,107 @@ async fn product_scan_bytes_stream() {
     assert_eq!(raw, b"\x00\x01\xffraw");
     engine_shutdown(&state).await;
 }
+
+/// Record `n` of the floor-pager fixture: exactly 1,000 bytes of JSON text
+/// on routing key `key`.
+fn floor_record(key: &str, n: u64) -> String {
+    let head = format!(r#"{{"c":"{key}","n":{n},"pad":""#);
+    format!("{head}{}\"}}", "x".repeat(1000 - head.len() - 2))
+}
+
+/// One `records:batch` append of records `from..to` on routing key `key`.
+async fn floor_batch(addr: std::net::SocketAddr, key: &str, from: u64, to: u64) {
+    let records: Vec<String> = (from..to).map(|n| floor_record(key, n)).collect();
+    let body = format!("[{}]", records.join(","));
+    let headers = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", key),
+    ];
+    let path = "/v1/streams/floorpager/records:batch";
+    let (st, _, b) = preq(addr, "POST", path, &headers, body.as_bytes()).await;
+    assert_eq!(
+        st,
+        200,
+        "batch {key} {from}..{to}: {}",
+        String::from_utf8_lossy(&b)
+    );
+}
+
+/// Layout 5: a keyed product pager at the byte floor (`maxBytes=1` clamps
+/// to 4 KiB, four 1,000-byte records) walks a key whose records share
+/// pages, absorbed into history and in the tail, with another key's page
+/// between them. Every read but the last serves exactly four records, so
+/// most reads end inside a page, and the next read resumes at the next
+/// record: all 110 records come back once, in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_pager_at_the_byte_floor_resumes_inside_pages() {
+    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    let rig = http_rig_build(
+        mem(),
+        super::fixture_runtime::RigRuntime::first(),
+        HttpRigOptions {
+            absorber: Some(crate::history::AbsorberConfig {
+                threshold_bytes: 1,
+                threshold_age: std::time::Duration::from_millis(1),
+                tick: std::time::Duration::from_millis(20),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    let addr = rig.addr;
+    let create = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/floorpager",
+        &create,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    floor_batch(addr, "c1", 0, 40).await;
+    floor_batch(addr, "c2", 0, 10).await;
+    let sref = rig.state.deployment.raw_adapter_sref("floorpager");
+    let desc = rig.state.registry.get(&sref).await.unwrap().unwrap();
+    let engine = rig
+        .state
+        .engine_for(&desc.segment_route_by_id(0).unwrap())
+        .await
+        .unwrap();
+    super::fixture_storage::wait_all_absorbed(&engine, &[desc.storage_hash()]).await;
+    let handle = engine.stream_handle(desc.storage_hash()).await.unwrap();
+    let absorbed = handle.state.lock().unwrap().durable.absorbed;
+    assert_eq!(absorbed, 50, "c1's first page and c2's page are in history");
+    floor_batch(addr, "c1", 40, 110).await;
+    let (mut cursor, mut served, mut reads) = (String::from("beginning"), Vec::new(), 0);
+    loop {
+        reads += 1;
+        assert!(reads <= 40, "the pager did not settle");
+        let path =
+            format!("/v1/streams/floorpager/records?routingKey=c1&cursor={cursor}&maxBytes=1");
+        let (st, h, b) = preq(addr, "GET", &path, &create, b"").await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+        let done = h.get("prisma-up-to-date").map(String::as_str) == Some("true");
+        assert!(
+            done || recs.len() == 4,
+            "read {reads}: {} records",
+            recs.len()
+        );
+        let records = recs
+            .iter()
+            .map(|r| (r["c"].as_str().map(str::to_owned), r["n"].as_u64()));
+        served.extend(records);
+        if done {
+            break;
+        }
+        cursor = h.get("prisma-next-cursor").unwrap().clone();
+    }
+    let expected: Vec<_> = (0..110).map(|n| (Some("c1".to_owned()), Some(n))).collect();
+    assert_eq!(served, expected);
+    assert_eq!(reads, 28, "110 records, four per read");
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+}

@@ -9,13 +9,10 @@
 //! `to`; a page holds at most `PAGE_MAX_RECORDS` records, so the scan never
 //! needs keys past `to - 1 + PAGE_MAX_RECORDS`.
 use super::{Deliver, ShardEngine, StreamHandle};
-use crate::crypto::{DecodedFrame, decode_frame};
 use crate::crypto_page::{
     CheckedPage, PAGE_MAX_RECORDS, PageCorruption, shard_page_key, shard_page_prefix,
 };
-mod checked;
 mod pages;
-pub(crate) use checked::CheckedFrame;
 pub(crate) use pages::{PageSlice, PageSlices};
 use slatedb::config::{DurabilityLevel, ScanOptions};
 
@@ -25,14 +22,7 @@ const PAGE_SPAN: u64 = PAGE_MAX_RECORDS as u64;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecordCorruption {
-    KeyWidth,
-    Namespace,
-    Frame,
-    Offset {
-        stored: u64,
-        header: u64,
-    },
-    /// A shard-log page failed admission against its row key.
+    /// A stored page failed admission against its row key.
     Page(PageCorruption),
 }
 impl std::fmt::Display for RecordCorruption {
@@ -73,52 +63,6 @@ impl From<RangeReadError> for slatedb::Error {
             RangeReadError::Store(error) => error,
         }
     }
-}
-
-/// Decode one complete row, including the exact namespace, tag and offset.
-/// The prefix comes from the canonical key encoder for the selected segment.
-pub(crate) fn decode_row<'a>(
-    key: &[u8],
-    prefix: &[u8],
-    raw: &'a [u8],
-) -> Result<DecodedFrame<'a>, RecordCorruption> {
-    if key.len() != prefix.len().saturating_add(8) {
-        return Err(RecordCorruption::KeyWidth);
-    }
-    if !key.starts_with(prefix) {
-        return Err(RecordCorruption::Namespace);
-    }
-    let offset = u64::from_be_bytes(
-        key.get(prefix.len()..)
-            .ok_or(RecordCorruption::KeyWidth)?
-            .try_into()
-            .map_err(|_| RecordCorruption::KeyWidth)?,
-    );
-    decode_at(raw, offset)
-}
-
-/// Ring offsets and stored-row offsets obey the same frame contract. The
-/// compatible byte decoder remains separate: admission additionally requires
-/// a complete AEAD tag and forbids unclassified trailing bytes.
-pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, RecordCorruption> {
-    let frame = decode_frame(raw).ok_or(RecordCorruption::Frame)?;
-    if raw.len() > crate::crypto::MAX_ENCODED_FRAME
-        || frame.ciphertext.len() < 16
-        || frame
-            .header_len
-            .saturating_add(4)
-            .saturating_add(frame.ciphertext.len())
-            != raw.len()
-    {
-        return Err(RecordCorruption::Frame);
-    }
-    if frame.header.offset != offset {
-        return Err(RecordCorruption::Offset {
-            stored: offset,
-            header: frame.header.offset,
-        });
-    }
-    Ok(frame)
 }
 
 /// The pages holding offsets in [scan_from, durable_next), each sliced to

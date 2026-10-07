@@ -308,12 +308,13 @@
     {
       "id": "KANI-017",
       "kind": "kani",
-      "title": "Stored record key and frame offset agreement",
+      "title": "Stored page key and last-offset agreement",
       "status": "pass-with-recorded-scope",
       "owner": "Stored-record admission",
       "source_paths": [
-        "src/shard/record.rs",
-        "src/crypto.rs"
+        "src/crypto_page.rs",
+        "src/crypto_page/header.rs",
+        "src/crypto_page/body.rs"
       ],
       "verification_paths": [
         "src/shard/record/proofs.rs"
@@ -331,7 +332,7 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "decode_row (and through it decode_at and crypto::decode_frame) over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix record_key gives a symbolic stream hash; the routing-key length field is fixed per harness at 0 and 4 bytes (the key bytes symbolic), every other field, including the version byte, the offset and the ciphertext length, is symbolic",
+      "input_scope": "CheckedPage::from_row (and through it CheckedPage::admit, the clear-header parser and get_varint) over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix shard_page_prefix gives a symbolic stream hash; the record count is a one-byte varint (1 to 127 records) and the routing-key length field is fixed per harness at 0 and 4 bytes (the key bytes symbolic), every other field, including the version byte, the first offset, the nonce and the ciphertext length, is symbolic",
       "checks": [
         {
           "id": "KANI-017/keyless-row",

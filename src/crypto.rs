@@ -566,6 +566,10 @@ pub(crate) struct DecodedFrame<'a> {
 }
 
 /// Parse a frame without decrypting (routing key and offsets are metadata).
+#[allow(
+    dead_code,
+    reason = "decode_frame; the frame parser serves the keys CLI, cryptobench and tests since layout 5 stores pages and no service read parses a stored frame; expect(dead_code) would be unfulfilled in the test build and in the by-path bins that call it"
+)]
 pub(crate) fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     if buf.len() < 27
         || !matches!(
@@ -630,12 +634,6 @@ pub(crate) fn decrypt_frame_limited(
 
 #[path = "crypto/decrypt.rs"]
 mod decrypt;
-/// An authenticated result can reuse caller storage or transfer independently
-/// decoded storage. Consumers adopt ownership before publishing a record.
-pub(crate) enum Decrypted {
-    Appended(std::ops::Range<usize>),
-    Owned(Vec<u8>),
-}
 pub(crate) use decrypt::FrameDecryptor;
 
 #[cfg(test)]

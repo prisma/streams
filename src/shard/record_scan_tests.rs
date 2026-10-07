@@ -22,24 +22,6 @@ fn encoded_record(offset: u64, lane: &str) -> Bytes {
     Bytes::from(page.bytes)
 }
 
-/// The legacy per-record key shape stored frames are admitted under (the
-/// history leg still stores frames).
-fn frame_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
-    [hash.as_slice(), b"r", &offset.to_be_bytes()].concat()
-}
-
-/// A frame at `offset` in `lane`, for the frame admission boundary.
-fn encoded_frame(offset: u64, lane: &str) -> Bytes {
-    Bytes::from(
-        crate::crypto::FrameCipher::new(
-            &[7; 32],
-            &[8; 16],
-            crate::crypto::FrameCompression::Disabled,
-        )
-        .encrypt(&[8; 16], offset, 1, 1, lane, b"retained payload"),
-    )
-}
-
 async fn scan_fixture(
     label: &str,
     key: Vec<u8>,
@@ -195,54 +177,47 @@ async fn r08a_valid_filtered_miss_keeps_legitimate_progress() {
         .unwrap();
 }
 
+/// KANI-017's regression: a stored row is admitted as a page only under its
+/// own stream's page prefix and its own last offset, and only when it is
+/// exactly one whole page with its tag.
 #[test]
 fn r08a_record_boundary_validates_namespace_extent_and_offset() {
-    use super::record::{RecordCorruption, decode_row};
-    let key = frame_key(&[8; 16], 1);
-    let raw = encoded_frame(1, "other");
-    assert!(decode_row(&key, &key[..17], &raw).is_ok());
-    for at in [0, 16] {
+    use crate::crypto_page::{CheckedPage, PageCorruption, shard_page_prefix};
+    let prefix = shard_page_prefix(&[8; 16]);
+    let key = shard_page_key(&[8; 16], 1);
+    let raw = encoded_record(1, "other");
+    let admit = |key: &[u8], raw: &[u8]| {
+        CheckedPage::from_row(key, &prefix, Bytes::copy_from_slice(raw)).map(|page| page.last())
+    };
+    assert_eq!(admit(&key, &raw), Ok(1));
+    for at in [0, 15, 16] {
         let mut foreign = key.clone();
         foreign[at] ^= 1;
-        assert!(matches!(
-            decode_row(&foreign, &key[..17], &raw),
-            Err(RecordCorruption::Namespace)
-        ));
+        assert_eq!(admit(&foreign, &raw), Err(PageCorruption::Namespace));
     }
     for width in [0, 17, 24, 26] {
         let mut invalid = key.clone();
         invalid.resize(width, 0);
-        assert!(matches!(
-            decode_row(&invalid, &key[..17], &raw),
-            Err(RecordCorruption::KeyWidth)
-        ));
+        assert_eq!(admit(&invalid, &raw), Err(PageCorruption::KeyWidth));
     }
-    assert!(matches!(
-        decode_row(&key, &key[..17], &encoded_frame(2, "other")),
-        Err(RecordCorruption::Offset { .. })
-    ));
+    assert_eq!(
+        admit(&key, &encoded_record(2, "other")),
+        Err(PageCorruption::Offset { key: 1, page: 2 })
+    );
     let mut trailing = raw.to_vec();
     trailing.push(0);
-    assert!(matches!(
-        decode_row(&key, &key[..17], &trailing),
-        Err(RecordCorruption::Frame)
-    ));
-    assert!(matches!(
-        decode_row(&key, &key[..17], &raw[..raw.len() - 1]),
-        Err(RecordCorruption::Frame)
-    ));
+    assert_eq!(admit(&key, &trailing), Err(PageCorruption::Trailing));
+    assert_eq!(
+        admit(&key, &raw[..raw.len() - 1]),
+        Err(PageCorruption::Truncated)
+    );
     // A ciphertext shorter than an AEAD tag can never authenticate, so a
-    // length-consistent frame carrying one is corrupt rather than short.
-    let header_len = crate::crypto::decode_frame(&raw)
-        .expect("fixture frame decodes")
-        .header_len;
-    let mut tagless = raw[..header_len].to_vec();
+    // length-consistent page carrying one is corrupt rather than short.
+    let ct_len = raw.len() - 4 - (16 + b"retained payload".len() + 2);
+    let mut tagless = raw[..ct_len].to_vec();
     tagless.extend_from_slice(&8u32.to_be_bytes());
     tagless.extend_from_slice(&[0; 8]);
-    assert!(matches!(
-        decode_row(&key, &key[..17], &tagless),
-        Err(RecordCorruption::Frame)
-    ));
+    assert_eq!(admit(&key, &tagless), Err(PageCorruption::Tag));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

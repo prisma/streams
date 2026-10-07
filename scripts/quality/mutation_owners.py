@@ -86,6 +86,11 @@ OWNERS = (
     owner('auth_signing_key', 'src/auth/signing_key.rs', 'auth:: auth_feed::'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
+    owner('history_page_read', 'src/history/page_read.rs',
+          'history::page_read:: history::postings_validation_tests:: history::record_validation_tests:: '
+          'history::refused_chain_read_tests:: application::read_decode::paging_tests:: '
+          'dst_tests::reads_history::'),
+    owner('history_page_read_tests', 'src/history/page_read/tests.rs', 'history::page_read::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
     owner('postings_cache', 'src/postings_cache.rs', 'postings_cache::'),
@@ -152,6 +157,7 @@ OWNERS = (
     owner('read_budget', 'src/application/read_budget.rs', 'application::read'),
     owner('read_decode', 'src/application/read_decode.rs', 'application::read'),
     owner('read_decode_tests', 'src/application/read_decode/tests.rs', 'application::read'),
+    owner('read_decode_paging_tests', 'src/application/read_decode/paging_tests.rs', 'application::read'),
     owner('read_keys', 'src/application/read_keys.rs', 'application::read'),
     owner('read_remote', 'src/application/read_remote.rs', 'application::read dst_tests::read_application:: dst_tests::read_page_limits::'),
     owner('read_remote_tests', 'src/application/read_remote_tests.rs', 'application::read'),
@@ -303,9 +309,6 @@ OWNERS = (
     owner('read_retention_probe', 'src/application/read_retention_probe.rs',
           'application::read_batch:: application::read_decode:: dst_tests::read_subset_retention:: '
           'dst_tests::read_peer_compatibility::'),
-    owner('record_checked', 'src/shard/record/checked.rs',
-          'shard::record::checked:: application::read_decode:: dst_tests::reads_raw:: '
-          'dst_tests::reads_ring:: dst_tests::reads_history::'),
     owner('sse_mod', 'src/sse/mod.rs', 'sse::'),
     owner('tasks_signal', 'src/tasks/signal.rs', 'tasks::'),
     MutationOwner(

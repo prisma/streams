@@ -3622,13 +3622,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::tests",
-      "path": "src/shard/record/checked.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate",
       "path": "src/shard/retirement_tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

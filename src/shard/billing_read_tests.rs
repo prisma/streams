@@ -339,12 +339,20 @@ impl Drop for ClockAt {
 }
 
 fn billed_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr>>) {
+    billed_request(vec![Bytes::from_static(b"payload")])
+}
+
+/// A billed append of `entries` to `SEGMENT`.
+fn billed_request(
+    entries: Vec<Bytes>,
+) -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr>>) {
     let (resp, reply) = oneshot::channel();
+    let bytes = entries.iter().map(Bytes::len).sum();
     let request = AppendReq {
         hash: SEGMENT,
         route: [9; 16],
         enqueued_at: std::time::Instant::now(),
-        entries: vec![Bytes::from_static(b"payload")],
+        entries,
         routing_key: "lane".into(),
         key_hash: [7; 16],
         producer_lineage: vec![],
@@ -352,7 +360,7 @@ fn billed_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr>>
         subkey: [1; 32],
         ts_hint_ms: Some(77),
         seq: None,
-        bytes: 7,
+        bytes,
         finish: AppendFinish::Open,
         billing: Some(Arc::new(crate::billing::BillingRef {
             identity: identity(),
@@ -367,6 +375,52 @@ fn billed_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr>>
         resp,
     };
     (CommitOp::Append(request), reply)
+}
+
+/// Layout 5: retention is billed on the bytes stored. A billed request
+/// split over three pages and one whose ten records share a page raise the
+/// row's gauge by exactly the bytes of the four pages they stored, far
+/// below their payload, while ingest stays metered on payload bytes and
+/// records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_retention_gauge_is_the_sum_of_the_stored_page_bytes() {
+    let rig = CloseRig::start("gauge-pages", None).await;
+    let large: Vec<Bytes> = (0..3u8).map(|n| Bytes::from(vec![n; 40 << 10])).collect();
+    let small: Vec<Bytes> = (0..10)
+        .map(|n| Bytes::from(format!(r#"{{"n":{n},"pad":"{}"}}"#, "x".repeat(200))))
+        .collect();
+    let payload: usize = large.iter().chain(&small).map(Bytes::len).sum();
+    for (entries, next) in [(large, 3), (small, 13)] {
+        let (append, reply) = billed_request(entries);
+        rig.commit(vec![append]).await;
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), reply).await;
+        assert_eq!(ack.unwrap().unwrap().unwrap().next_offset, next);
+    }
+    let prefix = crate::crypto_page::shard_page_prefix(&SEGMENT);
+    let rows = rig.rows().await;
+    let pages: Vec<usize> = rows
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .map(|(_, page)| page.len())
+        .collect();
+    assert_eq!(pages.len(), 4, "three pages and one");
+    let stored = u64::try_from(pages.iter().sum::<usize>()).unwrap();
+    let (row, _) = rig.stored().await;
+    let row: Meta = serde_json::from_str(&row.unwrap()).unwrap();
+    let payload = u64::try_from(payload).unwrap();
+    assert_eq!(
+        (
+            row.owned_frame_bytes_current,
+            row.ingest_payload_bytes_total,
+            row.ingest_records_total
+        ),
+        (stored, payload, 13)
+    );
+    assert!(
+        stored * 10 < payload,
+        "the gauge counts stored bytes: {stored}"
+    );
+    rig.stop().await;
 }
 
 /// Two closers enqueued their close before either applied: the row is

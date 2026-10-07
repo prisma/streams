@@ -1,21 +1,13 @@
-//! Page-local key material; retain at most 64 expanded cipher schedules of
-//! each kind (stored frames, stored pages).
-use crate::crypto::{DecodedFrame, FrameDecryptor, StreamKey, derive_subkey};
+//! Page-local key material: one page cipher per (key version, routing key)
+//! lane of the segment a read serves, at most 64 expanded schedules.
+use crate::crypto::{StreamKey, derive_subkey};
 use crate::crypto_page::{CheckedPage, OpenedPage, PageCipher};
 use std::collections::HashMap;
 const MAX_CIPHERS: usize = 64;
-struct KeyEntry {
-    subkey: [u8; 32],
-    cipher: Option<Box<FrameDecryptor>>,
-}
 pub(super) struct ReadKeys<'a> {
     key: &'a StreamKey,
     epoch: &'a [u8; 16],
     segment: [u8; 16],
-    // mt-lint: allow(name-keyed-map): routing keys within this fixed StreamKey, epoch,
-    // and physical segment are data lanes, never unqualified stream identities.
-    entries: HashMap<u32, HashMap<String, KeyEntry>>,
-    cached: usize,
     // mt-lint: allow(name-keyed-map): routing keys within this fixed StreamKey, epoch,
     // and physical segment are data lanes, never unqualified stream identities.
     pages: HashMap<u32, HashMap<String, PageCipher>>,
@@ -27,14 +19,13 @@ impl<'a> ReadKeys<'a> {
             key,
             epoch,
             segment,
-            entries: HashMap::new(),
-            cached: 0,
             pages: HashMap::new(),
             pages_cached: 0,
         }
     }
     /// Open an admitted page of this segment under its lane's page key. The
     /// whole page authenticates and parses before any record is returned.
+    /// A lane past the cache bound derives its cipher for this page only.
     pub(crate) fn open_page(&mut self, page: &CheckedPage) -> Result<OpenedPage, String> {
         let refused = |error| {
             format!(
@@ -56,133 +47,83 @@ impl<'a> ReadKeys<'a> {
         }
         opened
     }
-    #[cfg(test)]
-    pub(super) fn decrypt(
-        &mut self,
-        frame: &DecodedFrame<'_>,
-        raw: &[u8],
-        limit: usize,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let mut plaintext = Vec::new();
-        self.decrypt_append(frame, raw, limit, &mut plaintext, &mut Vec::new())
-            .map(|decoded| {
-                decoded.map(|value| match value {
-                    crate::crypto::Decrypted::Appended(_) => plaintext,
-                    crate::crypto::Decrypted::Owned(bytes) => bytes,
-                })
-            })
-    }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "ReadKeys::decrypt_append; the append decrypts one frame into the caller's plaintext and auth buffers under the page limit; a request struct would restate the buffers it fills"
-    )]
-    pub(crate) fn decrypt_append(
-        &mut self,
-        frame: &DecodedFrame<'_>,
-        raw: &[u8],
-        limit: usize,
-        plaintext: &mut Vec<u8>,
-        auth: &mut Vec<u8>,
-    ) -> Result<Option<crate::crypto::Decrypted>, String> {
-        let lanes = self.entries.entry(frame.header.key_version).or_default();
-        let entry = if let Some(entry) = lanes.get(frame.header.routing_key) {
-            entry
-        } else {
-            let subkey = derive_subkey(
-                self.key,
-                self.epoch,
-                frame.header.routing_key,
-                frame.header.key_version,
-            );
-            let cipher = if self.cached < MAX_CIPHERS {
-                self.cached += 1;
-                Some(Box::new(FrameDecryptor::new(&subkey, &self.segment)))
-            } else {
-                None
-            };
-            lanes
-                .entry(frame.header.routing_key.to_owned())
-                .or_insert(KeyEntry { subkey, cipher })
-        };
-        match &entry.cipher {
-            Some(cipher) => cipher.decrypt_append(frame, raw, limit, plaintext, auth),
-            None => FrameDecryptor::new(&entry.subkey, &self.segment)
-                .decrypt_append(frame, raw, limit, plaintext, auth),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "e03_page_cipher_cache_bounds_unique_lanes_and_fences_segment_epoch_and_version; the fixture's lane versions alternate between 1 and 2; a checked conversion would only restate the fixture"
-    )]
+    use crate::crypto_page::PageLane;
+
+    /// One sealed single-record page of `lane` at version `version`, under
+    /// the page key of (`key`, `epoch`, `segment`), admitted as the ring
+    /// admits it.
+    fn page(
+        key: &StreamKey,
+        epoch: &[u8; 16],
+        segment: &[u8; 16],
+        lane: &str,
+        version: u32,
+    ) -> CheckedPage {
+        let subkey = derive_subkey(key, epoch, lane, version);
+        let lane = PageLane {
+            ts_ms: 123,
+            key_version: version,
+            routing_key: lane,
+        };
+        let sealed = PageCipher::new(&subkey, segment)
+            .seal(&lane, 7, &[b"same payload"])
+            .unwrap();
+        CheckedPage::admit(bytes::Bytes::from(sealed.bytes), sealed.last).unwrap()
+    }
+
+    fn payload(keys: &mut ReadKeys<'_>, page: &CheckedPage) -> Result<Vec<u8>, String> {
+        let opened = keys.open_page(page)?;
+        Ok(opened
+            .records()
+            .flat_map(|record| record.payload.to_vec())
+            .collect())
+    }
+
+    /// 128 lanes over two key versions each open their own pages; the cache
+    /// keeps exactly 64 page ciphers and the lanes past the bound still
+    /// open. A page key is bound to its segment, its stream epoch and the
+    /// key version: a reader of another segment or epoch, or a page whose
+    /// clear key version was changed, does not open it.
     #[test]
     fn e03_page_cipher_cache_bounds_unique_lanes_and_fences_segment_epoch_and_version() {
         let key = StreamKey([3; 32]);
         let epoch = [4; 16];
-        let hash = [5; 16];
-        let mut keys = ReadKeys::new(&key, &epoch, hash);
-        let mut encoded = Vec::new();
-        for index in 0..128 {
-            let lane = format!("lane-{index}");
-            let version = (index % 2 + 1) as u32;
-            let subkey = derive_subkey(&key, &epoch, &lane, version);
-            let raw = crate::crypto::FrameCipher::new(
-                &subkey,
-                &hash,
-                crate::crypto::FrameCompression::Disabled,
-            )
-            .encrypt(&hash, index, 123, version, &lane, b"same payload");
-            let frame = crate::crypto::decode_frame(&raw).unwrap();
-            assert_eq!(
-                keys.decrypt(&frame, &raw, 12).unwrap().unwrap(),
-                b"same payload"
-            );
-            assert!(keys.decrypt(&frame, &raw, 11).unwrap().is_none());
-            encoded.push(raw);
+        let segment = [5; 16];
+        let mut keys = ReadKeys::new(&key, &epoch, segment);
+        let mut pages = Vec::new();
+        for version in [1, 2] {
+            for index in 0..64 {
+                let lane = format!("lane-{index}");
+                pages.push(page(&key, &epoch, &segment, &lane, version));
+            }
         }
-        assert_eq!(keys.entries.values().map(HashMap::len).sum::<usize>(), 128);
-        assert_eq!(keys.cached, MAX_CIPHERS);
-        assert_eq!(
-            keys.entries
-                .values()
-                .flat_map(HashMap::values)
-                .filter(|entry| entry.cipher.is_some())
-                .count(),
-            MAX_CIPHERS
-        );
-        for raw in encoded.iter().rev() {
-            let frame = crate::crypto::decode_frame(raw).unwrap();
-            assert_eq!(
-                keys.decrypt(&frame, raw, 12).unwrap().unwrap(),
-                b"same payload"
-            );
+        for page in &pages {
+            assert_eq!(payload(&mut keys, page).unwrap(), b"same payload");
         }
+        let cached: usize = keys.pages.values().map(HashMap::len).sum();
+        assert_eq!((cached, keys.pages_cached), (MAX_CIPHERS, MAX_CIPHERS));
+        for page in pages.iter().rev() {
+            assert_eq!(payload(&mut keys, page).unwrap(), b"same payload");
+        }
+        let cached: usize = keys.pages.values().map(HashMap::len).sum();
         assert_eq!(
-            keys.cached, MAX_CIPHERS,
-            "overflow must not retain more schedules"
+            (cached, keys.pages_cached),
+            (MAX_CIPHERS, MAX_CIPHERS),
+            "lanes past the bound must not retain more schedules"
         );
-        let frame = crate::crypto::decode_frame(&encoded[0]).unwrap();
-        assert!(
-            ReadKeys::new(&key, &epoch, [6; 16])
-                .decrypt(&frame, &encoded[0], 12)
-                .is_err()
-        );
-        assert!(
-            ReadKeys::new(&key, &[7; 16], hash)
-                .decrypt(&frame, &encoded[0], 12)
-                .is_err()
-        );
-        let mut changed = encoded[0].clone();
-        changed[17..21].copy_from_slice(&2u32.to_be_bytes());
-        let frame = crate::crypto::decode_frame(&changed).unwrap();
-        assert!(keys.decrypt(&frame, &changed, 12).is_err());
-        println!(
-            "expanded cipher bytes <= {} per segment page",
-            MAX_CIPHERS * std::mem::size_of::<FrameDecryptor>()
-        );
+        let first = &pages[0];
+        assert!(payload(&mut ReadKeys::new(&key, &epoch, [6; 16]), first).is_err());
+        assert!(payload(&mut ReadKeys::new(&key, &[7; 16], segment), first).is_err());
+        let mut changed = first.raw().to_vec();
+        let at = 1 + 8 + 1 + 8;
+        changed[at..at + 4].copy_from_slice(&2u32.to_be_bytes());
+        let changed = CheckedPage::admit(bytes::Bytes::from(changed), first.last()).unwrap();
+        assert_eq!(changed.key_version(), 2);
+        assert!(payload(&mut keys, &changed).is_err());
     }
 }
