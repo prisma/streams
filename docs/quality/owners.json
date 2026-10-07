@@ -291,6 +291,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::parked_waits",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Parked-wait DSTs (shared-cells PLAN step 5, the cost review's 2.4): a waiting consumer pull walks again only on a commit, a consumer-state change or a lease deadline, two walks more per wait and none woken by an idle neighbour; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/parked_waits.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "The shared-cell lifecycle scenarios (shared-cells PLAN section 4.1, A5 and A6): suspension, revocation, transfer, feed omission, a forced split, delete and recreate and a key rotation aimed at one project leave every neighbour's view byte-identical, and per-project state returns to its baseline when projects go idle; compiler and the full DST suite exercise the module.",

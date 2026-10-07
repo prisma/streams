@@ -141,6 +141,9 @@ mod livefeed_swap;
 #[path = "tests/livefeed_tail.rs"]
 mod livefeed_tail;
 
+#[path = "tests/parked_waits.rs"]
+mod parked_waits;
+
 #[path = "tests/persistence_faults.rs"]
 mod persistence_faults;
 

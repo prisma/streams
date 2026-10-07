@@ -2,6 +2,7 @@
 //! consumer generation before touching a queue. Protocol adapters only parse and render.
 mod deletion;
 mod delivery;
+mod pull_wait;
 use crate::application::read_remote::InternalTarget;
 use crate::crypto::StreamKey;
 use crate::registry::StreamDesc;
@@ -279,6 +280,9 @@ pub(crate) struct PullInput {
     pub(crate) max: Option<usize>,
     pub(crate) wait_ms: Option<u64>,
     pub(crate) visibility_ms: Option<u64>,
+    /// The pull's waits between walks: never read from the wire.
+    #[serde(skip)]
+    pub(crate) park: pull_wait::PullPark,
 }
 /// Fields in the order the Receive body has always carried them.
 #[derive(serde::Serialize)]

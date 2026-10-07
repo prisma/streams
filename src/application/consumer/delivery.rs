@@ -203,8 +203,7 @@ pub(crate) async fn pull(
                 break;
             }
         }
-        if tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if doc.park.wait(&state, &lineage, &cname, deadline).await {
             continue 'outer;
         }
         return Ok(PullOutcome {

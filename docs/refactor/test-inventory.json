@@ -1295,6 +1295,21 @@
     ]
   },
   {
+    "name": "a_record_committed_during_the_first_walk_reaches_the_pull",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1103865844a0c3294d5dfc7974d6a8e6287e25383b85b181560694f785aced07",
+    "mechanisms": [],
+    "configuration": [
+      "use crate::failpoints::{Fp, parked};",
+      "crate::failpoints::park_pull_before_receive(\"race-pull\");",
+      "crate::failpoints::release_pull_before_receive(\"race-pull\");"
+    ],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2351,6 +2366,17 @@
     ]
   },
   {
+    "name": "an_ack_that_unblocks_a_key_wakes_a_waiting_pull",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "da2a83c0e2ac43b26477886b1d7f98e2fd01c64abd251056049b770fbc6afd5e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_anonymous_denial_flood_never_drops_the_victims_denial",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
@@ -2395,6 +2421,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/product_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_reaches_a_waiting_pull_at_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5eb9b7677ab63cc8bdbbd4097e51353bd2fb17a92dc62e97a8e93b212525383f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
     "scenarios": []
   },
   {
@@ -2479,6 +2516,17 @@
     ]
   },
   {
+    "name": "an_expired_lease_reaches_a_waiting_pull_at_its_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d9e7136316d32b9834d44dd0a06ec81424ed1f301e297b763041805f71a0e2e5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2509,6 +2557,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ab8ebcd29c2a951f59fc53ebc32064f08c4cd66f920325c3aa819a659325ab2c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
     "scenarios": []
   },
   {
