@@ -1513,7 +1513,11 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    layout). History pages use the row tag `'g'`, because the history keyspace
    already uses `'p'` for postings (`src/postings.rs:65`).
 2. **The 100 ms write tier**, the single tier for everyone, with the WAL
-   failsafe at 60 s and the usage drain at 8 s (each an edge record).
+   failsafe at 60 s and the usage drain at 8 s (each an edge record). The gap and the failsafe are on slate (#97, #98, 2026-10-08); the
+   8 s drain is built on branch `tier100` and waits for the owner's word on
+   its re-pinned R09 mechanism test, the cross-server split gate waits for
+   the owner's choice on CI's `livefeed-fleet-cert` split, and the fleet
+   shard default waits behind the gate (`~/.streams-k2/analysis/tier100/`).
 3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
    throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
    memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard

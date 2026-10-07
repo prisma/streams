@@ -101,10 +101,17 @@ cdg 68 / sjc 87 — all regions PASS except **us-east-1 (iad1, 341 ms):
 excluded from the SLO region set** until the PoP improves (its
 mutating-op store costs are 5–12× peers; documented in
 SOAK-REGIONS).
+That envelope predates the 100 ms write tier (edge change #97, awaiting
+ratification): at the default `WAL_FLUSH_GAP_MS=100` an append on a busy
+shard waits up to the rest of the gap before its WAL write, about half a
+gap more on average. The SLO has not been re-measured at 100 ms; the
+interpolated fra p50 is about 0.09-0.14 s (NEXT-WORK §14.8 holds the
+local model check still to run).
 
 - Live-read wake: rt ≈ append + 2 ms with ring+gather posture
   (field-validated, soak7). `deliver=applied` subscribers see events
-  one WAL interval earlier still (opt-in, crash-window documented).
+  before durability, up to the rest of the flush gap plus one WAL write
+  earlier (opt-in, crash-window documented).
 - Error semantics inside SLO: 429/`Retry-After` shed under overload
   and 408 ambiguity on timed-out appends are IN-contract behaviors
   (bounded, retryable), not availability failures; 5xx without
