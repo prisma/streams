@@ -1484,28 +1484,145 @@ then the five rows of package 5):
 ## 14. K2 parity: storage layout 5, fewer uploads, shared cells
 
 The owner's goal (2026-10-02, revised 2026-10-07): launch at prices as close
-to Cloudflare K2's as the costs allow, with small tenants and no minimum fee.
-His order of work (2026-10-07), each step implemented and validated before the
-next:
+to Cloudflare K2's as the costs allow, with small tenants, no minimum fee and a
+small accepted subsidy of small tenants. The decisions behind this section are
+the README rows dated 2026-10-07. Working notes with the arithmetic live
+outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
+(`compression/`, `upload-once/`, `reprice-100ms/`, `wal-low-throughput/`,
+`shared-cells/`, `routing/`, `throughput-history/`).
 
-1. **Storage layout 5, compressed pages.** An append request's records are
-   stored as pages (README.md, "Storage layout 5 page format"; cryptography
-   accepted). Comes with run leases for consumer groups (README.md, "Consumer
-   groups"), an edge change for the owner to ratify. A new `LAYOUT_VERSION`:
-   every deployment needs a fresh bucket or `PATH_PREFIX`, the Tigris
-   observatory included, when the owner schedules it.
-2. **Fewer uploads per stored byte.** Each stored byte is uploaded about 8
-   times today (WAL 1.16, shard L0 1.05, shard compaction 1.56, history L0
-   1.02, history compaction about 2.9 and growing); only the WAL and one final
-   copy are required by a guarantee. The design is in progress and may be a
-   second layout change before launch.
-3. **Shared cells for small customers** (README.md, "Shared cells, first
-   scope").
+### 14.1 Prices and billing
 
-Billing stays as decided (README.md, "Billing bases"): retention on stored
-bytes, produce and consume on the customer's bytes. The cost levers E2 (a
-live-read block cache for the shard log) and E7 (fleet reads without LIST)
-are implemented outside `slate`; E2 is held because layout 5 rewrites the
-shard-log scan it changes, and E7 waits for the owner's choice on its edit of
-the R09 mechanism test.
+- Retention: $0.05 per stored GB-month. Stored means the page bytes we write
+  after our own compression.
+- Produce: $0.16 per stored GB written (K2 parity for data that compresses 4x),
+  with a 1 KiB minimum billable size per append request.
+- Consume: $0.04 per GB of the customer's bytes delivered.
+- Needs code: a monthly stored-bytes-written meter (none exists;
+  `owned_frame_bytes_current` is a gauge) outside `bill_append`'s `#[expect]`
+  scope, and the 1 KiB minimum. Both are edge changes.
+- Router-leg egress is priced at $0.01/GB until the platform lowers it.
 
+### 14.2 Order of work
+
+1. **Storage layout 5, compressed pages** (README, "Storage layout 5 page
+   format"; cryptography accepted). Comes with run leases for consumer groups.
+   Three small additions before it lands: a golden vector with non-zero
+   timestamp deltas, the delta base fixed, and a page builder that takes a
+   timestamp per record (they keep cross-request pages possible without a new
+   layout). History pages use the row tag `'g'`, because the history keyspace
+   already uses `'p'` for postings (`src/postings.rs:65`).
+2. **The 100 ms write tier**, the single tier for everyone, with the WAL
+   failsafe at 60 s and the usage drain at 8 s (each an edge record).
+3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
+   throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
+   memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard
+   L0 1.05, shard compaction 1.56, history L0 1.02, history compaction 2.9 and
+   growing. Only the WAL and one final copy are required by a guarantee. Design
+   B seals each shard's unabsorbed pages from the ring into one immutable
+   object per retention class before each memtable flush, writes index rows
+   and exact zero-lag trims, and removes history2, the absorber and history
+   compaction.
+4. **Shared cells, phase A**, in parallel with 1-3 (14.4).
+5. **Cross-request pages**, after layout 5 lands: consecutive appends of one
+   lane within one flush window share a page, cut whenever the authenticated
+   credential changes (one principal per page).
+
+### 14.3 Retention
+
+- Unlimited by default; any stream may set a policy: a maximum age of at least
+  1 h, or an explicit trim. A size cap comes later.
+- Expiry runs on server commit time, never on the client's timestamp.
+- Billing is exact to the page. Forks inherit their source's policy.
+- No archive tier: Prisma Buckets expose Tigris Standard only, and retention
+  keeps about 70% margin there at $0.05.
+- Client-visible: retention on create and update, 410 for reads below the
+  retained start, consumer groups skipping expired records (8-9 edge records,
+  with design B's stage 3b).
+
+### 14.4 Shared cells and shards
+
+- **Launch shape: one single-server shared cell** (one 1 GiB single-core
+  server, one shard, no routers, fleet off). Phase A of the shared-cells plan
+  applies to it, without router hardening.
+- **As few shards as possible.** Every shard is its own SlateDB with its own
+  WAL writer, and at the 100 ms tier each busy writer costs up to about $97 a
+  month whatever it carries. The WAL bill follows the number of writers, not
+  tenants or commits. Never ship the fleet-mode default
+  (`INITIAL_SHARDS = next_pow2(4 x FLEET_MAX)`, `src/config/validation.rs:806-818`,
+  16 shards for a 4-server cell); it becomes the largest power of two at most
+  `FLEET_MAX`, and the `CoarseInitialShards` notice inverts.
+- **Rejected:** a WAL journal shared by a cell's servers (servers must stay
+  uncoupled, so more servers do more work); durability classes, lazy leases
+  and a pump linger (they save nothing once every writer is saturated).
+
+### 14.5 Multi-server cells and routing (later, on the new Compute generation)
+
+Placement (which server runs each shard, and so each WAL writer) and
+partitioning (splitting one stream into key-range segments, each key in one
+segment) are separate layers, as Pravega's containers and segments are.
+
+- **Platform:** the new Prisma Compute generation provides one hostname per
+  cell spreading requests over its servers, `/i/<server>/` routed to a named
+  server on that hostname, no 404 while a server wakes, and long-lived
+  unbuffered responses. It also removes today's ~1,500-connection edge cap.
+- **Placement `home-v1`:** shard *i* lives on server *i*;
+  `INITIAL_SHARDS` equals the number of servers. No spare server: Compute
+  starts a replacement in under a second. This replaces the rendezvous draw,
+  which puts 4 shards on 4 servers as [1, 1, 0, 2] (FNV-1a over `streams-N`
+  names, `src/ownership.rs:12-88`).
+- **Misroute contract, no router we run:** a server that does not own a stream
+  forwards non-waiting requests (appends up to 1 MiB, settles, creates, pulls
+  without wait) one hop to the owner, answers a same-origin `307` to
+  `/i/<server>/...` for waiting ones (long-poll, SSE, pull with wait), never a
+  3xx on a write, and `503` + `Retry-After` on an exhausted hop. The owner is
+  named in `Streams-Owner`; the SDK pins it per stream. No cookie stickiness:
+  ownership is per stream, a cookie per client.
+- **Core package** (placement, the misroute contract, forwarding, SDK pinning):
+  about 14-19 days, before the first multi-server shared cell. It retires the
+  pilot router from the production path.
+
+### 14.6 One stream across servers
+
+- Segment splits are built (ROUTING-V3) but not correct across servers:
+  consumer groups never receive the high child (B1), an ambiguous append
+  retry across a split can commit twice (B2, open item F1-b), and watches miss
+  the child (B3).
+- **Decided (2026-10-07), not yet implemented: switch cross-server splits
+  off** (the controller declines a split while the ring has more than one
+  active server, `src/scaler3/controller.rs:115-135`, pinned by a DST); a hot
+  stream then gets `429` at its per-stream limit instead. Edge record.
+- **Before public launch:** the split package (consumer record relay and an
+  ancestry-based stop rule, F1-b with its fleet-internal lane read, a touch
+  relay for watches, DLQ through forwarding, per-segment rate buckets, a
+  cross-server merge probe, and a two-server DST written red first), about
+  17-28 days. Shard splits (SPEC D3) come after launch.
+
+### 14.7 Defects found on the way, not yet fixed
+
+- After a load, RSS stays at 499-562 MB and never returns below the 500 MB
+  shed line: the idle server refuses its own telemetry appends and a second
+  load is shed from its first request. Needs a heap profile.
+- The pilot router hashes the bare stream name, which no longer matches the
+  layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
+  and are replayed. The SDK never follows `Streams-Replay-To`.
+- Two `sharddir` mutants (`492:28`, `653:26`) differ only when the clock reads
+  exactly the holdoff deadline; removing them needs one `holdoff_verdict(now)`
+  helper and owner-approved exception-growth rows.
+
+### 14.8 Measurements to run when the machine is idle
+
+- The 100 ms model check: one local point (`bench/k2cost/run-local.sh` with
+  `WAL_GAP=100`), about 2 h.
+- Throughput history: today's binary against July's and August's on the same
+  shapes in a 1-CPU, 1 GB container against a local store with 40 ms latency
+  (runs R1-R4), about 12 h plus 1 h of builds. The 27 MB/s of July was
+  x-padded data compressed 17-30x with absorption deferred; nothing shows a
+  regression for the same job.
+
+### 14.9 Held cost levers
+
+E2 (a live-read block cache for the shard log, `keep/e2-live-read-cache`) is
+held because layout 5 rewrites the shard-log scan it changes. E7 (fleet reads
+without LIST, `keep/e7-fleet-reads`) waits for the owner's choice on its edit
+of the R09 mechanism test.
