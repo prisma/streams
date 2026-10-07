@@ -1,5 +1,5 @@
 //! The ceiling a cell puts on every project it serves (shared-cells
-//! PLAN step 2, finding H1).
+//! PLAN step 2, findings H1 and L2).
 //!
 //! Every project on a cell draws from the same instance bounds: the
 //! inflight slots that parked requests hold, the SSE connections, the
@@ -13,11 +13,22 @@
 //! `k = 1` is a dedicated cell: its one project may take every bound,
 //! so no ceiling applies and 0 keeps meaning "no project limit".
 //!
+//! No customer project may take an identity the cell reserves: the system
+//! project, the deployment's `PROJECT_ID` (the raw surface's tenant, open
+//! to fleet credentials) or its `ACCOUNT_ID` (the account every unowned
+//! meter event bills to). A policy naming one is dropped before
+//! publication, so the cell answers its tokens as for a project it does
+//! not serve, and the number the published snapshot dropped is reported
+//! (`/v1/debug/auth`, `policies.reservedDropped`).
+//!
 //! The ceiling is applied once, where `AuthService` publishes a policy
 //! snapshot, so every reader of a published policy (token verification,
 //! capability status, the lease) holds the project to the same quotas.
 
-use crate::project_policy::{PolicySnapshot, ProjectQuotas};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::project_policy::{PolicySnapshot, ProjectPolicy, ProjectQuotas};
+use crate::tenant::ProjectId;
 
 /// The bounds every project on one instance shares; 0 means the axis
 /// has no shared bound.
@@ -42,22 +53,38 @@ pub(crate) struct SharedBounds {
 pub(crate) struct CellCeiling {
     share_k: u64,
     bounds: SharedBounds,
+    deployment_project: Option<ProjectId>,
+    deployment_account: Option<String>,
+    /// Policies the last published snapshot dropped as reserved.
+    reserved_dropped: AtomicU64,
 }
 
 impl CellCeiling {
     /// A dedicated cell, as every cell runs until boot installs its own
-    /// ceiling: quotas pass unchanged.
+    /// ceiling: quotas pass unchanged, and of the reserved identities only
+    /// the system project is known.
     pub(crate) fn dedicated() -> Self {
-        Self {
-            share_k: 1,
-            bounds: SharedBounds::default(),
-        }
+        Self::shared(1, SharedBounds::default())
     }
 
     /// A cell shared `share_k` ways (`PROJECT_SHARE_K`) over `bounds`.
-    #[cfg(test)]
     pub(crate) fn shared(share_k: u64, bounds: SharedBounds) -> Self {
-        Self { share_k, bounds }
+        Self {
+            share_k,
+            bounds,
+            deployment_project: None,
+            deployment_account: None,
+            reserved_dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// The same cell, also reserving its deployment's `PROJECT_ID` and
+    /// `ACCOUNT_ID`.
+    #[cfg(test)]
+    pub(crate) fn reserving(mut self, deployment: &crate::deployment::DeploymentIdentity) -> Self {
+        self.deployment_project = Some(deployment.deployment_tenant().clone());
+        self.deployment_account = Some(deployment.account_id().to_string());
+        self
     }
 
     /// bound / k on an axis with a shared bound, never below 1; `None` on
@@ -90,20 +117,49 @@ impl CellCeiling {
         }
     }
 
-    /// The snapshot this cell publishes: every project at its effective
-    /// quotas.
-    pub(crate) fn apply(&self, mut snapshot: PolicySnapshot) -> PolicySnapshot {
+    /// Whether `policy` takes an identity this cell reserves.
+    fn reserves(&self, policy: &ProjectPolicy) -> bool {
+        policy.project_id.is_system()
+            || self.deployment_project.as_ref() == Some(&policy.project_id)
+            || self.deployment_account.as_deref() == Some(policy.workspace_id.as_str())
+    }
+
+    /// The snapshot this cell publishes, and how many policies it dropped:
+    /// no project that takes a reserved identity, every other one at its
+    /// effective quotas.
+    pub(crate) fn apply(&self, mut snapshot: PolicySnapshot) -> (PolicySnapshot, u64) {
+        let mut dropped = 0;
+        snapshot.projects.retain(|project, policy| {
+            let reserved = self.reserves(policy);
+            if reserved {
+                tracing::warn!(%project, workspace = %policy.workspace_id.as_str(),
+                    "policy feed names a reserved project or account; dropped");
+                dropped += 1;
+            }
+            !reserved
+        });
         for policy in snapshot.projects.values_mut() {
             policy.quotas = self.effective(&policy.quotas);
         }
-        snapshot
+        (snapshot, dropped)
+    }
+
+    /// Record how many policies the snapshot just published dropped.
+    pub(crate) fn published(&self, dropped: u64) {
+        self.reserved_dropped.store(dropped, Ordering::Relaxed);
+    }
+
+    /// Policies the last published snapshot dropped as reserved.
+    pub(crate) fn reserved_dropped(&self) -> u64 {
+        self.reserved_dropped.load(Ordering::Relaxed)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CellCeiling, SharedBounds};
-    use crate::project_policy::ProjectQuotas;
+    use crate::project_policy::{PolicySnapshot, ProjectPolicy, ProjectQuotas, ProjectStatus};
+    use crate::tenant::{CellId, ProjectId, WorkspaceId};
 
     const BOUNDS: SharedBounds = SharedBounds {
         requests_per_sec: 1_411,
@@ -193,5 +249,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn policy(project: &str, workspace: &str) -> (ProjectId, ProjectPolicy) {
+        let project_id = ProjectId::new(project).unwrap();
+        let policy = ProjectPolicy {
+            project_id: project_id.clone(),
+            workspace_id: WorkspaceId::new(workspace).unwrap(),
+            cell_id: "cell".into(),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: ProjectStatus::Active,
+            quotas: ProjectQuotas::default(),
+        };
+        (project_id, policy)
+    }
+
+    /// The projects `cell` publishes out of `snapshot`, sorted, and how
+    /// many it dropped.
+    fn served(cell: &CellCeiling, snapshot: &PolicySnapshot) -> (Vec<String>, u64) {
+        let (published, dropped) = cell.apply(snapshot.clone());
+        let mut ids: Vec<String> = published.projects.keys().map(|p| p.to_string()).collect();
+        ids.sort();
+        (ids, dropped)
+    }
+
+    /// L2: every cell drops a policy naming the system project; a cell
+    /// that knows its deployment also drops one naming its `PROJECT_ID`
+    /// and every project in its `ACCOUNT_ID` workspace. Each drop is
+    /// counted; the rest publish at their effective quotas.
+    #[test]
+    fn reserved_identities_are_dropped_and_counted() {
+        let deployment = crate::deployment::DeploymentIdentity::new(
+            ProjectId::new("proj-deploy").unwrap(),
+            "acct-deploy".to_string(),
+            CellId::new("cell").unwrap(),
+            "test".to_string(),
+        );
+        let snapshot = PolicySnapshot {
+            projects: [
+                policy(crate::tenant::SYSTEM_PROJECT, "ws-a"),
+                policy("proj-deploy", "ws-a"),
+                policy("proj-a", "acct-deploy"),
+                policy("proj-b", "ws-a"),
+            ]
+            .into(),
+            fetched_at_unix: 0,
+            feed_version: 1,
+        };
+        let dedicated = served(&CellCeiling::dedicated(), &snapshot);
+        let want = (
+            vec!["proj-a".into(), "proj-b".into(), "proj-deploy".into()],
+            1,
+        );
+        assert_eq!(dedicated, want, "dedicated: the system project only");
+        let shared = CellCeiling::shared(8, BOUNDS).reserving(&deployment);
+        assert_eq!(served(&shared, &snapshot), (vec!["proj-b".into()], 3));
+        let (published, _) = shared.apply(snapshot);
+        let quotas = &published.projects[&ProjectId::new("proj-b").unwrap()].quotas;
+        assert_eq!(quotas.max_inflight_requests, 64, "the rest at the share");
     }
 }

@@ -139,12 +139,13 @@ async fn a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_map
     engine_shutdown(&cell.state).await;
 }
 
-/// A12 (L2): a policy naming the deployment's own `PROJECT_ID`, and a
-/// project whose workspace is the deployment's `ACCOUNT_ID`, are dropped
-/// from the feed: their tokens are refused as for a project the cell
-/// does not serve (`421 wrong_cell`) and nothing is created.
+/// A12 (L2): a policy naming the system project, one naming the
+/// deployment's own `PROJECT_ID`, and a project whose workspace is the
+/// deployment's `ACCOUNT_ID` are dropped from the feed and counted (the
+/// cell serves its 2 projects and reports 3 dropped): the deployment and
+/// account tokens are refused as for a project the cell does not serve
+/// (`421 wrong_cell`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase A step 2: the feed drops and counts reserved ids"]
 async fn reserved_ids_are_dropped_from_the_feed() {
     let mut cell = open_cell(CellSpec::open(2)).await;
     let deployment = cell
@@ -174,7 +175,16 @@ async fn reserved_ids_are_dropped_from_the_feed() {
         token.credential_id = cred;
         tokens.push((pid.to_string(), token.bearer()));
     }
+    let mut system = policy(0, ProjectQuotas::default());
+    system.project_id = crate::tenant::system_project();
+    cell.policies.insert(system.project_id.clone(), system);
     cell.publish();
+    let feed = cell.svc.feed_json(crate::shard::now_ms() / 1000);
+    let counted = (
+        feed["policies"]["projects"].as_u64(),
+        feed["policies"]["reservedDropped"].as_u64(),
+    );
+    assert_eq!(counted, (Some(2), Some(3)), "(served, dropped as reserved)");
     for (pid, bearer) in tokens {
         let (st, _, b) = cell
             .call_with(&bearer, "PUT", "/v1/streams/reserved", CREATE)

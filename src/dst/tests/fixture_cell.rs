@@ -190,16 +190,17 @@ impl CellSpec {
 }
 
 /// Give the rig the spec's shared bounds and the cell its ceiling over
-/// them, before the first policy snapshot: the instance inflight bound and
-/// the ceiling derive from the one value, as boot derives both from
-/// `ADMIT_MAX_INFLIGHT`.
+/// them, reserving the rig deployment's identities, before the first
+/// policy snapshot: the instance inflight bound and the ceiling derive
+/// from the one value, as boot derives both from `ADMIT_MAX_INFLIGHT`.
 fn share_cell(svc: &crate::auth::AuthService, state: &crate::http::AppState, bounds: SharedBounds) {
     if bounds.inflight > 0 {
         state
             .admission
             .set_max_inflight(i64::try_from(bounds.inflight).unwrap());
     }
-    svc.install_cell_ceiling(CellCeiling::shared(u64::try_from(SHARE_K).unwrap(), bounds))
+    let ceiling = CellCeiling::shared(u64::try_from(SHARE_K).unwrap(), bounds);
+    svc.install_cell_ceiling(ceiling.reserving(&state.deployment))
         .unwrap();
 }
 

@@ -6716,10 +6716,9 @@
   {
     "name": "reserved_ids_are_dropped_from_the_feed",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase A step 2: the feed drops and counts reserved ids\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "02e1f488829b400c8c1902938a7546db29177597e7cff6505ded52dde61b9aae",
+    "function_sha256": "8944f7979979fdd1f24698775877706a12cee4e228725c6680c1af81d085c68e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",

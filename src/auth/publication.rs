@@ -396,14 +396,19 @@ impl AuthService {
     }
 
     /// The ceiling every policy snapshot is published through.
-    fn cell_ceiling(&self) -> &CellCeiling {
+    pub(super) fn cell_ceiling(&self) -> &CellCeiling {
         self.cell_ceiling.get_or_init(CellCeiling::dedicated)
     }
 
-    /// Publish a full policy snapshot as this cell serves it: every project
-    /// at its effective quotas (shared-cells H1), then the monotonic checks.
+    /// Publish a full policy snapshot as this cell serves it: no project
+    /// that takes a reserved identity (shared-cells L2), every other one at
+    /// its effective quotas (H1), then the monotonic checks.
     pub(crate) fn publish_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
-        self.commit_policies(self.cell_ceiling().apply(snapshot))
+        let ceiling = self.cell_ceiling();
+        let (served, dropped) = ceiling.apply(snapshot);
+        self.commit_policies(served)?;
+        ceiling.published(dropped);
+        Ok(())
     }
 
     #[expect(

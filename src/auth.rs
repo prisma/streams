@@ -368,7 +368,7 @@ pub(crate) struct AuthService {
     /// depend on the publisher staying perfect. FIFO-bounded; evicting
     /// an ancient id only returns it to publisher-contract protection.
     high_water: std::sync::Mutex<HighWater>,
-    /// Shared-cells H1: every policy snapshot publishes through this cell's
+    /// Shared-cells H1, L2: every policy snapshot publishes through this cell's
     /// ceiling, fixed at the first publication (dedicated unless installed).
     cell_ceiling: std::sync::OnceLock<ceiling::CellCeiling>,
     pub shadow: ShadowCounters,
@@ -783,6 +783,7 @@ impl AuthService {
             "policies": {
                 "projects": policies.projects.len(),
                 "feedVersion": policies.feed_version,
+                "reservedDropped": self.cell_ceiling().reserved_dropped(),
                 "ageSecs": age(policies.fetched_at_unix),
                 "stale": feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now),
             },
