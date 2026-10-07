@@ -19,6 +19,7 @@ import { corpusSample, corpusStats } from "./corpus.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { churn } from "./churn.ts";
+import { audit } from "./audit.ts";
 
 const USAGE = `k2gen <mode> [flags]
 
@@ -34,6 +35,8 @@ Modes
                 (a pull leases one message per routing key: give the producer --routing-keys K)
   churn         lifecycles: --count N --size-kib S --end delete|ttl:SECS [--rate L/s | --concurrency C]
   subs          --count N idle subscribers over the streams: --via sse|long-poll --connect-rate 20
+  audit         read --streams back in full and check them record for record and offset for offset
+                against the produce ledgers that wrote them: --expect a.ledger.json[,b...] --parallel P
   corpus-stats  per-record zstd-1 ratio (+55 B frame header) at --sizes 128,256,1024,2048,16384
                 for --payloads corpus,b64rand,bytes (--samples 2000, --sample N prints N records)
 
@@ -59,6 +62,7 @@ const KNOWN: Record<string, string[]> = {
   group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts"],
   churn: [...COMMON, "count", "size-kib", "end", "record-bytes", "payload", "concurrency", "rate", "records"],
   subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
+  audit: [...COMMON, "parallel", "max-bytes", "expect"],
   "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
 };
 // An earliest walk, setup and churn run to completion; --duration caps them.
@@ -117,7 +121,7 @@ try {
   const meter = new Meter();
   const http = new Http(base.replace(/\/+$/, ""), hdrs, meter);
   const walkLag = mode === "walk" && o.str("from", "earliest").startsWith("lag:");
-  const runsToCompletion = mode === "setup" || mode === "churn" || (mode === "walk" && !walkLag);
+  const runsToCompletion = mode === "setup" || mode === "churn" || mode === "audit" || (mode === "walk" && !walkLag);
   const ctx: Ctx = {
     http,
     meter,
@@ -140,6 +144,7 @@ try {
     case "group": result = await group(ctx, signal); break;
     case "churn": result = await churn(ctx, signal); break;
     case "subs": result = await subs(ctx, signal); break;
+    case "audit": result = await audit(ctx, signal); break;
     default: throw new Error(`unreachable mode ${mode}`);
   }
   const ledger = await rep.finish({
