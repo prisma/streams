@@ -1,6 +1,7 @@
 #![cfg(test)]
 
-use super::{PRESSURE_SUB_WEIGHT_BYTES, ProjectId, ProjectQuotas, QuotaRefusal, QuotaRegistry};
+use super::pressure::PRESSURE_SUB_WEIGHT_BYTES;
+use super::{ProjectId, ProjectQuotas, QuotaRefusal, QuotaRegistry};
 
 fn pid(s: &str) -> ProjectId {
     ProjectId::new(s).unwrap()

@@ -122,7 +122,7 @@ pub(crate) struct ProjectAdmission {
     memory_engage_count: AtomicU64,
 }
 
-/// Round-13 pressure model v1. The weights are SAFETY ESTIMATES
+/// Round-13 pressure model v1. The weights (`pressure`) are SAFETY ESTIMATES
 /// rounded UP from the round-12 certified memory model (26.28 KiB per
 /// connection, 7.95 KiB per feed, R^2 0.9987) plus the L1 resident-
 /// stream measurement (~45 KiB); they are never billing quantities.
@@ -130,9 +130,11 @@ pub(crate) struct ProjectAdmission {
 /// profile knob. Exact counters (retained/queued/body/frame bytes)
 /// enter unweighted.
 pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 1;
-pub(crate) const PRESSURE_SUB_WEIGHT_BYTES: u64 = 32 * 1024;
-pub(crate) const PRESSURE_FEED_WEIGHT_BYTES: u64 = 16 * 1024;
-pub(crate) const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 64 * 1024;
+
+mod pressure;
+use pressure::{
+    PRESSURE_DIRTY_STREAM_WEIGHT_BYTES, PRESSURE_FEED_WEIGHT_BYTES, PRESSURE_SUB_WEIGHT_BYTES,
+};
 
 /// Startup + manifest visibility for the model coefficients.
 pub(crate) fn pressure_model_json() -> serde_json::Value {
@@ -145,30 +147,6 @@ pub(crate) fn pressure_model_json() -> serde_json::Value {
 }
 
 impl ProjectAdmission {
-    /// `estimated_project_pressure_bytes` — named for what it is: a
-    /// conservative model, not RSS attribution.
-    pub(crate) fn estimated_pressure_bytes(&self) -> u64 {
-        self.live_subs.load(Ordering::Relaxed) * PRESSURE_SUB_WEIGHT_BYTES
-            + self.live_feeds.load(Ordering::Relaxed) * PRESSURE_FEED_WEIGHT_BYTES
-            + self.retained_sse_bytes.load(Ordering::Relaxed)
-            + self.buffered_body_bytes.load(Ordering::Relaxed)
-            + self.queued_bytes.load(Ordering::Relaxed)
-            + self.unabsorbed_frame_bytes.load(Ordering::Relaxed)
-            + self.dirty_streams.load(Ordering::Relaxed) * PRESSURE_DIRTY_STREAM_WEIGHT_BYTES
-    }
-
-    /// Any nonzero pressure dimension pins the entry against tracker
-    /// eviction (review: eviction must not orphan outstanding
-    /// pressure).
-    fn has_pressure(&self) -> bool {
-        self.live_feeds.load(Ordering::Relaxed) > 0
-            || self.retained_sse_bytes.load(Ordering::Relaxed) > 0
-            || self.buffered_body_bytes.load(Ordering::Relaxed) > 0
-            || self.queued_bytes.load(Ordering::Relaxed) > 0
-            || self.unabsorbed_frame_bytes.load(Ordering::Relaxed) > 0
-            || self.dirty_streams.load(Ordering::Relaxed) > 0
-    }
-
     /// Under the tracker lock: an entry in use is never evicted. An
     /// admission in progress or a request in flight, a live subscription
     /// and outstanding memory pressure all hold the Arc an eviction would

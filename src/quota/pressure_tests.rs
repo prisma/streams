@@ -1,9 +1,9 @@
 #![cfg(test)]
 
+use super::pressure::{PRESSURE_FEED_WEIGHT_BYTES, PRESSURE_SUB_WEIGHT_BYTES};
 use super::{
-    BufferedBodyGuard, FeedPressureGuard, IDLE_EVICT_MS, MAX_TRACKED_PROJECTS,
-    PRESSURE_FEED_WEIGHT_BYTES, PRESSURE_SUB_WEIGHT_BYTES, ProjectAdmission, ProjectId,
-    ProjectQuotas, QuotaRegistry, StreamPressureBinding,
+    BufferedBodyGuard, FeedPressureGuard, IDLE_EVICT_MS, MAX_TRACKED_PROJECTS, ProjectAdmission,
+    ProjectId, ProjectQuotas, QuotaRegistry, StreamPressureBinding,
 };
 use std::sync::{Arc, atomic::Ordering};
 

@@ -119,6 +119,7 @@ OWNERS = (
     owner('quota_registry', 'src/quota.rs', 'quota::'),
     owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
     owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'),
+    owner('quota_pressure', 'src/quota/pressure.rs', 'quota::pressure_tests:: quota::pressure_counting_tests::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     owner('commit_handoff', 'src/shard/commit_handoff.rs', 'shard::'),
     owner('commit_plan', 'src/shard/commit_plan.rs', 'shard::'),
