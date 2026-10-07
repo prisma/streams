@@ -186,9 +186,9 @@ pub(crate) struct PersistedDescriptor {
 }
 
 /// The storage-layout generation this binary writes and the ONLY one it
-/// reads. There are no layout bridges: opening a namespace written by a
-/// different layout is refused (pre-launch hard cutover).
-pub(crate) const LAYOUT_VERSION: u32 = 4;
+/// reads; no layout bridges (pre-launch hard cutover). Layout 5 stores pages
+/// (`crypto_page`), so a layout 4 namespace of per-record frames is refused.
+pub(crate) const LAYOUT_VERSION: u32 = 5;
 
 /// Seal-in-progress marker (audit P0). Present = Sealing: normal
 /// appends are refused, only the matching seal operation may write its

@@ -129,7 +129,11 @@ Shard log (one SlateDB per shard; payload bytes are ciphertext):
 <hash16> m                      stream meta (registry cache / tombstone)
 <hash16> t                      tail: next_offset, last_ts, last Stream-Seq,
                                 cumulative logical bytes, absorbed_through
-<hash16> r <offset u64 BE>      record: plaintext header + encrypted payload (§3.7)
+<hash16> p <last offset u64 BE> page (layout 5): one append request's records,
+                                at most 64 KiB and 4,096 of them, behind a clear
+                                header (first offset, count, routing key, nonce);
+                                the body is zstd-1 compressed when that pays, then
+                                encrypted once (src/crypto_page.rs)
 ```
 
 Per-stream history DB (block-transformer encrypted with the stream key,
@@ -464,9 +468,10 @@ share.
 - **L4 History-tier compaction is key-gated** (runs on owners when keys are
   in hand): pathological patterns (huge burst, then never touched) leave
   more small SSTs than ideal until the next keyed access.
-- **L5 Shard-log compression is weak by design** (per-record ciphertext):
-  acceptable because it's a small rolling window; the history tier carries
-  the ~90% ratio. Streams that are never absorbed (L3) never reach it.
+- **L5 Shard-log compression is per request** (layout 5): a request's
+  records are compressed together in pages of up to 64 KiB before they are
+  encrypted, and history holds the same pages. Requests of one small record,
+  and data that is already compressed or random, do not shrink.
 - **L6 Index-block exposure (to verify)**: if SlateDB's block transformer
   does not cover SST index/filter blocks, routing keys (which appear in `k!`
   index keys) could be visible in shared storage; mitigation is hashing

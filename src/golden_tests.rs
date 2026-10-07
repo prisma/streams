@@ -596,7 +596,7 @@ mod descriptor_json {
         }
     }
 
-    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":4}"#;
+    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":5}"#;
 
     /// All optional/empty/defaultable fields at their defaults.
     fn minimal_desc() -> crate::registry::PersistedDescriptor {
@@ -636,10 +636,10 @@ mod descriptor_json {
     /// soft_deleted, logical_close_ms, forked_from, fork_children, init,
     /// segments, sealing, seal_op, watch_definitions, parent_ref_pending,
     /// watch_sig_key.
-    const MINIMAL_JSON: &str = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":4}"#;
+    const MINIMAL_JSON: &str = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":5}"#;
 
     #[test]
-    fn golden_layout4_descriptor_full_json() {
+    fn golden_layout5_descriptor_full_json() {
         let d = full_desc();
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(json, FULL_JSON);
@@ -655,7 +655,7 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout4_descriptor_minimal_json() {
+    fn golden_layout5_descriptor_minimal_json() {
         assert_eq!(
             serde_json::to_string(&minimal_desc()).unwrap(),
             MINIMAL_JSON
@@ -663,7 +663,7 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout4_descriptor_decode_defaults() {
+    fn golden_layout5_descriptor_decode_defaults() {
         // Only the mandatory fields present (name, project_id,
         // stream_epoch, key_fingerprint, created_ms): every other field
         // takes its documented serde default. layout_version defaults to
@@ -694,14 +694,21 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout4_descriptor_foreign_layout_rejected() {
+    fn golden_layout5_descriptor_foreign_layout_rejected() {
         // The production fail-closed path (registry::decode_desc): any
-        // layout_version != 4 is refused as unsupported_storage_layout.
+        // layout_version != 5 is refused as unsupported_storage_layout,
+        // layout 4 (per-record frames, the layout before pages) included.
+        let with_layout = |layout: &str| {
+            format!(
+                r#"{{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1{layout}}}"#
+            )
+        };
         for bad in [
-            r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"layout_version":3}"#,
-            r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"layout_version":5}"#,
+            with_layout(r#","layout_version":3"#),
+            with_layout(r#","layout_version":4"#),
+            with_layout(r#","layout_version":6"#),
             // No layout_version at all: serde default 0, also refused.
-            r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#,
+            with_layout(""),
         ] {
             let err = decode_desc(bad.as_bytes(), None).expect_err("foreign layout refused");
             let msg = err.to_string();
@@ -710,17 +717,18 @@ mod descriptor_json {
                 "wrong refusal: {msg}"
             );
         }
-        // The precise operator-facing text for the explicit-version case.
-        let err = decode_desc(
-            br#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"layout_version":3}"#,
-            None,
-        )
-        .expect_err("layout 3 refused");
-        assert!(err.to_string().contains("has layout 3"));
+        // The precise operator-facing text for the layout before pages.
+        let err = decode_desc(with_layout(r#","layout_version":4"#).as_bytes(), None)
+            .expect_err("layout 4 refused");
+        assert!(
+            err.to_string()
+                .contains("has layout 4 (this binary reads only 5)"),
+            "wrong refusal: {err}"
+        );
     }
 
     #[test]
-    fn golden_layout4_descriptor_corrupt_json_errors_never_panics() {
+    fn golden_layout5_descriptor_corrupt_json_errors_never_panics() {
         // Garbage and truncation are parse errors, never panics.
         let garbage = decode_desc(b"{\"name\":", None).expect_err("garbage refused");
         assert!(garbage.to_string().contains("descriptor parse"));
