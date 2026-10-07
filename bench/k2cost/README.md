@@ -93,7 +93,9 @@ Two product rules shape the read and queue points:
      ADMIT_MAX_INFLIGHT=512 ADMIT_MAX_INFLIGHT_PER_STREAM=256
      LIMIT_BYTES_PER_SEC=5000000 LIMIT_REQS_PER_SEC=1000
      LIMIT_RECS_PER_SEC=5000`, and `INITIAL_SHARDS=4` (D2, STAGING);
-   - binary defaults for `WAL_FLUSH_GAP_MS` (10, P-exp), `TAIL_RING_BYTES` (0),
+   - binary defaults for `WAL_FLUSH_GAP_MS` (100, the one write tier; the
+     L1, L2 and L3 full points pass it as `WAL_GAP`, default 100),
+     `TAIL_RING_BYTES` (0),
      the manifest and compactor polls, `OUTBOX_SWEEP_SECS` (300) and
      `TELEMETRY_DRAIN_SECS` (2);
    - the release posture: `STREAMS_AUTH_MODE=enforce` with the

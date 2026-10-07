@@ -209,7 +209,7 @@ const env = {
   AUTH_TOKEN: apiKey,
   // Commit pipeline posture (validated defaults for object-store WALs).
   WAL_GROUP_COMMIT: "1",
-  WAL_FLUSH_GAP_MS: "10",
+  WAL_FLUSH_GAP_MS: "100",
   WAL_POST_ACK_GATHER_MS: "6",
   FLUSH_INTERVAL_MS: "25",
   // Mandatory with the current SlateDB pin: max_unflushed_bytes must

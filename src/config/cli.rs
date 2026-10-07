@@ -58,11 +58,15 @@ pub struct CliArgs {
     #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 1)]
     pub(crate) wal_group_commit: u8,
 
-    /// Minimum start-to-start gap between pump flushes, ms: bounds the
-    /// WAL SST mint rate as the tick did. 10 (what production runs) allows
-    /// more WAL objects per second than the 25 ms tick. Irrelevant when
-    /// the PUT RTT exceeds it. 0 = use flush_interval_ms.
-    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 10)]
+    /// Minimum start-to-start gap between pump flushes, ms: the one write
+    /// tier (owner decision of 2026-10-07). With the 1 ms herd-settle of a
+    /// non-zero gather, a shard's pump flushes at most once per 101 ms,
+    /// about 9.9 times a second. An append waits for the rest of the gap
+    /// since its shard's last flush started, then the settle and one WAL
+    /// write; on a shard that has not flushed for a gap, only the settle
+    /// and the write. Irrelevant when the PUT RTT exceeds it. 0 = use
+    /// flush_interval_ms.
+    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 100)]
     pub(crate) wal_flush_gap_ms: u64,
 
     /// Post-ACK gather window, ms (0 = off). After a busy WAL flush the
@@ -489,7 +493,7 @@ impl CliArgs {
             initial_shards: None,
             flush_interval_ms: 25,
             wal_group_commit: 1,
-            wal_flush_gap_ms: 10,
+            wal_flush_gap_ms: 100,
             wal_post_ack_gather_ms: 6,
             tail_ring_bytes: 0,
             l0_sst_size_bytes: 8 * 1024 * 1024,

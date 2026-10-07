@@ -67,7 +67,7 @@ tails, routing-key reads) re-architected so that:
 | D19 | **The CDN caches ciphertext only**; decryption happens client-side in an SDK using HKDF per-routing-key subkeys | tenant payloads are never at rest decrypted in edge caches; a routing-key subkey grants access to exactly that key's records (e.g. one chat), enabling end-user-granular access |
 | D20 | Key lifecycle and authn/authz are **delegated to an external service**; this repo ships a baseline `streams-keys` CLI (generate stream keys, derive routing subkeys, encrypt/decrypt records) used for development and benchmarking | keeps the data plane key-stateless; the CLI pins the envelope format the future service must implement |
 | D21 | **Globally unique stream names**; registry sharded by name hash (`registry/by-name/…`) with per-customer listing markers (`registry/by-customer/…`); target scale **billions of streams total, up to 1M per customer** | one lookup path, no tenancy in the stream identity; idle streams cost only their registry object + settled SSTs |
-| D22 | `flush_interval ≥ max(25 ms, backend PUT p90)` (amended twice) | 5 ms minted WAL SSTs ~7× faster than SlateDB's WAL GC reaps them; the backlog degraded per-DB durable-watermark latency to 0.3–1 s (EXPERIMENT-PILOT run 3). 25 ms holds the ack floor at ≈ flush + PUT ≈ 40–60 ms and cuts WAL churn 5×. Bench round 2 adds the RTT rider: the WAL flusher PUTs serially, so a flush interval below the backend's PUT latency mints SSTs faster than one pipe can ship them (Tigris p50 ~45 ms → 25 ms flush = durable-wait p90 518 ms; 50 ms flush = p90 82 ms). Local/fast backends keep 25 ms. **Under the group-commit pump, the binary's default since 2026-09-29 (edge record #77), this interval is the flush cadence no longer:** it is only the base of SlateDB's failsafe timer, stretched to at least 1 s. The pump flushes a shard's WAL when commits wait, one flush after the other (the serial shipping the RTT rider asks for), and starts a flush no sooner than `WAL_FLUSH_GAP_MS` (10 ms) after the previous one started, which permits more WAL objects per second than the 25 ms floor. The floor is the cadence only with `WAL_GROUP_COMMIT=0` |
+| D22 | `flush_interval ≥ max(25 ms, backend PUT p90)` (amended twice) | 5 ms minted WAL SSTs ~7× faster than SlateDB's WAL GC reaps them; the backlog degraded per-DB durable-watermark latency to 0.3–1 s (EXPERIMENT-PILOT run 3). 25 ms holds the ack floor at ≈ flush + PUT ≈ 40–60 ms and cuts WAL churn 5×. Bench round 2 adds the RTT rider: the WAL flusher PUTs serially, so a flush interval below the backend's PUT latency mints SSTs faster than one pipe can ship them (Tigris p50 ~45 ms → 25 ms flush = durable-wait p90 518 ms; 50 ms flush = p90 82 ms). Local/fast backends keep 25 ms. **Under the group-commit pump, the binary's default since 2026-09-29 (edge record #77), this interval is the flush cadence no longer:** it is only the base of SlateDB's failsafe timer, stretched to at least 1 s. The pump flushes a shard's WAL when commits wait, one flush after the other (the serial shipping the RTT rider asks for), and starts a flush no sooner than `WAL_FLUSH_GAP_MS` after the previous one started, 1 ms later still for the herd-settle. That gap is the one write tier, 100 ms since the owner's decision of 2026-10-07 (10 ms before, which permitted more WAL objects per second than the 25 ms floor): a busy shard writes at most about 9.9 WAL objects per second, and an append waits for the rest of the gap since its shard's last flush started, then the settle and one PUT. The floor is the cadence only with `WAL_GROUP_COMMIT=0` |
 | D23 | **No open handle runs default background loops** (response to V4): shard logs poll their manifest at 30–60 s with no embedded compactor/GC (fencing correctness comes from CAS write failures, not polls); history-tier DBs are only ever open in one of three modes — absorber-open (`compactor_options: None`, `garbage_collector_options: None`, no polling), checkpoint-pinned read-open (no loops), or maintenance piggybacked on absorber opens — and absorption fires on bytes-or-age thresholds (~4 MB / 60 s by default; the age was ~5 min, the value this decision was made with, until 2026-09-29, edge record #78; the cost of absorbing at 60 s has not been measured) so per-open costs amortize | turns idle cost from per-open-database (8.26 ops/s measured at defaults ≈ $10/mo each) into **per-shard baseline (~0.1 ops/s) + per-activity increments**; closed DBs cost zero; idle streams cost zero requests |
 
 ## 3. Architecture
@@ -155,7 +155,8 @@ client append (+ stream key)
     → db.write(await_durable=false)   # ordered memtable/WAL-buffer apply
     → push {seqnum, acks, tail snapshots} in-flight
   → WAL flush: by default the per-shard group-commit pump, which flushes
-    when commits wait, no sooner than 10 ms after its previous flush started
+    when commits wait, no sooner than 100 ms (WAL_FLUSH_GAP_MS, the one
+    write tier) and the 1 ms herd-settle after its previous flush started
     (with WAL_GROUP_COMMIT=0: SlateDB's flusher, flush_interval = 25 ms; D22),
     bundles everything written since the last flush into ONE WAL SST PUT to
     Tigris
@@ -169,6 +170,12 @@ WriteBatches → one WAL object per flush interval; commits pipeline while PUTs
 are in flight. Measured (25 ms emulated store): p50 ≈ 36 ms at moderate
 concurrency, 17k durable appends/s per instance at c=1024, ~490 records per
 PUT. On Tigris (~15 ms PUTs) expect ~25–45 ms durable tail latency.
+Those figures predate the 100 ms write tier. Under it, an append on a shard
+whose last flush started at least 100 ms ago still waits only for the 1 ms
+herd-settle and one PUT; on a shard that flushed more recently it first waits
+for the rest of the gap, so a producer with one append in flight is
+acknowledged once per ~101 ms (`bootstrap::tests::write_tier` measures both
+against a 50 ms PUT).
 
 No rollback paths exist by construction: shared stream state is published
 only after a successful memtable apply; the acker only advances on the

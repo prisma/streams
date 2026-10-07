@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 mod provider_contract;
+mod write_tier;
 
 #[test]
 fn active_absorber_options_reach_the_absorber_configuration() {
@@ -77,14 +78,14 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
     assert_eq!(
         shard_settings(&active),
         (
-            (true, Duration::from_millis(10), Duration::from_millis(6)),
+            (true, Duration::from_millis(100), Duration::from_millis(6)),
             (32, 1_048_576),
             (8_192, 65_536),
             (Duration::from_secs(600), 65_536),
             0,
             crate::crypto::FrameCompression::Disabled,
         ),
-        "a server that sets nothing runs the pump with a 10 ms gap and a 6 ms gather, \
+        "a server that sets nothing runs the pump with a 100 ms gap and a 6 ms gather, \
          skipped once the next WAL holds 32 requests or 1 MiB"
     );
     assert!(

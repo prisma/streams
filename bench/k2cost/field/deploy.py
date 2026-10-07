@@ -119,7 +119,10 @@ SCALE = {
     "SCALE_LATENCY_MS": "250", "SCALE_EDGE_SLOTS": "140", "SCALE_EDGE_LATENCY_MS": "1000",
     "SCALE_IN_SECS": "60",
 }
-WAL_POSTURES = {"P-exp": {}, "P-500": {"WAL_FLUSH_GAP_MS": "500"}, "P-1000": {"WAL_FLUSH_GAP_MS": "1000"}}
+# P-100 is the binary's default gap, the one write tier since 2026-10-07. P-exp
+# pins the 10 ms gap the cells recorded as P-exp ran (the default until then).
+WAL_POSTURES = {"P-100": {}, "P-exp": {"WAL_FLUSH_GAP_MS": "10"}, "P-500": {"WAL_FLUSH_GAP_MS": "500"},
+                "P-1000": {"WAL_FLUSH_GAP_MS": "1000"}}
 # Wrapper CPU samples every 15 awake seconds: a boot loses at most that much
 # CPU after its last line (smoke sm1002f: 60 s left a 16 s-awake server none).
 CPU_LOG_SECS = "15"
@@ -243,7 +246,7 @@ def server_env(run, cell, cfg, st, sec, bins, feeds_key, i) -> dict:
     env.update(ENGINE)
     env.update(LIMITS)
     env.update(SCALE)
-    env.update(WAL_POSTURES[cfg.get("WAL_POSTURE", "P-exp")])
+    env.update(WAL_POSTURES[cfg.get("WAL_POSTURE", "P-100")])
     env.update({
         "SERVER_BINARY_S3_KEY": bins["streams"], **bin_s3_env(), "RESOLV_OVERRIDE": RESOLV,
         "SLATE_S3_ENDPOINT": k["endpoint"], "SLATE_S3_BUCKET": k["bucketName"], "SLATE_S3_REGION": "auto",
@@ -627,7 +630,7 @@ def finish(run: str, cell: str, report: dict, bins: dict, out_name: str) -> None
 def context(run: str, cell: str) -> tuple:
     F.check_names(run, cell)
     cfg = F.read_cell_file(cell)
-    if cfg.get("WAL_POSTURE", "P-exp") not in WAL_POSTURES:
+    if cfg.get("WAL_POSTURE", "P-100") not in WAL_POSTURES:
         F.die(f"WAL_POSTURE must be one of {sorted(WAL_POSTURES)}")
     topology(cfg)
     res = F.load_resources(run)["cells"].get(cell) or {}
@@ -670,7 +673,7 @@ def deploy_all(run: str, cell: str) -> None:
         F.die(f"env names no process reads: {bad}")
     F.say(f"== {cell}: {n} server ordinal(s) (FLEET_MIN {topo['fleet_min']}, FLEET_MAX {topo['fleet_max']}"
           f"{', capped' if topo['capped'] else ''}), {m} router(s), KEEP_AWAKE={cfg.get('KEEP_AWAKE', '0')}, "
-          f"SCRAPE={cfg.get('SCRAPE', '0')}, {cfg.get('WAL_POSTURE', 'P-exp')}; env names verified")
+          f"SCRAPE={cfg.get('SCRAPE', '0')}, {cfg.get('WAL_POSTURE', 'P-100')}; env names verified")
     stage(*(["app-server"] + (["app-lb"] if m else [])))
     feeds_key = ensure_feeds(run, cell, st)
     report = {"run": run, "cell": cell, "cell_file": cfg, "topology": topo, "state": st, "binaries": bins,

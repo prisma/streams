@@ -268,7 +268,7 @@ A cell file (`$K2_FIELD_HOME/cells/<cell>.env`, no secrets):
 | `ROUTERS` | pilot load balancers `router-1..M` (`PILOT_MODE=lb`, `UPSTREAMS` = the servers in ordinal order) |
 | `KEEP_AWAKE` / `KEEP_AWAKE_TTL_MIN` | `1` on servers `1..FLEET_MIN` and every router (never a spare), with its expiry, enforced in-instance |
 | `SCRAPE` | `1`: observe.py scrapes `/v1/debug/*` on the live servers; `0`: nothing is ever sent to the cell's servers or routers (unless `observe.py --scrape-cell`, which F2 uses on f1b) |
-| `WAL_POSTURE` | `P-exp` (binary default gap 10, gather 6), `P-500`, `P-1000` (`WAL_FLUSH_GAP_MS`) |
+| `WAL_POSTURE` | `P-100` (the binary's default gap 100, gather 6; the default posture), `P-exp` (gap 10, the binary's default until 2026-10-07, which the recorded cells ran), `P-500`, `P-1000` (`WAL_FLUSH_GAP_MS`) |
 | `INITIAL_SHARDS` | default 4 (D2) |
 | `SERVER_ENV_EXTRA` | space-separated `KEY=VALUE` overrides, `-KEY` removes |
 
