@@ -1,9 +1,8 @@
 //! R06-A exercises encoded storage, decryption and consumed progress together.
-//! The shard log holds layout 5 pages (one per fixture record); the history
-//! leg still holds stored frames until history reads move to pages.
+//! The shard log and history hold layout 5 pages, one per fixture record.
 use crate::application::read::read_merged;
-use crate::crypto::{FrameCipher, FrameCompression, StreamKey, derive_subkey};
-use crate::crypto_page::{PageCipher, PageLane, SealError, shard_page_key};
+use crate::crypto::{FrameCompression, StreamKey, derive_subkey};
+use crate::crypto_page::{PageCipher, PageLane, SealError, history_page_key, shard_page_key};
 use crate::shard::{
     Deliver, RingBatch, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail,
     tail_key,
@@ -132,8 +131,10 @@ async fn r06a_compressed_database_pages_bound_plaintext_without_skipping() {
     assert_eq!(seen, (0..1600).collect::<Vec<_>>());
 }
 
+/// `_compression` names the matrix leg only: pages compress whenever that
+/// pays, in the shard log and history alike.
 async fn mixed_fixture(
-    compression: FrameCompression,
+    _compression: FrameCompression,
     ring: bool,
     history: usize,
     records: &[(String, usize)],
@@ -152,16 +153,11 @@ async fn mixed_fixture(
     for (last, page) in &tail.frames {
         batch.put(shard_page_key(&[8; 16], *last), page.clone());
     }
-    let mut frames = Vec::new();
-    for (offset, (lane, size)) in (0u64..).zip(records).take(history) {
-        let frame = FrameCipher::new(
-            &derive_subkey(&key, &[9; 16], lane, 1),
-            &[8; 16],
-            compression,
-        )
-        .encrypt(&[8; 16], offset, 0, 1, lane, &vec![b'x'; *size]);
-        frames.push((offset, lane, Bytes::from(frame)));
-    }
+    let pages: Vec<_> = (0u64..)
+        .zip(records)
+        .take(history)
+        .map(|(offset, (lane, size))| (offset, lane, record_page(&key, offset, lane, *size)))
+        .collect();
     batch.put(
         tail_key(&[8; 16]),
         encode_tail(&TailFields {
@@ -195,9 +191,9 @@ async fn mixed_fixture(
         let part = engine.history_partition().await.unwrap();
         let mut batch = WriteBatch::new();
         let mut builder = crate::postings::PageBuilder::default();
-        for (offset, lane, raw) in &frames {
+        for (offset, lane, raw) in &pages {
             batch.put(
-                crate::history::hist2_record_key(RouteHash([4; 16]), SegmentHash([8; 16]), *offset),
+                history_page_key(RouteHash([4; 16]), SegmentHash([8; 16]), *offset),
                 raw.clone(),
             );
             builder.note_frame(crate::postings::rk_hash(lane), *offset, raw.len() as u64);

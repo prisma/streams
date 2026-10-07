@@ -1,5 +1,5 @@
-//! Authenticated page construction. Stored layout 5 pages open whole into one
-//! buffer per read; the history leg still decodes stored frames.
+//! Authenticated page construction. Stored layout 5 pages, from the shard log
+//! and from history alike, open whole into one buffer per read.
 use super::read::ReadPage;
 use super::read_batch::PlainBatch;
 use super::read_budget::PageBudget;
@@ -9,8 +9,10 @@ use crate::shard::record::{PageSlice, PageSlices};
 use std::mem::take;
 use std::ops::Range;
 
-/// Stored rows a read decodes into its page: the shard log's page slices
-/// and, until history reads move to pages, the history leg's stored frames.
+/// Stored rows a read decodes into its page: the page slices the shard log
+/// and history return. Stored frames keep an implementation only for the
+/// frame decode tests until the layout 5 cutover removes the stored frame
+/// decoders.
 pub(super) trait StoredRows {
     /// Decode the rows into `out` under `budget`; false when the budget
     /// ended the decode, with `out.last` on the last admitted record.
@@ -105,8 +107,9 @@ impl Decoded {
     }
 }
 
-/// The history leg's stored frames, until history reads move to pages.
-/// Uncompressed runs share one planned buffer; fallback decoders transfer
+/// Stored frames: no read returns them since history reads moved to pages;
+/// only the frame decode tests call this until the layout 5 cutover removes
+/// it. Uncompressed runs share one planned buffer; fallback decoders transfer
 /// independent buffers without an aggregate copy.
 impl StoredRows for Vec<crate::shard::record::CheckedFrame> {
     #[expect(

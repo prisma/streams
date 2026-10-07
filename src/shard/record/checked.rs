@@ -15,6 +15,10 @@ pub struct CheckedFrame {
     version: u8,
 }
 impl CheckedFrame {
+    #[allow(
+        dead_code,
+        reason = "CheckedFrame::from_row; stored-frame admission has no service caller since every stored row is a layout 5 page, but it stays compiled with crypto.rs's frame decoder (a by-path file) and KANI-017 until the layout 5 cutover removes the stored frame decoders together; expect(dead_code) would be unfulfilled in the test build, which still calls it"
+    )]
     pub(crate) fn from_row(
         key: &[u8],
         prefix: &[u8],

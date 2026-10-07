@@ -9,7 +9,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Persistence and durability | `persistence_faults`, `durability_failures`, `durability_fences` |
 | Producer ordering and handoff | `producer_protocol`, `producer_handoff` |
 | History absorption and budgets | `history_absorption`, `history_gather`, `history_recovery` |
-| Read protocols and visibility | `reads_applied`, `reads_history`, `reads_product`, `reads_raw`, `reads_ring` |
+| Read protocols and visibility (incl. layout 5 history pages: a fork whose boundary falls inside a parent's absorbed page reads the parent exactly to the boundary: `reads_history`) | `reads_applied`, `reads_history`, `reads_product`, `reads_raw`, `reads_ring` |
 | Registry read classification (a store failure is retryable, corruption is final) | `product_descriptor_reads` |
 | JSON record fidelity (stored text, admission, identities, every read surface) | `json_fidelity` |
 | Lifecycle and topology | `lifecycle_*`, `fork_*`, `seal_*`, `topology_*`, `product_lifecycle` |

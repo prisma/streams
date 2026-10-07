@@ -20,7 +20,7 @@ pub(super) fn execute_postings_plan<'a>(
     upto: u64,
     max_bytes: usize,
 ) -> impl std::future::Future<
-    Output = anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)>,
+    Output = anyhow::Result<(crate::shard::record::PageSlices, Option<u64>, bool)>,
 > + 'a {
     use std::sync::atomic::Ordering::Relaxed;
     // 3. Plan bounded spans.
@@ -34,7 +34,7 @@ pub(super) fn execute_postings_plan<'a>(
     drop(window);
     async move {
         let mut spans_used = 0u64;
-        let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
+        let mut frames = crate::shard::record::PageSlices::default();
         let mut last: Option<u64> = None;
         let mut total = 0usize;
         let mut truncated = false;
@@ -58,10 +58,10 @@ pub(super) fn execute_postings_plan<'a>(
             'spans: while let Some(res) = results.next().await {
                 let (span, hits, span_trunc, span_last) = res?;
                 spans_used += 1;
-                for (off, raw) in hits {
-                    total += raw.len();
+                for raw in hits {
+                    total += raw.stored_len();
+                    last = Some(raw.last());
                     frames.push(raw);
-                    last = Some(off);
                     if total >= max_bytes {
                         truncated = true;
                         break 'spans;

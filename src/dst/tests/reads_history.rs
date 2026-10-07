@@ -572,3 +572,82 @@ async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
     );
     engine.begin_close();
 }
+
+/// Layout 5: a fork whose boundary falls inside a page of its parent's
+/// absorbed history reads the parent exactly up to the boundary (the page
+/// is sliced, its later records never leak into the fork), then continues
+/// with the fork's own records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
+    use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+    use super::fixture_requests::hreq;
+    let rig = http_rig_build(
+        mem(),
+        super::fixture_runtime::RigRuntime::first(),
+        HttpRigOptions {
+            shard: crate::shard::ShardConfig {
+                tail_ring_bytes: 0,
+                ..Default::default()
+            },
+            absorber: Some(crate::history::AbsorberConfig {
+                threshold_bytes: 1,
+                threshold_age: std::time::Duration::from_millis(1),
+                tick: std::time::Duration::from_millis(20),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(rig.addr, "PUT", "/v1/stream/pgparent", &ct, b"").await;
+    assert!(st == 200 || st == 201, "create: {st}");
+    let value = |n: &str| serde_json::from_str::<serde_json::Value>(&format!(r#"{{"n":{n}}}"#));
+    let records: Vec<_> = (0..10).map(|n| value(&n.to_string()).unwrap()).collect();
+    let body = serde_json::to_vec(&records).unwrap();
+    let (st, _, _) = hreq(rig.addr, "POST", "/v1/stream/pgparent", &ct, &body).await;
+    assert!(st == 200 || st == 204, "append: {st}");
+    let sref = rig.state.deployment.raw_adapter_sref("pgparent");
+    let desc = rig.state.registry.get(&sref).await.unwrap().unwrap();
+    let route = desc.segment_route_by_id(0).unwrap();
+    let engine = rig.state.engine_for(&route).await.unwrap();
+    let hash = desc.storage_hash();
+    wait_all_absorbed(&engine, &[hash]).await;
+    // The one request is one history page holding records 0 to 9.
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let route = crate::crypto::RouteHash(handle.state.lock().unwrap().durable.route);
+    let (inc, part) = (
+        crate::crypto::SegmentHash(hash),
+        engine.history_partition().await.unwrap(),
+    );
+    let stored = part
+        .get(crate::crypto_page::history_page_key(route, inc, 9))
+        .await
+        .unwrap()
+        .expect("the request's page in history");
+    let page = crate::crypto_page::CheckedPage::admit(stored, 9).unwrap();
+    assert_eq!((page.first(), page.count()), (0, 10));
+    let fork = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "pgparent"),
+        ("stream-fork-offset", "0000000000000000_0000000000000006"),
+    ];
+    let (st, _, b) = hreq(rig.addr, "PUT", "/v1/stream/pgchild", &fork, b"").await;
+    assert_eq!(st, 201, "fork: {}", String::from_utf8_lossy(&b));
+    let read = |name: &'static str| async move {
+        let (st, _, b) = hreq(rig.addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+        assert_eq!(st, 200, "read {name}: {}", String::from_utf8_lossy(&b));
+        serde_json::from_slice::<Vec<serde_json::Value>>(&b).unwrap()
+    };
+    assert_eq!(read("pgchild").await, records[..6]);
+    let own = value(r#""own""#).unwrap();
+    let body = serde_json::to_vec(&[&own]).unwrap();
+    let (st, _, _) = hreq(rig.addr, "POST", "/v1/stream/pgchild", &ct, &body).await;
+    assert!(st == 200 || st == 204, "child append: {st}");
+    let mut expected = records[..6].to_vec();
+    expected.push(own);
+    assert_eq!(read("pgchild").await, expected);
+    assert_eq!(read("pgparent").await, records);
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+}

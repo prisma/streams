@@ -1,20 +1,20 @@
-//! History tier (§3.6): per-stream WAL-less SlateDBs under shared-bucket
-//! prefixes, block-transformer encrypted with the stream key, block-zstd
-//! compressed — plus the absorber that drains shard logs into them.
+//! History tier (§3.6): each shard's shared WAL-less history partition, and
+//! the absorber that drains the shard log into it.
 //!
-//! History keyspace and record value:
+//! History keyspace (layout 5):
 //! ```text
-//! 'r' '!' <offset u64 BE>                       record (plaintext in blocks)
-//! 'k' '!' <rk_len u16 BE> <rk> <offset u64 BE>  routing-key index (copy)
-//! value: [ver u8=1][ts i64 LE][key_version u32 LE][rk_len u16 LE][rk][payload]
+//! <route16> <inc16> 'g' <last offset u64 BE>              stored page, copied
+//!                                                          byte for byte
+//! <route16> <inc16> 'p' <rk_hash16> <bucket BE8> <first BE8>  postings page
 //! ```
 
 mod canonical_span;
 mod gather;
 #[cfg(test)]
 pub(crate) use gather::StreamGatherFailure;
+mod page_read;
+pub(crate) use page_read::{read_history2, read_history2_keyed_cached};
 mod postings_read;
-use postings_read::execute_postings_plan;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
@@ -30,18 +30,6 @@ use crate::shard::{AbsorbSignal, ShardEngine, Submissions};
 mod controller_tests;
 #[cfg(test)]
 mod test_support;
-
-/// Scan options for history reads: without readahead, slatedb fetches one
-/// (compressed, ~200B) block per sequential GET — thousands of round-trips
-/// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
-fn hist_scan_opts() -> slatedb::config::ScanOptions {
-    slatedb::config::ScanOptions {
-        read_ahead_bytes: 2 * 1024 * 1024,
-        max_fetch_tasks: 2,
-        cache_blocks: true,
-        ..Default::default()
-    }
-}
 
 /// Postings-index scans (spec §7.5): 1 MiB read-ahead reaches ~64
 /// buckets of compact pages in one cold load; blocks stay cacheable
@@ -63,18 +51,10 @@ fn postings_scan_opts() -> slatedb::config::ScanOptions {
 // ---- shared history v2 keyspace (docs/HISTORY-V2.md) ----
 //
 // Route hash FIRST so a shard split can clone the partition by key
-// range; then the stream incarnation, a tag byte, and the offset.
-// Values are raw stream-key-encrypted frames, byte-identical to the
-// shard log's — the reader decodes them with the same tail machinery.
-
-pub(crate) fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(41);
-    k.extend_from_slice(&route.0);
-    k.extend_from_slice(&inc.0);
-    k.push(b'r');
-    k.extend_from_slice(&offset.to_be_bytes());
-    k
-}
+// range; then the stream incarnation, a tag byte, and the page's last
+// offset (`crate::crypto_page::history_page_key`, tag 'g'; 'p' rows are
+// postings pages). Values are layout 5 pages, byte-identical to the shard
+// log's; `page_read` scans them.
 
 /// Per-partition L0 facts from the db's IN-MEMORY manifest snapshot
 /// (`Db::manifest()` — no object-store request). The manifest types
@@ -799,215 +779,6 @@ pub(crate) static READ_SPANS_MAX: AtomicU64 = AtomicU64::new(0);
 pub(crate) static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static READ_FRAMES_MATCHED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static POSTINGS_CORRUPT: AtomicU64 = AtomicU64::new(0);
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "read_history2; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
-)]
-pub(crate) async fn read_history2(
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    from: u64,
-    upto: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    match key_filter {
-        Some(rk) => read_history2_keyed(part, route, inc, rk, from, upto, max_bytes).await,
-        None => read_history2_scan(part, route, inc, from, upto, max_bytes).await,
-    }
-}
-
-/// Unfiltered canonical scan (whole-segment replay): unchanged from the
-/// covering-index era — the canonical rows ARE the stream.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "read_history2_scan; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
-)]
-async fn read_history2_scan(
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    from: u64,
-    upto: u64,
-    max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
-    let mut last: Option<u64> = None;
-    let mut completed = true;
-    let mut total = 0usize;
-    let prefix = hist2_record_key(route, inc, 0);
-    let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
-    let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
-    while let Some(kv) = iter.next().await? {
-        let frame = crate::shard::record::CheckedFrame::from_row(&kv.key, &prefix[..33], kv.value)?;
-        let off = frame.view().header.offset;
-        total += frame.len();
-        frames.push(frame);
-        last = Some(off);
-        if total >= max_bytes {
-            completed = false;
-            break;
-        }
-    }
-    Ok((frames, last, completed))
-}
-
-/// Keyed read through the postings planner (ROUTING-V3 §3/§5): decode
-/// the key's offset runs for the requested range, plan bounded
-/// canonical spans (<= 8 per response, gap-coalesced by BYTES, 16 MiB
-/// scan cap), execute each span as ONE canonical range scan, and
-/// verify every frame against the exact routing-key bytes — a 128-bit
-/// rk-hash collision can add candidates, never another key's data.
-///
-/// `last` advances to `consumed_to - 1` even when a planned range holds
-/// no matches, so cursors move over provably match-free ranges. The
-/// per-offset GET pattern is structurally impossible here: reads are
-/// range scans only.
-///
-/// Ranges with ZERO postings pages are read as holding no matches (the
-/// greenfield layout; the covering-index fallback was deleted, see
-/// docs/ROUTING-V3.md). The reader cannot tell a page lost after it was
-/// durable from an absent key, so H11's missing-postings clause rests on
-/// storage assumptions today: docs/dst/DST-EXPANSION-SPEC.md §9.12.2
-/// records the open obligation.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "read_history2_keyed; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
-)]
-async fn read_history2_keyed(
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    rk: &str,
-    from: u64,
-    upto: u64,
-    max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    use std::sync::atomic::Ordering::Relaxed;
-    if from >= upto {
-        return Ok((Vec::new(), None, true));
-    }
-    let kh = crate::postings::rk_hash(rk);
-    // 1. Collect this key's pages for every bucket the range touches.
-    // Greenfield layout (spec §12.4, postings_from = 0): the postings
-    // index is authoritative for the WHOLE absorbed range — zero pages
-    // means the range provably holds no matches and the cursor advances
-    // over it. A page that fails to decode (or disagrees with its key)
-    // is corruption: never claim completeness over an unverified range;
-    // fall back to ONE bounded canonical envelope scan of the requested
-    // range, filtered by exact key bytes (spec §8.6), and count it.
-    let (lo, hi) = crate::postings::postings_range(route, inc, &kh, from, upto);
-    let mut runs: Vec<crate::postings::AbsRun> = Vec::new();
-    let mut corrupt = false;
-    {
-        let mut iter = part
-            .scan_with_options(lo..hi, &postings_scan_opts())
-            .await?;
-        while let Some(kv) = iter.next().await? {
-            if crate::postings::decode_stored_page(route, inc, &kh, &kv.key, &kv.value)
-                .and_then(|page| crate::postings::append_page_runs(&mut runs, page))
-                .is_none()
-            {
-                corrupt = true;
-                break;
-            }
-        }
-    }
-    let admitted = (!corrupt)
-        .then(|| crate::postings::ValidatedRuns::new(runs))
-        .flatten();
-    let Some(runs) = admitted else {
-        POSTINGS_CORRUPT.fetch_add(1, Relaxed);
-        return read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await;
-    };
-    let window = crate::postings::RunWindow::new(runs, from, upto);
-    execute_postings_plan(part, route, inc, rk, window, upto, upto, max_bytes).await
-}
-
-/// Keyed read through the DECODED SLICE CACHE (spec §7): the engine's
-/// cache resolves the runs (hit, single-flight cold load, or forward
-/// extension), then the shared planner/executor below serves them.
-/// `provable_to < upto` (a load window that could not reach the whole
-/// range) yields an honest partial at the proven boundary.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "read_history2_keyed_cached; a keyed history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
-)]
-pub(crate) async fn read_history2_keyed_cached(
-    cache: &Arc<crate::postings_cache::PostingsCache>,
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    rk: &str,
-    from: u64,
-    upto: u64,
-    absorbed: u64,
-    max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    use std::sync::atomic::Ordering::Relaxed;
-    if from >= upto {
-        return Ok((Vec::new(), None, true));
-    }
-    let kh = crate::postings::rk_hash(rk);
-    match cache
-        .runs_for(part, route, inc, kh, from, upto, absorbed)
-        .await?
-    {
-        crate::postings_cache::CacheRuns::Corrupt => {
-            POSTINGS_CORRUPT.fetch_add(1, Relaxed);
-            read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
-        }
-        crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
-            execute_postings_plan(part, route, inc, rk, runs, provable_to, upto, max_bytes).await
-        }
-    }
-}
-
-/// Corruption envelope (spec §8.6): one bounded canonical scan of the
-/// requested range, filtered by EXACT routing-key bytes. Never lies
-/// about completeness — a byte-truncated envelope returns an honest
-/// partial with a resume cursor.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "read_history2_keyed_envelope; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
-)]
-async fn read_history2_keyed_envelope(
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    rk: &str,
-    from: u64,
-    upto: u64,
-    max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
-    let mut last: Option<u64> = None;
-    let mut completed = true;
-    let mut total = 0usize;
-    let prefix = hist2_record_key(route, inc, 0);
-    let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
-    let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
-    while let Some(kv) = iter.next().await? {
-        let f = crate::shard::record::CheckedFrame::from_row(&kv.key, &prefix[..33], kv.value)?;
-        let off = f.view().header.offset;
-        total += f.len();
-        if f.view().header.routing_key == rk {
-            frames.push(f);
-        }
-        last = Some(off);
-        if total >= max_bytes {
-            completed = false;
-            break;
-        }
-    }
-    if completed {
-        // The whole range was verified frame-by-frame.
-        last = Some(last.map_or(upto - 1, |l| l.max(upto - 1)));
-    }
-    Ok((frames, last, completed))
-}
 
 pub(crate) fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbSignal>) {
     mpsc::channel(65_536)

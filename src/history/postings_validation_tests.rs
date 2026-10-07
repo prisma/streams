@@ -1,7 +1,22 @@
 //! Stored derived-index corruption must never skip canonical matches.
 use super::*;
-use crate::crypto::{FrameCipher, FrameCompression};
+use crate::crypto_page::{PageCipher, PageLane, history_page_key};
 use crate::postings::{PostingRun, encode_page, postings_key, rk_hash};
+
+/// The history page of one "wanted" record at `offset`, as the absorber
+/// copies it from the shard log.
+fn stored_page(inc: SegmentHash, offset: u64, payload: &[u8]) -> Vec<u8> {
+    let lane = PageLane {
+        ts_ms: 1,
+        key_version: 0,
+        routing_key: "wanted",
+    };
+    let page = PageCipher::new(&[7; 32], &inc.0)
+        .seal(&lane, offset, &[payload.to_vec()])
+        .unwrap();
+    assert_eq!(page.last, offset);
+    page.bytes
+}
 
 fn page(first: u64, count: u32, bytes: u64) -> Vec<u8> {
     encode_page(
@@ -38,15 +53,8 @@ async fn assert_canonical(
         .await
         .unwrap(),
     );
-    let frame = FrameCipher::new(&[7; 32], &inc.0, FrameCompression::Disabled).encrypt(
-        &inc.0,
-        offset,
-        1,
-        0,
-        "wanted",
-        b"canonical match",
-    );
-    db.put(hist2_record_key(route, inc, offset), frame.clone())
+    let frame = stored_page(inc, offset, b"canonical match");
+    db.put(history_page_key(route, inc, offset), frame.clone())
         .await
         .unwrap()
         .await_durable()
@@ -79,7 +87,7 @@ async fn assert_canonical(
             )
             .await
         } else {
-            read_history2_keyed(&db, route, inc, "wanted", from, upto, 32 * 1024).await
+            read_history2(&db, route, inc, from, upto, Some("wanted"), 32 * 1024).await
         }
         .unwrap();
         assert_eq!(
@@ -87,7 +95,8 @@ async fn assert_canonical(
             1,
             "{label}, cached={cached}: canonical match was skipped"
         );
-        assert_eq!(frames[0].as_ref(), frame.as_slice());
+        assert_eq!(frames[0].page().raw().as_ref(), frame.as_slice());
+        assert_eq!((frames[0].first(), frames[0].last()), (offset, offset));
         assert_eq!(last, Some(upto - 1), "exact consumed frontier");
         assert!(complete);
     }
@@ -143,13 +152,13 @@ async fn o4a_valid_page_seams_and_match_free_progress_remain_usable() {
         .await
         .unwrap(),
     );
-    let (frames, last, complete) = read_history2_keyed(
+    let (frames, last, complete) = read_history2(
         &db,
         RouteHash([1; 16]),
         SegmentHash([2; 16]),
-        "absent",
         50,
         60,
+        Some("absent"),
         1024,
     )
     .await
@@ -253,9 +262,8 @@ async fn o4a_stored_key_width_rejection_is_not_empty_progress() {
         .await
         .unwrap(),
     );
-    let frame = FrameCipher::new(&[7; 32], &inc.0, FrameCompression::Disabled)
-        .encrypt(&inc.0, 256, 1, 0, "wanted", b"present");
-    db.put(hist2_record_key(route, inc, 256), frame.clone())
+    let frame = stored_page(inc, 256, b"present");
+    db.put(history_page_key(route, inc, 256), frame.clone())
         .await
         .unwrap()
         .await_durable()
@@ -282,7 +290,7 @@ async fn o4a_stored_key_width_rejection_is_not_empty_progress() {
             .await
             .unwrap();
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0].as_ref(), frame.as_slice());
+    assert_eq!(frames[0].page().raw().as_ref(), frame.as_slice());
     assert_eq!(last, Some(511));
     assert!(complete);
     db.close().await.unwrap();

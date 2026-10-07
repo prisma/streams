@@ -68,9 +68,12 @@ async fn refused_chain(name: &str, hash: [u8; 16]) -> (Arc<ShardEngine>, Vec<u64
     (engine, stored)
 }
 
-/// The offsets of `frames`.
-fn offsets(frames: &[crate::shard::record::CheckedFrame]) -> Vec<u64> {
-    frames.iter().map(|f| f.view().header.offset).collect()
+/// The offsets of the records `pages` serve.
+fn offsets(pages: &[crate::shard::record::PageSlice]) -> Vec<u64> {
+    pages
+        .iter()
+        .flat_map(|page| page.first()..=page.last())
+        .collect()
 }
 
 /// HOLD-SPLIT-500 closure (owner decision, second external review): a
@@ -130,7 +133,10 @@ async fn a_refused_chains_overlapping_pages_still_read_exactly() {
         let (frames, last, completed) = read_history2(&part, route, inc, from, 9, Some(""), budget)
             .await
             .unwrap();
-        let bytes: usize = frames.iter().map(|f| f.len()).sum();
+        let bytes: usize = frames
+            .iter()
+            .map(crate::shard::record::PageSlice::stored_len)
+            .sum();
         assert!(
             bytes <= budget + usize::try_from(stored[0]).unwrap(),
             "a page read past its budget"

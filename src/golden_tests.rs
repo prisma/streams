@@ -483,10 +483,10 @@ mod history_postings {
     use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 
     #[test]
-    fn golden_layout4_hist2_record_key_bytes() {
-        // <route16> <inc16> 'r' <offset u64 BE>
+    fn golden_layout5_history_page_key_bytes() {
+        // <route16> <inc16> 'g' <last offset u64 BE>; 'p' is postings below
         assert_eq!(
-            hex(&crate::history::hist2_record_key(
+            hex(&crate::crypto_page::history_page_key(
                 RouteHash(H),
                 SegmentHash(K),
                 OFF
@@ -494,7 +494,7 @@ mod history_postings {
             concat!(
                 "11111111111111111111111111111111",
                 "22222222222222222222222222222222",
-                "72",
+                "67",
                 "0102030405060708"
             )
         );

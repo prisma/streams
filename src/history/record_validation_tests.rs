@@ -1,11 +1,24 @@
 //! R08-A: all three canonical history scan paths validate the same rows.
-use super::{
-    execute_postings_plan, hist2_record_key, read_history2_keyed_envelope, read_history2_scan,
-};
-use crate::crypto::{FrameCipher, FrameCompression, RouteHash, SegmentHash};
+use super::page_read::{read_history2_keyed_envelope, read_history2_scan};
+use super::postings_read::execute_postings_plan;
+use crate::crypto::{RouteHash, SegmentHash};
+use crate::crypto_page::{PageCipher, PageLane, history_page_key};
 use crate::postings::AbsRun;
 use slatedb::Db;
 use std::sync::Arc;
+
+/// A history page of one "other" record at `first`.
+fn page_at(inc: SegmentHash, first: u64) -> Vec<u8> {
+    let lane = PageLane {
+        ts_ms: 1,
+        key_version: 1,
+        routing_key: "other",
+    };
+    PageCipher::new(&[7; 32], &inc.0)
+        .seal(&lane, first, &[b"retained".to_vec()])
+        .unwrap()
+        .bytes
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r08a_history_scan_envelope_and_postings_reject_corrupt_rows() {
@@ -25,27 +38,14 @@ async fn r08a_history_scan_envelope_and_postings_reject_corrupt_rows() {
             .await
             .unwrap(),
         );
-        let mut key = hist2_record_key(route, inc, 1);
+        let mut key = history_page_key(route, inc, 1);
         let value = match label {
             "short" => {
                 key.remove(33);
-                FrameCipher::new(&[7; 32], &inc.0, FrameCompression::Disabled).encrypt(
-                    &inc.0,
-                    1,
-                    1,
-                    1,
-                    "other",
-                    b"retained",
-                )
+                page_at(inc, 1)
             }
-            "offset" => FrameCipher::new(&[7; 32], &inc.0, FrameCompression::Disabled).encrypt(
-                &inc.0,
-                2,
-                1,
-                1,
-                "other",
-                b"retained",
-            ),
+            // A whole page whose records end at 2, stored under the key of 1.
+            "offset" => page_at(inc, 2),
             _ => b"broken".to_vec(),
         };
         db.put(&key, value.clone())

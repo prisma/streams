@@ -779,6 +779,17 @@
     ]
   },
   {
+    "name": "a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0d47bfc4c755799f6b6c69f8c2fae37c45eecdf894d92b0ab24efe5998dc4ef0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_history.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_stamp_never_lands_on_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
