@@ -1,6 +1,6 @@
 //! Seal convergence.
 
-use super::fixture_auth::{sr_rig, sr2_workload_jwt};
+use super::fixture_auth::{FLEET_KID, sr_rig, sr2_workload_jwt};
 use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{engine_shutdown, http_rig, http_rig_named, http_rig_named_at};
 use super::fixture_livefeed::{hub_rig_stream, hub_sse_collect};
@@ -434,7 +434,7 @@ async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
     // must both be refused BEFORE any target work.
     for ops in [&[][..], &["segment-read"][..]] {
         let now = crate::shard::now_ms() / 1000;
-        let token = format!("Bearer {}", sr2_workload_jwt("scl-1", ops, now));
+        let token = format!("Bearer {}", sr2_workload_jwt(FLEET_KID, ops, now));
         let mut hdrs: Vec<(&str, &str)> =
             th.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         hdrs.push(("authorization", &token));
@@ -458,7 +458,7 @@ async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
     let now = crate::shard::now_ms() / 1000;
     let close_token = format!(
         "Bearer {}",
-        sr2_workload_jwt("scl-1", &["segment-close"], now)
+        sr2_workload_jwt(FLEET_KID, &["segment-close"], now)
     );
     let mut hdrs: Vec<(&str, &str)> = th.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     hdrs.push(("authorization", &close_token));

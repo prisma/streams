@@ -145,13 +145,17 @@ impl Token {
     }
 }
 
-/// The fixture public key under key id `kid`.
+/// The fixture public key under key id `kid`, pinned to the customer
+/// audience: the key that signs every project's tokens.
 pub(super) fn jwks_key(kid: &str) -> (String, crate::auth::JwksKey) {
-    let key = crate::auth::JwksKey {
-        alg: jsonwebtoken::Algorithm::RS256,
-        key: jsonwebtoken::DecodingKey::from_rsa_pem(RIG_PUB.as_bytes()).unwrap(),
-        fp: crate::auth::key_fp(RIG_PUB.as_bytes()),
-    };
+    let key = crate::auth::JwksKey::rs256(RIG_PUB, crate::auth::KeyAudience::Customer);
+    (kid.to_string(), key)
+}
+
+/// The same material under `kid`, pinned to the fleet audience (H6). A
+/// single-server shared cell publishes none.
+pub(super) fn fleet_key(kid: &str) -> (String, crate::auth::JwksKey) {
+    let key = crate::auth::JwksKey::rs256(RIG_PUB, crate::auth::KeyAudience::Internal);
     (kid.to_string(), key)
 }
 

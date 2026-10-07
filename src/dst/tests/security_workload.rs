@@ -1,6 +1,6 @@
 //! Security workload.
 
-use super::fixture_auth::{sr_rig, sr2_workload_jwt, sr2_workload_jwt_exp};
+use super::fixture_auth::{FLEET_KID, sr_rig, sr2_workload_jwt, sr2_workload_jwt_exp};
 use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_livefeed::{hub_sse_collect, sse_head};
@@ -40,7 +40,7 @@ async fn raw_sse_terminates_at_workload_token_expiry() {
     let now = crate::shard::now_ms() / 1000;
     let wl = format!(
         "Bearer {}",
-        sr2_workload_jwt_exp("rwl-1", &["raw-read"], now + 4)
+        sr2_workload_jwt_exp(FLEET_KID, &["raw-read"], now + 4)
     );
     let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
     use tokio::io::AsyncWriteExt;
@@ -78,7 +78,7 @@ async fn internal_segment_read_refuses_live_semantics() {
     let now = crate::shard::now_ms() / 1000;
     let sa = format!(
         "Bearer {}",
-        sr2_workload_jwt("rlv-1", &["segment-read"], now)
+        sr2_workload_jwt(FLEET_KID, &["segment-read"], now)
     );
     let (st, _, body) = hreq(
         addr,
@@ -113,7 +113,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
     assert!(st == 200 || st == 201, "stage: {st}");
 
     // A token with an EMPTY operations claim grants NOTHING.
-    let none = format!("Bearer {}", sr2_workload_jwt("opsc-1", &[], now));
+    let none = format!("Bearer {}", sr2_workload_jwt(FLEET_KID, &[], now));
     let na = ("authorization", none.as_str());
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/opx", &[ct, na], br#"[{"i":1}]"#).await;
     assert_eq!(st, 401, "empty-operations token appended via raw: {st}");
@@ -128,7 +128,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
     // telemetry appends, and unrelated internal routes refuse.
     let sr = format!(
         "Bearer {}",
-        sr2_workload_jwt("opsc-1", &["segment-read"], now)
+        sr2_workload_jwt(FLEET_KID, &["segment-read"], now)
     );
     let sa = ("authorization", sr.as_str());
     let (st, _, _) = hreq(addr, "GET", "/v1/internal/segment-read/opx", &[sa], b"").await;
@@ -151,7 +151,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
     // consumer-sweep must not open segment scans.
     let cs = format!(
         "Bearer {}",
-        sr2_workload_jwt("opsc-1", &["consumer-sweep"], now)
+        sr2_workload_jwt(FLEET_KID, &["consumer-sweep"], now)
     );
     let ca = ("authorization", cs.as_str());
     let (st, _, _) = hreq(addr, "GET", "/v1/internal/segment-scan/opx", &[ca], b"").await;
@@ -160,7 +160,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
     // An UNKNOWN operation name grants nothing.
     let junk = format!(
         "Bearer {}",
-        sr2_workload_jwt("opsc-1", &["everything"], now)
+        sr2_workload_jwt(FLEET_KID, &["everything"], now)
     );
     let ja = ("authorization", junk.as_str());
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/opx", &[ct, ja], br#"[{"i":3}]"#).await;
@@ -177,7 +177,7 @@ async fn raw_surface_operations_follow_the_request_method() {
     let (_state, addr, _tok) = sr_rig("proj-rmo", "ws_rmo", "c_rmo", "rmo-1", scopes).await;
     let now = crate::shard::now_ms() / 1000;
     let ops = ["raw-lifecycle", "raw-append", "raw-read"];
-    let tokens = ops.map(|op| format!("Bearer {}", sr2_workload_jwt("rmo-1", &[op], now)));
+    let tokens = ops.map(|op| format!("Bearer {}", sr2_workload_jwt(FLEET_KID, &[op], now)));
     let row: &[u8] = br#"[{"i":0}]"#;
     // (method, body, the one operation it needs). Every other operation's
     // token is refused before the needed one performs the request.
@@ -227,11 +227,7 @@ async fn jwt_only_fleet_relay_succeeds() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wl-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Internal),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -332,11 +328,7 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wl-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Internal),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -437,11 +429,7 @@ async fn static_token_is_dead_in_workload_mode() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wm-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Internal),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -522,11 +510,7 @@ async fn jwt_only_fleet(
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wl-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Internal),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

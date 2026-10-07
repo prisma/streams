@@ -50,7 +50,6 @@ pub(super) async fn sr_rig(
     std::net::SocketAddr,
     String,
 ) {
-    const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
     let svc = std::sync::Arc::new(
         crate::auth::AuthService::new(
@@ -60,17 +59,8 @@ pub(super) async fn sr_rig(
         )
         .unwrap(),
     );
-    let mut keys = std::collections::HashMap::new();
-    keys.insert(
-        kid.to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
-    );
     svc.publish_jwks(crate::auth::JwksSnapshot {
-        keys,
+        keys: rig_keys(kid),
         fetched_at_unix: now,
         feed_version: 1,
     })
@@ -138,6 +128,27 @@ pub(super) async fn sr_rig(
 // SR2 (second review round): red tests. Written BEFORE the fixes and
 // confirmed FAILING at ce475426 — findings 1-3 of the follow-up review.
 // ---------------------------------------------------------------------------
+
+/// Shared-cells H6: the kid the rigs publish the fixture key under for
+/// the fleet audience. A kid signs for one audience, so workload tokens
+/// sign with this one, never with a rig's customer kid.
+pub(super) const FLEET_KID: &str = "fleet-1";
+
+/// The fixture key under `kid` for customer tokens and under
+/// [`FLEET_KID`] for workload tokens.
+pub(super) fn rig_keys(kid: &str) -> std::collections::HashMap<String, crate::auth::JwksKey> {
+    use crate::auth::{JwksKey, KeyAudience};
+    std::collections::HashMap::from([
+        (
+            kid.to_string(),
+            JwksKey::rs256(RIG_PUB, KeyAudience::Customer),
+        ),
+        (
+            FLEET_KID.to_string(),
+            JwksKey::rs256(RIG_PUB, KeyAudience::Internal),
+        ),
+    ])
+}
 
 /// Mint a workload JWT with an explicit operations claim (§14.1).
 pub(super) fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> String {
@@ -271,11 +282,7 @@ pub(super) async fn auth_rig(
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "rig-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(RIG_PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(RIG_PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(RIG_PUB, crate::auth::KeyAudience::Customer),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

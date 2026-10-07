@@ -73,7 +73,7 @@ for (let i = 0; i < total; i++) {
     scopes,
   });
 }
-writeFileSync(join(dir, "keys.json"), JSON.stringify({ feed_version: 1, keys: [{ kid: "camp-1", alg: "RS256", pem: publicKey }] }));
+writeFileSync(join(dir, "keys.json"), JSON.stringify({ feed_version: 1, keys: [{ kid: "camp-1", alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] }));
 writeFileSync(join(dir, "policies.json"), JSON.stringify({ feed_version: 1, projects }));
 writeFileSync(join(dir, "grants.json"), JSON.stringify({ feed_version: 1, credentials }));
 

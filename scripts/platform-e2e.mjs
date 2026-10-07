@@ -399,6 +399,8 @@ check("restored ownership tuple lands: freshly minted token serves on cell B",
   check("schema catches the empty-prefixes hostile vector", emptyPrefixes.some((e) => e.includes("minItems")), JSON.stringify(emptyPrefixes));
   const unknownAlg = validateDocument(golden("keys.hostile-unknown-alg.json"), schema("keys.schema.json"));
   check("schema catches the unknown-alg hostile vector", unknownAlg.some((e) => e.includes("enum")), JSON.stringify(unknownAlg));
+  const missingAud = validateDocument(golden("keys.hostile-missing-aud.json"), schema("keys.schema.json"));
+  check("schema catches the missing-aud hostile vector", missingAud.some((e) => e.includes('missing required "aud"')), JSON.stringify(missingAud));
 }
 
 // ---- §14.5 quotas: feed-delivered max_streams on two instances ------------
@@ -467,6 +469,13 @@ const seg = (tok) => sfetch(`${aBase}/v1/segments/e2e/orders`, { headers: { auth
 check("workload JWT with empty operations grants nothing", (await seg(wlNone.body.jwt)).status === 401);
 check("workload JWT with the exact operation passes auth", (await seg(wlRead.body.jwt)).status !== 401);
 check("customer token cannot enter the internal surface", (await seg(tokB2.body.accessToken)).status === 401);
+// §14.1 r7 (shared-cells H6): the feed pins each kid to one audience, so
+// the customer issuer's key cannot mint a workload token for any cell.
+const wlForged = await j(await sfetch(`${emuBase}/admin/mint-workload`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ cell: "cell-a", operations: ["segment-read"], signer: "customer" }),
+}));
+check("workload JWT signed by the customer key is refused", (await seg(wlForged.body.jwt)).status === 401);
 // The platform contract names the seal's two relays (edge change #90):
 // the cell's own token, as the emulator mints it by default, is a valid
 // claim set naming both, and each operation opens exactly its route.

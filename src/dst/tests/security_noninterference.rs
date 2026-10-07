@@ -47,11 +47,7 @@ async fn dab_rig(
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         kid.clone(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Customer),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

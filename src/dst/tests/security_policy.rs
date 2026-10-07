@@ -1,7 +1,8 @@
 //! Security policy.
 
 use super::fixture_auth::{
-    auth_rig, mint_token, rig_create, rig_policy, rig_publish_policy, sr_rig, sr2_workload_jwt,
+    FLEET_KID, auth_rig, mint_token, rig_create, rig_policy, rig_publish_policy, sr_rig,
+    sr2_workload_jwt,
 };
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
@@ -173,7 +174,7 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
         exp: i64,
     }
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    header.kid = Some("raw-1".into());
+    header.kid = Some(FLEET_KID.into());
     let wl = jsonwebtoken::encode(
         &header,
         &W {
@@ -207,7 +208,7 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
     let now2 = crate::shard::now_ms() / 1000;
     let wl_op = format!(
         "Bearer {}",
-        sr2_workload_jwt("raw-1", &["raw-append"], now2)
+        sr2_workload_jwt(FLEET_KID, &["raw-append"], now2)
     );
     let wopa = ("authorization", wl_op.as_str());
     let (st, _, _) = hreq(
@@ -653,11 +654,7 @@ fn jwks_kid_lifecycle_rules() {
         "test-cell",
     )
     .unwrap();
-    let key = |pem: &str| crate::auth::JwksKey {
-        alg: jsonwebtoken::Algorithm::RS256,
-        key: jsonwebtoken::DecodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
-        fp: crate::auth::key_fp(pem.as_bytes()),
-    };
+    let key = |pem: &str| crate::auth::JwksKey::rs256(pem, crate::auth::KeyAudience::Customer);
     let snap = |ver: u64, kids: &[&str]| {
         let mut keys = std::collections::HashMap::new();
         for k in kids {
@@ -691,7 +688,7 @@ fn jwks_kid_lifecycle_rules() {
     // material under the same kid.)
     let mut keys = std::collections::HashMap::new();
     let mut k = key(PUB);
-    k.fp = crate::auth::key_fp(b"different-material");
+    k.fp = crate::auth::key_fp(b"different-material", k.aud);
     keys.insert("kid-b".to_string(), k);
     let r = svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

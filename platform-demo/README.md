@@ -35,7 +35,7 @@ The end-to-end battery (`node scripts/platform-e2e.mjs`) starts the
 emulator, the gateway, and THREE REAL `streams-slate` cells under the
 full release posture (`STREAMS_AUTH_MODE=enforce`,
 `FLEET_AUTH_MODE=workload`, `STREAMS_RELEASE_POSTURE=1`, no static
-fleet token) and proves the §14.5 scenario families — 62 checks:
+fleet token) and proves the §14.5 scenario families — 64 checks:
 
 - **Credential lifecycle** (through the gateway): secret-shown-once,
   wrong-secret refusal, exchange, SDK create/append/read via
@@ -63,7 +63,10 @@ fleet token) and proves the §14.5 scenario families — 62 checks:
   first requires the emulator to have applied the fault, so a refused
   injection fails the battery instead of passing the leg.
 - **Fleet identity**: operation-scoped workload JWTs (empty operations
-  grant nothing), customer tokens refused on the internal surface,
+  grant nothing), customer tokens refused on the internal surface, a
+  workload token signed by the customer issuer's key refused (the keys
+  feed pins each kid to one audience; the emulator's workload key is
+  its own kid, and the gateway verifies only customer-pinned kids),
   per-cell atomic workload rotation. The cells' own token (default
   `--workload-ops telemetry-append,segment-read,segment-close,seal-fence`)
   validates against the claims schema, and a `segment-close` or

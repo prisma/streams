@@ -12,11 +12,15 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["kid", "alg", "pem"],
+        "required": ["kid", "alg", "aud", "pem"],
         "additionalProperties": false,
         "properties": {
           "kid": { "type": "string", "minLength": 1, "maxLength": 128 },
           "alg": { "enum": ["RS256", "EdDSA"] },
+          "aud": {
+            "description": "The one token audience this key may sign for (MULTITENANCY §14.1 r7): customer access tokens or fleet workload tokens, never both. Fixed for the life of the kid.",
+            "enum": ["prisma-streams-data", "prisma-streams-internal"]
+          },
           "pem": { "type": "string", "pattern": "^-----BEGIN PUBLIC KEY-----" }
         }
       }

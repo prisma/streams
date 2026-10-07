@@ -132,6 +132,7 @@ fn keys(version: u64, fingerprint: u8) -> JwksSnapshot {
             JwksKey {
                 alg: jsonwebtoken::Algorithm::RS256,
                 key: jsonwebtoken::DecodingKey::from_rsa_pem(public).unwrap(),
+                aud: crate::auth::KeyAudience::Customer,
                 fp: [fingerprint; 32],
             },
         )]),
@@ -246,7 +247,7 @@ fn refused_key_rebinding_changes_neither_snapshot_history_nor_generation() {
     let generation = service.auth_generation();
     assert_eq!(
         service.publish_jwks(keys(11, 2)),
-        Err("kid rebound to different key material")
+        Err("kid rebound to different key material or audience")
     );
     assert!(Arc::ptr_eq(&before, &service.jwks.load_full()));
     assert_eq!(history(&service), history_before);

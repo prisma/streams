@@ -80,17 +80,29 @@ for (const c of cells.values()) {
 const firstCell = [...cells.keys()][0];
 
 // ---- signing keys (kid lifecycle per MULTITENANCY §7) --------------------
-function newRsaKid() {
+// Each kid is pinned to ONE audience in the keys feed (§14.1 r7): the
+// customer issuer's keys sign access tokens only, and the fleet's workload
+// key signs workload tokens only, so neither can mint the other's token.
+const AUD_CUSTOMER = "prisma-streams-data";
+const AUD_INTERNAL = "prisma-streams-internal";
+function newRsaKid(prefix = "streams-rs256") {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
-  return { kid: `streams-rs256-${randomBytes(4).toString("hex")}`, publicKey, privateKey, retired: false };
+  return { kid: `${prefix}-${randomBytes(4).toString("hex")}`, publicKey, privateKey, retired: false };
 }
-/** ordered oldest→newest; sign with the newest non-retired */
+/** customer keys, ordered oldest→newest; sign with the newest non-retired */
 const jwksKeys = [newRsaKid()];
 const signingKey = () => [...jwksKeys].reverse().find((k) => !k.retired);
+/** the fleet's workload key: never rotated with the customer keys */
+const workloadKey = newRsaKid("streams-workload");
+/** keys-feed entries: every given customer key, then the workload key */
+const keyEntries = (customer) => [
+  ...customer.map((k) => ({ kid: k.kid, alg: "RS256", aud: AUD_CUSTOMER, pem: k.publicKey })),
+  { kid: workloadKey.kid, alg: "RS256", aud: AUD_INTERNAL, pem: workloadKey.publicKey },
+];
 
 // ---- model --------------------------------------------------------------
 /** project_id -> {workspace_id, status, ppv, ov, quotas, cell_id,
@@ -127,7 +139,7 @@ function snapshotBodies(cellId) {
   return {
     keys: ({
       feed_version: gen.keys,
-      keys: jwksKeys.filter((k) => !k.retired).map((k) => ({ kid: k.kid, alg: "RS256", pem: k.publicKey })),
+      keys: keyEntries(jwksKeys.filter((k) => !k.retired)),
     }),
     policies: ({
       feed_version: gen.policies,
@@ -199,7 +211,7 @@ function mintCustomer(credId, cred) {
   const now = Math.floor(Date.now() / 1000);
   const p = projects.get(cred.project_id);
   return signJwt({
-    iss: ISS, aud: "prisma-streams-data", sub: `cred:${credId}`,
+    iss: ISS, aud: AUD_CUSTOMER, sub: `cred:${credId}`,
     credential_id: credId, project_id: cred.project_id,
     workspace_id: p.workspace_id, cell_id: p.cell_id,
     ownership_version: p.ov, grant_version: cred.grant_version,
@@ -208,12 +220,12 @@ function mintCustomer(credId, cred) {
     jti: randomBytes(8).toString("hex"), iat: now, nbf: now, exp: now + 600,
   });
 }
-function mintWorkload(cellId, operations) {
+function mintWorkload(cellId, operations, key = workloadKey) {
   const now = Math.floor(Date.now() / 1000);
   return signJwt({
-    iss: ISS, aud: "prisma-streams-internal", sub: "emulator-slot-1",
+    iss: ISS, aud: AUD_INTERNAL, sub: "emulator-slot-1",
     cell_id: cellId, operations, nbf: now, exp: now + 300,
-  });
+  }, key);
 }
 function rotateWorkload(onlyCell) {
   for (const [cellId, cell] of cells) {
@@ -428,7 +440,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/admin/mint-workload") {
       if (!FAULT_API) return json(res, 403, { error: "fault API not enabled" });
       const body = JSON.parse((await readBody(req)) || "{}");
-      return json(res, 200, { jwt: mintWorkload(body.cell ?? firstCell, body.operations ?? []) });
+      // signer "customer": the customer issuer's key signs a workload
+      // token, which every cell must refuse (the audience pin, §14.1 r7).
+      const key = body.signer === "customer" ? signingKey() : workloadKey;
+      return json(res, 200, { jwt: mintWorkload(body.cell ?? firstCell, body.operations ?? [], key) });
     }
     if (req.method === "POST" && url.pathname === "/admin/faults") {
       if (!FAULT_API) return json(res, 403, { error: "fault API not enabled" });
@@ -504,7 +519,7 @@ const server = http.createServer(async (req, res) => {
           // refuse the whole snapshot (retirement is permanent).
           const doc = {
             feed_version: gen.keys + 1,
-            keys: jwksKeys.map((k) => ({ kid: k.kid, alg: "RS256", pem: k.publicKey })),
+            keys: keyEntries(jwksKeys),
           };
           atomicWrite(join(cell.dir, "keys.json"), JSON.stringify(doc));
           return json(res, 200, { fault: "resurrect-kid", cell: cellId, gen: doc.feed_version });

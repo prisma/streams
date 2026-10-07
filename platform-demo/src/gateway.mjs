@@ -41,7 +41,10 @@ let placement = { projects: {}, fetched: 0 };
 async function refreshJwks() {
   const r = await fetch(`${EMU}/internal/streams/cells/gw/jwks`);
   const doc = await r.json();
-  jwks = new Map(doc.keys.filter((k) => k.alg === "RS256").map((k) => [k.kid, k.pem]));
+  // Only keys the feed pins to the customer audience verify access tokens
+  // (MULTITENANCY §14.1 r7): a workload key never authorizes a project.
+  const customer = doc.keys.filter((k) => k.alg === "RS256" && k.aud === "prisma-streams-data");
+  jwks = new Map(customer.map((k) => [k.kid, k.pem]));
 }
 async function resolvePlacement(force = false) {
   if (!force && Date.now() - placement.fetched < 1000) return placement;

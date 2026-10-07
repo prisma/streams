@@ -466,6 +466,13 @@ Only projects assigned to this cell are present.
     {
       "kid": "streams-rs256-2026-08",
       "alg": "RS256",
+      "aud": "prisma-streams-data",
+      "pem": "-----BEGIN PUBLIC KEY-----…"
+    },
+    {
+      "kid": "streams-workload-2026-08",
+      "alg": "RS256",
+      "aud": "prisma-streams-internal",
       "pem": "-----BEGIN PUBLIC KEY-----…"
     }
   ]
@@ -480,6 +487,7 @@ Rules:
 4. Prisma Auth begins signing with the new key only after the overlap generation is available to gateways and cells.
 5. The old key is removed only after the longest accepted token lifetime plus propagation margin.
 6. An unknown `kid` triggers an asynchronous, rate-limited refresh; requests still fail closed until the key arrives.
+7. Every key names the ONE token audience it signs for in `aud` (MULTITENANCY.md §14.1, r7): `prisma-streams-data` for customer access tokens, `prisma-streams-internal` for fleet workload tokens (§8). A token verifies only under a key pinned to its verifier's audience, so the customer issuer's key cannot mint a workload token, which would act on every project on the cell, and a workload key cannot mint a customer token. `aud` is required: a snapshot with a key that names no audience, or another one, is refused whole. A `kid` keeps its audience for life; re-pinning it is refused like new material under an old `kid`. Workload keys stay out of the customer issuer's custody. A single-server cell needs no workload key; with none in its feed, no workload token opens its internal surface.
 
 ### 7.6 Refresh and readiness
 

@@ -60,7 +60,7 @@ if (cmd === "init") {
   });
   const kid = `streams-rs256-k2c-${randomBytes(4).toString("hex")}`;
   const bundle = {
-    keys: { feed_version: 1, keys: [{ kid, alg: "RS256", pem: publicKey }] },
+    keys: { feed_version: 1, keys: [{ kid, alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] },
     policies: {
       feed_version: 1,
       projects: [{

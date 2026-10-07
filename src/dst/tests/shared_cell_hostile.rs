@@ -10,7 +10,7 @@
 
 use super::fixture_auth::sr2_workload_jwt;
 use super::fixture_cell::{
-    CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, grant,
+    CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, fleet_key, grant,
     hold_subscriptions, journal, jwks_key, open_cell, padded, policy, project,
 };
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
@@ -366,13 +366,31 @@ async fn a_feed_rollback_after_a_restart_keeps_a_revoked_credential_refused() {
     );
 }
 
-/// A10 (H6): an internal-audience workload token signed by a key the
-/// customer JWKS publishes is refused on the internal surface; today it
-/// is a fleet credential for every project on the cell (here it reads
-/// the victim's `orders` segment, named only by headers, with the
-/// stream key).
+/// GET the segment `named` points at on the internal surface, with the
+/// stream key and a `segment-read` workload token signed under `kid`.
+async fn internal_segment_read(
+    cell: &Cell,
+    named: &[(&'static str, String)],
+    kid: &str,
+) -> (u16, String) {
+    let now = crate::shard::now_ms() / 1000;
+    let token = format!("Bearer {}", sr2_workload_jwt(kid, &["segment-read"], now));
+    let mut headers: Vec<(&str, &str)> = named.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    headers.push(("authorization", token.as_str()));
+    headers.push(("stream-encryption-key", PRISMA_KEY));
+    let path = "/v1/internal/segment-read/orders";
+    let (st, _, b) = preq(cell.addr, "GET", path, &headers, b"").await;
+    (st, String::from_utf8_lossy(&b).to_string())
+}
+
+/// A10 (H6): an internal-audience workload token signed by the key that
+/// signs the cell's customer tokens is refused on the internal surface,
+/// where it would act on every project on the cell (here: read the
+/// victim's `orders` segment, named only by headers, with the stream
+/// key). The same request under a kid the feed pins to the fleet
+/// audience reads exactly the victim's record, so the refusal is the
+/// pin, not the route.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase A step 8: each signing key is pinned to one audience"]
 async fn an_internal_token_signed_by_a_customer_key_is_refused() {
     let cell = open_cell(CellSpec::open(2)).await;
     assert_eq!(
@@ -386,27 +404,31 @@ async fn an_internal_token_signed_by_a_customer_key_is_refused() {
             .0,
         200
     );
+    // A cell with a fleet: its feed pins `fleet-1` to the internal
+    // audience beside the customer key `rig-1`.
+    cell.svc
+        .publish_jwks(crate::auth::JwksSnapshot {
+            keys: HashMap::from([jwks_key("rig-1"), fleet_key("fleet-1")]),
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
     let victim = project(1);
     let sref = ProjectId::new(&victim).unwrap().stream_ref("orders");
     let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
     // The production internal target (project-qualified) names the
     // victim's segment, exactly as a fleet peer would.
     let target = crate::application::read_remote::InternalTarget::of(&desc, 0).unwrap();
-    let now = crate::shard::now_ms() / 1000;
-    let token = format!(
-        "Bearer {}",
-        sr2_workload_jwt("rig-1", &["segment-read"], now)
-    );
     let named = target.headers();
-    let mut headers: Vec<(&str, &str)> = named.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    headers.push(("authorization", token.as_str()));
-    headers.push(("stream-encryption-key", PRISMA_KEY));
-    let path = "/v1/internal/segment-read/orders";
-    let (st, _, b) = preq(cell.addr, "GET", path, &headers, b"").await;
-    let shown = String::from_utf8_lossy(&b[..b.len().min(160)]).to_string();
     assert_eq!(
-        st, 401,
-        "customer-key internal token read {victim}'s segment: {shown}"
+        internal_segment_read(&cell, &named, "rig-1").await.0,
+        401,
+        "the customer key read {victim}'s segment"
+    );
+    assert_eq!(
+        internal_segment_read(&cell, &named, "fleet-1").await,
+        (200, r#"[{"secret":1}]"#.to_string()),
+        "the fleet key"
     );
     engine_shutdown(&cell.state).await;
 }

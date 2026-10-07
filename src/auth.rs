@@ -29,12 +29,16 @@ mod freshness;
 mod lease;
 mod publication;
 mod refusal;
+mod signing_key;
 pub(crate) use lease::{AuthLease, LeaseInvalidReason};
 use publication::HighWater;
 pub(crate) use refusal::{Denial, Refusal};
+#[cfg(test)]
+pub(crate) use signing_key::key_fp;
+pub(crate) use signing_key::{JwksKey, KeyAudience};
 
 use arc_swap::ArcSwap;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
 
 use crate::project_policy::{CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectStatus};
 use crate::tenant::{
@@ -246,32 +250,11 @@ pub(crate) struct InternalPrincipal {
     pub expires_at: i64,
 }
 
-/// One published JWKS generation: kid -> verification key.
-/// `feed_version` orders generations for the monotonic-publication
-/// rule (review item 2) — key sets change on rotation, and an
-/// out-of-order feed must not resurrect a retired signing key.
-/// One verification key with its PINNED algorithm (review item 6):
-/// the token header's alg must equal the key's declared alg — the
-/// allowlist alone still permitted verifying an RSA key under any
-/// allowlisted algorithm the header claimed.
-pub(crate) struct JwksKey {
-    pub alg: Algorithm,
-    pub key: DecodingKey,
-    /// SR3-3: canonical fingerprint of the key MATERIAL (sha256 of the
-    /// PEM bytes, computed at parse). A `kid` names one algorithm and
-    /// one public key FOREVER — same kid + different fp is a publisher
-    /// defect and the snapshot is refused.
-    pub fp: [u8; 32],
-}
-
-/// SR3-3: the key-material fingerprint stored per kid.
-pub(crate) fn key_fp(pem: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    let mut h = sha2::Sha256::new();
-    h.update(pem);
-    h.finalize().into()
-}
-
+/// One published JWKS generation: kid -> verification key, each pinned
+/// to one algorithm and one audience (`signing_key`). `feed_version`
+/// orders generations for the monotonic-publication rule (review item
+/// 2) — key sets change on rotation, and an out-of-order feed must not
+/// resurrect a retired signing key.
 pub(crate) struct JwksSnapshot {
     // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
     pub keys: HashMap<String, JwksKey>,
@@ -462,12 +445,14 @@ impl AuthService {
         true
     }
 
-    /// Signature + structural verification shared by all audiences.
-    /// Returns the still-untrusted-but-authentic claim JSON.
+    /// Signature + structural verification shared by all audiences, under
+    /// a kid the feed pinned to `audience`. Returns the
+    /// still-untrusted-but-authentic claim JSON.
     fn verify_signature<T: serde::de::DeserializeOwned>(
         &self,
         token: &str,
         now: i64,
+        audience: KeyAudience,
     ) -> Result<T, AuthError> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::TokenTooLarge);
@@ -488,13 +473,8 @@ impl AuthService {
                 return Err(AuthError::KidUnknown);
             }
         };
-        // The header's alg must equal the KEY's pinned alg — the
-        // allowlist alone still let a header pick any allowed alg for
-        // whatever key material the kid names.
-        if header.alg != entry.alg {
-            return Err(AuthError::AlgNotAllowed);
-        }
-        let key = &entry.key;
+        // The kid pins one alg (review item 6) and one audience (H6).
+        let key = entry.pinned(header.alg, audience)?;
         // jsonwebtoken verifies the signature with EXACTLY the header
         // alg (already allowlisted). Time and audience checks are done
         // by us against the injected clock, so tests are deterministic
@@ -536,7 +516,7 @@ impl AuthService {
         token: &str,
         now: i64,
     ) -> Result<RequestPrincipal, AuthError> {
-        let c: RawClaims = self.verify_signature(token, now)?;
+        let c: RawClaims = self.verify_signature(token, now, KeyAudience::Customer)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
         }
@@ -652,7 +632,7 @@ impl AuthService {
         token: &str,
         now: i64,
     ) -> Result<InternalPrincipal, AuthError> {
-        let c: RawInternalClaims = self.verify_signature(token, now)?;
+        let c: RawInternalClaims = self.verify_signature(token, now, KeyAudience::Internal)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
         }
@@ -834,13 +814,16 @@ mod tests {
     // Test-only keypair, checked in as a fixture (never deployed).
     const PRIV: &str = include_str!("dst/fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("dst/fixtures/mt-test-rsa.pub.pem");
-    const KID: &str = "test-1";
+    pub(super) const KID: &str = "test-1";
+    /// Shared-cells H6: the fleet's workload key, the same fixture
+    /// material under its own kid, pinned to the internal audience.
+    pub(super) const FLEET_KID: &str = "fleet-1";
     const ISS: &str = "https://auth.prisma.io";
     const CELL: &str = "fra-cell-07";
     pub(super) const NOW: i64 = 1_786_600_600;
 
     #[derive(serde::Serialize)]
-    struct C {
+    pub(super) struct C {
         iss: String,
         aud: String,
         sub: String,
@@ -858,7 +841,7 @@ mod tests {
         exp: i64,
     }
 
-    fn claims() -> C {
+    pub(super) fn claims() -> C {
         C {
             iss: ISS.into(),
             aud: AUD_CUSTOMER.into(),
@@ -881,7 +864,7 @@ mod tests {
         sign_with(c, KID, jsonwebtoken::Algorithm::RS256)
     }
 
-    fn sign_with(c: &C, kid: &str, alg: jsonwebtoken::Algorithm) -> String {
+    pub(super) fn sign_with(c: &C, kid: &str, alg: jsonwebtoken::Algorithm) -> String {
         let mut h = Header::new(alg);
         h.kid = Some(kid.to_string());
         encode(&h, c, &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap()).unwrap()
@@ -889,15 +872,13 @@ mod tests {
 
     pub(super) fn service() -> AuthService {
         let svc = AuthService::new(AuthMode::Shadow, ISS.into(), CELL).unwrap();
-        let mut keys = HashMap::new();
-        keys.insert(
-            KID.to_string(),
-            JwksKey {
-                alg: Algorithm::RS256,
-                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-                fp: crate::auth::key_fp(PUB.as_bytes()),
-            },
-        );
+        let keys = HashMap::from([
+            (KID.to_string(), JwksKey::rs256(PUB, KeyAudience::Customer)),
+            (
+                FLEET_KID.to_string(),
+                JwksKey::rs256(PUB, KeyAudience::Internal),
+            ),
+        ]);
         svc.publish_jwks(JwksSnapshot {
             keys,
             fetched_at_unix: NOW,
@@ -1174,20 +1155,27 @@ mod tests {
             operations: vec!["segment-read".into()],
             exp: NOW + 300,
         };
-        let mut h = Header::new(jsonwebtoken::Algorithm::RS256);
-        h.kid = Some(KID.into());
-        let t = encode(
-            &h,
-            &ic,
-            &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-        )
-        .unwrap();
-        let p = svc.verify_internal(&t, NOW).unwrap();
+        let signed = |kid: &str| {
+            let mut h = Header::new(jsonwebtoken::Algorithm::RS256);
+            h.kid = Some(kid.into());
+            encode(
+                &h,
+                &ic,
+                &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+            )
+            .unwrap()
+        };
+        let p = svc.verify_internal(&signed(FLEET_KID), NOW).unwrap();
         assert_eq!(p.operations, vec!["segment-read"]);
-        assert!(matches!(
-            svc.verify_customer(&t, NOW),
-            Err(AuthError::Malformed(_)) | Err(AuthError::BadSignature)
-        ));
+        assert_eq!(
+            svc.verify_customer(&signed(FLEET_KID), NOW).unwrap_err(),
+            AuthError::WrongAudience
+        );
+        // Shared-cells H6: the customer issuer's key cannot mint one.
+        assert_eq!(
+            svc.verify_internal(&signed(KID), NOW).unwrap_err(),
+            AuthError::WrongAudience
+        );
     }
 
     #[test]
@@ -1424,15 +1412,7 @@ mod tests {
         };
         svc.publish_jwks(fresh).unwrap();
         // The stale set (feed 1, containing the retired key) is refused.
-        let mut keys = HashMap::new();
-        keys.insert(
-            KID.to_string(),
-            JwksKey {
-                alg: Algorithm::RS256,
-                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-                fp: crate::auth::key_fp(PUB.as_bytes()),
-            },
-        );
+        let keys = HashMap::from([(KID.to_string(), JwksKey::rs256(PUB, KeyAudience::Customer))]);
         assert!(
             svc.publish_jwks(JwksSnapshot {
                 keys,
@@ -1463,15 +1443,10 @@ mod tests {
             "test-cell",
         )
         .unwrap();
-        let mut keys = HashMap::new();
-        keys.insert(
-            KID.to_string(),
-            JwksKey {
-                alg: Algorithm::EdDSA, // pinned differently
-                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-                fp: crate::auth::key_fp(PUB.as_bytes()),
-            },
-        );
+        let rsa = jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap();
+        let pinned_differently =
+            JwksKey::new(Algorithm::EdDSA, rsa, PUB.as_bytes(), KeyAudience::Customer);
+        let keys = HashMap::from([(KID.to_string(), pinned_differently)]);
         svc.publish_jwks(JwksSnapshot {
             keys,
             fetched_at_unix: NOW,

@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{AuthService, JwksSnapshot};
+use crate::auth::{AUD_CUSTOMER, AUD_INTERNAL, AuthService, JwksKey, JwksSnapshot, KeyAudience};
 use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource,
     ProjectPolicy, ProjectQuotas, ProjectStatus,
@@ -68,6 +68,10 @@ struct KeyDoc {
     /// a key that could never verify fails at LOAD time, not silently
     /// at request time.
     alg: String,
+    /// Shared-cells H6: the ONE token audience this key may sign for,
+    /// `prisma-streams-data` (customer) or `prisma-streams-internal`
+    /// (fleet workload). Required: a key the feed does not pin is refused.
+    aud: String,
     /// PEM public key (SPKI).
     pem: String,
 }
@@ -141,16 +145,16 @@ pub(crate) fn parse_keys(json: &str) -> anyhow::Result<JwksSnapshot> {
             ),
             other => anyhow::bail!("kid {:?}: alg {other:?} is not in [RS256, EdDSA]", k.kid),
         };
-        anyhow::ensure!(
-            keys.insert(
-                k.kid.clone(),
-                crate::auth::JwksKey {
-                    alg,
-                    key: dk,
-                    fp: crate::auth::key_fp(k.pem.as_bytes()),
-                },
+        let aud = KeyAudience::parse(&k.aud).ok_or_else(|| {
+            anyhow::anyhow!(
+                "kid {:?}: aud {:?} is not in [{AUD_CUSTOMER}, {AUD_INTERNAL}]",
+                k.kid,
+                k.aud
             )
-            .is_none(),
+        })?;
+        anyhow::ensure!(
+            keys.insert(k.kid.clone(), JwksKey::new(alg, dk, k.pem.as_bytes(), aud))
+                .is_none(),
             "duplicate kid {:?}",
             k.kid
         );
@@ -687,7 +691,7 @@ mod tests {
 
     fn keys_json() -> String {
         serde_json::json!({
-            "keys": [{ "kid": "test-1", "alg": "RS256", "pem": PUB }]
+            "keys": [{ "kid": "test-1", "alg": "RS256", "aud": AUD_CUSTOMER, "pem": PUB }]
         })
         .to_string()
     }
@@ -702,10 +706,78 @@ mod tests {
         );
         // HMAC must fail at LOAD, per the §7 alg allowlist.
         let hmac = serde_json::json!({
-            "keys": [{ "kid": "h", "alg": "HS256", "pem": PUB }]
+            "keys": [{ "kid": "h", "alg": "HS256", "aud": AUD_CUSTOMER, "pem": PUB }]
         });
         assert!(parse_keys(&hmac.to_string()).is_err());
         assert!(parse_keys(r#"{"keys":[]}"#).is_err());
+    }
+
+    /// Shared-cells H6: every key names the ONE audience it may sign for,
+    /// and a key that names none, or one this cell does not verify, refuses
+    /// the whole feed (the previous key set stays and ages toward refusal).
+    #[test]
+    fn keys_pin_each_kid_to_one_audience() {
+        let doc = |aud: Option<&str>| {
+            let mut doc: serde_json::Value = serde_json::from_str(&keys_json()).unwrap();
+            let key = doc["keys"][0].as_object_mut().unwrap();
+            match aud {
+                Some(aud) => key.insert("aud".into(), aud.into()),
+                None => key.remove("aud"),
+            };
+            doc.to_string()
+        };
+        for (case, aud) in [
+            ("a key without aud", None),
+            ("an unknown aud", Some("prisma-streams-admin")),
+            ("an empty aud", Some("")),
+        ] {
+            let parsed = parse_keys(&doc(aud)).map(|s| s.keys.len());
+            assert!(parsed.is_err(), "{case} parsed as {parsed:?}");
+        }
+        for (aud, pinned) in [
+            (AUD_CUSTOMER, KeyAudience::Customer),
+            (AUD_INTERNAL, KeyAudience::Internal),
+        ] {
+            let parsed = parse_keys(&doc(Some(aud))).unwrap();
+            let key = &parsed.keys["test-1"];
+            assert_eq!(key.aud, pinned, "{aud}");
+            assert_eq!(key.fp, crate::auth::key_fp(PUB.as_bytes(), pinned));
+        }
+    }
+
+    /// The platform contract's golden key vectors parse here exactly as
+    /// its schema judges them (comments stripped): the valid snapshot pins
+    /// its key to the customer audience, and each hostile one is refused.
+    #[test]
+    fn golden_key_vectors_parse_as_the_schema_judges_them() {
+        let golden = |json: &str| {
+            let mut doc: serde_json::Value = serde_json::from_str(json).unwrap();
+            doc.as_object_mut().unwrap().remove("_comment");
+            parse_keys(&doc.to_string())
+        };
+        let valid = golden(include_str!(
+            "../contracts/streams-platform/v1/golden/keys.valid.json"
+        ))
+        .unwrap();
+        let pins: Vec<KeyAudience> = valid.keys.values().map(|k| k.aud).collect();
+        assert_eq!(pins, [KeyAudience::Customer]);
+        for (case, json) in [
+            (
+                "missing aud",
+                include_str!(
+                    "../contracts/streams-platform/v1/golden/keys.hostile-missing-aud.json"
+                ),
+            ),
+            (
+                "unknown alg",
+                include_str!(
+                    "../contracts/streams-platform/v1/golden/keys.hostile-unknown-alg.json"
+                ),
+            ),
+        ] {
+            let parsed = golden(json).map(|s| s.keys.len());
+            assert!(parsed.is_err(), "{case} parsed as {parsed:?}");
+        }
     }
 
     #[test]

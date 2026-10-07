@@ -47,7 +47,7 @@ const WS = "ws-mt";
 const now = Math.floor(Date.now() / 1000);
 
 const bundle = {
-  keys: { feed_version: 1, keys: [{ kid: KID, alg: "RS256", pem: publicKey }] },
+  keys: { feed_version: 1, keys: [{ kid: KID, alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] },
   policies: {
     feed_version: 1,
     projects: Array.from({ length: N }, (_, i) => ({

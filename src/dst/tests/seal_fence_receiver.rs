@@ -5,7 +5,7 @@
 //! without opening a writer, and answers the owner committer's
 //! closed-report only after the fence is durable.
 
-use super::fixture_auth::{sr_rig, sr2_workload_jwt};
+use super::fixture_auth::{FLEET_KID, sr_rig, sr2_workload_jwt};
 use super::fixture_http::{engine_shutdown, http_rig, http_rig_named};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
@@ -149,7 +149,7 @@ async fn seal_fence_receiver_demands_its_exact_operation() {
     let th = target_headers(&target);
     let engine = owner_engine(&state, &desc).await;
     let now = crate::shard::now_ms() / 1000;
-    let token = |ops: &[&str]| format!("Bearer {}", sr2_workload_jwt("sfr-1", ops, now));
+    let token = |ops: &[&str]| format!("Bearer {}", sr2_workload_jwt(FLEET_KID, ops, now));
     let query = format!("?fence_to={RESERVED}");
     for ops in [
         &[][..],

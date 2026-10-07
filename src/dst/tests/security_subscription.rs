@@ -184,11 +184,7 @@ async fn transfer_terminates_established_subscriptions() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wtx-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Customer),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -367,11 +363,7 @@ async fn subscription_terminates_at_token_expiry() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wtx-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Customer),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -514,11 +506,7 @@ async fn suspension_terminates_established_subscriptions() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "wtx-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
+        crate::auth::JwksKey::rs256(PUB, crate::auth::KeyAudience::Customer),
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

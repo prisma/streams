@@ -58,6 +58,14 @@
   fence relay of 433b60e5 and 82a14a8f, edge records #88 and #89). The
   platform contract (`contracts/streams-platform/v1/workload-token-claims.schema.json`)
   and the reference emulator name both since 89011daa (edge record #90).
+- r7 (2026-10-07, shared-cells H6, awaiting the owner's ratification):
+  §4.5 and §14.1 — the keys feed pins every kid to ONE token audience
+  (`aud`: `prisma-streams-data` or `prisma-streams-internal`, required;
+  `contracts/streams-platform/v1/keys.schema.json`). A token verifies
+  only under a kid pinned to its verifier's audience, so the customer
+  issuer's key can no longer mint a workload token for the internal
+  surface, nor a fleet key a customer token. A kid keeps its audience
+  for life.
 
 ---
 
@@ -406,9 +414,10 @@ content — including an entry ADDED under an already-published
 generation, which per-ID checks cannot see — is refused. Identical
 replay stays accepted.
 
-**JWKS lifecycle (r5, implemented in `publish_jwks`).** A `kid`
-names ONE algorithm and ONE public key forever (the key-material
-fingerprint is captured at parse); once omitted from a full snapshot
+**JWKS lifecycle (r5, audience r7; implemented in `publish_jwks`).** A
+`kid` names ONE algorithm, ONE public key and ONE audience forever (the
+fingerprint of its material and audience is captured at parse, so
+re-pinning a kid is refused like rebinding it); once omitted from a full snapshot
 a kid is RETIRED and never returns at any later generation; rotation
 publishes an overlap generation carrying old and new keys, and the
 old key is removed only after the maximum token lifetime plus
@@ -1058,6 +1067,13 @@ method (PUT/DELETE -> raw-lifecycle, POST -> raw-append, GET/HEAD ->
 raw-read; `/v1/segments` -> segment-read; `/v1/internal/segment-close`
 -> segment-close; `/v1/internal/seal-fence` -> seal-fence). A workload
 token is never a cell-wide credential.
+
+*Trust roots (r7).* Customer and workload tokens share one keys feed but
+never a key: the feed pins each kid to one audience, and
+`verify_customer` / `verify_internal` accept only kids pinned to their
+own (`src/auth/signing_key.rs`). Before r7 any kid in the feed verified
+both, so whoever held the customer signing key also held every
+project's internal lifecycle on the cell.
 
 OUTBOUND, the cell presents workload identity itself: relays draw
 their bearer from a refreshing token source (`WORKLOAD_TOKEN_FILE`,

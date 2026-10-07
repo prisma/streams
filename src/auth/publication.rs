@@ -245,7 +245,7 @@ impl KidHw {
             return Err("retired kid reintroduced (SR3 tombstone)");
         }
         if self.fp != key.fp || self.alg_dbg != format!("{:?}", key.alg) {
-            return Err("kid rebound to different key material");
+            return Err("kid rebound to different key material or audience");
         }
         Ok(())
     }
@@ -334,7 +334,7 @@ impl AuthService {
             return Err("jwks feed_version regressed");
         }
         // SR3-3 (round-3 finding 3): signing-key lifecycle rules —
-        //   * a kid names ONE algorithm and ONE public key forever;
+        //   * a kid names ONE algorithm, ONE public key, ONE audience forever;
         //   * once omitted from a full snapshot, a kid is RETIRED and
         //     never returns, at ANY later generation;
         //   * the same generation always carries the same canonical
