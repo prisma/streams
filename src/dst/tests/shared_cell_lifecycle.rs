@@ -268,17 +268,64 @@ fn resident(cell: &Cell) -> usize {
         .sum()
 }
 
-/// Poll `probe` every 100 ms until it holds or 90 s pass (absorption
+/// Whether `probe` holds within 90 s, polled every 100 ms (absorption
 /// keeps touching handles for tens of seconds on a loaded host at 1,000
 /// projects; each touch restarts a handle's idle window).
-async fn eventually(what: &str, probe: impl Fn() -> bool) {
+async fn held_within_90s(probe: impl Fn() -> bool) -> bool {
     for _ in 0..900 {
         if probe() {
-            return;
+            return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    panic!("{what} never held within 90 s");
+    false
+}
+
+/// Fails naming `what` unless `probe` holds within 90 s.
+async fn eventually(what: &str, probe: impl Fn() -> bool) {
+    assert!(
+        held_within_90s(probe).await,
+        "{what} never held within 90 s"
+    );
+}
+
+/// Wait until only the boot baseline's handles stay resident; a timeout
+/// names every shard's absorption state.
+async fn evicted_to(cell: &Cell, boot: usize) {
+    let evicted = held_within_90s(|| resident(cell) == boot).await;
+    assert!(
+        evicted,
+        "idle handles never evicted within 90 s: {}",
+        absorption(cell)
+    );
+}
+
+/// Every shard's absorption state, for an eviction wait that timed out:
+/// a gather that cannot finish keeps its streams' handles referenced, and
+/// a referenced handle is never evicted. Measured 2026-10-07 at 1,000
+/// projects beside the scale module (one process, one two-thread storage
+/// executor, the rig's 20 ms absorber tick): a history partition's L0
+/// filled, its flush waited for the partition's 300 s manifest poll, and
+/// for those 300 s neither shard absorbed a byte.
+fn absorption(cell: &Cell) -> String {
+    let now = crate::shard::now_ms();
+    let shards: Vec<String> = cell
+        .state
+        .shards
+        .engines()
+        .iter()
+        .map(|e| {
+            let m = e.maintenance_snapshot();
+            let stalled = if m.last_progress_ms > 0 { now - m.last_progress_ms } else { 0 };
+            format!(
+                "shard {:?}: {} resident, {} unabsorbed bytes, no absorption progress for {stalled} ms",
+                e.prefix,
+                e.resident_streams(),
+                m.unabsorbed_frame_bytes,
+            )
+        })
+        .collect();
+    shards.join("; ")
 }
 
 /// A6: per-project state is bounded while the cell works and released
@@ -356,7 +403,7 @@ async fn per_project_state_is_bounded_and_released() {
         let held = (&row["live_subscriptions"], &row["retained_sse_bytes"]);
         assert_eq!(held, (&Value::from(0), &Value::from(0)), "{row}");
     }
-    eventually("idle handles evicted", || resident(&cell) == boot).await;
+    evicted_to(&cell, boot).await;
     assert_eq!(
         cell.state.quotas.stats(),
         (cell.projects, 0),
