@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // cell-admin: the operator tool for a single-server shared cell (shared-cells
-// PLAN step 9). It owns the cell's feed bundle and admits and lists
-// projects; README.md in this directory is the operator's guide.
+// PLAN step 9). It owns the cell's feed bundle and admits, lists and
+// offboards projects; README.md in this directory is the operator's guide.
 //
 //   bun deploy/cell-admin/cell-admin.ts <command> [flags]
 //
@@ -10,12 +10,14 @@
 import { parseFlags } from "./args";
 import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
+import { offboard } from "./offboard";
 
 const USAGE = `usage: cell-admin <command> --state DIR [flags]
   init      --cell-id C --deployment-project P --account A --key-file K
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
+  offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S]
   list      [--json]
   bundle`;
 
@@ -41,6 +43,13 @@ const COMMANDS = {
     spec: {
       single: ["state", "credential", "key-file", "out", "ttl", "sub"],
       required: ["state", "credential", "key-file", "out"],
+    },
+  },
+  offboard: {
+    run: offboard,
+    spec: {
+      single: ["state", "project", "cell-url", "key-file", "max-walks", "settle-secs"],
+      required: ["state", "project"],
     },
   },
   list: { run: list, spec: { single: ["state"], bool: ["json"], required: ["state"] } },
