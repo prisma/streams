@@ -7,7 +7,7 @@ from common import digest
 from lint_contract import from_compiler
 
 PROOFS = {
-    'src/shard/record/checked.rs': ('crate::CheckedFrame::',),
+    'src/crypto_page/header.rs': ('crate::CheckedPage::',),
     'src/postings/validated.rs': ('crate::ValidatedRuns::', 'crate::RunWindow::'),
     'src/application/read_batch.rs': ('crate::PlainPayload::', 'crate::PlainBatch::'),
 }

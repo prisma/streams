@@ -15,12 +15,12 @@ from common import ROOT, write_json
 
 PREFIX = '#![allow(dead_code, reason = "compiler fixture; compile both positive and negative cases; functions are type-checked without execution")]\n'
 IMPORTS = '''use crate::postings::{ValidatedRuns as Runs, RunWindow as Window};
-use crate::shard::record::CheckedFrame as Frame;
+use crate::crypto_page::CheckedPage as Page;
 use crate::application::read_batch::{PlainBatch as Batch, PlainPayload as Payload};
 '''
 POSITIVE = '''
-fn controls(frame: &Frame, batch: &Batch, payload: &Payload) {
-    let _view = frame.view(); let _records = batch.iter();
+fn controls(page: &Page, batch: &Batch, payload: &Payload) {
+    let _last = page.last(); let _records = batch.iter();
     let _bytes = payload.as_ref();
     let owner = Runs::new(Vec::new()).unwrap();
     let window = Window::new(owner, 0, 0); assert_eq!(window.iter().count(), 0);
@@ -28,8 +28,8 @@ fn controls(frame: &Frame, batch: &Batch, payload: &Payload) {
 fn released_before_await(window: Window) -> impl std::future::Future<Output=()> { drop(window); async { tokio::task::yield_now().await; } }
 '''
 CASES = [
- ('frame_construct', 'E0451', 'fn frame_construct() { let _x = Frame { raw:bytes::Bytes::new(), offset:0, timestamp:0, key_version:0, routing_end:0, header_len:0, version:0 }; }'),
- ('frame_mutate', 'E0616', 'fn frame_mutate(x: &mut Frame) { x.offset = 0; }'),
+ ('page_construct', 'E0451', 'fn page_construct() { let _x = Page { raw:bytes::Bytes::new(), header:bytes::Bytes::new(), sealed:bytes::Bytes::new(), nonce:[0; 12], ver:0, first:0, last:0, count:1, ts_ms:0, key_version:0, routing_key:Box::from("") }; }'),
+ ('page_mutate', 'E0616', 'fn page_mutate(x: &mut Page) { x.last = 0; }'),
  ('runs_construct', 'E0423', 'fn runs_construct() { let _x = Runs(std::sync::Arc::from([])); }'),
  ('runs_mutate', 'E0616', 'fn runs_mutate(x: &mut Runs) { x.0 = std::sync::Arc::from([]); }'),
  ('window_construct', 'E0451', 'fn window_construct() { let _x = Window { owner:Runs::empty(), indices:0..0, from:0, upto:0 }; }'),
