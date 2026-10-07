@@ -196,6 +196,8 @@ pub(crate) fn spawn_unready_watchdog(
 }
 
 #[cfg(test)]
+mod open_gate_tests;
+#[cfg(test)]
 mod watchdog_policy_tests;
 
 type OpenResult = Result<Arc<ShardEngine>, String>;
