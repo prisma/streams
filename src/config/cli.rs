@@ -238,8 +238,8 @@ pub struct CliArgs {
     pub(crate) auth_token: Option<String>,
     /// MULTITENANCY §7.2: off | shadow | enforce. Shadow verifies every
     /// product bearer through the customer pipeline and counts the
-    /// outcome without touching responses. Enforce is refused at boot
-    /// until the route-scope matrix lands (Stage 5b).
+    /// outcome without touching responses. Shadow and enforce refuse to
+    /// start without an explicit PROJECT_ID and the three feed files below.
     #[arg(long, env = "STREAMS_AUTH_MODE", default_value = "off")]
     pub(crate) streams_auth_mode: String,
     #[arg(
@@ -383,7 +383,7 @@ pub struct CliArgs {
     pub(crate) scale_edge_latency_ms: u64,
 
     /// Round-13: per-project memory-pressure high watermark in bytes
-    /// (0 = the backstop is off; the profile pins a certified value).
+    /// (0 = off; deploy/profiles/shared-cell.env sets one, pending certification).
     #[arg(long, env = "PROJECT_MEMORY_PRESSURE_BYTES", default_value_t = 0)]
     pub(crate) project_memory_pressure_bytes: u64,
     /// Hysteresis release point as a percentage of the high watermark.
