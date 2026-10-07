@@ -167,13 +167,14 @@ export function cursorOffset(token: string): { kind: number; segment: number; of
   return { kind: b[0]!, segment: b.readUInt32LE(33), offset: b.readBigUInt64LE(37) };
 }
 
-interface StreamCheck {
+export interface StreamCheck {
   name: string;
   read_records: number;
   read_bytes: number;
   pages: number;
   blocks_found: number;
   blocks_missing: number;
+  records_missing: number;
   unexpected_records: number;
   mismatched_records: number;
   incomplete_blocks: number;
@@ -183,7 +184,7 @@ interface StreamCheck {
   examples: string[];
 }
 
-class Matcher {
+export class Matcher {
   used: Uint8Array;
   cur = -1; // block being matched
   pos = 0;
@@ -226,13 +227,14 @@ class Matcher {
   finish(): void {
     if (this.cur >= 0) this.c.incomplete_blocks++;
     this.c.blocks_missing = this.used.length - this.used.reduce((a, x) => a + x, 0);
+    this.c.records_missing = this.plan.blocks.reduce((a, b, i) => a + (this.used[i] ? 0 : b.n), 0);
   }
 }
 
 async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: number | undefined): Promise<StreamCheck> {
   const { http, meter } = ctx;
   const c: StreamCheck = {
-    name, read_records: 0, read_bytes: 0, pages: 0, blocks_found: 0, blocks_missing: 0, unexpected_records: 0,
+    name, read_records: 0, read_bytes: 0, pages: 0, blocks_found: 0, blocks_missing: 0, records_missing: 0, unexpected_records: 0,
     mismatched_records: 0, incomplete_blocks: 0, offset_errors: 0, inversions: 0, segments: [], examples: [],
   };
   const m = new Matcher(plan, c);
@@ -311,7 +313,7 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
   const missing = sum("blocks_missing");
   const ok = !signal.aborted && checks.every(Boolean) && sum("unexpected_records") === 0 && sum("mismatched_records") === 0 &&
     sum("incomplete_blocks") === 0 && sum("offset_errors") === 0 && missing <= failed &&
-    sum("read_records") + missingRecords(plans, checks) === expected;
+    sum("read_records") + sum("records_missing") === expected;
   return {
     verify: {
       ok,
@@ -327,6 +329,7 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
       blocks_expected: blocks,
       blocks_found: sum("blocks_found"),
       blocks_missing: missing,
+      records_missing: sum("records_missing"),
       unexpected_records: sum("unexpected_records"),
       mismatched_records: sum("mismatched_records"),
       incomplete_blocks: sum("incomplete_blocks"),
@@ -335,15 +338,4 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
       per_stream: checks.filter(Boolean).map((c) => ({ ...c, examples: c.examples.slice(0, 3) })),
     },
   };
-}
-
-/** Records in the blocks a stream never returned (failed requests). */
-function missingRecords(plans: Map<string, StreamPlan>, checks: StreamCheck[]): number {
-  let n = 0;
-  for (const c of checks) {
-    if (!c || c.blocks_missing === 0) continue;
-    const p = plans.get(c.name);
-    if (p) n += c.blocks_missing * (p.blocks[0]?.n ?? 0);
-  }
-  return n;
 }
