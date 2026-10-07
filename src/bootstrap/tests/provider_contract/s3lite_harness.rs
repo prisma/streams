@@ -103,6 +103,22 @@ async fn fault_layer(
     }
 }
 
+/// `GET /_s3lite/stats2` of one emulator: every request it answered, by
+/// `<tier>/<kind>/<op>` of the key its URL names and by status, and the
+/// objects it holds by tier and kind. Reading it is not itself recorded.
+pub(super) struct Ledger(String);
+
+impl Ledger {
+    pub(super) async fn read(&self) -> serde_json::Value {
+        reqwest::get(&self.0)
+            .await
+            .expect("reach the s3lite ledger")
+            .json()
+            .await
+            .expect("decode the s3lite ledger")
+    }
+}
+
 pub(super) struct S3lite {
     listener: tokio::net::TcpListener,
     app: Arc<emulator::AppState>,
@@ -131,6 +147,11 @@ impl S3lite {
 
     pub(super) fn faults(&self) -> Arc<HttpFaults> {
         self.faults.clone()
+    }
+
+    /// The emulator's physical-request ledger, read while it is served.
+    pub(super) fn ledger(&self) -> Ledger {
+        Ledger(format!("{}/_s3lite/stats2", self.endpoint()))
     }
 
     /// Serve until `work` finishes; the server stops with it.

@@ -1,7 +1,8 @@
 //! The raw conditional-write contract (ASM-OBJSTORE-CAS (a) and (b)):
 //! competing creates and updates, stale and fabricated preconditions,
 //! updates of missing objects, ETag presence and stability, and the user
-//! metadata SlateDB's retrying store relies on.
+//! metadata SlateDB's retrying store relies on; and deletes, of an object
+//! and of a key that holds nothing.
 #![cfg(test)]
 
 use std::borrow::Cow;
@@ -100,6 +101,7 @@ pub(super) async fn run(b: &Backend) -> Observations {
         ledger.record(b, &etag, &body);
     }
     refused_updates(b).await;
+    deletes(b).await;
     let etag_repeats_for_identical_content = etag_stability(b, &mut ledger).await;
     Observations {
         etag_repeats_for_identical_content,
@@ -254,6 +256,34 @@ async fn refused_updates(b: &Backend) {
         .await;
     assert_eq!(outcome(&fabricated), Outcome::Precondition, "{}", b.name);
     assert_eq!(read_etag(b, &path).await, before, "{}", b.name);
+}
+
+/// A delete removes its object, and a delete of a key that holds nothing
+/// succeeds too. SlateDB's garbage collector and the repository's sweeps
+/// may delete a key that is already gone, and they take an error from a
+/// delete as a failed delete.
+async fn deletes(b: &Backend) {
+    let path = b.path("delete/object");
+    b.shard
+        .put(&path, PutPayload::from_static(b"doomed"))
+        .await
+        .expect("write the object to delete");
+    let deleted = b.shard.delete(&path).await;
+    assert!(deleted.is_ok(), "{}: a delete answered {deleted:?}", b.name);
+    assert!(
+        matches!(
+            b.shard.head(&path).await,
+            Err(object_store::Error::NotFound { .. })
+        ),
+        "{}: a deleted object is still there",
+        b.name
+    );
+    let missing = b.shard.delete(&b.path("delete/missing")).await;
+    assert!(
+        missing.is_ok(),
+        "{}: a delete of a key that holds nothing answered {missing:?}",
+        b.name
+    );
 }
 
 /// Distinct contents never share an ETag, repeated reads of one version

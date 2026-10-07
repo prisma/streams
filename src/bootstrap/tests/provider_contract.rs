@@ -347,3 +347,58 @@ async fn the_fleet_store_exists_only_with_a_fleet_prefix_and_writes_under_it() {
         })
         .await;
 }
+
+/// Every object the server deletes reaches the provider as one keyed
+/// `DELETE /<bucket>/<key>`, never as a `DeleteObjects` request
+/// (`POST /<bucket>?delete` with an XML list of keys): Tigris does not bill
+/// a DELETE, and a `DeleteObjects` POST may be billed as a write
+/// (docs/PROVIDER-CONTRACT.md, "Deletes"). s3lite's ledger files a keyed
+/// DELETE under the tier and kind of the key in its URL, and a
+/// `DeleteObjects` POST, whose URL names only the bucket, under
+/// `other/meta`. A one-key delete (SlateDB's garbage collector and the
+/// repository's sweeps delete one key per call), a delete of a key that
+/// holds nothing and a two-key delete stream each send one DELETE per key,
+/// and each succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn s3lite_receives_every_delete_as_one_keyed_delete_request() {
+    let s3lite = s3lite_harness::S3lite::bind().await;
+    let ledger = s3lite.ledger();
+    let config = local_config(&s3lite.endpoint(), None);
+    let (_, shard) = production_stores(&config);
+    let wal = ObjPath::from("shards/contract/wal/00000000000000000001.sst");
+    let missing = ObjPath::from("shards/contract/wal/00000000000000000002.sst");
+    let ssts = ["1", "2"].map(|id| ObjPath::from(format!("shards/contract/compacted/{id}.sst")));
+    s3lite
+        .serve_while(async {
+            for path in ssts.iter().chain([&wal]) {
+                shard
+                    .put(path, object_store::PutPayload::from_static(b"doomed"))
+                    .await
+                    .expect("write an object to delete");
+            }
+            shard.delete(&wal).await.expect("delete one object");
+            shard
+                .delete(&missing)
+                .await
+                .expect("a delete of a key that holds nothing succeeds");
+            let deleted: Vec<ObjPath> = shard
+                .delete_stream(futures_util::stream::iter(ssts.clone().map(Ok)).boxed())
+                .try_collect()
+                .await
+                .expect("delete two objects in one stream");
+            assert_eq!(deleted, ssts.to_vec());
+            let stats = ledger.read().await;
+            assert_eq!(
+                stats["cells"],
+                serde_json::json!({
+                    "shard/sst/put": {"2xx": 2},
+                    "shard/wal/put": {"2xx": 1},
+                    "shard/sst/delete": {"2xx": 2},
+                    "shard/wal/delete": {"2xx": 2},
+                }),
+                "each delete is one DELETE of its own key"
+            );
+            assert_eq!(stats["live_objects"], serde_json::json!({}));
+        })
+        .await;
+}

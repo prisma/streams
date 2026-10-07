@@ -22,6 +22,14 @@
 //! `AmbiguousCompletion`, SlateDB's put-id check). Everything else — reads,
 //! lists, deletes, unconditional PUTs, multipart uploads — keeps the default
 //! retries, because repeating them cannot turn a success into a refusal.
+//!
+//! Both clients delete each key with its own `DELETE /<bucket>/<key>`, never
+//! with a `DeleteObjects` request (`POST /<bucket>?delete`), which
+//! `object_store` sends by default even for one key. Every delete the server
+//! issues is of one key (SlateDB's garbage collector, the repository's
+//! sweeps), so the request count is the same; Tigris does not bill a
+//! DELETE, and the `DeleteObjects` POST may be billed as a write
+//! (docs/PROVIDER-CONTRACT.md, "Deletes").
 
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;
@@ -54,7 +62,8 @@ impl S3Store {
         let http = crate::store_timing::SniffConnector.connect(&options)?;
         let builder = builder
             .with_client_options(options)
-            .with_http_connector(SharedHttp(http));
+            .with_http_connector(SharedHttp(http))
+            .with_disable_bulk_delete(true);
         Ok(S3Store {
             retried: builder.clone().build()?,
             conditional: builder

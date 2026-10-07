@@ -14,7 +14,7 @@ and SlateDB do with the answers.
 
 | file | checks |
 |---|---|
-| `store_cases.rs` | the raw contract: competing creates and updates, stale, fabricated and missing-object preconditions, ETag presence and stability, user metadata |
+| `store_cases.rs` | the raw contract: competing creates and updates, stale, fabricated and missing-object preconditions, ETag presence and stability, user metadata, and deletes of an object and of a key that holds nothing |
 | `registry_cases.rs` | `Registry::create`, `recreate` and `mutate_incarnation` through the store under test: missing ETags, lost replies, failed dispatches, a changed incarnation, racing registries |
 | `slatedb_cases.rs` | SlateDB writer fencing with the server's own settings, written through the configured commit pipeline, and ambiguous WAL PUTs |
 | `http_cases.rs` | s3lite only: 5xx answers before and after the emulator applied a PUT, below the S3 client: conditional PUTs are sent once and reach the registry and SlateDB as errors, unconditional PUTs are still retried |
@@ -25,7 +25,8 @@ Every runner builds its stores the way the server does:
 `ServerConfig::store_for` in `src/bootstrap.rs` (the `AmazonS3Builder`
 with `S3ConditionalPut::ETagMatch`, the timing connector and store wrapper,
 the pool settings and `PATH_PREFIX`, and `src/bootstrap/s3_store.rs`, which
-sends conditional PUTs through a client that never retries). The registry cases use the ops-bucket
+sends conditional PUTs through a client that never retries and deletes each
+key with its own `DELETE`; see [Deletes](#deletes)). The registry cases use the ops-bucket
 store and the SlateDB cases the shard-bucket store, as in production. SlateDB
 opens with `shard_settings`, the settings the server gives shard logs. With
 group commit on (`WAL_GROUP_COMMIT=1`, the default), those settings make
@@ -42,6 +43,7 @@ engine and are not part of what the suite drives.
 | `s3lite_through_the_production_client_meets_the_provider_contract` | every test build | s3lite over loopback HTTP, through the production client |
 | `in_memory_store_meets_the_slatedb_contract_under_each_commit_pipeline` | every test build | `InMemory`, the SlateDB cases with `WAL_GROUP_COMMIT` 0 and then 1 |
 | `s3lite_meets_the_slatedb_and_http_contract_under_each_commit_pipeline` | every test build | s3lite through the production client, the SlateDB and HTTP cases with `WAL_GROUP_COMMIT` 0 and then 1 |
+| `s3lite_receives_every_delete_as_one_keyed_delete_request` | every test build | s3lite through the production client: the requests a delete sends, read from s3lite's request ledger ([Deletes](#deletes)) |
 | `real_provider_meets_the_provider_contract` | `#[ignore]`d; runs only with `STREAMS_PROVIDER_CONTRACT=1` | the provider the environment names |
 
 The first two run the whole suite under the default pipeline. The two
@@ -50,7 +52,7 @@ whatever the default is, and each first proves that the pipeline is what
 made a write durable: under the pump SlateDB's own timer is set to 600 s for
 that one database, so a writer that did not flush would time out. The
 real-provider runner follows `WAL_GROUP_COMMIT` from its environment. The
-first four run in `scripts/gate.sh` and CI (`cargo test --lib`):
+first five run in `scripts/gate.sh` and CI (`cargo test --lib`):
 
 ```sh
 cargo test --locked --lib provider_contract
@@ -157,6 +159,17 @@ ASM-SLATEDB-FENCE:
   durable when the path is reopened. The suite measures the store's
   metadata behaviour first, then asserts the matching outcome.
 
+Deletes:
+
+- A delete of an object succeeds and the object is gone (a HEAD answers
+  `NotFound`). A delete of a key that holds nothing succeeds too: SlateDB's
+  garbage collector and the repository's sweeps may delete a key that is
+  already gone, and take an error from a delete as a failed delete.
+- s3lite only: each delete, of one key, of a key that holds nothing and of
+  two keys in one delete stream, reaches the emulator as one
+  `DELETE /<bucket>/<key>` per key and no `DeleteObjects` POST
+  ([Deletes](#deletes)).
+
 Rounds that a transport error makes inconclusive are retried with fresh
 names, at most 4 attempts per round. A transport error on InMemory or
 s3lite is a failure.
@@ -182,6 +195,8 @@ It does not establish:
   the HTTP layer on s3lite only.
 - Durability, read-after-write visibility across regions, multipart
   conditional writes (the WAL and descriptors use single PUTs) or cost.
+  In particular, which requests a provider bills, `DeleteObjects` included;
+  the request shape of a delete is asserted on s3lite only.
 - Anything that lifts the performance, cryptographic, deployment or
   evidence-upload holds.
 
@@ -189,6 +204,39 @@ InMemory and s3lite passing only shows that the suite and the repository
 code agree with those stores. s3lite stores no user metadata, and both use
 counter ETags, so the metadata and A-B-A branches differ from S3-style
 providers. Only a real run exercises those branches.
+
+## Deletes
+
+The server deletes each object with its own `DELETE /<bucket>/<key>`
+(`with_disable_bulk_delete(true)` in `src/bootstrap/s3_store.rs`).
+`object_store` 0.14.1 otherwise sends every delete, even of one key, as a
+`DeleteObjects` request: `POST /<bucket>?delete` with an XML list of up to
+1,000 keys, a `Content-MD5` and a SHA-256 of the body. Every delete the
+server issues is of one key: SlateDB's garbage collector deletes WAL SSTs,
+compacted SSTs, manifests and compaction files one key per call (8
+concurrent per collector task), and the repository's own deletes
+(`src/registry/replaced.rs`, `src/registry/fork_debt.rs`, the boot canary
+in `src/bootstrap.rs`) are of one key each. So the switch sends as many
+requests as before, each without a body. A delete stream of several keys
+(only the suite's own cleanup) sends one `DELETE` per key, at most 20 at a
+time, where it sent one POST per 1,000 keys.
+
+Why: Tigris's pricing does not bill a `DELETE` and does not name
+`DeleteObjects`. If Tigris bills that POST as the write it is, every object
+the collector removes costs a Class A request (the K2 cost harness prices
+it both ways, `bench/k2cost/README.md`). The retries are the same: both
+requests are retried after a 5xx, 429 or 408, and neither after a
+transport timeout. A provider that answers a keyed `DELETE` of a missing
+key with 404 would surface `NotFound` to the caller, where `DeleteObjects`
+reports such a key as deleted; S3 and s3lite answer 204, and the
+real-provider runner asserts the provider's answer (the store case
+above).
+
+Not established by the suite: whether Tigris bills `DeleteObjects` at all
+(the saving rests on it), and the provider's answer to a missing key's
+`DELETE` until the real-provider runner has run against it. What an
+operator sees change in `GET /v1/debug/store` is edge change #96
+(`docs/reviews/2026-09-hardening/edge-changes.md`).
 
 ## Findings
 
