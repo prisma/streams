@@ -102,6 +102,7 @@ OWNERS = (
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
     owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history::'),
     owner('http_serve', 'src/http/serve.rs', 'http::serve::'),
+    owner('http_serve_drain', 'src/http/serve/drain.rs', 'http::serve::drain::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),

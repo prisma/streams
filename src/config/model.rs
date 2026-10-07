@@ -249,6 +249,12 @@ pub struct HttpConfig {
     /// default. Never disabled: hyper without it holds a headless socket
     /// for ever.
     pub h1_header_timeout: std::time::Duration,
+    /// The drain floor (shared cells H3, `http::serve::drain`): a
+    /// connection whose client accepts fewer than `drain_min_bytes` of a
+    /// pending response in a `drain_window` is closed. 10 s and 16 KiB; no
+    /// environment name sets them, rigs shorten them.
+    pub drain_window: std::time::Duration,
+    pub drain_min_bytes: u64,
 }
 
 /// Billing/telemetry/rollup knobs (src/billing.rs, src/ops.rs).
@@ -484,6 +490,8 @@ impl Default for HttpConfig {
             binary_sha256: "unknown".into(),
             h1_max_buf: 64 * 1024,
             h1_header_timeout: std::time::Duration::from_secs(120),
+            drain_window: std::time::Duration::from_secs(10),
+            drain_min_bytes: 16 * 1024,
         }
     }
 }

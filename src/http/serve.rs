@@ -8,6 +8,8 @@ use crate::config::HttpConfig;
 
 use super::{NOFILE_HARD, NOFILE_SOFT, raise_nofile, spawn_runtime_watchdog};
 
+mod drain;
+
 /// The hyper builder every connection is served with; cloned per accept
 /// (an `Arc` bump and a parser-config copy).
 ///
@@ -56,8 +58,9 @@ fn reap(tasks: &crate::tasks::TaskSupervisor, joined: Result<(), tokio::task::Jo
 
 /// #269: the one h1 serve entry — production and every test rig serve
 /// through THIS function, so the suite exercises the real connection
-/// path; what each connection is served with is `serve::h1_builder`, and
-/// every response it serves passes `challenge`.
+/// path; what each connection is served with is `serve::h1_builder` over
+/// a socket under the drain floor (`drain`), and every response it serves
+/// passes `challenge`.
 pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
@@ -65,7 +68,7 @@ pub(crate) async fn serve_h1(
     tasks: crate::tasks::TaskSupervisor,
 ) -> std::io::Result<()> {
     let app = app.layer(axum::middleware::map_response(challenge));
-    serve_connections(listener, app, http, tasks).await
+    serve_connections(drain::DrainListener::new(listener, http), app, http, tasks).await
 }
 
 /// RFC 9110 §15.5.2: a 401 names how to authenticate. Every credential the
@@ -90,7 +93,7 @@ async fn challenge(mut response: axum::response::Response) -> axum::response::Re
     reason = "serve_h1; each accepted connection is served by a task the listener's own JoinSet owns, reaps (counting a panicked one) and joins at shutdown, and nodelay and connection errors are routine client behaviour; a supervised task per connection and handled connection results would restate what the JoinSet already owns"
 )]
 async fn serve_connections(
-    listener: tokio::net::TcpListener,
+    listener: drain::DrainListener,
     app: axum::Router,
     http: &crate::config::HttpConfig,
     tasks: crate::tasks::TaskSupervisor,
