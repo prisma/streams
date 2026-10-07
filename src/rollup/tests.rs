@@ -8,17 +8,22 @@ use std::sync::Arc;
 
 /// Restore the shared test clock before releasing exclusive access, including
 /// unwinding through a failed assertion.
-struct ClockGuard {
+pub(super) struct ClockGuard {
     _exclusive: tokio::sync::RwLockWriteGuard<'static, ()>,
 }
 
 impl ClockGuard {
-    async fn at(now_ms: i64) -> Self {
+    pub(super) async fn at(now_ms: i64) -> Self {
         let exclusive = crate::billing::billing_clock_lock().write().await;
         crate::billing::BILLING_CLOCK_OVERRIDE.store(now_ms, std::sync::atomic::Ordering::Relaxed);
         Self {
             _exclusive: exclusive,
         }
+    }
+
+    /// Move the clock while this guard still holds it exclusively.
+    pub(super) fn set(&self, now_ms: i64) {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(now_ms, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
