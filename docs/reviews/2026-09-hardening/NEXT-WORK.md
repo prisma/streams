@@ -23,6 +23,7 @@ Contents:
 - [11. Deployment gates (need the owner or the Compute owner)](#11-deployment-gates-need-the-owner-or-the-compute-owner)
 - [12. Formal verification: new obligations and what blocks them](#12-formal-verification-new-obligations-and-what-blocks-them)
 - [13. Configuration: fewer settings, and defaults that are what production runs](#13-configuration-fewer-settings-and-defaults-that-are-what-production-runs)
+- [14. K2 parity: storage layout 5, fewer uploads, shared cells](#14-k2-parity-storage-layout-5-fewer-uploads-shared-cells)
 
 ---
 
@@ -1477,3 +1478,34 @@ then the five rows of package 5):
   cannot be read or is invalid; the record said without a condition that
   no answer of an append changes and was corrected after the review of
   2026-09-29.
+
+---
+
+## 14. K2 parity: storage layout 5, fewer uploads, shared cells
+
+The owner's goal (2026-10-02, revised 2026-10-07): launch at prices as close
+to Cloudflare K2's as the costs allow, with small tenants and no minimum fee.
+His order of work (2026-10-07), each step implemented and validated before the
+next:
+
+1. **Storage layout 5, compressed pages.** An append request's records are
+   stored as pages (README.md, "Storage layout 5 page format"; cryptography
+   accepted). Comes with run leases for consumer groups (README.md, "Consumer
+   groups"), an edge change for the owner to ratify. A new `LAYOUT_VERSION`:
+   every deployment needs a fresh bucket or `PATH_PREFIX`, the Tigris
+   observatory included, when the owner schedules it.
+2. **Fewer uploads per stored byte.** Each stored byte is uploaded about 8
+   times today (WAL 1.16, shard L0 1.05, shard compaction 1.56, history L0
+   1.02, history compaction about 2.9 and growing); only the WAL and one final
+   copy are required by a guarantee. The design is in progress and may be a
+   second layout change before launch.
+3. **Shared cells for small customers** (README.md, "Shared cells, first
+   scope").
+
+Billing stays as decided (README.md, "Billing bases"): retention on stored
+bytes, produce and consume on the customer's bytes. The cost levers E2 (a
+live-read block cache for the shard log) and E7 (fleet reads without LIST)
+are implemented outside `slate`; E2 is held because layout 5 rewrites the
+shard-log scan it changes, and E7 waits for the owner's choice on its edit of
+the R09 mechanism test.
+
