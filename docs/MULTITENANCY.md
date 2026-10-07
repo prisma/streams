@@ -65,7 +65,9 @@
   only under a kid pinned to its verifier's audience, so the customer
   issuer's key can no longer mint a workload token for the internal
   surface, nor a fleet key a customer token. A kid keeps its audience
-  for life.
+  for life. §15 (shared-cells M5): under enforce, a watch request that
+  carries a capability must verify it; a stream key observes only beside
+  a verified principal.
 
 ---
 
@@ -1191,6 +1193,13 @@ than the staleness window fails the wait CLOSED with a retryable 503
 waits also occupy the project's live-subscription pool for their
 whole duration (§17.3): watches have no side door around the
 ceiling.
+
+*Carrier proof (r7, shared-cells M5).* A request that carries a
+capability skips the token gate, so under enforce the capability
+itself must verify. A stream key proves record access only: it
+observes beside a verified principal, never in place of a capability
+that failed (a garbage capability plus a learned key used to observe
+with no token, past revocation). Off and shadow modes are unchanged.
 
 ---
 

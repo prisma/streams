@@ -219,43 +219,7 @@ impl WatchService {
             .filter(|descriptor| self.alive(descriptor))
             .ok_or(WatchFailure::Unauthorized(None))?;
         let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
-        let epoch = descriptor.epoch();
-        let key = credentials
-            .encryption_key
-            .as_deref()
-            .and_then(|raw| crate::crypto::StreamKey::from_b64(raw).ok())
-            .filter(|key| key.fingerprint(&epoch) == descriptor.key_fingerprint);
-        let capability_ok = credentials.capability.as_deref().is_some_and(|capability| {
-            use base64::Engine;
-            let Some(encoded) = descriptor.watch_sig_key.as_deref() else {
-                return false;
-            };
-            let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-                return false;
-            };
-            let Ok(signing_key) = <[u8; 32]>::try_from(raw.as_slice()) else {
-                return false;
-            };
-            crate::crypto::verify_watch_capability(
-                capability,
-                &signing_key,
-                &descriptor.sref(),
-                &descriptor.stream_epoch,
-                &watch,
-                &key_hex,
-                "GET",
-                self.clock.now().ms() / 1000,
-            )
-        });
-        if !capability_ok && key.is_none() {
-            return Err(WatchFailure::Unauthorized(None));
-        }
-        if let WatchAccess::AdmittedAccount(principal) = &access
-            && (principal.project_id != descriptor.project_id
-                || principal.require_stream(&descriptor.name).is_err())
-        {
-            return Err(WatchFailure::Unauthorized(None));
-        }
+        let key = self.observation_proof(&descriptor, &credentials, (&watch, &key_hex), &access)?;
         if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
             return Err(WatchFailure::InvalidKey);
         }
@@ -266,6 +230,77 @@ impl WatchService {
             key,
             access,
         })
+    }
+
+    /// The stream key a request presented, once it proved it may observe
+    /// `watch` at `key_hex`: by a capability that verifies against the
+    /// descriptor's persisted verifier, or by a matching stream key. A key
+    /// proves record access only, so under enforce it observes only beside
+    /// the principal the account gate verified, never in place of the
+    /// capability a carrier failed to verify (shared-cells M5: a garbage
+    /// capability plus a learned key used to observe without a token, past
+    /// revocation). A principal observes only its own project's streams
+    /// inside its prefix grant.
+    fn observation_proof(
+        &self,
+        descriptor: &StreamDesc,
+        credentials: &WatchCredentials,
+        (watch, key_hex): (&str, &str),
+        access: &WatchAccess<'_>,
+    ) -> Result<Option<crate::crypto::StreamKey>, WatchFailure> {
+        let epoch = descriptor.epoch();
+        let key = credentials
+            .encryption_key
+            .as_deref()
+            .and_then(|raw| crate::crypto::StreamKey::from_b64(raw).ok())
+            .filter(|key| key.fingerprint(&epoch) == descriptor.key_fingerprint);
+        let capability_ok = credentials.capability.as_deref().is_some_and(|capability| {
+            self.capability_verifies(descriptor, capability, watch, key_hex)
+        });
+        let key_admits = key.is_some()
+            && (self.auth.mode != crate::auth::AuthMode::Enforce
+                || matches!(access, WatchAccess::AdmittedAccount(_)));
+        if !capability_ok && !key_admits {
+            return Err(WatchFailure::Unauthorized(None));
+        }
+        if let WatchAccess::AdmittedAccount(principal) = access
+            && (principal.project_id != descriptor.project_id
+                || principal.require_stream(&descriptor.name).is_err())
+        {
+            return Err(WatchFailure::Unauthorized(None));
+        }
+        Ok(key)
+    }
+
+    /// Whether `capability` verifies against the descriptor's persisted
+    /// watch verifier for exactly this watch, key and method, now.
+    fn capability_verifies(
+        &self,
+        descriptor: &StreamDesc,
+        capability: &str,
+        watch: &str,
+        key_hex: &str,
+    ) -> bool {
+        use base64::Engine;
+        let Some(encoded) = descriptor.watch_sig_key.as_deref() else {
+            return false;
+        };
+        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            return false;
+        };
+        let Ok(signing_key) = <[u8; 32]>::try_from(raw.as_slice()) else {
+            return false;
+        };
+        crate::crypto::verify_watch_capability(
+            capability,
+            &signing_key,
+            &descriptor.sref(),
+            &descriptor.stream_epoch,
+            watch,
+            key_hex,
+            "GET",
+            self.clock.now().ms() / 1000,
+        )
     }
 
     pub(crate) async fn wait(

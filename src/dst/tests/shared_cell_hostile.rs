@@ -433,31 +433,44 @@ async fn an_internal_token_signed_by_a_customer_key_is_refused() {
     engine_shutdown(&cell.state).await;
 }
 
-/// A10 (M5): a watch observation carrying a garbage capability that names
-/// project B, plus B's stream key and no token, is refused under
-/// enforce: a key never substitutes for both a principal and a verified
-/// capability.
+/// A10 (M5): under enforce, a watch observation that carries a
+/// capability must verify it. A garbage capability naming project B,
+/// plus B's stream key and no token, is refused with the carriers'
+/// uniform `403 watch_unauthorized`: a key never substitutes for both a
+/// principal and a verified capability. The same key beside B's token,
+/// and B's verified capability with no key and no token, still observe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase A step 8: a capability carrier must verify"]
 async fn a_capability_carrier_with_only_a_key_is_refused() {
     let cell = open_cell(CellSpec::open(2)).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
     assert_eq!(cell.call(1, "PUT", "/v1/streams/w", watched).await.0, 201);
     let fields = ["/customerId".to_string()];
     let khex = crate::product::watch_key_hex("by-customer", &fields, &["\"c42\"".to_string()]);
-    let path = format!(
-        "/v1/streams/w/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=100&cap={}.garbage",
-        project(1)
+    let base = format!("/v1/streams/w/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=100");
+    let garbage = format!("{base}&cap={}.garbage", project(1));
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, b) = preq(cell.addr, "GET", &garbage, &key, b"").await;
+    assert_eq!(
+        (st, error_code(&b)),
+        (403, Some("watch_unauthorized".to_string())),
+        "key-only carrier: {}",
+        String::from_utf8_lossy(&b)
     );
-    let (st, _, b) = preq(
-        cell.addr,
-        "GET",
-        &path,
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 401, "key-only carrier: {}", String::from_utf8_lossy(&b));
+    let (st, _, b) = cell.call(1, "GET", &base, b"").await;
+    assert_eq!(
+        st,
+        200,
+        "the key beside B's token: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let verified = format!("{base}&cap={}", capability(&cell, 1, &khex).await);
+    let (st, _, b) = preq(cell.addr, "GET", &verified, &[], b"").await;
+    assert_eq!(
+        st,
+        200,
+        "B's verified capability: {}",
+        String::from_utf8_lossy(&b)
+    );
     engine_shutdown(&cell.state).await;
 }
 

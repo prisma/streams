@@ -59,10 +59,9 @@
   {
     "name": "a_capability_carrier_with_only_a_key_is_refused",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase A step 8: a capability carrier must verify\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5797222c15c5f6d3db575f4368eca80467e906c439a1ff34b3518bc6667fe262",
+    "function_sha256": "96a12273ae3db3dda7e24bea115df1cacfa974aa43b22330356428c92186a5a7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
