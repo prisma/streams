@@ -7,8 +7,8 @@ use bytes::Bytes;
 
 use super::body::{get_varint, put_varint};
 use super::{
-    NONCE_LEN, PAGE_MAX_RECORDS, PAGE_TAG, PAGE_VER, PAGE_VER_Z, PageCorruption, PageLane,
-    SealError, TAG_LEN, body_cap, last_offset,
+    NONCE_LEN, PAGE_MAX_RECORDS, PAGE_VER, PAGE_VER_Z, PageCorruption, PageLane, SealError,
+    TAG_LEN, body_cap, last_offset, page_tag,
 };
 
 /// Everything the clear header of a page being sealed says.
@@ -129,10 +129,11 @@ pub(crate) struct CheckedPage {
 
 impl CheckedPage {
     /// Admit a stored row. `prefix` is the canonical page-key prefix of the
-    /// selected segment (namespace and the `'p'` tag); the row key is that
-    /// prefix and the page's last offset.
+    /// selected segment: its namespace and its keyspace's page tag (`'p'` in
+    /// the shard log, `'g'` in history); the row key is that prefix and the
+    /// page's last offset.
     pub(crate) fn from_row(key: &[u8], prefix: &[u8], raw: Bytes) -> Result<Self, PageCorruption> {
-        if prefix.last() != Some(&PAGE_TAG) {
+        if page_tag(prefix.len()).is_none_or(|tag| prefix.last() != Some(&tag)) {
             return Err(PageCorruption::RowTag);
         }
         let (namespace, last) = key

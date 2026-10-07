@@ -6,7 +6,7 @@ use super::{
     AppendAck, AppendErr, AppendFinish, AppendReq, CommitOp, CopiedBytes, Deliver, ShardConfig,
     ShardEngine, StreamHandle, TailFields, read_frames, read_frames_range,
 };
-use crate::crypto_page::{CheckedPage, PAGE_TAG, PageCipher, shard_page_key};
+use crate::crypto_page::{CheckedPage, PageCipher, SHARD_PAGE_TAG, shard_page_key};
 use bytes::Bytes;
 use object_store::ObjectStore;
 use slatedb::Db;
@@ -138,7 +138,7 @@ async fn record_rows(engine: &ShardEngine) -> Vec<(u8, u64, Bytes)> {
 /// Admit and open one stored page row of the fixture stream.
 fn open(last: u64, value: &Bytes) -> (CheckedPage, Vec<Opened>) {
     let key = shard_page_key(&HASH, last);
-    let prefix = [HASH.as_slice(), &[PAGE_TAG]].concat();
+    let prefix = [HASH.as_slice(), &[SHARD_PAGE_TAG]].concat();
     let page = CheckedPage::from_row(&key, &prefix, value.clone()).unwrap();
     let opened = PageCipher::new(&subkey(), &HASH).open(&page).unwrap();
     let records = opened

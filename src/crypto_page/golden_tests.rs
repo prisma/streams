@@ -111,6 +111,6 @@ fn row_keys_are_pinned() {
     let history = history_page_key(RouteHash([0xbb; 16]), SegmentHash([0xcc; 16]), last);
     assert_eq!(
         hex(&history),
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccc700102030405060708"
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccc670102030405060708"
     );
 }

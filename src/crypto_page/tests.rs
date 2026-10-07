@@ -7,7 +7,7 @@ use bytes::Bytes;
 use super::body::{get_varint, put_varint, varint_len};
 use super::seal::split_pages;
 use super::{
-    CheckedPage, PAGE_MAX_RECORDS, PAGE_TAG, PageCipher, PageLane, SealError, SealedPage,
+    CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealedPage,
     history_page_key, shard_page_key,
 };
 use crate::crypto::{MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash, StreamKey, derive_subkey};
@@ -38,7 +38,7 @@ pub(super) fn lane() -> PageLane<'static> {
 
 /// The canonical shard-log page prefix of the fixture segment.
 pub(super) fn prefix() -> Vec<u8> {
-    [HASH.as_slice(), &[PAGE_TAG]].concat()
+    [HASH.as_slice(), &[SHARD_PAGE_TAG]].concat()
 }
 
 /// Admit a sealed page under its canonical shard-log key.
@@ -350,7 +350,7 @@ fn row_keys_are_namespace_tag_and_last_offset() {
     let history = history_page_key(route, inc, last);
     assert_eq!(
         history,
-        [&[0x0a; 16][..], &[0x0b; 16], b"p", &last.to_be_bytes()].concat()
+        [&[0x0a; 16][..], &[0x0b; 16], b"g", &last.to_be_bytes()].concat()
     );
 
     let sealed = cipher().seal_request(&lane(), 5, &[b"a".to_vec()]).unwrap();

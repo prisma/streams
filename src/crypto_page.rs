@@ -19,7 +19,8 @@
 //! page key = HKDF-SHA256(salt = segment identity, ikm = routing-key subkey,
 //!                        info = "prisma-streams/page/v6/aes-256-gcm-siv")
 //! row key  = hash16 || 'p' || last offset              (shard log)
-//!            route16 || inc16 || 'p' || last offset    (history)
+//!            route16 || inc16 || 'g' || last offset    (history, where 'p'
+//!                                                       rows are postings)
 //! ```
 //!
 //! Integers are big-endian. A varint is minimal LEB128: seven bits per byte,
@@ -48,8 +49,16 @@ pub(crate) use open::OpenedPage;
 pub(crate) const PAGE_VER: u8 = 6;
 /// Version byte of a page whose body is zstd level 1 (compress-then-encrypt).
 pub(crate) const PAGE_VER_Z: u8 = 7;
-/// The row-key tag between a page row's namespace and its last offset.
-pub(crate) const PAGE_TAG: u8 = b'p';
+/// The row-key tag between a shard-log page row's namespace and its last
+/// offset.
+pub(crate) const SHARD_PAGE_TAG: u8 = b'p';
+/// The row-key tag of a history page row. History's `'p'` rows are its
+/// postings pages, so its stored pages take a tag nothing else there uses.
+pub(crate) const HISTORY_PAGE_TAG: u8 = b'g';
+/// The width of a shard-log page prefix: hash16 and the tag.
+const SHARD_PAGE_PREFIX_LEN: usize = 17;
+/// The width of a history page prefix: route16, inc16 and the tag.
+const HISTORY_PAGE_PREFIX_LEN: usize = 33;
 /// The body cap of a page that holds more than one record, and the size at
 /// which a request is cut into pages.
 pub(crate) const PAGE_TARGET_PLAINTEXT: usize = 64 << 10;
@@ -94,9 +103,9 @@ pub(crate) fn shard_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
 }
 
 /// The canonical prefix of a segment's shard-log page keys: its hash and
-/// the page tag. `CheckedPage::from_row` admits a row against it.
-pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; 17] {
-    let mut prefix = [PAGE_TAG; 17];
+/// the shard-log page tag. `CheckedPage::from_row` admits a row against it.
+pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; SHARD_PAGE_PREFIX_LEN] {
+    let mut prefix = [SHARD_PAGE_TAG; SHARD_PAGE_PREFIX_LEN];
     let (namespace, _) = prefix.split_at_mut(16);
     namespace.copy_from_slice(hash);
     prefix
@@ -104,12 +113,37 @@ pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; 17] {
 
 /// History row key of the page whose last offset is `last`.
 pub(crate) fn history_page_key(route: RouteHash, inc: SegmentHash, last: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(41);
-    key.extend_from_slice(&route.0);
-    key.extend_from_slice(&inc.0);
-    key.push(PAGE_TAG);
+    let mut key = Vec::with_capacity(HISTORY_PAGE_PREFIX_LEN + 8);
+    key.extend_from_slice(&history_page_prefix(route, inc));
     key.extend_from_slice(&last.to_be_bytes());
     key
+}
+
+/// The canonical prefix of one stream incarnation's history page keys: its
+/// route, its incarnation and the history page tag. `CheckedPage::from_row`
+/// admits a history row against it.
+pub(crate) fn history_page_prefix(
+    route: RouteHash,
+    inc: SegmentHash,
+) -> [u8; HISTORY_PAGE_PREFIX_LEN] {
+    let mut prefix = [HISTORY_PAGE_TAG; HISTORY_PAGE_PREFIX_LEN];
+    let (namespace, _) = prefix.split_at_mut(32);
+    let (route_part, inc_part) = namespace.split_at_mut(16);
+    route_part.copy_from_slice(&route.0);
+    inc_part.copy_from_slice(&inc.0);
+    prefix
+}
+
+/// The page tag a page prefix of `len` bytes must end in: the shard log's
+/// for `hash16 || tag`, history's for `route16 || inc16 || tag`. No other
+/// width is a page keyspace, so a prefix of the wrong keyspace's tag, or of
+/// any other row family, is refused before its rows are looked at.
+const fn page_tag(len: usize) -> Option<u8> {
+    match len {
+        SHARD_PAGE_PREFIX_LEN => Some(SHARD_PAGE_TAG),
+        HISTORY_PAGE_PREFIX_LEN => Some(HISTORY_PAGE_TAG),
+        _ => None,
+    }
 }
 
 /// The lane fields every page of one request carries in its clear header.
@@ -142,7 +176,8 @@ pub(crate) enum SealError {
 /// corruption: the writer never produces such a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageCorruption {
-    /// The prefix the caller selected is not a page namespace.
+    /// The prefix the caller selected is not a page namespace: it does not
+    /// end in the page tag of the keyspace its width names.
     RowTag,
     KeyWidth,
     Namespace,
