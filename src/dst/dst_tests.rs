@@ -314,6 +314,9 @@ mod read_page_limits;
 #[path = "tests/read_page_assembly.rs"]
 mod read_page_assembly;
 
+#[path = "tests/read_memory.rs"]
+mod read_memory;
+
 #[path = "tests/runtime_engine_lifecycle.rs"]
 mod runtime_engine_lifecycle;
 #[path = "tests/runtime_request_work.rs"]

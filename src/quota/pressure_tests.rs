@@ -254,3 +254,30 @@ fn per_project_gate_off_defers_to_the_global_gate() {
         "0 = off; the global gate owns it"
     );
 }
+
+/// Model version 2 (shared cells H3): each wait parked in the project's
+/// share weighs 48 KiB, the read bytes its pages hold enter exactly, and
+/// both leave the estimate when released; the manifest names the weight.
+#[test]
+fn parked_waits_weigh_48_kib_and_read_bytes_enter_exactly() {
+    let r = QuotaRegistry::default();
+    let p = pid("p15");
+    let a = adm(&r, "p15");
+    let share = r.park_share(&p, &ProjectQuotas::default()).unwrap();
+    let parked: Vec<_> = (0..3).map(|_| share.park().unwrap()).collect();
+    assert_eq!(a.estimated_pressure_bytes(), 3 * 48 * 1024);
+    let reads = r.read_bytes(&p).unwrap();
+    reads.charge(1_000);
+    assert_eq!(a.estimated_pressure_bytes(), 3 * 48 * 1024 + 1_000);
+    drop(parked);
+    reads.release(1_000);
+    assert_eq!(a.estimated_pressure_bytes(), 0);
+    let model = super::pressure_model_json();
+    assert_eq!(
+        (
+            model["version"].as_u64(),
+            model["parked_weight_bytes"].as_u64()
+        ),
+        (Some(2), Some(48 * 1024))
+    );
+}

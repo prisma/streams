@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use crate::backpressure::GlobalLatch;
 
 pub(crate) mod park;
+pub(crate) mod read_memory;
 
 /// Bound on distinct streams tracked by the per-stream admission map:
 /// the map stays proportional to concurrently-active streams and can
@@ -152,6 +153,9 @@ struct Inner {
     /// Successful /v1/stream/* requests, the fleet load vector (§4.2).
     fleet_ops: AtomicU64,
     record_ceiling: std::sync::atomic::AtomicUsize,
+    /// The instance's read memory: page reads in flight and the bodies
+    /// that still hold their pages (shared cells H3).
+    read_memory: read_memory::ReadMemory,
 }
 
 /// RAII in-flight ticket: the count drops on response AND on
@@ -255,6 +259,7 @@ impl AdmissionController {
                 maintenance: GlobalLatch::new(),
                 fleet_ops: AtomicU64::new(0),
                 record_ceiling: std::sync::atomic::AtomicUsize::new(knobs.record_ceiling_bytes),
+                read_memory: read_memory::ReadMemory::new(knobs.rss_shed_mb),
             }),
         }
     }

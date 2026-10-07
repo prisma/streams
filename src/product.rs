@@ -703,11 +703,9 @@ pub(crate) fn project_admission(
         .map_err(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }
 
-/// Round-13: the per-project memory-pressure backstop for a WRITE by
-/// this principal. Some(response) = the typed, project-audited,
-/// retryable refusal; None = admitted. Order (review): after the
-/// ordinary project quotas, before the global RSS emergency gate the
-/// shared append path applies.
+/// Round-13: the per-project memory-pressure backstop for a WRITE by this
+/// principal (the typed, project-audited, retryable refusal, or None):
+/// after the project quotas, before the RSS gate the append path applies.
 pub(crate) fn project_memory_gate(
     state: &AppState,
     principal: Option<&crate::auth::RequestPrincipal>,
@@ -746,15 +744,16 @@ fn check_read_quota(
 }
 
 /// Debit the SERVED page bytes, the framed body a render site hands to
-/// the transport, against the project's read-byte bucket (§17.2
-/// post-hoc volume metering). Only a render site knows that count, so
-/// only a render site debits; a refused request never reaches one, and
-/// a streaming body is governed by its live-subscription slot instead.
+/// the transport, against the project's read-byte bucket (§17.2 post-hoc
+/// volume metering), and hold them in the request's read memory until
+/// the body ends (H3). Only a render site knows that count, so only a
+/// render site debits; a streaming body has its live-subscription slot.
 fn debit_read_bytes(
     state: &AppState,
     principal: Option<&crate::auth::RequestPrincipal>,
     bytes: usize,
 ) {
+    read_memory::settle(state, principal, bytes);
     let Some(p) = principal else { return };
     state.quotas.debit_read(
         &p.project_id,
@@ -3762,6 +3761,7 @@ mod internal;
 mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};
 mod read_cursor;
+pub(crate) mod read_memory;
 mod scan;
 use scan::product_scan;
 mod seal_request;

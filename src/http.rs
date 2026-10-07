@@ -1801,12 +1801,12 @@ pub(crate) async fn product_entry_axum_inner(
         Err(r) => return crate::product::with_product_cors(r),
     };
     crate::admission::park::bind_principal(&state.quotas, principal);
-    // Round-13: the per-project memory-pressure backstop for WRITES on
-    // this surface — after ordinary project admission, before body
-    // work. Reads and established SSE delivery continue while a
-    // project is engaged.
-    if method == Method::POST
-        && let Some(r) = crate::product::project_memory_gate(&state, principal)
+    // Round-13 and H3: the memory backstops, after ordinary project
+    // admission and before body work — a write's project pressure gate,
+    // a page read's memory reservation. Established SSE delivery and
+    // other reads continue while a project is engaged.
+    if let Some(r) =
+        crate::product::read_memory::refusal(&state, principal, &method, &name, &query).await
     {
         return crate::product::with_product_cors(r);
     }

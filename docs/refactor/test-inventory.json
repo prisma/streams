@@ -951,6 +951,17 @@
     "scenarios": []
   },
   {
+    "name": "a_page_is_held_until_its_client_reads_it_or_leaves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9a8e6fbfba3bcabfdccfbab43d4fb8a0651c20314eaa15e80af8f1bb0510cf60",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1191,6 +1202,17 @@
     ]
   },
   {
+    "name": "a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_not",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d8dd72ad5bc7ee41dd06e387cf6acfb84a13384c78dd31e2da744a675953f927",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_projects_waits_park_only_within_its_share_and_the_pool",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1289,6 +1311,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3f6c6abfc3862f9cc3b987dc9700fd6e4b73020948e08aed62c5beadd8ce1049",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
     "scenarios": []
   },
   {
@@ -5521,6 +5554,17 @@
     "scenarios": []
   },
   {
+    "name": "parked_waits_weigh_in_their_projects_pressure",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "241536be100ff7b3c841c57495269235165322540f18ae53bcd6956a052b1659",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "pending_summary_clears_on_shard_close",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -8362,6 +8406,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "waiting_long_polls_hold_no_read_memory",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a1ea4cc5a8e959204d94716785ad36402bd545b1768b40310812b9f805eb699c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
     "scenarios": []
   },
   {

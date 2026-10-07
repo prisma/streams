@@ -94,6 +94,7 @@ pub(crate) async fn data(
     let (heartbeats, desired) = state.fleet.operator_snapshot().await;
 
     let adm = state.admission.snapshot();
+    let (read_memory, read_memory_capacity) = state.admission.read_memory();
     let shard_opens = state.shards.open_stats();
     let local = json!({
         "instance": state.ownership.instance(),
@@ -102,6 +103,8 @@ pub(crate) async fn data(
         "inflight": adm.inflight,
         "inflight_peak": adm.inflight_peak,
         "parked": state.admission.parked(),
+        "read_memory_bytes": read_memory,
+        "read_memory_capacity_bytes": read_memory_capacity,
         "admit_shed": adm.shed.total,
         "stream_shed": adm.shed.stream,
         "wedge_shed": adm.shed.wedge,

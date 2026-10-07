@@ -61,6 +61,7 @@ mod bucket;
 use bucket::Bucket;
 pub(crate) mod parked;
 mod pin;
+pub(crate) mod read_reservation;
 use pin::AdmissionCounters;
 
 pub(crate) struct ProjectAdmission {
@@ -105,6 +106,9 @@ pub(crate) struct ProjectAdmission {
     /// Request-body bytes buffered (or reserved from Content-Length)
     /// after auth, before the queued-append phase takes over.
     buffered_body_bytes: AtomicU64,
+    /// EXACT page bytes this project's reads reserve at admission and
+    /// their response bodies hold until each body ends (`read_reservation`).
+    read_held: AtomicU64,
     // Durable-write pressure:
     /// Encoded frame bytes committed but not yet absorbed —
     /// stream-incarnation-safe attribution via StreamPressureBinding,
@@ -122,18 +126,21 @@ pub(crate) struct ProjectAdmission {
     memory_engage_count: AtomicU64,
 }
 
-/// Round-13 pressure model v1. The weights (`pressure`) are SAFETY ESTIMATES
-/// rounded UP from the round-12 certified memory model (26.28 KiB per
-/// connection, 7.95 KiB per feed, R^2 0.9987) plus the L1 resident-
-/// stream measurement (~45 KiB); they are never billing quantities.
+/// Round-13 pressure model, version 2 since shared cells H3 (reserved
+/// read bytes enter exactly, parked waits by weight). The weights
+/// (`pressure`) are SAFETY ESTIMATES rounded UP from the round-12
+/// certified memory model (26.28 KiB per connection, 7.95 KiB per feed,
+/// R^2 0.9987), the L1 resident-stream measurement (~45 KiB) and #269's
+/// ~44 KB per parked connection; they are never billing quantities.
 /// Versioned IN CODE: a calibration campaign bumps the version, not a
-/// profile knob. Exact counters (retained/queued/body/frame bytes)
+/// profile knob. Exact counters (retained/queued/body/frame/read bytes)
 /// enter unweighted.
-pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 1;
+pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 2;
 
 mod pressure;
 use pressure::{
-    PRESSURE_DIRTY_STREAM_WEIGHT_BYTES, PRESSURE_FEED_WEIGHT_BYTES, PRESSURE_SUB_WEIGHT_BYTES,
+    PRESSURE_DIRTY_STREAM_WEIGHT_BYTES, PRESSURE_FEED_WEIGHT_BYTES, PRESSURE_PARKED_WEIGHT_BYTES,
+    PRESSURE_SUB_WEIGHT_BYTES,
 };
 
 /// Startup + manifest visibility for the model coefficients.
@@ -143,6 +150,7 @@ pub(crate) fn pressure_model_json() -> serde_json::Value {
         "sub_weight_bytes": PRESSURE_SUB_WEIGHT_BYTES,
         "feed_weight_bytes": PRESSURE_FEED_WEIGHT_BYTES,
         "dirty_stream_weight_bytes": PRESSURE_DIRTY_STREAM_WEIGHT_BYTES,
+        "parked_weight_bytes": PRESSURE_PARKED_WEIGHT_BYTES,
     })
 }
 
@@ -535,6 +543,7 @@ impl QuotaRegistry {
             live_feeds: AtomicU64::new(0),
             retained_sse_bytes: AtomicU64::new(0),
             buffered_body_bytes: AtomicU64::new(0),
+            read_held: AtomicU64::new(0),
             unabsorbed_frame_bytes: AtomicU64::new(0),
             dirty_streams: AtomicU64::new(0),
             memory_latch: std::sync::atomic::AtomicU8::new(0),

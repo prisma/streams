@@ -11,10 +11,19 @@
 //!
 //! A wait that cannot park (outside a served request, or with the pool or
 //! the share full) waits as an active request, as every wait did before.
+//!
+//! The scope also carries the request's read memory (shared cells H3,
+//! `read_memory::ReadHold`): bound at admission, released while the request
+//! waits, settled when its page renders, and attached to the response body
+//! when the handler returns, so the page's bytes stay counted until the
+//! body ends.
 
 use std::future::Future;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
+use axum::response::Response;
+
+use super::read_memory::ReadHold;
 use super::{InflightTicket, ParkedTicket};
 use crate::auth::RequestPrincipal;
 use crate::quota::QuotaRegistry;
@@ -28,17 +37,25 @@ tokio::task_local! {
 struct Request {
     ticket: InflightTicket,
     share: OnceLock<ParkShare>,
+    read: Arc<OnceLock<ReadHold>>,
 }
 
 impl InflightTicket {
     /// Serve `handler` as the request this ticket admitted; the ticket
-    /// drops when the handler's future completes or is dropped.
-    pub(crate) async fn serve<F: Future>(self, handler: F) -> F::Output {
+    /// drops when the handler's future completes or is dropped, and a read
+    /// hold the request bound rides the response's body.
+    pub(crate) async fn serve<F: Future<Output = Response>>(self, handler: F) -> Response {
+        let read = Arc::new(OnceLock::new());
         let request = Request {
             ticket: self,
             share: OnceLock::new(),
+            read: read.clone(),
         };
-        REQUEST.scope(request, handler).await
+        let response = REQUEST.scope(request, handler).await;
+        match Arc::into_inner(read).and_then(OnceLock::into_inner) {
+            Some(hold) => hold.attach(response),
+            None => response,
+        }
     }
 }
 
@@ -58,6 +75,24 @@ pub(crate) fn bind_principal(quotas: &QuotaRegistry, principal: Option<&RequestP
         .unwrap_or(false)
 }
 
+/// Bind the served request's read hold. The first bind stands; a hold that
+/// does not bind (outside a served request, or beside an earlier hold)
+/// drops here, released.
+pub(crate) fn bind_read(hold: ReadHold) {
+    REQUEST
+        .try_with(|request| drop(request.read.set(hold)))
+        .unwrap_or(());
+}
+
+/// A page of `served` bytes rendered for the served request: its hold
+/// settles to the page, or `unreserved` makes one (a page no admission
+/// reserved). Outside a served request no body holds the page.
+pub(crate) fn settle_read(served: u64, unreserved: impl FnOnce() -> ReadHold) {
+    REQUEST
+        .try_with(|request| request.read.get_or_init(unreserved).settle(served))
+        .unwrap_or(());
+}
+
 /// While held, the served request is parked in a wait.
 pub(crate) struct Parked {
     _instance: ParkedTicket,
@@ -66,9 +101,14 @@ pub(crate) struct Parked {
 
 /// Park the served request for one wait, against the instance's live pool
 /// and, when bound, its project's share. `None`: the wait stays active.
+/// Either way the request's unrendered read reservation is released: a
+/// waiting request materializes nothing.
 pub(crate) fn park() -> Option<Parked> {
     REQUEST
         .try_with(|request| {
+            if let Some(hold) = request.read.get() {
+                hold.unreserve();
+            }
             let project = match request.share.get() {
                 Some(share) => Some(share.park()?),
                 None => None,
