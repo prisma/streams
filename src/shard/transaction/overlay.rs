@@ -23,11 +23,12 @@ pub(super) struct FrameEffects {
     pub payload_bytes: u64,
     pub added_bytes: u64,
     pub retired_bytes: u64,
-    pub ring: Vec<(u64, Bytes)>,
-    /// The group's frame cipher and the subkey it was derived from.
+    /// The group's sealed pages of this stream, for the ring once durable.
+    pub ring: RingBatch,
+    /// The group's page cipher and the subkey it was derived from.
     cipher: Option<(
         [u8; crate::crypto::KEY_LEN],
-        Arc<crate::crypto::FrameCipher>,
+        Arc<crate::crypto_page::PageCipher>,
     )>,
 }
 pub(super) struct StreamOverlay {
@@ -90,28 +91,22 @@ impl BillingOverlay {
 }
 
 impl FrameEffects {
-    /// The frame cipher for `subkey` in this stream's `segment`. Every
+    /// The page cipher for `subkey` in this stream's `segment`. Every
     /// request of the group under the same subkey (stream key, epoch, routing
-    /// key and key version) shares one derivation of the segment frame key
-    /// and its key schedule; another subkey derives its own. Each record
-    /// still draws its own nonce. The key material lives only as long as the
-    /// group.
+    /// key and key version) shares one derivation of the segment page key
+    /// and its key schedule; another subkey derives its own. Each page still
+    /// draws its own nonce. The key material lives only as long as the group.
     pub(super) fn cipher(
         &mut self,
         subkey: &[u8; crate::crypto::KEY_LEN],
         segment: &[u8; 16],
-        compression: crate::crypto::FrameCompression,
-    ) -> Arc<crate::crypto::FrameCipher> {
+    ) -> Arc<crate::crypto_page::PageCipher> {
         if let Some((derived_from, cipher)) = &self.cipher
             && same_key(derived_from, subkey)
         {
             return cipher.clone();
         }
-        let cipher = Arc::new(crate::crypto::FrameCipher::new(
-            subkey,
-            segment,
-            compression,
-        ));
+        let cipher = Arc::new(crate::crypto_page::PageCipher::new(subkey, segment));
         self.cipher = Some((*subkey, cipher.clone()));
         cipher
     }
@@ -125,8 +120,32 @@ fn same_key(a: &[u8; crate::crypto::KEY_LEN], b: &[u8; crate::crypto::KEY_LEN]) 
 #[cfg(test)]
 mod tests {
     use super::{BillingOverlay, FrameEffects};
-    use crate::crypto::{FrameCompression, decode_frame, decrypt_frame};
+    use crate::crypto_page::{CheckedPage, PageCipher, PageLane};
+    use bytes::Bytes;
     use std::sync::Arc;
+
+    /// Seal `payload` at offset `first` with `cipher` and open it with a
+    /// fresh cipher of `subkey`.
+    fn reopen(
+        cipher: &PageCipher,
+        subkey: &[u8; 32],
+        segment: &[u8; 16],
+        first: u64,
+        payload: &[u8],
+    ) -> Option<Vec<u8>> {
+        let lane = PageLane {
+            ts_ms: 2,
+            key_version: 0,
+            routing_key: "",
+        };
+        let sealed = cipher.seal(&lane, first, &[payload]).unwrap();
+        let page = CheckedPage::admit(Bytes::from(sealed.bytes), sealed.last).unwrap();
+        let opened = PageCipher::new(subkey, segment).open(&page).ok()?;
+        opened
+            .records()
+            .next()
+            .map(|record| record.payload.to_vec())
+    }
 
     /// A close with no billing row changes nothing: no row appears, nothing
     /// is marked for writing and no month is staged.
@@ -139,34 +158,30 @@ mod tests {
     }
 
     /// A group's requests under one subkey share one cipher, and a request
-    /// under another subkey gets its own: its frames decrypt under its own
+    /// under another subkey gets its own: its pages open under its own
     /// subkey and not under the first.
     #[test]
     fn a_group_shares_a_cipher_per_subkey() {
         let (segment, first, other) = ([3; 16], [7; 32], [8; 32]);
         let mut frames = FrameEffects::default();
-        let cipher = frames.cipher(&first, &segment, FrameCompression::Disabled);
-        let again = frames.cipher(&first, &segment, FrameCompression::Disabled);
+        let cipher = frames.cipher(&first, &segment);
+        let again = frames.cipher(&first, &segment);
         assert!(Arc::ptr_eq(&cipher, &again), "one derivation per subkey");
         let mut last = [7; 32];
         last[31] = 9;
         for subkey in [other, last] {
-            let theirs = frames.cipher(&subkey, &segment, FrameCompression::Disabled);
+            let theirs = frames.cipher(&subkey, &segment);
             assert!(!Arc::ptr_eq(&cipher, &theirs), "{subkey:?} derives its own");
-            let frame = theirs.encrypt(&segment, 1, 2, 0, "", b"record");
-            let decoded = decode_frame(&frame).unwrap();
             assert_eq!(
-                decrypt_frame(&subkey, &segment, &decoded, &frame).unwrap(),
-                b"record"
+                reopen(&theirs, &subkey, &segment, 1, b"record").as_deref(),
+                Some(&b"record"[..])
             );
-            assert!(decrypt_frame(&first, &segment, &decoded, &frame).is_err());
+            assert_eq!(reopen(&theirs, &first, &segment, 1, b"record"), None);
         }
-        let back = frames.cipher(&first, &segment, FrameCompression::Disabled);
-        let frame = back.encrypt(&segment, 3, 4, 0, "", b"again");
-        let decoded = decode_frame(&frame).unwrap();
+        let back = frames.cipher(&first, &segment);
         assert_eq!(
-            decrypt_frame(&first, &segment, &decoded, &frame).unwrap(),
-            b"again"
+            reopen(&back, &first, &segment, 3, b"again").as_deref(),
+            Some(&b"again"[..])
         );
     }
 }

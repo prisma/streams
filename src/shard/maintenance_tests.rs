@@ -2,6 +2,7 @@
 //! state, and the absorbed-boundary retirement that keeps the ledger exact.
 #![cfg(test)]
 use super::*;
+use crate::crypto_page::shard_page_key;
 use std::sync::Arc;
 
 /// R25-A: the delta rule. Retirement past the ledger is an ERROR —
@@ -356,7 +357,7 @@ async fn append(engine: &ShardEngine, hash: [u8; 16]) -> Result<AppendAck, Appen
 async fn stored_bytes(engine: &ShardEngine, hash: &[u8; 16], from: u64, upto: u64) -> u64 {
     let mut total = 0;
     for offset in from..upto {
-        let row = engine.db.get(record_key(hash, offset)).await.unwrap();
+        let row = engine.db.get(shard_page_key(hash, offset)).await.unwrap();
         total += row.unwrap().len() as u64;
     }
     total
@@ -413,8 +414,22 @@ async fn a_trim_tick_drains_what_an_advances_budget_left() {
         engine.commit_group(vec![CommitOp::TrimTick], &cfg).await;
         assert_eq!(applied(&engine, h).await.trimmed, trimmed);
     }
-    assert!(engine.db.get(record_key(&h, 3)).await.unwrap().is_none());
-    assert!(engine.db.get(record_key(&h, 4)).await.unwrap().is_some());
+    assert!(
+        engine
+            .db
+            .get(shard_page_key(&h, 3))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        engine
+            .db
+            .get(shard_page_key(&h, 4))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// Committer layer: in one group, an advance over [0, 4) and a second
@@ -476,7 +491,14 @@ async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_appe
         "the advance from the boundary did not retire"
     );
     assert_eq!((tail.trim_safe_to, tail.trimmed), (4, 4));
-    assert!(engine.db.get(record_key(&h, 0)).await.unwrap().is_none());
+    assert!(
+        engine
+            .db
+            .get(shard_page_key(&h, 0))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(engine.trim_deletes_total.load(Ordering::Relaxed), 4);
     assert_eq!(
         tail.unabsorbed_bytes,

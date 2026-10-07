@@ -2,18 +2,38 @@
 //! Checked stored-record admission, shared by shard and history readers.
 //! Invalid cache entries force a canonical storage read; corrupt stored rows
 //! fail before either matching or match-free progress can be published.
-use super::{Deliver, ShardEngine, StreamHandle, record_key};
+//!
+//! The shard log stores layout 5 pages under `hash16 ‖ 'p' ‖ last offset`.
+//! A read of `[from, to)` scans from the key of `from`, so the first page it
+//! meets holds `from`, and stops at the first page that starts at or after
+//! `to`; a page holds at most `PAGE_MAX_RECORDS` records, so the scan never
+//! needs keys past `to - 1 + PAGE_MAX_RECORDS`.
+use super::{Deliver, ShardEngine, StreamHandle};
 use crate::crypto::{DecodedFrame, decode_frame};
+use crate::crypto_page::{
+    CheckedPage, PAGE_MAX_RECORDS, PageCorruption, shard_page_key, shard_page_prefix,
+};
 mod checked;
+mod pages;
 pub(crate) use checked::CheckedFrame;
+pub(crate) use pages::{PageSlice, PageSlices};
 use slatedb::config::{DurabilityLevel, ScanOptions};
+
+/// How far past `to - 1` a window's scan may have to read to meet the page
+/// holding `to - 1`.
+const PAGE_SPAN: u64 = PAGE_MAX_RECORDS as u64;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecordCorruption {
     KeyWidth,
     Namespace,
     Frame,
-    Offset { stored: u64, header: u64 },
+    Offset {
+        stored: u64,
+        header: u64,
+    },
+    /// A shard-log page failed admission against its row key.
+    Page(PageCorruption),
 }
 impl std::fmt::Display for RecordCorruption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,6 +64,14 @@ impl From<RecordCorruption> for RangeReadError {
 impl From<slatedb::Error> for RangeReadError {
     fn from(error: slatedb::Error) -> Self {
         Self::Store(error)
+    }
+}
+impl From<RangeReadError> for slatedb::Error {
+    fn from(error: RangeReadError) -> Self {
+        match error {
+            RangeReadError::Corrupt(corruption) => corruption.into(),
+            RangeReadError::Store(error) => error,
+        }
     }
 }
 
@@ -93,10 +121,13 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
     Ok(frame)
 }
 
-/// Frames with offset in [scan_from, durable_next), optionally filtered by
-/// routing key (frame metadata; no decryption needed).
+/// The pages holding offsets in [scan_from, durable_next), each sliced to
+/// the records of the window, optionally filtered by routing key (clear page
+/// metadata; no decryption needed). `last_offset` is the consumed progress:
+/// the last record of the last inspected slice, matching or not.
+#[derive(Default)]
 pub(crate) struct FrameReadResult {
-    pub frames: Vec<CheckedFrame>,
+    pub frames: PageSlices,
     pub last_offset: Option<u64>,
     pub(super) coverage: Option<DurableRingCoverage>,
 }
@@ -142,10 +173,9 @@ impl FrameReadResult {
 /// ranges partition the log exactly — the absorber issues several of these
 /// concurrently to hide per-chunk object-store latency (a serial 8 MB chunk
 /// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
-#[expect(
-    clippy::indexing_slicing,
-    reason = "read_frames_range; the canonical record key carries a 17-byte namespace prefix by construction, so the slice is total; a fallible slice would add a corruption path no encoded key reaches"
-)]
+/// The absorber's windows start and end on page edges (the absorbed
+/// boundary and the durable frontier are both page edges), so each slice it
+/// receives is a whole page.
 pub(crate) async fn read_frames_range(
     engine: &ShardEngine,
     handle: &StreamHandle,
@@ -153,14 +183,8 @@ pub(crate) async fn read_frames_range(
     scan_to: u64,
     max_bytes: usize,
 ) -> Result<FrameReadResult, RangeReadError> {
-    let hash = handle.hash;
-    let mut out = FrameReadResult {
-        frames: Vec::new(),
-        last_offset: None,
-        coverage: None,
-    };
     if scan_from >= scan_to {
-        return Ok(out);
+        return Ok(FrameReadResult::default());
     }
     // Durable-tail fast path: live readers chase offsets the ring still
     // holds; the scan below is the canonical fallback (restart, eviction,
@@ -173,32 +197,135 @@ pub(crate) async fn read_frames_range(
     if let Some(hit) = engine.ring_read(handle, window, None) {
         return Ok(hit);
     }
-    let prefix = record_key(&hash, 0);
-    let range = record_key(&hash, scan_from)..record_key(&hash, scan_to);
-    let mut iter = engine
-        .db
-        .scan_with_options(
-            range,
-            &ScanOptions {
-                durability_filter: DurabilityLevel::Remote,
-                read_ahead_bytes: 2 * 1024 * 1024,
-                max_fetch_tasks: 4,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let mut total = 0usize;
-    while let Some(kv) = iter.next().await? {
-        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
-        let off = frame.view().header.offset;
-        total = total.saturating_add(frame.len());
-        out.frames.push(frame);
-        out.last_offset = Some(off);
-        if total >= max_bytes {
-            break;
+    engine
+        .scan_pages(handle.hash, window, None, DurabilityLevel::Remote)
+        .await
+}
+
+impl ShardEngine {
+    /// The canonical page scan of `window` at `durability`: every page that
+    /// holds a record of `[from, to)`, sliced to the window, until the
+    /// stored page bytes reach `max_bytes` (the page that reaches them is
+    /// kept, so the first page always fits). A page of another routing key
+    /// than `key_filter` is inspected and skipped without decrypting; its
+    /// records still count as consumed progress.
+    pub(super) async fn scan_pages(
+        &self,
+        hash: [u8; 16],
+        window: super::RingScan,
+        key_filter: Option<&str>,
+        durability: DurabilityLevel,
+    ) -> Result<FrameReadResult, RangeReadError> {
+        let super::RingScan {
+            from,
+            to,
+            max_bytes,
+        } = window;
+        let mut out = FrameReadResult::default();
+        if from >= to {
+            return Ok(out);
         }
+        let prefix = shard_page_prefix(&hash);
+        let bound = to.saturating_sub(1).saturating_add(PAGE_SPAN);
+        let range = shard_page_key(&hash, from)..shard_page_key(&hash, bound);
+        let mut iter = self
+            .db
+            .scan_with_options(
+                range,
+                &ScanOptions {
+                    durability_filter: durability,
+                    read_ahead_bytes: 2 * 1024 * 1024,
+                    max_fetch_tasks: 4,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let mut total = 0usize;
+        while let Some(kv) = iter.next().await? {
+            let page = CheckedPage::from_row(&kv.key, &prefix, kv.value)
+                .map_err(RecordCorruption::Page)?;
+            // The first page that starts at or after `to` ends the window.
+            let Some(slice) = PageSlice::clip(page, from, to) else {
+                break;
+            };
+            total = total.saturating_add(slice.stored_len());
+            out.last_offset = Some(slice.last());
+            if key_filter.is_none_or(|key| key == slice.page().routing_key()) {
+                out.frames.push(slice);
+            }
+            if total >= max_bytes {
+                break;
+            }
+        }
+        Ok(out)
     }
-    Ok(out)
+
+    /// `window` as a read at `deliver` sees it. DURABLE reads try the ring
+    /// first: it holds only durable pages, so an Applied read chasing the
+    /// just-applied suffix scans (the suffix is memtable-resident, so the
+    /// scan costs no store round-trip). Filtered reads use the keyed ring
+    /// read (#272): page headers are plaintext, so the lane filter runs on
+    /// the ring copy and the consumed offset still covers non-matching pages.
+    async fn read_window(
+        &self,
+        handle: &StreamHandle,
+        window: super::RingScan,
+        key_filter: Option<&str>,
+        deliver: Deliver,
+    ) -> Result<FrameReadResult, slatedb::Error> {
+        if window.from >= window.to {
+            return Ok(FrameReadResult::default());
+        }
+        if deliver == Deliver::Durable
+            && let Some(hit) = self.ring_read(handle, window, key_filter)
+        {
+            return Ok(hit);
+        }
+        Ok(self
+            .scan_pages(handle.hash, window, key_filter, deliver.durability())
+            .await?)
+    }
+}
+
+/// Tail repair (R26-4) over pages: the stored bytes of the pages holding
+/// `[absorbed, next)`. The pages must hold exactly those records, page after
+/// page: a missing page inside the unabsorbed range is corruption, and
+/// repairing over it would bake the hole into the ledger, so the engine
+/// open fails instead.
+pub(super) async fn unabsorbed_page_bytes(
+    db: &slatedb::Db,
+    hash: &[u8; 16],
+    absorbed: u64,
+    next: u64,
+) -> anyhow::Result<u64> {
+    let prefix = shard_page_prefix(hash);
+    let mut rows = db
+        .scan(shard_page_key(hash, absorbed)..shard_page_key(hash, next))
+        .await?;
+    let (mut sum, mut expected) = (0u64, absorbed);
+    while let Some(row) = rows.next().await? {
+        let page = CheckedPage::from_row(&row.key, &prefix, row.value)
+            .map_err(|corruption| anyhow::anyhow!("tail repair: page {corruption:?}"))?;
+        let starts_inside = expected == absorbed && page.first() <= absorbed;
+        anyhow::ensure!(
+            starts_inside || page.first() == expected,
+            "tail repair found a page [{}, {}] where offset {expected} was due",
+            page.first(),
+            page.last(),
+        );
+        sum = sum
+            .checked_add(page.raw().len() as u64)
+            .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
+        expected = page
+            .last()
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
+    }
+    anyhow::ensure!(
+        expected == next,
+        "tail repair found pages for [{absorbed}, {expected}) of [{absorbed}, {next})",
+    );
+    Ok(sum)
 }
 
 #[cfg(test)]
@@ -282,10 +409,6 @@ impl ShardEngine {
     reason = "read_frames_until; a bounded durable read names its engine, stream, window, key filter, byte budget and delivery separately as the application resolved them; a request struct would exist for this single boundary"
 )]
 #[expect(
-    clippy::indexing_slicing,
-    reason = "read_frames_until; the canonical record key carries a 17-byte namespace prefix by construction, so the slice is total; a fallible slice would add a corruption path no encoded key reaches"
-)]
-#[expect(
     clippy::unwrap_used,
     reason = "read_frames_until; a poisoned handle state may hold a partially advanced boundary; recovering it could serve frames past a boundary that was never committed"
 )]
@@ -298,7 +421,7 @@ pub(crate) async fn read_frames_until(
     max_bytes: usize,
     deliver: Deliver,
 ) -> Result<FrameReadResult, slatedb::Error> {
-    let (hash, end) = {
+    let end = {
         let st = handle.state.lock().unwrap();
         let end = match deliver {
             Deliver::Durable => st.durable.next,
@@ -307,62 +430,17 @@ pub(crate) async fn read_frames_until(
             // means Applied can never see LESS than a durable reader.
             Deliver::Applied => st.applied.next.max(st.durable.next),
         };
-        (handle.hash, end.min(scan_to))
+        end.min(scan_to)
     };
-    let mut out = FrameReadResult {
-        frames: Vec::new(),
-        last_offset: None,
-        coverage: None,
+    // The ring serves DURABLE windows only; see `read_window`.
+    let window = super::RingScan {
+        from: scan_from,
+        to: end,
+        max_bytes,
     };
-    if scan_from >= end {
-        return Ok(out);
-    }
-    // Durable-tail fast path (see read_frames_range). DURABLE reads
-    // only: the ring holds only durable frames — an Applied read
-    // chasing the just-applied suffix must scan (the suffix is
-    // memtable-resident, so the scan costs no store round-trip).
-    // Filtered reads use the keyed variant (#272): frame headers are
-    // plaintext, so the lane filter runs on the ring copy and the
-    // consumed offset still covers non-matching frames.
-    if deliver == Deliver::Durable {
-        let window = super::RingScan {
-            from: scan_from,
-            to: end,
-            max_bytes,
-        };
-        let hit = engine.ring_read(handle, window, key_filter);
-        if let Some(hit) = hit {
-            return Ok(hit);
-        }
-    }
-    let prefix = record_key(&hash, 0);
-    let range = record_key(&hash, scan_from)..record_key(&hash, end);
-    let mut iter = engine
-        .db
-        .scan_with_options(
-            range,
-            &ScanOptions {
-                durability_filter: deliver.durability(),
-                read_ahead_bytes: 2 * 1024 * 1024,
-                max_fetch_tasks: 4,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let mut total = 0usize;
-    while let Some(kv) = iter.next().await? {
-        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
-        let off = frame.view().header.offset;
-        total = total.saturating_add(frame.len());
-        if !key_filter.is_some_and(|kf| frame.view().header.routing_key != kf) {
-            out.frames.push(frame);
-        }
-        out.last_offset = Some(off);
-        if total >= max_bytes {
-            break;
-        }
-    }
-    Ok(out)
+    engine
+        .read_window(handle, window, key_filter, deliver)
+        .await
 }
 
 // Scoped to the actual read future, so a held redundant marker operation does

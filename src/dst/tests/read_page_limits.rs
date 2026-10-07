@@ -33,7 +33,6 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
             absorber: Some(cold_absorber()),
             max_request_body_bytes: Some(32 << 20),
             shard: crate::shard::ShardConfig {
-                frame_compression: crate::crypto::FrameCompression::ZstdLevel1,
                 tail_ring_bytes: 4 << 20,
                 ..Default::default()
             },

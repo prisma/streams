@@ -59,7 +59,7 @@
     "from_commit": "6ea617d4fbc1863f3e7e80865116ebce46495e09",
     "from_file": "src/shard.rs",
     "to_file": "src/shard/billing_read_tests.rs",
-    "function_sha256": "71412f1033b5690af591be179fc8b80699cb6598a51d075f317f07bf4cbf6d9b",
-    "reason": "Accounting-read mechanism test moved with its module into the file-split test module; it now carries the reasoned expectations for its length, its ignored delivery result and its nesting, with the same inputs and assertions. Repinned when the billing ops gained their reply (the lost close's exact fix): the three accounting ops are built by `accounting_op`, the same ops with detached replies."
+    "function_sha256": "48936e2dfbe9a475aa55efbd44880a30aab171402054ed5f38dd07c5bfaa5c26",
+    "reason": "Accounting-read mechanism test moved with its module into the file-split test module; it now carries the reasoned expectations for its length, its ignored delivery result and its nesting, with the same inputs and assertions. Repinned when the billing ops gained their reply (the lost close's exact fix): the three accounting ops are built by `accounting_op`, the same ops with detached replies. Repinned for layout 5 (prototype): the retained record row is read under its page key, `shard_page_key`."
   }
 ]

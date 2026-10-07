@@ -28,13 +28,6 @@ mod billing_service;
 mod bootstrap;
 mod config;
 mod crypto;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "crypto_page; the layout 5 page codec has no service caller until the append and read paths adopt it in the next prototype step; wiring a caller first would mix the stored format with the path changes reviewed apart from it"
-    )
-)]
 mod crypto_page;
 mod deployment;
 mod deployment_bearer;

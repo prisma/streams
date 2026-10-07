@@ -2,6 +2,7 @@
 //! A billing close that would change nothing is skipped whole.
 #![cfg(test)]
 use super::*;
+use crate::crypto_page::shard_page_key;
 
 #[expect(
     clippy::excessive_nesting,
@@ -52,7 +53,7 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
         wb.put(key.clone(), before.clone());
         wb.put(dirty.clone(), 8u64.to_le_bytes());
         wb.put(final_key.clone(), b"owed snapshot");
-        wb.put(record_key(&hash, 0), b"retained record");
+        wb.put(shard_page_key(&hash, 0), b"retained record");
         db.write(wb).await.unwrap();
         for action in 0..3 {
             if !corrupt {
@@ -92,7 +93,7 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
                 b"owed snapshot"
             );
             assert_eq!(
-                db.get(record_key(&hash, 0))
+                db.get(shard_page_key(&hash, 0))
                     .await
                     .unwrap()
                     .unwrap()
@@ -470,7 +471,13 @@ async fn a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_w
         (10, 0, CLOSED, "3153600000", 4, Some(10)),
         "one version for the append, one for the close, none for the second close"
     );
-    assert!(rig.db.get(record_key(&SEGMENT, 0)).await.unwrap().is_some());
+    assert!(
+        rig.db
+            .get(shard_page_key(&SEGMENT, 0))
+            .await
+            .unwrap()
+            .is_some()
+    );
     let ack = tokio::time::timeout(std::time::Duration::from_secs(5), reply)
         .await
         .unwrap()

@@ -28,7 +28,7 @@ pub(crate) enum EnqueueError {
 }
 
 type ReplyEffect<T, E> = (oneshot::Sender<Result<T, E>>, Result<T, E>);
-pub(super) type RingPublication = (Arc<StreamHandle>, Vec<(u64, Bytes)>);
+pub(super) type RingPublication = (Arc<StreamHandle>, RingBatch);
 
 /// Effects whose truth requires the group's REMOTE durability sequence.
 /// No sender/tail/ring/touch escapes this plan before durable dispatch.

@@ -1,6 +1,6 @@
 //! Retain canonical admission through filtering/decryption without reparsing
 //! scalar metadata. Shared bytes remain immutable and are never plaintext.
-use super::{RecordCorruption, decode_at, decode_row};
+use super::{RecordCorruption, decode_row};
 use crate::crypto::{DecodedFrame, ReadFrameHeader};
 use bytes::Bytes;
 
@@ -24,12 +24,15 @@ impl CheckedFrame {
         let metadata = Self::metadata(&parsed);
         Ok(Self::retain(raw, metadata))
     }
+    /// Stored frames no longer reach a ring (it holds layout 5 pages); the
+    /// history leg's frame tests still admit frames at an offset this way.
+    #[cfg(test)]
     pub(crate) fn from_ring(
         raw: &Bytes,
         offset: u64,
         selector: Option<&str>,
     ) -> Result<Option<Self>, RecordCorruption> {
-        let parsed = decode_at(raw, offset)?;
+        let parsed = super::decode_at(raw, offset)?;
         if selector.is_some_and(|key| key != parsed.header.routing_key) {
             return Ok(None);
         }
@@ -120,6 +123,12 @@ mod tests {
     use super::*;
     use crate::crypto::{FrameCipher, FrameCompression, decrypt_frame};
 
+    /// The per-record key shape stored frames are admitted under: a 17-byte
+    /// namespace and the offset.
+    fn frame_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
+        [hash.as_slice(), b"r", &offset.to_be_bytes()].concat()
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "CheckedFrame storage-identity regression; canonical 25-byte keys and successfully admitted frame ranges establish every slice; direct pointer comparisons prove borrowing without an extra helper or copied oracle"
@@ -137,7 +146,7 @@ mod tests {
                     lane,
                     &vec![0x5a; 4096],
                 ));
-                let key = crate::shard::record_key(&[8; 16], 17);
+                let key = frame_key(&[8; 16], 17);
                 let admitted = CheckedFrame::from_row(&key, &key[..17], raw.clone()).unwrap();
                 let checked = admitted.view();
                 assert_eq!(
@@ -182,7 +191,7 @@ mod tests {
     fn o1_structural_admission_never_substitutes_for_authentication() {
         let mut raw = FrameCipher::new(&[7; 32], &[8; 16], FrameCompression::Disabled)
             .encrypt(&[8; 16], 17, 0, 1, "other", b"payload");
-        let key = crate::shard::record_key(&[8; 16], 17);
+        let key = frame_key(&[8; 16], 17);
         let end = raw.len() - 1;
         raw[end] ^= 1;
         let frame = CheckedFrame::from_row(&key, &key[..17], Bytes::from(raw.clone())).unwrap();

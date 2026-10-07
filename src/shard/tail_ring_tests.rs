@@ -1,5 +1,5 @@
 //! The durable-tail ring's eviction bookkeeping across a gap reset.
-use crate::shard::{ShardConfig, ShardEngine, ShardMaintenance, StreamHandle};
+use crate::shard::{RingBatch, ShardConfig, ShardEngine, ShardMaintenance, StreamHandle};
 use bytes::Bytes;
 use slatedb::Db;
 use std::sync::Arc;
@@ -27,11 +27,14 @@ async fn engine(tail_ring_bytes: usize) -> Arc<ShardEngine> {
     )
 }
 
-/// `n` opaque frames of `size` bytes at consecutive offsets from `from`.
-fn frames(from: u64, n: u64, size: usize) -> Vec<(u64, Bytes)> {
-    (from..from + n)
-        .map(|offset| (offset, Bytes::from(vec![0u8; size])))
-        .collect()
+/// A batch of `n` opaque one-record pages of `size` bytes at consecutive
+/// offsets from `from`.
+fn frames(from: u64, n: u64, size: usize) -> RingBatch {
+    let mut batch = RingBatch::default();
+    for offset in from..from + n {
+        batch.push_page(offset, offset, Bytes::from(vec![0u8; size]));
+    }
+    batch
 }
 
 fn batch_starts(handle: &StreamHandle) -> Vec<u64> {

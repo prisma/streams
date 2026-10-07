@@ -104,15 +104,16 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 
 /// The part of every shard engine's configuration that the parsed settings
 /// decide: the WAL pipeline, the gather-skip constants, the trims, the
-/// handle settings, the tail ring, frame compression, the history settings
-/// and the compactor options. `run` adds the runtime's shared handles once
-/// and hands each engine a clone, so this is where a setting is shown to
-/// reach the engine.
+/// handle settings, the tail ring, the history settings and the compactor
+/// options. `run` adds the runtime's shared handles once and hands each
+/// engine a clone, so this is where a setting is shown to reach the engine.
+/// FRAME_COMPRESS no longer reaches it: layout 5 pages compress whenever
+/// that pays (the setting's removal is the layout cutover's own step).
 fn shard_config(
     args: &crate::config::CliArgs,
     history: crate::config::HistoryConfig,
     compactor_options: slatedb::config::CompactorOptions,
-    frame_compress: bool,
+    _frame_compress: bool,
 ) -> ShardConfig {
     let mut config = ShardConfig {
         max_trim_per_op: args.trim_per_op,
@@ -127,7 +128,6 @@ fn shard_config(
         tail_ring_bytes: args.tail_ring_bytes,
         handle_idle_evict: Duration::from_secs(args.handle_idle_evict_secs),
         handle_max_resident: args.handle_max_resident,
-        frame_compression: crate::crypto::FrameCompression::from_enabled(frame_compress),
         history,
         compactor_options,
         ..Default::default()

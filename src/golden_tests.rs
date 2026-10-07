@@ -37,14 +37,15 @@ mod shard_keys {
     }
 
     #[test]
-    fn golden_layout4_record_key_bytes_be_offset() {
-        // <hash16> 'r' <offset u64 BIG-endian> — BE keeps keys
+    fn golden_layout5_shard_page_key_bytes_be_last_offset() {
+        // <hash16> 'p' <last offset u64 BIG-endian> — BE keeps pages
         // offset-ordered inside the hash range.
+        let key = crate::crypto_page::shard_page_key(&H, OFF);
         assert_eq!(
-            hex(&record_key(&H, OFF)),
-            concat!("11111111111111111111111111111111", "72", "0102030405060708")
+            hex(&key),
+            concat!("11111111111111111111111111111111", "70", "0102030405060708")
         );
-        assert_eq!(record_key(&H, OFF).len(), 25);
+        assert_eq!(key.len(), 25);
     }
 
     #[test]

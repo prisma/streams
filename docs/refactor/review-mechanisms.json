@@ -109,7 +109,7 @@
         {
           "file": "src/shard/billing_read_tests.rs",
           "name": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version",
-          "sha256": "71412f1033b5690af591be179fc8b80699cb6598a51d075f317f07bf4cbf6d9b"
+          "sha256": "48936e2dfbe9a475aa55efbd44880a30aab171402054ed5f38dd07c5bfaa5c26"
         }
       ]
     },
@@ -852,7 +852,7 @@
         {
           "file": "src/shard/retirement_tests.rs",
           "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
-          "sha256": "bc4f5869cdc1e62dd93e116b65edcb96accbd243ed5b521060ce4aad469559b1"
+          "sha256": "cfd34e54f504e2605f22fe3696d685f037c97a59500de6e317ff9efb8d992d16"
         }
       ],
       "support_functions": [
@@ -939,7 +939,7 @@
         {
           "file": "src/shard/maintenance_tests.rs",
           "name": "an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
-          "sha256": "94a57bccbcce40ea332a33541633a101aa654263d68392877b9b8e01ca03f668"
+          "sha256": "0e5fc0447f49e618b55923b2d2c2441fd3b109a577e1c2b53705cc7a5184891b"
         },
         {
           "file": "src/shard/maintenance_tests.rs",

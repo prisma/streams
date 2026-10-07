@@ -1,6 +1,7 @@
 #![cfg(test)]
 //! R17-B: stop a real transaction after staging/write, with its WAL held.
 use super::*;
+use crate::crypto_page::shard_page_key;
 use crate::queue::QueueOp;
 use slatedb::config::{DurabilityLevel, ReadOptions};
 use std::time::Duration;
@@ -551,7 +552,7 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
         (1, 1, 7)
     );
     let frame = replacement
-        .get(record_key(&HASH, 0))
+        .get(shard_page_key(&HASH, 0))
         .await
         .unwrap()
         .unwrap();

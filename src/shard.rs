@@ -1,11 +1,11 @@
 //! Shard log engine: one SlateDB per shard, hash-first keyspace, committer +
-//! durable-watermark acker (§3.4). Record values ARE the wire frames (§3.7):
-//! encryption happens in the committer, after offset assignment, because the
-//! the authenticated metadata includes the assigned offset.
+//! durable-watermark acker (§3.4). Records are stored as layout 5 pages: the
+//! committer seals each request's records into pages after offset
+//! assignment, because the authenticated header carries the first offset.
 //!
 //! Keyspace (hash-first so a hash range is one contiguous split range):
-//!   `<hash16> 't'`                 tail state
-//!   `<hash16> 'r' <offset u64 BE>` record frame
+//!   `<hash16> 't'`                      tail state
+//!   `<hash16> 'p' <last offset u64 BE>` record page
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,14 +50,6 @@ pub(crate) fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
     k.extend_from_slice(hash);
     k.push(b't');
-    k
-}
-
-pub(crate) fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(25);
-    k.extend_from_slice(hash);
-    k.push(b'r');
-    k.extend_from_slice(&offset.to_be_bytes());
     k
 }
 
@@ -386,8 +378,8 @@ pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<Shard
 /// R26-4 tail repair: a tail written before the exact gauge existed
 /// decodes `unabsorbed_bytes == 0` while genuinely holding
 /// `absorbed < next` — impossible for an exact tail (every encoded
-/// frame is nonzero bytes), so that shape identifies a legacy row. Its
-/// exact gauge is recomputed by summing the actual stored frames in
+/// page is nonzero bytes), so that shape identifies a legacy row. Its
+/// exact gauge is recomputed by summing the stored pages holding
 /// `[absorbed, next)` and the repaired tail is staged in the SAME
 /// WriteBatch as the rebuilt shard row. Without this, the stream's
 /// first boundary advance retires real frame bytes against a zero
@@ -410,27 +402,8 @@ async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintena
         };
         let mut tail = stored_tail(&tail_raw)?;
         if tail.absorbed < tail.next && tail.unabsorbed_bytes == 0 {
-            let mut sum = 0u64;
-            let mut frames = db
-                .scan(record_key(&h, tail.absorbed)..record_key(&h, tail.next))
-                .await?;
-            let mut count = 0u64;
-            while let Some(rec) = frames.next().await? {
-                sum = sum
-                    .checked_add(rec.value.len() as u64)
-                    .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
-                count += 1;
-            }
-            // A missing frame row inside the unabsorbed range is
-            // corruption, and repairing over it would bake the hole
-            // into the ledger: fail the engine open instead.
-            anyhow::ensure!(
-                count == tail.next - tail.absorbed,
-                "tail repair found {count} frames for range [{}, {})",
-                tail.absorbed,
-                tail.next,
-            );
-            tail.unabsorbed_bytes = sum;
+            tail.unabsorbed_bytes =
+                record::unabsorbed_page_bytes(db, &h, tail.absorbed, tail.next).await?;
             repaired_tails.push((h, tail.clone()));
         }
         total = total
@@ -600,13 +573,36 @@ impl StreamHandle {
     }
 }
 
-/// One durably-committed group's frames for one stream: a contiguous
-/// offset range [first, next) in publish order.
+/// One durably-committed group's pages for one stream: a contiguous
+/// offset range [first, next) in publish order, each page as (last offset,
+/// stored bytes).
+#[derive(Clone, Default)]
 pub(crate) struct RingBatch {
     pub first: u64,
     pub next: u64,
     pub frames: Vec<(u64, Bytes)>,
     pub bytes: usize,
+}
+
+impl RingBatch {
+    /// Add the page holding `[first, last]`, the next one of the batch.
+    fn push_page(&mut self, first: u64, last: u64, page: Bytes) {
+        if self.frames.is_empty() {
+            self.first = first;
+        }
+        debug_assert_eq!(
+            self.next.max(self.first),
+            first,
+            "ring pages are contiguous"
+        );
+        self.next = last + 1;
+        self.bytes += page.len();
+        self.frames.push((last, page));
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -956,10 +952,6 @@ pub(crate) struct ShardConfig {
     pub shared_history: Option<Arc<crate::history::HistoryResources>>,
     pub shared_usage: Option<Arc<crate::usage::UsageService>>,
     pub shared_ops: Option<Arc<crate::ops::OpsService>>,
-    /// Writer-side frame compression policy for this engine (explicit,
-    /// selected at engine construction — the codec does no ambient
-    /// lookup). Readers accept both frame versions unconditionally.
-    pub frame_compression: crate::crypto::FrameCompression,
     /// History/absorber knobs for the shard's shared history v2
     /// partition (from the process ServerConfig at construction).
     pub history: crate::config::HistoryConfig,
@@ -991,7 +983,6 @@ impl Default for ShardConfig {
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
-            frame_compression: crate::crypto::FrameCompression::Disabled,
             history: crate::config::HistoryConfig::default(),
             compactor_options: crate::config::EngineConfig::default().compactor_options(),
         }
@@ -2822,5 +2813,7 @@ pub(crate) use test_support::{
     encode_tail_without_gauge_for_tests, inject_dirty_scan_faults,
 };
 
+#[cfg(test)]
+mod page_log_tests;
 #[cfg(test)]
 mod retirement_tests;

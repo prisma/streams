@@ -185,17 +185,21 @@ impl Fixture {
         let actual = self.rows().await;
         let mut total = 0;
         for hash in [HASH, FINAL] {
-            let key = record_key(&hash, 0);
+            let key = crate::crypto_page::shard_page_key(&hash, 0);
             let frame = actual[&key].clone();
-            let decoded = crate::crypto::decode_frame(&frame).unwrap();
-            let plaintext =
-                crate::crypto::decrypt_frame(&[1; 32], &hash, &decoded, &frame).unwrap();
-            let header = &decoded.header;
+            let page =
+                crate::crypto_page::CheckedPage::admit(Bytes::from(frame.clone()), 0).unwrap();
+            let opened = crate::crypto_page::PageCipher::new(&[1; 32], &hash)
+                .open(&page)
+                .unwrap();
+            let records: Vec<_> = opened
+                .records()
+                .map(|record| (record.offset, record.ts_ms, record.payload.to_vec()))
+                .collect();
             assert_eq!(
-                (header.offset, header.ts_ms, header.routing_key),
-                (0, 77, "lane")
+                (page.routing_key(), records),
+                ("lane", vec![(0, 77, b"payload".to_vec())])
             );
-            assert_eq!(plaintext, b"payload");
             let bytes = frame.len() as u64;
             total += bytes;
             expected.insert(key, frame);

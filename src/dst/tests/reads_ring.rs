@@ -1,7 +1,7 @@
 //! Reads ring.
 
 use super::fixture_storage::{
-    absorb_through, append_sized, mem, open_engine, open_engine_cfg, skey,
+    absorb_through, append_sized, mem, open_engine, open_engine_cfg, sized, skey,
 };
 use crate::dst::{FaultPlan, FaultStore, OpLog, Outcome, Workload, drain_observed};
 use object_store::ObjectStore;
@@ -497,7 +497,7 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
         page.recs.iter().map(|r| r.off).collect::<Vec<_>>(),
         vec![1, 3]
     );
-    assert!(page.recs.iter().all(|r| r.payload.as_ref() == [0x5a; 1024]));
+    assert!(page.recs.iter().all(|r| *r.payload == sized(1024)[..]));
     assert_eq!(page.last, Some(3));
     assert!(page.completed);
     assert!(

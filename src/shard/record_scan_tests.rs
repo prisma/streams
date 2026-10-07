@@ -1,14 +1,35 @@
 //! R08-A: real persisted scans, rather than an ordered-key model.
 use super::{
     Deliver, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail, producer_key,
-    read_frames, read_frames_range, record::RangeReadError, record_key, tail_key,
+    read_frames, read_frames_range, record::RangeReadError, tail_key,
 };
+use crate::crypto_page::{PageCipher, PageLane, shard_page_key};
 use bytes::Bytes;
 use slatedb::{Db, WriteBatch};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
+/// A one-record page at `offset` in `lane`.
 fn encoded_record(offset: u64, lane: &str) -> Bytes {
+    let lane = PageLane {
+        ts_ms: 1,
+        key_version: 1,
+        routing_key: lane,
+    };
+    let page = PageCipher::new(&[7; 32], &[8; 16])
+        .seal(&lane, offset, &[b"retained payload"])
+        .unwrap();
+    Bytes::from(page.bytes)
+}
+
+/// The legacy per-record key shape stored frames are admitted under (the
+/// history leg still stores frames).
+fn frame_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
+    [hash.as_slice(), b"r", &offset.to_be_bytes()].concat()
+}
+
+/// A frame at `offset` in `lane`, for the frame admission boundary.
+fn encoded_frame(offset: u64, lane: &str) -> Bytes {
     Bytes::from(
         crate::crypto::FrameCipher::new(
             &[7; 32],
@@ -89,26 +110,26 @@ async fn stored_rows(engine: &ShardEngine) -> Vec<(Bytes, Bytes)> {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
-    let mut short = record_key(&[8; 16], 1);
+    let mut short = shard_page_key(&[8; 16], 1);
     short.remove(17);
-    let mut long = record_key(&[8; 16], 1);
+    let mut long = shard_page_key(&[8; 16], 1);
     long.push(0);
     let cases = [
         ("short", short, encoded_record(1, "wanted")),
         ("long", long, encoded_record(1, "wanted")),
         (
             "offset",
-            record_key(&[8; 16], 1),
+            shard_page_key(&[8; 16], 1),
             encoded_record(2, "other"),
         ),
         (
             "frame",
-            record_key(&[8; 16], 1),
+            shard_page_key(&[8; 16], 1),
             Bytes::from_static(b"invalid frame"),
         ),
     ];
     for (label, key, value) in cases {
-        assert!(record_key(&[8; 16], 0) < key && key < record_key(&[8; 16], 512));
+        assert!(shard_page_key(&[8; 16], 0) < key && key < shard_page_key(&[8; 16], 512));
         let engine = scan_fixture(&format!("r08a-{label}"), key, value, 0).await;
         let handle = engine.stream_handle([8; 16]).await.unwrap();
         let before = stored_rows(&engine).await;
@@ -151,7 +172,7 @@ async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
 async fn r08a_valid_filtered_miss_keeps_legitimate_progress() {
     let engine = scan_fixture(
         "r08a-valid-miss",
-        record_key(&[8; 16], 1),
+        shard_page_key(&[8; 16], 1),
         encoded_record(1, "other"),
         0,
     )
@@ -177,8 +198,8 @@ async fn r08a_valid_filtered_miss_keeps_legitimate_progress() {
 #[test]
 fn r08a_record_boundary_validates_namespace_extent_and_offset() {
     use super::record::{RecordCorruption, decode_row};
-    let key = record_key(&[8; 16], 1);
-    let raw = encoded_record(1, "other");
+    let key = frame_key(&[8; 16], 1);
+    let raw = encoded_frame(1, "other");
     assert!(decode_row(&key, &key[..17], &raw).is_ok());
     for at in [0, 16] {
         let mut foreign = key.clone();
@@ -197,7 +218,7 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
         ));
     }
     assert!(matches!(
-        decode_row(&key, &key[..17], &encoded_record(2, "other")),
+        decode_row(&key, &key[..17], &encoded_frame(2, "other")),
         Err(RecordCorruption::Offset { .. })
     ));
     let mut trailing = raw.to_vec();
@@ -228,7 +249,7 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
 async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress() {
     let engine = scan_fixture(
         "r08a-ring",
-        record_key(&[8; 16], 1),
+        shard_page_key(&[8; 16], 1),
         encoded_record(1, "wanted"),
         1 << 20,
     )
@@ -255,7 +276,8 @@ async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress(
     let page = read_frames(&engine, &handle, 0, Some("wanted"), 1024, Deliver::Durable)
         .await
         .unwrap();
-    assert_eq!(page.frames, vec![encoded_from_store(&engine).await]);
+    let served: Vec<Bytes> = page.frames.iter().map(|s| s.page().raw().clone()).collect();
+    assert_eq!(served, vec![encoded_from_store(&engine).await]);
     assert_eq!(page.last_offset, Some(1));
     engine.begin_close();
     engine
@@ -267,7 +289,7 @@ async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress(
 async fn encoded_from_store(engine: &ShardEngine) -> Bytes {
     engine
         .db
-        .get(record_key(&[8; 16], 1))
+        .get(shard_page_key(&[8; 16], 1))
         .await
         .unwrap()
         .unwrap()

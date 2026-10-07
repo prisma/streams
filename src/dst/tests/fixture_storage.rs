@@ -4,6 +4,35 @@ use crate::dst::AttemptId;
 use object_store::ObjectStore;
 use std::sync::Arc;
 
+/// `len` deterministic bytes, distinct per `seed`, that zstd cannot shrink:
+/// a fixture that sizes a budget by stored bytes needs payloads a layout 5
+/// page stores at about their own size.
+pub(super) fn noise(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state.to_le_bytes()[0]
+    };
+    (0..len).map(|_| next()).collect()
+}
+
+/// `noise` as `len` JSON-safe characters of a 64-symbol alphabet, which
+/// zstd keeps at about three quarters of its size.
+pub(super) fn noise_text(len: usize, seed: u64) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    noise(len, seed)
+        .into_iter()
+        .map(|byte| char::from(ALPHABET[usize::from(byte & 63)]))
+        .collect()
+}
+
+/// The payload `append_sized` appends: `len` bytes of `noise`.
+pub(super) fn sized(len: usize) -> Vec<u8> {
+    noise(len, 0x5a)
+}
+
 pub(super) fn mem() -> Arc<dyn ObjectStore> {
     Arc::new(object_store::memory::InMemory::new())
 }
@@ -222,7 +251,7 @@ pub(super) async fn append_sized(
         enqueued_at: std::time::Instant::now(),
         hash,
         route: hash,
-        entries: vec![bytes::Bytes::from(vec![0x5au8; payload_bytes])],
+        entries: vec![bytes::Bytes::from(sized(payload_bytes))],
         usage: crate::usage::counters(&hash),
         routing_key: rk.to_string(),
         key_hash: crate::crypto::stream_hash(rk),
@@ -294,8 +323,9 @@ pub(super) async fn append_n(
         enqueued_at: std::time::Instant::now(),
         hash,
         route: hash,
-        entries: (0..n)
-            .map(|_| bytes::Bytes::from(vec![0x5au8; each]))
+        entries: (0u64..)
+            .take(n)
+            .map(|seed| bytes::Bytes::from(noise(each, seed)))
             .collect(),
         usage: crate::usage::counters(&hash),
         routing_key: String::new(),

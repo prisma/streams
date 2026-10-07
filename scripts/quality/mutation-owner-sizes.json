@@ -114,6 +114,7 @@
     "read_wire_tests": 0,
     "record": 60,
     "record_checked": 114,
+    "record_pages": 26,
     "record_scan_tests": 0,
     "registry_cache": 45,
     "registry_replaced": 28,

@@ -10,7 +10,7 @@ use super::fixture_livefeed::{
 };
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
-use super::fixture_storage::mem;
+use super::fixture_storage::{mem, noise_text};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -476,7 +476,7 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     )
     .await;
     assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
-    let payload = format!(r#"{{"pad":"{}"}}"#, "x".repeat(64 * 1024));
+    let payload = format!(r#"{{"pad":"{}"}}"#, noise_text(96 * 1024, 3));
     let (st, _, b) = preq(
         addr,
         "POST",

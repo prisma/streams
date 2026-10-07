@@ -41,9 +41,8 @@ mod header;
 mod open;
 mod seal;
 
-// The service's first caller re-exports `OpenedPage`, `PageRecord` and
-// `split_pages` with it; until then only the module and its tests use them.
 pub(crate) use header::CheckedPage;
+pub(crate) use open::OpenedPage;
 
 /// Version byte of a page whose body is stored raw.
 pub(crate) const PAGE_VER: u8 = 6;
@@ -89,10 +88,18 @@ pub(crate) fn last_offset(first: u64, count: usize) -> Option<u64> {
 /// Shard-log row key of the page whose last offset is `last`.
 pub(crate) fn shard_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
     let mut key = Vec::with_capacity(25);
-    key.extend_from_slice(hash);
-    key.push(PAGE_TAG);
+    key.extend_from_slice(&shard_page_prefix(hash));
     key.extend_from_slice(&last.to_be_bytes());
     key
+}
+
+/// The canonical prefix of a segment's shard-log page keys: its hash and
+/// the page tag. `CheckedPage::from_row` admits a row against it.
+pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; 17] {
+    let mut prefix = [PAGE_TAG; 17];
+    let (namespace, _) = prefix.split_at_mut(16);
+    namespace.copy_from_slice(hash);
+    prefix
 }
 
 /// History row key of the page whose last offset is `last`.

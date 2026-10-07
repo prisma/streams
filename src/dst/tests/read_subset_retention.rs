@@ -13,7 +13,6 @@ async fn rig() -> super::fixture_http::HttpRig {
         HttpRigOptions {
             absorber: Some(cold_absorber()),
             shard: crate::shard::ShardConfig {
-                frame_compression: crate::crypto::FrameCompression::Disabled,
                 tail_ring_bytes: 0,
                 ..Default::default()
             },

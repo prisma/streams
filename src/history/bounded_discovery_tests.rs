@@ -215,8 +215,8 @@ fn assert_ledger_is_exact(regather: &Regather) {
 
 /// Stored frame bytes of one record, if it is stored.
 pub(super) async fn stored_len(engine: &ShardEngine, hash: &[u8; 16], offset: u64) -> Option<u64> {
-    let row = engine.db.get(crate::shard::record_key(hash, offset)).await;
-    row.unwrap().map(|value| value.len() as u64)
+    let key = crate::crypto_page::shard_page_key(hash, offset);
+    engine.db.get(key).await.unwrap().map(|v| v.len() as u64)
 }
 
 /// An engine over a fault store whose WAL puts a test can hold, with an
@@ -749,7 +749,7 @@ async fn until_row0_trimmed_durably(engine: &ShardEngine, hash: [u8; 16], absorb
     for _ in 0..1000 {
         let row0 = engine
             .db
-            .get_with_options(crate::shard::record_key(&hash, 0), &remote)
+            .get_with_options(crate::crypto_page::shard_page_key(&hash, 0), &remote)
             .await
             .unwrap();
         let durable = engine

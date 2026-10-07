@@ -4079,7 +4079,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d00a6ec8fc702354b4d20772732c3a2416dbd50a455aed0b751f86b2a3a50d5c",
+    "function_sha256": "4be88c92f4df9084b646f3c2b328a8239c20fd51a4624c4444faaa644e43f450",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_memory.rs",
@@ -5467,7 +5467,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "63e975b1c399fa1df73dfa6f78cff6fe5d08dd65385431b9413e6a2446ca7565",
+    "function_sha256": "663dc370a6f09a395b62165417e687cb13443a6ef4f0107123fc690274ed9151",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_ring.rs",
@@ -5522,7 +5522,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "082af97970db9e82e43583b07e542e0eede311cad87c0ce97b10562e2f07a257",
+    "function_sha256": "8c480afffdc5855d4b9bad408c832c1d2538a6d9886ef9bb92aec28bf6b000b7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/history_gather.rs",
@@ -5753,7 +5753,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "b045ee4bbdba1a86611a3f367e1c0827909f7feb9c578f4ba5eed5e3f8080011",
+    "function_sha256": "1ead3dbb0e90c437928c484dd9da1f89d993dfed81cea20fa33736255996e50f",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
@@ -6612,7 +6612,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "33b3d4a3ffac0c128af885fce57a5d49f732bbbfb0de9e3ef37fba730e33a560",
+    "function_sha256": "654195e011c0ce7232d3b0896d35579be8a24371c88e116243b9680d78ef3630",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_page_limits.rs",
@@ -7763,7 +7763,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "85fc3bcc98f80a3c7a829ec950b1b76df2d60ecfb284abaf17d5fe484cd46c68",
+    "function_sha256": "b289888d4e5d49c0fcca1691d9ec42a263dae0c9450dc8d06f89c4e7152984f5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",

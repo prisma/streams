@@ -1,8 +1,10 @@
 //! The durable-tail ring: each stream's most recent published batches, held
 //! under one engine-wide byte budget so live readers can chase offsets the
-//! ring still covers without a canonical scan.
-use super::{FrameReadResult, RingBatch, ShardEngine, StreamHandle, record};
-use bytes::Bytes;
+//! ring still covers without a canonical scan. A batch holds the group's
+//! pages of one stream as (last offset, stored page); a read admits each
+//! page it inspects again and slices it to the window.
+use super::{FrameReadResult, RingBatch, ShardEngine, StreamHandle, TailRing, record};
+use crate::crypto_page::CheckedPage;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -24,9 +26,8 @@ impl ShardEngine {
         clippy::unwrap_used,
         reason = "ShardEngine::ring_publish; a poisoned ring or eviction FIFO may hold a half-published batch; recovering it could serve a batch that was never fully retained or evict the wrong stream"
     )]
-    pub(super) fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &[(u64, Bytes)]) {
-        let bytes: usize = recs.iter().map(|(_, f)| f.len()).sum();
-        let (first, next) = (recs[0].0, recs[recs.len() - 1].0 + 1);
+    pub(super) fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &RingBatch) {
+        let (first, bytes) = (recs.first, recs.bytes);
         {
             let mut ring = handle.ring.lock().unwrap();
             // A shard handoff replays through a fresh engine, so within
@@ -42,12 +43,7 @@ impl ShardEngine {
                 let mut fifo = self.ring_fifo.lock().unwrap();
                 fifo.retain(|h| !Arc::ptr_eq(h, handle));
             }
-            ring.batches.push_back(RingBatch {
-                first,
-                next,
-                frames: recs.to_vec(),
-                bytes,
-            });
+            ring.batches.push_back(recs.clone());
             ring.bytes += bytes;
         }
         self.ring_fifo.lock().unwrap().push_back(handle.clone());
@@ -128,43 +124,7 @@ impl ShardEngine {
             }
             return None;
         }
-        let mut out = FrameReadResult {
-            frames: Vec::new(),
-            last_offset: None,
-            coverage: None,
-        };
-        let mut total = 0usize;
-        let mut expected = scan_from;
-        // Batches are contiguous and ordered, so the window is the covering
-        // batches' frames from the first offset in range up to the end.
-        let frames = ring
-            .batches
-            .iter()
-            .filter(|b| b.next > scan_from)
-            .take_while(|b| b.first < scan_to)
-            .flat_map(|b| b.frames.iter())
-            .filter(|(off, _)| *off >= scan_from)
-            .take_while(|(off, _)| *off < scan_to);
-        for (off, f) in frames {
-            // Floor/ceiling alone cannot prove density after eviction or
-            // malformed cached batch metadata. Every inspected row counts,
-            // including filtered misses and a byte-limited final row.
-            if *off != expected {
-                return None;
-            }
-            let checked = record::CheckedFrame::from_ring(f, *off, selector).ok()?;
-            expected = off.checked_add(1)?;
-            total += f.len();
-            out.frames.extend(checked);
-            // Consumed progress covers NON-matching frames too.
-            out.last_offset = Some(*off);
-            if total >= max_bytes {
-                return Some(self.ring_hit(out, handle, scan_from, expected));
-            }
-        }
-        if expected != scan_to {
-            return None;
-        }
+        let (out, expected) = ring.serve(scan_from, scan_to, max_bytes, selector)?;
         Some(self.ring_hit(out, handle, scan_from, expected))
     }
 
@@ -184,5 +144,56 @@ impl ShardEngine {
         ));
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         out
+    }
+}
+
+impl TailRing {
+    /// The window `[from, to)` up to `max_bytes` of stored page bytes from
+    /// the ring's pages, each admitted again and sliced to the window, and
+    /// the offset after the last inspected record. None when the pages are
+    /// not dense from `from` or one fails admission: the caller then scans
+    /// the store. The page that reaches `max_bytes` is kept.
+    fn serve(
+        &self,
+        from: u64,
+        to: u64,
+        max_bytes: usize,
+        selector: Option<&str>,
+    ) -> Option<(FrameReadResult, u64)> {
+        let mut out = FrameReadResult::default();
+        let mut total = 0usize;
+        let mut expected = from;
+        // Batches are contiguous and ordered, so the window is the covering
+        // batches' pages from the one holding `from` up to the end.
+        let pages = self
+            .batches
+            .iter()
+            .filter(|b| b.next > from)
+            .take_while(|b| b.first < to)
+            .flat_map(|b| b.frames.iter())
+            .filter(|(last, _)| *last >= from);
+        for (last, raw) in pages {
+            let page = CheckedPage::admit(raw.clone(), *last).ok()?;
+            let Some(slice) = record::PageSlice::clip(page, from, to) else {
+                break;
+            };
+            // Floor/ceiling alone cannot prove density after eviction or
+            // malformed cached batch metadata. Every inspected page counts,
+            // including filtered misses and a byte-limited final page.
+            if slice.first() != expected {
+                return None;
+            }
+            expected = slice.last().checked_add(1)?;
+            total = total.saturating_add(slice.stored_len());
+            // Consumed progress covers NON-matching pages too.
+            out.last_offset = Some(slice.last());
+            if selector.is_none_or(|key| key == slice.page().routing_key()) {
+                out.frames.push(slice);
+            }
+            if total >= max_bytes {
+                return Some((out, expected));
+            }
+        }
+        (expected == to).then_some((out, expected))
     }
 }

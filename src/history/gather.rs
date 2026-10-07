@@ -1,6 +1,6 @@
 //! The absorber's per-tick work: seeding its pending roster from the
 //! durable dirty index, and the shared-partition gather pass (history
-//! v2) that reads MANY streams' raw encrypted frames from the shard log,
+//! v2) that reads MANY streams' raw encrypted pages from the shard log,
 //! puts them all into ONE WriteBatch on the shard's shared partition,
 //! flushes ONCE, then advances every covered boundary. No decryption, no
 //! KeyCache, no per-stream DB — the per-stream request tax this replaced
@@ -10,13 +10,12 @@ use super::{
     CANONICAL_BYTES_WRITTEN, DISCOVERY_PAGE_STREAMS, GATHER_LAST_ACTUAL, GATHER_LAST_FLUSH_MS,
     GATHER_LAST_READ_MS, GATHER_LAST_WRITE_MS, GATHER_PER_STREAM_CAP, HISTORY_FLUSH_STALL_MS,
     HISTORY_FLUSH_WAIT_MS_MAX, MAX_PENDING_STREAMS, POSTINGS_BYTES_WRITTEN, POSTINGS_PAGES_WRITTEN,
-    POSTINGS_RUNS_WRITTEN, PendingAbsorb, hist2_record_key,
+    POSTINGS_RUNS_WRITTEN, PendingAbsorb,
 };
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::postings::{AbsRun, PageBuilder};
 use crate::shard::record::{RangeReadError, RecordCorruption};
 use crate::shard::{CopiedBytes, FrameReadResult, StreamHandle, read_frames_range};
-use bytes::Bytes;
 use slatedb::config::WriteOptions;
 use slatedb::{Db, WriteBatch};
 use std::collections::HashMap;
@@ -91,6 +90,11 @@ pub(crate) enum StreamGatherFailure {
     PostingsSelfDecode,
     /// The chunk's postings pages decoded to overlapping runs.
     PostingsOverlap,
+    /// The chunk's window started or ended inside a page. The absorbed
+    /// boundary and the durable frontier are page edges, so only a corrupt
+    /// boundary cuts one, and copying the page would claim records outside
+    /// the window.
+    PageCut,
 }
 
 impl std::fmt::Display for StreamGatherFailure {
@@ -99,6 +103,7 @@ impl std::fmt::Display for StreamGatherFailure {
             Self::Corrupt(corruption) => write!(f, "{corruption}"),
             Self::PostingsSelfDecode => f.write_str("postings page failed its self-decode"),
             Self::PostingsOverlap => f.write_str("postings pages overlap"),
+            Self::PageCut => f.write_str("the absorb window cut a stored page"),
         }
     }
 }
@@ -125,26 +130,29 @@ fn millis(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// This chunk's batch contribution and its raw frame bytes (the tail's
-/// unabsorbed_bytes gauge). A canonical row costs the frame plus a
-/// conservative per-record postings allowance (~key 65 B amortized + a
-/// few varints); the full-frame keyed duplicate is GONE (ROUTING-V3 §3).
+/// This chunk's batch contribution and its raw page bytes (the tail's
+/// unabsorbed_bytes gauge). A canonical row costs the page and its key
+/// plus a conservative per-record postings allowance (~key 65 B amortized
+/// + a few varints); the full-frame keyed duplicate is GONE (ROUTING-V3 §3).
 fn chunk_cost(chunk: &FrameReadResult) -> (usize, u64) {
     let mut chunk_bytes = 0usize;
     let mut chunk_raw = 0u64;
-    for raw in &chunk.frames {
-        chunk_raw += raw.len() as u64;
-        chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD + 24;
+    for slice in &chunk.frames {
+        let records = usize::try_from(slice.records()).unwrap_or(usize::MAX);
+        chunk_raw += slice.stored_len() as u64;
+        chunk_bytes += slice.stored_len() + 41 + ENTRY_OVERHEAD + 24 * records;
     }
     (chunk_bytes, chunk_raw)
 }
 
-/// Note every frame's routing key for the chunk's postings pages, staging
+/// Note every record's routing key for the chunk's postings pages, staging
 /// nothing yet: a chunk whose pages fail their self-check must leave no
-/// canonical row in the shared batch. Returns the offsets the chunk holds.
-/// They are dense (a ring hit proves its window dense; a Remote scan reads
-/// one snapshot of the log) but can start above `plan.from`: a Remote scan
-/// skips the head a trim deleted after a stale plan (TLA-016-F3).
+/// canonical row in the shared batch. A stored page's bytes are spread over
+/// its records, so the notes of a page sum to its size. Returns the offsets
+/// the chunk holds. They are dense (a ring hit proves its window dense; a
+/// Remote scan reads one snapshot of the log) but can start above
+/// `plan.from`: a Remote scan skips the head a trim deleted after a stale
+/// plan (TLA-016-F3).
 fn note_frames(
     plan: &ReadPlan,
     chunk: &FrameReadResult,
@@ -152,16 +160,15 @@ fn note_frames(
 ) -> std::ops::Range<u64> {
     let mut first = None;
     let mut last = plan.from;
-    for raw in &chunk.frames {
-        let frame = raw.view();
-        let off = frame.header.offset;
-        pages.note_frame(
-            crate::postings::rk_hash(frame.header.routing_key),
-            off,
-            raw.len() as u64,
-        );
-        first.get_or_insert(off);
-        last = off;
+    for slice in &chunk.frames {
+        let key = crate::postings::rk_hash(slice.page().routing_key());
+        let (count, stored) = (slice.records(), slice.stored_len() as u64);
+        for (index, off) in (0u64..).zip(slice.first()..=slice.last()) {
+            let share = stored * (index + 1) / count - stored * index / count;
+            pages.note_frame(key, off, share);
+        }
+        first.get_or_insert(slice.first());
+        last = slice.last();
     }
     first.unwrap_or(plan.from)..last + 1
 }
@@ -193,8 +200,8 @@ fn check_postings(pages: PageBuilder) -> Result<ChunkPostings, StreamGatherFailu
     Ok(ChunkPostings { pages, runs, bytes })
 }
 
-/// Stage a checked chunk: its canonical rows — the frame is stored once
-/// under its canonical offset — then its postings pages (ROUTING-V3 §3):
+/// Stage a checked chunk: its canonical rows — each page is stored once,
+/// byte for byte, under its last offset — then its postings pages (ROUTING-V3 §3):
 /// every routing key, INCLUDING the empty/default key, gets compact
 /// offset-run pages in the SAME WriteBatch, so the index adds no request,
 /// manifest, database, namespace or GC surface of its own. Returns the
@@ -206,10 +213,11 @@ fn stage_checked(
     checked: ChunkPostings,
 ) -> KeyRuns {
     let inc = SegmentHash(plan.hash);
-    for raw in &chunk.frames {
+    for slice in &chunk.frames {
+        let page = slice.page();
         wb.put(
-            hist2_record_key(plan.route, inc, raw.view().header.offset),
-            Bytes::from(raw.clone()),
+            crate::crypto_page::history_page_key(plan.route, inc, page.last()),
+            page.raw().clone(),
         );
     }
     let ChunkPostings { pages, runs, bytes } = checked;
@@ -538,6 +546,17 @@ impl Absorber {
     ) {
         if chunk.frames.is_empty() {
             staged.out.no_work.push(plan.hash);
+            return;
+        }
+        if !chunk
+            .frames
+            .iter()
+            .all(crate::shard::record::PageSlice::is_whole)
+        {
+            staged
+                .out
+                .failed
+                .push((plan.hash, StreamGatherFailure::PageCut));
             return;
         }
         let (chunk_bytes, chunk_raw) = chunk_cost(chunk);

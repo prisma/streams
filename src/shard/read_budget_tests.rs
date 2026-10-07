@@ -1,11 +1,38 @@
 //! R06-A exercises encoded storage, decryption and consumed progress together.
+//! The shard log holds layout 5 pages (one per fixture record); the history
+//! leg still holds stored frames until history reads move to pages.
 use crate::application::read::read_merged;
 use crate::crypto::{FrameCipher, FrameCompression, StreamKey, derive_subkey};
+use crate::crypto_page::{PageCipher, PageLane, SealError, shard_page_key};
 use crate::shard::{
-    Deliver, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail, record_key,
+    Deliver, RingBatch, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail,
     tail_key,
 };
 use bytes::Bytes;
+
+/// The shard-log page of one fixture record of `size` bytes of `x` at
+/// `offset` in `lane`.
+fn record_page(key: &StreamKey, offset: u64, lane: &str, size: usize) -> Bytes {
+    let cipher = PageCipher::new(&derive_subkey(key, &[9; 16], lane, 1), &[8; 16]);
+    let lane = PageLane {
+        ts_ms: 0,
+        key_version: 1,
+        routing_key: lane,
+    };
+    let page = cipher.seal(&lane, offset, &[vec![b'x'; size]]).unwrap();
+    assert_eq!(page.last, offset);
+    Bytes::from(page.bytes)
+}
+
+/// The fixture records from `history` on as the shard log stores them: one
+/// page per record, in a batch the ring can publish.
+fn tail_pages(key: &StreamKey, records: &[(String, usize)], history: usize) -> RingBatch {
+    let mut batch = RingBatch::default();
+    for (offset, (lane, size)) in (0u64..).zip(records).skip(history) {
+        batch.push_page(offset, offset, record_page(key, offset, lane, *size));
+    }
+    batch
+}
 use slatedb::{Db, WriteBatch};
 use std::{sync::Arc, time::Duration};
 
@@ -18,20 +45,14 @@ async fn compressed_fixture() -> (Arc<ShardEngine>, StreamKey) {
             .unwrap(),
     );
     let key = StreamKey([7; 32]);
-    let cipher = FrameCipher::new(
-        &derive_subkey(&key, &[9; 16], "", 1),
-        &[8; 16],
-        FrameCompression::ZstdLevel1,
-    );
-    let payload = vec![b'x'; 16 * 1024];
     let mut batch = WriteBatch::new();
     for offset in 0..1600 {
-        let frame = cipher.encrypt(&[8; 16], offset, 0, 1, "", &payload);
+        let page = record_page(&key, offset, "", 16 * 1024);
         assert!(
-            frame.len() < 100,
+            page.len() < 100,
             "fixture must reproduce the compressed size gap"
         );
-        batch.put(record_key(&[8; 16], offset), Bytes::from(frame));
+        batch.put(shard_page_key(&[8; 16], offset), page);
     }
     batch.put(
         tail_key(&[8; 16]),
@@ -111,10 +132,6 @@ async fn r06a_compressed_database_pages_bound_plaintext_without_skipping() {
     assert_eq!(seen, (0..1600).collect::<Vec<_>>());
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "mixed_fixture; the fixture's offsets index its own small record table; a checked conversion would only restate the fixture"
-)]
 async fn mixed_fixture(
     compression: FrameCompression,
     ring: bool,
@@ -131,19 +148,19 @@ async fn mixed_fixture(
     );
     let mut batch = WriteBatch::new();
     let key = StreamKey([7; 32]);
+    let tail = tail_pages(&key, records, history);
+    for (last, page) in &tail.frames {
+        batch.put(shard_page_key(&[8; 16], *last), page.clone());
+    }
     let mut frames = Vec::new();
-    for (offset, (lane, size)) in records.iter().enumerate() {
+    for (offset, (lane, size)) in (0u64..).zip(records).take(history) {
         let frame = FrameCipher::new(
             &derive_subkey(&key, &[9; 16], lane, 1),
             &[8; 16],
             compression,
         )
-        .encrypt(&[8; 16], offset as u64, 0, 1, lane, &vec![b'x'; *size]);
-        let frame = Bytes::from(frame);
-        if offset >= history {
-            batch.put(record_key(&[8; 16], offset as u64), frame.clone());
-        }
-        frames.push((offset as u64, frame));
+        .encrypt(&[8; 16], offset, 0, 1, lane, &vec![b'x'; *size]);
+        frames.push((offset, lane, Bytes::from(frame)));
     }
     batch.put(
         tail_key(&[8; 16]),
@@ -178,16 +195,12 @@ async fn mixed_fixture(
         let part = engine.history_partition().await.unwrap();
         let mut batch = WriteBatch::new();
         let mut builder = crate::postings::PageBuilder::default();
-        for (offset, raw) in &frames[..history] {
+        for (offset, lane, raw) in &frames {
             batch.put(
                 crate::history::hist2_record_key(RouteHash([4; 16]), SegmentHash([8; 16]), *offset),
                 raw.clone(),
             );
-            builder.note_frame(
-                crate::postings::rk_hash(&records[*offset as usize].0),
-                *offset,
-                raw.len() as u64,
-            );
+            builder.note_frame(crate::postings::rk_hash(lane), *offset, raw.len() as u64);
         }
         for (rk, bucket, first, value) in builder.finish().0 {
             batch.put(
@@ -209,9 +222,9 @@ async fn mixed_fixture(
         .unwrap();
         write.await_durable().await.unwrap();
     }
-    if ring && history < frames.len() {
+    if ring && !tail.is_empty() {
         let handle = engine.stream_handle([8; 16]).await.unwrap();
-        engine.ring_publish(&handle, &frames[history..]);
+        engine.ring_publish(&handle, &tail);
     }
     (engine, key)
 }
@@ -345,31 +358,21 @@ async fn r06a_metadata_and_individual_decompression_are_bounded() {
         .await_terminated(Duration::from_secs(5))
         .await
         .unwrap();
-    let (engine, key) = mixed_fixture(
-        FrameCompression::ZstdLevel1,
-        false,
-        0,
-        &[(String::new(), crate::crypto::MAX_RECORD_PLAINTEXT + 1)],
-    )
-    .await;
-    let handle = engine.stream_handle([8; 16]).await.unwrap();
-    let result = read_merged(
-        &key,
-        &[9; 16],
-        &handle,
-        &engine,
-        0,
-        None,
-        1,
-        Deliver::Durable,
-    )
-    .await;
-    assert!(result.err().unwrap().contains("exceeds 32 MiB"));
-    engine.begin_close();
-    engine
-        .await_terminated(Duration::from_secs(5))
-        .await
-        .unwrap();
+    // A record past the 32 MiB record cap is never stored: its page refuses
+    // to seal, and a stored page claiming one fails admission before any
+    // decryption (its ciphertext exceeds the single-record body cap).
+    let lane = PageLane {
+        ts_ms: 0,
+        key_version: 1,
+        routing_key: "",
+    };
+    let oversized = vec![0u8; crate::crypto::MAX_RECORD_PLAINTEXT + 1];
+    assert_eq!(
+        PageCipher::new(&[1; 32], &[8; 16])
+            .seal(&lane, 0, &[oversized])
+            .unwrap_err(),
+        SealError::RecordTooLarge
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

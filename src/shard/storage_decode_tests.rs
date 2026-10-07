@@ -1,6 +1,7 @@
 //! R12: corrupt storage refuses to open without overwriting records.
 #![cfg(test)]
 use super::*;
+use crate::crypto_page::shard_page_key;
 
 #[test]
 fn r12_supported_tail_versions_and_extensions() {
@@ -84,7 +85,7 @@ async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
     let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());
     let hash = [12; 16];
     let mut wb = WriteBatch::new();
-    wb.put(record_key(&hash, 0), b"retained ciphertext");
+    wb.put(shard_page_key(&hash, 0), b"retained ciphertext");
     wb.put(tail_key(&hash), b"broken tail");
     db.write(wb).await.unwrap().await_durable().await.unwrap();
     let (tx, _rx) = mpsc::channel(1);
@@ -102,7 +103,7 @@ async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
     assert!(engine.durable_absorbed(&hash).await.is_err());
     assert!(engine.seed_fork_tail(hash, [1; 16], 0).await.is_err());
     assert_eq!(
-        db.get(record_key(&hash, 0))
+        db.get(shard_page_key(&hash, 0))
             .await
             .unwrap()
             .unwrap()

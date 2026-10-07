@@ -72,15 +72,18 @@ pub(crate) struct OpenedPage {
 }
 
 impl OpenedPage {
+    #[cfg(test)]
     pub(crate) fn first(&self) -> u64 {
         self.first
     }
 
+    #[cfg(test)]
     pub(crate) fn last(&self) -> u64 {
         self.last
     }
 
     /// The plaintext body bytes, before any compression: tables and payloads.
+    #[cfg(test)]
     pub(crate) fn body_len(&self) -> usize {
         self.body.len()
     }

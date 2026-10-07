@@ -4,7 +4,7 @@ use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{HttpRigOptions, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
-use super::fixture_storage::{eventually, mem, open_engine, skey};
+use super::fixture_storage::{eventually, mem, noise_text, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
 use crate::shard::{encode_shard_maint, shard_maint_key};
 use object_store::ObjectStore;
@@ -41,9 +41,9 @@ async fn overloaded_engine_sheds_while_sibling_admits() {
     let calm = open_engine(store.clone(), "dst-iso-calm").await;
     let key = skey();
     let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
-    let w = Workload::new(cov);
+    let (w, pad) = (Workload::new(cov), noise_text(8192, 24));
     let out = w
-        .attempt_with_deadline(&hot, [24u8; 16], &key, "k", &"h".repeat(8192), None, None)
+        .attempt_with_deadline(&hot, [24u8; 16], &key, "k", &pad, None, None)
         .await;
     assert!(matches!(out, Outcome::Acked { .. }));
 
@@ -197,7 +197,7 @@ async fn backlog_rig(
 }
 
 async fn append_raw_backlog(addr: std::net::SocketAddr, name: &str) {
-    let body = format!("[{{\"padding\":\"{}\"}}]", "x".repeat(2048));
+    let body = format!("[{{\"padding\":\"{}\"}}]", noise_text(2048, 1));
     let (status, _, body) = hreq(
         addr,
         "POST",
@@ -416,7 +416,7 @@ async fn split_child_sheds_while_sibling_child_admits() {
             engine: e1,
         },
     } = split_admission().await;
-    let body = format!("{{\"k\":\"{ka}\",\"padding\":\"{}\"}}", "x".repeat(2048));
+    let body = format!("{{\"k\":\"{ka}\",\"padding\":\"{}\"}}", noise_text(2048, 2));
     let (st, _, response_body) = preq(
         addr,
         "POST",

@@ -3,6 +3,7 @@ use super::{
     AppendAck, AppendErr, AppendFinish, AppendReq, CloseReq, SealFenceReq, ShardConfig,
     ShardEngine, ShardMaintenance, stored_tail, tail_key,
 };
+use crate::crypto_page::shard_page_key;
 use slatedb::{Db, config::DurabilityLevel};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -528,15 +529,18 @@ async fn durable_reads_see_only_the_remote_frontier() {
     );
     let (engine, _rx) = fence_engine("durable-view", &store).await;
     let hash = [32; 16];
-    let (mut append, reply) = seal_append(hash, AppendFinish::Open, None);
-    append.entries = (0..4u8)
-        .map(|i| bytes::Bytes::from(vec![i; 16 + usize::from(i)]))
-        .collect();
-    engine.try_enqueue(append).unwrap();
-    assert_eq!(reply.await.unwrap().unwrap().next_offset, 4);
+    // One request per record: each record is its own page, so the trims
+    // below delete whole pages.
+    for i in 0..4u8 {
+        let (mut append, reply) = seal_append(hash, AppendFinish::Open, None);
+        append.entries = vec![bytes::Bytes::from(vec![i; 16 + usize::from(i)])];
+        engine.try_enqueue(append).unwrap();
+        let next = reply.await.unwrap().unwrap().next_offset;
+        assert_eq!(next, u64::from(i) + 1);
+    }
     let mut frames = Vec::new();
     for offset in 0..4 {
-        let row = engine.db.get(super::record_key(&hash, offset)).await;
+        let row = engine.db.get(shard_page_key(&hash, offset)).await;
         frames.push(row.unwrap().unwrap().len() as u64);
     }
     let copied = super::CopiedBytes::new(0, frames[0] + frames[1]);

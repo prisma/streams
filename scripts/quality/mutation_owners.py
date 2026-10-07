@@ -111,6 +111,7 @@ OWNERS = (
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),
     owner('record', 'src/shard/record.rs', 'shard::'),
+    owner('record_pages', 'src/shard/record/pages.rs', 'shard::'),
     owner('lane_rows', 'src/shard/lane_rows.rs', 'shard::'),
     owner('maintenance_row', 'src/shard/maintenance_row.rs', 'shard::'),
     owner('tasks_shutdown', 'src/tasks/shutdown.rs', 'tasks::'),

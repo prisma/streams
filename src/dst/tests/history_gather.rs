@@ -5,6 +5,7 @@ use super::fixture_requests::hreq;
 use super::fixture_storage::{
     append_sized, mem, open_engine, open_engine_with_settings, skey, wait_all_absorbed,
 };
+use crate::crypto_page::shard_page_key;
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -807,7 +808,7 @@ async fn one_corrupt_row_fails_only_its_stream() {
         append_sized(&engine, h, &key, "", 1024).await;
     }
     let mut overwrite = slatedb::WriteBatch::new();
-    overwrite.put(crate::shard::record_key(&bad, 0), b"invalid frame");
+    overwrite.put(shard_page_key(&bad, 0), b"invalid frame");
     let written = engine.db.write(overwrite).await.expect("overwrite the row");
     written.await_durable().await.expect("durable overwrite");
     let absorber =
@@ -822,8 +823,9 @@ async fn one_corrupt_row_fails_only_its_stream() {
         vec![a, c],
         "the corrupt stream's lane-mates advance in the same flush"
     );
-    let frame =
-        crate::history::StreamGatherFailure::Corrupt(crate::shard::record::RecordCorruption::Frame);
+    let frame = crate::history::StreamGatherFailure::Corrupt(
+        crate::shard::record::RecordCorruption::Page(crate::crypto_page::PageCorruption::Version),
+    );
     assert_eq!(
         outcome.failed,
         vec![(bad, frame)],

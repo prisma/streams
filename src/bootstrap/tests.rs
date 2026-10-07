@@ -38,14 +38,13 @@ fn active_absorber_options_reach_the_absorber_configuration() {
 /// The settings-derived part of a shard engine's configuration as one
 /// value: (pump, flush gap, post-ack gather), (gather-skip requests,
 /// bytes), (trim per op, global trim budget), (handle idle eviction,
-/// resident handles), the tail ring bytes, and frame compression.
+/// resident handles), and the tail ring bytes.
 type ShardSettings = (
     (bool, Duration, Duration),
     (u32, u64),
     (u64, u64),
     (Duration, usize),
     usize,
-    crate::crypto::FrameCompression,
 );
 
 fn shard_settings(config: &crate::shard::ShardConfig) -> ShardSettings {
@@ -59,14 +58,13 @@ fn shard_settings(config: &crate::shard::ShardConfig) -> ShardSettings {
         (config.max_trim_per_op, config.trim_global_budget),
         (config.handle_idle_evict, config.handle_max_resident),
         config.tail_ring_bytes,
-        config.frame_compression,
     )
 }
 
 /// Every shard engine opens on the WAL pipeline, the gather-skip constants,
-/// the trims, the handle settings, the tail ring, frame compression, the
-/// history settings and the compactor options that the parsed settings
-/// decide, and on no shared handle of its own (`run` adds those). This pins
+/// the trims, the handle settings, the tail ring, the history settings and
+/// the compactor options that the parsed settings decide, and on no shared
+/// handle of its own (`run` adds those). This pins
 /// what the review of edge record #77 found unpinned: that the three WAL
 /// values reach the engine.
 #[test]
@@ -83,7 +81,6 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
             (8_192, 65_536),
             (Duration::from_secs(600), 65_536),
             0,
-            crate::crypto::FrameCompression::Disabled,
         ),
         "a server that sets nothing runs the pump with a 100 ms gap and a 6 ms gather, \
          skipped once the next WAL holds 32 requests or 1 MiB"
@@ -127,7 +124,6 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
             (9, 11),
             (Duration::from_secs(13), 15),
             32 * 1024 * 1024,
-            crate::crypto::FrameCompression::ZstdLevel1,
         ),
         "the tick pipeline flushes on the flush interval, gathers nothing, and the skip \
          thresholds are the same constants"

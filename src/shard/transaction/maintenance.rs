@@ -1,4 +1,5 @@
 use super::*;
+use crate::crypto_page::shard_page_key;
 use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed, trim_target};
 impl CommitTransaction<'_> {
     pub(super) fn usage_ack(
@@ -324,7 +325,7 @@ impl CommitTransaction<'_> {
         let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
         let trim_to = trim_target(&local.fields, allowed);
         for off in local.fields.trimmed..trim_to {
-            self.batch.delete(record_key(&hash, off));
+            self.batch.delete(shard_page_key(&hash, off));
         }
         self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
         local.fields.trimmed = local.fields.trimmed.max(trim_to);
@@ -336,11 +337,18 @@ impl CommitTransaction<'_> {
         }
         true
     }
+    /// Trims delete shard-log pages by key: one blind tombstone per offset
+    /// in `[trimmed, trim_to)`, so exactly the pages whose LAST offset is
+    /// below `trim_to` go, and a page holding any record at or above it (an
+    /// unabsorbed one among them, since `trim_to` never passes the absorbed
+    /// boundary) stays. Most of those keys name no page: the prototype pays
+    /// one tombstone per record where exact page tombstones would pay one per
+    /// page (the absorbed advance knows the pages it copied).
     pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {
         let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
         let trim_to = trim_target(&local.fields, allowed);
         for off in local.fields.trimmed..trim_to {
-            self.batch.delete(record_key(&hash, off));
+            self.batch.delete(shard_page_key(&hash, off));
         }
         self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
         local.fields.trimmed = local.fields.trimmed.max(trim_to);

@@ -1,8 +1,9 @@
 //! Item 35: a stream whose stored row fails admission backs off alone;
 //! the lane-mates gathered beside it retire with the same flush.
 use super::{Absorber, PendingAbsorb};
+use crate::crypto_page::shard_page_key;
 use crate::history::{AbsorberConfig, absorber_channel};
-use crate::shard::{AppendFinish, AppendReq, ShardConfig, ShardEngine, record_key};
+use crate::shard::{AppendFinish, AppendReq, ShardConfig, ShardEngine};
 use bytes::Bytes;
 use object_store::ObjectStore;
 use slatedb::WriteBatch;
@@ -41,7 +42,7 @@ async fn append_one(engine: &ShardEngine, hash: [u8; 16]) {
 
 async fn overwrite_first_row(engine: &ShardEngine, hash: [u8; 16]) {
     let mut batch = WriteBatch::new();
-    batch.put(record_key(&hash, 0), b"invalid frame");
+    batch.put(shard_page_key(&hash, 0), b"invalid frame");
     let written = engine.db.write(batch).await.unwrap();
     written.await_durable().await.unwrap();
 }

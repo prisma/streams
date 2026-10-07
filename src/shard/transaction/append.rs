@@ -147,6 +147,16 @@ impl CommitTransaction<'_> {
         req: AppendReq,
         prod_echo: Option<(u64, u64)>,
     ) {
+        let ts = req.ts_hint_ms.unwrap_or_else(now_ms).max(local.fields.ts);
+        // Sealed before anything is staged: a request whose pages cannot be
+        // sealed stages no row and changes no state.
+        let pages = match seal_pages(local, hash, &req, ts) {
+            Ok(pages) => pages,
+            Err(refusal) => {
+                self.effects.acks.push((req.resp, Err(refusal)));
+                return;
+            }
+        };
         if let Some(pr) = &req.producer {
             let commit_last = if req.entries.is_empty() {
                 local.fields.next.wrapping_sub(1)
@@ -184,35 +194,14 @@ impl CommitTransaction<'_> {
             ));
             return;
         }
-        let ts = req.ts_hint_ms.unwrap_or_else(now_ms).max(local.fields.ts);
         let start = local.fields.next;
-        let cipher = local
-            .frames
-            .cipher(&req.subkey, &hash, self.cfg.frame_compression);
         let usage = req.usage.clone();
-        let (mut pt_sum, mut frame_sum) = (0u64, 0u64);
-        for (i, payload) in req.entries.iter().enumerate() {
-            let offset = start + i as u64;
-            let frame = cipher.encrypt(
-                &hash,
-                offset,
-                ts,
-                req.key_version,
-                &req.routing_key,
-                payload,
-            );
-            pt_sum += payload.len() as u64;
-            frame_sum += frame.len() as u64;
-            let frame = Bytes::from(frame);
-            if self.engine.ring_enabled {
-                local.frames.ring.push((offset, frame.clone()));
-            }
-            local.fields.unabsorbed_bytes += frame.len() as u64;
-            local.frames.added_bytes += frame.len() as u64;
-            self.batch.put(record_key(&hash, offset), frame);
-            local.fields.logical += payload.len() as u64;
-            local.frames.payload_bytes += payload.len() as u64;
-        }
+        // Ingest stays metered on payload bytes; the frame bytes the usage
+        // counters and the retention gauge carry are the stored page bytes.
+        let pt_sum: u64 = req.entries.iter().map(|payload| payload.len() as u64).sum();
+        let frame_sum = self.stage_pages(local, hash, start, pages);
+        local.fields.logical += pt_sum;
+        local.frames.payload_bytes += pt_sum;
         self.effects.usage.push((usage, pt_sum, frame_sum));
         self.bill_append(local, &req, pt_sum, frame_sum);
         self.stats.records += req.entries.len() as u64;
@@ -241,6 +230,33 @@ impl CommitTransaction<'_> {
                 duplicate: false,
             }),
         ));
+    }
+    /// Stage a request's sealed pages, the first starting at offset `first`,
+    /// in the group's write batch under their last offsets, so every page of
+    /// the request commits or none does, and in the stream's ring batch.
+    /// Returns their stored bytes.
+    fn stage_pages(
+        &mut self,
+        local: &mut StreamOverlay,
+        hash: [u8; 16],
+        first: u64,
+        pages: Vec<crate::crypto_page::SealedPage>,
+    ) -> u64 {
+        let (mut first, mut stored) = (first, 0u64);
+        for page in pages {
+            let bytes = Bytes::from(page.bytes);
+            let len = bytes.len() as u64;
+            stored += len;
+            local.fields.unabsorbed_bytes += len;
+            local.frames.added_bytes += len;
+            if self.engine.ring_enabled {
+                local.frames.ring.push_page(first, page.last, bytes.clone());
+            }
+            self.batch
+                .put(crate::crypto_page::shard_page_key(&hash, page.last), bytes);
+            first = page.last.saturating_add(1);
+        }
+        stored
     }
     #[expect(
         clippy::unwrap_used,
@@ -284,5 +300,43 @@ impl CommitTransaction<'_> {
             bm.usage_version += 1;
             local.billing.dirty = true;
         }
+    }
+}
+
+/// A request's records sealed into pages from the stream's next offset, all
+/// or none, under the group's cipher for the request's subkey. A close-only
+/// request has no page.
+fn seal_pages(
+    local: &mut StreamOverlay,
+    hash: [u8; 16],
+    req: &AppendReq,
+    ts: i64,
+) -> Result<Vec<crate::crypto_page::SealedPage>, AppendErr> {
+    if req.entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lane = crate::crypto_page::PageLane {
+        ts_ms: ts,
+        key_version: req.key_version,
+        routing_key: &req.routing_key,
+    };
+    local
+        .frames
+        .cipher(&req.subkey, &hash)
+        .seal_request(&lane, local.fields.next, &req.entries)
+        .map_err(seal_refusal)
+}
+
+/// The answer to a request its pages refused. The record and routing-key
+/// caps are the client's; the rest cannot follow from a validated request.
+fn seal_refusal(error: crate::crypto_page::SealError) -> AppendErr {
+    match error {
+        crate::crypto_page::SealError::RecordTooLarge => {
+            AppendErr::BadBody("a record exceeds the 32 MiB record cap".into())
+        }
+        crate::crypto_page::SealError::RoutingKeyTooLong => {
+            AppendErr::BadBody("the routing key exceeds 65535 bytes".into())
+        }
+        other => AppendErr::Internal(format!("page seal refused: {other:?}")),
     }
 }

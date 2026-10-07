@@ -1,5 +1,7 @@
-//! Page-local key material; retain at most 64 expanded cipher schedules.
+//! Page-local key material; retain at most 64 expanded cipher schedules of
+//! each kind (stored frames, stored pages).
 use crate::crypto::{DecodedFrame, FrameDecryptor, StreamKey, derive_subkey};
+use crate::crypto_page::{CheckedPage, OpenedPage, PageCipher};
 use std::collections::HashMap;
 const MAX_CIPHERS: usize = 64;
 struct KeyEntry {
@@ -14,6 +16,10 @@ pub(super) struct ReadKeys<'a> {
     // and physical segment are data lanes, never unqualified stream identities.
     entries: HashMap<u32, HashMap<String, KeyEntry>>,
     cached: usize,
+    // mt-lint: allow(name-keyed-map): routing keys within this fixed StreamKey, epoch,
+    // and physical segment are data lanes, never unqualified stream identities.
+    pages: HashMap<u32, HashMap<String, PageCipher>>,
+    pages_cached: usize,
 }
 impl<'a> ReadKeys<'a> {
     pub(super) fn new(key: &'a StreamKey, epoch: &'a [u8; 16], segment: [u8; 16]) -> Self {
@@ -23,7 +29,32 @@ impl<'a> ReadKeys<'a> {
             segment,
             entries: HashMap::new(),
             cached: 0,
+            pages: HashMap::new(),
+            pages_cached: 0,
         }
+    }
+    /// Open an admitted page of this segment under its lane's page key. The
+    /// whole page authenticates and parses before any record is returned.
+    pub(crate) fn open_page(&mut self, page: &CheckedPage) -> Result<OpenedPage, String> {
+        let refused = |error| {
+            format!(
+                "stored page [{}, {}] did not open: {error:?}",
+                page.first(),
+                page.last()
+            )
+        };
+        let lanes = self.pages.entry(page.key_version()).or_default();
+        if let Some(cipher) = lanes.get(page.routing_key()) {
+            return cipher.open(page).map_err(refused);
+        }
+        let subkey = derive_subkey(self.key, self.epoch, page.routing_key(), page.key_version());
+        let cipher = PageCipher::new(&subkey, &self.segment);
+        let opened = cipher.open(page).map_err(refused);
+        if self.pages_cached < MAX_CIPHERS {
+            self.pages_cached += 1;
+            lanes.insert(page.routing_key().to_owned(), cipher);
+        }
+        opened
     }
     #[cfg(test)]
     pub(super) fn decrypt(
