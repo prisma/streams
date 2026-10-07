@@ -8,8 +8,9 @@
 //! AEAD error. Each record names its project, stream, key and sequence,
 //! and the test keeps the exact ledger of what it appended.
 
-use super::fixture_auth::{RIG_PRIV, RIG_PUB};
+use super::fixture_auth::{RIG_PRIV, RIG_PUB, rig_sse};
 use super::fixture_http::{HttpRigOptions, http_rig_build, install_rollup};
+use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -616,6 +617,32 @@ pub(super) async fn burst(
         out.push(one().await);
     }
     out
+}
+
+/// Open `count` live `orders` subscriptions at once as project `i`; each
+/// answer once every head is in, and the sockets, which hold the admitted
+/// subscriptions until they are dropped.
+pub(super) async fn hold_subscriptions(
+    cell: &Cell,
+    i: usize,
+    count: usize,
+) -> (Answers, Vec<tokio::net::TcpStream>) {
+    let mut socks = Vec::new();
+    for _ in 0..count {
+        socks.push(rig_sse(cell.addr, "orders", &cell.bearers[i], "", None).await);
+    }
+    let mut out = Vec::new();
+    for sock in &mut socks {
+        let (st, _) = sse_head(sock).await;
+        let code = if st == 200 {
+            None
+        } else {
+            let (rest, _) = hub_sse_collect(sock, 2, |t| t.contains("\"code\"")).await;
+            error_code(rest.as_bytes())
+        };
+        out.push((st, code));
+    }
+    (out, socks)
 }
 
 /// A JSON record padded to about `bytes` bytes.

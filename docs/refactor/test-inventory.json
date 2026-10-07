@@ -325,6 +325,17 @@
     "scenarios": []
   },
   {
+    "name": "a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_connections",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "434cc0c5aff71a155f18d4d6552795e0068df78a25925bdf778f4fd689f68ecb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_debt_that_outlives_its_circles_raises_the_stale_alert",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

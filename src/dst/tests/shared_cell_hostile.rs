@@ -10,8 +10,8 @@
 
 use super::fixture_auth::sr2_workload_jwt;
 use super::fixture_cell::{
-    CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, grant, journal,
-    jwks_key, open_cell, padded, policy, project,
+    CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, grant,
+    hold_subscriptions, journal, jwks_key, open_cell, padded, policy, project,
 };
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
@@ -136,6 +136,48 @@ async fn a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_map
     }
     let victim = cell.call(K - 1, "PUT", "/v1/streams/victim", CREATE).await;
     assert_eq!(victim.0, 201, "the victim's create");
+    engine_shutdown(&cell.state).await;
+}
+
+/// A2b, subscription axis (H1): with the cell's live-connection bound at
+/// 16, k - 1 tenants whose feed sets no `max_live_subscriptions` each open
+/// twice their ceiling and hold what they are given. Each holds exactly
+/// 16 / k = 2, every other attempt is its own `429
+/// project_concurrency_limit`, and the victim subscribes beside them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_connections() {
+    let bounds = SharedBounds {
+        subscriptions: 16,
+        ..SharedBounds::default()
+    };
+    let cell = open_cell(CellSpec {
+        bounds,
+        ..CellSpec::open(K)
+    })
+    .await;
+    for i in 0..K {
+        let created = cell.call(i, "PUT", "/v1/streams/orders", CREATE).await;
+        assert_eq!(created.0, 201);
+    }
+    let cell = &cell;
+    let crowd =
+        futures_util::future::join_all((0..K - 1).map(|i| hold_subscriptions(cell, i, 4))).await;
+    for (i, (answers, _held)) in crowd.iter().enumerate() {
+        let open = answers.iter().filter(|(st, _)| *st == 200).count();
+        assert_eq!(open, 16 / K, "{} subscribed", project(i));
+        for (st, code) in answers.iter().filter(|(st, _)| *st != 200) {
+            let typed = (*st, code.as_deref());
+            let want = (429, Some("project_concurrency_limit"));
+            assert_eq!(typed, want, "{}", project(i));
+        }
+    }
+    let (victim, _held) = hold_subscriptions(cell, K - 1, 1).await;
+    assert_eq!(
+        victim,
+        vec![(200, None)],
+        "the victim among a subscribed crowd"
+    );
+    drop(crowd);
     engine_shutdown(&cell.state).await;
 }
 

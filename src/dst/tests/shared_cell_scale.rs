@@ -9,11 +9,11 @@
 use super::fixture_auth::rig_sse;
 use super::fixture_cell::{
     Answers, CREATE, Cell, CellSpec, KEYS, Ledger, NAMES, WORKSPACES, append_all, burst,
-    cell_scale, error_code, for_each, journal, key_query, marker, open_cell, padded, project,
-    record, seed, workspace,
+    cell_scale, error_code, for_each, hold_subscriptions, journal, key_query, marker, open_cell,
+    padded, project, record, seed, workspace,
 };
 use super::fixture_http::engine_shutdown;
-use super::fixture_livefeed::{hub_sse_collect, sse_head};
+use super::fixture_livefeed::hub_sse_collect;
 use super::fixture_requests::preq;
 use crate::project_policy::ProjectQuotas;
 use serde_json::Value;
@@ -636,7 +636,7 @@ async fn flood(cell: &Cell, i: usize) -> Answers {
             let park = "/v1/streams/orders/records:long-poll?cursor=now&waitMs=1000";
             burst(cell, i, ("GET", park, b""), 12, true).await
         }
-        5 => subscription_flood(cell, i, 6).await,
+        5 => hold_subscriptions(cell, i, 6).await.0,
         6 => {
             let mut out = Vec::new();
             for j in 0..8 {
@@ -653,27 +653,6 @@ async fn flood(cell: &Cell, i: usize) -> Answers {
             out
         }
     }
-}
-
-/// Open `count` live subscriptions at once as project `i` and hold them
-/// until every answer head is in.
-async fn subscription_flood(cell: &Cell, i: usize, count: usize) -> Answers {
-    let mut socks = Vec::new();
-    for _ in 0..count {
-        socks.push(rig_sse(cell.addr, "orders", &cell.bearers[i], "", None).await);
-    }
-    let mut out = Vec::new();
-    for sock in &mut socks {
-        let (st, _) = sse_head(sock).await;
-        let code = if st == 200 {
-            None
-        } else {
-            let (rest, _) = hub_sse_collect(sock, 2, |t| t.contains("\"code\"")).await;
-            error_code(rest.as_bytes())
-        };
-        out.push((st, code));
-    }
-    out
 }
 
 /// A paced project's ordinary load: a stream, then ten appends and ten
