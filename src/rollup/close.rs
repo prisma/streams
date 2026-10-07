@@ -295,8 +295,10 @@ impl CarryPage<'_, '_> {
         };
         let month_segment = row.segments.entry(segment).or_default();
         if !month_segment.final_seen {
-            let from = state.storage_accounted_through_ms.max(self.close.start);
-            if from < self.close.boundary && state.owned_frame_bytes_current > 0 {
+            if state.owned_frame_bytes_current > 0 {
+                // Both bounds of `from` are short of the boundary: the state's
+                // by the return above, the month's start by construction.
+                let from = state.storage_accounted_through_ms.max(self.close.start);
                 let add = super::storage::byte_ms(
                     state.owned_frame_bytes_current,
                     from,
