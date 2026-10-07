@@ -367,7 +367,10 @@ fn default_values_are_pinned() {
     assert_eq!(c.admission.limit_reqs_per_sec, 1_000.0);
     assert_eq!(c.admission.limit_recs_per_sec, 5_000.0);
     assert_eq!(c.admission.limit_burst_secs, 2.0);
-    assert!(!c.crypto.frame_compress);
+    assert!(
+        !c.crypto.frame_compress,
+        "the retired constant frozen scopes still pass is off"
+    );
     assert_eq!(c.runtime.memprofile_cert, None);
     assert_eq!(c.runtime.cert_sealed_publish_delay_ms_raw, None);
     assert_eq!(c.runtime.certification_mode, None);
@@ -493,7 +496,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
         ("SSE_H1_HEADER_TIMEOUT_MS", "0"),  // filtered -> default, never disabled
         ("MAINT_BACKPRESSURE_RELEASE_PCT", "140"), // min(100)
         ("SWEEP_MAINT_RESIDENT", "0"),      // stored raw (boot check)
-        ("FRAME_COMPRESS", "TrUe"),
         ("SCALE_HOT_PCT", "90.0"),
         ("FLEET_ALLOW_HTTP_PEERS", "1"),
     ]);
@@ -504,7 +506,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
     assert_eq!(c.sse.heartbeat_ms, 15_000);
     assert_eq!(c.admission.maint_release_pct, 100);
     assert_eq!(c.billing.sweep_maint_resident, 0); // raw; floored at the use site
-    assert!(c.crypto.frame_compress);
     assert_eq!(c.scaler.hot_pct, 0.9);
     assert!(c.fleet.allow_http_peers);
 

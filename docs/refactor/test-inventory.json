@@ -4097,6 +4097,17 @@
     ]
   },
   {
+    "name": "format_frames_reencrypts_each_record_of_a_paged_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8ea3cef2c4c444907231611757d578ea795511576da0d8e4e4349bc2a5b57690",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_raw.rs",
+    "scenarios": []
+  },
+  {
     "name": "frame_debt_survives_restart_via_tail_seed",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

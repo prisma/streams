@@ -173,15 +173,20 @@ fn overlay_names_nothing_set_are_not_read() {
 /// A name that was a setting without a flag, and whose mechanism is removed,
 /// changes nothing in the loaded configuration: `STORE_MAX_CONCURRENT`, the
 /// count cap on store operations (edge record #82), `HISTORY_COMPACTOR`,
-/// the switch that turned the history compactor off (edge record #84), and
+/// the switch that turned the history compactor off (edge record #84),
 /// `BILLING_METER`, the switch that turned ingest metering off (edge record
-/// #85).
+/// #85), and `FRAME_COMPRESS`, the per-record compression switch that
+/// layout 5's pages replaced (they compress whenever that pays): neither of
+/// the spellings that turned it on, nor "0", changes anything.
 #[test]
 fn retired_environment_names_change_nothing() {
-    const NAMES: [(&str, &str); 3] = [
+    const NAMES: [(&str, &str); 6] = [
         ("STORE_MAX_CONCURRENT", "48"),
         ("HISTORY_COMPACTOR", "off"),
         ("BILLING_METER", "off"),
+        ("FRAME_COMPRESS", "1"),
+        ("FRAME_COMPRESS", "TrUe"),
+        ("FRAME_COMPRESS", "0"),
     ];
     for (name, value) in NAMES {
         assert_eq!(load_with(&[(name, value)]), load_with(&[]), "{name}");

@@ -334,6 +334,11 @@ fn typed_refusal(error: ReadFailure) -> Response {
     clippy::fn_params_excessive_bools,
     reason = "read_payload; the raw and filtered switches are independent rendering options the caller resolved from the request; an enum would force one axis onto independent flags"
 )]
+/// The response body of a read. With `frames`, each record is re-encrypted
+/// as its own frame under the selector's subkey, compressed only when
+/// `compress` asks, and every caller passes false: the raw read passes the
+/// constant `CryptoConfig::frame_compress`, so wire frames are version 4
+/// and no response length tells an observer how well a record compresses.
 pub(crate) fn read_payload(
     out: &ReadOutcome,
     frames: bool,

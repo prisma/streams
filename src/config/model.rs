@@ -347,10 +347,19 @@ pub struct AdmissionConfig {
     pub limit_burst_secs: f64,
 }
 
-/// Crypto framing knobs (src/crypto.rs).
+/// Crypto framing: no setting since layout 5. Stored pages compress
+/// whenever that pays, and `format=frames` responses never compress (every
+/// frame is version 4), so no response length depends on how well a record
+/// compresses. FRAME_COMPRESS is no longer read: a retired name, like the
+/// names of edge records #80 to #85.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CryptoConfig {
-    /// FRAME_COMPRESS: "1" or case-insensitive "true", default false.
+    /// Always false: the wire's compression choice the frozen
+    /// `render_raw_read` passes to `read_payload`, so `format=frames`
+    /// answers version 4 frames. Nothing sets it; `bootstrap::run` also
+    /// hands it to `shard_config`, which ignores it. It stays a field only
+    /// because those frozen scopes read it, and goes with the next approved
+    /// change to them.
     pub frame_compress: bool,
 }
 

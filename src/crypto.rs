@@ -35,12 +35,12 @@ pub(crate) const EPOCH_LEN: usize = 16;
 /// dominates, and the attempt itself costs CPU in the serial committer).
 const COMPRESS_MIN_BYTES: usize = 256;
 
-/// Whether writers attempt compress-then-encrypt for newly written
-/// frames. Read-side support is unconditional (the version byte in the
-/// AAD-bound header decides), so this is a per-engine writer policy, not
-/// a wire capability. Selected explicitly at engine construction from
-/// the process configuration (FRAME_COMPRESS); tools/benches pass their
-/// own choice. No ambient lookup: the flag travels with the cipher.
+/// Whether a frame writer attempts compress-then-encrypt. Read-side
+/// support is unconditional (the version byte in the AAD-bound header
+/// decides), so this is a writer policy, not a wire capability. Since
+/// layout 5 frames are only written for `format=frames` responses, which
+/// never compress; tools/benches pass their own choice. No ambient
+/// lookup: the flag travels with the cipher.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum FrameCompression {
     #[default]

@@ -774,3 +774,119 @@ async fn catalog_pages_without_scanning_the_world() {
     assert!(!c.starts_with("cat-"), "cursor must be opaque, got {c}");
     engine_shutdown(&state).await;
 }
+
+/// The JSON elements of the wire-frames fixture: every third record is
+/// padded to 600 B of text that zstd shrinks, the others are a few bytes.
+fn wire_records(from: u64, to: u64) -> Vec<String> {
+    (from..to)
+        .map(|i| match i % 3 {
+            0 => format!(r#"{{"i":{i},"pad":"{}"}}"#, "x".repeat(600)),
+            _ => format!(r#"{{"i":{i}}}"#),
+        })
+        .collect()
+}
+
+/// Every frame of a `format=frames` body, decrypted under the stream's
+/// default-key subkey: (version, offset, routing key, payload text).
+fn wire_frames(
+    body: &[u8],
+    subkey: &[u8; 32],
+    segment: &[u8; 16],
+) -> Vec<(u8, u64, String, String)> {
+    let mut rest = body;
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let frame = crate::crypto::decode_frame(rest).expect("a whole frame");
+        let len = frame.header_len + 4 + frame.ciphertext.len();
+        let plain = crate::crypto::decrypt_frame(subkey, segment, &frame, &rest[..len]);
+        let text = String::from_utf8(plain.expect("the frame authenticates")).unwrap();
+        let header = &frame.header;
+        out.push((
+            frame.ver,
+            header.offset,
+            header.routing_key.to_owned(),
+            text,
+        ));
+        rest = &rest[len..];
+    }
+    out
+}
+
+/// Layout 5: `format=frames` still re-encrypts each served record as its
+/// own frame, whatever page stores it. A read from the start and a read
+/// whose cursor falls inside the absorbed history page each answer one
+/// frame per record, in order, from the cursor on. Every frame is version 4
+/// (uncompressed), the 600 B records zstd would shrink included: no
+/// response length depends on how well a record compresses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn format_frames_reencrypts_each_record_of_a_paged_stream() {
+    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    let rig = http_rig_build(
+        mem(),
+        super::fixture_runtime::RigRuntime::first(),
+        HttpRigOptions {
+            absorber: Some(crate::history::AbsorberConfig {
+                threshold_bytes: 1,
+                threshold_age: std::time::Duration::from_millis(1),
+                tick: std::time::Duration::from_millis(20),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(rig.addr, "PUT", "/v1/stream/wireframes", &ct, b"").await;
+    assert!(st == 200 || st == 201, "create: {st}");
+    let body = |records: Vec<String>| format!("[{}]", records.join(","));
+    let (st, _, _) = hreq(
+        rig.addr,
+        "POST",
+        "/v1/stream/wireframes",
+        &ct,
+        body(wire_records(0, 12)).as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "append: {st}");
+    let sref = rig.state.deployment.raw_adapter_sref("wireframes");
+    let desc = rig.state.registry.get(&sref).await.unwrap().unwrap();
+    let engine = rig
+        .state
+        .engine_for(&desc.segment_route_by_id(0).unwrap())
+        .await
+        .unwrap();
+    wait_all_absorbed(&engine, &[desc.storage_hash()]).await;
+    let (st, _, _) = hreq(
+        rig.addr,
+        "POST",
+        "/v1/stream/wireframes",
+        &ct,
+        body(wire_records(12, 20)).as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "tail append: {st}");
+    let subkey = crate::crypto::derive_subkey(&skey(), &desc.epoch(), "", 0);
+    let expected = |from: u64| -> Vec<_> {
+        let texts = wire_records(from, 20);
+        (from..20)
+            .zip(texts)
+            .map(|(i, text)| (4, i, String::new(), text))
+            .collect()
+    };
+    for from in [0, 5] {
+        let path = format!(
+            "/v1/stream/wireframes?format=frames&offset={}",
+            crate::offsets::encode(0, from)
+        );
+        let (st, h, b) = hreq(rig.addr, "GET", &path, &[], b"").await;
+        assert_eq!(st, 200, "frames read from {from}");
+        assert_eq!(
+            h.get("content-type").map(String::as_str),
+            Some("application/x-durable-stream-frames")
+        );
+        let frames = wire_frames(&b, &subkey, &desc.storage_hash());
+        assert_eq!(frames, expected(from), "frames read from {from}");
+    }
+    engine_shutdown(&rig.state).await;
+    rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+}

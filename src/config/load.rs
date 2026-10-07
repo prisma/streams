@@ -33,7 +33,6 @@ impl ServerConfig {
         self.overlay_fleet(env);
         self.overlay_scaler(env);
         self.overlay_admission_usage_limits(env);
-        self.overlay_crypto(env);
         self.overlay_runtime_certification(env);
     }
 
@@ -248,13 +247,6 @@ impl ServerConfig {
         if let Some(v) = env_parse(env, "LIMIT_BURST_SECS") {
             self.admission.limit_burst_secs = v;
         }
-    }
-
-    fn overlay_crypto(&mut self, env: &dyn Environment) {
-        self.crypto.frame_compress = env
-            .get("FRAME_COMPRESS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
     }
 
     fn overlay_runtime_certification(&mut self, env: &dyn Environment) {

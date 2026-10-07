@@ -93,7 +93,6 @@ impl ServerConfig {
                 "limit_recs_per_sec": self.admission.limit_recs_per_sec,
                 "limit_burst_secs": self.admission.limit_burst_secs,
             },
-            "crypto": { "frame_compress": self.crypto.frame_compress },
             "runtime": {
                 "memprofile_cert": &self.runtime.memprofile_cert,
                 "certification_mode": &self.runtime.certification_mode,

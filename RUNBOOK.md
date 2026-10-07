@@ -95,7 +95,6 @@ with an empty pool rather than dead sockets.
 | `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25. It is the cadence only with `WAL_GROUP_COMMIT=0`. With the pump (the default) it is read only as the gap when `WAL_FLUSH_GAP_MS=0`; SlateDB's own timer is then the fixed 60 s failsafe (below), whatever this says (until 2026-10-07 it was this value stretched to ≥1 s) |
 | `WAL_GROUP_COMMIT` | 1 | per-shard pump flushes the WAL the moment the previous flush completes when commits are waiting, instead of on the fixed tick; 0 = SlateDB's fixed tick at `FLUSH_INTERVAL_MS` (the default until 2026-09-29). Sparse/moderate appends stop paying tick alignment (local A/B vs 25 ms s3lite: sequential append p50 55→28 ms, durable_wait 47→27 ms); at saturation both modes self-clock to the PUT RTT (equal). Skips entirely when nothing awaits durability, so idle churn is zero |
 | `WAL_FLUSH_GAP_MS` | 100 (0 = `FLUSH_INTERVAL_MS`) | pump-mode floor on start-to-start flush spacing: the one write tier (owner decision of 2026-10-07; 10 until then). With the 1 ms herd-settle, a shard's flushes start at least 101 ms apart, so a busy shard writes at most ~9.9 WAL objects/s. An append waits for the rest of the gap since its shard's last flush started, then the settle and one WAL PUT: on a shard whose last flush started at least 100 ms ago, settle + PUT only; a producer with one append in flight gets one ack per ~101 ms (the PUT overlaps the gap while it is shorter). Only binds when the PUT RTT is faster than the gap. Lowering it buys acknowledgement latency with more WAL PUTs on busy shards |
-| `FRAME_COMPRESS` | 0 | 1 = zstd-1 each record payload BEFORE encryption (frame v3; readers accept v2+v3, no migration). Ciphertext never compresses, so this is the only tier where compression can live — it shrinks WAL, L0, compaction, absorber and history bytes together. Sinmax campaign: removed a ~5-6x NIC amplification; enable for any workload with compressible payloads |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
 | `L0_MAX_SSTS` | 32 | L0 count that triggers write backpressure. An L0 costs a stored object, not memory; 8 (the default until 2026-09-29) stalled batch ingest. It is also SlateDB's per-key L0 cap: a totally-ordered stream rewrites one meta row per memtable, so every L0 overlaps on that key and a lower per-key cap would be the real dispatch gate (the upstream default of 8 stalled the flusher). `L0_MAX_SSTS_PER_KEY` is not read (since 2026-09-29) |
@@ -750,6 +749,13 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   the pilot — treat the pilot keyspace as re-creatable.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
+- **Layout 5** (storage layout version 5): each append request is stored as
+  pages of up to 64 KiB of records, compressed with zstd-1 when that pays
+  and encrypted once. There is no compression setting; `FRAME_COMPRESS` is
+  no longer read and can be dropped from deployments. `format=frames` reads
+  answer uncompressed version 4 frames on every deployment. A binary refuses any
+  namespace written under another layout (`unsupported_storage_layout`),
+  so a layout 4 deployment moves to a fresh `PATH_PREFIX` or bucket.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
