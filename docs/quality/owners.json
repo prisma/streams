@@ -283,6 +283,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::shared_cell_hostile",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The shared-cell hostile legs (shared-cells PLAN section 4.1, A2b and A7-A12): what one tenant can do to its neighbours through the cell's shared bounds and trust roots; each leg is red on the tree it was written against and is ignored with the plan step that turns it green; compiler and the ignored-test run exercise the module.",
+      "syntax": "path = \"tests/shared_cell_hostile.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "The shared-cell lifecycle scenarios (shared-cells PLAN section 4.1, A5 and A6): suspension, revocation, transfer, feed omission, a forced split, delete and recreate and a key rotation aimed at one project leave every neighbour's view byte-identical, and per-project state returns to its baseline when projects go idle; compiler and the full DST suite exercise the module.",

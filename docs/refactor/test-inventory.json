@@ -57,6 +57,30 @@
     "scenarios": []
   },
   {
+    "name": "a_capability_carrier_with_only_a_key_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 8: a capability carrier must verify\"]"
+    ],
+    "function_sha256": "5797222c15c5f6d3db575f4368eca80467e906c439a1ff34b3518bc6667fe262",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_capability_flood_never_starves_the_victims_watch",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase B step 15: unverified capability lookups are not charged to a shared budget\"]"
+    ],
+    "function_sha256": "eea3f6d53a87119ac856809913db19a323a43fcfefa1a3b1739f797c69520fea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_ceiling_limited_exact_retry_still_completes_a_committed_final",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -165,6 +189,18 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 2: effective quota = min(feed, shared bound / k)\"]"
+    ],
+    "function_sha256": "5a3a42263a4cb629dcd1646bd7cd9f2351b5a9b041393c79949130a27526b2da",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
     "scenarios": []
   },
   {
@@ -476,6 +512,18 @@
     "scenarios": [
       "QUE-004"
     ]
+  },
+  {
+    "name": "a_feed_rollback_after_a_restart_keeps_a_revoked_credential_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 4: accepted feed versions persist across restarts\"]"
+    ],
+    "function_sha256": "728f658409f0ec453bb8dcd298dfbd1432b96dfa5b95821ba434178b27169e37",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
   },
   {
     "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
@@ -900,6 +948,18 @@
     "scenarios": [
       "CRT-005"
     ]
+  },
+  {
+    "name": "a_parked_crowd_never_sheds_the_victims_writes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 5: parked waits leave the inflight write gate\"]"
+    ],
+    "function_sha256": "916867276ec123f32cc3bb76351ab5368448471e367c15a189203ae6af26c24e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
   },
   {
     "name": "a_parked_delete_never_removes_a_later_incarnation",
@@ -2260,6 +2320,18 @@
     ]
   },
   {
+    "name": "an_anonymous_denial_flood_never_drops_the_victims_denial",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase B step 14: unverified denials are counted, not queued per event\"]"
+    ],
+    "function_sha256": "26cbe9f0d50c8cee2a7493648e8afec156229da04397f4fb3faf20e3bca46ba0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_append_counts_when_its_descriptor_cannot_be_read_again",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2457,6 +2529,18 @@
       "CRT-003",
       "SEC-004"
     ]
+  },
+  {
+    "name": "an_internal_token_signed_by_a_customer_key_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 8: each signing key is pinned to one audience\"]"
+    ],
+    "function_sha256": "aa69eb8cf24062b228a497ce22b2a30ff9742840a4e93a73d64b137e1e24ec23",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
   },
   {
     "name": "an_interrupted_reconcile_pass_is_completed_after_a_restart",
@@ -3435,6 +3519,18 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "e39d2fd61316a3e844d0c9c459934c108510883604d78cb5f1bbdc111a572d20",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "expired_streams_close_within_two_walk_passes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase B step 17: owner-scheduled billing closes\"]"
+    ],
+    "function_sha256": "18f2857a6a83ce64d7fa2c0c63099286b5436f4c8c99465b9d483c0cf6782245",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_lifecycle.rs",
@@ -4870,6 +4966,18 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "names_ground_onto_the_victims_shard_never_shed_the_victim",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase B step 12: per-(project, shard) backlog attribution\"]"
+    ],
+    "function_sha256": "41d374c82e53c81291912b0171cca66a1f637a077a31e24e4b2b2d8bbe376f54",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
     "scenarios": []
   },
   {
@@ -6594,6 +6702,18 @@
     "scenarios": [
       "COST-004"
     ]
+  },
+  {
+    "name": "reserved_ids_are_dropped_from_the_feed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until shared-cells phase A step 2: the feed drops and counts reserved ids\"]"
+    ],
+    "function_sha256": "02e1f488829b400c8c1902938a7546db29177597e7cff6505ded52dde61b9aae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
   },
   {
     "name": "reserved_namespace_refuses_customer_credentials",

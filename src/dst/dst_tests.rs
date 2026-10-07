@@ -252,6 +252,9 @@ mod security_usage;
 #[path = "tests/security_workload.rs"]
 mod security_workload;
 
+#[path = "tests/shared_cell_hostile.rs"]
+mod shared_cell_hostile;
+
 #[path = "tests/shared_cell_lifecycle.rs"]
 mod shared_cell_lifecycle;
 

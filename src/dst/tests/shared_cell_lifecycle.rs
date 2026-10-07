@@ -473,3 +473,12 @@ async fn closes_within(bound: fn(usize) -> usize) {
 async fn expired_streams_close_within_one_walk_circle() {
     closes_within(|d| d.div_ceil(256) + 1).await;
 }
+
+/// A4 (L4): one project's closes do not wait on every other project's
+/// descriptors: they land within two walk passes however many streams
+/// the cell holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "red until shared-cells phase B step 17: owner-scheduled billing closes"]
+async fn expired_streams_close_within_two_walk_passes() {
+    closes_within(|_| 2).await;
+}
