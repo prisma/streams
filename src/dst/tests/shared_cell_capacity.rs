@@ -1,7 +1,8 @@
 //! Shared-cell capacity (the capacity review of 2026-10-07): what one
 //! project inside its quotas can hold of what a shared cell's projects
 //! share, besides read memory (`read_memory`). Each test pins one bound:
-//! a write's buffered bodies share their project's memory line (C3).
+//! a write's buffered bodies share their project's memory line (C3), and
+//! a deleted watched stream's touch journal ends with it (C9).
 
 use super::fixture_cell::{Cell, CellSpec, open_cell, project};
 use super::fixture_http::engine_shutdown;
@@ -111,5 +112,51 @@ async fn concurrent_uploads_share_their_projects_memory_line() {
          pressure holds {buffered} body bytes; answers {answers:?}"
     );
     assert_eq!(at_rest(|| entry.estimated_pressure_bytes()).await, 0);
+    engine_shutdown(&cell.state).await;
+}
+
+/// C9. Deleting a watched stream retires its touch journal: 32 watched
+/// streams created, appended to (which opens each incarnation's journal
+/// and its 25 ms flusher task) and deleted leave the runtime's alive task
+/// count where it was. Before: each deleted incarnation kept its journal
+/// and flusher for the life of the process (35 tasks before, 67 after),
+/// attributed to no project, and only a shard fence or move closed them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleted_watched_streams_leave_no_touch_journal_running() {
+    const STREAMS: usize = 32;
+    let cell = open_cell(CellSpec::open(1)).await;
+    let tasks = || {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    };
+    // Bring the engine to its steady task set first: plain streams
+    // created, appended to and deleted leave no task.
+    for n in 0..8 {
+        let warm = format!("/v1/streams/warm-{n}");
+        assert_eq!(cell.call(0, "PUT", &warm, CREATE).await.0, 201);
+        let record = format!("{warm}/records");
+        assert_eq!(cell.call(0, "POST", &record, br#"{"k":0}"#).await.0, 200);
+        assert_eq!(cell.call(0, "DELETE", &warm, b"").await.0, 204);
+    }
+    let before = at_rest(tasks).await;
+    let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/k"]}]}"#;
+    for n in 0..STREAMS {
+        let path = format!("/v1/streams/touch-{n}");
+        assert_eq!(cell.call(0, "PUT", &path, watched).await.0, 201);
+        let record = format!(r#"{{"k":{n}}}"#);
+        let appended = cell
+            .call(0, "POST", &format!("{path}/records"), record.as_bytes())
+            .await;
+        assert_eq!(appended.0, 200);
+        assert_eq!(cell.call(0, "DELETE", &path, b"").await.0, 204);
+    }
+    let after = at_rest(tasks).await;
+    assert!(
+        after <= before,
+        "{} more tasks alive after {STREAMS} watched streams were created, appended to and \
+         deleted ({before} before, {after} after)",
+        after.saturating_sub(before)
+    );
     engine_shutdown(&cell.state).await;
 }

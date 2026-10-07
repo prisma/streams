@@ -267,3 +267,35 @@ async fn closing_a_shard_closes_and_forgets_exactly_the_journals_whose_route_is_
     outside.close();
     reopened.close();
 }
+
+/// Retiring a deleted incarnation's journal closes exactly that journal
+/// (its waiter wakes stale), forgets it so its flusher ends and the next
+/// journal for the identity is a fresh one, and leaves every other journal
+/// waiting; retiring an identity with no journal changes nothing.
+#[tokio::test]
+async fn retiring_an_identity_closes_and_forgets_exactly_its_journal() {
+    let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
+    let route = RouteHash([0x40; 16]);
+    let (deleted_hash, kept_hash) = ([0x01; 16], [0x02; 16]);
+    let deleted = registry.journal(deleted_hash, route);
+    let kept = registry.journal(kept_hash, route);
+    let mut deleted_wait = Box::pin(deleted.wait("now", vec![7], LONG));
+    let mut kept_wait = Box::pin(kept.wait("now", vec![7], LONG));
+    assert_eq!(ready(futures_util::poll!(deleted_wait.as_mut())), "pending");
+    assert_eq!(ready(futures_util::poll!(kept_wait.as_mut())), "pending");
+
+    registry.retire(deleted_hash);
+    registry.retire([0x03; 16]);
+
+    assert_eq!(
+        ready(futures_util::poll!(deleted_wait.as_mut())),
+        format!("stale {}:0", deleted.epoch)
+    );
+    assert_eq!(ready(futures_util::poll!(kept_wait.as_mut())), "pending");
+    assert_eq!(registry.map.lock().unwrap().len(), 1);
+    assert!(Arc::ptr_eq(&registry.journal(kept_hash, route), &kept));
+    let reopened = registry.journal(deleted_hash, route);
+    assert!(!Arc::ptr_eq(&reopened, &deleted));
+    kept.close();
+    reopened.close();
+}

@@ -2,9 +2,14 @@
 use super::*;
 
 impl CreationService {
+    /// Delete the stream `sref` names. The incarnation it ends, or the
+    /// tombstone or expired incarnation it finds, has its watch journal
+    /// retired in `touch` (capacity review C9: journals otherwise outlive
+    /// their incarnations until a fence, each with its flusher task).
     pub(crate) async fn delete(
         self: &Arc<Self>,
         sref: crate::tenant::TenantStreamRef,
+        touch: &crate::touch::TouchRegistry,
     ) -> Result<(), CreationError> {
         let existing = self.registry.get(&sref).await.map_err(|e| {
             CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
@@ -13,6 +18,7 @@ impl CreationService {
             return Err(CreationError::gone(None));
         };
         if !desc_alive(&desc) {
+            touch.retire(desc.storage_hash());
             if desc.deleted {
                 delete_lifecycle(self, &sref)
                     .await
@@ -22,7 +28,9 @@ impl CreationService {
         }
         delete_lifecycle(self, &sref)
             .await
-            .map_err(|e| CreationError::new(CreationFailure::Storage, "internal", &e))
+            .map_err(|e| CreationError::new(CreationFailure::Storage, "internal", &e))?;
+        touch.retire(desc.storage_hash());
+        Ok(())
     }
     #[cfg(test)]
     pub(crate) async fn release_fork_ref(

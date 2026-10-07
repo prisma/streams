@@ -3495,6 +3495,17 @@
     "scenarios": []
   },
   {
+    "name": "deleted_watched_streams_leave_no_touch_journal_running",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b6a67dae1258328d6f80fd06a73bf3b4d0f88e31abb26c55dcc2590f59d6a3eb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
+  },
+  {
     "name": "deletes_and_reads_are_faulted_too",
     "attributes": [
       "#[tokio::test]"

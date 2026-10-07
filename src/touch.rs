@@ -404,6 +404,20 @@ impl TouchRegistry {
             .clone()
     }
 
+    /// A deleted incarnation's journal, by its storage identity: closed
+    /// (its waiters woken stale) and dropped, so its flusher ends. A
+    /// deleted incarnation is never appended to or watched again; a wait
+    /// that races the delete on a stale descriptor opens a fresh journal,
+    /// as it would after a fence. A poisoned map retires nothing.
+    pub(crate) fn retire(&self, hash: [u8; 16]) {
+        let Ok(mut map) = self.map.lock() else {
+            return;
+        };
+        if let Some((_, journal)) = map.remove(&hash) {
+            journal.close();
+        }
+    }
+
     /// Fence/move of a shard: close + drop every journal whose stream's
     /// shard ROUTE hash falls in the shard's bit-prefix, waking all
     /// their waiters with stale.

@@ -2336,7 +2336,7 @@ pub(crate) fn creation_error_response(
 }
 
 async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRef) -> Response {
-    match state.creation_service().delete(sref).await {
+    match state.creation_service().delete(sref, &state.touch).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => creation_error_response(error),
     }
