@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) mod ceiling;
+mod freshness;
 mod lease;
 mod publication;
 mod refusal;
@@ -346,8 +347,8 @@ pub(crate) struct AuthService {
     /// Unknown-kid sightings since the last JWKS refresh — the
     /// refresher's rate-limited signal to fetch out of cadence (§7.1).
     pub unknown_kid_seen: AtomicU64,
-    /// SR-4: fired (rate-limited) when an unknown kid is seen, so the
-    /// refresher fetches a freshly rotated key out of cadence instead
+    /// SR-4, shared-cells R2: fired (rate-limited) on an unknown kid or a
+    /// stale-feed refusal, so the refresher fetches out of cadence instead
     /// of failing requests until the next tick.
     pub kid_wakeup: tokio::sync::Notify,
     /// Review V4: bumped by every accepted feed publication (JWKS,
@@ -436,9 +437,9 @@ impl AuthService {
         self.gen_tx.subscribe()
     }
 
-    /// SR-4: nudge the refresher out of cadence — at most once per 30s
-    /// — so a freshly rotated signing key is fetched when its first
-    /// token arrives instead of failing requests until the next tick.
+    /// SR-4, shared-cells R2: nudge the refresher out of cadence, at most
+    /// once per 30 s, so a rotated key's first token or a feed found stale
+    /// on waking is fetched now instead of failing until the next tick.
     /// Returns whether the nudge fired (rate-limit observable in tests).
     pub(crate) fn request_kid_refresh(&self) -> bool {
         let now = crate::shard::now_ms();
@@ -476,12 +477,9 @@ impl AuthService {
             return Err(AuthError::AlgNotAllowed);
         }
         let kid = header.kid.ok_or(AuthError::KidMissing)?;
-        let jwks = self.jwks.load();
         // Bounded key-set staleness (review item 6): fail closed like
         // policies and grants — retryable, not a credential error.
-        if feed_stale(jwks.fetched_at_unix, JWKS_STALENESS_MAX_SECS, now) {
-            return Err(AuthError::KeysStale);
-        }
+        let jwks = self.fresh_jwks(now)?;
         let entry = match jwks.keys.get(&kid) {
             Some(k) => k,
             None => {
@@ -579,10 +577,7 @@ impl AuthService {
         let (token_scopes, _unknown) = ScopeSet::parse(&c.scope);
 
         // §7.1 fail-closed policy checks, all from local snapshots.
-        let policies = self.projects.load();
-        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
-            return Err(AuthError::PolicyStale);
-        }
+        let policies = self.fresh_policies(now)?;
         // §8.1: placement is not an authorization problem. This cell's
         // policy snapshot lists EXACTLY the projects placed here, so a
         // project absent from it is not served by this cell (or the
@@ -610,10 +605,7 @@ impl AuthService {
             return Err(AuthError::WorkspaceMismatch);
         }
 
-        let grants = self.credentials.load();
-        if feed_stale(grants.fetched_at_unix, self.staleness_max_secs(), now) {
-            return Err(AuthError::GrantsStale);
-        }
+        let grants = self.fresh_grants(now)?;
         let cred = grants
             .credentials
             .get(c.credential_id.as_str())
@@ -754,10 +746,7 @@ impl AuthService {
         )>,
         AuthError,
     > {
-        let policies = self.projects.load();
-        if feed_stale(policies.fetched_at_unix, self.staleness_max_secs(), now) {
-            return Err(AuthError::PolicyStale);
-        }
+        let policies = self.fresh_policies(now)?;
         Ok(self
             .served_policy(&policies, project)
             .map(|p| (p.status, p.quotas.clone())))

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::{AuthService, feed_fresh_until, feed_stale};
+use super::{AuthService, feed_fresh_until};
 use crate::tenant::ProjectId;
 
 /// Review V4: compact authorization lease for LONG-LIVED
@@ -104,9 +104,7 @@ impl AuthService {
         let pols = self.projects.load();
         // Fail closed at the SAME window new requests use: an
         // established subscription must never outlive the feed truth.
-        if feed_stale(pols.fetched_at_unix, w, now_unix) {
-            return Err(R::PolicyStale);
-        }
+        self.refuse_stale(pols.fetched_at_unix, w, now_unix, R::PolicyStale)?;
         // §8.1: absent from this cell's snapshot, or placed on another cell.
         let Some(p) = self.served_policy(&pols, &l.project_id) else {
             return Err(R::ProjectMissing);
@@ -118,9 +116,7 @@ impl AuthService {
             return Err(R::OwnershipChanged);
         }
         let creds = self.credentials.load();
-        if feed_stale(creds.fetched_at_unix, w, now_unix) {
-            return Err(R::GrantsStale);
-        }
+        self.refuse_stale(creds.fetched_at_unix, w, now_unix, R::GrantsStale)?;
         let Some(c) = creds.credentials.get(&l.credential_id) else {
             return Err(R::CredentialMissing);
         };

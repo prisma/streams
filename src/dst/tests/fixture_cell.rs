@@ -155,6 +155,16 @@ pub(super) fn jwks_key(kid: &str) -> (String, crate::auth::JwksKey) {
     (kid.to_string(), key)
 }
 
+/// The cell's key set (the fixture key as `rig-1`, feed version 1), as a
+/// feed pass that asked at `fetched_at_unix` stamps it.
+pub(super) fn cell_keys(fetched_at_unix: i64) -> crate::auth::JwksSnapshot {
+    crate::auth::JwksSnapshot {
+        keys: HashMap::from([jwks_key("rig-1")]),
+        fetched_at_unix,
+        feed_version: 1,
+    }
+}
+
 /// The divisor every fixture cell shares its bounds by (`PROJECT_SHARE_K`,
 /// the owner's default of 2026-10-07): a project's ceiling on each shared
 /// bound is the bound / 8.
@@ -229,12 +239,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
         )
         .unwrap(),
     );
-    svc.publish_jwks(crate::auth::JwksSnapshot {
-        keys: HashMap::from([jwks_key("rig-1")]),
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
+    svc.publish_jwks(cell_keys(now)).unwrap();
     let policies: HashMap<_, _> = (0..spec.projects)
         .map(|i| {
             (
@@ -284,21 +289,25 @@ impl Cell {
     /// Publish the current policies and grants as the next feed version.
     pub(super) fn publish(&mut self) {
         self.feed_version += 1;
-        let now = crate::shard::now_ms() / 1000;
-        self.svc
-            .publish_policies(PolicySnapshot {
-                projects: self.policies.clone(),
-                fetched_at_unix: now,
-                feed_version: self.feed_version,
-            })
-            .unwrap();
-        self.svc
-            .publish_grants(GrantSnapshot {
-                credentials: self.grants.clone(),
-                fetched_at_unix: now,
-                feed_version: self.feed_version,
-            })
-            .unwrap();
+        let (policies, grants) = self.feeds(crate::shard::now_ms() / 1000);
+        self.svc.publish_policies(policies).unwrap();
+        self.svc.publish_grants(grants).unwrap();
+    }
+
+    /// The current policies and grants at the last published feed version,
+    /// as a feed pass that asked at `fetched_at_unix` stamps them.
+    pub(super) fn feeds(&self, fetched_at_unix: i64) -> (PolicySnapshot, GrantSnapshot) {
+        let policies = PolicySnapshot {
+            projects: self.policies.clone(),
+            fetched_at_unix,
+            feed_version: self.feed_version,
+        };
+        let grants = GrantSnapshot {
+            credentials: self.grants.clone(),
+            fetched_at_unix,
+            feed_version: self.feed_version,
+        };
+        (policies, grants)
     }
 
     /// The policy of project `i`, for an edit before `publish`.

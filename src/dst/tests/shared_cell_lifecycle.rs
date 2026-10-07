@@ -3,18 +3,21 @@
 //! lifecycle event aimed at one project (suspension, revocation,
 //! transfer, omission from the feed, a forced split, delete and
 //! recreate, a signing-key rotation) leaves every neighbour's whole
-//! view byte-identical, and per-project state returns to its baseline
-//! once projects go idle.
+//! view byte-identical, per-project state returns to its baseline once
+//! projects go idle, and a cell that wakes with a stale feed serves
+//! every project again after one refresh pass.
 
 use super::fixture_cell::{
-    Cell, CellSpec, KEYS, Ledger, NAMES, Token, active, cell_scale, jwks_key, key_query, map_each,
-    open_cell, project, seed, workspace,
+    Cell, CellSpec, KEYS, Ledger, NAMES, Token, active, cell_keys, cell_scale, jwks_key, key_query,
+    map_each, open_cell, project, seed, workspace,
 };
 use super::fixture_http::engine_shutdown;
-use crate::project_policy::{CredentialStatus, ProjectStatus};
+use crate::project_policy::{CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectStatus};
 use crate::tenant::ProjectId;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One project's whole observable view: every read, every metadata
 /// answer and its catalog, as (status, body bytes).
@@ -481,4 +484,176 @@ async fn expired_streams_close_within_one_walk_circle() {
 #[ignore = "red until shared-cells phase B step 17: owner-scheduled billing closes"]
 async fn expired_streams_close_within_two_walk_passes() {
     closes_within(|_| 2).await;
+}
+
+/// The feeds a woken cell's refresher fetches: the cell's own, at the
+/// version it last published, and how many passes fetched them.
+struct WakeFeeds {
+    policies: PolicySnapshot,
+    grants: GrantSnapshot,
+    passes: AtomicU64,
+}
+
+/// One of the refresher's three sources; each pass asks each once.
+struct WakeSource(Arc<WakeFeeds>);
+
+#[async_trait::async_trait]
+impl crate::auth_feed::KeySource for WakeSource {
+    async fn fetch(&self) -> anyhow::Result<crate::auth::JwksSnapshot> {
+        self.0.passes.fetch_add(1, Ordering::Relaxed);
+        Ok(cell_keys(0))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::project_policy::PolicySource for WakeSource {
+    async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
+        Ok(self.0.policies.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::project_policy::GrantSource for WakeSource {
+    async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
+        Ok(self.0.grants.clone())
+    }
+}
+
+/// The feed a sleeping cell finds stale when it wakes.
+#[derive(Clone, Copy, Debug)]
+enum Aged {
+    Policies,
+    Grants,
+    Keys,
+}
+
+impl Aged {
+    /// The code a request answers while this feed is stale.
+    fn code(self) -> String {
+        match self {
+            Aged::Policies => "policy_stale",
+            Aged::Grants => "grants_stale",
+            Aged::Keys => "keys_stale",
+        }
+        .to_string()
+    }
+
+    /// Republish this feed as the cell's last pass stamped it, one second
+    /// past its window: the wall clock moved while the cell slept, and
+    /// the refresher's monotonic tick did not.
+    fn age(self, cell: &Cell, feeds: &WakeFeeds) {
+        let now = crate::shard::now_ms() / 1000;
+        let policy_window = now - crate::auth::POLICY_STALENESS_MAX_SECS - 1;
+        match self {
+            Aged::Policies => cell.svc.publish_policies(PolicySnapshot {
+                fetched_at_unix: policy_window,
+                ..feeds.policies.clone()
+            }),
+            Aged::Grants => cell.svc.publish_grants(GrantSnapshot {
+                fetched_at_unix: policy_window,
+                ..feeds.grants.clone()
+            }),
+            Aged::Keys => cell
+                .svc
+                .publish_jwks(cell_keys(now - crate::auth::JWKS_STALENESS_MAX_SECS - 1)),
+        }
+        .unwrap();
+    }
+}
+
+/// What project `i` gets listing its catalog: (status, error code).
+async fn catalog(cell: &Cell, i: usize) -> (u16, Option<String>) {
+    let (st, _, b) = cell.call(i, "GET", "/v1/streams", b"").await;
+    (st, super::fixture_cell::error_code(&b))
+}
+
+/// What every project gets listing its catalog, all at once, by index.
+async fn catalogs(cell: &Cell) -> Vec<(u16, Option<String>)> {
+    map_each(
+        cell.projects,
+        |i| async move { (i, catalog(cell, i).await) },
+    )
+    .await
+}
+
+/// Wait until `probe` holds, for at most `secs` seconds (polled every
+/// 10 ms); the caller then asserts the exact state either way.
+async fn settle(secs: u64, probe: impl Fn() -> bool) {
+    for _ in 0..secs * 100 {
+        if probe() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// One cell, its refresher at an hour's cadence, then a wake with
+/// `aged` stale: the first request, every project's request meanwhile,
+/// and every project's request once the wake's pass had 5 s to land.
+/// Returns (refresh passes, projects served) after the wake.
+async fn wake(aged: Aged) -> (u64, usize) {
+    let cell = open_cell(CellSpec::open(cell_scale())).await;
+    let (policies, grants) = cell.feeds(0);
+    let passes = AtomicU64::new(0);
+    let feeds = Arc::new(WakeFeeds {
+        policies,
+        grants,
+        passes,
+    });
+    let tasks = crate::tasks::TaskSupervisor::new();
+    let booted = cell.svc.auth_generation() + 3;
+    crate::auth_feed::spawn_refresher(
+        cell.svc.clone(),
+        Box::new(WakeSource(feeds.clone())),
+        Box::new(WakeSource(feeds.clone())),
+        Box::new(WakeSource(feeds.clone())),
+        std::time::Duration::from_secs(3_600),
+        &tasks,
+    );
+    eventually("the boot pass", || cell.svc.auth_generation() == booted).await;
+    aged.age(&cell, &feeds);
+    let woken = cell.svc.auth_generation() + 3;
+    let first = catalog(&cell, 0).await;
+    assert_eq!(
+        first,
+        (503, Some(aged.code())),
+        "{aged:?}: the first request"
+    );
+    let storm = catalogs(&cell).await;
+    let served = (200, None);
+    let typed = storm.iter().all(|s| *s == first || *s == served);
+    assert!(
+        typed,
+        "{aged:?}: every answer meanwhile is the refusal or served"
+    );
+    settle(5, || cell.svc.auth_generation() >= woken).await;
+    let after = catalogs(&cell).await;
+    let shown = (
+        feeds.passes.load(Ordering::Relaxed),
+        after.iter().filter(|s| **s == served).count(),
+    );
+    tasks.shutdown(std::time::Duration::from_millis(100)).await;
+    engine_shutdown(&cell.state).await;
+    shown
+}
+
+/// Step 3 (R2): the refresher's cadence runs on monotonic time and the
+/// feeds age on the wall clock, so a cell that slept wakes with a stale
+/// feed and no tick due. Its first request is refused as retryable (503
+/// and the feed's code), and that refusal wakes the refresher: one pass
+/// out of cadence, however many projects were refused meanwhile, and
+/// every project is served again. The cadence is an hour and tokio time
+/// never advances, so only a refusal can start that pass. Each feed in
+/// turn: policies, grants, keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_cell_refreshes_on_its_first_stale_refusal() {
+    let (mut shown, mut want) = (Vec::new(), Vec::new());
+    for aged in [Aged::Policies, Aged::Grants, Aged::Keys] {
+        shown.push((aged.code(), wake(aged).await));
+        want.push((aged.code(), (2, cell_scale())));
+    }
+    assert_eq!(
+        shown, want,
+        "(stale feed, (refresh passes, projects served)) after each wake"
+    );
 }

@@ -2156,6 +2156,17 @@
     "scenarios": []
   },
   {
+    "name": "a_woken_cell_refreshes_on_its_first_stale_refusal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "65a826f1e0c502d4dd9eb357688ec75ec80a648a2321a6cd3715675183e11df6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
