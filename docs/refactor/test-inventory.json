@@ -2688,6 +2688,19 @@
     "scenarios": []
   },
   {
+    "name": "books_are_exact_per_project_and_workspace",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "33d4f431d162bf089662086aa68f06afbdeaa588e3fb6df009a168f225ca0b85",
+    "mechanisms": [],
+    "configuration": [
+      "let ledger = seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_scale.rs",
+    "scenarios": []
+  },
+  {
     "name": "budget_deferred_streams_absorb_on_the_next_tick",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2893,6 +2906,19 @@
       "QUE-011",
       "RES-002"
     ]
+  },
+  {
+    "name": "consumer_groups_and_producers_stay_inside_their_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "499b40299d3d96b154bb2d8845e9f164235db665be9b6bbc0dc8ff16f27f54b2",
+    "mechanisms": [],
+    "configuration": [
+      "let ledger = seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_scale.rs",
+    "scenarios": []
   },
   {
     "name": "consumer_pulls_draw_on_the_read_byte_quota",
@@ -3380,6 +3406,19 @@
     "scenarios": []
   },
   {
+    "name": "every_project_reads_exactly_its_own_records",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "dbebcad3e062950cd7eca99dfcca1367577a9fbc2ddae71c3ccb1da9afd1d903",
+    "mechanisms": [],
+    "configuration": [
+      "let ledger = seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_scale.rs",
+    "scenarios": []
+  },
+  {
     "name": "every_read_surface_serves_the_minified_client_text",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3388,6 +3427,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
+    "name": "expired_streams_close_within_one_walk_circle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e39d2fd61316a3e844d0c9c459934c108510883604d78cb5f1bbdc111a572d20",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_lifecycle.rs",
     "scenarios": []
   },
   {
@@ -3910,6 +3960,19 @@
       "crate::failpoints::release_sse_before_lease_gate(\"f1l\");"
     ],
     "file": "src/dst/tests/security_subscription.rs",
+    "scenarios": []
+  },
+  {
+    "name": "live_subscribers_and_watches_see_only_their_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3850654ef4c897231f4e85d4574a9f28a373f05bc07f925451f43e2b1bb85c03",
+    "mechanisms": [],
+    "configuration": [
+      "let ledger = seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_scale.rs",
     "scenarios": []
   },
   {
@@ -5256,6 +5319,19 @@
     ]
   },
   {
+    "name": "per_project_state_is_bounded_and_released",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "92e6005fa4476be54276ff6626933ea7be46f47a98097c4ccd0d1036ffdb7180",
+    "mechanisms": [],
+    "configuration": [
+      "seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "post_split_throughput_scales",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 8)]"
@@ -5816,6 +5892,17 @@
       "crate::failpoints::release(crate::failpoints::Fp::SseBodyBeforeYield, \"rvq\");"
     ],
     "file": "src/dst/tests/security_revocation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "quotas_refuse_only_their_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9691cb40168d60db5db863145c9d75e37456050284b66aef6412fe07b57a57e7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_scale.rs",
     "scenarios": []
   },
   {
@@ -7833,6 +7920,19 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_lineage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "transitions_leave_every_neighbour_byte_identical",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ea2276d177ed64ffb072147db59833ad51cb97c530c253687faee3dd964281be",
+    "mechanisms": [],
+    "configuration": [
+      "let ledger = seed(&cell).await;"
+    ],
+    "file": "src/dst/tests/shared_cell_lifecycle.rs",
     "scenarios": []
   },
   {

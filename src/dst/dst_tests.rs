@@ -79,6 +79,9 @@ mod durability_fences;
 #[path = "tests/fixture_auth.rs"]
 mod fixture_auth;
 
+#[path = "tests/fixture_cell.rs"]
+mod fixture_cell;
+
 #[path = "tests/fixture_failpoints.rs"]
 mod fixture_failpoints;
 
@@ -248,6 +251,12 @@ mod security_usage;
 
 #[path = "tests/security_workload.rs"]
 mod security_workload;
+
+#[path = "tests/shared_cell_lifecycle.rs"]
+mod shared_cell_lifecycle;
+
+#[path = "tests/shared_cell_scale.rs"]
+mod shared_cell_scale;
 
 #[path = "tests/sse_delivery.rs"]
 mod sse_delivery;

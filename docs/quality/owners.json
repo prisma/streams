@@ -275,6 +275,30 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fixture_cell",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The shared-cell rig (shared-cells PLAN section 4.1, Layer A): one enforce-mode cell serving many projects that reuse every name, routing key, producer, consumer group and encryption key, with each project's exact append ledger, its feeds and its journal reader; the shared-cell scale, lifecycle and hostile modules use it; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fixture_cell.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::shared_cell_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The shared-cell lifecycle scenarios (shared-cells PLAN section 4.1, A5 and A6): suspension, revocation, transfer, feed omission, a forced split, delete and recreate and a key rotation aimed at one project leave every neighbour's view byte-identical, and per-project state returns to its baseline when projects go idle; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/shared_cell_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::shared_cell_scale",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The shared-cell scale scenarios (shared-cells PLAN section 4.1, A1-A3; 128 projects in the suite, 1,000 with MT_CERT_PROJECTS): every project's reads, scans, metadata, catalog, consumer group, producer, live subscriptions, watches, fork attempts and usage equal its own ledger exactly, quotas refuse only their project, and the books are exact per project and workspace; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/shared_cell_scale.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",

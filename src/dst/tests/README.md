@@ -18,6 +18,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Consumer delivery and deletion | `consumer_atomicity`, `consumer_delete`, `consumer_generations`, `consumer_product`, `consumer_saga` |
 | Watches and live delivery | `watch_observation`, `sse_delivery`, `livefeed_*` (incl. `livefeed_engine_retired`) |
 | Multitenancy and authorization (incl. the in-flight admission over the wire: the cap answers only after authentication, and the survival refusal above four times the cap covers reads and appends on both stream surfaces, at the default caps: `security_routes`) | `security_*`, `quota_enforcement`, `quota_read_volume` |
+| Shared cells at scale (shared-cells PLAN section 4.1, Layer A: one enforce cell of 128 projects, 1,000 with `MT_CERT_PROJECTS=1000`, reusing every name, key and encryption key; each project's every read, list, consumer, producer, live, watch, fork and usage answer equals its own ledger, quotas refuse only their project, books are exact per project and workspace, lifecycle events leave neighbours byte-identical, expired streams close within one walk circle and per-project state is released) | `shared_cell_scale`, `shared_cell_lifecycle` |
 | Accounting and admission (incl. closure debts across recreation, crashes and instances: `billing_closure_debts`, `billing_closure_owners`; a close that settles after its months were invoiced: `billing_late_close`; the walk's shard custody: `billing_walk_custody`; the read spool's place under `--path-prefix` and the rollup report's split of the artifact outbox into publishable, blocked-corrupt and total rows: `billing_readiness`) | `billing_*`, `admission_*` |
 | Runtime ownership and recovery (incl. a retiring engine's written-but-not-durable group over the wire: the raw `shard_moving` and product `temporarily_unavailable` answers, the successor runtime's single copy, the producer-keyed duplicate retry, and the owed final of a raw append-and-close or a product `:seal` retained until its exact retry completes it: `retiring_written_group`) | `runtime_isolation`, `runtime_open_gate`, `runtime_retirement`, `runtime_sweep`, `retiring_written_group` |
 | Fleet coordination (heartbeat liveness, controller progress, withdrawal, ring view, planned drain) | `fleet_controller`, `fleet_desired`, `fleet_drain` |
@@ -29,8 +30,8 @@ scenarios under `dst::dst_tests`; the existing trace-store contract tests and
 review security/readiness modules retain their registrations.
 
 Shared support is divided by capability: `fixture_storage`, `fixture_runtime`,
-`fixture_http`, `fixture_requests`, `fixture_auth`, `fixture_livefeed`, and
-`fixture_failpoints`. Fixture visibility is limited to the test subtree with
+`fixture_http`, `fixture_requests`, `fixture_auth`, `fixture_livefeed`,
+`fixture_failpoints`, and `fixture_cell` (the many-project shared-cell rig). Fixture visibility is limited to the test subtree with
 `pub(super)`, and each module imports its dependencies explicitly. Helpers
 used by just one contract remain private in that contract's module.
 
