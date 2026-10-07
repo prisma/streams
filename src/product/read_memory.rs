@@ -1,16 +1,20 @@
 //! The product surface's memory backstops after project admission (round
 //! 13 and shared cells H3): a WRITE is refused while its project's
 //! estimated pressure is over its line (`project_memory_gate`), and a PAGE
-//! READ (a records read or long-poll, or a scan) reserves the bytes its
-//! page may hold before it runs (`admission::read_memory`). Established
-//! SSE delivery and every other read continue while a project is engaged.
+//! READ (a records read or long-poll, or a scan) and a CONSUMER PULL
+//! reserve the bytes they may hold before they run
+//! (`admission::read_memory`). Established SSE delivery and every other
+//! read continue while a project is engaged.
 //!
 //! A read reserves `min(maxBytes, 8 MiB)`, the route's own page budget
 //! (`product_read`, `product_scan`): an unparseable `maxBytes` reserves
-//! the cap and is refused 400 by the route, as before. Its project's
-//! memory line refuses it at once (429 `project_memory_pressure`, as a
-//! write's); the instance's read memory makes it wait, then refuses it
-//! (503 `read_memory_busy`). Both are retryable after 1 s.
+//! the cap and is refused 400 by the route, as before. A pull, which also
+//! passes the write gate, reserves what one walk of its lineage reads
+//! before it leases (`PULL_COVERAGE_BYTES`); its batch replaces the
+//! reservation when it renders. Its project's memory line makes it wait,
+//! then refuses it (429 `project_memory_pressure`, as a write's); the
+//! instance's read memory makes it wait, then refuses it (503
+//! `read_memory_busy`). Both are retryable after 1 s.
 
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::Response;
@@ -20,6 +24,7 @@ use super::{
     perr, project_memory_gate, quota_refusal_response, strip_verb,
 };
 use crate::admission::read_memory::{ReadHold, ReadRefusal};
+use crate::application::consumer::PULL_COVERAGE_BYTES;
 use crate::auth::RequestPrincipal;
 
 /// The memory backstops for one admitted request on the product surface
@@ -32,8 +37,10 @@ pub(crate) async fn refusal(
     path: &str,
     query: &str,
 ) -> Option<Response> {
-    if method == Method::POST {
-        return project_memory_gate(state, principal);
+    if method == Method::POST
+        && let Some(refusal) = project_memory_gate(state, principal)
+    {
+        return Some(refusal);
     }
     let bytes = page_bytes(method, path, query)?;
     let project = principal.and_then(|p| state.quotas.read_bytes(&p.project_id));
@@ -54,13 +61,23 @@ pub(crate) async fn refusal(
     }
 }
 
-/// The bytes a page read on the route `path` may hold: `None` for every
-/// request that renders no page.
+/// The bytes a page read or a consumer pull on the route `path` may hold:
+/// `None` for every request that renders no page.
 fn page_bytes(method: &Method, path: &str, query: &str) -> Option<u64> {
-    if method != Method::GET {
+    if method != Method::GET && method != Method::POST {
         return None;
     }
-    let default = match (classify_route(path).ok()?, strip_verb(path).1) {
+    let route = classify_route(path).ok()?;
+    let verb = strip_verb(path).1;
+    if method == Method::POST {
+        return match (route, verb) {
+            (ProductRoute::Consumer { .. }, Some("pull")) => {
+                u64::try_from(PULL_COVERAGE_BYTES).ok()
+            }
+            _ => None,
+        };
+    }
+    let default = match (route, verb) {
         (ProductRoute::Records { .. }, None | Some("long-poll")) => READ_MAX_BYTES_CAP,
         (ProductRoute::Collection { .. }, Some("scan")) => SCAN_DEFAULT_BYTES,
         _ => return None,

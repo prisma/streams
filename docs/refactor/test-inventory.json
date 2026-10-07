@@ -1213,6 +1213,21 @@
     "scenarios": []
   },
   {
+    "name": "a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbour_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b991ccf13a8ca4ffdb644bfbcd6884010a1212516dfbba7c81f27a5193d4ddec",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_pull_before_receive(Q);",
+      "// A third pull that passed admission would wait at the failpoint: it is",
+      "crate::failpoints::release_pull_before_receive(Q);"
+    ],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_projects_waits_park_only_within_its_share_and_the_pool",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2240,6 +2255,17 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "c9cdfe957a607dc2a58dd25d44fe74c43512ef4aa30b8a68a83351a27207dbcc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "563ddd2a170b076c9ef868141188921bef3e47f51dc2223cff4c40c27793a178",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",

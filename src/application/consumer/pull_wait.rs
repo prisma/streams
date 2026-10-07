@@ -17,6 +17,11 @@
 //! leaves the consumer's state as it was, so idle pulls never wake one
 //! another.
 //!
+//! A wait that ends to walk again first takes the pull's coverage
+//! reservation again (shared cells H3: released while it waited), waiting,
+//! still parked, for room under its project's line and in the instance's
+//! read memory until its deadline; with no room by then it answers empty.
+//!
 //! The first wait of each pull always walks once more: its view is taken
 //! after the first walk, so a record committed during that walk could
 //! otherwise go unseen. From then on each wait compares the view the
@@ -75,9 +80,16 @@ impl PullPark {
         }
         let watched = watch(service, lineage).await;
         let _parked = crate::admission::park::park();
-        let Some(watched) = watched else {
-            return poll(deadline).await;
+        let walk = match watched {
+            Some(watched) => self.until_moved(&watched, consumer, deadline).await,
+            None => poll(deadline).await,
         };
+        walk && crate::admission::park::resume(deadline).await
+    }
+
+    /// Wait on `watched` until a view moved, a lease expired or `deadline`
+    /// passed: true, walk again.
+    async fn until_moved(&self, watched: &[Watched], consumer: &str, deadline: Instant) -> bool {
         loop {
             // Registered before the view is read, so no commit after the
             // read goes unnoticed.
@@ -85,7 +97,7 @@ impl PullPark {
                 .iter()
                 .map(|w| Box::pin(w.handle.notify.notified()))
                 .collect();
-            let Some((views, lease)) = observe(&watched, consumer) else {
+            let Some((views, lease)) = observe(watched, consumer) else {
                 return poll(deadline).await;
             };
             if self.moved(views) {

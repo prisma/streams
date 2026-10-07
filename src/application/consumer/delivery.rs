@@ -358,6 +358,11 @@ impl DeliveryRecords {
     }
 }
 
+/// The records one walk of one lineage segment reads from the consumer's
+/// cursor before it leases: what a pull's admission reserves for it
+/// (`product::read_memory`), held while the walk runs.
+pub(crate) const PULL_COVERAGE_BYTES: usize = 4 << 20;
+
 struct DeliveryCoverage {
     keys_map: std::collections::HashMap<u64, [u8; 16]>,
     by_off: DeliveryRecords,
@@ -407,7 +412,7 @@ async fn read_coverage(
         engine,
         cursor,
         None,
-        4 << 20,
+        PULL_COVERAGE_BYTES,
         crate::shard::Deliver::Durable,
     )
     .await

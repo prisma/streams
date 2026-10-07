@@ -13,6 +13,7 @@
 use super::fixture_cell::{Cell, CellSpec, open_cell, project};
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
+use crate::failpoints::{Fp, parked};
 use crate::tenant::ProjectId;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -105,6 +106,35 @@ async fn queue_of_keys(cell: &Cell, i: usize) -> u64 {
         (200, Some(48))
     );
     u64::try_from(pulled.len()).unwrap()
+}
+
+/// Project `i`'s JSON stream `name`: 48 records of 64 KiB, each under its
+/// own routing key, and consumers `g0`.. that each lease all 48 in a pull.
+async fn keyed_queue(cell: &Cell, i: usize, name: &str, consumers: usize) {
+    let path = format!("/v1/streams/{name}");
+    let created = cell
+        .call(i, "PUT", &path, br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    let records = format!("{path}/records");
+    for n in 0..48 {
+        let record = padded(n);
+        let key = format!("k{n}");
+        let headers = [
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", cell.bearers[i].as_str()),
+            ("prisma-routing-key", key.as_str()),
+        ];
+        let (status, _, _) = preq(cell.addr, "POST", &records, &headers, record.as_bytes()).await;
+        assert_eq!(status, 200);
+    }
+    for g in 0..consumers {
+        let consumer = format!("{path}/consumers/g{g}");
+        let created = cell
+            .call(i, "PUT", &consumer, br#"{"maxBatchRecords":48}"#)
+            .await;
+        assert_eq!(created.0, 201, "{}", String::from_utf8_lossy(&created.2));
+    }
 }
 
 /// Send `method path body` as project `i` and never read the response.
@@ -563,5 +593,144 @@ async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_c
     let from = format!("/v1/streams/lp/records?cursor={cursor}");
     let (status, _, read) = cell.call(0, "GET", &from, b"").await;
     assert_eq!((status, read.as_slice()), (200, br#"[{"n":1}]"#.as_slice()));
+    engine_shutdown(&cell.state).await;
+}
+
+/// A consumer pull reserves what its walk reads before it leases (capacity
+/// review C1): with project 0's line at two coverages, two never-read
+/// pulls pass admission and are held after their coverage read
+/// (`PullBeforeReceive`), a third waits 2 s and is refused 429
+/// `project_memory_pressure`, and once the two render their batches
+/// project 0 holds them inside its line and project 1 reads at once.
+/// Before: every pull passed admission at pressure 0 (eight together held
+/// 25,271,096 B against the line of 8,388,608 B, past the instance's read
+/// memory of 25,165,824 B, and project 1 was refused 503
+/// `read_memory_busy`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbour_reads() {
+    const Q: &str = "cq";
+    let cell = open_cell(CellSpec::open(2)).await;
+    keyed_queue(&cell, 0, Q, 3).await;
+    big_stream(&cell, 1).await;
+    let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
+    let line = 2 * coverage;
+    cell.state.admission.set_project_memory_pressure_bytes(line);
+    cell.state
+        .admission
+        .set_read_memory_capacity(3 * PAGE_BUDGET);
+    let before = parked(Fp::PullBeforeReceive, Q);
+    crate::failpoints::park_pull_before_receive(Q);
+    let pull = |g: usize| format!("/v1/streams/{Q}/consumers/g{g}:pull");
+    let mut held = Vec::new();
+    for g in 0..2 {
+        held.push(never_read(&cell, 0, "POST", &pull(g), br#"{"max":48}"#).await);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while parked(Fp::PullBeforeReceive, Q) - before < 2 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let reserved = ledgers(&cell, 0);
+    // A third pull that passed admission would wait at the failpoint: it is
+    // given 5 s to be refused.
+    let started = Instant::now();
+    let path = pull(2);
+    let third = cell.call(0, "POST", &path, br#"{"max":48}"#);
+    let third = tokio::time::timeout(Duration::from_secs(5), third).await;
+    let waited = started.elapsed();
+    let third = third.map(|(status, headers, body)| {
+        let refusal: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let code = refusal["error"]["code"].as_str().map(str::to_string);
+        (status, code, headers.get("retry-after").cloned())
+    });
+    let past_admission = parked(Fp::PullBeforeReceive, Q) - before;
+    crate::failpoints::release_pull_before_receive(Q);
+    let refused = (
+        429,
+        Some("project_memory_pressure".into()),
+        Some("1".into()),
+    );
+    assert_eq!(
+        (past_admission, reserved, third.ok()),
+        (2, (2 * coverage, 2 * coverage), Some(refused)),
+        "the third pull, after {waited:?}"
+    );
+    assert!(waited >= Duration::from_secs(2), "refused after {waited:?}");
+    let (hostile, instance) = at_rest(&cell, 0).await;
+    let neighbour = prompt_read(&cell, 1).await;
+    assert_eq!(
+        (hostile <= line, hostile == instance, neighbour.clone()),
+        (true, true, (200, None, true)),
+        "project 0 holds {hostile} B of batches against its line of {line} B; its \
+         neighbour's read: {neighbour:?}"
+    );
+    drop(held);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    engine_shutdown(&cell.state).await;
+}
+
+/// A pull waiting for messages holds nothing, and takes its coverage
+/// reservation again before it walks: woken while an unread page of its
+/// project fills its line of one coverage, it finds no room before its
+/// wait ends, answers empty and leases nothing, and the message is pulled
+/// once the line has room. Before: a woken pull walked unreserved and
+/// leased the message past the line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    let page = big_stream(&cell, 0).await;
+    let created = cell
+        .call(0, "PUT", "/v1/streams/wq", br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    let consumer = cell
+        .call(0, "PUT", "/v1/streams/wq/consumers/g", b"{}")
+        .await;
+    assert_eq!(consumer.0, 201, "{}", String::from_utf8_lossy(&consumer.2));
+    let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(coverage);
+    let path = "/v1/streams/wq/consumers/g:pull";
+    let started = Instant::now();
+    let waiting = cell.call(0, "POST", path, br#"{"max":1,"waitMs":1500}"#);
+    let wake = async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while cell.state.admission.parked() < 1 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let parked = ledgers(&cell, 0);
+        let unread = never_read(&cell, 0, "GET", RECORDS, b"").await;
+        let held = settle_at(&cell, 0, (page, page)).await;
+        let appended = cell
+            .call(0, "POST", "/v1/streams/wq/records", br#"{"n":1}"#)
+            .await;
+        (unread, parked, held, appended.0)
+    };
+    let ((status, _, body), (unread, parked, held, appended)) =
+        futures_util::future::join(waiting, wake).await;
+    let waited = started.elapsed();
+    let messages = |body: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v["messages"].as_array().map(Vec::len))
+    };
+    assert_eq!(
+        (parked, held, appended, status, messages(&body)),
+        ((0, 0), (page, page), 200, 200, Some(0)),
+        "the woken pull, after {waited:?}"
+    );
+    assert!(
+        waited >= Duration::from_millis(1400),
+        "answered after {waited:?}"
+    );
+    assert_eq!(settle_at(&cell, 0, (page, page)).await, (page, page));
+    drop(unread);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    let (status, _, body) = cell.call(0, "POST", path, br#"{"max":1}"#).await;
+    assert_eq!(
+        (status, messages(&body)),
+        (200, Some(1)),
+        "the message waited"
+    );
     engine_shutdown(&cell.state).await;
 }

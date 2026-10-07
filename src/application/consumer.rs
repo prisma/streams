@@ -7,7 +7,7 @@ use crate::application::read_remote::InternalTarget;
 use crate::crypto::StreamKey;
 use crate::registry::StreamDesc;
 pub(crate) use deletion::delete;
-pub(crate) use delivery::{pull, settle};
+pub(crate) use delivery::{PULL_COVERAGE_BYTES, pull, settle};
 use serde_json::json;
 use std::sync::Arc;
 
