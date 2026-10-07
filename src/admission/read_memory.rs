@@ -17,11 +17,14 @@
 //! A request's hold (`ReadHold`) lives in its request scope
 //! (`admission::park`): it reserves `min(maxBytes, 8 MiB)` at admission,
 //! releases the reservation while the request waits for data (a waiting
-//! long-poll materializes nothing), becomes the rendered page's exact size
-//! when the page renders, and rides the response body from there
-//! (`ReadHold::attach`), released when the body ends or is dropped: a
-//! client that never drains it holds it until the connection's drain floor
-//! (`http::serve`) closes the connection.
+//! long-poll materializes nothing), takes it again before a woken wait
+//! renders (`ReadHold::resume`, waiting for room until the wait's own
+//! deadline, so a fan-out wake of one project's waits stays inside its
+//! line), becomes the rendered page's exact size when the page renders,
+//! and rides the response body from there (`ReadHold::attach`), released
+//! when the body ends or is dropped: a client that never drains it holds
+//! it until the connection's drain floor (`http::serve`) closes the
+//! connection.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -151,6 +154,9 @@ impl ReadRefusal {
 pub(crate) struct ReadHold {
     ctl: AdmissionController,
     project: Option<ProjectReadBytes>,
+    /// What admission reserved: what a woken wait takes again before it
+    /// renders. 0 for a hold no admission reserved.
+    budget: u64,
     bytes: AtomicU64,
     rendered: AtomicBool,
 }
@@ -166,27 +172,56 @@ impl ReadHold {
         line: u64,
         bytes: u64,
     ) -> Result<Self, ReadRefusal> {
-        let memory = &ctl.inner.read_memory;
-        if Self::take(memory, project.as_ref(), line, bytes).is_err() {
-            Self::wait(memory, project.as_ref(), line, bytes).await?;
-        }
+        let deadline = tokio::time::Instant::now() + READ_MEMORY_WAIT;
+        Self::take_until(
+            &ctl.inner.read_memory,
+            project.as_ref(),
+            line,
+            bytes,
+            deadline,
+        )
+        .await?;
         Ok(Self {
             ctl: ctl.clone(),
             project,
+            budget: bytes,
             bytes: AtomicU64::new(bytes),
             rendered: AtomicBool::new(false),
         })
     }
 
-    /// Retry `take` on every release until it fits or `READ_MEMORY_WAIT`
-    /// has passed.
-    async fn wait(
+    /// A woken wait is about to render: take what admission reserved
+    /// again, under the project's line and the instance's read memory, as
+    /// admission did, waiting for room until `deadline` (the wait's own).
+    /// False when no room came by then: the wait must end without a page.
+    /// A rendered hold, or one that already holds its budget, takes
+    /// nothing.
+    pub(crate) async fn resume(&self, deadline: tokio::time::Instant) -> bool {
+        let short = self.budget.saturating_sub(self.bytes());
+        if self.rendered.load(Ordering::Relaxed) || short == 0 {
+            return true;
+        }
+        let line = self.ctl.project_memory_pressure_bytes();
+        let memory = &self.ctl.inner.read_memory;
+        let taken = Self::take_until(memory, self.project.as_ref(), line, short, deadline).await;
+        if taken.is_ok() {
+            self.bytes.fetch_add(short, Ordering::Relaxed);
+        }
+        taken.is_ok()
+    }
+
+    /// `take`, retried on every release until it fits or `deadline` has
+    /// passed; refused for the ledger that refused it last.
+    async fn take_until(
         memory: &ReadMemory,
         project: Option<&ProjectReadBytes>,
         line: u64,
         bytes: u64,
+        deadline: tokio::time::Instant,
     ) -> Result<(), ReadRefusal> {
-        let deadline = tokio::time::Instant::now() + READ_MEMORY_WAIT;
+        if Self::take(memory, project, line, bytes).is_ok() {
+            return Ok(());
+        }
         loop {
             // Registered before the retry, so a release between the two is
             // never missed; every release in either ledger notifies.
@@ -232,6 +267,7 @@ impl ReadHold {
         Self {
             ctl: ctl.clone(),
             project,
+            budget: 0,
             bytes: AtomicU64::new(0),
             rendered: AtomicBool::new(true),
         }

@@ -389,3 +389,179 @@ async fn parked_waits_weigh_in_their_projects_pressure() {
     assert_eq!(crate::quota::pressure_model_json()["version"], 2);
     engine_shutdown(&cell.state).await;
 }
+
+/// Project `i`'s default read of its stream `big`: (status, error code,
+/// answered within 1 s).
+async fn prompt_read(cell: &Cell, i: usize) -> (u16, Option<String>, bool) {
+    let started = Instant::now();
+    let (status, _, body) = cell.call(i, "GET", RECORDS, b"").await;
+    let code = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_string));
+    (status, code, started.elapsed() < Duration::from_secs(1))
+}
+
+/// The ledgers once they have not moved for 300 ms, or after 10 s.
+async fn at_rest(cell: &Cell, i: usize) -> (u64, u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut last, mut since) = (ledgers(cell, i), Instant::now());
+    while Instant::now() < deadline && since.elapsed() < Duration::from_millis(300) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let now = ledgers(cell, i);
+        if now != last {
+            (last, since) = (now, Instant::now());
+        }
+    }
+    last
+}
+
+/// `polls` long-polls of project 0 on its empty stream `lp`, each from a
+/// client that never reads, parked holding nothing.
+async fn parked_polls(cell: &Cell, polls: usize, query: &str) -> Vec<TcpStream> {
+    let created = cell
+        .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    let poll = format!("/v1/streams/lp/records:long-poll?cursor=now&{query}");
+    let mut sockets = Vec::new();
+    for _ in 0..polls {
+        sockets.push(never_read(cell, 0, "GET", &poll, b"").await);
+    }
+    let parked = i64::try_from(polls).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while cell.state.admission.parked() < parked && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        (cell.state.admission.parked(), ledgers(cell, 0)),
+        (parked, (0, 0)),
+        "parked, holding nothing while they wait"
+    );
+    sockets
+}
+
+/// `n` records of 64 KiB appended to project 0's stream `lp` in one batch.
+async fn append_to_lp(cell: &Cell, n: usize) {
+    let records: Vec<String> = (0..n).map(padded).collect();
+    let batch = format!("[{}]", records.join(","));
+    let path = "/v1/streams/lp/records:batch";
+    let appended = cell.call(0, "POST", path, batch.as_bytes()).await;
+    assert_eq!(appended.0, 200, "{}", String::from_utf8_lossy(&appended.2));
+}
+
+/// A woken long-poll takes its read reservation again before it renders
+/// (isolation review F1): twelve of project 0's long-polls of 1 MiB each,
+/// woken together by one append of 15 x 64 KiB to clients that never read,
+/// hold at most project 0's line of one page budget, so the instance's
+/// read memory of two page budgets keeps a page budget for project 1,
+/// whose read is served at once. Before: each woken page was charged
+/// unreserved, project 0 held 11,799,612 B past its line of 8,388,608 B
+/// and project 1 was refused 503 `read_memory_busy` after 2 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_projects_woken_long_polls_stay_inside_its_line_and_its_neighbour_reads() {
+    let cell = open_cell(CellSpec::open(2)).await;
+    big_stream(&cell, 1).await;
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    cell.state
+        .admission
+        .set_read_memory_capacity(2 * PAGE_BUDGET);
+    let polls = parked_polls(&cell, 12, "waitMs=20000&maxBytes=1048576").await;
+    append_to_lp(&cell, 15).await;
+    let (held, instance) = at_rest(&cell, 0).await;
+    let neighbour = prompt_read(&cell, 1).await;
+    assert_eq!(
+        (held <= PAGE_BUDGET, held == instance, neighbour.clone()),
+        (true, true, (200, None, true)),
+        "project 0 holds {held} B against its line of {PAGE_BUDGET} B (instance {instance} B); \
+         its neighbour's read: {neighbour:?}"
+    );
+    drop(polls);
+    engine_shutdown(&cell.state).await;
+}
+
+/// The same with long-polls that leave `maxBytes` to its default (capacity
+/// review C2): 32 of them, woken by one append of 48 x 64 KiB, take the
+/// default page budget again each before reading their 1 MiB tail page, so
+/// project 0 holds at most its line and project 1 reads at once beside
+/// it. Before: project 0 held 31,465,632 B under a line of 8,388,608 B,
+/// past the instance's read memory of 25,165,824 B, and project 1 was
+/// refused 503 `read_memory_busy`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn woken_default_long_polls_stay_inside_their_projects_line_and_its_neighbour_reads() {
+    let cell = open_cell(CellSpec::open(2)).await;
+    big_stream(&cell, 1).await;
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    cell.state
+        .admission
+        .set_read_memory_capacity(3 * PAGE_BUDGET);
+    let polls = parked_polls(&cell, 32, "waitMs=20000").await;
+    append_to_lp(&cell, 48).await;
+    let (held, instance) = at_rest(&cell, 0).await;
+    let neighbour = prompt_read(&cell, 1).await;
+    assert_eq!(
+        (held <= PAGE_BUDGET, held == instance, neighbour.clone()),
+        (true, true, (200, None, true)),
+        "project 0 holds {held} B against its line of {PAGE_BUDGET} B (instance {instance} B); \
+         its neighbour's read: {neighbour:?}"
+    );
+    drop(polls);
+    engine_shutdown(&cell.state).await;
+}
+
+/// A woken long-poll whose page finds no room under its project's line
+/// before its wait ends answers as a timeout (204) holding its cursor and
+/// charges nothing; a read from that cursor serves the record once the
+/// line has room. Project 0's line is one page budget and an unread page
+/// of `big` holds part of it, so the long-poll's default budget cannot be
+/// taken again. Before: the woken page was rendered and served (200) past
+/// the line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    let page = big_stream(&cell, 0).await;
+    let created = cell
+        .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    let started = Instant::now();
+    let poll = "/v1/streams/lp/records:long-poll?cursor=now&waitMs=1500";
+    let waiting = cell.call(0, "GET", poll, b"");
+    let wake = async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while cell.state.admission.parked() < 1 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let unread = never_read(&cell, 0, "GET", RECORDS, b"").await;
+        let held = settle_at(&cell, 0, (page, page)).await;
+        let appended = cell
+            .call(0, "POST", "/v1/streams/lp/records", br#"{"n":1}"#)
+            .await;
+        (unread, held, appended.0)
+    };
+    let ((status, headers, body), (unread, held, appended)) =
+        futures_util::future::join(waiting, wake).await;
+    let waited = started.elapsed();
+    assert_eq!(
+        (held, appended, status, body.len(), ledgers(&cell, 0)),
+        ((page, page), 200, 204, 0, (page, page)),
+        "the woken long-poll, after {waited:?}"
+    );
+    assert!(
+        waited >= Duration::from_millis(1400),
+        "answered after {waited:?}"
+    );
+    drop(unread);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    let cursor = &headers["prisma-next-cursor"];
+    let from = format!("/v1/streams/lp/records?cursor={cursor}");
+    let (status, _, read) = cell.call(0, "GET", &from, b"").await;
+    assert_eq!((status, read.as_slice()), (200, br#"[{"n":1}]"#.as_slice()));
+    engine_shutdown(&cell.state).await;
+}

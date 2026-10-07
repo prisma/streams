@@ -14,9 +14,9 @@
 //!
 //! The scope also carries the request's read memory (shared cells H3,
 //! `read_memory::ReadHold`): bound at admission, released while the request
-//! waits, settled when its page renders, and attached to the response body
-//! when the handler returns, so the page's bytes stay counted until the
-//! body ends.
+//! waits, taken again before a woken wait renders (`resume`), settled when
+//! its page renders, and attached to the response body when the handler
+//! returns, so the page's bytes stay counted until the body ends.
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
@@ -120,6 +120,22 @@ pub(crate) fn park() -> Option<Parked> {
         })
         .ok()
         .flatten()
+}
+
+/// The served request's wait ended with a page to render: take its read
+/// reservation, released while it waited, again (`ReadHold::resume`),
+/// waiting for room until `deadline`, the wait's own; the caller keeps its
+/// `Parked` across this, so the request waits for room parked. False: no
+/// room came, and the wait must end as if nothing had arrived. True
+/// outside a served request or for a request no admission reserved.
+pub(crate) async fn resume(deadline: tokio::time::Instant) -> bool {
+    let Ok(read) = REQUEST.try_with(|request| request.read.clone()) else {
+        return true;
+    };
+    match read.get() {
+        Some(hold) => hold.resume(deadline).await,
+        None => true,
+    }
 }
 
 /// Park the served request against the instance's live pool only, for a

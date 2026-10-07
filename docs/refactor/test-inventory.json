@@ -1224,6 +1224,17 @@
     "scenarios": []
   },
   {
+    "name": "a_projects_woken_long_polls_stay_inside_its_line_and_its_neighbour_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e4a2bf221e34108f52f5255192299ea8ab66ba03cacd8a2765b97a51ad4c897f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_pulled_visibility_beyond_the_lease_window_is_held_to_twelve_hours",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2221,6 +2232,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c9cdfe957a607dc2a58dd25d44fe74c43512ef4aa30b8a68a83351a27207dbcc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
     "scenarios": []
   },
   {
@@ -8496,6 +8518,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "woken_default_long_polls_stay_inside_their_projects_line_and_its_neighbour_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "862b85d69722c277d3f66bc7bbe602ab725a2e5080ec5e713551ac4801dd5d36",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
     "scenarios": []
   },
   {

@@ -153,6 +153,65 @@ async fn a_read_waits_at_its_projects_line_for_its_own_reads() {
     assert_eq!(ctl.read_memory().0, 8 * MIB);
 }
 
+/// A woken wait takes its admission reservation again before it renders:
+/// at once while it fits, when a release makes room while it waits, and
+/// not at all when no room comes by its deadline, which takes nothing and
+/// counts one memory shed when the project's line refused it. A rendered
+/// hold, and one no admission reserved, take nothing.
+#[tokio::test(start_paused = true)]
+async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
+    let ctl = ctl(500);
+    let line = 12 * MIB;
+    ctl.set_project_memory_pressure_bytes(line);
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let entry = registry.pressure_handle(&id).unwrap();
+    let ledgers = || (ctl.read_memory().0, entry.estimated_pressure_bytes());
+    let woken = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB)
+        .await
+        .unwrap();
+    woken.unreserve();
+    assert!(woken.resume(tokio::time::Instant::now()).await, "room");
+    assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "taken again");
+
+    woken.unreserve();
+    let other = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB)
+        .await
+        .unwrap();
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        drop(other);
+    };
+    let started = tokio::time::Instant::now();
+    let deadline = started + READ_MEMORY_WAIT;
+    let (resumed, ()) = futures_util::future::join(woken.resume(deadline), release).await;
+    assert_eq!(
+        (resumed, started.elapsed()),
+        (true, Duration::from_millis(400))
+    );
+    assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "taken when room came");
+
+    woken.unreserve();
+    let other = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB)
+        .await
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(1_500);
+    assert!(!woken.resume(deadline).await, "no room by the deadline");
+    assert_eq!(started.elapsed(), Duration::from_millis(1_500));
+    assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "nothing taken");
+    let shed = &registry.memory_pressure_json(1, 8)["project_memory_shed_total"];
+    assert_eq!(shed.as_u64(), Some(1));
+    drop(other);
+
+    woken.settle(1_000);
+    assert!(woken.resume(tokio::time::Instant::now()).await);
+    assert_eq!(ledgers(), (1_000, 1_000), "a rendered hold takes nothing");
+    let unreserved = ReadHold::unreserved(&ctl, registry.read_bytes(&id));
+    assert!(unreserved.resume(tokio::time::Instant::now()).await);
+    assert_eq!(ledgers(), (1_000, 1_000), "nor one no admission reserved");
+}
+
 /// A rendered page's hold rides its body: the body keeps its exact length,
 /// yields frames of at most 64 KiB, and releases the hold only when it is
 /// dropped. A hold that rendered nothing is released when the response is

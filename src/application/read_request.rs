@@ -554,6 +554,9 @@ fn tail_state(handle: &StreamHandle, visibility: Deliver) -> (u64, bool, u64) {
         durable,
     )
 }
+/// A long-poll's wait for the tail to pass `start`, parked (M1). A wait
+/// that ends with records to read takes its page's read reservation again
+/// first (`resumed`).
 async fn wait_tail(
     handle: &StreamHandle,
     visibility: Deliver,
@@ -561,21 +564,37 @@ async fn wait_tail(
     wait: Duration,
 ) -> (u64, bool, u64) {
     let deadline = tokio::time::Instant::now() + wait.min(Duration::from_secs(25));
-    // A waiting long-poll is parked, not a request in flight (M1).
     let _parked = crate::admission::park::park();
     loop {
         let durable = handle.notify.notified();
         let applied = handle.applied_notify.notified();
         let state = tail_state(handle, visibility);
         if state.0 > start || state.1 {
-            return state;
+            return resumed(state, start, deadline).await;
         }
         if visibility == Deliver::Applied {
-            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>return tail_state(handle,visibility)}
+            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline).await}
         } else {
-            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>return tail_state(handle,visibility)}
+            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline).await}
         }
     }
+}
+
+/// The tail `state` a long-poll's wait ended with. With records past
+/// `start` to read, the request's read reservation (H3: released while it
+/// waited) is taken again first, waiting, still parked, until `deadline`;
+/// when no room comes the wait ends as if nothing had arrived, holding the
+/// cursor, and the client's next read is admitted under its own
+/// reservation.
+async fn resumed(
+    state: (u64, bool, u64),
+    start: u64,
+    deadline: tokio::time::Instant,
+) -> (u64, bool, u64) {
+    if state.0 > start && !crate::admission::park::resume(deadline).await {
+        return (start, false, state.2.min(start));
+    }
+    state
 }
 
 /// A resolved local physical span carries all inputs that may cross the async

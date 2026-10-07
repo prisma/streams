@@ -100,7 +100,7 @@ OWNERS = (
     owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
     owner('bootstrap_service_runtime', 'src/bootstrap/service_runtime.rs', 'bootstrap::service_runtime::'),
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
-    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history::'),
+    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history:: dst_tests::read_memory::a_woken_long_poll'),
     owner('http_serve', 'src/http/serve.rs', 'http::serve::'),
     owner('http_serve_drain', 'src/http/serve/drain.rs', 'http::serve::drain::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery::'),
