@@ -80,6 +80,18 @@
     "scenarios": []
   },
   {
+    "name": "a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)\"]"
+    ],
+    "function_sha256": "4bef071449b475a6ae6fe195d827d3e49b87ff494eb539d9c6464c1dcc329422",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_ceiling_limited_exact_retry_still_completes_a_committed_final",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3519,6 +3531,18 @@
     "scenarios": []
   },
   {
+    "name": "descriptor_bytes_are_held_to_a_byte_bound",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until the owner decides capacity review C4: a byte bound on watch definitions and on the descriptor cache\"]"
+    ],
+    "function_sha256": "da951cab73fc469a741737bf8340b8b480ce7508d7ceb1e223038293d016288d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
+  },
+  {
     "name": "dirty_scan_retries_until_it_succeeds",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3599,6 +3623,18 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_owners.rs",
+    "scenarios": []
+  },
+  {
+    "name": "empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
+      "#[ignore = \"red until the owner decides capacity review C7: who pays for a pull's coverage read\"]"
+    ],
+    "function_sha256": "6446388e29df7a3e9dc203caa72ba1057470bb0fba039a3aaa049da8fa32e581",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
     "scenarios": []
   },
   {

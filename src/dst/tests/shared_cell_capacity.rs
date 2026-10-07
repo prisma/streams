@@ -1,12 +1,21 @@
 //! Shared-cell capacity (the capacity review of 2026-10-07): what one
 //! project inside its quotas can hold of what a shared cell's projects
-//! share, besides read memory (`read_memory`). Each test pins one bound:
-//! a write's buffered bodies share their project's memory line (C3), and
-//! a deleted watched stream's touch journal ends with it (C9).
+//! share, besides read memory (`read_memory`). Each test pins one bound.
+//!
+//! Green: a write's buffered bodies share their project's memory line
+//! (C3), and a deleted watched stream's touch journal ends with it (C9).
+//! Ignored, red until the owner decides them (`impl/fixes.md`): the bytes
+//! a descriptor may hold (C4), the coverage a pull reads charged to
+//! nobody (C7), and a catalog page reserving nothing (C8).
+//!
+//! The hostile project is project 0, its neighbour project 1. A client
+//! that "never reads" sends its request over a socket with a 4 KiB receive
+//! buffer and leaves the response unread.
 
 use super::fixture_cell::{Cell, CellSpec, open_cell, project};
 use super::fixture_http::engine_shutdown;
-use super::fixture_requests::PRISMA_KEY;
+use super::fixture_requests::{PRISMA_KEY, preq};
+use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,6 +25,37 @@ const MIB: u64 = 1 << 20;
 /// The page budget a read without `maxBytes` reserves.
 const PAGE_BUDGET: u64 = 8 * MIB;
 const CREATE: &[u8] = br#"{"format":{"kind":"json"}}"#;
+
+/// Record `n`: a JSON object of 64 KiB and a few bytes.
+fn padded(n: usize) -> String {
+    format!(r#"{{"n":{n},"pad":"{}"}}"#, "x".repeat(64 * 1024))
+}
+
+/// Project `i`'s JSON stream `name` holding 48 records of 64 KiB.
+async fn big_stream(cell: &Cell, i: usize, name: &str) {
+    let path = format!("/v1/streams/{name}");
+    assert_eq!(cell.call(i, "PUT", &path, CREATE).await.0, 201);
+    let records: Vec<String> = (0..48).map(padded).collect();
+    let batch = format!("[{}]", records.join(","));
+    let target = format!("{path}/records:batch");
+    let appended = cell.call(i, "POST", &target, batch.as_bytes()).await;
+    assert_eq!(appended.0, 200, "{}", String::from_utf8_lossy(&appended.2));
+}
+
+/// Send `method path body` as project `i` and never read the response.
+async fn never_read(cell: &Cell, i: usize, method: &str, path: &str, body: &[u8]) -> TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stream = socket.connect(cell.addr).await.unwrap();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nhost: rig\r\nauthorization: {}\r\nprisma-encryption-key: {PRISMA_KEY}\r\ncontent-length: {}\r\n\r\n",
+        cell.bearers[i],
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
+    stream
+}
 
 /// Start a POST of `declared` body bytes as project `i`: the head only.
 async fn upload_head(cell: &Cell, i: usize, path: &str, declared: u64) -> TcpStream {
@@ -48,6 +88,29 @@ async fn answer(stream: &mut TcpStream) -> Option<(u16, Option<String>)> {
         .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
         .and_then(|v| v["error"]["code"].as_str().map(str::to_string));
     Some((status, code))
+}
+
+/// A create body just under `MAX_CONFIG_BODY` (256 KiB): 64 watches of 16
+/// field pointers of about 240 bytes, all stored in the descriptor.
+fn fat_create() -> String {
+    let watches: Vec<String> = (0..64)
+        .map(|w| {
+            let fields: Vec<String> = (0..16)
+                .map(|f| format!("\"/{w}-{f}-{}\"", "p".repeat(228)))
+                .collect();
+            format!(r#"{{"name":"w{w}","fields":[{}]}}"#, fields.join(","))
+        })
+        .collect();
+    format!(
+        r#"{{"format":{{"kind":"json"}},"watches":[{}]}}"#,
+        watches.join(",")
+    )
+}
+
+/// Project `i`'s read bytes.
+fn read_held(cell: &Cell, i: usize) -> u64 {
+    let id = ProjectId::new(&project(i)).unwrap();
+    cell.state.quotas.read_bytes(&id).map_or(0, |b| b.held())
 }
 
 /// `probe` once it has not moved for 300 ms, or after 10 s.
@@ -157,6 +220,157 @@ async fn deleted_watched_streams_leave_no_touch_journal_running() {
         "{} more tasks alive after {STREAMS} watched streams were created, appended to and \
          deleted ({before} before, {after} after)",
         after.saturating_sub(before)
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// C4. A descriptor's bytes are bounded by nothing but the request rate:
+/// a create body (and so its stored descriptor: 64 watches x 16 field
+/// pointers of any length) may be 256 KiB, creates are charged to no byte
+/// quota, and the descriptor cache counts entries (65,536), not bytes, and
+/// deep-clones a descriptor under its one lock on every lookup. Under the
+/// shared cell's append ceiling (257,500 B/s at k = 8) project 0 creates
+/// 16 descriptors of about 245 KB in well under a second. Pass: the
+/// project is refused (by a byte quota or a descriptor bound) before 16.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "red until the owner decides capacity review C4: a byte bound on watch definitions and on the descriptor cache"]
+async fn descriptor_bytes_are_held_to_a_byte_bound() {
+    const CREATES: usize = 16;
+    let cell = open_cell(CellSpec {
+        quotas: |_| ProjectQuotas {
+            append_bytes_per_sec: 257_500,
+            max_streams: 8_192,
+            ..ProjectQuotas::default()
+        },
+        ..CellSpec::open(1)
+    })
+    .await;
+    let body = fat_create();
+    let started = Instant::now();
+    let mut created = 0;
+    for n in 0..CREATES {
+        let path = format!("/v1/streams/fat-{n}");
+        if cell.call(0, "PUT", &path, body.as_bytes()).await.0 == 201 {
+            created += 1;
+        }
+    }
+    let took = started.elapsed();
+    assert!(
+        created < CREATES,
+        "{created} descriptors of {} bytes each created in {took:?} under an append ceiling of \
+         257,500 B/s",
+        body.len()
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// C7. A consumer pull's coverage read is charged to nobody: a pull reads
+/// up to 4 MiB of the stream before it leases, and only the batch it
+/// renders is debited from its project's read quota. With every record
+/// leased, each further pull reads about 3 MiB and delivers nothing, so a
+/// project under a 4 MiB/s read quota runs every one of nine such pulls
+/// (and a parked pull repeats that walk on every append to the stream).
+/// Pass: the project is refused (429) before eight empty pulls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "red until the owner decides capacity review C7: who pays for a pull's coverage read"]
+async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
+    let cell = open_cell(CellSpec {
+        quotas: |_| ProjectQuotas {
+            read_bytes_per_sec: 4 << 20,
+            ..ProjectQuotas::default()
+        },
+        ..CellSpec::open(1)
+    })
+    .await;
+    let path = "/v1/streams/cover";
+    assert_eq!(cell.call(0, "PUT", path, CREATE).await.0, 201);
+    for n in 0..48 {
+        let record = padded(n);
+        let key = format!("k{n}");
+        let headers = [
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", cell.bearers[0].as_str()),
+            ("prisma-routing-key", key.as_str()),
+        ];
+        let records = format!("{path}/records");
+        let (status, _, _) = preq(cell.addr, "POST", &records, &headers, record.as_bytes()).await;
+        assert_eq!(status, 200);
+    }
+    let consumer = format!("{path}/consumers/g0");
+    let created = cell
+        .call(0, "PUT", &consumer, br#"{"maxBatchRecords":48}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    let pull = format!("{consumer}:pull");
+    let messages = |body: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v["messages"].as_array().map(Vec::len))
+    };
+    let (status, _, body) = cell
+        .call(0, "POST", &pull, br#"{"max":48,"visibilityMs":600000}"#)
+        .await;
+    assert_eq!(
+        (status, messages(&body)),
+        (200, Some(48)),
+        "the leasing pull"
+    );
+    let mut admitted = 0;
+    for _ in 0..9 {
+        let (status, _, body) = cell.call(0, "POST", &pull, br#"{"max":48}"#).await;
+        if status != 200 {
+            break;
+        }
+        assert_eq!(messages(&body), Some(0), "every record is leased");
+        admitted += 1;
+    }
+    assert!(
+        admitted < 8,
+        "{admitted} empty pulls admitted, each reading about 3 MiB of coverage, under a read \
+         quota of 4 MiB/s"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// C8. A catalog page materializes up to 16 MiB of descriptors
+/// (`MAX_PAGE_BYTES`, read with up to 8,064 store GETs) and reserves
+/// nothing, so it is served while its project's held pages fill its
+/// memory line, where a read is refused: 64 concurrent listings of one
+/// project can materialize up to 1 GiB. Here 64 descriptors of about
+/// 245 KB make one page of about 15.6 MB. Pass: the catalog page is held
+/// to the line as a read is (both answered alike).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)"]
+async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    let body = fat_create();
+    for n in 0..64 {
+        let path = format!("/v1/streams/cat-{n}");
+        assert_eq!(cell.call(0, "PUT", &path, body.as_bytes()).await.0, 201);
+    }
+    big_stream(&cell, 0, "page").await;
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    let page = "/v1/streams/page/records";
+    let unread = never_read(&cell, 0, "GET", page, b"").await;
+    // The page's reservation, then the rendered page itself.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(read_held(&cell, 0), 0 | PAGE_BUDGET) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let held = read_held(&cell, 0);
+    let read = cell.call(0, "GET", page, b"").await.0;
+    let started = Instant::now();
+    let (listed, _, names) = cell.call(0, "GET", "/v1/streams?limit=1000", b"").await;
+    let took = started.elapsed();
+    drop(unread);
+    assert_eq!(
+        listed,
+        read,
+        "with {held} bytes of unread page held under a line of {PAGE_BUDGET}, a read answered \
+         {read} and a catalog page of 64 descriptors answered {listed} ({} bytes) in {took:?}",
+        names.len()
     );
     engine_shutdown(&cell.state).await;
 }

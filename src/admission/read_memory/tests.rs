@@ -242,3 +242,25 @@ async fn a_rendered_hold_rides_its_body_and_an_unrendered_one_is_released() {
     assert_eq!(ctl.read_memory().0, 0, "a refusal holds nothing");
     drop(response);
 }
+
+/// Capacity review C5: the shared-cell profile's memory line
+/// (`deploy/profiles/shared-cell.env`, `PROJECT_MEMORY_PRESSURE_BYTES` =
+/// 16,384,000) is below two default page budgets (2 x 8 MiB = 16,777,216),
+/// so one project's second concurrent read without `maxBytes` waits for
+/// its first and is refused after 2 s while the first still runs (a cold
+/// read): a compliant project reads one default page at a time.
+#[tokio::test(start_paused = true)]
+#[ignore = "red until the owner decides capacity review C5: the shared-cell line admits one default read per project"]
+async fn the_shared_cell_line_admits_two_default_reads_of_one_project_at_once() {
+    const PROFILE_LINE: u64 = 16_384_000;
+    let ctl = ctl(500);
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let first = ReadHold::reserve(&ctl, registry.read_bytes(&id), PROFILE_LINE, 8 * MIB).await;
+    assert!(first.is_ok(), "the first default read");
+    let second = ReadHold::reserve(&ctl, registry.read_bytes(&id), PROFILE_LINE, 8 * MIB)
+        .await
+        .map(drop);
+    assert_eq!(second, Ok(()), "the second default read of one project");
+    drop(first);
+}

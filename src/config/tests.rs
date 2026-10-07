@@ -858,3 +858,28 @@ fn process_environment_smoke_test() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("1 passed"), "helper did not run: {stdout}");
 }
+
+/// Capacity review C6: a shared cell (compute-1g's budgets, which are the
+/// defaults, and shared-cell.env's 1,200 SSE cap) must fit its
+/// instance-wide memory bounds together under the RSS shed line: the fixed
+/// caches and absorber budget, the read memory step 6 added (a quarter of
+/// the line), the LiveFeed total, and the connections the SSE cap admits at
+/// #269's ~44 KB each. Past the line the instance sheds every project's
+/// writes, attributed to none, while every project is inside its ceilings.
+#[test]
+#[ignore = "red until the owner sizes the shared cell's instance budgets (capacity review C6)"]
+fn the_shared_cells_instance_bounds_fit_under_the_shed_line_together() {
+    let c = load_with(&[]);
+    let mib = 1u64 << 20;
+    let fixed = shipped_fixed_memory_budget_bytes(&c);
+    let read_memory = c.cli.admit_rss_shed_mb * mib / 4;
+    let livefeed = c.sse.feed_total_bytes;
+    let connections = c.cli.sse_max_connections * 44_000;
+    let line = c.cli.admit_rss_shed_mb * mib;
+    let sum = fixed + read_memory + livefeed + connections;
+    assert!(
+        sum <= line,
+        "fixed {fixed} + read memory {read_memory} + LiveFeed {livefeed} + connections \
+         {connections} = {sum} > the shed line {line}"
+    );
+}
