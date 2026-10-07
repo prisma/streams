@@ -61,7 +61,8 @@ pub(crate) struct Heartbeat {
     /// In-flight HTTP requests at heartbeat time / windowed peak since the
     /// last beat. Measures ADMITTED CONCURRENCY — the per-instance
     /// resource the platform edge actually bounds (runs 6–8: the fleet
-    /// ceiling at 16–25 % CPU).
+    /// ceiling at 16–25 % CPU). Requests parked in a wait (long-polls,
+    /// consumer pulls, watch waits) are not counted (shared cells M1).
     #[serde(default)]
     pub inflight: i64,
     #[serde(default)]
@@ -243,7 +244,8 @@ impl Sampler {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let (inflight, inflight_peak) = state.admission.swap_peak();
+        // Active requests only: parked waits never ask for servers (M1).
+        let (inflight, inflight_peak) = state.admission.swap_active_peak();
         let (wal_put_p50_ms, wal_put_p99_ms, out_inflight, out_inflight_peak) =
             crate::store_timing::heartbeat_summary();
         let ts_ms = now_ms();

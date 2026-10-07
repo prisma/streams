@@ -246,7 +246,6 @@ async fn reserved_ids_are_dropped_from_the_feed() {
 /// Parked waits are not writes in flight: the victim's append and its
 /// own long-poll are admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase A step 5: parked waits leave the inflight write gate"]
 async fn a_parked_crowd_never_sheds_the_victims_writes() {
     let cell = open_cell(CellSpec::open(5)).await;
     cell.state.admission.set_max_inflight(BOUND);

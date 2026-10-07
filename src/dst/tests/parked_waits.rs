@@ -1,10 +1,17 @@
-//! Parked waits (shared-cells PLAN step 5, the cost review's 2.4): a
-//! waiting consumer pull walks its lineage again only when something can
-//! have made a message deliverable, never every 50 ms.
+//! Parked waits (shared-cells PLAN step 5, finding M1 and the cost
+//! review's 2.3-2.4). A request waiting for data is parked, not in
+//! flight: a read long-poll, a consumer pull and a watch wait leave the
+//! write gate, the survival bound and the fleet heartbeat; they park
+//! within the live-connection pool and their project's share of it; and a
+//! waiting pull walks its lineage again only when something can have made
+//! a message deliverable, never every 50 ms.
 
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_cell::{Cell, CellSpec, open_cell};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::auth::ceiling::SharedBounds;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -245,4 +252,200 @@ async fn a_record_committed_during_the_first_walk_reaches_the_pull() {
         "delivered {took:?} after the walk resumed"
     );
     engine_shutdown(&state).await;
+}
+
+/// A long-poll, a consumer pull and a watch wait that are waiting are
+/// parked: in flight, exactly as parked, and the write gate at an
+/// in-flight cap of 2 admits an append beside the three of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn waiting_reads_pulls_and_watches_are_parked_and_leave_the_write_gate() {
+    let (state, addr) = http_rig(mem()).await;
+    let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/k"]}]}"#;
+    assert_eq!(
+        call(addr, "PUT", "/v1/streams/parked", watched).await.0,
+        201
+    );
+    assert_eq!(
+        call(addr, "PUT", "/v1/streams/parked/consumers/g", b"{}")
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        call(
+            addr,
+            "PUT",
+            "/v1/streams/other",
+            br#"{"format":{"kind":"json"}}"#
+        )
+        .await
+        .0,
+        201
+    );
+    state.admission.set_max_inflight(2);
+    let khex = crate::product::watch_key_hex("w", &["/k".to_string()], &["\"z\"".to_string()]);
+    let wait = format!("/v1/streams/parked/watches/w/keys/{khex}?cursor=now&timeoutMs=3000");
+    let waits = async {
+        futures_util::future::join3(
+            call(
+                addr,
+                "GET",
+                "/v1/streams/parked/records:long-poll?cursor=now&waitMs=3000",
+                b"",
+            ),
+            call(
+                addr,
+                "POST",
+                "/v1/streams/parked/consumers/g:pull",
+                br#"{"waitMs":3000}"#,
+            ),
+            call(addr, "GET", &wait, b""),
+        )
+        .await
+    };
+    let observe = async {
+        settled(|| state.admission.snapshot().inflight == 3).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let held = (
+            state.admission.snapshot().inflight,
+            state.admission.parked(),
+        );
+        let (st, _) = call(addr, "POST", "/v1/streams/other/records", br#"{"k":"x"}"#).await;
+        (held, st)
+    };
+    let (answers, (held, appended)) = futures_util::future::join(waits, observe).await;
+    assert_eq!(
+        (held, appended),
+        ((3, 3), 200),
+        "(in flight, parked), the append"
+    );
+    assert_eq!((answers.0.0, answers.1.0, answers.2.0), (204, 200, 200));
+    assert_eq!(
+        (
+            state.admission.snapshot().inflight,
+            state.admission.parked()
+        ),
+        (0, 0)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// (in flight, parked) while each of the first `projects` projects of
+/// `cell` holds `count` waiting long-polls on its `orders`.
+async fn held_long_polls(cell: &Cell, count: usize, projects: usize) -> (i64, i64) {
+    let poll = "/v1/streams/orders/records:long-poll?cursor=now&waitMs=1500";
+    let polls = (0..projects).flat_map(|i| (0..count).map(move |_| cell.call(i, "GET", poll, b"")));
+    let observe = async {
+        let inflight = i64::try_from(count * projects).unwrap();
+        settled(|| cell.state.admission.snapshot().inflight == inflight).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let admission = &cell.state.admission;
+        (admission.snapshot().inflight, admission.parked())
+    };
+    futures_util::future::join(futures_util::future::join_all(polls), observe)
+        .await
+        .1
+}
+
+/// On a cell shared 8 ways over 16 live connections, a project's share is
+/// 2: of its 4 waiting long-polls exactly 2 are parked, and the other 2
+/// wait as active requests. Two projects at their shares in a pool sized
+/// 3 park exactly 3 waits between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_projects_waits_park_only_within_its_share_and_the_pool() {
+    let bounds = SharedBounds {
+        subscriptions: 16,
+        ..SharedBounds::default()
+    };
+    let cell = open_cell(CellSpec {
+        bounds,
+        ..CellSpec::open(2)
+    })
+    .await;
+    for i in 0..2 {
+        let created = cell
+            .call(
+                i,
+                "PUT",
+                "/v1/streams/orders",
+                br#"{"format":{"kind":"json"}}"#,
+            )
+            .await;
+        assert_eq!(created.0, 201);
+    }
+    assert_eq!(
+        held_long_polls(&cell, 4, 1).await,
+        (4, 2),
+        "one project over its share"
+    );
+    cell.state.admission.set_live_pool(3);
+    assert_eq!(
+        held_long_polls(&cell, 2, 2).await,
+        (4, 3),
+        "two projects at their shares, pool 3"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// The first heartbeat `streams-1` publishes after `since_ms`.
+async fn beat_after(state: &State, since_ms: i64) -> crate::fleet::Heartbeat {
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let beats = state.fleet.peek_heartbeat_set().await.unwrap_or_default();
+        let beat = beats
+            .into_iter()
+            .find(|b| b.instance == "streams-1" && b.ts_ms > since_ms);
+        if let Some(beat) = beat {
+            return beat;
+        }
+    }
+}
+
+/// A fleet instance holding 400 parked pulls reports none of them in
+/// flight in its heartbeat, so the scaler's edge-slot dimension, in flight
+/// over 105 admitted slots, sizes the fleet by the load and not by the
+/// waits: 400 waits in flight wanted four servers (cost review 2.3). The
+/// desired count itself also follows the process's CPU, which the suite's
+/// own load moves, so the beat is what this leg pins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parked_pulls_never_reach_the_heartbeat() {
+    let fleet = mem();
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(fleet.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(matches!(
+        rig.state
+            .shards
+            .open_or_wait("00", Duration::from_secs(5))
+            .await,
+        crate::sharddir::OpenOutcome::Ready(_)
+    ));
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    let addr = rig.addr;
+    queue(addr, "fleet-idle", b"{}").await;
+    let state = &rig.state;
+    let pulls = (0..400).map(|_| pull(addr, "fleet-idle", r#"{"waitMs":9000}"#));
+    let observe = async {
+        settled(|| state.admission.snapshot().inflight == 400).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let beat = beat_after(state, crate::shard::now_ms()).await;
+        (state.admission.parked(), beat.inflight)
+    };
+    let (answers, held) =
+        futures_util::future::join(futures_util::future::join_all(pulls), observe).await;
+    assert_eq!(held, (400, 0), "(parked, the heartbeat's in flight)");
+    assert!(answers.iter().all(|(got, _, _)| got.is_empty()));
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
 }

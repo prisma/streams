@@ -293,7 +293,7 @@
       "count": 1,
       "owner": "crate::parked_waits",
       "path": "src/dst/dst_tests.rs",
-      "reason": "Parked-wait DSTs (shared-cells PLAN step 5, the cost review's 2.4): a waiting consumer pull walks again only on a commit, a consumer-state change or a lease deadline, two walks more per wait and none woken by an idle neighbour; the compiler and the DST suite exercise the module.",
+      "reason": "Parked-wait DSTs (shared-cells PLAN step 5, M1 and the cost review's 2.3-2.4): waiting long-polls, consumer pulls and watch waits are parked within the live pool and their project's share, leave the write gate and the fleet heartbeat, and a waiting pull walks again only on a commit, a consumer-state change or a lease deadline; the compiler and the DST suite exercise the module.",
       "syntax": "path = \"tests/parked_waits.rs\""
     },
     {
@@ -2783,6 +2783,14 @@
       "path": "src/application/creation.rs",
       "reason": "JSON record storage properties; the pinned generator builds whitespace-laden documents with shortest, 17-digit, subnormal, big-integer and money literals, and 1,024 cases per property run the production json_entries owner.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(tokio::task_local)",
+      "path": "src/admission/park.rs",
+      "reason": "The served request's own in-flight ticket, scoped to its handler future by the transport (InflightTicket::serve), so a wait deep inside a read long-poll, a consumer pull or a watch wait parks exactly that request without every layer carrying the ticket (shared cells M1); one value per request future, dropped with it; no process-wide state.",
+      "syntax": "tokio::task_local"
     },
     {
       "category": "macro-dsl",

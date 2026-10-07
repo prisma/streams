@@ -365,6 +365,9 @@ impl WatchService {
                 .put(descriptor.storage_hash(), key, descriptor.epoch());
         }
         let journal = self.touch.journal(descriptor.storage_hash(), stream_route);
+        // The wait holds its project's live slot above; on the instance it
+        // is parked, not a request in flight (shared cells M1).
+        let _parked = crate::admission::park::park_instance();
         let outcome = journal
             .wait(
                 &cursor,

@@ -972,8 +972,7 @@
   {
     "name": "a_parked_crowd_never_sheds_the_victims_writes",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase A step 5: parked waits leave the inflight write gate\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "916867276ec123f32cc3bb76351ab5368448471e367c15a189203ae6af26c24e",
     "mechanisms": [],
@@ -1190,6 +1189,17 @@
     "scenarios": [
       "SEL-014"
     ]
+  },
+  {
+    "name": "a_projects_waits_park_only_within_its_share_and_the_pool",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ce34fdaaae3adba28e16be3235161749b28b5d2c9d2bdcbb4a9e9e0d3e22bee1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
   },
   {
     "name": "a_pulled_visibility_beyond_the_lease_window_is_held_to_twelve_hours",
@@ -5500,6 +5510,17 @@
     "scenarios": []
   },
   {
+    "name": "parked_pulls_never_reach_the_heartbeat",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ad631aa4802fd19e279a7ab83f89b45f0014a0aa5b706db0810dad669ccf83bb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "pending_summary_clears_on_shard_close",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -8341,6 +8362,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "waiting_reads_pulls_and_watches_are_parked_and_leave_the_write_gate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8b67dae57975a8a0ccc5e4eddf993446c3c70836886e5b79e6f8acd286cf5845",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
     "scenarios": []
   },
   {

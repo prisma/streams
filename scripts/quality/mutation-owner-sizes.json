@@ -1,7 +1,7 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "15151a354f71d1c155011960d15746066a479293",
-  "measured_on": "2026-10-02",
+  "commit": "26807d5622d34eedb5ae4dea755d48f2b933604d",
+  "measured_on": "2026-10-07",
   "owners": {
     "admission_limits": 27,
     "append": 45,
@@ -82,6 +82,7 @@
     "queue_receive": 47,
     "queue_settle": 34,
     "quota": 20,
+    "quota_parked": 10,
     "quota_pin": 21,
     "quota_registry": 217,
     "read_accumulator": 46,

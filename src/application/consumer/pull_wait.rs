@@ -1,7 +1,7 @@
-//! A consumer pull's wait between walks of its lineage (shared cells, the
-//! cost review's 2.4). A pull with `waitMs` that found nothing to lease
-//! waits until something can have made a message deliverable, not for a
-//! fixed 50 ms between walks:
+//! A consumer pull's wait between walks of its lineage (shared cells M1
+//! and the cost review's 2.4). A pull with `waitMs` that found nothing to
+//! lease parks until something can have made a message deliverable, not
+//! for a fixed 50 ms between walks:
 //!
 //! - a record became durable in a lineage segment: the segment handle's
 //!   commit notification;
@@ -13,7 +13,7 @@
 //! Every commit that touches the stream notifies its handle, other
 //! consumers' receives included, so a wake walks again only when a
 //! segment's durable tail or this consumer's state moved, or its engine
-//! closed; otherwise the pull waits again. A walk that leases nothing
+//! closed; otherwise the pull parks again. A walk that leases nothing
 //! leaves the consumer's state as it was, so idle pulls never wake one
 //! another.
 //!
@@ -60,7 +60,7 @@ struct Watched {
 }
 
 impl PullPark {
-    /// Wait until `consumer` may have a deliverable message in
+    /// Wait, parked, until `consumer` may have a deliverable message in
     /// `lineage` or `deadline` passes. True: walk the lineage again;
     /// false: the deadline had already passed and the pull answers empty.
     pub(crate) async fn wait(
@@ -73,7 +73,9 @@ impl PullPark {
         if Instant::now() >= deadline {
             return false;
         }
-        let Some(watched) = watch(service, lineage).await else {
+        let watched = watch(service, lineage).await;
+        let _parked = crate::admission::park::park();
+        let Some(watched) = watched else {
             return poll(deadline).await;
         };
         loop {

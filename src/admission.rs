@@ -5,12 +5,25 @@
 //! `http::AppState`. Counters are PRIVATE: request paths hold RAII
 //! tickets and ask typed questions; operator surfaces read one
 //! immutable snapshot. One controller per runtime, no statics.
+//!
+//! Parked waits (shared cells M1): a request waiting for data (a read
+//! long-poll, a consumer pull, a watch wait) is PARKED while it waits.
+//! A parked request still holds its in-flight ticket and its project's
+//! request slot, but the write gate, the survival bound and the fleet
+//! heartbeat count only the ACTIVE requests (in flight minus parked), so
+//! waiting clients neither shed writes nor ask the scaler for servers.
+//! Parked waits draw on the live-connection pool the SSE cap sizes,
+//! after the subscriptions already open: a wait that finds the pool (or
+//! its project's share of it, `park`) full waits as an active request,
+//! as every wait did before.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backpressure::GlobalLatch;
+
+pub(crate) mod park;
 
 /// Bound on distinct streams tracked by the per-stream admission map:
 /// the map stays proportional to concurrently-active streams and can
@@ -107,6 +120,16 @@ pub(crate) struct AdmissionController {
 struct Inner {
     inflight: AtomicI64,
     inflight_peak: AtomicI64,
+    /// Requests in flight that are parked in a wait (a subset of
+    /// `inflight`, each held by a `ParkedTicket`).
+    parked: AtomicI64,
+    /// The peak of active requests (in flight minus parked) since the
+    /// heartbeat last swapped it.
+    active_peak: AtomicI64,
+    /// The live-connection pool parked waits share with subscriptions:
+    /// the effective SSE cap (0 = unlimited). Atomic only so rigs can
+    /// size it; production never moves it.
+    live_pool: AtomicU64,
     /// Runtime-tunable (operator endpoint) — hence atomic, not a knob.
     max_inflight: AtomicI64,
     per_stream_cap: i64,
@@ -148,6 +171,23 @@ impl InflightTicket {
 impl Drop for InflightTicket {
     fn drop(&mut self) {
         self.ctl.inner.inflight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// RAII parked slot: while held, one request in flight counts as parked
+/// in a wait and holds one place in the live-connection pool. Dropping
+/// it makes the request active again.
+pub(crate) struct ParkedTicket {
+    ctl: AdmissionController,
+}
+
+impl Drop for ParkedTicket {
+    fn drop(&mut self) {
+        let inner = &self.ctl.inner;
+        inner.parked.fetch_sub(1, Ordering::Relaxed);
+        inner
+            .active_peak
+            .fetch_max(self.ctl.active(), Ordering::Relaxed);
     }
 }
 
@@ -194,6 +234,9 @@ impl AdmissionController {
             inner: Arc::new(Inner {
                 inflight: AtomicI64::new(0),
                 inflight_peak: AtomicI64::new(0),
+                parked: AtomicI64::new(0),
+                active_peak: AtomicI64::new(0),
+                live_pool: AtomicU64::new(knobs.subscriptions.effective),
                 max_inflight: AtomicI64::new(knobs.max_inflight),
                 per_stream_cap: knobs.per_stream_cap,
                 streams: Mutex::new(HashMap::new()),
@@ -225,18 +268,46 @@ impl AdmissionController {
         self.inner
             .inflight_peak
             .fetch_max(current, Ordering::Relaxed);
+        self.inner
+            .active_peak
+            .fetch_max(self.active(), Ordering::Relaxed);
         InflightTicket {
             ctl: self.clone(),
             current,
         }
     }
 
+    /// Requests in flight that are not parked in a wait.
+    fn active(&self) -> i64 {
+        let parked = self.inner.parked.load(Ordering::Relaxed);
+        self.inner.inflight.load(Ordering::Relaxed) - parked
+    }
+
+    /// Park one request in flight in a wait: `None` when the
+    /// live-connection pool, which open subscriptions use first, has no
+    /// room (the wait then stays active). A parked request leaves the
+    /// write gate, the survival bound and the heartbeat's count.
+    pub(crate) fn park(&self) -> Option<ParkedTicket> {
+        let inner = &self.inner;
+        let pool = inner.live_pool.load(Ordering::Relaxed);
+        let before = inner.parked.fetch_add(1, Ordering::Relaxed);
+        let subscriptions = inner.sse_connections.load(Ordering::Relaxed);
+        let held = subscriptions.saturating_add(u64::try_from(before).unwrap_or(u64::MAX));
+        if pool > 0 && held >= pool {
+            inner.parked.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(ParkedTicket { ctl: self.clone() })
+    }
+
     /// The PRE-AUTH survival bound: only an absolute multiple of the
     /// ordinary cap, only on stream paths, no capacity answer — a
     /// process this far over its cap is defending its sockets. Counts
-    /// the shed when it refuses.
+    /// the shed when it refuses. Parked waits are not counted: they
+    /// hold their own bounded pool.
     pub(crate) fn survival_refused(&self, current: i64, stream_path: bool) -> bool {
         let cap = self.max_inflight();
+        let current = current - self.inner.parked.load(Ordering::Relaxed);
         let refuse = cap > 0 && stream_path && current > cap.saturating_mul(SURVIVAL_MULTIPLIER);
         if refuse {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
@@ -247,10 +318,11 @@ impl AdmissionController {
 
     /// The ordinary in-flight gate for WRITES, after authentication
     /// (Round-13). Reads are never shed here (R24-B: shedding reads
-    /// hides the instance from its own operators).
+    /// hides the instance from its own operators), and requests parked
+    /// in a wait are not writes in flight (shared cells M1).
     pub(crate) fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
         let cap = self.max_inflight();
-        if cap > 0 && self.inner.inflight.load(Ordering::Relaxed) > cap {
+        if cap > 0 && self.active() > cap {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_inflight.fetch_add(1, Ordering::Relaxed);
             return Err(WriteRefusal::Overloaded);
@@ -275,6 +347,11 @@ impl AdmissionController {
         self.inner.max_inflight.load(Ordering::Relaxed)
     }
 
+    /// Requests in flight parked in a wait now.
+    pub(crate) fn parked(&self) -> i64 {
+        self.inner.parked.load(Ordering::Relaxed)
+    }
+
     /// Rigs tune the ordinary cap live (an operator surface can adopt
     /// this the day one exists; until then it is a test hook).
     #[cfg(test)]
@@ -283,11 +360,27 @@ impl AdmissionController {
     }
 
     /// The current in-flight count and the peak since the last swap
-    /// (the fleet heartbeat and the load page reset the peak).
+    /// (the load page resets the peak).
     pub(crate) fn swap_peak(&self) -> (i64, i64) {
         let now = self.inner.inflight.load(Ordering::Relaxed);
         let peak = self.inner.inflight_peak.swap(now, Ordering::Relaxed);
         (now, peak)
+    }
+
+    /// The current ACTIVE count (in flight minus parked) and its peak
+    /// since the last swap: the load the fleet heartbeat reports, so
+    /// parked waits never ask the scaler for servers.
+    pub(crate) fn swap_active_peak(&self) -> (i64, i64) {
+        let now = self.active();
+        let peak = self.inner.active_peak.swap(now, Ordering::Relaxed);
+        (now, peak.max(now))
+    }
+
+    /// Rigs size the live-connection pool parked waits draw on (the
+    /// rig's subscription budget is unlimited).
+    #[cfg(test)]
+    pub(crate) fn set_live_pool(&self, connections: u64) {
+        self.inner.live_pool.store(connections, Ordering::Relaxed);
     }
 
     // ---- per-stream ----------------------------------------------------
@@ -538,6 +631,66 @@ mod tests {
         assert_eq!(c.admit_write_inflight(), Ok(()));
         let s = c.snapshot().shed;
         assert_eq!((s.total, s.survival, s.inflight), (2, 1, 1), "{s:?}");
+    }
+
+    /// A parked request leaves the write gate, the survival bound and the
+    /// active count the heartbeat reads; unparking returns it to all three.
+    #[test]
+    fn parked_requests_leave_the_write_gate_survival_and_the_active_count() {
+        let c = ctl(2, 0, 0, 0);
+        let tickets: Vec<_> = (0..9).map(|_| c.enter()).collect();
+        assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
+        assert!(c.survival_refused(9, true), "9 active over 4 x 2");
+        let parked: Vec<_> = (0..7).map(|_| c.park().expect("unlimited pool")).collect();
+        assert_eq!((c.snapshot().inflight, c.parked()), (9, 7));
+        assert_eq!(c.admit_write_inflight(), Ok(()), "2 active at a cap of 2");
+        assert!(!c.survival_refused(9, true), "2 active of 9 in flight");
+        assert_eq!(c.swap_active_peak(), (2, 9), "the peak before parking");
+        assert_eq!(c.swap_active_peak(), (2, 2), "swapped to the active count");
+        drop(parked);
+        assert_eq!((c.parked(), c.swap_active_peak()), (0, (9, 9)));
+        assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
+        assert_eq!(
+            c.swap_peak(),
+            (9, 9),
+            "the load page's peak counts every request"
+        );
+        drop(tickets);
+        assert_eq!(c.swap_active_peak(), (0, 9));
+        let s = c.snapshot().shed;
+        assert_eq!((s.inflight, s.survival), (2, 1));
+    }
+
+    /// Parked waits draw on the live-connection pool after the open
+    /// subscriptions: a park finding the pool full is refused (the wait
+    /// stays active) and leaves no count; subscriptions keep their own cap
+    /// whatever is parked; a released place is reusable; 0 = unlimited.
+    #[test]
+    fn parked_waits_take_the_live_pool_after_subscriptions() {
+        let c = ctl(0, 0, 0, 3);
+        let _ticket = c.enter();
+        let sub = c.subscribe().expect("1 of 3");
+        let a = c.park().expect("1 subscription + 1 parked of 3");
+        let _b = c.park().expect("1 + 2 of 3");
+        assert!(c.park().is_none(), "the pool is full");
+        assert_eq!(c.parked(), 2, "a refusal never counts");
+        let subs: Vec<_> = (0..2).map(|_| c.subscribe().expect("own cap")).collect();
+        assert!(
+            c.subscribe().is_err(),
+            "subscriptions keep their own cap of 3"
+        );
+        assert_eq!((c.snapshot().sse_connections, c.parked()), (3, 2));
+        drop((subs, sub));
+        drop(a);
+        let _c = c.park().expect("a released place is reusable");
+        assert!(c.park().is_some(), "and so is a closed subscription's");
+        let unlimited = ctl(0, 0, 0, 0);
+        let held: Vec<_> = (0..1_000).map(|_| unlimited.park().unwrap()).collect();
+        assert_eq!(unlimited.parked(), 1_000);
+        drop(held);
+        assert_eq!(unlimited.parked(), 0);
+        c.set_live_pool(1);
+        assert!(c.park().is_none(), "a rig sizes the pool");
     }
 
     /// The RSS gate reads sampled RSS PLUS the reserved bytes against the

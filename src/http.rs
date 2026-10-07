@@ -657,7 +657,6 @@ async fn track_inflight(
 ) -> Response {
     let ticket = state.admission.enter();
     let cur = ticket.current();
-    let _guard = ticket;
     // Round-13 (review): the ORDINARY inflight admission gate moved
     // POST-auth into append_core — running it here answered 429 with
     // capacity information (plus a 25 ms tarpit) to UNAUTHENTICATED
@@ -694,7 +693,7 @@ async fn track_inflight(
     // 8 MiB of body drain and receive capacity answers (429/503) where
     // the contract requires 401: authenticate before buffering or
     // materially consuming the request body.
-    next.run(req).await
+    ticket.serve(next.run(req)).await
 }
 
 /// Calibrated-latency endpoint for edge probes: holds the request for
@@ -1801,6 +1800,7 @@ pub(crate) async fn product_entry_axum_inner(
         Ok(g) => g,
         Err(r) => return crate::product::with_product_cors(r),
     };
+    crate::admission::park::bind_principal(&state.quotas, principal);
     // Round-13: the per-project memory-pressure backstop for WRITES on
     // this surface — after ordinary project admission, before body
     // work. Reads and established SSE delivery continue while a

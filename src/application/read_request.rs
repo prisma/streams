@@ -561,6 +561,8 @@ async fn wait_tail(
     wait: Duration,
 ) -> (u64, bool, u64) {
     let deadline = tokio::time::Instant::now() + wait.min(Duration::from_secs(25));
+    // A waiting long-poll is parked, not a request in flight (M1).
+    let _parked = crate::admission::park::park();
     loop {
         let durable = handle.notify.notified();
         let applied = handle.applied_notify.notified();

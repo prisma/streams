@@ -59,6 +59,7 @@ pub(crate) const IDLE_EVICT_MS: i64 = 300_000;
 
 mod bucket;
 use bucket::Bucket;
+pub(crate) mod parked;
 mod pin;
 use pin::AdmissionCounters;
 
@@ -77,6 +78,8 @@ pub(crate) struct ProjectAdmission {
     /// Admissions in progress and admitted requests in flight.
     counters: AdmissionCounters,
     live_subs: AtomicU64,
+    /// Parked waits holding a place in the project's live share (`parked`).
+    parked: AtomicU64,
     /// SR2-4 max_streams accounting. Seeded LAZILY from the durable
     /// catalog on the first limited create after boot (the count is
     /// process-local; the catalog is the truth it re-derives from).
@@ -548,6 +551,7 @@ impl QuotaRegistry {
             read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
             counters: AdmissionCounters::default(),
             live_subs: AtomicU64::new(0),
+            parked: AtomicU64::new(0),
             streams: Mutex::new(StreamCount::default()),
             queued_bytes: AtomicU64::new(0),
             live_feeds: AtomicU64::new(0),

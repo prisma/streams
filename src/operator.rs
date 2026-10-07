@@ -101,6 +101,7 @@ pub(crate) async fn data(
         "ring_active": state.ownership.ring_active(),
         "inflight": adm.inflight,
         "inflight_peak": adm.inflight_peak,
+        "parked": state.admission.parked(),
         "admit_shed": adm.shed.total,
         "stream_shed": adm.shed.stream,
         "wedge_shed": adm.shed.wedge,
