@@ -1520,7 +1520,12 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    replaces `CheckedFrame` in the compiler fixtures and the source gate (L2);
    `decode_frame` keeps one reasoned `dead_code` allow (L3); and
    `CryptoConfig::frame_compress` is removed in one commit before it lands
-   (L4). After landing, the keys CLI decrypts a page on the library crate
+   (L4). **Implemented:** pages in the shard log and in history, reads of
+   layout 5 only, the three additions, the fixes of the crypto and G3
+   reviews, KANI-017 on pages, the new KANI-097, the TLA-016 and TLA-018
+   page models, the five records (#125-#129, ratified) and L2-L4; TLA-016's
+   and TLA-018's receipts are re-recorded before the model commit lands, and
+   L5's measurements follow (14.8). After landing, the keys CLI decrypts a page on the library crate
    (crypto review F9) and `frame_bytes` keeps its name until the billing
    meter renames it (L6). Run leases' option 3 and the SDK iterator that
    retries a key's later messages after `msg.retry()` come later, together

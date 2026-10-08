@@ -148,17 +148,17 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 121 | 030eea63 | One usage drain round takes up to 256 of each shard's dirty rows, not 64: a shard that dirties more than 64 segments within one cadence reaches the usage answers in a quarter of the rounds | product | low | owner decision (2026-10-08, "all recommended", T9(a)); awaits ratification |
 | 123 | 412a560a, b0e308c0 | A consumer pull leases consecutive records of a routing key up to max, each under its own lease token, and the key stays blocked for every other pull while any of them is leased | product | medium | owner decision (2026-10-07, "Consumer groups"); awaits ratification |
 | 124 | a39dfba1 | The fleet tick reads its members by name with conditional GETs, and lists fleet/ and routers/ only on its first pass and every 30th after it | fleet-internal | low | owner request (2026-10-06, the K2 cost plan); awaits ratification |
-| 125 | a7839858 | Usage and retention count stored page bytes: frame_bytes, the storage gauge and the stored-byte totals measure layout 5 pages, after compression | both | medium | owner decision (2026-10-07, layout 5, retention on stored bytes); ratified 2026-10-08 (landing call L1), as drafted, before landing |
-| 126 | 2b160965 | A binary reads only storage layout 5: a namespace written under layout 4 is refused as unsupported_storage_layout | both | high | owner decision (2026-10-07, layout 5, no backwards compatibility); ratified 2026-10-08 (landing call L1), as drafted, before landing |
-| 127 | 8746682f | FRAME_COMPRESS is not read: stored pages compress whenever that pays | process | low | owner decision (2026-10-07, layout 5 §11); ratified 2026-10-08 (landing call L1), as drafted, before landing |
-| 128 | 8746682f | format=frames answers uncompressed version 4 frames on every deployment, so no response length depends on how well a record compresses | raw | low | crypto review F2 (2026-10-08); ratified 2026-10-08 (landing call L1), as drafted, before landing |
-| 129 | 2c0fbef8 | A history read refuses pages that do not tile its window: an overlapping or a lost page fails the read as stored corruption | both | high | crypto review F1 (2026-10-08); ratified 2026-10-08 (landing call L1), as drafted, before landing |
+| 125 | c5da3a4e | Usage and retention count stored page bytes: frame_bytes, the storage gauge and the stored-byte totals measure layout 5 pages, after compression | both | medium | owner decision (2026-10-07, layout 5, retention on stored bytes); ratified 2026-10-08 (landing call L1), as drafted, before landing |
+| 126 | 4e03fe81 | A binary reads only storage layout 5: a namespace written under layout 4 is refused as unsupported_storage_layout | both | high | owner decision (2026-10-07, layout 5, no backwards compatibility); ratified 2026-10-08 (landing call L1), as drafted, before landing |
+| 127 | 6d5d0fb8 | FRAME_COMPRESS is not read: stored pages compress whenever that pays | process | low | owner decision (2026-10-07, layout 5 §11); ratified 2026-10-08 (landing call L1), as drafted, before landing |
+| 128 | 6d5d0fb8 | format=frames answers uncompressed version 4 frames on every deployment, so no response length depends on how well a record compresses | raw | low | crypto review F2 (2026-10-08); ratified 2026-10-08 (landing call L1), as drafted, before landing |
+| 129 | 13aee2c0 | A history read refuses pages that do not tile its window: an overlapping or a lost page fails the read as stored corruption | both | high | crypto review F1 (2026-10-08); ratified 2026-10-08 (landing call L1), as drafted, before landing |
 
 ## High risk (12)
 
 In each of these changes, a request that used to succeed can now fail permanently. Each risk reason states how narrow the affected inputs are and, where it applies, why the earlier success was incorrect.
 
-### #126 2b160965 — A binary reads only storage layout 5: a namespace written under layout 4 is refused as unsupported_storage_layout
+### #126 4e03fe81 — A binary reads only storage layout 5: a namespace written under layout 4 is refused as unsupported_storage_layout
 
 - **Program item:** layout 5 (spec §6 and §11; the owner's decisions of 2026-10-07: layout 5 as specified, no backwards compatibility).
 - **Surface:** both.
@@ -172,7 +172,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high. Every request against an existing namespace fails permanently after the deploy; the cutover is the design (no compatibility before launch), and nothing is lost once a deployment moves to a fresh namespace.
 - **Check against commit:** written at landing from the layout 5 drafts (#NN-a); not checked by an independent pass. RATIFIED by the owner on 2026-10-08 (landing call L1), as drafted, before landing.
 
-### #129 2c0fbef8 — A history read refuses pages that do not tile its window: an overlapping or a lost page fails the read as stored corruption instead of serving offsets twice or passing records off as consumed
+### #129 13aee2c0 — A history read refuses pages that do not tile its window: an overlapping or a lost page fails the read as stored corruption instead of serving offsets twice or passing records off as consumed
 
 - **Program item:** layout 5, the crypto review of 2026-10-08 (F1, major): pages are keyed by their last offset, so two authentic pages can cover the same offsets and one lost row hides up to 4,096 records; the tail ring and tail repair checked that pages follow each other, history reads did not.
 - **Surface:** both (every read whose window reaches history: raw and product reads, SSE catch-up, consumer pulls over absorbed records).
@@ -378,7 +378,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 
 These changes alter a status, error code or retry behaviour on an error case clients may branch on, or change the semantics of a successful path (redelivery timing, connection lifetime, subscription lifetime, new quota refusals).
 
-### #125 a7839858 — Usage and retention count stored page bytes: frame_bytes, the storage gauge and the stored-byte totals measure layout 5 pages, after compression
+### #125 c5da3a4e — Usage and retention count stored page bytes: frame_bytes, the storage gauge and the stored-byte totals measure layout 5 pages, after compression
 
 - **Program item:** layout 5 (spec §7; the owner's decision of 2026-10-07: retention is billed on the bytes the server stores, after its compression; produce and consume stay on the bytes the customer sees).
 - **Surface:** both (product usage answers, the usage ledger and rollup); operator-debug for `/v1/debug/usage` and `/v1/debug/load`.
@@ -1185,21 +1185,21 @@ These changes alter a status, error code or retry behaviour on an error case cli
 
 None of these changes alters a status or code on a path that worked before, and only #92 and #95 add a header to one (`Cache-Control: no-store` on successes that WIRE-MATRIX already listed with it: one for #92, four for #95), except shared cells phase A's #101 and #104, which refuse requests that crossed a trust boundary (a reserved identity's tokens, a watch carrier with only a stream key), as their risk reasons say; #102's amendment adds `Retry-After: 1` to an existing retryable `503`; and #114 and #116 change answers on paths that worked (a pull may now wait for memory and be refused retryably or answered empty; a deleted stream's watchers are answered `stale` at once), as their records say. Most are internal, operator-facing or timing-only; the rest correct data inside successful responses, or turn a failure (or a hang) into a success.
 
-### #127 8746682f — FRAME_COMPRESS is not read: stored pages compress whenever that pays
+### #127 6d5d0fb8 — FRAME_COMPRESS is not read: stored pages compress whenever that pays
 
 - **Program item:** layout 5 (spec §11: the setting is removed).
 - **Surface:** process.
 - **Endpoint:** process startup: the environment name `FRAME_COMPRESS` (it never had a command-line argument); the startup summary loses its `crypto` section (`crypto.frame_compress`).
 - **Condition:** a process holds `FRAME_COMPRESS`, with any value.
 - **Before:** `1` or `true` (any case) made writers zstd-1 each record before encrypting it (frame version 5) and made `format=frames` responses compress; any other value, or none, meant off. The code default was off; every deployment script, family and bench in the repository set `FRAME_COMPRESS=1`.
-- **After:** the name is not read; a process that holds it starts as one that does not, whatever the value, and nothing is logged (the policy of edge records #80 to #85: retired environment names are ignored, retired arguments refused; this one had no argument). Storage compression is decided per page by the page codec. `CryptoConfig::frame_compress`, the constant `false` this left, is removed with `CryptoConfig` in the commit that follows (landing call L4): `bootstrap::run` no longer passes it and `render_raw_read` asks `read_payload` for uncompressed frames itself. `format=frames` is #128.
+- **After:** the name is not read; a process that holds it starts as one that does not, whatever the value, and nothing is logged (the policy of edge records #80 to #85: retired environment names are ignored, retired arguments refused; this one had no argument). Storage compression is decided per page by the page codec. `CryptoConfig::frame_compress`, the constant `false` this left, is removed with `CryptoConfig` in the commit that follows, 25228d64 (landing call L4): `bootstrap::run` no longer passes it and `render_raw_read` asks `read_payload` for uncompressed frames itself. `format=frames` is #128.
 - **Retry semantics:** none.
-- **Who is affected:** operators. The bench scripts, effective-configuration families and `bench/k2cost/field/deploy.py` still pass `FRAME_COMPRESS=1`, now inert; they are not edited. The removed summary leaf should be declared in `scripts/effective-config`'s `rename-map.json` (not done).
+- **Who is affected:** operators. The bench scripts, effective-configuration families and `bench/k2cost/field/deploy.py` still pass `FRAME_COMPRESS=1`, now inert; they are not edited. The removed configuration leaf `crypto.frame_compress` is declared in `scripts/effective-config`'s `rename-map.json` by 25228d64.
 - **Pinning tests:** `config::retired_tests::retired_environment_names_change_nothing` (`FRAME_COMPRESS` = `1`, `TrUe`, `0`; red: `assertion left == right failed: FRAME_COMPRESS`); `config::tests::env_overlay_applies_with_legacy_parse_semantics` (loses the name).
 - **Risk reason:** low. Stored data compresses whenever that pays, which is what every deployment ran with the switch on; nothing a client sends or reads changes through this name.
 - **Check against commit:** written at landing from the layout 5 drafts (#NN-c); not checked by an independent pass. RATIFIED by the owner on 2026-10-08 (landing call L1), as drafted, before landing.
 
-### #128 8746682f — format=frames answers uncompressed version 4 frames on every deployment, so no response length depends on how well a record compresses
+### #128 6d5d0fb8 — format=frames answers uncompressed version 4 frames on every deployment, so no response length depends on how well a record compresses
 
 - **Program item:** layout 5 (spec §5: `format=frames` re-encrypts each record as a frame for the client); the crypto review of 2026-10-08 (F2: a compressed wire frame is a length side channel, the BREACH condition) and the landing instruction to keep today's default of uncompressed wire frames.
 - **Surface:** raw.

@@ -116,7 +116,8 @@ refused, cursors inside pages).
   the byte).
 - Guidance for customers: do not batch secrets together with
   attacker-controlled data into one append if the storage operator is
-  outside your trust boundary.
+  outside your trust boundary. The SDK's README states it under "Security
+  notes" (the owner's decision of 2026-10-08, L6).
 - The wire does not compress: `format=frames` answers version 4 frames on
   every deployment, so no response length depends on how well a record
   compresses (FRAME_COMPRESS is not read since layout 5).
