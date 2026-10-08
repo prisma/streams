@@ -32,6 +32,10 @@ const PORTS = { "streams-1": 9862, "streams-2": 9864, "streams-3": 9866 };
 const BUCKET = `lfcert-${Date.now()}`;
 const KEY_B64 = Buffer.from(Array(32).fill(9)).toString("base64");
 const DEBUG_TOKEN = "lfcert-debug-token-0123456789";
+// The customer project the battery certifies (the emulator places it on
+// cell-a), and the cell's own deployment project, which no feed names.
+const CERT_PROJECT = "proj-lc";
+const DEPLOY_PROJECT = "proj-lc-deploy";
 const legs = {};
 const reconciliation = {};
 let failed = 0;
@@ -54,7 +58,7 @@ const emu = spawn(process.execPath, [
   "platform-demo/src/emulator.mjs",
   "--port", String(EMU),
   "--cells", `cell-a=${dirA}`,
-  "--fixture", "proj-lc:ws-lc:cell-a",
+  "--fixture", `${CERT_PROJECT}:ws-lc:cell-a`,
   "--enable-fault-api",
 ], { stdio: ["ignore", "inherit", "inherit"] });
 const s3 = spawn("./target/release/s3lite", ["--listen", `127.0.0.1:${S3}`, "--latency-ms", "2"], { stdio: "ignore" });
@@ -73,10 +77,10 @@ const instEnv = (name) => ({
   FLEET_AUTH_MODE: "workload",
   WORKLOAD_TOKEN_FILE: join(dirA, "workload.jwt"),
   CELL_ID: "cell-a",
-  // Single-project cell: the deployment tenant IS the certification
-  // project, so the raw observability surface (/v1/segments) resolves
-  // product streams directly.
-  PROJECT_ID: "proj-lc",
+  // The deployment's own project, never the certified one: a cell
+  // reserves its PROJECT_ID and answers that project's tokens
+  // 421 wrong_cell (edge change #101, live since #130).
+  PROJECT_ID: DEPLOY_PROJECT,
   USAGE_STREAM_KEY: KEY_B64,
   AUTH_TOKEN: DEBUG_TOKEN,
   // Round-11.7: NO engine selection — the release binary defaults to
@@ -164,7 +168,7 @@ const debug = async (n) =>
   (await (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).json());
 
 // Mint a customer token.
-const cred = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/proj-lc/streams/credentials`, {
+const cred = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ displayName: "cert" }),
 })).json();
@@ -174,17 +178,34 @@ const tokenOf = async () =>
   })).json()).accessToken;
 await sleep(1500); // feeds land
 let TOK = await tokenOf();
-// Observability probes (/v1/segments) live on the internal surface:
-// workload identity with the exact operation, never the customer token.
-const wlSeg = await (await sfetch(`http://127.0.0.1:${EMU}/admin/mint-workload`, {
-  method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ cell: "cell-a", operations: ["segment-read"] }),
-})).json();
-console.log(`  [diag] mint-workload keys=${Object.keys(wlSeg)} jwt=${String(wlSeg.jwt).slice(0, 24)}...`);
-const SEG_AUTH = { authorization: `Bearer ${wlSeg.jwt}` };
-// Product streams surface on the raw observability vocabulary as
-// {project}/{name}.
-const segPath = (name) => `/v1/segments/${name}`;
+// A certified stream's segment map, read where the server keeps it: its
+// registry descriptor in the store (the path is desc_path's in
+// src/registry.rs; a layout that moves it fails the split leg with
+// status 404 in the poll's diag), in the raw surface's shape
+// ({version, pending, segments: [{seg_id, live, sealed_next_offset,
+// predecessors}]}). The raw observability surface (/v1/segments)
+// reaches only the deployment project's streams, which the certified
+// project never is. A descriptor without a map is one live segment.
+const hex = (s) => Buffer.from(s, "utf8").toString("hex");
+const storedSegments = async (name) => {
+  const r = await sfetch(`http://127.0.0.1:${S3}/${BUCKET}/registry/v4/projects/${hex(CERT_PROJECT)}/streams/${hex(name)}.json`);
+  if (r.status !== 200) return { status: r.status, map: null };
+  const map = (await r.json().catch(() => ({}))).segments;
+  const segments = map?.segments ?? [{ seg_id: 0, sealed_ms: null }];
+  return {
+    status: r.status,
+    map: {
+      version: map?.version ?? 0,
+      pending: map?.pending?.kind ?? null,
+      segments: segments.map((s) => ({
+        seg_id: s.seg_id,
+        live: s.sealed_ms == null,
+        sealed_next_offset: s.sealed_next_offset ?? null,
+        predecessors: s.predecessors ?? [],
+      })),
+    },
+  };
+};
 const H = (extra = {}) => ({
   authorization: `Bearer ${TOK}`,
   "prisma-encryption-key": KEY_B64,
@@ -308,10 +329,10 @@ async function makeSplitStream(name) {
           console.log(`  [diag ${n}] scaler=${JSON.stringify(d.scaler)}`);
         } catch { /* booting */ }
       }
-      const sr = await ownerFetch(segPath(name), { headers: SEG_AUTH });
-      console.log(`  [diag] segments status=${sr.status} body=${(await sr.clone?.().text?.().catch(() => "") ?? "")}`);
-      if (sr.status === 200) {
-        const m = await sr.json();
+      const sr = await storedSegments(name);
+      console.log(`  [diag] segments status=${sr.status} map=${JSON.stringify(sr.map)}`);
+      if (sr.map) {
+        const m = sr.map;
         const liveCount = (m.segments ?? []).filter((x) => x.live !== false).length;
         const sealedRecords = (m.segments ?? [])
           .map((x) => x.sealed_next_offset ?? 0).reduce((a, b) => a + b, 0);
@@ -624,14 +645,14 @@ let fullReplayRecords = 0;
   });
   await sleep(1500);
   const t0 = Date.now();
-  await sfetch(`http://127.0.0.1:${EMU}/v1/projects/proj-lc/streams/credentials/${cred.credential.id}/revoke`, { method: "POST" });
+  await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials/${cred.credential.id}/revoke`, { method: "POST" });
   const ended = await sub;
   const cutMs = Date.now() - t0;
   leg("revocation mid-subscription: established 200, prompt resumable EOF",
     ended.status === 200 && ended.eof && cutMs < 15000 && !ended.text.includes('"sealed":true'),
     `status=${ended.status} eof=${ended.eof} cutMs=${cutMs}`);
   // Fresh credential for the rest of the battery.
-  const c2 = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/proj-lc/streams/credentials`, {
+  const c2 = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ displayName: "cert2" }),
   })).json();
