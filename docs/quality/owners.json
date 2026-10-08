@@ -2899,6 +2899,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::on_paused_clock",
+      "path": "src/http/serve/drain/tests.rs",
+      "reason": "Drain-floor spin guard; a write that spins inside one poll never returns, so the paused runtime runs on a detached thread the bounded receive observes; a runtime task cannot bound a spin of its own runtime's thread. A spun thread ends with the test process.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::debug_routes",
       "path": "src/http.rs",
       "reason": "The debug abort route spawns one bare task that sleeps briefly and aborts the process; nothing outlives it.",
