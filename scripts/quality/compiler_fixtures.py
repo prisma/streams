@@ -79,6 +79,9 @@ def copy_source(destination):
     # The keys-feed parser's golden-vector test includes the platform contract's vectors.
     golden = 'contracts/streams-platform/v1/golden'
     shutil.copytree(ROOT / golden, destination / golden)
+    # The shared-cell profile's memory-line and layering tests include the deploy profiles.
+    profiles = 'deploy/profiles'
+    shutil.copytree(ROOT / profiles, destination / profiles)
     with (destination / 'src/lib.rs').open('a') as root:
         root.write('\nmod quality_boundary_fixture;\n')
 
