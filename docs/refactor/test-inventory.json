@@ -214,6 +214,17 @@
     "scenarios": []
   },
   {
+    "name": "a_consumer_that_stops_part_way_gets_the_unacked_rest_again_in_offset_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2a02e0a92d7f0bbc1ec56bfe91340f48949194d2179fe3a9072f9b00e2434297",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_runs.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_continuation_carries_across_provisional_pages_and_is_verified_over_both",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1295,6 +1306,17 @@
     "scenarios": []
   },
   {
+    "name": "a_pull_delivers_a_run_of_one_routing_key_with_one_lease_token_per_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a782beb0e372cfe79c71fc361e0e5e5e3dcf5564407526662564116849a1b8d1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_runs.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_pulled_visibility_beyond_the_lease_window_is_held_to_twelve_hours",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1750,6 +1772,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_walk_custody.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_run_that_reaches_max_attempts_is_dead_lettered_in_offset_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "46ec18d41440ec41329d0f915dc1c4dadff0482fc6f43f22c983a8cdc7b75df1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_runs.rs",
     "scenarios": []
   },
   {
@@ -2539,7 +2572,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "da2a83c0e2ac43b26477886b1d7f98e2fd01c64abd251056049b770fbc6afd5e",
+    "function_sha256": "60e3af98c150dae12c31dc4521e23f4af63a159a440709eb6e2dbce93e82baae",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/parked_waits.rs",
@@ -5990,7 +6023,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9c7b3752b292fa43efbaadcfc3c86f017e164283c162c60cb5078f0ef850dfd9",
+    "function_sha256": "018e9a03c8ad086c138859478d45e2500b179e73eab52b02a9111004655157fc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_product.rs",

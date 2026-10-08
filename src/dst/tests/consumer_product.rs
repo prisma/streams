@@ -114,7 +114,8 @@ async fn product_consumer_config_lifecycle() {
 }
 
 /// Stage 2a §2.3: per-key FIFO — a key with an active lease blocks its
-/// later records; other keys flow; the ack unblocks.
+/// later records for every other pull (the run one pull leases is
+/// `consumer_runs`); other keys flow; the ack unblocks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_consumer_per_key_fifo() {
     let store = mem();
@@ -152,17 +153,22 @@ async fn product_consumer_per_key_fifo() {
     )
     .await;
     assert_eq!(st, 201);
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/cf/consumers/w:pull",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"max":10}"#,
-    )
-    .await;
-    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    let msgs = v["messages"].as_array().unwrap();
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    // One record, then a second pull: a run leases a key's records to one
+    // pull only, so a/1 waits behind a/0 while b flows.
+    for max in [1, 10] {
+        let (st, _, b) = preq(
+            addr,
+            "POST",
+            "/v1/streams/cf/consumers/w:pull",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            format!("{{\"max\":{max}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        msgs.extend(v["messages"].as_array().unwrap().iter().cloned());
+    }
     let got: Vec<(String, i64)> = msgs
         .iter()
         .map(|m| {

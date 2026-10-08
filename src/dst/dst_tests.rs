@@ -64,6 +64,9 @@ mod consumer_generations;
 #[path = "tests/consumer_product.rs"]
 mod consumer_product;
 
+#[path = "tests/consumer_runs.rs"]
+mod consumer_runs;
+
 #[path = "tests/consumer_saga.rs"]
 mod consumer_saga;
 

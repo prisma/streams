@@ -339,6 +339,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::consumer_runs",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Run-lease scenarios over real HTTP rigs: a pull leases consecutive records of one routing key up to max with one lease token each, the key stays blocked for every other pull while any of them is leased, acks settle record by record in any order, a consumer that stops part-way gets the unacked rest again in offset order after expiry, and a run that reaches maxAttempts is dead-lettered in offset order; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/consumer_runs.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",

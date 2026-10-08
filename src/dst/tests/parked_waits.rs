@@ -194,18 +194,20 @@ async fn an_expired_lease_reaches_a_waiting_pull_at_its_deadline() {
 }
 
 /// An ack that unblocks a key's next record wakes a pull waiting on the
-/// consumer: the settle moves the consumer's queue state.
+/// consumer: the settle moves the consumer's queue state. The first pull
+/// takes `max` 1, so a/1 stays behind a/0's lease (a larger `max` leases
+/// the run a/0, a/1, edge change #123).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ack_that_unblocks_a_key_wakes_a_waiting_pull() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "fifo", br#"{"visibilityTimeoutMs":60000}"#).await;
     append(addr, "fifo", "a", 0).await;
     append(addr, "fifo", "a", 1).await;
-    let (got, tokens, _) = pull(addr, "fifo", r#"{"max":10}"#).await;
+    let (got, tokens, _) = pull(addr, "fifo", r#"{"max":1}"#).await;
     assert_eq!(
         got,
         vec![("a".to_string(), 0, 1)],
-        "a/1 is blocked behind a/0"
+        "the first pull leases a/0 alone"
     );
     let waiting = pull(addr, "fifo", r#"{"waitMs":10000}"#);
     let acking = async {
@@ -223,7 +225,10 @@ async fn an_ack_that_unblocks_a_key_wakes_a_waiting_pull() {
     let ((got, _, took), acked) = futures_util::future::join(waiting, acking).await;
     assert_eq!(acked, 200);
     assert_eq!(got, vec![("a".to_string(), 1, 1)]);
-    assert!(took < Duration::from_secs(3), "delivered after {took:?}");
+    assert!(
+        took >= Duration::from_millis(250) && took < Duration::from_secs(3),
+        "a/1 waits for a/0's ack: delivered after {took:?}"
+    );
     engine_shutdown(&state).await;
 }
 

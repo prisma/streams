@@ -82,21 +82,18 @@ impl CommitTransaction<'_> {
                     off += 1;
                     continue;
                 }
-                let prev = cs.leases.get(&off).copied();
-                if let Some(l) = prev {
-                    if l.deadline_ms > now {
-                        off += 1;
-                        continue; // in flight
-                    }
-                    if l.delivery_count >= max_deliveries {
-                        poisoned.push((off, l.lease_gen, l.delivery_count, kh));
-                        blocked.insert(kh);
-                        off += 1;
-                        continue;
-                    }
-                }
                 if blocked.contains(&kh) {
                     off += 1;
+                    continue;
+                }
+                // Open key: every lease of it, `prev` included, has expired.
+                let prev = cs.leases.get(&off).copied();
+                if let Some(l) = prev
+                    && l.delivery_count >= max_deliveries
+                {
+                    poisoned.push((off, l.lease_gen, l.delivery_count, kh));
+                    // The check above skips this offset and the key's later ones.
+                    blocked.insert(kh);
                     continue;
                 }
                 let lease = Lease {
@@ -109,7 +106,7 @@ impl CommitTransaction<'_> {
                     .put(lease_key(&hash, &consumer, cgen, off), encode_lease(&lease));
                 self.extra_writes = true;
                 cs.leases.insert(off, lease);
-                blocked.insert(kh);
+                // The key stays open to this Receive: its run continues.
                 leased.push((off, lease.lease_gen, lease.delivery_count, kh));
                 off += 1;
             }
@@ -131,3 +128,5 @@ impl CommitTransaction<'_> {
         self.effects.queue_acks.push((resp, Ok(out)));
     }
 }
+#[cfg(test)]
+mod run_lease_tests;
