@@ -1,7 +1,8 @@
 //! Page-local key material: one page cipher per (key version, routing key)
-//! lane of the segment a read serves, at most 64 expanded schedules.
+//! lane of the segment a read serves, at most 64 expanded schedules, and
+//! one page decoder for every compressed page the read opens.
 use crate::crypto::{StreamKey, derive_subkey};
-use crate::crypto_page::{CheckedPage, OpenedPage, PageCipher};
+use crate::crypto_page::{CheckedPage, OpenedPage, PageCipher, PageDecoder};
 use std::collections::HashMap;
 const MAX_CIPHERS: usize = 64;
 pub(super) struct ReadKeys<'a> {
@@ -12,6 +13,7 @@ pub(super) struct ReadKeys<'a> {
     // and physical segment are data lanes, never unqualified stream identities.
     pages: HashMap<u32, HashMap<String, PageCipher>>,
     pages_cached: usize,
+    decoder: PageDecoder,
 }
 impl<'a> ReadKeys<'a> {
     pub(super) fn new(key: &'a StreamKey, epoch: &'a [u8; 16], segment: [u8; 16]) -> Self {
@@ -21,6 +23,7 @@ impl<'a> ReadKeys<'a> {
             segment,
             pages: HashMap::new(),
             pages_cached: 0,
+            decoder: PageDecoder::default(),
         }
     }
     /// Open an admitted page of this segment under its lane's page key. The
@@ -36,11 +39,11 @@ impl<'a> ReadKeys<'a> {
         };
         let lanes = self.pages.entry(page.key_version()).or_default();
         if let Some(cipher) = lanes.get(page.routing_key()) {
-            return cipher.open(page).map_err(refused);
+            return cipher.open_with(page, &mut self.decoder).map_err(refused);
         }
         let subkey = derive_subkey(self.key, self.epoch, page.routing_key(), page.key_version());
         let cipher = PageCipher::new(&subkey, &self.segment);
-        let opened = cipher.open(page).map_err(refused);
+        let opened = cipher.open_with(page, &mut self.decoder).map_err(refused);
         if self.pages_cached < MAX_CIPHERS {
             self.pages_cached += 1;
             lanes.insert(page.routing_key().to_owned(), cipher);

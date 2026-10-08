@@ -1,42 +1,95 @@
 //! Opening: authenticate the whole page, decompress it within its cap, parse
 //! its tables exactly, and only then hand out records with their offsets and
 //! timestamps.
-
-use std::io::Read;
+//!
+//! A compressed body is decoded in one pass into a buffer of exactly the
+//! size its zstd frame declares, which must be at most the page's cap: no
+//! window or streaming buffer is allocated, and a frame cannot inflate past
+//! its buffer. Only the frame the writer makes opens: one zstd frame with a
+//! content size, no checksum and no dictionary, of a body the writer would
+//! have compressed (at least PAGE_COMPRESS_MIN_BYTES, and shrunk).
 
 use aes_gcm_siv::Nonce;
 use aes_gcm_siv::aead::{Aead, Payload};
+use zstd::zstd_safe;
 
 use super::body::{PageTable, RecordSpan, parse_body};
-use super::{CheckedPage, OpenError, PageCipher, body_cap};
+use super::{CheckedPage, OpenError, PAGE_COMPRESS_MIN_BYTES, PageCipher, body_cap};
 
-/// zstd window limit: the 32 MiB record cap's, as stored frames use.
-const WINDOW_LOG_MAX: u32 = 25;
+/// The frame header descriptor bits the writer never sets: a dictionary id
+/// (bits 0 and 1), the content checksum (bit 2) and the reserved bit 3.
+const UNWRITTEN_DESCRIPTOR_BITS: u8 = 0b0000_1111;
 
-/// Decompress at most `cap` body bytes. Reading stops at cap + 1, so an
-/// oversized body is refused without being materialised.
-fn decompress(compressed: &[u8], cap: usize) -> Result<Vec<u8>, OpenError> {
-    let mut decoder =
-        zstd::stream::read::Decoder::new(compressed).map_err(|_| OpenError::Decompression)?;
-    decoder
-        .window_log_max(WINDOW_LOG_MAX)
-        .map_err(|_| OpenError::Decompression)?;
-    let mut body = Vec::new();
-    decoder
-        .take((cap as u64).saturating_add(1))
-        .read_to_end(&mut body)
-        .map_err(|_| OpenError::Decompression)?;
-    if body.len() > cap {
-        return Err(OpenError::BodyTooLarge);
+/// What opening pages reuses: the zstd context of the compressed pages one
+/// read opens, made at the first of them.
+#[derive(Default)]
+pub(crate) struct PageDecoder {
+    zstd: Option<zstd::bulk::Decompressor<'static>>,
+}
+
+impl PageDecoder {
+    /// Decompress the authenticated message of a compressed page whose body
+    /// holds at most `cap` bytes.
+    fn decompress(&mut self, message: &[u8], cap: usize) -> Result<Vec<u8>, OpenError> {
+        let size = declared_size(message)?;
+        if size > cap {
+            return Err(OpenError::BodyTooLarge);
+        }
+        if size < PAGE_COMPRESS_MIN_BYTES || message.len() >= size {
+            return Err(OpenError::StoredRaw);
+        }
+        let zstd = match &mut self.zstd {
+            Some(zstd) => zstd,
+            None => self
+                .zstd
+                .insert(zstd::bulk::Decompressor::new().map_err(|_| OpenError::Decompression)?),
+        };
+        let mut body = Vec::with_capacity(size);
+        let written = zstd
+            .decompress_to_buffer(message, &mut body)
+            .map_err(|_| OpenError::Decompression)?;
+        if written != size {
+            return Err(OpenError::Decompression);
+        }
+        Ok(body)
     }
-    Ok(body)
+}
+
+/// The body size the message's one zstd frame declares. The message must be
+/// exactly one standard frame (no skippable frame, nothing after it) whose
+/// descriptor carries a content size and nothing the writer never writes.
+fn declared_size(message: &[u8]) -> Result<usize, OpenError> {
+    let [0x28, 0xb5, 0x2f, 0xfd, descriptor, ..] = *message else {
+        return Err(OpenError::Decompression);
+    };
+    if descriptor & UNWRITTEN_DESCRIPTOR_BITS != 0
+        || zstd_safe::find_frame_compressed_size(message) != Ok(message.len())
+    {
+        return Err(OpenError::Decompression);
+    }
+    match zstd_safe::get_frame_content_size(message) {
+        Ok(Some(size)) => usize::try_from(size).map_err(|_| OpenError::BodyTooLarge),
+        _ => Err(OpenError::Decompression),
+    }
 }
 
 impl PageCipher {
-    /// Open an admitted page of this cipher's lane. Every record is returned
-    /// or none: authentication, decompression and the exact body parse all
-    /// succeed before any record is visible.
+    /// Open an admitted page of this cipher's lane with a decoder of its
+    /// own. Every record is returned or none.
+    #[cfg(test)]
     pub(crate) fn open(&self, page: &CheckedPage) -> Result<OpenedPage, OpenError> {
+        self.open_with(page, &mut PageDecoder::default())
+    }
+
+    /// Open an admitted page of this cipher's lane, decompressing with
+    /// `decoder`. Every record is returned or none: authentication,
+    /// decompression and the exact body parse all succeed before any record
+    /// is visible.
+    pub(crate) fn open_with(
+        &self,
+        page: &CheckedPage,
+        decoder: &mut PageDecoder,
+    ) -> Result<OpenedPage, OpenError> {
         let payload = Payload {
             msg: page.sealed_bytes(),
             aad: &self.aad(page.header_bytes()),
@@ -48,7 +101,7 @@ impl PageCipher {
         // A raw body is bounded by admission: its ciphertext is at most the
         // cap plus the tag.
         let body = if page.is_compressed() {
-            decompress(&plain, body_cap(page.count()))?
+            decoder.decompress(&plain, body_cap(page.count()))?
         } else {
             plain
         };
@@ -86,6 +139,12 @@ impl OpenedPage {
     #[cfg(test)]
     pub(crate) fn body_len(&self) -> usize {
         self.body.len()
+    }
+
+    /// The bytes the body's buffer holds.
+    #[cfg(test)]
+    pub(crate) fn body_capacity(&self) -> usize {
+        self.body.capacity()
     }
 
     /// The records in offset order, from `first` through `last`.

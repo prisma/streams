@@ -28,7 +28,7 @@ fn opened(cipher: &PageCipher, raw: Vec<u8>, last: u64) -> Result<Vec<(u64, i64)
 
 /// An authentic page of `count` records from offset 0 whose message (the
 /// body, compressed when `ver` is 7) is exactly `message`.
-fn authentic(ver: u8, count: usize, ts_ms: i64, message: &[u8]) -> CheckedPage {
+pub(super) fn authentic(ver: u8, count: usize, ts_ms: i64, message: &[u8]) -> CheckedPage {
     let lane = lane();
     let fields = HeaderFields {
         ver,
@@ -236,23 +236,25 @@ fn a_compressed_body_opens_at_exactly_its_cap_and_not_one_byte_past() {
     assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
 }
 
+/// A frame that declares no content size cannot open, however small it is
+/// stored: 1 GiB of zeros in 32 KiB is refused from its frame header,
+/// before one byte is inflated (the decoder sizes its one buffer from the
+/// declared size; `decode_tests` covers a declared size past the cap).
 #[test]
-fn a_decompression_bomb_is_cut_at_the_cap_without_inflating_it() {
+fn a_decompression_bomb_is_refused_from_its_frame_header() {
     let two_blocks = zstd::stream::decode_all(rle_bomb(2).as_slice()).unwrap();
     assert_eq!(
         two_blocks,
         vec![0; 256 << 10],
         "the bomb is a valid zstd frame"
     );
-    // 1 GiB of zeros in 32 KiB: admitted, and refused after cap + 1 bytes.
     let gib = rle_bomb(8192);
     assert_eq!(gib.len(), 6 + 8192 * 4);
     let page = authentic(PAGE_VER_Z, 2, TS, &gib);
-    assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
-    // A single-record page stops at the record cap's body, not 64 MiB.
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::Decompression));
     let page = authentic(PAGE_VER_Z, 1, TS, &rle_bomb(512));
     assert_eq!(body_cap(1), (32 << 20) + 5);
-    assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::Decompression));
 }
 
 /// Decrypted plaintext has no `{:?}` form: neither an opened page nor one

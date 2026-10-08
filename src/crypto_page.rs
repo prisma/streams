@@ -45,7 +45,7 @@ mod open;
 mod seal;
 
 pub(crate) use header::CheckedPage;
-pub(crate) use open::OpenedPage;
+pub(crate) use open::{OpenedPage, PageDecoder};
 
 /// Version byte of a page whose body is stored raw.
 pub(crate) const PAGE_VER: u8 = 6;
@@ -226,7 +226,13 @@ pub(crate) enum PageCorruption {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OpenError {
     Authentication,
+    /// The compressed body is not the one zstd frame the writer makes: it
+    /// declares no content size, carries a checksum or dictionary, is
+    /// followed or preceded by more bytes, or does not decode to its size.
     Decompression,
+    /// The writer stores this body raw: it is under PAGE_COMPRESS_MIN_BYTES
+    /// or zstd did not shrink it.
+    StoredRaw,
     BodyTooLarge,
     Body(BodyError),
 }
@@ -292,6 +298,9 @@ mod tamper_tests;
 
 #[cfg(test)]
 mod golden_tests;
+
+#[cfg(test)]
+mod decode_tests;
 
 #[cfg(test)]
 mod properties;
