@@ -45,11 +45,21 @@ fn hist_scan_opts() -> ScanOptions {
 /// One forward scan over a stream incarnation's history pages, yielding
 /// each page that holds a record of the window `[from, to)`, clipped to it,
 /// in offset order. It ends at the first page that starts at or after `to`.
+///
+/// Every window a read scans lies below the absorbed boundary, where the
+/// pages tile the offsets: each offset is in exactly one page. Admission
+/// checks one page against its own key only, so the scan checks the set:
+/// each page it meets, another routing key's included, must start at the
+/// offset after the last one (the first at `from`), and the pages must
+/// reach `to`. An overlap would serve offsets twice and a lost page would
+/// pass its records off as consumed progress; both fail the read.
 pub(super) struct PageScan {
     rows: Option<slatedb::DbIterator>,
     prefix: [u8; 33],
     from: u64,
     to: u64,
+    /// The offset the next page met must serve first.
+    due: u64,
 }
 
 impl PageScan {
@@ -77,27 +87,59 @@ impl PageScan {
             prefix: history_page_prefix(route, inc),
             from,
             to,
+            due: from,
         })
     }
 
     /// The next page holding a record of the window, clipped to it; None
     /// once the scan meets a page past the window or runs out of rows. A row
-    /// that fails admission against its key fails the read.
+    /// that fails admission against its key fails the read, and so do pages
+    /// that do not tile the window.
     pub(super) async fn next(&mut self) -> anyhow::Result<Option<PageSlice>> {
         let Some(rows) = self.rows.as_mut() else {
             return Ok(None);
         };
-        let Some(row) = rows.next().await? else {
+        let slice = match rows.next().await? {
+            Some(row) => {
+                let page = CheckedPage::from_row(&row.key, &self.prefix, row.value)
+                    .map_err(RecordCorruption::Page)?;
+                PageSlice::clip(page, self.from, self.to)
+            }
+            None => None,
+        };
+        let Some(slice) = slice else {
             self.rows = None;
+            self.reached_end()?;
             return Ok(None);
         };
-        let page = CheckedPage::from_row(&row.key, &self.prefix, row.value)
-            .map_err(RecordCorruption::Page)?;
-        let slice = PageSlice::clip(page, self.from, self.to);
-        if slice.is_none() {
-            self.rows = None;
+        Ok(Some(self.follow(slice)?))
+    }
+
+    /// `slice` if it serves first the offset due, which it then moves past.
+    fn follow(&mut self, slice: PageSlice) -> Result<PageSlice, RecordCorruption> {
+        if slice.first() != self.due {
+            let page = slice.page();
+            return Err(RecordCorruption::Misplaced {
+                due: self.due,
+                first: page.first(),
+                last: page.last(),
+            });
         }
+        // A slice ends before `to`, so the offset after it never saturates.
+        self.due = slice.last().saturating_add(1);
         Ok(slice)
+    }
+
+    /// Whether the pages the scan met reached the window's end.
+    fn reached_end(&self) -> Result<(), RecordCorruption> {
+        if self.due == self.to {
+            Ok(())
+        } else {
+            Err(RecordCorruption::Missing {
+                due: self.due,
+                to: self.to,
+            })
+        }
     }
 
     /// Every page of the window, or only those of `key_filter`'s routing key,

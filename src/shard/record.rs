@@ -24,6 +24,14 @@ const PAGE_SPAN: u64 = PAGE_MAX_RECORDS as u64;
 pub(crate) enum RecordCorruption {
     /// A stored page failed admission against its row key.
     Page(PageCorruption),
+    /// A read met the page `[first, last]` where offset `due` was due: the
+    /// pages below the absorbed boundary tile the offsets, so a page that
+    /// starts before `due` overlaps the one before it and a page that
+    /// starts after it follows a lost page.
+    Misplaced { due: u64, first: u64, last: u64 },
+    /// A read's pages ended at offset `due`, short of its window's end `to`:
+    /// the pages that held `[due, to)` were lost.
+    Missing { due: u64, to: u64 },
 }
 impl std::fmt::Display for RecordCorruption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

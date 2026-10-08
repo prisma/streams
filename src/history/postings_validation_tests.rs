@@ -18,6 +18,32 @@ fn stored_page(inc: SegmentHash, offset: u64, payload: &[u8]) -> Vec<u8> {
     page.bytes
 }
 
+/// Store pages of another key's records around the "wanted" page at
+/// `offset`, so the history pages tile `[from, upto)` as every absorbed
+/// offset is in exactly one page.
+async fn fill_around(db: &Db, route: RouteHash, inc: SegmentHash, window: (u64, u64), offset: u64) {
+    let lane = PageLane {
+        ts_ms: 1,
+        key_version: 0,
+        routing_key: "other",
+    };
+    let cipher = PageCipher::new(&[7; 32], &inc.0);
+    let mut batch = slatedb::WriteBatch::new();
+    for (first, end) in [(window.0, offset), (offset + 1, window.1)] {
+        if first < end {
+            let records: Vec<Vec<u8>> = (first..end).map(|_| b"other".to_vec()).collect();
+            let page = cipher.seal(&lane, first, &records).unwrap();
+            batch.put(history_page_key(route, inc, page.last), page.bytes);
+        }
+    }
+    db.write(batch)
+        .await
+        .unwrap()
+        .await_durable()
+        .await
+        .unwrap();
+}
+
 fn page(first: u64, count: u32, bytes: u64) -> Vec<u8> {
     encode_page(
         first,
@@ -60,6 +86,7 @@ async fn assert_canonical(
         .await_durable()
         .await
         .unwrap();
+    fill_around(&db, route, inc, (from, upto), offset).await;
     for (first, value) in entries {
         db.put(
             postings_key(route, inc, &kh, crate::postings::bucket_of(first), first),
@@ -269,6 +296,7 @@ async fn o4a_stored_key_width_rejection_is_not_empty_progress() {
         .await_durable()
         .await
         .unwrap();
+    fill_around(&db, route, inc, (0, 512), 256).await;
     let mut key = postings_key(route, inc, &kh, 0, 256);
     key.pop();
     db.put(key, page(256, 1, 1))

@@ -113,13 +113,11 @@ async fn a_history_read_starts_and_ends_inside_pages() {
     assert_eq!((runs(&pages), last), (vec![(10, 19)], Some(19)));
     let (pages, _, _) = read(0, 1).await.unwrap();
     assert_eq!(runs(&pages), [(0, 0)]);
-    let (pages, last, completed) = read(24, 40).await.unwrap();
+    let (pages, last, completed) = read(24, 25).await.unwrap();
     assert_eq!(
         (runs(&pages), last, completed),
         (vec![(24, 24)], Some(24), true)
     );
-    let (pages, last, completed) = read(25, 40).await.unwrap();
-    assert_eq!((runs(&pages), last, completed), (vec![], None, true));
 }
 
 /// A page of 4,096 records is keyed by its last offset, 4,095 past its
@@ -249,7 +247,9 @@ async fn a_keyed_history_read_skips_other_keys_pages_as_progress() {
 /// History pages ('g') and postings pages ('p') share an incarnation's
 /// namespace: a page scan never returns or trips over a postings row, even
 /// when its bound saturates at the end of the offset space, and a postings
-/// scan never meets a page row.
+/// scan never meets a page row. The scan meets the three pages and then
+/// refuses only because they end at 25, short of the window: a postings
+/// row would have failed admission instead.
 #[tokio::test]
 async fn history_pages_and_postings_rows_never_meet() {
     let db = three_pages("history-postings").await;
@@ -257,14 +257,20 @@ async fn history_pages_and_postings_rows_never_meet() {
         .await
         .unwrap();
     let mut seen = Vec::new();
-    while let Some(slice) = scan.next().await.unwrap() {
-        seen.push((slice.first(), slice.last()));
-    }
+    let end = loop {
+        match scan.next().await {
+            Ok(Some(slice)) => seen.push((slice.first(), slice.last())),
+            other => break other.map(|_| ()).map_err(|error| error.to_string()),
+        }
+    };
     assert_eq!(seen, [(0, 9), (10, 19), (20, 24)]);
-    let (pages, last, completed) = read_history2(&db, ROUTE, INC, 0, u64::MAX, None, 1 << 20)
-        .await
-        .unwrap();
-    assert_eq!((pages.len(), last, completed), (25, Some(24), true));
+    let missing = format!(
+        "stored record corruption: Missing {{ due: 25, to: {} }}",
+        u64::MAX
+    );
+    assert_eq!(end, Err(missing.clone()));
+    let read = read_history2(&db, ROUTE, INC, 0, u64::MAX, None, 1 << 20).await;
+    assert_eq!(shown(&read), missing);
     let kh = rk_hash("");
     let (lo, hi) = postings_range(ROUTE, INC, &kh, 0, u64::MAX);
     let mut postings = db.scan(lo..hi).await.unwrap();
@@ -515,5 +521,204 @@ async fn a_keyed_history_read_never_opens_another_keys_page() {
     let refused = read_from(&engine, hash, 0, None).await.unwrap_err();
     assert!(refused.contains("did not open"), "{refused}");
     assert!(read_from(&engine, hash, 0, Some("b")).await.is_err());
+    engine.begin_close();
+}
+
+/// Store `pages` under their history keys alone, without postings notes.
+async fn store_rows(db: &Db, pages: &[SealedPage]) {
+    let mut batch = WriteBatch::new();
+    for page in pages {
+        batch.put(history_page_key(ROUTE, INC, page.last), page.bytes.clone());
+    }
+    db.write(batch)
+        .await
+        .unwrap()
+        .await_durable()
+        .await
+        .unwrap();
+}
+
+/// A history read's answer in a shape a test compares exactly: the runs it
+/// served, its consumed progress and whether it completed, or its refusal.
+fn shown(read: &anyhow::Result<(PageSlices, Option<u64>, bool)>) -> String {
+    match read {
+        Ok((pages, last, completed)) => {
+            format!(
+                "runs {:?}, last {last:?}, completed {completed}",
+                runs(pages)
+            )
+        }
+        Err(error) => error.to_string(),
+    }
+}
+
+/// Every absorbed offset of an incarnation is in exactly one history page,
+/// but each page is admitted against its own last offset only: two
+/// authentic pages that overlap, [0, 9] under key 9 and [5, 14] under key
+/// 14, both pass admission. The read refuses the second rather than serve
+/// offsets 5..=9 twice, from 0 and from inside the overlap, and also when
+/// the first page alone covers the window, since both pages claim its
+/// records.
+#[tokio::test]
+async fn an_unfiltered_history_read_refuses_overlapping_pages() {
+    let db = partition("history-overlap").await;
+    store_rows(&db, &[page("", 0, 10), page("", 5, 10)]).await;
+    let read = |from, to| read_history2(&db, ROUTE, INC, from, to, None, 1 << 20);
+    let overlap = "stored record corruption: Misplaced { due: 10, first: 5, last: 14 }";
+    assert_eq!(shown(&read(0, 15).await), overlap);
+    assert_eq!(shown(&read(7, 15).await), overlap);
+    assert_eq!(
+        shown(&read(0, 8).await),
+        "stored record corruption: Misplaced { due: 8, first: 5, last: 14 }"
+    );
+}
+
+/// One lost row hides a whole page of records, here [10, 19]. A read never
+/// consumes them as progress: a window across the hole and a window inside
+/// it (which meets only the page after it) both refuse, and so does a
+/// window past the history's last page, whose row is lost the same way.
+/// The windows the surviving pages cover are still served.
+#[tokio::test]
+async fn an_unfiltered_history_read_refuses_a_missing_page() {
+    let db = partition("history-hole").await;
+    store(&db, &[("", page("", 0, 10)), ("", page("", 20, 5))]).await;
+    let read = |from, to| read_history2_scan(&db, ROUTE, INC, from, to, 1 << 20);
+    assert_eq!(
+        shown(&read(0, 25).await),
+        "stored record corruption: Misplaced { due: 10, first: 20, last: 24 }"
+    );
+    assert_eq!(
+        shown(&read(12, 15).await),
+        "stored record corruption: Missing { due: 12, to: 15 }"
+    );
+    assert_eq!(
+        shown(&read(22, 30).await),
+        "stored record corruption: Missing { due: 25, to: 30 }"
+    );
+    assert_eq!(
+        shown(&read(3, 10).await),
+        "runs [(3, 9)], last Some(9), completed true"
+    );
+    assert_eq!(
+        shown(&read(20, 25).await),
+        "runs [(20, 24)], last Some(24), completed true"
+    );
+}
+
+/// A keyed read inspects every page of its window, its own key's and the
+/// others', and holds them all to the same rule: another key's page that
+/// overlaps (b [3, 9] beside a [0, 4]) or was lost (b [5, 9]) is refused by
+/// the envelope scan and by a postings span alike, never skipped as
+/// match-free progress; a span whose last pages were lost ends short.
+#[tokio::test]
+async fn a_keyed_history_read_refuses_pages_that_do_not_follow_each_other() {
+    use super::super::canonical_span;
+    let overlap = partition("history-keyed-overlap").await;
+    store_rows(
+        &overlap,
+        &[page("a", 0, 5), page("b", 3, 7), page("a", 10, 5)],
+    )
+    .await;
+    let hole = partition("history-keyed-hole").await;
+    store_rows(&hole, &[page("a", 0, 5), page("a", 10, 5)]).await;
+    let spanned = |db, end| async move {
+        let span = crate::postings::Span {
+            start: 0,
+            end,
+            matching_bytes: 1,
+            scan_bytes: 1,
+        };
+        match canonical_span::read(db, ROUTE, INC, "a", span, 1 << 20).await {
+            Ok(page) => format!("hits {}, last {:?}", page.hits.len(), page.last),
+            Err(error) => error.to_string(),
+        }
+    };
+    for (db, refusal) in [
+        (&overlap, "Misplaced { due: 5, first: 3, last: 9 }"),
+        (&hole, "Misplaced { due: 5, first: 10, last: 14 }"),
+    ] {
+        let expected = format!("stored record corruption: {refusal}");
+        let envelope = read_history2_keyed_envelope(db, ROUTE, INC, "a", 0, 15, 1 << 20).await;
+        assert_eq!(shown(&envelope), expected, "envelope");
+        assert_eq!(spanned(db, 15).await, expected, "postings span");
+    }
+    assert_eq!(
+        spanned(&hole, 8).await,
+        "stored record corruption: Missing { due: 5, to: 8 }"
+    );
+    assert_eq!(spanned(&hole, 5).await, "hits 1, last Some(4)");
+}
+
+/// Three requests of 10, 10 and 5 records, absorbed: history holds pages
+/// [0, 9], [10, 19] and [20, 24].
+async fn absorbed_three_requests(engine: &ShardEngine, absorber: &Absorber, hash: [u8; 16]) {
+    for (first, count) in [(0, 10), (10, 10), (20, 5)] {
+        let records: Vec<_> = (first..first + count).map(|o| payload("", o)).collect();
+        assert_eq!(append(engine, hash, "", &records).await, first + count - 1);
+    }
+    assert_eq!(absorb_once(engine, absorber, hash).await, 25);
+}
+
+/// End to end on the real engine and absorber: beside the absorbed pages
+/// [0, 9], [10, 19] and [20, 24] sits an authentic page of the stream's own
+/// lane covering [5, 14] (a row restored from another copy, or a writer
+/// bug). No merged read serves an offset twice: unfiltered and keyed, from
+/// 0 and from inside the overlap, each refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merged_read_refuses_an_overlapping_history_page() {
+    let (engine, absorber, _store) = rig("history-merged-overlap").await;
+    let hash = [0x64; 16];
+    absorbed_three_requests(&engine, &absorber, hash).await;
+    let subkey = crate::crypto::derive_subkey(&KEY, &hash, "", 0);
+    let lane = PageLane {
+        ts_ms: 1,
+        key_version: 0,
+        routing_key: "",
+    };
+    let records: Vec<_> = (5..15).map(|o| payload("", o)).collect();
+    let planted = PageCipher::new(&subkey, &hash)
+        .seal(&lane, 5, &records)
+        .unwrap();
+    let part = engine.history_partition().await.unwrap();
+    let key = history_page_key(RouteHash(hash), SegmentHash(hash), planted.last);
+    part.put(&key, planted.bytes).await.unwrap();
+    let overlap = "stored record corruption: Misplaced { due: 10, first: 5, last: 14 }";
+    for (from, selector) in [(0, None), (0, Some("")), (7, None), (7, Some(""))] {
+        assert_eq!(
+            read_from(&engine, hash, from, selector).await,
+            Err(overlap.to_string()),
+            "from {from}, selector {selector:?}"
+        );
+    }
+    engine.begin_close();
+}
+
+/// End to end: the history row of page [10, 19] is lost. A merged read
+/// never serves [20, 24] as what follows 0..=9 or 12 (the client's next
+/// cursor would be 25, skipping the lost records for good): unfiltered and
+/// keyed, from before and from inside the lost page, each refuses. The
+/// surviving page still reads from 20.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merged_read_refuses_a_lost_history_page() {
+    let (engine, absorber, _store) = rig("history-merged-hole").await;
+    let hash = [0x65; 16];
+    absorbed_three_requests(&engine, &absorber, hash).await;
+    let part = engine.history_partition().await.unwrap();
+    let key = history_page_key(RouteHash(hash), SegmentHash(hash), 19);
+    part.delete(&key).await.unwrap();
+    for (from, due) in [(0, 10), (12, 12)] {
+        let refusal =
+            format!("stored record corruption: Misplaced {{ due: {due}, first: 20, last: 24 }}");
+        for selector in [None, Some("")] {
+            assert_eq!(
+                read_from(&engine, hash, from, selector).await,
+                Err(refusal.clone()),
+                "from {from}, selector {selector:?}"
+            );
+        }
+    }
+    let tail: Vec<_> = (20..25).map(|o| (o, payload("", o))).collect();
+    assert_eq!(read_from(&engine, hash, 20, None).await, Ok(tail.clone()));
+    assert_eq!(read_from(&engine, hash, 20, Some("")).await, Ok(tail));
     engine.begin_close();
 }
