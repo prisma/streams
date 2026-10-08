@@ -174,9 +174,13 @@ class MutationOwnership(unittest.TestCase):
         minutes = mutation_owners.night_minutes
         self.assertEqual(minutes(service, 0), 0)
         self.assertEqual(minutes(service, 1), 6 + 2.5)
-        self.assertEqual(minutes(service, 9), 6 + 3 * 2.5)
-        self.assertEqual(minutes(service, 9, parts=2), 6 + 2 * 2.5)
-        self.assertEqual(minutes(harness, 9), 1 + 3 * 0.25)
+        self.assertEqual(minutes(service, 9, jobs=4), 6 + 3 * 2.5)
+        self.assertEqual(minutes(service, 9, parts=2, jobs=4), 6 + 2 * 2.5)
+        self.assertEqual(minutes(harness, 9, jobs=4), 1 + 3 * 0.25)
+        # The job's default width, eight runners: 17 mutants are 3 on runner 0.
+        self.assertEqual(mutation_owners.SCHEDULE_JOBS, 8)
+        self.assertEqual(minutes(service, 17), 6 + 3 * 2.5)
+        self.assertEqual(minutes(service, 17, parts=2), 6 + 2 * 2.5)
 
     def test_an_owner_too_large_for_one_night_is_dealt_over_several_nights(self):
         big = MutationOwner('big', ('src/big.rs',), ('big::',))
@@ -184,22 +188,24 @@ class MutationOwnership(unittest.TestCase):
                       for index in range(6))
         idle = MutationOwner('idle', ('src/idle.rs',), ('idle::',))
         owners = (big, *small, idle)
-        sizes = {'big': 400, 'idle': 0, **{entry.name: 100 for entry in small}}
+        sizes = {'big': 1000, 'idle': 0, **{entry.name: 100 for entry in small}}
         groups = mutation_owners.schedule_groups(owners, sizes)
         self.assertEqual(groups, mutation_owners.schedule_groups(owners, dict(reversed(sizes.items()))))
         placed = [(index, share.owner.name, share.part, share.parts)
                   for index, group in enumerate(groups) for share in group]
         big_parts = [row for row in placed if row[1] == 'big']
-        # 400 mutants are 100 per runner, 6 + 100 x 2.5 = 256 minutes: two parts of 131.
+        # 1,000 mutants are 125 per runner of eight, 6 + 125 x 2.5 = 318.5 minutes,
+        # over the 270-minute night: two parts of 6 + 63 x 2.5 = 163.5.
         self.assertEqual(sorted(row[2:] for row in big_parts), [(0, 2), (1, 2)])
         self.assertEqual(len({row[0] for row in big_parts}), 2)
         self.assertCountEqual([row[1] for row in placed if row[1] != 'big'],
                               [entry.name for entry in (*small, idle)])
         for group in groups:
-            self.assertLessEqual(sum(share.minutes for share in group), 180)
+            self.assertLessEqual(sum(share.minutes for share in group),
+                                 mutation_owners.SCHEDULE_CAP_MINUTES)
             self.assertEqual([share.owner for share in group],
                              [entry for entry in owners if entry in {s.owner for s in group}])
-        self.assertEqual(len(groups), 5)  # 2 x 131 + 6 x 68.5 = 673 minutes: at least 4.
+        self.assertEqual(len(groups), 3)  # 2 x 163.5 + 6 x 38.5 = 558 minutes: at least 3.
 
     def test_table_names_and_sources_are_unique(self):
         self.assertEqual(len({entry.name for entry in OWNERS}), len(OWNERS))

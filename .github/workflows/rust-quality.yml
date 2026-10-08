@@ -92,17 +92,20 @@ jobs:
         run: scripts/quality/nightly.sh miri
   mutants:
     runs-on: ubuntu-latest
-    # The mutation leg, dealt over four jobs: each lists and tests every
-    # fourth mutant of every selected owner (round-robin, cargo-mutants
+    # The mutation leg, dealt over eight jobs: each lists and tests every
+    # eighth mutant of every selected owner (round-robin, cargo-mutants
     # --shard), so together they test the same selection with the same
     # tests and timeouts, each mutant once. As one job inside
     # invariant-tools it exceeded that job's 240 min on a push across the
-    # fleet owners (f780ad64: about 120 mutants, cancelled at 4 h).
-    timeout-minutes: 240
+    # fleet owners (f780ad64: about 120 mutants, cancelled at 4 h); four
+    # jobs of 240 min could not finish a push selecting 681-919 mutants
+    # (owner decision of 2026-10-08: eight jobs of 360 min, GitHub's hosted
+    # maximum).
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,7 +142,7 @@ jobs:
         # Same mutants, tests and timeouts; only the rebuild is incremental.
         env:
           CARGO_INCREMENTAL: "1"
-          QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/4
+          QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/8
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-latest

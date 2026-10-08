@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+import mutation_owners
 import verification_plan
 from common import ROOT, syntax
 from mutation_owners import MutationOwner, OWNERS, validate_plan
@@ -137,20 +138,25 @@ class Triggers(unittest.TestCase):
         self.assertEqual(declared.count(('scaler', 0, 1)), 1)
 
     def test_a_scheduled_receipt_cannot_change_a_split_owners_share_or_the_group_count(self):
-        groups = plan_schedule(0)['schedule_groups']
-        checks = next(plan_schedule(slot) for slot in range(groups)
-                      if plan_schedule(slot)['scheduled_owner_shares'])
-        name, (part, parts) = next(iter(checks['scheduled_owner_shares'].items()))
-        self.assertEqual([owner.name for owner in validate_plan(checks)],
-                         checks['selected_mutation_owners'])
-        for field, value in (('scheduled_owner_shares', {}),
-                             ('scheduled_owner_shares', {name: [part, parts + 1]}),
-                             ('scheduled_owner_shares', {name: [(part + 1) % parts, parts]}),
-                             ('schedule_groups', groups + 1),
-                             ('schedule_slot', checks['schedule_slot'] + groups)):
-            with self.subTest(field=field, value=value):
-                with self.assertRaisesRegex(ValueError, 'selection receipt disagrees'):
-                    validate_plan({**checks, field: value})
+        # No measured owner is too large for one night of eight runners, so
+        # billing is made one: 2,000 mutants take three parts.
+        sizes = {**mutation_owners.owner_sizes(), 'billing': 2000}
+        with patch.object(mutation_owners, 'owner_sizes', lambda owners=OWNERS: sizes):
+            groups = plan_schedule(0)['schedule_groups']
+            checks = next(plan_schedule(slot) for slot in range(groups)
+                          if plan_schedule(slot)['scheduled_owner_shares'])
+            name, (part, parts) = next(iter(checks['scheduled_owner_shares'].items()))
+            self.assertEqual((name, parts), ('billing', 3))
+            self.assertEqual([owner.name for owner in validate_plan(checks)],
+                             checks['selected_mutation_owners'])
+            for field, value in (('scheduled_owner_shares', {}),
+                                 ('scheduled_owner_shares', {name: [part, parts + 1]}),
+                                 ('scheduled_owner_shares', {name: [(part + 1) % parts, parts]}),
+                                 ('schedule_groups', groups + 1),
+                                 ('schedule_slot', checks['schedule_slot'] + groups)):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, 'selection receipt disagrees'):
+                        validate_plan({**checks, field: value})
 
     def test_deleted_critical_source_is_disposed_not_mutated(self):
         path = 'src/shard/old_owner.rs'

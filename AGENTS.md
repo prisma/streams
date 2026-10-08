@@ -282,12 +282,12 @@ export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
 scripts/quality/mutations.sh    # zero MISSED and TIMEOUT; ~1 min per mutant locally
 ```
 
-CI deals the same leg over the `mutants` job's four matrix jobs
-(`QUALITY_MUTANT_SHARD=k/4`, cargo-mutants `--shard`, round-robin): each
-tests every fourth selected mutant, together each one once. A diff across
-the fleet owners selects about 120 mutants whose tests include the fleet
-DSTs, which one 240 min job could not finish. Locally run it whole, or one
-share with the same variable. The driver stops at the first owner with a
+CI deals the same leg over the `mutants` job's eight matrix jobs of
+360 min (`QUALITY_MUTANT_SHARD=k/8`, cargo-mutants `--shard`,
+round-robin): each tests every eighth selected mutant, together each one
+once. A push selecting more than about 900 mutants does not fit: split it
+into smaller pushes (preflight's `plan.json` lists the selection). Locally
+run it whole, or one share with the same variable. The driver stops at the first owner with a
 survivor: fix it, then re-run for the owners after it.
 
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
@@ -369,8 +369,8 @@ record `docs/quality/pr19-merge-review.md`. Open work, in priority order:
 - `slate` is the default branch (2026-09-28), so the nightly legs run for
   it: the noisy-neighbor campaign (03:17 UTC) and rust-quality's full
   formal run, fuzzing and mutation rotation (03:43 UTC). The rotation
-  deals the owners into 29 groups sized to the 240-minute job (a full cycle
-  is 29 nights), runs every owner of the night's group and fails once at the
+  deals the owners into 12 groups sized to the 360-minute job (a full cycle
+  is 12 nights), runs every owner of the night's group and fails once at the
   end; a new owner needs its size measured (`python3
   scripts/quality/mutation_driver.py --measure-sizes`, NEXT-WORK "Nightly
   mutation rotation").

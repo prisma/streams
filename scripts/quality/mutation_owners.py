@@ -439,10 +439,12 @@ SIZES_COMMAND = 'python3 scripts/quality/mutation_driver.py --measure-sizes'
 # service-crate baseline took 293-348 s (430-543 s for the night's first)
 # and a mutant 1.4-3.4 min, 2.3 on average, nearly all of it the rebuild;
 # the harness crate's baseline under 40 s and its mutants seconds. A group
-# may hold 180 minutes, three quarters of the job's 240: the rest is the
-# runner's setup, the night's first cold build and slower mutants.
-SCHEDULE_JOBS = 4
-SCHEDULE_CAP_MINUTES = 180.0
+# may hold 270 minutes, three quarters of the job's 360: the rest is the
+# runner's setup, the night's first cold build and slower mutants. Eight
+# runners of 360 min since the owner's decision of 2026-10-08 (four of 240
+# before), which deals the owners into 12 nights instead of 29.
+SCHEDULE_JOBS = 8
+SCHEDULE_CAP_MINUTES = 270.0
 NIGHT_MINUTES = {'harness-lib': (1.0, 0.25)}  # target: (baseline, each mutant)
 DEFAULT_NIGHT_MINUTES = (6.0, 2.5)
 

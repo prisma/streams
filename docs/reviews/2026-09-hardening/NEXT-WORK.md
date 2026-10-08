@@ -876,7 +876,10 @@ before marking it complete."
   owner's call: a wider `mutants` matrix (the baseline term does not shrink:
   8 runners model 17 nights, 16 runners 11), building an owner's baseline
   incrementally instead of in a fresh copy of the tree, or a cheaper
-  per-mutant rebuild. Still open: a MISSED backlog with dispositions as the
+  per-mutant rebuild. **Taken on 2026-10-08** (owner decision, phase A Q3a):
+  the `mutants` job is eight runners of 360 min, the cap 270 modeled minutes
+  (three quarters of 360), and the owners deal into 12 nights; a push now
+  fits about 900 selected mutants. Still open: a MISSED backlog with dispositions as the
   groups report, and re-measuring the sizes as owners grow
   (`python3 scripts/quality/mutation_driver.py --measure-sizes`; a new owner
   row needs its count before the unit tests pass).
