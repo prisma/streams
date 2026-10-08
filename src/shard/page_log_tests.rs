@@ -6,7 +6,9 @@ use super::{
     AppendAck, AppendErr, AppendFinish, AppendReq, CommitOp, CopiedBytes, Deliver, ShardConfig,
     ShardEngine, StreamHandle, TailFields, read_frames, read_frames_range,
 };
-use crate::crypto_page::{CheckedPage, PageCipher, SHARD_PAGE_TAG, shard_page_key};
+use crate::crypto_page::{
+    CheckedPage, PageCipher, PageLane, SHARD_PAGE_TAG, shard_page_key, stamped,
+};
 use bytes::Bytes;
 use object_store::ObjectStore;
 use slatedb::Db;
@@ -566,6 +568,79 @@ async fn tail_repair_counts_records_per_page_after_a_restart() {
     assert_eq!(
         refused.to_string(),
         "tail repair found a page [21, 21] where offset 20 was due"
+    );
+    db.close().await.unwrap();
+}
+
+/// Tail repair (R26-4) from an absorbed boundary inside a page: the page
+/// holding the boundary counts whole and the pages after it follow it, so
+/// the repaired gauge is the bytes of [10, 19] and the three pages past it;
+/// an authentic page [11, 20] in place of [20, 20] overlaps the page before
+/// it and fails the open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tail_repair_from_inside_a_page_counts_it_whole_and_refuses_an_overlap() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let engine = engine_on(store.clone(), "pages-repair-inside", 0).await;
+    two_pages(&engine).await;
+    append(&engine, &records(3, 40 << 10)).await.unwrap();
+    let rows = record_rows(&engine).await;
+    let first = rows[0].2.len() as u64;
+    let rest: u64 = rows[1..].iter().map(|(_, _, page)| page.len() as u64).sum();
+    // Absorbed to 12, inside the page [10, 19], which stays unabsorbed.
+    let advance = CommitOp::Absorbed {
+        hash: HASH,
+        upto: 12,
+        bytes: CopiedBytes::new(0, first),
+        v2: true,
+    };
+    engine
+        .commit_group(vec![advance], &ShardConfig::default())
+        .await;
+    let handle = engine.stream_handle(HASH).await.unwrap();
+    let exact = applied(&handle);
+    assert_eq!(
+        (exact.absorbed, exact.next, exact.unabsorbed_bytes),
+        (12, 23, rest)
+    );
+    let gaugeless = super::encode_tail_without_gauge_for_tests(&exact);
+    let mut downgrade = slatedb::WriteBatch::new();
+    downgrade.put(super::tail_key(&HASH), gaugeless.clone());
+    downgrade.delete(super::shard_maint_key());
+    engine.db.write(downgrade).await.unwrap();
+    engine.db.flush().await.unwrap();
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    let db = Db::builder("pages-repair-inside", store)
+        .build()
+        .await
+        .unwrap();
+    let rebuilt = super::load_or_rebuild_maintenance(&db).await.unwrap();
+    assert_eq!(rebuilt.unabsorbed_frame_bytes, rest);
+    let tail = db.get(super::tail_key(&HASH)).await.unwrap().unwrap();
+    let repaired = super::decode_tail_for_tests(&tail).unwrap();
+    assert_eq!(
+        (repaired.absorbed, repaired.next, repaired.unabsorbed_bytes),
+        (12, 23, rest)
+    );
+    let lane = PageLane {
+        key_version: 1,
+        routing_key: LANE,
+    };
+    let overlap = PageCipher::new(&subkey(), &HASH)
+        .seal(&lane, 11, &stamped(1, &records(10, 100)))
+        .unwrap();
+    let mut planted = slatedb::WriteBatch::new();
+    planted.put(super::tail_key(&HASH), gaugeless);
+    planted.delete(super::shard_maint_key());
+    planted.put(shard_page_key(&HASH, overlap.last), overlap.bytes);
+    db.write(planted).await.unwrap();
+    let refused = super::load_or_rebuild_maintenance(&db).await.unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "tail repair found a page [11, 20] where offset 20 was due"
     );
     db.close().await.unwrap();
 }
