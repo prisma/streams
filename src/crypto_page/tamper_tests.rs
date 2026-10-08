@@ -251,7 +251,7 @@ fn a_decompression_bomb_is_cut_at_the_cap_without_inflating_it() {
     assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
     // A single-record page stops at the record cap's body, not 64 MiB.
     let page = authentic(PAGE_VER_Z, 1, TS, &rle_bomb(512));
-    assert_eq!(body_cap(1), (32 << 20) + 14);
+    assert_eq!(body_cap(1), (32 << 20) + 5);
     assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
 }
 
@@ -278,5 +278,27 @@ fn opened_plaintext_has_no_debug_form() {
         printable,
         [true, false, false],
         "[u8, OpenedPage, PageRecord] have a Debug form"
+    );
+}
+
+/// No opened record exceeds the 32 MiB record cap, even in a body its
+/// page's cap would hold: a length past the cap fails the parse.
+#[test]
+fn a_body_never_holds_a_record_over_the_record_cap() {
+    use super::body::parse_body;
+    let over = crate::crypto::MAX_RECORD_PLAINTEXT + 1;
+    let mut body = Vec::new();
+    super::body::put_varint(&mut body, over as u64);
+    body.push(0);
+    body.resize(body.len() + over, 0);
+    assert_eq!(
+        parse_body(&body, 1, TS).err(),
+        Some(BodyError::RecordTooLarge)
+    );
+    body.truncate(body.len() - 1);
+    *body.first_mut().unwrap() -= 1;
+    assert_eq!(
+        parse_body(&body, 1, TS).map(|table| table.records.len()),
+        Ok(1)
     );
 }

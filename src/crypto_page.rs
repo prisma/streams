@@ -69,11 +69,11 @@ pub(crate) const PAGE_TARGET_PLAINTEXT: usize = 64 << 10;
 pub(crate) const PAGE_MAX_RECORDS: usize = 4096;
 /// Bodies below this size are stored raw without a compression attempt.
 const PAGE_COMPRESS_MIN_BYTES: usize = 256;
-/// The table bytes of one record: a length below 2^28 (four varint bytes)
-/// and any timestamp delta (ten).
-const RECORD_TABLE_MAX: usize = 14;
+/// The table bytes of a single-record page: a length of at most the record
+/// cap (four varint bytes) and the first record's zero delta (one).
+const SINGLE_RECORD_TABLE_MAX: usize = 5;
 /// The body cap of a single-record page: one record at the record cap.
-const SINGLE_RECORD_BODY_MAX: usize = MAX_RECORD_PLAINTEXT + RECORD_TABLE_MAX;
+const SINGLE_RECORD_BODY_MAX: usize = MAX_RECORD_PLAINTEXT + SINGLE_RECORD_TABLE_MAX;
 const PAGE_KEY_INFO: &[u8] = b"prisma-streams/page/v6/aes-256-gcm-siv";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
@@ -235,6 +235,8 @@ pub(crate) enum OpenError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BodyError {
     LengthTable,
+    /// A record is longer than the 32 MiB record cap.
+    RecordTooLarge,
     DeltaTable,
     /// The first record's delta is not 0: the header's timestamp is the
     /// first record's.

@@ -255,3 +255,17 @@ fn a_page_may_not_pass_the_last_offset() {
     let one = forged(6, u64::MAX, 1, 16);
     assert_eq!(admit_at(&one, u64::MAX).unwrap().last(), u64::MAX);
 }
+
+/// A single-record page holds one record at the record cap, its four-byte
+/// length and its zero delta: one ciphertext byte more is refused before
+/// any decryption.
+#[test]
+fn a_single_record_page_holds_at_most_the_record_cap_and_its_table() {
+    let most = crate::crypto::MAX_RECORD_PLAINTEXT + 5 + 16;
+    assert_eq!(body_cap(1), crate::crypto::MAX_RECORD_PLAINTEXT + 5);
+    assert!(admit_at(&forged(6, 0, 1, most), 0).is_ok());
+    assert_eq!(
+        admit_at(&forged(6, 0, 1, most + 1), 0),
+        Err(PageCorruption::Oversized)
+    );
+}

@@ -7,7 +7,7 @@
 //! It is a pure function over a byte slice so the Kani harnesses in
 //! `proofs.rs` can check it over symbolic bodies.
 
-use super::{BodyError, SealRecord};
+use super::{BodyError, MAX_RECORD_PLAINTEXT, SealRecord};
 
 /// One record's place in a parsed body: its payload length and timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +110,7 @@ pub(super) fn build_body(records: &[SealRecord<'_>]) -> Option<Vec<u8>> {
 
 /// Parse the body of a page of `count` records whose header timestamp is
 /// `ts_ms`. Ok only when both tables hold exactly `count` minimal varints,
-/// the first delta is 0, every timestamp (the previous record's plus its
+/// no length passes the record cap, the first delta is 0, every timestamp (the previous record's plus its
 /// delta) fits an i64, and the lengths sum to the remaining bytes.
 pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTable, BodyError> {
     let mut input = body;
@@ -121,6 +121,9 @@ pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTa
         let len = get_varint(&mut input)
             .and_then(|len| usize::try_from(len).ok())
             .ok_or(BodyError::LengthTable)?;
+        if len > MAX_RECORD_PLAINTEXT {
+            return Err(BodyError::RecordTooLarge);
+        }
         records.push(RecordSpan { len, ts_ms });
     }
     let mut previous = None;
