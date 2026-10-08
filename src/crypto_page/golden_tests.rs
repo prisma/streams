@@ -1,16 +1,25 @@
 //! Golden vectors: the page key, a raw and a compressed page under a fixed
-//! nonce, and both row keys, pinned as hex. The raw page and the key were
-//! reproduced byte for byte by an independent implementation (OpenSSL's
-//! HKDF and AES-256-GCM-SIV over a header built from the format text).
-//! The compressed vector also pins zstd's level-1 output at the locked
-//! version: a zstd upgrade may change the encode bytes, never the decode.
+//! nonce, a stamped page from a derived key, and both row keys, pinned as
+//! hex. The raw pages and the keys were reproduced byte for byte by an
+//! independent implementation (stdlib HMAC-HKDF and OpenSSL's
+//! AES-256-GCM-SIV over a header and body built from the format text,
+//! analysis/layout5-proto/crosscheck_vectors.py and crosscheck_stamped.py);
+//! the compressed pages were authenticated and zstd-CLI-decoded to the
+//! format's body there. The compressed vectors also pin zstd's level-1
+//! output at the locked version: a zstd upgrade may change the encode
+//! bytes, never the decode.
 #![cfg(test)]
 
 use super::stamped;
 use bytes::Bytes;
 
-use super::tests::Opened;
-use super::{CheckedPage, PageCipher, PageLane, history_page_key, page_key, shard_page_key};
+use super::body::build_body;
+use super::header::{HeaderFields, encode_header};
+use super::tests::{Opened, noise};
+use super::{
+    CheckedPage, PAGE_VER, PageCipher, PageLane, SealRecord, history_page_key, page_key,
+    shard_page_key,
+};
 use crate::crypto::{RouteHash, SegmentHash, hex, unhex};
 
 const SUBKEY: [u8; 32] = [0x11; 32];
@@ -116,4 +125,120 @@ fn row_keys_are_pinned() {
         hex(&history),
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccc670102030405060708"
     );
+}
+
+/// The stamped vector's lane: a stream key, epoch, UTF-8 routing key and
+/// key version run through `derive_subkey` to the page key.
+const STAMPED_KEY: [u8; 32] = [0x42; 32];
+const STAMPED_EPOCH: [u8; 16] = [0x5e; 16];
+const STAMPED_ROUTING_KEY: &str = "tenant/ü-key";
+const STAMPED_KEY_VERSION: u32 = 0x0102_0304;
+const STAMPED_SEGMENT: [u8; 16] = [0x6d; 16];
+const STAMPED_NONCE: [u8; 12] = [0x7c; 12];
+const STAMPED_FIRST: u64 = 1_000_000;
+const STAMPED_TS: i64 = -1_234_567;
+/// The deltas the records take in turn after the first: one, two, three
+/// and four varint bytes, crossing every width boundary.
+const STAMPED_STEPS: [i64; 8] = [0, 1, 127, 128, 16_383, 16_384, 2_097_151, 2_097_152];
+
+const STAMPED_SUBKEY: &str = "929af616dbdcf749deb96efef102e75c6fd1c60c5c9f8862f76e484741432bc2";
+const STAMPED_PAGE_KEY: &str = "93babc205ab19576352d583ed6201894d7036fbd026113d6e3029f0223ab7100";
+/// The raw page's clear header, ver through ct_len: ver 6, first 1,000,000,
+/// count 130 (two varint bytes), ts_ms -1,234,567, key version 0x01020304,
+/// the 13-byte routing key, the nonce and ct_len.
+const STAMPED_RAW_HEAD: &str = concat!(
+    "0600000000000f42408201ffffffffffed297901020304000d74656e616e742fc3bc2d",
+    "6b65797c7c7c7c7c7c7c7c7c7c7c7c0000442a",
+);
+const STAMPED_RAW_SHA256: &str = "7c060f5df8f00d7f1060ab5206d20f78fc8d8bfddb90fda8da96e07d57924e84";
+/// The same records through the seal path: their tables compress, so the
+/// writer stores them as version 7.
+const STAMPED_SEALED_SHA256: &str =
+    "92289707d2061d33ba2618b223b62cf7644f07cdd6462773060d59ad0241c7c9";
+
+/// 130 records of 130 bytes zstd cannot shrink (`noise(i, 130)`), each
+/// stamped `STAMPED_STEPS[i % 8]` ms after the one before, from STAMPED_TS.
+fn stamped_payloads() -> Vec<(i64, Vec<u8>)> {
+    let mut ts_ms = STAMPED_TS;
+    (0..130u64)
+        .zip(STAMPED_STEPS.iter().cycle())
+        .map(|(index, step)| {
+            if index > 0 {
+                ts_ms = ts_ms.checked_add(*step).unwrap();
+            }
+            (ts_ms, noise(index, 130))
+        })
+        .collect()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex(&sha2::Sha256::digest(bytes))
+}
+
+/// A page of 130 records of 130 bytes under a key derived from a stream
+/// key, with a two-byte count, two-byte lengths and timestamp deltas of one
+/// to four bytes from a negative first timestamp, pinned raw (built body,
+/// version 6) and as the seal path stores it (version 7); both open to
+/// every record with its own timestamp.
+#[test]
+fn a_stamped_page_from_a_derived_key_is_pinned_and_decodes() {
+    let key = crate::crypto::StreamKey(STAMPED_KEY);
+    let subkey = crate::crypto::derive_subkey(
+        &key,
+        &STAMPED_EPOCH,
+        STAMPED_ROUTING_KEY,
+        STAMPED_KEY_VERSION,
+    );
+    assert_eq!(hex(&subkey), STAMPED_SUBKEY);
+    assert_eq!(hex(&page_key(&subkey, &STAMPED_SEGMENT)), STAMPED_PAGE_KEY);
+    let payloads = stamped_payloads();
+    let records: Vec<SealRecord<'_>> = payloads
+        .iter()
+        .map(|(ts_ms, payload)| SealRecord {
+            ts_ms: *ts_ms,
+            payload,
+        })
+        .collect();
+    let lane = PageLane {
+        key_version: STAMPED_KEY_VERSION,
+        routing_key: STAMPED_ROUTING_KEY,
+    };
+    let cipher = PageCipher::new(&subkey, &STAMPED_SEGMENT);
+    let fields = HeaderFields {
+        ver: PAGE_VER,
+        first: STAMPED_FIRST,
+        count: records.len(),
+        ts_ms: STAMPED_TS,
+        lane: &lane,
+        nonce: STAMPED_NONCE,
+    };
+    let raw = cipher
+        .seal_message(&fields, &build_body(&records).unwrap())
+        .unwrap();
+    let head = encode_header(&fields).unwrap().len() + 4;
+    assert_eq!(hex(raw.get(..head).unwrap()), STAMPED_RAW_HEAD);
+    assert_eq!(sha256_hex(&raw), STAMPED_RAW_SHA256);
+    let sealed = cipher
+        .seal_with_nonce(&lane, STAMPED_FIRST, &records, STAMPED_NONCE)
+        .unwrap();
+    assert_eq!(sha256_hex(&sealed.bytes), STAMPED_SEALED_SHA256);
+    let last = STAMPED_FIRST + 129;
+    assert_eq!(sealed.last, last);
+    let want: Vec<Opened> = payloads
+        .iter()
+        .zip(STAMPED_FIRST..)
+        .map(|((ts_ms, payload), offset)| (offset, *ts_ms, payload.clone()))
+        .collect();
+    for (bytes, compressed) in [(raw, false), (sealed.bytes, true)] {
+        let page = CheckedPage::admit(Bytes::from(bytes), last).unwrap();
+        assert_eq!(page.is_compressed(), compressed);
+        let opened: Vec<Opened> = cipher
+            .open(&page)
+            .unwrap()
+            .records()
+            .map(|record| (record.offset, record.ts_ms, record.payload.to_vec()))
+            .collect();
+        assert_eq!(opened, want);
+    }
 }

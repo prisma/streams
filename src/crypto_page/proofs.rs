@@ -35,7 +35,10 @@ fn exact<const COUNT: usize>() {
     );
     assert!(
         table.records.first().map(|span| span.ts_ms) == Some(ts_ms)
-            && table.records.windows(2).all(|pair| pair[0].ts_ms <= pair[1].ts_ms),
+            && table
+                .records
+                .windows(2)
+                .all(|pair| pair[0].ts_ms <= pair[1].ts_ms),
         "the first record is at the page timestamp and none goes back"
     );
     let payloads: usize = table.records.iter().map(|span| span.len).sum();
@@ -59,7 +62,10 @@ fn exact<const COUNT: usize>() {
     );
     kani::cover!(payloads > 0, "a body with payload bytes is accepted");
     kani::cover!(
-        table.records.windows(2).any(|pair| pair[0].ts_ms < pair[1].ts_ms),
+        table
+            .records
+            .windows(2)
+            .any(|pair| pair[0].ts_ms < pair[1].ts_ms),
         "a nonzero delta is accepted"
     );
 }
