@@ -73,6 +73,7 @@ describe("the shared-cell profile", () => {
 
   const breaks: [string, string | undefined, string][] = [
     ["STREAMS_AUTH_MODE", "shadow", "a shared cell needs STREAMS_AUTH_MODE=enforce"],
+    ["STREAMS_RELEASE_POSTURE", undefined, "a shared cell needs STREAMS_RELEASE_POSTURE=1"],
     ["BILLING_MODE", "off", "a shared cell needs BILLING_MODE=required"],
     ["ROLLUP", "0", "a shared cell needs ROLLUP=1"],
     ["INITIAL_SHARDS", "4", "a shared cell needs INITIAL_SHARDS=1"],

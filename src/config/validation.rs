@@ -209,13 +209,19 @@ fn validate_fleet_auth(
 ) -> anyhow::Result<()> {
     match args.fleet_auth_mode.as_str() {
         "static" => {
-            if args.release_posture {
+            // A fleet-off cell without FLEET_INTERNAL_TOKEN holds no shared
+            // credential to bridge: the posture accepts it (shared cells
+            // Q6(b), the single-server cell, which reads no workload token).
+            if args.release_posture && (fleet_mode || args.fleet_internal_token.is_some()) {
                 anyhow::bail!(
                     "FLEET_AUTH_MODE=static is the bridge posture and is refused under \
-                     STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1)"
+                     STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1); \
+                     only a fleet-off server without FLEET_INTERNAL_TOKEN runs it"
                 );
             }
-            notices.push(ConfigNotice::FleetAuthStaticBridge);
+            if !args.release_posture {
+                notices.push(ConfigNotice::FleetAuthStaticBridge);
+            }
             if fleet_mode {
                 match (&args.fleet_internal_token, &args.auth_token) {
                     (None, _) => anyhow::bail!(

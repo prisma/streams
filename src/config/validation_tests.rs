@@ -500,6 +500,7 @@ mod validate_boundary_tests {
     //! drive `ServerConfig::validate()` itself for every rejection
     //! category, plus the multi-error and default-valid cases).
 
+    use crate::config::tests::shared_cell_profile;
     use crate::config::{CliArgs, MapEnvironment, ServerConfig};
 
     fn base() -> CliArgs {
@@ -805,9 +806,57 @@ mod validate_boundary_tests {
         }
     }
 
+    /// The release posture on a fleet-off cell that holds no static token
+    /// and no workload token file (the single-server shared cell).
+    fn release_without_fleet(c: &mut CliArgs) {
+        release(c);
+        c.fleet_auth_mode = "static".into();
+        c.workload_token_file = None;
+    }
+
+    /// The posture refuses static fleet auth wherever it would bridge a
+    /// shared credential: in fleet mode, or with a static token.
     #[test]
     fn validation_rejects_static_fleet_auth_under_release_posture() {
-        rejects(|c| c.release_posture = true, &[], "FLEET_AUTH_MODE=static");
+        let fleet = |c: &mut CliArgs| {
+            release_without_fleet(c);
+            c.fleet_prefix = Some("fleet/".into());
+        };
+        rejects(fleet, &[], "FLEET_AUTH_MODE=static");
+        let token = |c: &mut CliArgs| {
+            release_without_fleet(c);
+            c.fleet_internal_token = Some("legacy-token-0123456789".into());
+        };
+        rejects(token, &[], "FLEET_AUTH_MODE=static");
+    }
+
+    /// Shared cells Q6 (b) (owner decision of 2026-10-08): the shared-cell
+    /// profile carries the release posture, and its fleet-off server, with
+    /// no static token and no workload token file, validates as deployed.
+    #[test]
+    fn the_shared_cell_profile_validates_under_the_release_posture() {
+        let per_cell = [
+            ("CELL_ID", "sc1"),
+            (
+                "USAGE_STREAM_KEY",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            ("AUTH_TOKEN", "placeholder-operator-bearer"),
+            ("SLATE_S3_ENDPOINT", "http://127.0.0.1:9500"),
+            ("PATH_PREFIX", "sc1/"),
+        ];
+        let mut deployed = shared_cell_profile(&per_cell);
+        // The deployment's own identities, which the deploy also sets.
+        deployed.cli.project_id = "proj_sc1_operator".into();
+        deployed.cli.account_id = "acct_sc1_sink".into();
+        let validated = deployed.validate().unwrap_or_else(|e| panic!("{e}"));
+        let cli = &validated.config().cli;
+        assert!(cli.release_posture);
+        assert_eq!(cli.fleet_auth_mode, "static");
+        assert_eq!(cli.fleet_prefix, None);
+        assert_eq!(cli.workload_token_file, None);
+        assert_eq!(cli.fleet_internal_token, None);
+        assert_eq!(cli.project_share_k, 8);
     }
 
     #[test]

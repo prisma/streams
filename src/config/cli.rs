@@ -605,7 +605,8 @@ impl CliArgs {
 /// mode discards any configured static token at construction — see
 /// the AppState wiring), and the release posture is validated whether
 /// or not fleet mode is on: a single-instance deployment mounts the
-/// same raw and internal routes, so it gets the same rules.
+/// same raw and internal routes, so it gets the same rules, except that
+/// a fleet-off server without a static token has none to bridge.
 fn parse_bool_flag(s: &str) -> Result<bool, String> {
     match s {
         "1" | "true" | "yes" => Ok(true),

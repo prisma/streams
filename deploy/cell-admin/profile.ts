@@ -91,6 +91,7 @@ function requireValue(env: Map<string, string>, name: string, want: string): voi
 /// A single-server shared cell's posture (PLAN section 1.2 shape (a)).
 function checkPosture(env: Map<string, string>): void {
   requireValue(env, "STREAMS_AUTH_MODE", "enforce");
+  requireValue(env, "STREAMS_RELEASE_POSTURE", "1");
   requireValue(env, "BILLING_MODE", "required");
   requireValue(env, "ROLLUP", "1");
   requireValue(env, "INITIAL_SHARDS", "1");

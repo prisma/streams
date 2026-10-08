@@ -907,9 +907,13 @@ FLEET_INTERNAL_TOKEN absent
 ```
 
 `FLEET_AUTH_MODE=static` is a NAMED migration/test posture only; the
-binary refuses it under `STREAMS_RELEASE_POSTURE=1`, and in workload
-mode the static token does not exist at runtime even if the
-environment still carries it. Feed files (`STREAMS_AUTH_*_FILE`) and
+binary refuses it under `STREAMS_RELEASE_POSTURE=1` in fleet mode or
+beside a `FLEET_INTERNAL_TOKEN`, and in workload mode the static token
+does not exist at runtime even if the environment still carries it. A
+server without the fleet (no `FLEET_PREFIX`) and without
+`FLEET_INTERNAL_TOKEN`, the single-server shared cell, holds no shared
+credential to bridge: it passes the posture with `FLEET_AUTH_MODE` at
+its default and no `WORKLOAD_TOKEN_FILE`, which it would never read. Feed files (`STREAMS_AUTH_*_FILE`) and
 the workload token file MUST be replaced atomically: write a
 temporary file, flush, `rename(2)` over the live path — never
 truncate-and-rewrite in place (docs/CONTROL-PLANE-INTEGRATION.md
