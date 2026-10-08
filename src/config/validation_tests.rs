@@ -566,18 +566,104 @@ mod validate_boundary_tests {
         rejects(|c| c.initial_shards = Some(0), &[], "INITIAL_SHARDS");
     }
 
+    /// The resolved initial shard count of a configuration, and every
+    /// shard notice as (is a warning, its text).
+    fn shards_and_notices(mutate: impl FnOnce(&mut CliArgs)) -> (usize, Vec<(bool, String)>) {
+        let v = validate_with(mutate, &[]).expect("the configuration must validate");
+        let notices = v
+            .notices
+            .iter()
+            .map(|n| (n.is_warning(), n.to_string()))
+            .filter(|(_, text)| text.starts_with("INITIAL_SHARDS="))
+            .collect();
+        (v.initial_shards.get(), notices)
+    }
+
+    /// A fleet configuration (`FLEET_PREFIX` set; fleet mode needs
+    /// `FLEET_MAX` above 1) with `INITIAL_SHARDS` set or not.
+    fn fleet_shards(fleet_max: u64, initial_shards: Option<usize>) -> (usize, Vec<(bool, String)>) {
+        shards_and_notices(|c| {
+            c.fleet_prefix = Some("fleet/".into());
+            c.fleet_max = fleet_max;
+            c.fleet_internal_token = Some("0123456789abcdef".into());
+            c.initial_shards = initial_shards;
+        })
+    }
+
+    /// Owner decision of 2026-10-07 (NEXT-WORK §14.4, "as few shards as
+    /// possible"): every shard is its own WAL writer, so a fleet that does
+    /// not set INITIAL_SHARDS starts the largest power of two at most
+    /// FLEET_MAX, never more writers than servers, and is not warned.
+    /// FLEET_MAX=1 is not fleet mode: one shard.
     #[test]
-    fn validation_resolves_the_fleet_mode_shard_default() {
-        let v = validate_with(
-            |c| {
-                c.fleet_prefix = Some("fleet/".into());
-                c.fleet_max = 3;
-                c.fleet_internal_token = Some("0123456789abcdef".into());
-            },
-            &[],
-        )
-        .expect("fleet default must validate");
-        assert_eq!(v.initial_shards.get(), 16, "next_power_of_two(4x3)");
+    fn the_fleet_mode_shard_default_is_the_largest_power_of_two_at_most_fleet_max() {
+        let resolved = [1, 2, 3, 4, 5, 7, 8, 9, 4096].map(|m| {
+            let (shards, notices) = fleet_shards(m, None);
+            (m, shards, notices.len())
+        });
+        assert_eq!(
+            resolved,
+            [
+                (1, 1, 0),
+                (2, 2, 0),
+                (3, 2, 0),
+                (4, 4, 0),
+                (5, 4, 0),
+                (7, 4, 0),
+                (8, 8, 0),
+                (9, 8, 0),
+                (4096, 4096, 0),
+            ]
+        );
+    }
+
+    /// The notice inverts with the default: a fleet that sets more shards
+    /// than FLEET_MAX runs more WAL writers than servers and is warned
+    /// with the default it would get; a count at most FLEET_MAX, however
+    /// few, is not; a server out of fleet mode never is. The configured
+    /// count is always the one that is used.
+    #[test]
+    fn an_initial_shard_count_above_fleet_max_warns_and_one_at_most_it_does_not() {
+        let warn = |n: usize, m: u64, s: usize| {
+            vec![(
+                true,
+                format!(
+                    "INITIAL_SHARDS={n} > FLEET_MAX={m}: a fresh topology this fine runs \
+                     more WAL writers than servers, and every busy writer pays its own WAL \
+                     PUTs whatever it carries; use <= {s}, the largest power of two at most \
+                     FLEET_MAX (the fleet default)"
+                ),
+            )]
+        };
+        let configured = [
+            (4, 1),
+            (4, 2),
+            (4, 4),
+            (4, 8),
+            (4, 16),
+            (5, 4),
+            (5, 8),
+            (3, 4),
+        ];
+        assert_eq!(
+            configured.map(|(m, n)| (m, fleet_shards(m, Some(n)))),
+            [
+                (4, (1, vec![])),
+                (4, (2, vec![])),
+                (4, (4, vec![])),
+                (4, (8, warn(8, 4, 4))),
+                (4, (16, warn(16, 4, 4))),
+                (5, (4, vec![])),
+                (5, (8, warn(8, 5, 4))),
+                (3, (4, warn(4, 3, 2))),
+            ]
+        );
+        // Out of fleet mode: FLEET_MAX=1 with a prefix, and no prefix.
+        assert_eq!(fleet_shards(1, Some(8)), (8, vec![]));
+        assert_eq!(
+            shards_and_notices(|c| c.initial_shards = Some(8)),
+            (8, vec![])
+        );
     }
 
     #[test]

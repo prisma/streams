@@ -1568,10 +1568,20 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
 - **As few shards as possible.** Every shard is its own SlateDB with its own
   WAL writer, and at the 100 ms tier each busy writer costs up to about $97 a
   month whatever it carries. The WAL bill follows the number of writers, not
-  tenants or commits. Never ship the fleet-mode default
-  (`INITIAL_SHARDS = next_pow2(4 x FLEET_MAX)`, `src/config/validation.rs:806-818`,
-  16 shards for a 4-server cell); it becomes the largest power of two at most
-  `FLEET_MAX`, and the `CoarseInitialShards` notice inverts.
+  tenants or commits. **Decided (2026-10-07), implemented:** the fleet-mode
+  default `INITIAL_SHARDS` is the largest power of two at most `FLEET_MAX`
+  (`fleet_shard_default`, `src/config/validation.rs`; it was
+  `next_pow2(4 x FLEET_MAX)`, 16 shards for a 4-server cell), and the notice
+  inverts: `ShardsExceedFleetMax` warns when a fleet sets `INITIAL_SHARDS`
+  above `FLEET_MAX` (more WAL writers than servers), where `CoarseInitialShards`
+  warned below `4 x FLEET_MAX`. Edge record #120, awaiting ratification. Until
+  `home-v1` (14.5) replaces the rendezvous draw (`ring_pick`,
+  `src/ownership.rs`), `S = n` leaves servers without a shard: over
+  `streams-1..n` the draw is `[0, 2]` for 2 over 2, `[0, 1, 1]` for 2 over 3,
+  `[1, 1, 0, 2]` for 4 over 4 and `[1, 1, 0, 1, 1]` for 4 over 5 (the old 16
+  over 4 drew `[4, 3, 1, 8]`). Only the rebalancer evens it out, and only
+  once the loaded server's absorber lags more than `REBALANCE_LAG_SECS` (60 s)
+  for two ticks; the load-aware return-home then keeps the move.
 - **Rejected:** a WAL journal shared by a cell's servers (servers must stay
   uncoupled, so more servers do more work); durability classes, lazy leases
   and a pump linger (they save nothing once every writer is saturated).

@@ -29,11 +29,10 @@ pub struct CliArgs {
     pub(crate) secret_access_key: String,
 
     /// Initial shard count (power of two) if no topology exists yet (D3).
-    /// Unset = auto: 1 standalone, next_power_of_two(4 × FLEET_MAX) in
-    /// fleet mode — a topology as coarse as the fleet gives rendezvous a
-    /// permanently uneven draw and turns the rebalancer's override into a
-    /// return-home tug-of-war (FLEET-CAMPAIGN.md: 4 shards over 4
-    /// instances drew 1/1/2/0 and oscillated on a ~300 s period).
+    /// Unset = auto: 1 standalone, and in fleet mode the largest power of
+    /// two at most FLEET_MAX. Every shard is its own WAL writer, so a
+    /// fresh cell runs no more writers than servers (owner decision of
+    /// 2026-10-07); a fleet that sets more than FLEET_MAX is warned.
     #[arg(long, env = "INITIAL_SHARDS")]
     pub(crate) initial_shards: Option<usize>,
 

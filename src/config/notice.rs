@@ -21,7 +21,10 @@ pub(crate) enum ConfigNotice {
         max: u64,
         profile: String,
     },
-    CoarseInitialShards {
+    /// A fleet sets more initial shards than FLEET_MAX: a fresh topology
+    /// then runs more WAL writers than servers. `suggested` is the fleet
+    /// default, the largest power of two at most FLEET_MAX.
+    ShardsExceedFleetMax {
         configured: usize,
         fleet_max: u64,
         suggested: usize,
@@ -78,15 +81,16 @@ impl std::fmt::Display for ConfigNotice {
                 "SSE_FEED_TOTAL_BYTES={configured} exceeds the {max}-byte release-safe \
                  maximum for memory profile {profile:?}"
             ),
-            Self::CoarseInitialShards {
+            Self::ShardsExceedFleetMax {
                 configured,
                 fleet_max,
                 suggested,
             } => write!(
                 f,
-                "INITIAL_SHARDS={configured} < 4×FLEET_MAX={fleet_max}: a fresh topology \
-                 this coarse draws unevenly under rendezvous and the rebalancer flaps \
-                 against return-home; use >= {suggested}"
+                "INITIAL_SHARDS={configured} > FLEET_MAX={fleet_max}: a fresh topology \
+                 this fine runs more WAL writers than servers, and every busy writer pays \
+                 its own WAL PUTs whatever it carries; use <= {suggested}, the largest \
+                 power of two at most FLEET_MAX (the fleet default)"
             ),
             Self::DescriptorReserveTight {
                 nofile_hard,

@@ -543,6 +543,15 @@ impl InitialShards {
     }
 }
 
+/// The fleet-mode default initial shard count: the largest power of two
+/// at most `fleet_max`, so a fresh cell never runs more WAL writers than
+/// servers. Every shard is its own WAL writer, and a busy writer pays its
+/// own WAL PUTs whatever it carries (owner decision of 2026-10-07,
+/// NEXT-WORK §14.4). The caller has checked `fleet_max >= 1`; 0 answers 1.
+fn fleet_shard_default(fleet_max: usize) -> usize {
+    fleet_max.checked_ilog2().map_or(1, |bits| 1_usize << bits)
+}
+
 /// Every configuration problem found by [`crate::config::ServerConfig::validate`]
 /// — all of them, not just the first, so one boot attempt reports one
 /// complete list (PR 3.2). Library code returns this; the binary decides
@@ -803,18 +812,19 @@ impl crate::config::ServerConfig {
             return None;
         };
         let fleet_mode = self.fleet_mode();
+        let fleet_default = fleet_shard_default(fleet_max);
         let effective_shards = match self.cli.initial_shards {
             Some(n) => {
-                if fleet_mode && n < 4 * fleet_max {
-                    f.notices.push(ConfigNotice::CoarseInitialShards {
+                if fleet_mode && n > fleet_max {
+                    f.notices.push(ConfigNotice::ShardsExceedFleetMax {
                         configured: n,
                         fleet_max: self.cli.fleet_max,
-                        suggested: (4 * fleet_max).next_power_of_two(),
+                        suggested: fleet_default,
                     });
                 }
                 n
             }
-            None if fleet_mode => (4 * fleet_max).next_power_of_two(),
+            None if fleet_mode => fleet_default,
             None => 1,
         };
         match InitialShards::new(effective_shards) {
