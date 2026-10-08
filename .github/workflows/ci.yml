@@ -290,8 +290,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Credential-wait cancellation (Bun)
         run: bun test sdk/scripts/credential-cancellation.test.mjs
-      - name: Deploy wrapper and campaign staging (Bun)
-        run: bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts
+      - name: Deploy wrapper, campaign staging and cell-admin (Bun)
+        run: bun test ./deploy/supervise.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin
+      # cell-admin's end-to-end test boots the release streams-slate over
+      # s3lite (free ports) on the shared-cell profile, admits, serves and
+      # offboards two projects (owner decision 2026-10-08, Q3(b)).
+      - name: cell-admin end to end on the release binaries (Bun)
+        run: CELL_ADMIN_E2E_BIN_DIR=target/release bun test ./deploy/cell-admin/e2e.test.ts
       - name: Smoke through the package (Bun)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8092 \
