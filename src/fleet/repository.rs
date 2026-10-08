@@ -487,6 +487,53 @@ mod population_tests {
                 .contains("4096")
         );
     }
+
+    /// The heartbeat namespace holds at most MAX_MEMBERS beats and the
+    /// three coordination documents: a full fleet reads all its beats,
+    /// and one object more fails the pass.
+    #[tokio::test]
+    async fn a_full_fleet_reads_and_one_object_more_fails() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let repository = FleetRepository::new(Some(store.clone()));
+        for doc in ["desired", "overrides", "urls"] {
+            store
+                .put(
+                    &ObjPath::from(format!("fleet/{doc}.json")),
+                    PutPayload::from("{}".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        for n in 0..MAX_MEMBERS {
+            let beat = format!(
+                r#"{{"instance":"m{n:04}","ts_ms":0,"rps":0,"owned_shards":[],"draining":false}}"#
+            );
+            store
+                .put(
+                    &ObjPath::from(format!("fleet/m{n:04}.json")),
+                    PutPayload::from(beat),
+                )
+                .await
+                .unwrap();
+        }
+        let beats = repository.peek_heartbeat_set().await.unwrap();
+        assert_eq!(beats.len(), MAX_MEMBERS);
+        store
+            .put(
+                &ObjPath::from("fleet/extra"),
+                PutPayload::from("{}".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .peek_heartbeat_set()
+                .await
+                .unwrap_err()
+                .to_string(),
+            "fleet population exceeds 4099 objects"
+        );
+    }
 }
 
 #[cfg(test)]
