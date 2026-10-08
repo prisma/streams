@@ -1684,11 +1684,29 @@ segment) are separate layers, as Pravega's containers and segments are.
   On the single-server shared cell (14.4) that is an instance-wide write shed
   no tenant caused and nothing attributes; it is fixed before the first cell
   (README, "Shared cells Q0").
-- A history partition's manifest poll (300 s, `src/history.rs`) turns a full
-  history L0 into an absorption stall of up to 300 s: Layer A's A6 at 1,000
-  projects stalls that long beside the scale module. Watched for in the
-  shared-cell certification; shortening the poll stales TLA-016, TLA-018 and
-  TLA-019 and the 300 s assumption in `verification/assumptions.md`.
+- **Needs the owner: the absorber stalls at the history L0 cap.** A history
+  partition's Db learns that compaction freed an L0 slot only when it writes
+  its own manifest, which no flush can do at the cap, or at its manifest poll
+  (300 s, `src/history.rs`). So a gather whose flush meets a full L0 (64 as
+  the Db last saw it) waits until the next poll after compaction frees a
+  slot: up to 300 s of no absorption on that shard. Layer A's A6 at 1,000
+  projects stalls that long beside the scale module, and production reaches
+  the cap whenever one sorted-run merge holds the only compaction slot
+  (`compactor_max_concurrent` 1) for 64 gathers (at least 320 s). The same
+  wait held a shard's close for up to 300 s, or for good; that is fixed
+  (edge record #134: the history partition closes without its final flush),
+  the absorber's stall is not. Options, for the owner's call (performance):
+  (a) `Db::refresh_manifest()` when a gather's flush passes a bound (one
+  manifest GET per stall; `src/history/gather.rs`, no formal receipt);
+  (b) a shorter history manifest poll (GETs per open history Db, the cost
+  posture of #80 and `docs/TIGRIS-404-COST.md`; stales TLA-016, TLA-018 and
+  TLA-019, about 103 min serial, and the 300 s assumption in
+  `verification/assumptions.md`); (c) leave it and alarm on
+  `history_flush_wait_ms_max`. Watched for in the shared-cell certification
+  either way. The shard log's close keeps its final flush: its poll is 2 s,
+  so it ends unless shard compaction stops for good, and item 38's verdict
+  and the formal models pin it. Analysis:
+  `~/.streams-k2/analysis/shard-close-hang.md`.
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
