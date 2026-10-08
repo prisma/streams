@@ -634,3 +634,130 @@ async fn dead_letter_link_requires_a_shared_key() {
     assert_eq!(code(&b), "dead_letter_sealed");
     engine_shutdown(&state).await;
 }
+
+/// One leased message of the paged-queue consumer: key, number, attempts, token.
+type Leased = (String, u64, u64, String);
+
+/// Pull up to `max` messages of `cpg`'s consumer `w` under `visibility` ms.
+async fn pull(addr: std::net::SocketAddr, max: u64, visibility: u64) -> Vec<Leased> {
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let body = format!(r#"{{"max":{max},"visibilityMs":{visibility}}}"#);
+    let path = "/v1/streams/cpg/consumers/w:pull";
+    let (st, _, b) = preq(addr, "POST", path, &key, body.as_bytes()).await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let leased = |m: &serde_json::Value| {
+        let text = |v: &serde_json::Value| v.as_str().unwrap().to_string();
+        let number = |v: &serde_json::Value| v.as_u64().unwrap();
+        (
+            text(&m["value"]["k"]),
+            number(&m["value"]["n"]),
+            number(&m["attempts"]),
+            text(&m["leaseToken"]),
+        )
+    };
+    v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(leased)
+        .collect()
+}
+
+/// Ack one lease token of `cpg`'s consumer `w`.
+async fn ack(addr: std::net::SocketAddr, token: &str) {
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let body = format!(r#"{{"acks":[{{"leaseToken":"{token}"}}]}}"#);
+    let path = "/v1/streams/cpg/consumers/w:settle";
+    let (st, _, b) = preq(addr, "POST", path, &key, body.as_bytes()).await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["acked"], 1, "ack {token}");
+}
+
+/// Stream `cpg` with key a's 12 records in one `records:batch` page and key
+/// b's 5 in another, and its consumer `w`.
+async fn paged_queue(addr: std::net::SocketAddr) {
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let format = br#"{"format":{"kind":"json"}}"#;
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/cpg", &key, format).await;
+    assert_eq!(st, 201);
+    for (rk, n) in [("a", 12u64), ("b", 5)] {
+        let records: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"k":"{rk}","n":{i}}}"#))
+            .collect();
+        let body = format!("[{}]", records.join(","));
+        let headers = [
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", rk),
+        ];
+        let path = "/v1/streams/cpg/records:batch";
+        let (st, _, b) = preq(addr, "POST", path, &headers, body.as_bytes()).await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    }
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/cpg/consumers/w", &key, b"{}").await;
+    assert_eq!(st, 201);
+}
+
+/// Ack everything pulled until the queue is empty; every message is a
+/// first delivery except a/5, which must come back exactly once more.
+async fn drain(addr: std::net::SocketAddr, acked: &mut Vec<(String, u64)>) {
+    let mut redelivered = false;
+    for _ in 0..40 {
+        let got = pull(addr, 10, 30_000).await;
+        if got.is_empty() {
+            break;
+        }
+        for (k, n, attempts, token) in got {
+            let again = (k.as_str(), n) == ("a", 5);
+            assert_eq!(attempts, if again { 2 } else { 1 }, "{k}/{n}");
+            redelivered |= again;
+            ack(addr, &token).await;
+            acked.push((k, n));
+        }
+    }
+    assert!(redelivered, "a/5 was never delivered again");
+}
+
+/// A consumer works through records that
+/// share stored pages. Key a's 12 records are one page and key b's 5
+/// another. The consumer acks part of a's page (a pull of at most 5 leases
+/// the run a/0 to a/4), then leases a/5 alone (a pull of at most 1) and
+/// stops without acking it (a crash); after the lease expires a/5 is
+/// delivered again, and every record of both keys is acked exactly once, in
+/// offset order per key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consumer_settles_part_of_a_page_and_resumes_inside_it() {
+    let (state, addr) = http_rig(mem()).await;
+    paged_queue(addr).await;
+    let mut acked: Vec<(String, u64)> = Vec::new();
+    while acked.iter().filter(|(k, _)| k == "a").count() < 5 {
+        for (k, n, attempts, token) in pull(addr, 5, 30_000).await {
+            assert_eq!(attempts, 1, "{k}/{n}");
+            ack(addr, &token).await;
+            acked.push((k, n));
+        }
+    }
+    let leased = pull(addr, 1, 1000).await;
+    let a: Vec<(u64, u64)> = leased
+        .iter()
+        .filter(|m| m.0 == "a")
+        .map(|m| (m.1, m.2))
+        .collect();
+    assert_eq!(a, [(5, 1)], "the consumer leases a/5, inside the page");
+    for (k, n, _, token) in leased.into_iter().filter(|m| m.0 == "b") {
+        ack(addr, &token).await;
+        acked.push((k, n));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    drain(addr, &mut acked).await;
+    for (rk, n) in [("a", 12u64), ("b", 5)] {
+        let got: Vec<u64> = acked
+            .iter()
+            .filter(|(k, _)| k == rk)
+            .map(|(_, n)| *n)
+            .collect();
+        assert_eq!(got, (0..n).collect::<Vec<_>>(), "key {rk}");
+    }
+    engine_shutdown(&state).await;
+}

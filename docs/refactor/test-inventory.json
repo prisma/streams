@@ -214,6 +214,17 @@
     "scenarios": []
   },
   {
+    "name": "a_consumer_settles_part_of_a_page_and_resumes_inside_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cde2345ef390846474ea0252d683550e48fcbca6a61a55679f19eb95c7cbe90a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_consumer_that_stops_part_way_gets_the_unacked_rest_again_in_offset_order",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -777,6 +788,17 @@
     "scenarios": [
       "FRK-009"
     ]
+  },
+  {
+    "name": "a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "411a6e076918c656d089ef91ee35b9bc63d4ecc05234b2a4f6d2a23aa9b21574",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_history.rs",
+    "scenarios": []
   },
   {
     "name": "a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page",

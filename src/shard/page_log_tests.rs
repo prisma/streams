@@ -627,3 +627,61 @@ async fn a_trim_never_deletes_a_page_holding_an_unabsorbed_record() {
     assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (15, second - 1));
     engine.begin_close();
 }
+
+/// The scan bound at the top of the offset
+/// space. A stream's `next` cannot pass u64::MAX, so its last page ends at
+/// u64::MAX - 1 at most, and `to - 1 + PAGE_MAX_RECORDS` saturates to
+/// u64::MAX: windows ending at u64::MAX, starting inside, at the first and
+/// at the last record of the top pages, are served exactly. (A page keyed
+/// u64::MAX itself is admissible but unreachable: the writer would need
+/// next = 2^64, and the exclusive bound never returns it.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scans_at_the_top_of_the_offset_space_are_exact() {
+    let engine = engine("pages-u64", 0).await;
+    let cipher = PageCipher::new(&subkey(), &HASH);
+    let lane = crate::crypto_page::PageLane {
+        key_version: 1,
+        routing_key: LANE,
+    };
+    let top = u64::MAX - 1;
+    let firsts = [top - 29, top - 19, top - 9];
+    let mut batch = slatedb::WriteBatch::new();
+    for first in firsts {
+        let page = cipher
+            .seal(
+                &lane,
+                first,
+                &crate::crypto_page::stamped(1, &records(10, 8)),
+            )
+            .unwrap();
+        batch.put(shard_page_key(&HASH, page.last), page.bytes);
+    }
+    engine.db.write(batch).await.unwrap();
+    let windows = [
+        (top - 29, u64::MAX, top - 29, top),
+        (top - 15, u64::MAX, top - 15, top),
+        (top, u64::MAX, top, top),
+        (top - 9, top, top - 9, top - 1),
+        (top - 20, top - 19, top - 20, top - 20),
+        (top - 19, top - 18, top - 19, top - 19),
+    ];
+    for (from, to, first, last) in windows {
+        let window = super::RingScan {
+            from,
+            to,
+            max_bytes: usize::MAX,
+        };
+        let got = engine
+            .scan_pages(HASH, window, None, slatedb::config::DurabilityLevel::Memory)
+            .await
+            .unwrap();
+        let served: Vec<u64> = served(&got).iter().map(|(offset, _)| *offset).collect();
+        assert_eq!(
+            served,
+            (first..=last).collect::<Vec<u64>>(),
+            "[{from}, {to})"
+        );
+        assert_eq!(got.last_offset, Some(last), "[{from}, {to})");
+    }
+    engine.begin_close();
+}
