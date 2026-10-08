@@ -102,12 +102,18 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
       headers: { authorization: `Bearer ${tokens[p]}`, "content-type": "application/json", "prisma-encryption-key": KEY },
       body,
     });
+  // The status, and the body too when it is not the one wanted, so a
+  // failure names the refusal (its code and message).
+  const answered = async (res: Response, want: number) =>
+    res.status === want ? `${want}` : `${res.status} ${await res.text()}`;
   const created = async (p: string, name: string) =>
-    (await as(p, "PUT", `/v1/streams/${name}`, JSON.stringify({ format: { kind: "json" } }))).status;
-  for (const name of ["orders", "dir/x", "events"]) expect(await created("proj_a", name)).toBe(201);
-  expect(await created("proj_b", "orders")).toBe(201);
-  expect((await as("proj_a", "POST", "/v1/streams/orders/records", '{"m":"a-marker"}')).status).toBe(200);
-  expect((await as("proj_b", "POST", "/v1/streams/orders/records", '{"m":"b-marker"}')).status).toBe(200);
+    answered(await as(p, "PUT", `/v1/streams/${name}`, JSON.stringify({ format: { kind: "json" } })), 201);
+  for (const name of ["orders", "dir/x", "events"]) expect(await created("proj_a", name)).toBe("201");
+  expect(await created("proj_b", "orders")).toBe("201");
+  const appended = async (p: string, body: string) =>
+    answered(await as(p, "POST", "/v1/streams/orders/records", body), 200);
+  expect(await appended("proj_a", '{"m":"a-marker"}')).toBe("200");
+  expect(await appended("proj_b", '{"m":"b-marker"}')).toBe("200");
 
   // Offboarding, first run: revoke and publish; second run: prove, walk, omit.
   expect((await run("offboard", "--state", c.state, "--project", "proj_a")).code).toBe(0);
