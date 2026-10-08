@@ -17,8 +17,8 @@ from a scratchpad path (`platform-token.txt`, `key.txt`, `bkey-*.json`,
 | `checker.py` | per-key gapless order check across the full segment lineage |
 | `setup.sh` | create one scaled stream + seed `desired.json` |
 | `showmap.py` | segment-map summary (live/sealed per stream) |
-| `cluster-deploy.sh` | create/update the 4 Compute services, emit `cluster-urls.json` |
-| `cluster-run.sh` | Compute rung: C1 (split) / C3 (rebalance) / C5 (soak) |
+| `cluster-deploy.sh [up\|solo]` | create/update the 4 Compute services in fleet mode (`up`), or streams-1 alone outside fleet mode (`solo`, for C1's splits), emit `cluster-urls.json` |
+| `cluster-run.sh [solo\|fleet]` | Compute rung: C1 (split) / C3 (rebalance) / C5 (soak); `solo` drives C1's load on streams-1 outside fleet mode, the default `fleet` checks C1's order through the four in fleet mode, then runs C3 and C5 (a server in fleet mode splits no stream, edge change #119) |
 
 Two invariants the harness enforces, both learned the hard way:
 

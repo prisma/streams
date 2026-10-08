@@ -1655,11 +1655,13 @@ segment) are separate layers, as Pravega's containers and segments are.
   became cross-server once the ring grew (review finding F1, option B).
   Fleet off still splits. Edge record #119, awaiting ratification. The
   split package's last commit removes the gate and inverts those DSTs.
-- The Compute cluster rung C1 (`bench/docker/harness/cluster-run.sh`) splits
-  inside a four-server fleet, which the gate refuses: it takes its split on
-  streams-1 outside fleet mode, then redeploys all four in fleet mode over
-  the same `PATH_PREFIX`, as T2's rigs do (T7, 2026-10-08; a script change,
-  the run stays the owner's).
+- The Compute cluster rung C1 (`bench/docker/harness/cluster-run.sh`) split
+  inside a four-server fleet, which the gate refuses. Implemented (T7,
+  2026-10-08): it takes its split on streams-1 outside fleet mode
+  (`cluster-deploy.sh solo`, `cluster-run.sh solo`), then redeploys all four
+  in fleet mode over the same `PATH_PREFIX` (`cluster-deploy.sh up`,
+  `cluster-run.sh`), as T2's rigs do; a script change, not run (the field
+  run stays the owner's).
 - **Before public launch:** the split package (consumer record relay and an
   ancestry-based stop rule, F1-b with its fleet-internal lane read, a touch
   relay for watches, DLQ through forwarding, per-segment rate buckets, a

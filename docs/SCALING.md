@@ -259,7 +259,12 @@ checks through the fleet formed afterwards over the same PATH_PREFIX:
   segments.
 
 Only after D1–D5 are green twice consecutively: the 4-instance Compute
-cluster repeat of D1/D3/D5.
+cluster repeat of D1/D3/D5. Its C1 takes its splits the same way (the
+owner's decision of 2026-10-08, T7): `harness/cluster-deploy.sh solo`
+deploys streams-1 alone outside fleet mode, `harness/cluster-run.sh solo`
+drives C1's load there, then `cluster-deploy.sh up` redeploys all four in
+fleet mode over the same PATH_PREFIX and `cluster-run.sh` checks C1's
+order through the fleet before C3 and C5.
 
 ## 9. Validation results (2026-07-24 / 25)
 

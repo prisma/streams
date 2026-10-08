@@ -13,8 +13,22 @@ if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" != "1" ]; then
 fi
 # 4-instance Compute cluster for SCALING.md's on-Compute validation.
 # One service per ordinal (the ring's ordinal set is streams-1..N).
-# usage: cluster-deploy.sh [up|status]
+# usage: cluster-deploy.sh [up|solo]
+#   up    all four in fleet mode (FLEET_PREFIX set)
+#   solo  streams-1 alone outside fleet mode (FLEET_PREFIX, FLEET_MIN and
+#         FLEET_MAX unset) over the same PATH_PREFIX, for C1's splits: a
+#         server in fleet mode splits no stream (edge change #119; the
+#         owner's decision of 2026-10-08, T7; cluster-run.sh). Compute
+#         keeps a project's variables across deploys (RUNBOOK §7.3), so
+#         solo unsets the three with --unset-env, which a later `up` sets
+#         again; omitting them would keep an earlier `up`'s values.
 set -e
+STEP=${1:-up}
+case "$STEP" in
+  up) ORDINALS=(1 2 3 4); FLEETARG=(--env FLEET_PREFIX=cluster1-fleet --env FLEET_MIN=4 --env FLEET_MAX=4) ;;
+  solo) ORDINALS=(1); FLEETARG=(--unset-env FLEET_PREFIX --unset-env FLEET_MIN --unset-env FLEET_MAX) ;;
+  *) echo "usage: cluster-deploy.sh [up|solo]"; exit 1 ;;
+esac
 S=/private/tmp/claude-501/-Users-sorenschmidt-code-streams/92de44c8-b33b-41e2-90d2-cd3f47beaa72/scratchpad
 export PRISMA_API_TOKEN=$(cat $S/platform-token.txt)
 P=$(cat $S/sinmax/proj.txt)
@@ -26,7 +40,7 @@ BINID=$(grep -oE '\bS3_ACCESS_KEY_ID=tid_[A-Za-z0-9_-]+' $S/deploy-obs.sh | head
 BINSEC=$(grep -oE "S3_SECRET_ACCESS_KEY='[^']+'" $S/deploy-obs.sh | head -1 | sed "s/S3_SECRET_ACCESS_KEY='//; s/'\$//")
 j() { python3 -c "import json;print(json.load(open('$S/sinmax/bkey.json'))['data']['$1'])"; }
 
-for i in 1 2 3 4; do
+for i in $ORDINALS; do
   SVCFILE=$S/scale-docker/cluster-svc-$i.txt
   SVCARG=()
   [ -f "$SVCFILE" ] && SVCARG=(--service $(cat $SVCFILE))
@@ -39,9 +53,8 @@ for i in 1 2 3 4; do
     --env SLATE_S3_ENDPOINT=https://t3.storage.dev --env SLATE_S3_BUCKET=$(j bucketName) --env SLATE_S3_REGION=auto \
     --env SLATE_S3_ACCESS_KEY_ID=$(j accessKeyId) --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
     --env AUTH_TOKEN="$AUTH" \
-    --env PATH_PREFIX=cluster1 --env FLEET_PREFIX=cluster1-fleet \
+    --env PATH_PREFIX=cluster1 ${FLEETARG[@]} \
     --env INSTANCE_NAME=streams-$i \
-    --env FLEET_MIN=4 --env FLEET_MAX=4 \
     --env INITIAL_SHARDS=8 \
     --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=100 --env FLUSH_INTERVAL_MS=25 \
     --env L0_SST_SIZE_BYTES=16777216 --env MAX_UNFLUSHED_BYTES=33554432 \

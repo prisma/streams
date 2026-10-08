@@ -1,9 +1,18 @@
 #!/bin/bash
 # Compute-cluster validation (SCALING.md 8, final rung): repeat D1/D3/D5
 # against the 4-instance Prisma Compute fleet through its front door.
-# Requires: cluster-deploy.sh already run; CLUSTER_URL/CLUSTER_AUTH set.
+# A server in fleet mode splits no stream (the split gate, edge change
+# #119), so C1 takes its splits as the docker ladder's D1 does (the
+# owner's decision of 2026-10-08, T7): streams-1 alone outside fleet mode,
+# then all four in fleet mode over the same PATH_PREFIX:
+#   cluster-deploy.sh solo && cluster-run.sh solo   # C1's load and splits
+#   cluster-deploy.sh up   && cluster-run.sh        # C1's order check
+#                                                   # through the fleet, C3, C5
+# Requires: CLUSTER_URLS (or cluster-urls.json) and CLUSTER_AUTH set.
 set -e
 S=$(dirname "$0")
+PHASE=${1:-fleet}
+case "$PHASE" in solo|fleet) ;; *) echo "usage: cluster-run.sh [solo|fleet]"; exit 1 ;; esac
 LOG="$S/cluster-run.log"
 say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 CLUSTER_URLS=${CLUSTER_URLS:-$(cat "$S/cluster-urls.json" 2>/dev/null)}
@@ -31,6 +40,44 @@ create() {  # create a scaled stream, following the ring redirect
   done
   echo "create $name: $code" | tee -a "$LOG"
 }
+
+if [ "$PHASE" = solo ]; then
+  S1=$(python3 -c "import json,os;print(json.loads(os.environ['CLUSTER_URLS']).get('streams-1',''))")
+  [ -n "$S1" ] || { echo "no streams-1 URL in CLUSTER_URLS"; exit 1; }
+  # A peer still serving in fleet mode over the same PATH_PREFIX would
+  # contest the shards streams-1 owns alone: the solo phase refuses it.
+  for n in 2 3 4; do
+    U=$(python3 -c "import json,os;print(json.loads(os.environ['CLUSTER_URLS']).get('streams-$n',''))")
+    if [ -n "$U" ] && curl -sf -o /dev/null -m 10 "$U/health" -H "Authorization: Bearer $CLUSTER_AUTH"; then
+      say "streams-$n still serves; stop it before the solo phase"; exit 1
+    fi
+  done
+  # streams-1 outside fleet mode (cluster-deploy.sh solo: FLEET_PREFIX
+  # unset) runs no fleet loop and publishes no ring, so its scaler splits.
+  say "waiting for streams-1 to serve outside fleet mode..."
+  SOLO=0
+  for i in $(seq 1 60); do
+    if curl -s -m 25 "$S1/v1/debug/load" -H "Authorization: Bearer $CLUSTER_AUTH" 2>/dev/null \
+      | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit(1)
+raise SystemExit(0 if not (d.get('ring') or {}).get('active') else 1)" 2>/dev/null; then
+      SOLO=1; break
+    fi
+    sleep 10
+  done
+  [ "$SOLO" = 1 ] || { say "streams-1 never served outside fleet mode (its ring is not empty); aborting"; exit 1; }
+  CLUSTER_URLS=$(python3 -c "import json;print(json.dumps({'streams-1': '$S1'}))")
+  export CLUSTER_URLS
+  say "=== C1: split under load on streams-1 outside fleet mode ==="
+  create ${TAG}c1
+  rm -f /tmp/ladder-seqs-${TAG}c1.json
+  BATCH=100 python3 -u "$S/driver.py" "${TAG}c1" "$S/key.txt" 4300 360 100 32 | tee -a "$LOG"
+  say "C1's load is done on streams-1; next: cluster-deploy.sh up (all four"
+  say "in fleet mode over the same PATH_PREFIX), then cluster-run.sh"
+  exit 0
+fi
 
 # Ring-stability gate: Compute cold-starts instances one at a time, so
 # the live set (and therefore shard ownership) churns for minutes after
@@ -62,11 +109,8 @@ done
 [ "$STABLE" -ge 6 ] || { say "ring never stabilized at 4 instances; aborting"; exit 1; }
 say "ring stable — starting load"
 
-say "=== C1: split under load (4-instance cluster) ==="
-create ${TAG}c1
-rm -f /tmp/ladder-seqs-${TAG}c1.json
-BATCH=100 python3 -u "$S/driver.py" "${TAG}c1" "$S/key.txt" 4300 360 100 32 | tee -a "$LOG"
-sleep 20
+say "=== C1: order check through the fleet (split by the solo phase) ==="
+[ -f /tmp/ladder-seqs-${TAG}c1.json ] || { say "no C1 load state: run cluster-run.sh solo first"; exit 1; }
 python3 "$S/checker.py" "${TAG}c1" "$S/key.txt" | tail -3 | tee -a "$LOG"
 
 say "=== C3: rebalance under absorb lag ==="
