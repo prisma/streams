@@ -1,6 +1,7 @@
 //! Security routes.
 
 use super::fixture_auth::{rig_policy, rig_publish_policy};
+use super::fixture_cell::{CREATE, CellSpec, open_cell, project};
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
@@ -922,4 +923,62 @@ async fn every_answer_is_marked_as_this_servers() {
         );
     }
     engine_shutdown(&state).await;
+}
+
+/// A records page is debited from its project's read-byte bucket as it is
+/// served, and held in its project's read bytes and the instance's read
+/// memory until its body ends (`product::debit_read_bytes`). At 1 B/s a page
+/// of P bytes takes the full 1 B bucket to P - 1 B of debt: the project's
+/// next read is refused 429 `project_rate_limit`, retryable after P - 1 s
+/// (less any whole second the test took since the page).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_page_is_debited_and_held_until_its_body_ends() {
+    use hyper::service::Service as _;
+    let mut spec = CellSpec::open(1);
+    spec.quotas = |_| crate::project_policy::ProjectQuotas {
+        read_bytes_per_sec: 1,
+        ..Default::default()
+    };
+    let cell = open_cell(spec).await;
+    let records = "/v1/streams/paid/records";
+    assert_eq!(cell.call(0, "PUT", "/v1/streams/paid", CREATE).await.0, 201);
+    assert_eq!(cell.call(0, "POST", records, br#"{"n":1}"#).await.0, 200);
+    let read = axum::http::Request::get(records)
+        .header("authorization", &cell.bearers[0])
+        .header("prisma-encryption-key", PRISMA_KEY)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    // The router in process, as `serve_h1` calls it: the test holds the body.
+    let router =
+        hyper_util::service::TowerToHyperService::new(crate::http::router(cell.state.clone()));
+    let started = std::time::Instant::now();
+    let Ok(page) = router.call(read).await;
+    let id = crate::tenant::ProjectId::new(&project(0)).unwrap();
+    let ledgers = || {
+        let held = cell.state.quotas.read_bytes(&id).map_or(0, |b| b.held());
+        (held, cell.state.admission.read_memory().0)
+    };
+    let (status, unread) = (page.status().as_u16(), ledgers());
+    let body = axum::body::to_bytes(page.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let served = u64::try_from(body.len()).unwrap();
+    assert_eq!(
+        (status, unread, ledgers()),
+        (200, (served, served), (0, 0)),
+        "the page is held until its body ends"
+    );
+    let (status, headers, refused) = cell.call(0, "GET", records, b"").await;
+    let late = (started.elapsed() + std::time::Duration::from_millis(2)).as_secs();
+    let error = &serde_json::from_slice::<serde_json::Value>(&refused).unwrap()["error"];
+    assert_eq!(
+        (status, error["code"].as_str(), error["retryable"].as_bool()),
+        (429, Some("project_rate_limit"), Some(true))
+    );
+    let retry: u64 = headers["retry-after"].parse().unwrap();
+    assert!(
+        (served.saturating_sub(1 + late)..=served - 1).contains(&retry),
+        "retry-after {retry} s for a {served} B page, {late} s late"
+    );
+    engine_shutdown(&cell.state).await;
 }

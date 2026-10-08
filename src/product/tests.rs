@@ -432,6 +432,136 @@ async fn every_auth_refusal_keeps_its_response() {
     }
 }
 
+/// A rendered watch refusal as the wire and the journal see it, one column
+/// each, `-` for none: status, body code (`-` for a body that is not a JSON
+/// error), `retryable`, `retry-after`, `streams-replay-to`, and the journal
+/// tag as `class:project`. No watch refusal carries `prisma-error-code`.
+async fn watch_wire(failure: crate::application::watch::WatchFailure) -> String {
+    let response = watch_failure_response(failure);
+    let header = |name| {
+        let value = response.headers().get(name);
+        value.map_or("-", |v| v.to_str().unwrap())
+    };
+    assert_eq!(header("prisma-error-code"), "-");
+    let tag = response.extensions().get::<crate::audit::DenialTag>();
+    let journal = tag.map_or("-".to_string(), |t| {
+        format!("{}:{}", t.code, t.project.as_deref().unwrap_or("-"))
+    });
+    let status = response.status().as_u16();
+    let tail = format!(
+        "{} {} {journal}",
+        header("retry-after"),
+        header("streams-replay-to")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+    let body: serde_json::Value = serde_json::from_slice(&body.unwrap()).unwrap_or_default();
+    let (code, retryable) = (&body["error"]["code"], &body["error"]["retryable"]);
+    let retryable = retryable
+        .as_bool()
+        .map_or("-".to_string(), |r| r.to_string());
+    format!(
+        "{status} {} {retryable} {tail}",
+        code.as_str().unwrap_or("-")
+    )
+}
+
+/// Every watch refusal and how it renders (`watch_wire`'s columns).
+fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static str)> {
+    use crate::application::watch::WatchFailure as W;
+    use crate::quota::QuotaRefusal as Q;
+    use crate::shard_directory::ResolveError as R;
+    let p = || crate::tenant::ProjectId::new("proj-w").unwrap();
+    let prefix = || "0a".to_string();
+    vec![
+        (
+            W::Unauthorized(Some(p())),
+            "403 watch_unauthorized false - - watch_unauthorized:proj-w",
+        ),
+        (
+            W::Unauthorized(None),
+            "403 watch_unauthorized false - - watch_unauthorized:-",
+        ),
+        (W::PolicyStale(p()), "503 policy_stale true - - -"),
+        (
+            W::ProjectInactive(p()),
+            "403 project_not_active false - - project_not_active:proj-w",
+        ),
+        (
+            W::Quota(
+                p(),
+                Q::Rate {
+                    retry_after_secs: 7,
+                },
+            ),
+            "429 project_rate_limit true 7 - project_rate_limit:proj-w",
+        ),
+        (
+            W::Quota(p(), Q::Concurrency),
+            "429 project_concurrency_limit true - - project_concurrency_limit:proj-w",
+        ),
+        (
+            W::Quota(p(), Q::TrackerCapacity),
+            "503 project_tracker_capacity true - - project_tracker_capacity:proj-w",
+        ),
+        (
+            W::Quota(p(), Q::StreamLimit),
+            "429 stream_limit false - - project_stream_limit:proj-w",
+        ),
+        (
+            W::Quota(p(), Q::QueuedBytes),
+            "429 queued_bytes true - - project_queued_bytes:proj-w",
+        ),
+        (
+            W::Quota(p(), Q::MemoryPressure),
+            "429 project_memory_pressure true 1 - project_memory_pressure:proj-w",
+        ),
+        (W::InvalidKey, "400 invalid_watch_key false - - -"),
+        (W::Creating, "503 creating true - - -"),
+        (W::NotFound, "404 not_found false - - -"),
+        (W::UnknownWatch, "404 unknown_watch false - - -"),
+        (W::Storage("store down".into()), "500 internal true - - -"),
+        (
+            W::Resolve(R::NotOwner {
+                prefix: prefix(),
+                owner: "streams-2".into(),
+            }),
+            "409 not_ring_owner - - streams-2 -",
+        ),
+        (
+            W::Resolve(R::Opening {
+                prefix: prefix(),
+                code: "shard_opening",
+                retry_after_secs: 3,
+            }),
+            "503 shard_opening - 3 - -",
+        ),
+        (
+            W::Resolve(R::OpenFailed {
+                prefix: prefix(),
+                error: "x".into(),
+            }),
+            "500 shard_open - - - -",
+        ),
+    ]
+}
+
+/// Every watch refusal keeps its status, body code, retry hint, replay
+/// header and journal tag: the capability refusal is journaled with the
+/// project it names (or none), an inactive project and every project quota
+/// refusal with their project, and nothing else is journaled. A storage
+/// failure carries its message; a routing failure keeps the one resolve
+/// mapping, which has no `retryable` field.
+#[tokio::test]
+async fn every_watch_refusal_keeps_its_response() {
+    for (failure, want) in watch_refusals() {
+        assert_eq!(watch_wire(failure).await, want);
+    }
+    let failure = crate::application::watch::WatchFailure::Storage("store down".into());
+    let body = axum::body::to_bytes(watch_failure_response(failure).into_body(), usize::MAX);
+    let body: serde_json::Value = serde_json::from_slice(&body.await.unwrap()).unwrap();
+    assert_eq!(body["error"]["message"], "store down");
+}
+
 /// A transient append refusal keeps its wait on the product surface: the
 /// per-stream limiter's 429 carries `retry-after` in decimal seconds and
 /// `retryable: true` (pins `render_product_append_error`'s header value).
