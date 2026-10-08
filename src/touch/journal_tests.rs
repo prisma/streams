@@ -420,3 +420,49 @@ async fn a_journal_waited_on_between_looks_stays_until_ten_minutes_after_the_las
         "retired as at a fence"
     );
 }
+
+/// The idle sweep retires only a journal with nothing left to deliver: one
+/// with a parked waiter, or with a touch ingested and not yet published, is
+/// not idle however long the sweep sees it unchanged (retiring it would
+/// wake the waiter stale, or lose the touch). Once the waiter is answered
+/// and the touch published, each is retired ten minutes later. A journal
+/// built here has no flusher: the test's own handle stands where the
+/// flusher's would, so each journal counts as unheld.
+#[tokio::test(start_paused = true)]
+async fn a_journal_with_a_parked_waiter_or_an_unpublished_touch_is_never_idle() {
+    let (parked_hash, unpublished_hash) = ([0x01; 16], [0x02; 16]);
+    let (parked, unpublished) = (fixed("parked"), fixed("unpublished"));
+    let route = RouteHash([0x40; 16]);
+    let map: super::JournalMap = Mutex::new(HashMap::from([
+        (parked_hash, (route, parked.clone())),
+        (unpublished_hash, (route, unpublished.clone())),
+    ]));
+    let mut wait = Box::pin(parked.wait("now", vec![7], LONG));
+    assert_eq!(ready(futures_util::poll!(wait.as_mut())), "pending");
+    unpublished.ingest(&[7], 1);
+    let mut seen = HashMap::new();
+    let start = tokio::time::Instant::now();
+    let look = |seen: &mut HashMap<[u8; 16], super::Seen>, minute: u64| {
+        super::retire_idle(&map, seen, start + Duration::from_secs(60 * minute));
+        let map = map.lock().unwrap();
+        [parked_hash, unpublished_hash].map(|hash| map.contains_key(&hash))
+    };
+    let retired: Vec<u64> = (0..=30)
+        .filter(|minute| look(&mut seen, *minute) != [true, true])
+        .collect();
+    assert_eq!(retired, [0u64; 0], "neither journal is idle");
+    assert_eq!(ready(futures_util::poll!(wait.as_mut())), "pending");
+    parked.ingest(&[7], 2);
+    parked.flush_bucket(false);
+    assert_eq!(
+        ready(futures_util::poll!(wait.as_mut())),
+        "touched parked:1 end 2 proven true"
+    );
+    unpublished.flush_bucket(false);
+    let kept: Vec<u64> = (31..=41)
+        .filter(|minute| look(&mut seen, *minute) == [true, true])
+        .collect();
+    assert_eq!(kept, (31..41).collect::<Vec<u64>>());
+    assert_eq!(map.lock().unwrap().len(), 0);
+    assert!(parked.inner.lock().unwrap().closed && unpublished.inner.lock().unwrap().closed);
+}
