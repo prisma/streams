@@ -118,14 +118,13 @@ impl FrameReadResult {
 }
 
 /// The read-ahead of a page scan whose stored-byte budget is `max_bytes`:
-/// the budget and one page past it, at least 64 KiB and at most 2 MiB. The
-/// scan stops at its budget, so a larger read-ahead only fetches (and in
-/// history caches) blocks the read never uses; a 64 KiB window scanned with
-/// 2 MiB of read-ahead fetched several store bytes per byte it served.
+/// the budget and one page past it, so at least the 64 KiB of one page, and
+/// at most 2 MiB. The scan stops at its budget, so a larger read-ahead only
+/// fetches (and in history caches) blocks the read never uses; a 64 KiB
+/// window scanned with 2 MiB of read-ahead fetched several store bytes per
+/// byte it served.
 pub(crate) fn scan_read_ahead(max_bytes: usize) -> usize {
-    max_bytes
-        .saturating_add(PAGE_TARGET_PLAINTEXT)
-        .clamp(64 << 10, 2 << 20)
+    max_bytes.saturating_add(PAGE_TARGET_PLAINTEXT).min(2 << 20)
 }
 
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
