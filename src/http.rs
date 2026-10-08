@@ -463,9 +463,9 @@ pub(crate) fn raw_surface_authorized(
     raw_surface_authorization(state, headers, op).is_some()
 }
 
-/// Short-lived workload JWT (§14.1): aud "prisma-streams-internal",
-/// same issuer and JWKS as customer tokens, bound to this cell — and
-/// authorized for EXACTLY the operations its claim names.
+/// Short-lived workload JWT (§14.1): aud "prisma-streams-internal", the
+/// customers' issuer and keys feed but only a kid pinned to that audience
+/// (r7), bound to this cell — and authorized for EXACTLY its operations.
 fn workload_jwt_operation(state: &AppState, headers: &HeaderMap, op: InternalOperation) -> bool {
     if state.auth.mode == crate::auth::AuthMode::Off {
         return false;
@@ -1163,10 +1163,10 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/v1/segments/{*name}", get(get_segments))
         .merge(internal_routes::table())
         .nest("/v1/debug", debug::gated(&state, debug_routes()))
-        // Operator dashboard: UNSECURED by explicit product decision (on-call
-        // must see the cell without credentials). The payload is therefore
-        // restricted to operational metadata — never stream names, tenant
-        // identifiers, tokens, keys, or signed URLs.
+        // Operator dashboard: gated by the deployment bearer in every mode
+        // (`operator_gate`, SR-5). The payload stays restricted to
+        // operational metadata — never stream names, tenant identifiers,
+        // tokens, keys, or signed URLs.
         .route("/operator", get(crate::operator::page))
         .route("/operator/data.json", get(crate::operator::data))
         .route("/operator/runbook", get(crate::operator::runbook))

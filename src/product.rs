@@ -548,8 +548,8 @@ fn watch_capability_carrier(path: &str, method: &Method, query: &str, headers: &
 /// MULTITENANCY Stage 5 shadow trial: run a NON-capability product
 /// bearer through the full customer pipeline and count the outcome.
 /// Observation only, and called from the REQUEST WRAPPERS exactly once
-/// per request — the auth gate itself runs twice by design
-/// (wrapper + entry defense-in-depth) and must stay side-effect free.
+/// per request — the auth gate (one caller, the product wrapper) stays
+/// side-effect free, so the shadow count is taken here and only here.
 pub(crate) fn shadow_observe_request(
     state: &AppState,
     path: &str,
@@ -997,10 +997,10 @@ pub(crate) async fn product_entry(
     // Entry owns verification and admission; preserve its explicit authority.
     let principal = authorization.principal().cloned();
     // Stage 5d: the VERIFIED principal selects the tenant-qualified
-    // storage identity. Off/shadow requests (and §15 capability
-    // carriers, until the capability wire carries the project —
-    // review item 3) address the deployment tenant, which is the
-    // single-tenant posture those modes run in.
+    // storage identity. Off/shadow requests address the deployment
+    // tenant, the single-tenant posture those modes run in; a §15
+    // capability carrier's observation takes its project from the
+    // capability it verifies (`WatchService::authenticate`).
     let tenant: crate::tenant::ProjectId = principal
         .as_ref()
         .map(|p| p.project_id.clone())
