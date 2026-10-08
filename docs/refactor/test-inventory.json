@@ -3698,7 +3698,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b6a67dae1258328d6f80fd06a73bf3b4d0f88e31abb26c55dcc2590f59d6a3eb",
+    "function_sha256": "2888ff697330f9a726379006e0a2833bac32061a31b63a70fac533eca1f1c93d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -3959,6 +3959,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "expired_watched_streams_leave_no_touch_journal_after_the_walk",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "733b4b2bf4d016235ce4e1cf853f487da51650d92db2b10f8f2a810bbb88fbef",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
     "scenarios": []
   },
   {

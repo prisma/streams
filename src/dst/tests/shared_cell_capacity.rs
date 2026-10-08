@@ -3,7 +3,8 @@
 //! share, besides read memory (`read_memory`). Each test pins one bound.
 //!
 //! Green: a write's buffered bodies share their project's memory line
-//! (C3), and a deleted watched stream's touch journal ends with it (C9).
+//! (C3), and a deleted or expired watched stream's touch journal ends with
+//! it (C9).
 //! Ignored, red until the owner decides them (`impl/fixes.md`): the bytes
 //! a descriptor may hold (C4), the coverage a pull reads charged to
 //! nobody (C7), and a catalog page reserving nothing (C8).
@@ -188,21 +189,7 @@ async fn concurrent_uploads_share_their_projects_memory_line() {
 async fn deleted_watched_streams_leave_no_touch_journal_running() {
     const STREAMS: usize = 32;
     let cell = open_cell(CellSpec::open(1)).await;
-    let tasks = || {
-        tokio::runtime::Handle::current()
-            .metrics()
-            .num_alive_tasks()
-    };
-    // Bring the engine to its steady task set first: plain streams
-    // created, appended to and deleted leave no task.
-    for n in 0..8 {
-        let warm = format!("/v1/streams/warm-{n}");
-        assert_eq!(cell.call(0, "PUT", &warm, CREATE).await.0, 201);
-        let record = format!("{warm}/records");
-        assert_eq!(cell.call(0, "POST", &record, br#"{"k":0}"#).await.0, 200);
-        assert_eq!(cell.call(0, "DELETE", &warm, b"").await.0, 204);
-    }
-    let before = at_rest(tasks).await;
+    let before = steady_tasks(&cell).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/k"]}]}"#;
     for n in 0..STREAMS {
         let path = format!("/v1/streams/touch-{n}");
@@ -214,11 +201,86 @@ async fn deleted_watched_streams_leave_no_touch_journal_running() {
         assert_eq!(appended.0, 200);
         assert_eq!(cell.call(0, "DELETE", &path, b"").await.0, 204);
     }
-    let after = at_rest(tasks).await;
+    let after = at_rest(alive_tasks).await;
     assert!(
         after <= before,
         "{} more tasks alive after {STREAMS} watched streams were created, appended to and \
          deleted ({before} before, {after} after)",
+        after.saturating_sub(before)
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+fn alive_tasks() -> usize {
+    tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks()
+}
+
+/// The runtime's alive tasks once the engine has its steady task set:
+/// plain streams created, appended to and deleted leave no task.
+async fn steady_tasks(cell: &Cell) -> usize {
+    for n in 0..8 {
+        let warm = format!("/v1/streams/warm-{n}");
+        assert_eq!(cell.call(0, "PUT", &warm, CREATE).await.0, 201);
+        let record = format!("{warm}/records");
+        assert_eq!(cell.call(0, "POST", &record, br#"{"k":0}"#).await.0, 200);
+        assert_eq!(cell.call(0, "DELETE", &warm, b"").await.0, 204);
+    }
+    at_rest(alive_tasks).await
+}
+
+/// Puts the billing clock back however the test ends.
+struct BillingClockReset;
+
+impl Drop for BillingClockReset {
+    fn drop(&mut self) {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// C9's expiry half (owner-approved 2026-10-08, README "Shared cells Q10"
+/// (a)): an expired watched stream is closed by the tombstone walk, not
+/// deleted, and the walk's close retires its touch journal, so the
+/// journal's flusher ends there, not at a fence (which never comes on a
+/// one-shard cell) nor ten idle minutes later. 32 watched streams that
+/// expire, appended to once each, leave the alive task count where it was
+/// once one walk pass has closed them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_watched_streams_leave_no_touch_journal_after_the_walk() {
+    const STREAMS: usize = 32;
+    let _clock = crate::billing::billing_clock_lock().write().await;
+    let _reset = BillingClockReset;
+    let cell = open_cell(CellSpec::open(1)).await;
+    let before = steady_tasks(&cell).await;
+    let at = chrono::DateTime::from_timestamp_millis(crate::shard::now_ms() + 60_000)
+        .unwrap()
+        .to_rfc3339();
+    let watched = format!(
+        r#"{{"format":{{"kind":"json"}},"expiry":{{"at":"{at}"}},"watches":[{{"name":"w","fields":["/k"]}}]}}"#
+    );
+    for n in 0..STREAMS {
+        let path = format!("/v1/streams/expiring-{n}");
+        assert_eq!(cell.call(0, "PUT", &path, watched.as_bytes()).await.0, 201);
+        let record = format!(r#"{{"k":{n}}}"#);
+        let appended = cell
+            .call(0, "POST", &format!("{path}/records"), record.as_bytes())
+            .await;
+        assert_eq!(appended.0, 200);
+    }
+    let opened = at_rest(alive_tasks).await;
+    assert!(
+        opened >= before + STREAMS,
+        "{opened} tasks with {STREAMS} journals open"
+    );
+    let expired = crate::shard::now_ms() + 120_000;
+    crate::billing::BILLING_CLOCK_OVERRIDE.store(expired, std::sync::atomic::Ordering::Relaxed);
+    crate::billing::tombstone_walk(&cell.state).await;
+    let after = at_rest(alive_tasks).await;
+    assert!(
+        after <= before,
+        "{} more tasks alive after {STREAMS} watched streams expired and the walk closed them \
+         ({before} before, {opened} with them open, {after} after)",
         after.saturating_sub(before)
     );
     engine_shutdown(&cell.state).await;

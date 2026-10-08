@@ -86,6 +86,12 @@ pub(super) async fn walk_segment(
         );
         return Pass::Stop;
     };
+    if terminal {
+        // An expired or deleted incarnation is never appended to or
+        // watched again: its watch journal ends here (capacity review C9),
+        // its waiters answered stale, as a delete's are.
+        state.touch.retire(d.storage_hash());
+    }
     let budget = sweep_resident_budget(&state.config.billing);
     let (engine, ours) = match walk_engine_budgeted(state, &route, budget).await {
         Ok(acquired) => acquired,
