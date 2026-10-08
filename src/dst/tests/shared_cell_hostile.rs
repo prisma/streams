@@ -449,9 +449,17 @@ async fn a_capability_carrier_with_only_a_key_is_refused() {
     let garbage = format!("{base}&cap={}.garbage", project(1));
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, b) = preq(cell.addr, "GET", &garbage, &key, b"").await;
+    let refusal: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
     assert_eq!(
-        (st, error_code(&b)),
-        (403, Some("watch_unauthorized".to_string())),
+        (st, error_code(&b), refusal["error"]["message"].as_str()),
+        (
+            403,
+            Some("watch_unauthorized".to_string()),
+            Some(
+                "a valid observation capability or Prisma-Encryption-Key is required; \
+                 under enforce the key observes only beside a verified token"
+            )
+        ),
         "key-only carrier: {}",
         String::from_utf8_lossy(&b)
     );

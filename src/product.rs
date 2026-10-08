@@ -3862,7 +3862,7 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
                 perr(
                     StatusCode::FORBIDDEN,
                     "watch_unauthorized",
-                    "a valid observation capability or Prisma-Encryption-Key is required",
+                    "a valid observation capability or Prisma-Encryption-Key is required; under enforce the key observes only beside a verified token",
                     None,
                     false,
                 ),
