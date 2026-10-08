@@ -123,3 +123,36 @@ async fn a_ring_read_inspects_no_batch_from_its_window_end() {
     assert_eq!(hit.last_offset, Some(1));
     assert!(engine.ring_read(&handle, scan(3), None).is_none());
 }
+
+/// A ring read skips every batch that ends at or before its window's
+/// start without inspecting its pages: the window [2, 3) is served from the
+/// batch at 2 although the batch before it, which ends at 2, holds an entry
+/// that claims offset 2 and fails admission. The control: the window
+/// [1, 3), which starts inside that batch, inspects the entry and is
+/// refused.
+#[tokio::test]
+async fn a_ring_read_inspects_no_batch_that_ends_at_its_window_start() {
+    let engine = engine(1 << 20).await;
+    let handle = engine.stream_handle([4; 16]).await.unwrap();
+    let before = RingBatch {
+        first: 0,
+        next: 2,
+        frames: vec![(2, Bytes::from_static(b"broken"))],
+        bytes: 6,
+    };
+    engine.ring_publish(&handle, &before);
+    let mut window = RingBatch::default();
+    window.push_page(2, 2, sealed_page(2));
+    engine.ring_publish(&handle, &window);
+    handle.state.lock().unwrap().durable.next = 3;
+    let scan = |from| RingScan {
+        from,
+        to: 3,
+        max_bytes: usize::MAX,
+    };
+    let hit = engine.ring_read(&handle, scan(2), None).unwrap();
+    let served: Vec<(u64, u64)> = hit.frames.iter().map(|s| (s.first(), s.last())).collect();
+    assert_eq!(served, vec![(2, 2)]);
+    assert_eq!(hit.last_offset, Some(2));
+    assert!(engine.ring_read(&handle, scan(1), None).is_none());
+}
